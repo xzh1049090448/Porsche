@@ -1,20 +1,15 @@
-## Porsche Spring Boot 应用
+# Porsche 工作区
 
-This is Dog Dan's debut work.
+本仓库包含**两个相互独立**的子项目，可分别在各自目录内开发、构建与部署。
 
-这里是实际的 Spring Boot 项目根目录，使用 Maven 构建。
+| 目录 | 说明 |
+|------|------|
+| [`spring-app/`](spring-app/) | Java 17 + Spring Boot + Maven（博客 API 等后端） |
+| [`ai-gateway/`](ai-gateway/) | Python + FastAPI AI 网关（OpenAI 兼容中转） |
 
-### 运行
+两者无代码依赖；若你希望拆成两个 Git 仓库，可将对应目录各自 `git init` 或使用子树/子模块策略迁移。
 
-```bash
-./mvnw.cmd spring-boot:run
-```
+## 快速入口
 
-### 主要模块
-
-- `src/main/java/com/example/app/controller`：接口层
-- `src/main/java/com/example/app/service`：业务层
-- `src/main/java/com/example/app/repository`：数据访问层（JPA）
-- `src/main/java/com/example/app/entity`：实体
-- `src/main/java/com/example/app/exception`：全局异常处理
-- `src/main/java/com/example/app/common`：统一返回体等通用类
+- **Spring Boot**：进入 `spring-app/`，见该目录下的 [`README.md`](spring-app/README.md)。
+- **AI Gateway**：进入 `ai-gateway/`，见 [`ai-gateway/README.md`](ai-gateway/README.md)（含合规说明与 Docker）。
