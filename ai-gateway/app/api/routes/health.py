@@ -12,6 +12,8 @@ router = APIRouter(tags=["health"])
 
 @router.get("/health")
 async def health(state: AppState = Depends(get_state)) -> dict:
+    if state.settings.app_env == "production":
+        return {"status": "ok"}
     return {
         "status": "ok",
         "models_loaded": len(state.models.routes),

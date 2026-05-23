@@ -1,8 +1,25 @@
-# 本地一键启动（含 Redis，用于分布式限流与用量统计）
+# 本地一键启动（含 Redis + MySQL）
 # 使用: docker compose up --build
-# 不启用 Redis 时: 删除或清空环境变量 REDIS_URL，并移除 depends_on / redis 服务。
 
 services:
+  mysql:
+    image: mysql:8.0
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: platform
+      MYSQL_USER: platform
+      MYSQL_PASSWORD: platform
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   redis:
     image: redis:7-alpine
     restart: unless-stopped
@@ -18,9 +35,20 @@ services:
       - .env
     environment:
       REDIS_URL: redis://redis:6379/0
+      DATABASE_URL: mysql+aiomysql://platform:platform@mysql:3306/platform
       MODELS_CONFIG_PATH: /app/config/models.yaml
       CLIENTS_CONFIG_PATH: /app/config/clients.yaml
+      CHROMA_PERSIST_DIR: /app/data/chroma
+      DATASET_UPLOAD_DIR: /app/data/uploads
     volumes:
       - ./config:/app/config:ro
+      - platform_data:/app/data
     depends_on:
-      - redis
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+volumes:
+  mysql_data:
+  platform_data:

@@ -1,5 +1,4 @@
-# 下游客户端密钥 — 生产环境请复制 clients.example.yaml 并替换 secret，勿提交真实密钥
-# 平台内部密钥需与环境变量 PLATFORM_CLIENT_SECRET 一致
+# Test-only client secrets (used by pytest via CLIENTS_CONFIG_PATH)
 
 clients:
   - name: platform-internal
@@ -12,7 +11,7 @@ clients:
     ip_allowlist: []
 
   - name: api-external
-    secret: "REPLACE-WITH-STRONG-RANDOM-SECRET"
+    secret: "sk-client-dev-change-me"
     allowed_models: []
     rpm: 120
     tpm: 500000

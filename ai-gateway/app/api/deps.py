@@ -5,7 +5,12 @@ from __future__ import annotations
 from typing import Annotated
 
 from fastapi import Depends, Header, HTTPException, Request
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.security import decode_access_token
+from app.db.models import User, UserStatus
+from app.db.session import get_db
 from app.services.client_registry import ClientConfig, ClientRegistry
 from app.state import AppState
 
@@ -29,10 +34,39 @@ async def get_client_config(
     client = state.clients.get_by_secret(secret)
     if client is None:
         raise HTTPException(status_code=401, detail="Invalid API key")
-    host = request.client.host if request.client else ""
-    forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        host = forwarded.split(",")[0].strip()
+    host = _resolve_client_host(request, state.settings.trust_proxy_headers)
     if not ClientRegistry.ip_allowed(client, host):
         raise HTTPException(status_code=403, detail="IP not allowed")
     return client
+
+
+async def get_current_user(
+    state: Annotated[AppState, Depends(get_state)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    authorization: Annotated[str | None, Header()] = None,
+) -> User:
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="未登录")
+    token = authorization.split(" ", 1)[1].strip()
+    payload = decode_access_token(token, state.settings.jwt_secret_key)
+    if not payload or "sub" not in payload:
+        raise HTTPException(status_code=401, detail="Token无效或已过期")
+    user_id = int(payload["sub"])
+    user = await db.scalar(select(User).where(User.id == user_id))
+    if not user or user.status != UserStatus.ACTIVE:
+        raise HTTPException(status_code=401, detail="用户不存在或已被禁用")
+    return user
+
+
+def _resolve_client_host(request: Request, trust_proxy_headers: bool) -> str:
+    if trust_proxy_headers:
+        forwarded = request.headers.get("x-forwarded-for")
+        if forwarded:
+            return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else ""
+
+
+def get_client_ip(request: Request) -> str:
+    state = getattr(request.app.state, "app_state", None)
+    trust = state.settings.trust_proxy_headers if state is not None else False
+    return _resolve_client_host(request, trust)

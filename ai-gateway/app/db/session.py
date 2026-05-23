@@ -1,0 +1,50 @@
+"""Async SQLAlchemy session management."""
+
+from __future__ import annotations
+
+from collections.abc import AsyncGenerator
+
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
+from app.config import get_settings
+from app.db.models import Base
+
+_engine = None
+async_session_factory: async_sessionmaker[AsyncSession] | None = None
+
+
+def _build_engine():
+    settings = get_settings()
+    return create_async_engine(
+        settings.database_url,
+        echo=settings.app_env == "development",
+        pool_pre_ping=True,
+    )
+
+
+async def init_db() -> None:
+    global _engine, async_session_factory
+    _engine = _build_engine()
+    async_session_factory = async_sessionmaker(_engine, expire_on_commit=False)
+    async with _engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+
+async def get_db() -> AsyncGenerator[AsyncSession, None]:
+    if async_session_factory is None:
+        raise RuntimeError("Database not initialized")
+    async with async_session_factory() as session:
+        try:
+            yield session
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
+
+
+async def shutdown_db() -> None:
+    global _engine, async_session_factory
+    if _engine is not None:
+        await _engine.dispose()
+    _engine = None
+    async_session_factory = None
