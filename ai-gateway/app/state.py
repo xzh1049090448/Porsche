@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import httpx
 
 from app.config import Settings
@@ -9,12 +11,14 @@ from app.services.auth_service import AuthService
 from app.services.billing_service import BillingService
 from app.services.client_registry import ClientRegistry
 from app.services.model_registry import ModelRegistry
-from app.services.platform_chat import PlatformChatService
 from app.services.rag_engine import RagEngine
 from app.services.rate_limiter import RateLimiter
 from app.services.sms import SmsService
 from app.services.upstream_pool import UpstreamKeyPool
 from app.services.usage_tracker import UsageTracker
+
+if TYPE_CHECKING:
+    from app.services.platform_chat import PlatformChatService
 
 
 class AppState:
@@ -51,6 +55,8 @@ class AppState:
         self.pool.rebuild(self.models.routes)
 
     def init_platform_chat(self) -> None:
+        from app.services.platform_chat import PlatformChatService
+
         self.platform_chat = PlatformChatService(self, self.rag, self.billing)
 
     async def shutdown(self) -> None:
