@@ -40,18 +40,32 @@ async def get_client_config(
     return client
 
 
-async def get_current_user(
-    state: Annotated[AppState, Depends(get_state)],
-    db: Annotated[AsyncSession, Depends(get_db)],
-    authorization: Annotated[str | None, Header()] = None,
-) -> User:
+def _decode_user_id_from_header(
+    state: AppState, authorization: str | None
+) -> int:
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(status_code=401, detail="未登录")
     token = authorization.split(" ", 1)[1].strip()
     payload = decode_access_token(token, state.settings.jwt_secret_key)
     if not payload or "sub" not in payload:
         raise HTTPException(status_code=401, detail="Token无效或已过期")
-    user_id = int(payload["sub"])
+    return int(payload["sub"])
+
+
+async def require_authenticated_user(
+    state: Annotated[AppState, Depends(get_state)],
+    authorization: Annotated[str | None, Header()] = None,
+) -> int:
+    """Validate JWT only (no DB). Use for read-only endpoints to reduce pool pressure."""
+    return _decode_user_id_from_header(state, authorization)
+
+
+async def get_current_user(
+    state: Annotated[AppState, Depends(get_state)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    authorization: Annotated[str | None, Header()] = None,
+) -> User:
+    user_id = _decode_user_id_from_header(state, authorization)
     user = await db.scalar(select(User).where(User.id == user_id))
     if not user or user.status != UserStatus.ACTIVE:
         raise HTTPException(status_code=401, detail="用户不存在或已被禁用")

@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_client_ip, get_current_user, get_state
+from app.api.deps import get_client_ip, get_current_user, get_state, require_authenticated_user
 from app.db.models import User
 from app.db.session import get_db
 from app.schemas.platform import (
@@ -26,7 +26,7 @@ router = APIRouter(prefix="/api/v1/platform", tags=["platform"])
 @router.get("/models")
 async def list_models(
     state: Annotated[AppState, Depends(get_state)],
-    _user: Annotated[User, Depends(get_current_user)],
+    _user_id: Annotated[int, Depends(require_authenticated_user)],
 ):
     """List available domestic LLM models."""
     models = []
