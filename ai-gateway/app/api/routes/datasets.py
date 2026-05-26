@@ -25,10 +25,13 @@ async def list_datasets(
         select(Dataset).where(Dataset.status == DatasetStatus.ACTIVE).order_by(Dataset.id)
     )
     items = []
+    plan = user.plan_type.value
+    allowed_ids = user.allowed_datasets or []
     for ds in rows.all():
-        if user.allowed_datasets and ds.id not in user.allowed_datasets:
+        if allowed_ids and ds.id not in allowed_ids:
             continue
-        if ds.access_plans and user.plan_type.value not in ds.access_plans:
+        plans = ds.access_plans or []
+        if plans and plan not in plans:
             continue
         items.append(DatasetResponse.model_validate(ds))
     return DatasetListResponse(items=items)

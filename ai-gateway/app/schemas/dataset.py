@@ -3,20 +3,28 @@
 from __future__ import annotations
 
 from datetime import datetime
+from enum import Enum
+from typing import Annotated, Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, BeforeValidator, Field
+
+
+def _coerce_enum_str(value: Any) -> str:
+    if isinstance(value, Enum):
+        return value.value
+    return str(value)
 
 
 class DatasetResponse(BaseModel):
     id: int
     name: str
     slug: str
-    category: str
+    category: Annotated[str, BeforeValidator(_coerce_enum_str)]
     description: str | None
-    status: str
+    status: Annotated[str, BeforeValidator(_coerce_enum_str)]
     current_version: str
     token_count: int
-    vector_status: str
+    vector_status: Annotated[str, BeforeValidator(_coerce_enum_str)]
     access_plans: list | None
     created_at: datetime
 
