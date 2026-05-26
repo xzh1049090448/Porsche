@@ -89,6 +89,12 @@ routes:
     base_url: https://open.bigmodel.cn/api/paas/v4
     api_keys_env: GLM_API_KEYS
 
+  glm-5.1:
+    provider: openai_compatible
+    upstream_model: glm-5.1
+    base_url: https://open.bigmodel.cn/api/paas/v4
+    api_keys_env: GLM_API_KEYS
+
   # 月之暗面 Moonshot
   moonshot-v1-8k:
     provider: openai_compatible
