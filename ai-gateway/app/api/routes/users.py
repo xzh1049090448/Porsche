@@ -11,6 +11,7 @@ from app.api.deps import get_current_user
 from app.core.security import hash_password, verify_password
 from app.db.models import User
 from app.db.session import get_db
+from app.schemas.serializers import user_profile_response
 from app.schemas.user import (
     ChangePasswordRequest,
     RealNameVerifyRequest,
@@ -28,7 +29,7 @@ router = APIRouter(prefix="/api/v1/users", tags=["users"])
 
 @router.get("/me", response_model=UserProfileResponse)
 async def get_profile(user: Annotated[User, Depends(get_current_user)]):
-    return user
+    return user_profile_response(user)
 
 
 @router.put("/me", response_model=UserProfileResponse)
@@ -38,7 +39,7 @@ async def update_profile(
 ):
     if body.nickname is not None:
         user.nickname = body.nickname
-    return user
+    return user_profile_response(user)
 
 
 @router.post("/me/password")

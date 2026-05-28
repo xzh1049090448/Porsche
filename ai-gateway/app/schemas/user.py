@@ -51,3 +51,10 @@ class UsageStatsResponse(BaseModel):
     daily_call_limit: int
     remaining_daily_calls: int
     plan_type: str
+
+    @field_validator("plan_type", mode="before")
+    @classmethod
+    def coerce_plan_type(cls, v: object) -> str:
+        if isinstance(v, Enum):
+            return v.value
+        return str(v)

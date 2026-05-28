@@ -5,6 +5,7 @@ from __future__ import annotations
 import enum
 from typing import Any, TypeVar
 
+from loguru import logger
 from sqlalchemy import String
 from sqlalchemy.types import TypeDecorator
 
@@ -58,7 +59,17 @@ class StrEnumType(TypeDecorator):
     def process_result_value(self, value: Any, dialect: Any) -> E | None:
         if value is None:
             return None
-        return _coerce_enum(self.enum_cls, value)
+        try:
+            return _coerce_enum(self.enum_cls, value)
+        except ValueError:
+            fallback = next(iter(self.enum_cls))
+            logger.warning(
+                "Invalid {} value {!r}, falling back to {}",
+                self.enum_cls.__name__,
+                value,
+                fallback.value,
+            )
+            return fallback
 
 
 def str_enum(enum_cls: type[E], *, length: int = 32) -> StrEnumType:
