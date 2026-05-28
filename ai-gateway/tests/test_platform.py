@@ -6,6 +6,16 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from app.main import app
+from app.services.platform_chat import _parse_sse_chunk
+
+
+def test_parse_sse_chunk_delta_and_error():
+    delta, err = _parse_sse_chunk(b'data: {"choices":[{"delta":{"content":"你好"}}]}\n\n')
+    assert delta == "你好"
+    assert err is None
+
+    _, err = _parse_sse_chunk(b'data: {"error":{"message":"upstream down"}}\n\n')
+    assert err == "upstream down"
 
 
 @pytest.fixture

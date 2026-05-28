@@ -19,6 +19,32 @@ from app.services.rag_engine import DATASET_ATTRIBUTION, RagEngine
 from app.state import AppState
 
 
+def _parse_sse_chunk(chunk: bytes) -> tuple[str, str | None]:
+  """Extract text delta and optional error from one SSE chunk."""
+  delta_parts: list[str] = []
+  error: str | None = None
+  text = chunk.decode("utf-8", errors="ignore")
+  for line in text.split("\n"):
+    if not line.startswith("data:"):
+      continue
+    payload = line[5:].strip()
+    if not payload or payload == "[DONE]":
+      continue
+    try:
+      data = json.loads(payload)
+    except json.JSONDecodeError:
+      continue
+    if isinstance(data.get("error"), dict):
+      error = data["error"].get("message") or str(data["error"])
+    elif isinstance(data.get("error"), str):
+      error = data["error"]
+    choice = (data.get("choices") or [{}])[0]
+    content = choice.get("delta", {}).get("content")
+    if content:
+      delta_parts.append(content)
+  return "".join(delta_parts), error
+
+
 class PlatformChatService:
   def __init__(
     self,
@@ -172,10 +198,15 @@ class PlatformChatService:
   ) -> AsyncIterator[bytes]:
     await self._billing.check_and_consume_call(db, user)
 
+    if user.allowed_models and model not in user.allowed_models:
+      raise HTTPException(status_code=403, detail="当前账号无权使用该模型")
+
     datasets: list[Dataset] = []
     dataset_used = False
     if dataset_enabled:
       datasets = await self._validate_datasets(db, user, dataset_ids)
+      if not datasets:
+        raise HTTPException(status_code=400, detail="启用数据集时必须选择至少一个子数据集")
 
     trimmed = ConversationService.trim_messages(messages, context_window)
     query = ""
@@ -189,6 +220,28 @@ class PlatformChatService:
       ds_ids = [d.id for d in datasets]
       rag_messages, dataset_used = self._rag.build_rag_messages(trimmed, ds_ids, query)
 
+    if conversation_id:
+      conv = await ConversationService.get(db, user, conversation_id)
+    else:
+      conv = await ConversationService.create(
+        db,
+        user,
+        model=model,
+        dataset_enabled=dataset_enabled,
+        dataset_ids=dataset_ids,
+      )
+
+    last_user = trimmed[-1] if trimmed else None
+    if last_user and last_user.get("role") == "user":
+      user_content = str(last_user.get("content", ""))
+      await ConversationService.add_message(
+        db, conv, role="user", content=user_content
+      )
+      if conv.title == "新对话" and user_content.strip():
+        conv.title = user_content.strip()[:24] or "新对话"
+
+    await db.flush()
+
     client = self._get_platform_client()
     chat_messages = [ChatMessage(**m) for m in rag_messages]
     body = ChatCompletionRequest(
@@ -199,14 +252,44 @@ class PlatformChatService:
       stream=True,
     )
 
+    attribution = DATASET_ATTRIBUTION if dataset_used else None
     meta = {
+      "type": "meta",
+      "conversation_id": conv.id,
       "dataset_used": dataset_used,
-      "dataset_attribution": DATASET_ATTRIBUTION if dataset_used else None,
+      "dataset_attribution": attribution,
     }
-    yield f"data: {json.dumps({'type': 'meta', **meta}, ensure_ascii=False)}\n\n".encode()
+    yield f"data: {json.dumps(meta, ensure_ascii=False)}\n\n".encode()
+
+    content_parts: list[str] = []
+    stream_error: str | None = None
 
     async for chunk in self._gateway.stream(client=client, body=body):
+      delta, err = _parse_sse_chunk(chunk)
+      if delta:
+        content_parts.append(delta)
+      if err:
+        stream_error = err
       yield chunk
+
+    content = "".join(content_parts)
+    if stream_error and not content:
+      content = f"[错误] {stream_error}"
+
+    await ConversationService.add_message(
+      db,
+      conv,
+      role="assistant",
+      content=content,
+      model=model,
+      dataset_used=dataset_used,
+      dataset_attribution=attribution,
+      tokens=0,
+    )
+    if dataset_used:
+      user.dataset_calls += 1
+    db.add(UsageRecord(user_id=user.id, record_type="chat", tokens=0, model=model))
+    await db.flush()
 
   async def compare(
     self,
