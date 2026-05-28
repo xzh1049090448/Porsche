@@ -25,6 +25,11 @@ class LoginPasswordRequest(BaseModel):
     phone: str = Field(..., min_length=11, max_length=11)
     password: str
 
+    @field_validator("phone", mode="before")
+    @classmethod
+    def strip_whitespace(cls, v: str) -> str:
+        return v.strip() if isinstance(v, str) else v
+
 
 class LoginCodeRequest(BaseModel):
     phone: str = Field(..., min_length=11, max_length=11)

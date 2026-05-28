@@ -75,6 +75,11 @@ class Settings(BaseSettings):
     )
     jwt_expire_minutes: int = 60 * 24 * 7  # 7 days
 
+    # 临时固定账号密码登录（关闭验证码/注册登录）
+    fixed_login_enabled: bool = True
+    fixed_login_phone: str = "13800138000"
+    fixed_login_password: str = "Porsche@2026"
+
     # SMS verification (dev mode returns code in response)
     sms_dev_mode: bool = True
     sms_send_limit_per_phone: int = Field(

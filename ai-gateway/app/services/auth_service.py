@@ -15,10 +15,22 @@ from app.services.sms import SmsService
 
 
 class AuthService:
-  def __init__(self, sms: SmsService, jwt_secret: str, jwt_expire_minutes: int) -> None:
+  def __init__(
+    self,
+    sms: SmsService,
+    jwt_secret: str,
+    jwt_expire_minutes: int,
+    *,
+    fixed_login_enabled: bool = False,
+    fixed_login_phone: str = "",
+    fixed_login_password: str = "",
+  ) -> None:
     self._sms = sms
     self._jwt_secret = jwt_secret
     self._jwt_expire_minutes = jwt_expire_minutes
+    self._fixed_login_enabled = fixed_login_enabled
+    self._fixed_phone = fixed_login_phone.strip()
+    self._fixed_password = fixed_login_password
 
   async def register(
     self,
@@ -47,11 +59,36 @@ class AuthService:
     return user, token
 
   async def login_password(self, db: AsyncSession, *, phone: str, password: str) -> tuple[User, str]:
+    phone = phone.strip()
+    if self._fixed_login_enabled:
+      if phone != self._fixed_phone or password != self._fixed_password:
+        raise HTTPException(status_code=401, detail="手机号或密码错误")
+      user = await self._get_or_create_fixed_user(db, phone)
+      self._ensure_active(user)
+      return user, self._make_token(user)
+
     user = await db.scalar(select(User).where(User.phone == phone))
     if not user or not user.password_hash or not verify_password(password, user.password_hash):
       raise HTTPException(status_code=401, detail="手机号或密码错误")
     self._ensure_active(user)
     return user, self._make_token(user)
+
+  async def _get_or_create_fixed_user(self, db: AsyncSession, phone: str) -> User:
+    user = await db.scalar(select(User).where(User.phone == phone))
+    if user:
+      if not user.password_hash:
+        user.password_hash = hash_password(self._fixed_password)
+      return user
+    user = User(
+      phone=phone,
+      password_hash=hash_password(self._fixed_password),
+      nickname="测试用户",
+      plan_type=PlanType.FREE,
+      status=UserStatus.ACTIVE,
+    )
+    db.add(user)
+    await db.flush()
+    return user
 
   async def login_code(self, db: AsyncSession, *, phone: str, code: str) -> tuple[User, str]:
     if not await self._sms.verify_code(phone, code):

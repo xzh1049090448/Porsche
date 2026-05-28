@@ -46,6 +46,9 @@ class AppState:
             self.sms,
             settings.jwt_secret_key,
             settings.jwt_expire_minutes,
+            fixed_login_enabled=settings.fixed_login_enabled,
+            fixed_login_phone=settings.fixed_login_phone,
+            fixed_login_password=settings.fixed_login_password,
         )
         limits = httpx.Limits(max_connections=200, max_keepalive_connections=50)
         self.http = httpx.AsyncClient(http2=True, limits=limits)

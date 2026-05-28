@@ -17,6 +17,7 @@ os.environ.setdefault("JWT_SECRET_KEY", "test-jwt-secret")
 os.environ.setdefault("CHROMA_PERSIST_DIR", "./data/test_chroma")
 os.environ.setdefault("DATASET_UPLOAD_DIR", "./data/test_uploads")
 os.environ.setdefault("SMS_DEV_MODE", "true")
+os.environ.setdefault("FIXED_LOGIN_ENABLED", "false")
 
 
 @pytest.fixture(scope="session", autouse=True)
