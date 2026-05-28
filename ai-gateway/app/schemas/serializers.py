@@ -4,8 +4,11 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+from sqlalchemy.orm import attributes
+
 from app.db.enum_utils import enum_value
-from app.db.models import User
+from app.db.models import Conversation, Message, User
+from app.schemas.conversation import ConversationResponse, MessageResponse
 from app.schemas.user import UserProfileResponse
 
 
@@ -13,6 +16,37 @@ def _as_utc(dt: datetime) -> datetime:
     if dt.tzinfo is None:
         return dt.replace(tzinfo=timezone.utc)
     return dt
+
+
+def message_response(msg: Message) -> MessageResponse:
+    return MessageResponse(
+        id=msg.id,
+        role=msg.role,
+        content=msg.content,
+        model=msg.model,
+        dataset_used=bool(msg.dataset_used),
+        dataset_attribution=msg.dataset_attribution,
+        tokens=int(msg.tokens or 0),
+        created_at=_as_utc(msg.created_at),
+    )
+
+
+def conversation_response(conv: Conversation, *, include_messages: bool = False) -> ConversationResponse:
+    messages: list[MessageResponse] = []
+    if include_messages:
+        state = attributes.instance_state(conv)
+        if "messages" not in state.unloaded:
+            messages = [message_response(m) for m in conv.messages]
+    return ConversationResponse(
+        id=conv.id,
+        title=conv.title,
+        model=conv.model,
+        dataset_enabled=bool(conv.dataset_enabled),
+        dataset_ids=conv.dataset_ids,
+        created_at=_as_utc(conv.created_at),
+        updated_at=_as_utc(conv.updated_at),
+        messages=messages,
+    )
 
 
 def user_profile_response(user: User) -> UserProfileResponse:

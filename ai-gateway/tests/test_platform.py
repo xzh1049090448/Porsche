@@ -46,6 +46,28 @@ async def client():
 
 
 @pytest.mark.asyncio
+async def test_create_conversation_without_lazy_load(client: AsyncClient):
+    phone = "13800138077"
+    send_resp = await client.post("/api/v1/auth/send-code", json={"phone": phone})
+    code = send_resp.json()["dev_code"]
+    login = await client.post(
+        "/api/v1/auth/login/code", json={"phone": phone, "code": code}
+    )
+    token = login.json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    create = await client.post(
+        "/api/v1/conversations",
+        headers=headers,
+        json={"title": "测试对话", "model": "glm-5.1", "dataset_enabled": False},
+    )
+    assert create.status_code == 200, create.text
+    data = create.json()
+    assert data["title"] == "测试对话"
+    assert data["messages"] == []
+
+
+@pytest.mark.asyncio
 async def test_login_code_existing_user(client: AsyncClient):
     """Regression: MySQL may return plan_type as str; second login must not 500."""
     phone = "13800138088"

@@ -16,8 +16,8 @@ from app.schemas.conversation import (
     ConversationListResponse,
     ConversationResponse,
     ConversationUpdate,
-    MessageResponse,
 )
+from app.schemas.serializers import conversation_response
 from app.services.conversation_service import ConversationService
 
 router = APIRouter(prefix="/api/v1/conversations", tags=["conversations"])
@@ -32,7 +32,7 @@ async def list_conversations(
 ):
     items, total = await ConversationService.list_conversations(db, user, skip=skip, limit=limit)
     return ConversationListResponse(
-        items=[ConversationResponse.model_validate(c) for c in items],
+        items=[conversation_response(c) for c in items],
         total=total,
     )
 
@@ -51,7 +51,7 @@ async def create_conversation(
         dataset_enabled=body.dataset_enabled,
         dataset_ids=body.dataset_ids,
     )
-    return conv
+    return conversation_response(conv)
 
 
 @router.get("/{conversation_id}", response_model=ConversationResponse)
@@ -61,9 +61,7 @@ async def get_conversation(
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
     conv = await ConversationService.get(db, user, conversation_id)
-    resp = ConversationResponse.model_validate(conv)
-    resp.messages = [MessageResponse.model_validate(m) for m in conv.messages]
-    return resp
+    return conversation_response(conv, include_messages=True)
 
 
 @router.put("/{conversation_id}", response_model=ConversationResponse)
@@ -75,8 +73,9 @@ async def update_conversation(
 ):
     if body.title:
         conv = await ConversationService.update_title(db, user, conversation_id, body.title)
-        return conv
-    return await ConversationService.get(db, user, conversation_id)
+    else:
+        conv = await ConversationService.get(db, user, conversation_id)
+    return conversation_response(conv, include_messages=True)
 
 
 @router.delete("/{conversation_id}")
