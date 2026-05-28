@@ -6,7 +6,7 @@ import os
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -32,6 +32,13 @@ class Settings(BaseSettings):
     clients_config_path: str = "config/clients.yaml"
 
     redis_url: str | None = None
+
+    @field_validator("redis_url", mode="before")
+    @classmethod
+    def empty_redis_url_is_none(cls, v: object) -> str | None:
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return None
+        return str(v).strip()
 
     log_level: str = "INFO"
 

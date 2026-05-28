@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class SendCodeRequest(BaseModel):
@@ -28,7 +28,12 @@ class LoginPasswordRequest(BaseModel):
 
 class LoginCodeRequest(BaseModel):
     phone: str = Field(..., min_length=11, max_length=11)
-    code: str
+    code: str = Field(..., min_length=4, max_length=8)
+
+    @field_validator("phone", "code", mode="before")
+    @classmethod
+    def strip_whitespace(cls, v: str) -> str:
+        return v.strip() if isinstance(v, str) else v
 
 
 class TokenResponse(BaseModel):

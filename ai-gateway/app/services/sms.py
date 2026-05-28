@@ -25,9 +25,25 @@ class SmsService:
     self._mem_send_ip: dict[str, tuple[int, float]] = {}
     self._mem_fail_count: dict[str, tuple[int, float]] = {}
 
+  @staticmethod
+  def _normalize_phone(phone: str) -> str:
+    return phone.strip()
+
+  @staticmethod
+  def _normalize_code(code: str) -> str:
+    return code.strip()
+
   async def connect(self) -> None:
-    if self._redis_url:
+    if not self._redis_url:
+      logger.info("SMS codes stored in memory (set REDIS_URL for multi-worker deployments)")
+      return
+    try:
       self._redis = aioredis.from_url(self._redis_url, decode_responses=True)
+      await self._redis.ping()
+      logger.info("Redis connected for SMS verification codes")
+    except Exception as exc:  # noqa: BLE001
+      logger.warning("Redis unavailable for SMS ({}); using in-memory codes", exc)
+      self._redis = None
 
   async def close(self) -> None:
     if self._redis:
@@ -52,6 +68,7 @@ class SmsService:
     return count
 
   async def check_send_allowed(self, phone: str, client_ip: str) -> None:
+    phone = self._normalize_phone(phone)
     phone_key = f"sms:send:phone:{phone}"
     ip_key = f"sms:send:ip:{client_ip or 'unknown'}"
     phone_count = await self._incr_window(phone_key, self._settings.sms_send_limit_per_phone)
@@ -85,6 +102,7 @@ class SmsService:
       self._mem_fail_count.pop(key, None)
 
   async def send_code(self, phone: str) -> str:
+    phone = self._normalize_phone(phone)
     code = self._generate_code()
     key = f"sms:code:{phone}"
     if self._redis:
@@ -95,11 +113,13 @@ class SmsService:
     return code
 
   async def verify_code(self, phone: str, code: str) -> bool:
+    phone = self._normalize_phone(phone)
+    code = self._normalize_code(code)
     key = f"sms:code:{phone}"
     stored: str | None = None
     if self._redis:
       stored = await self._redis.get(key)
-      if stored and secrets.compare_digest(stored, code):
+      if stored and secrets.compare_digest(stored.strip(), code):
         await self._redis.delete(key)
         await self._clear_failed_verify(phone)
         return True
@@ -107,7 +127,7 @@ class SmsService:
       return False
 
     entry = self._memory.get(key)
-    if entry and entry[1] > time.time() and secrets.compare_digest(entry[0], code):
+    if entry and entry[1] > time.time() and secrets.compare_digest(entry[0].strip(), code):
       del self._memory[key]
       await self._clear_failed_verify(phone)
       return True
