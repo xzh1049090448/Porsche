@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import decode_access_token
+from app.db.enum_utils import enum_is
 from app.db.models import User, UserStatus
 from app.db.session import get_db
 from app.services.client_registry import ClientConfig, ClientRegistry
@@ -67,7 +68,7 @@ async def get_current_user(
 ) -> User:
     user_id = _decode_user_id_from_header(state, authorization)
     user = await db.scalar(select(User).where(User.id == user_id))
-    if not user or user.status != UserStatus.ACTIVE:
+    if not user or not enum_is(user.status, UserStatus.ACTIVE):
         raise HTTPException(status_code=401, detail="用户不存在或已被禁用")
     return user
 

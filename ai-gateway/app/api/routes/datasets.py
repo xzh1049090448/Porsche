@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user
+from app.db.enum_utils import enum_value
 from app.db.models import Dataset, DatasetStatus, User
 from app.db.session import get_db
 from app.schemas.dataset import DatasetListResponse, DatasetResponse
@@ -25,7 +26,7 @@ async def list_datasets(
         select(Dataset).where(Dataset.status == DatasetStatus.ACTIVE).order_by(Dataset.id)
     )
     items = []
-    plan = user.plan_type.value
+    plan = enum_value(user.plan_type)
     allowed_ids = user.allowed_datasets or []
     for ds in rows.all():
         if allowed_ids and ds.id not in allowed_ids:

@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user, get_state
+from app.db.enum_utils import enum_value
 from app.db.models import Order, User
 from app.db.session import get_db
 from app.schemas.billing import (
@@ -28,8 +29,8 @@ async def get_plans(
     user: Annotated[User, Depends(get_current_user)],
     state: Annotated[AppState, Depends(get_state)],
 ):
-    plans = state.billing.get_plans(user.plan_type)
-    return PlansResponse(plans=plans, current_plan=user.plan_type.value)
+    plans = state.billing.get_plans(enum_value(user.plan_type))
+    return PlansResponse(plans=plans, current_plan=enum_value(user.plan_type))
 
 
 @router.post("/orders", response_model=OrderResponse)

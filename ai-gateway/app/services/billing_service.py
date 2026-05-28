@@ -10,6 +10,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
+from app.db.enum_utils import enum_is, enum_value
 from app.db.models import Order, OrderStatus, PlanType, User
 
 
@@ -63,7 +64,10 @@ class BillingService:
       return
     self._reset_daily_if_needed(user)
     limit = user.daily_call_limit
-    if user.plan_type in (PlanType.PROFESSIONAL, PlanType.ENTERPRISE):
+    if enum_value(user.plan_type) in (
+      PlanType.PROFESSIONAL.value,
+      PlanType.ENTERPRISE.value,
+    ):
       user.daily_calls_used += count
       return
     if user.daily_calls_used + count > limit:
@@ -103,14 +107,14 @@ class BillingService:
     )
     if not order:
       raise HTTPException(status_code=404, detail="订单不存在")
-    if order.status != OrderStatus.PENDING:
+    if not enum_is(order.status, OrderStatus.PENDING):
       raise HTTPException(status_code=400, detail="订单状态不可支付")
     order.status = OrderStatus.PAID
     order.paid_at = datetime.now(timezone.utc)
     user.plan_type = order.plan_type
-    if order.plan_type == PlanType.PROFESSIONAL:
+    if enum_is(order.plan_type, PlanType.PROFESSIONAL):
       user.daily_call_limit = 999999
-    elif order.plan_type == PlanType.ENTERPRISE:
+    elif enum_is(order.plan_type, PlanType.ENTERPRISE):
       user.daily_call_limit = 999999
     return order
 
@@ -120,7 +124,7 @@ class BillingService:
     )
     if not order:
       raise HTTPException(status_code=404, detail="订单不存在")
-    if order.status != OrderStatus.PAID:
+    if not enum_is(order.status, OrderStatus.PAID):
       raise HTTPException(status_code=400, detail="仅已支付订单可申请发票")
     order.invoice_requested = True
     return order
@@ -136,17 +140,19 @@ class BillingService:
   async def get_usage_stats(user: User) -> dict:
     BillingService._reset_daily_if_needed(user)
     limit = user.daily_call_limit
-    remaining = max(0, limit - user.daily_calls_used) if user.plan_type == PlanType.FREE else 999999
+    remaining = (
+      max(0, limit - user.daily_calls_used) if enum_is(user.plan_type, PlanType.FREE) else 999999
+    )
     return {
       "total_tokens_used": user.total_tokens_used,
       "dataset_calls": user.dataset_calls,
       "daily_calls_used": user.daily_calls_used,
       "daily_call_limit": limit,
       "remaining_daily_calls": remaining,
-      "plan_type": user.plan_type.value,
+      "plan_type": enum_value(user.plan_type),
     }
 
   @staticmethod
   async def plan_distribution(db: AsyncSession) -> dict[str, int]:
     rows = await db.execute(select(User.plan_type, func.count()).group_by(User.plan_type))
-    return {plan.value: count for plan, count in rows.all()}
+    return {enum_value(plan): count for plan, count in rows.all()}

@@ -10,6 +10,7 @@ from fastapi import HTTPException
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db.enum_utils import enum_is, enum_value
 from app.db.models import Dataset, DatasetStatus, PlanType, UsageRecord, User
 from app.schemas.openai import ChatCompletionRequest, ChatMessage
 from app.services.billing_service import BillingService
@@ -75,8 +76,8 @@ class PlatformChatService:
         raise HTTPException(status_code=400, detail=f"数据集 {ds_id} 不可用")
       if user.allowed_datasets and ds_id not in user.allowed_datasets:
         raise HTTPException(status_code=403, detail=f"无权访问数据集 {ds_id}")
-      if ds.access_plans and user.plan_type.value not in ds.access_plans:
-        if user.plan_type == PlanType.FREE and "free" not in ds.access_plans:
+      if ds.access_plans and enum_value(user.plan_type) not in ds.access_plans:
+        if enum_is(user.plan_type, PlanType.FREE) and "free" not in ds.access_plans:
           raise HTTPException(status_code=403, detail=f"当前套餐无法访问数据集 {ds.name}")
       datasets.append(ds)
     return datasets

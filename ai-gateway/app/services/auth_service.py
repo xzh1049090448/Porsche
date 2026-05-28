@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import create_access_token, hash_password, verify_password
+from app.db.enum_utils import enum_is, enum_value
 from app.db.models import PlanType, User, UserStatus
 from app.services.sms import SmsService
 
@@ -73,12 +74,12 @@ class AuthService:
       subject=str(user.id),
       secret_key=self._jwt_secret,
       expires_minutes=self._jwt_expire_minutes,
-      extra={"plan": user.plan_type.value},
+      extra={"plan": enum_value(user.plan_type)},
     )
 
   @staticmethod
   def _ensure_active(user: User) -> None:
-    if user.status != UserStatus.ACTIVE:
+    if not enum_is(user.status, UserStatus.ACTIVE):
       raise HTTPException(status_code=403, detail="账号已被禁用")
 
   @staticmethod

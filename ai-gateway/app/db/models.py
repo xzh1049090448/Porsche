@@ -19,6 +19,8 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
+from app.db.enum_utils import mysql_enum
+
 
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
@@ -77,8 +79,8 @@ class User(Base):
     real_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
     id_card_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
     is_verified: Mapped[bool] = mapped_column(Boolean, default=False)
-    plan_type: Mapped[PlanType] = mapped_column(Enum(PlanType), default=PlanType.FREE)
-    status: Mapped[UserStatus] = mapped_column(Enum(UserStatus), default=UserStatus.ACTIVE)
+    plan_type: Mapped[PlanType] = mapped_column(mysql_enum(PlanType), default=PlanType.FREE)
+    status: Mapped[UserStatus] = mapped_column(mysql_enum(UserStatus), default=UserStatus.ACTIVE)
     allowed_models: Mapped[list | None] = mapped_column(JSON, nullable=True)
     allowed_datasets: Mapped[list | None] = mapped_column(JSON, nullable=True)
     daily_call_limit: Mapped[int] = mapped_column(Integer, default=100)
@@ -135,12 +137,14 @@ class Dataset(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String(128))
     slug: Mapped[str] = mapped_column(String(64), unique=True, index=True)
-    category: Mapped[DatasetCategory] = mapped_column(Enum(DatasetCategory))
+    category: Mapped[DatasetCategory] = mapped_column(mysql_enum(DatasetCategory))
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
-    status: Mapped[DatasetStatus] = mapped_column(Enum(DatasetStatus), default=DatasetStatus.DRAFT)
+    status: Mapped[DatasetStatus] = mapped_column(mysql_enum(DatasetStatus), default=DatasetStatus.DRAFT)
     current_version: Mapped[str] = mapped_column(String(32), default="1.0.0")
     token_count: Mapped[int] = mapped_column(Integer, default=0)
-    vector_status: Mapped[VectorStatus] = mapped_column(Enum(VectorStatus), default=VectorStatus.PENDING)
+    vector_status: Mapped[VectorStatus] = mapped_column(
+        mysql_enum(VectorStatus), default=VectorStatus.PENDING
+    )
     access_plans: Mapped[list | None] = mapped_column(JSON, nullable=True)
     compliance_report: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     asset_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
@@ -187,9 +191,9 @@ class Order(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     order_no: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
-    plan_type: Mapped[PlanType] = mapped_column(Enum(PlanType))
+    plan_type: Mapped[PlanType] = mapped_column(mysql_enum(PlanType))
     amount: Mapped[float] = mapped_column(Float, default=0.0)
-    status: Mapped[OrderStatus] = mapped_column(Enum(OrderStatus), default=OrderStatus.PENDING)
+    status: Mapped[OrderStatus] = mapped_column(mysql_enum(OrderStatus), default=OrderStatus.PENDING)
     invoice_requested: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

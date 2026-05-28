@@ -26,6 +26,24 @@ async def client():
 
 
 @pytest.mark.asyncio
+async def test_login_code_existing_user(client: AsyncClient):
+    """Regression: MySQL may return plan_type as str; second login must not 500."""
+    phone = "13800138088"
+    send_resp = await client.post("/api/v1/auth/send-code", json={"phone": phone})
+    assert send_resp.status_code == 200
+    code = send_resp.json()["dev_code"]
+
+    first = await client.post("/api/v1/auth/login/code", json={"phone": phone, "code": code})
+    assert first.status_code == 200
+
+    send_resp2 = await client.post("/api/v1/auth/send-code", json={"phone": phone})
+    code2 = send_resp2.json()["dev_code"]
+    second = await client.post("/api/v1/auth/login/code", json={"phone": phone, "code": code2})
+    assert second.status_code == 200
+    assert second.json()["plan_type"] == "free"
+
+
+@pytest.mark.asyncio
 async def test_auth_register_and_login(client: AsyncClient):
     phone = "13800138001"
     send_resp = await client.post("/api/v1/auth/send-code", json={"phone": phone})

@@ -17,6 +17,7 @@ from app.schemas.auth import (
     SendCodeResponse,
     TokenResponse,
 )
+from app.db.enum_utils import enum_value
 from app.services.audit_service import AuditService
 from app.state import AppState
 
@@ -51,7 +52,7 @@ async def register(
         db, action="user.register", user_id=user.id, ip=get_client_ip(request)
     )
     return TokenResponse(
-        access_token=token, user_id=user.id, plan_type=user.plan_type.value
+        access_token=token, user_id=user.id, plan_type=enum_value(user.plan_type)
     )
 
 
@@ -67,7 +68,7 @@ async def login_password(
         db, action="user.login", user_id=user.id, detail={"method": "password"}, ip=get_client_ip(request)
     )
     return TokenResponse(
-        access_token=token, user_id=user.id, plan_type=user.plan_type.value
+        access_token=token, user_id=user.id, plan_type=enum_value(user.plan_type)
     )
 
 
@@ -83,5 +84,5 @@ async def login_code(
         db, action="user.login", user_id=user.id, detail={"method": "code"}, ip=get_client_ip(request)
     )
     return TokenResponse(
-        access_token=token, user_id=user.id, plan_type=user.plan_type.value
+        access_token=token, user_id=user.id, plan_type=enum_value(user.plan_type)
     )
