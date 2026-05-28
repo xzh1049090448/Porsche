@@ -15,10 +15,13 @@ async_session_factory: async_sessionmaker[AsyncSession] | None = None
 
 def _build_engine():
     settings = get_settings()
+    url = settings.database_url
+    # aiomysql/asyncmy: pool_pre_ping triggers ping() without `reconnect` (SQLAlchemy #13306)
+    pool_pre_ping = "aiomysql" not in url and "asyncmy" not in url
     return create_async_engine(
-        settings.database_url,
+        url,
         echo=settings.app_env == "development",
-        pool_pre_ping=True,
+        pool_pre_ping=pool_pre_ping,
         pool_size=10,
         max_overflow=20,
         pool_recycle=1800,
