@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from datetime import datetime
+from enum import Enum
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class UserProfileResponse(BaseModel):
@@ -20,6 +21,13 @@ class UserProfileResponse(BaseModel):
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+    @field_validator("plan_type", mode="before")
+    @classmethod
+    def coerce_plan_type(cls, v: object) -> str:
+        if isinstance(v, Enum):
+            return v.value
+        return str(v)
 
 
 class UpdateProfileRequest(BaseModel):

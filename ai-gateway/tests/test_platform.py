@@ -42,6 +42,14 @@ async def test_login_code_existing_user(client: AsyncClient):
     assert second.status_code == 200
     assert second.json()["plan_type"] == "free"
 
+    me = await client.get(
+        "/api/v1/users/me",
+        headers={"Authorization": f"Bearer {second.json()['access_token']}"},
+    )
+    assert me.status_code == 200
+    assert me.json()["phone"] == phone
+    assert me.json()["plan_type"] == "free"
+
 
 @pytest.mark.asyncio
 async def test_auth_register_and_login(client: AsyncClient):
