@@ -16,6 +16,7 @@ from app.schemas.openai import ChatCompletionRequest, ChatMessage
 from app.services.billing_service import BillingService
 from app.services.conversation_service import ConversationService
 from app.services.gateway import GatewayService
+from app.services.multi_model_message import encode_multi_model_replies
 from app.services.rag_engine import DATASET_ATTRIBUTION, RagEngine
 from app.state import AppState
 
@@ -299,14 +300,16 @@ class PlatformChatService:
     *,
     models: list[str],
     messages: list[dict],
+    conversation_id: int | None = None,
     temperature: float | None = None,
     max_tokens: int | None = None,
+    context_window: int | None = None,
     dataset_enabled: bool = False,
     dataset_ids: list[int] | None = None,
-  ) -> list[dict]:
+  ) -> dict:
     await self._billing.check_and_consume_call(db, user, count=len(models))
 
-    trimmed = messages
+    trimmed = ConversationService.trim_messages(messages, context_window)
     query = ""
     for m in reversed(trimmed):
       if m.get("role") == "user":
@@ -327,6 +330,8 @@ class PlatformChatService:
     async def _call_one(model_name: str) -> dict:
       t0 = time.perf_counter()
       try:
+        if user.allowed_models and model_name not in user.allowed_models:
+          raise HTTPException(status_code=403, detail="当前账号无权使用该模型")
         body = ChatCompletionRequest(
           model=model_name,
           messages=chat_messages,
@@ -372,4 +377,54 @@ class PlatformChatService:
     results = await asyncio.gather(*[_call_one(m) for m in models])
     if dataset_used:
       user.dataset_calls += 1
-    return list(results)
+
+    replies: dict[str, str] = {}
+    total_tokens = 0
+    for r in results:
+      model_name = r["model"]
+      total_tokens += int(r.get("tokens", 0))
+      if r["error"]:
+        replies[model_name] = f"[错误] {r['error']}"
+      else:
+        replies[model_name] = r["content"] or ""
+
+    conv_id = conversation_id
+    if conversation_id is not None or trimmed:
+      primary_model = models[0]
+      if conversation_id:
+        conv = await ConversationService.get(db, user, conversation_id)
+      else:
+        conv = await ConversationService.create(
+          db,
+          user,
+          model=primary_model,
+          dataset_enabled=dataset_enabled,
+          dataset_ids=dataset_ids,
+        )
+      conv_id = conv.id
+
+      last_user = trimmed[-1] if trimmed else None
+      if last_user and last_user.get("role") == "user":
+        user_content = str(last_user.get("content", ""))
+        await ConversationService.add_message(
+          db, conv, role="user", content=user_content
+        )
+        if conv.title == "新对话" and user_content.strip():
+          conv.title = user_content.strip()[:24] or "新对话"
+
+      attribution = DATASET_ATTRIBUTION if dataset_used else None
+      await ConversationService.add_message(
+        db,
+        conv,
+        role="assistant",
+        content=encode_multi_model_replies(replies),
+        model=primary_model,
+        dataset_used=dataset_used,
+        dataset_attribution=attribution,
+        tokens=total_tokens,
+      )
+      for model_name in models:
+        db.add(UsageRecord(user_id=user.id, record_type="chat", tokens=0, model=model_name))
+      await db.flush()
+
+    return {"results": list(results), "conversation_id": conv_id}

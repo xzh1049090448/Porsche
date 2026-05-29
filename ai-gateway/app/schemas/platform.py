@@ -25,10 +25,12 @@ class PlatformChatRequest(BaseModel):
 
 
 class PlatformCompareRequest(BaseModel):
-    models: list[str] = Field(..., min_length=2, max_length=5)
+    models: list[str] = Field(..., min_length=2, max_length=3)
     messages: list[PlatformChatMessage]
+    conversation_id: int | None = None
     temperature: float | None = Field(None, ge=0, le=1)
     max_tokens: int | None = Field(None, ge=1, le=128000)
+    context_window: int | None = Field(None, ge=1, le=128)
     dataset_enabled: bool = False
     dataset_ids: list[int] | None = None
 
@@ -44,3 +46,4 @@ class CompareResultItem(BaseModel):
 class PlatformCompareResponse(BaseModel):
     results: list[CompareResultItem]
     dataset_attribution: str | None = None
+    conversation_id: int | None = None

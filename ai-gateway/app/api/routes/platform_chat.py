@@ -121,7 +121,7 @@ async def compare_models(
     user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
-    """多模型并行对比（2～5 个模型）。
+    """多模型并行对比（2～3 个模型）。
 
     - 同一输入分别调用各模型，返回内容、耗时、Token 数
     - 可选启用 RAG 数据集，响应含 ``dataset_attribution``
@@ -131,13 +131,15 @@ async def compare_models(
         raise HTTPException(status_code=503, detail="Platform chat not ready")
 
     messages = [m.model_dump(exclude_none=True) for m in body.messages]
-    results = await state.platform_chat.compare(
+    payload = await state.platform_chat.compare(
         db,
         user,
         models=body.models,
         messages=messages,
+        conversation_id=body.conversation_id,
         temperature=body.temperature,
         max_tokens=body.max_tokens,
+        context_window=body.context_window,
         dataset_enabled=body.dataset_enabled,
         dataset_ids=body.dataset_ids,
     )
@@ -149,4 +151,8 @@ async def compare_models(
         detail={"models": body.models},
         ip=get_client_ip(request),
     )
-    return PlatformCompareResponse(results=results, dataset_attribution=attribution)
+    return PlatformCompareResponse(
+        results=payload["results"],
+        dataset_attribution=attribution,
+        conversation_id=payload.get("conversation_id"),
+    )
