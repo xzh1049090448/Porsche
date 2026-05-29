@@ -1,4 +1,9 @@
-"""Conversation history CRUD and export."""
+"""对话历史 CRUD 与导出接口。
+
+前缀: ``/api/v1/conversations``
+
+需 JWT 鉴权；用户只能访问自己的对话。
+"""
 
 from __future__ import annotations
 
@@ -30,6 +35,7 @@ async def list_conversations(
     skip: int = Query(0, ge=0),
     limit: int = Query(20, ge=1, le=100),
 ):
+    """分页获取当前用户的对话列表（不含消息详情，按更新时间倒序）。"""
     items, total = await ConversationService.list_conversations(db, user, skip=skip, limit=limit)
     return ConversationListResponse(
         items=[conversation_response(c) for c in items],
@@ -43,6 +49,7 @@ async def create_conversation(
     user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
+    """创建新对话（可指定标题、默认模型、是否启用数据集）。"""
     conv = await ConversationService.create(
         db,
         user,
@@ -60,6 +67,7 @@ async def get_conversation(
     user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
+    """获取单个对话详情（含全部消息记录）。"""
     conv = await ConversationService.get(db, user, conversation_id)
     return conversation_response(conv, include_messages=True)
 
@@ -71,6 +79,7 @@ async def update_conversation(
     user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
+    """更新对话（目前支持修改标题）。"""
     if body.title:
         conv = await ConversationService.update_title(db, user, conversation_id, body.title)
     else:
@@ -84,6 +93,7 @@ async def delete_conversation(
     user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
+    """删除指定对话及其全部消息。"""
     await ConversationService.delete(db, user, conversation_id)
     return {"message": "对话已删除"}
 
@@ -94,5 +104,6 @@ async def export_markdown(
     user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
+    """将对话导出为 Markdown 文本（``text/plain``）。"""
     conv = await ConversationService.get(db, user, conversation_id)
     return ConversationService.export_markdown(conv)

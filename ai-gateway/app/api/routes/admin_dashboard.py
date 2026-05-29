@@ -1,4 +1,9 @@
-"""Admin dashboard and model health monitoring."""
+"""管理端仪表盘与模型健康检查接口。
+
+前缀: ``/admin/dashboard``
+
+需 Admin Token 鉴权。
+"""
 
 from __future__ import annotations
 
@@ -25,6 +30,7 @@ router = APIRouter(
 
 @router.get("", response_model=DashboardResponse)
 async def get_dashboard(db: Annotated[AsyncSession, Depends(get_db)]):
+    """获取运营仪表盘数据（用户总数、套餐分布、调用量等汇总指标）。"""
     data = await DashboardService.get_dashboard(db)
     return DashboardResponse(**data)
 
@@ -34,6 +40,7 @@ async def model_health(
     state: Annotated[AppState, Depends(get_state)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
+    """获取各上游模型的健康状态（可用性、平均延迟、错误率）。"""
     results = []
     for name, route in state.models.routes.items():
         health = await db.scalar(select(ModelHealth).where(ModelHealth.model_name == name))
@@ -54,9 +61,11 @@ async def check_model_health(
     state: Annotated[AppState, Depends(get_state)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
-    """Probe each model route and update health metrics."""
-    from app.services.client_registry import ClientRegistry
+    """主动探测所有模型路由可用性并更新健康指标。
 
+    - 向每个模型发送简短 ping 请求
+    - 更新延迟、可用性、错误率
+    """
     client = state.clients.get_by_secret(state.settings.platform_client_secret)
     if not client:
         return {"message": "Platform client not configured"}

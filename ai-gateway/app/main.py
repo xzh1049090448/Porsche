@@ -104,6 +104,7 @@ def create_app() -> FastAPI:
 
     @app.get("/metrics", dependencies=[Depends(_verify_metrics_token)])
     async def metrics_endpoint() -> Response:
+        """Prometheus 指标导出（需 ``METRICS_TOKEN`` 或 ``ADMIN_TOKEN`` 鉴权）。"""
         data = generate_latest()
         return Response(content=data, media_type=CONTENT_TYPE_LATEST)
 

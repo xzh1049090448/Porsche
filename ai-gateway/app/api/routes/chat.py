@@ -1,4 +1,9 @@
-"""OpenAI-compatible chat completions gateway endpoint."""
+"""OpenAI 兼容的对话网关（下游 API 客户端使用）。
+
+前缀: ``/v1``
+
+需客户端 API Key 鉴权（``clients.yaml`` 中的 secret）；支持 RPM/TPM 限流与用量统计。
+"""
 
 from __future__ import annotations
 
@@ -29,7 +34,12 @@ async def chat_completions(
     client: Annotated[ClientConfig, Depends(get_client_config)],
     state: Annotated[AppState, Depends(get_state)],
 ):
-    """OpenAI-compatible chat completions (non-stream and SSE stream)."""
+    """OpenAI 兼容 Chat Completions 接口。
+
+    - 请求/响应格式与 OpenAI API 一致
+    - ``stream=true`` 时返回 ``text/event-stream`` SSE
+    - 按客户端配置做模型白名单、IP 限制、RPM/TPM 与 Token 配额校验
+    """
     messages_dict = [m.model_dump(exclude_none=True) for m in body.messages]
     est = estimate_request_tokens(messages_dict)
 

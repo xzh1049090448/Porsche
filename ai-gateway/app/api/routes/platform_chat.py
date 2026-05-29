@@ -1,4 +1,9 @@
-"""Platform chat with RAG and model comparison."""
+"""平台对话与模型对比接口（Web 前端使用）。
+
+前缀: ``/api/v1/platform``
+
+需 JWT 鉴权；支持 RAG 数据集增强、流式输出、多模型对比。
+"""
 
 from __future__ import annotations
 
@@ -28,7 +33,7 @@ async def list_models(
     state: Annotated[AppState, Depends(get_state)],
     _user_id: Annotated[int, Depends(require_authenticated_user)],
 ):
-    """List available domestic LLM models."""
+    """获取平台可用的大模型列表（逻辑名、厂商、上游模型 ID）。"""
     models = []
     for name, route in state.models.routes.items():
         models.append(
@@ -49,6 +54,13 @@ async def platform_chat(
     user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
+    """平台对话补全（支持流式 / 非流式）。
+
+    - ``stream=true`` 时返回 SSE，首包为 ``type: meta``（含 conversation_id、数据集归因）
+    - 可关联 ``conversation_id`` 自动持久化消息
+    - ``dataset_enabled=true`` 时按 ``dataset_ids`` 做 RAG 检索增强
+    - 受用户每日调用配额限制
+    """
     if state.platform_chat is None:
         raise HTTPException(status_code=503, detail="Platform chat not ready")
 
@@ -109,6 +121,12 @@ async def compare_models(
     user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
+    """多模型并行对比（2～5 个模型）。
+
+    - 同一输入分别调用各模型，返回内容、耗时、Token 数
+    - 可选启用 RAG 数据集，响应含 ``dataset_attribution``
+    - 按模型数量消耗每日调用次数
+    """
     if state.platform_chat is None:
         raise HTTPException(status_code=503, detail="Platform chat not ready")
 

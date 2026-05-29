@@ -1,4 +1,9 @@
-"""Admin dataset management endpoints."""
+"""管理端数据集管理接口。
+
+前缀: ``/admin/datasets``
+
+需 Admin Token 鉴权；支持上传、向量化、版本回滚与下线。
+"""
 
 from __future__ import annotations
 
@@ -10,6 +15,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.deps import get_state
 from app.api.routes.admin import verify_admin
 from app.config import get_settings
 from app.db.models import (
@@ -28,7 +34,6 @@ from app.schemas.dataset import (
 )
 from app.services.dataset_processor import DatasetProcessor
 from app.state import AppState
-from app.api.deps import get_state
 
 router = APIRouter(prefix="/admin/datasets", tags=["admin-datasets"], dependencies=[Depends(verify_admin)])
 
@@ -38,6 +43,7 @@ _ALLOWED_SUFFIXES = frozenset({".jsonl", ".csv", ".parquet"})
 
 @router.get("", response_model=list[DatasetResponse])
 async def admin_list_datasets(db: Annotated[AsyncSession, Depends(get_db)]):
+    """获取全部数据集（含草稿、处理中、已下线）。"""
     rows = await db.scalars(select(Dataset).order_by(Dataset.id))
     return [DatasetResponse.model_validate(d) for d in rows.all()]
 
@@ -47,6 +53,7 @@ async def create_dataset(
     body: DatasetCreateRequest,
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
+    """创建数据集元数据（初始状态为 ``draft``，需上传文件后激活）。"""
     try:
         category = DatasetCategory(body.category)
     except ValueError as exc:
@@ -76,6 +83,12 @@ async def upload_dataset(
     file: UploadFile = File(...),
     version: str = "1.0.0",
 ):
+    """上传数据集文件并触发处理与向量化。
+
+    - 支持 ``.jsonl`` / ``.csv`` / ``.parquet``
+    - 解析、合规检查、写入 Chroma 向量库
+    - 成功后数据集状态变为 ``active``
+    """
     ds = await db.get(Dataset, dataset_id)
     if not ds:
         raise HTTPException(status_code=404, detail="数据集不存在")
@@ -148,6 +161,7 @@ async def rollback_dataset(
     state: Annotated[AppState, Depends(get_state)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
+    """回滚数据集到指定历史版本（重新索引向量库）。"""
     ds = await db.get(Dataset, dataset_id)
     if not ds:
         raise HTTPException(status_code=404, detail="数据集不存在")
@@ -172,6 +186,7 @@ async def rollback_dataset(
 
 @router.get("/{dataset_id}/versions", response_model=list[DatasetVersionResponse])
 async def list_versions(dataset_id: int, db: Annotated[AsyncSession, Depends(get_db)]):
+    """获取数据集全部版本记录。"""
     rows = await db.scalars(
         select(DatasetVersion)
         .where(DatasetVersion.dataset_id == dataset_id)
@@ -182,6 +197,7 @@ async def list_versions(dataset_id: int, db: Annotated[AsyncSession, Depends(get
 
 @router.put("/{dataset_id}/offline")
 async def offline_dataset(dataset_id: int, db: Annotated[AsyncSession, Depends(get_db)]):
+    """下线数据集（用户侧不再可见）。"""
     ds = await db.get(Dataset, dataset_id)
     if not ds:
         raise HTTPException(status_code=404, detail="数据集不存在")

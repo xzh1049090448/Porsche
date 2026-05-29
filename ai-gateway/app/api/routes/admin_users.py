@@ -1,4 +1,9 @@
-"""Admin user management endpoints."""
+"""管理端用户管理接口。
+
+前缀: ``/admin/users``
+
+需 Admin Token 鉴权。
+"""
 
 from __future__ import annotations
 
@@ -24,6 +29,7 @@ async def list_users(
     limit: int = Query(50, ge=1, le=200),
     status: str | None = None,
 ):
+    """分页查询用户列表，可按状态（``active`` / ``disabled``）筛选。"""
     q = select(User).order_by(User.created_at.desc()).offset(skip).limit(limit)
     if status:
         try:
@@ -36,6 +42,7 @@ async def list_users(
 
 @router.get("/{user_id}", response_model=AdminUserResponse)
 async def get_user(user_id: int, db: Annotated[AsyncSession, Depends(get_db)]):
+    """获取指定用户详情。"""
     user = await db.get(User, user_id)
     if not user:
         raise HTTPException(status_code=404, detail="用户不存在")
@@ -48,6 +55,7 @@ async def update_user(
     body: AdminUserUpdateRequest,
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
+    """更新用户状态、套餐、可用模型/数据集、每日调用上限等。"""
     user = await db.get(User, user_id)
     if not user:
         raise HTTPException(status_code=404, detail="用户不存在")
@@ -66,6 +74,7 @@ async def update_user(
 
 @router.get("/{user_id}/behavior")
 async def user_behavior(user_id: int, db: Annotated[AsyncSession, Depends(get_db)]):
+    """获取用户行为分析（模型偏好、数据集使用统计等）。"""
     user = await db.get(User, user_id)
     if not user:
         raise HTTPException(status_code=404, detail="用户不存在")

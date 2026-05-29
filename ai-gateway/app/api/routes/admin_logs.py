@@ -1,4 +1,9 @@
-"""Admin audit logs and alerts."""
+"""管理端审计日志与告警配置接口。
+
+前缀: ``/admin/logs``
+
+需 Admin Token 鉴权。
+"""
 
 from __future__ import annotations
 
@@ -33,6 +38,7 @@ async def list_logs(
     start: datetime | None = None,
     end: datetime | None = None,
 ):
+    """分页查询审计日志，支持按操作类型、用户、时间范围筛选。"""
     q = select(AuditLog).order_by(AuditLog.created_at.desc()).offset(skip).limit(limit)
     if action:
         q = q.where(AuditLog.action == action)
@@ -48,11 +54,13 @@ async def list_logs(
 
 @router.get("/alerts")
 async def list_alerts():
+    """获取告警规则配置列表。"""
     return {"alerts": _alert_configs}
 
 
 @router.put("/alerts/{alert_type}")
 async def update_alert(alert_type: str, threshold: float, enabled: bool = True):
+    """更新或新增告警规则（阈值、启用状态）。"""
     for cfg in _alert_configs:
         if cfg["alert_type"] == alert_type:
             cfg["threshold"] = threshold

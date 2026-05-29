@@ -1,4 +1,12 @@
-"""User authentication endpoints."""
+"""用户认证接口。
+
+前缀: ``/api/v1/auth``
+
+| 接口 | 鉴权 |
+|------|------|
+| 发送验证码 / 注册 / 验证码登录 | 公开（固定账号模式下部分接口禁用） |
+| 密码登录 | 公开 |
+"""
 
 from __future__ import annotations
 
@@ -8,6 +16,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_client_ip, get_state
+from app.db.enum_utils import enum_value
 from app.db.session import get_db
 from app.schemas.auth import (
     LoginCodeRequest,
@@ -17,7 +26,6 @@ from app.schemas.auth import (
     SendCodeResponse,
     TokenResponse,
 )
-from app.db.enum_utils import enum_value
 from app.services.audit_service import AuditService
 from app.state import AppState
 
@@ -37,6 +45,12 @@ async def send_code(
     request: Request,
     state: Annotated[AppState, Depends(get_state)],
 ):
+    """发送短信验证码。
+
+    - 按手机号与 IP 限流
+    - ``SMS_DEV_MODE=true`` 时响应体返回 ``dev_code``（仅开发/测试）
+    - ``FIXED_LOGIN_ENABLED=true`` 时返回 403
+    """
     _reject_if_password_only(state)
     await state.sms.check_send_allowed(body.phone, get_client_ip(request))
     code = await state.sms.send_code(body.phone)
@@ -53,6 +67,12 @@ async def register(
     state: Annotated[AppState, Depends(get_state)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
+    """手机号注册（验证码 + 密码）。
+
+    - 手机号不可重复
+    - 成功后直接返回 JWT，等同登录
+    - ``FIXED_LOGIN_ENABLED=true`` 时返回 403
+    """
     _reject_if_password_only(state)
     user, token = await state.auth.register(
         db, phone=body.phone, code=body.code, password=body.password, nickname=body.nickname
@@ -72,6 +92,11 @@ async def login_password(
     state: Annotated[AppState, Depends(get_state)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
+    """手机号 + 密码登录。
+
+    - 返回 ``access_token``、``user_id``、``plan_type``
+    - ``FIXED_LOGIN_ENABLED=true`` 时仅允许配置的固定账号密码
+    """
     user, token = await state.auth.login_password(db, phone=body.phone, password=body.password)
     await AuditService.log(
         db, action="user.login", user_id=user.id, detail={"method": "password"}, ip=get_client_ip(request)
@@ -88,6 +113,12 @@ async def login_code(
     state: Annotated[AppState, Depends(get_state)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
+    """手机号 + 短信验证码登录。
+
+    - 验证码一次性有效，约 5 分钟过期
+    - 用户不存在时自动注册
+    - ``FIXED_LOGIN_ENABLED=true`` 时返回 403
+    """
     _reject_if_password_only(state)
     user, token = await state.auth.login_code(db, phone=body.phone, code=body.code)
     await AuditService.log(
