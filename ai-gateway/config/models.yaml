@@ -76,29 +76,22 @@ routes:
     base_url: https://api.deepseek.com/v1
     api_keys_env: DEEPSEEK_API_KEYS
 
-  # 智谱清言 GLM（带点号的逻辑名须加引号，避免 YAML 解析歧义）
-  glm-4:
+  # 智谱清言 GLM（平台仅开放以下三个逻辑模型）
+  "glm-5.1":
     provider: openai_compatible
-    upstream_model: glm-4
+    upstream_model: glm-5.1
+    base_url: https://open.bigmodel.cn/api/paas/v4
+    api_keys_env: GLM_API_KEYS
+
+  "glm-4.5-air":
+    provider: openai_compatible
+    upstream_model: glm-4.5-air
     base_url: https://open.bigmodel.cn/api/paas/v4
     api_keys_env: GLM_API_KEYS
 
   "glm-4.7-flash":
     provider: openai_compatible
     upstream_model: glm-4.7-flash
-    base_url: https://open.bigmodel.cn/api/paas/v4
-    api_keys_env: GLM_API_KEYS
-
-  # 兼容旧配置/前端曾用名
-  glm-4-flash:
-    provider: openai_compatible
-    upstream_model: glm-4.7-flash
-    base_url: https://open.bigmodel.cn/api/paas/v4
-    api_keys_env: GLM_API_KEYS
-
-  "glm-5.1":
-    provider: openai_compatible
-    upstream_model: glm-5.1
     base_url: https://open.bigmodel.cn/api/paas/v4
     api_keys_env: GLM_API_KEYS
 
