@@ -83,9 +83,9 @@ routes:
     base_url: https://open.bigmodel.cn/api/paas/v4
     api_keys_env: GLM_API_KEYS
 
-  glm-4-flash:
+  glm-4.7-flash:
     provider: openai_compatible
-    upstream_model: glm-4-flash
+    upstream_model: glm-4.7-flash
     base_url: https://open.bigmodel.cn/api/paas/v4
     api_keys_env: GLM_API_KEYS
 
