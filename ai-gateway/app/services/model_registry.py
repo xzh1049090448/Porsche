@@ -45,6 +45,9 @@ class ModelRegistry:
         routes_raw: dict[str, Any] = raw.get("routes") or {}
         loaded: dict[str, ModelRoute] = {}
         for logical, cfg in routes_raw.items():
+            logical_name = str(logical).strip()
+            if not logical_name:
+                continue
             if not isinstance(cfg, dict):
                 continue
             provider = str(cfg.get("provider", "")).strip()
@@ -55,8 +58,8 @@ class ModelRegistry:
             if not provider or not upstream_model or not api_keys_env:
                 logger.warning("Skipping invalid route for model {}", logical)
                 continue
-            loaded[logical] = ModelRoute(
-                logical_name=logical,
+            loaded[logical_name] = ModelRoute(
+                logical_name=logical_name,
                 provider=provider,
                 upstream_model=upstream_model,
                 base_url=base_url_s,
