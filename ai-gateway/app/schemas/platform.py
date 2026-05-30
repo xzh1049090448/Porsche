@@ -31,6 +31,7 @@ class PlatformCompareRequest(BaseModel):
     temperature: float | None = Field(None, ge=0, le=1)
     max_tokens: int | None = Field(None, ge=1, le=128000)
     context_window: int | None = Field(None, ge=1, le=128)
+    stream: bool = False
     dataset_enabled: bool = False
     dataset_ids: list[int] | None = None
 

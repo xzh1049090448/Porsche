@@ -135,6 +135,32 @@ async def compare_models(
         raise HTTPException(status_code=503, detail="Platform chat not ready")
 
     messages = [m.model_dump(exclude_none=True) for m in body.messages]
+
+    if body.stream:
+        async def event_stream():
+            async for chunk in state.platform_chat.compare_stream(
+                db,
+                user,
+                models=body.models,
+                messages=messages,
+                conversation_id=body.conversation_id,
+                temperature=body.temperature,
+                max_tokens=body.max_tokens,
+                context_window=body.context_window,
+                dataset_enabled=body.dataset_enabled,
+                dataset_ids=body.dataset_ids,
+            ):
+                yield chunk
+
+        await AuditService.log(
+            db,
+            action="chat.compare.stream",
+            user_id=user.id,
+            detail={"models": body.models},
+            ip=get_client_ip(request),
+        )
+        return StreamingResponse(event_stream(), media_type="text/event-stream")
+
     payload = await state.platform_chat.compare(
         db,
         user,

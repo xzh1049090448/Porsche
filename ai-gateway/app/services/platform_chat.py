@@ -36,15 +36,20 @@ def _parse_sse_chunk(chunk: bytes) -> tuple[str, str | None]:
       data = json.loads(payload)
     except json.JSONDecodeError:
       continue
-    if isinstance(data.get("error"), dict):
-      error = data["error"].get("message") or str(data["error"])
-    elif isinstance(data.get("error"), str):
-      error = data["error"]
-    choice = (data.get("choices") or [{}])[0]
-    content = choice.get("delta", {}).get("content")
-    if content:
-      delta_parts.append(content)
+    if isinstance(data, dict) and data.get("error"):
+      err = data["error"]
+      error = err if isinstance(err, str) else str(err.get("message", err))
+      continue
+    choices = data.get("choices") if isinstance(data, dict) else None
+    if choices:
+      delta = choices[0].get("delta", {}).get("content")
+      if delta:
+        delta_parts.append(delta)
   return "".join(delta_parts), error
+
+
+def _compare_sse_line(payload: dict) -> bytes:
+  return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n".encode()
 
 
 class PlatformChatService:
@@ -387,6 +392,187 @@ class PlatformChatService:
     if dataset_used:
       user.dataset_calls += 1
 
+    conv_id = await self._persist_compare_exchange(
+      db,
+      user,
+      models=models,
+      trimmed=trimmed,
+      results=list(results),
+      conversation_id=conversation_id,
+      dataset_enabled=dataset_enabled,
+      dataset_ids=dataset_ids,
+      dataset_used=dataset_used,
+    )
+
+    return {"results": list(results), "conversation_id": conv_id}
+
+  async def compare_stream(
+    self,
+    db: AsyncSession,
+    user: User,
+    *,
+    models: list[str],
+    messages: list[dict],
+    conversation_id: int | None = None,
+    temperature: float | None = None,
+    max_tokens: int | None = None,
+    context_window: int | None = None,
+    dataset_enabled: bool = False,
+    dataset_ids: list[int] | None = None,
+  ) -> AsyncIterator[bytes]:
+    """多模型对比 SSE：各模型并行流式输出，逐段推送 model_chunk。"""
+    await self._billing.check_and_consume_call(db, user, count=len(models))
+
+    trimmed = ConversationService.trim_messages(messages, context_window)
+    query = ""
+    for m in reversed(trimmed):
+      if m.get("role") == "user":
+        query = str(m.get("content", ""))
+        break
+
+    rag_messages = trimmed
+    dataset_used = False
+    if dataset_enabled:
+      datasets = await self._validate_datasets(db, user, dataset_ids)
+      if datasets:
+        ds_ids = [d.id for d in datasets]
+        rag_messages, dataset_used = self._rag.build_rag_messages(trimmed, ds_ids, query)
+
+    client = self._get_platform_client()
+    chat_messages = [ChatMessage(**m) for m in rag_messages]
+    out_queue: asyncio.Queue = asyncio.Queue()
+    results_by_model: dict[str, dict] = {}
+
+    async def _pump_model(model_name: str) -> None:
+      t0 = time.perf_counter()
+      parts: list[str] = []
+      try:
+        if user.allowed_models and model_name not in user.allowed_models:
+          raise HTTPException(status_code=403, detail="当前账号无权使用该模型")
+        body = ChatCompletionRequest(
+          model=model_name,
+          messages=chat_messages,
+          temperature=temperature,
+          max_tokens=max_tokens,
+          stream=True,
+        )
+        stream_error: str | None = None
+        async for chunk in self._gateway.stream(client=client, body=body):
+          delta, err = _parse_sse_chunk(chunk)
+          if delta:
+            parts.append(delta)
+            await out_queue.put(
+              _compare_sse_line(
+                {"type": "model_chunk", "model": model_name, "delta": delta}
+              )
+            )
+          if err:
+            stream_error = err
+        content = "".join(parts)
+        if stream_error and not content:
+          content = f"[错误] {stream_error}"
+        latency = round((time.perf_counter() - t0) * 1000, 2)
+        if content.startswith("[错误]"):
+          results_by_model[model_name] = {
+            "model": model_name,
+            "content": None,
+            "error": content[4:].strip(),
+            "tokens": 0,
+            "latency_ms": latency,
+          }
+        else:
+          results_by_model[model_name] = {
+            "model": model_name,
+            "content": content,
+            "error": None,
+            "tokens": 0,
+            "latency_ms": latency,
+          }
+      except HTTPException as exc:
+        detail = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
+        results_by_model[model_name] = {
+          "model": model_name,
+          "content": None,
+          "error": detail,
+          "tokens": 0,
+          "latency_ms": round((time.perf_counter() - t0) * 1000, 2),
+        }
+        await out_queue.put(
+          _compare_sse_line(
+            {
+              "type": "model_chunk",
+              "model": model_name,
+              "delta": f"[错误] {detail}",
+            }
+          )
+        )
+      except Exception as exc:  # noqa: BLE001
+        logger.exception("Compare stream failed for model {}", model_name)
+        msg = str(exc)
+        results_by_model[model_name] = {
+          "model": model_name,
+          "content": None,
+          "error": msg,
+          "tokens": 0,
+          "latency_ms": round((time.perf_counter() - t0) * 1000, 2),
+        }
+        await out_queue.put(
+          _compare_sse_line(
+            {"type": "model_chunk", "model": model_name, "delta": f"[错误] {msg}"}
+          )
+        )
+      finally:
+        await out_queue.put(None)
+
+    for model_name in models:
+      asyncio.create_task(_pump_model(model_name))
+
+    finished = 0
+    while finished < len(models):
+      item = await out_queue.get()
+      if item is None:
+        finished += 1
+        continue
+      yield item
+
+    if dataset_used:
+      user.dataset_calls += 1
+
+    results = [results_by_model[m] for m in models if m in results_by_model]
+    conv_id = await self._persist_compare_exchange(
+      db,
+      user,
+      models=models,
+      trimmed=trimmed,
+      results=results,
+      conversation_id=conversation_id,
+      dataset_enabled=dataset_enabled,
+      dataset_ids=dataset_ids,
+      dataset_used=dataset_used,
+    )
+
+    attribution = DATASET_ATTRIBUTION if dataset_used else None
+    done = {
+      "type": "done",
+      "conversation_id": conv_id,
+      "dataset_attribution": attribution,
+      "dataset_used": dataset_used,
+    }
+    yield _compare_sse_line(done)
+
+  async def _persist_compare_exchange(
+    self,
+    db: AsyncSession,
+    user: User,
+    *,
+    models: list[str],
+    trimmed: list[dict],
+    results: list[dict],
+    conversation_id: int | None,
+    dataset_enabled: bool,
+    dataset_ids: list[int] | None,
+    dataset_used: bool,
+  ) -> int | None:
     replies: dict[str, str] = {}
     total_tokens = 0
     for r in results:
@@ -436,4 +622,4 @@ class PlatformChatService:
         db.add(UsageRecord(user_id=user.id, record_type="chat", tokens=0, model=model_name))
       await db.flush()
 
-    return {"results": list(results), "conversation_id": conv_id}
+    return conv_id
