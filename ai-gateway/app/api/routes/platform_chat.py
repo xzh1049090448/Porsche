@@ -159,7 +159,15 @@ async def compare_models(
             detail={"models": body.models},
             ip=get_client_ip(request),
         )
-        return StreamingResponse(event_stream(), media_type="text/event-stream")
+        return StreamingResponse(
+            event_stream(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
 
     payload = await state.platform_chat.compare(
         db,
