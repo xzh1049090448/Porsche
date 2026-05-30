@@ -38,3 +38,10 @@ routes:
     upstream_model: mistral-small-latest
     base_url: https://api.mistral.ai/v1
     api_keys_env: MISTRAL_API_KEYS
+
+  # 深度求索 DeepSeek（仅 V4 Flash，需配置 DEEPSEEK_API_KEYS）
+  "deepseek-v4-flash":
+    provider: openai_compatible
+    upstream_model: deepseek-v4-flash
+    base_url: https://api.deepseek.com
+    api_keys_env: DEEPSEEK_API_KEYS
