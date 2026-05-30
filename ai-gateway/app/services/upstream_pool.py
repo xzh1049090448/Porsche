@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 
 from loguru import logger
 
+from app.config import Settings
 from app.services.model_registry import ModelRoute, read_keys_from_env
 
 
@@ -43,12 +44,12 @@ class UpstreamKeyPool:
         self._cycles: dict[str, itertools.cycle] = {}
         self._entries: dict[str, list[UpstreamKeyEntry]] = {}
 
-    def rebuild(self, routes: dict[str, ModelRoute]) -> None:
+    def rebuild(self, routes: dict[str, ModelRoute], settings: Settings | None = None) -> None:
         """Rebuild pools from current routes and environment keys."""
         self._cycles.clear()
         self._entries.clear()
         for logical, route in routes.items():
-            keys = read_keys_from_env(route.api_keys_env)
+            keys = read_keys_from_env(route.api_keys_env, settings)
             if not keys:
                 logger.warning("No upstream keys for model {} (env {})", logical, route.api_keys_env)
                 continue

@@ -27,7 +27,7 @@ from app.api.routes import platform_chat as platform_chat_routes
 from app.api.routes import users as users_routes
 from app.config import clear_settings_cache, get_settings
 from app.core.logging_config import setup_logging
-from app.core.startup_checks import validate_settings
+from app.core.startup_checks import validate_settings, verify_platform_client_config
 from app.db.session import async_session_factory, init_db, shutdown_db
 from app.services.seed import seed_default_datasets
 from app.state import AppState
@@ -48,6 +48,7 @@ async def lifespan(app: FastAPI):
     state = AppState(settings)
     state.models.load_sync()
     state.clients.load_sync()
+    verify_platform_client_config(state)
     state.rebuild_upstream_pool()
     state.init_platform_chat()
     await state.rate_limiter.connect()

@@ -11,6 +11,8 @@ from typing import Any
 import yaml
 from loguru import logger
 
+from app.config import Settings
+
 
 @dataclass(frozen=True)
 class ModelRoute:
@@ -76,9 +78,32 @@ class ModelRegistry:
         return self._routes.get(logical_model)
 
 
-def read_keys_from_env(env_name: str) -> list[str]:
-    """Read comma/newline separated API keys from process environment."""
+# models.yaml api_keys_env -> Settings 字段（与 .env 变量名一致）
+_API_KEYS_ENV_TO_SETTINGS: dict[str, str] = {
+    "OPENAI_API_KEYS": "openai_api_keys",
+    "ANTHROPIC_API_KEYS": "anthropic_api_keys",
+    "GOOGLE_API_KEYS": "google_api_keys",
+    "MISTRAL_API_KEYS": "mistral_api_keys",
+    "QWEN_API_KEYS": "qwen_api_keys",
+    "ERNIE_API_KEYS": "ernie_api_keys",
+    "HUNYUAN_API_KEYS": "hunyuan_api_keys",
+    "DOUBAO_API_KEYS": "doubao_api_keys",
+    "DEEPSEEK_API_KEYS": "deepseek_api_keys",
+    "GLM_API_KEYS": "glm_api_keys",
+    "MOONSHOT_API_KEYS": "moonshot_api_keys",
+    "YI_API_KEYS": "yi_api_keys",
+}
+
+
+def read_keys_from_env(env_name: str, settings: Settings | None = None) -> list[str]:
+    """Read comma/newline separated API keys from env or Settings (.env)."""
     val = os.environ.get(env_name, "") or ""
+    if not val.strip() and settings is not None:
+        attr = _API_KEYS_ENV_TO_SETTINGS.get(env_name)
+        if attr:
+            fallback = getattr(settings, attr, None)
+            if fallback:
+                val = str(fallback)
     parts = []
     for chunk in val.replace("\n", ",").split(","):
         s = chunk.strip()

@@ -55,7 +55,7 @@ class AppState:
         self.platform_chat: PlatformChatService | None = None
 
     def rebuild_upstream_pool(self) -> None:
-        self.pool.rebuild(self.models.routes)
+        self.pool.rebuild(self.models.routes, self.settings)
 
     def init_platform_chat(self) -> None:
         from app.services.platform_chat import PlatformChatService

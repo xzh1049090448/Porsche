@@ -53,7 +53,15 @@ class GatewayService:
         for attempt in range(1, max_attempts + 1):
             key_entry = self._state.pool.next_key(logical_model)
             if key_entry is None:
-                raise HTTPException(status_code=503, detail="No upstream API keys available")
+                route = self._state.models.get(logical_model)
+                env_name = route.api_keys_env if route else "API_KEYS"
+                raise HTTPException(
+                    status_code=503,
+                    detail=(
+                        f"No upstream API keys available for model '{logical_model}'. "
+                        f"Configure {env_name} in .env (e.g. DEEPSEEK_API_KEYS=sk-xxx) and restart the gateway."
+                    ),
+                )
             try:
                 return await call(key_entry)
             except UpstreamError as exc:

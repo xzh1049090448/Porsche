@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from loguru import logger
+
 from app.config import Settings
+from app.state import AppState
 
 _INSECURE_DEFAULTS = frozenset(
     {
@@ -35,3 +38,21 @@ def validate_settings(settings: Settings) -> None:
 
     if errors:
         raise RuntimeError("Unsafe production configuration:\n- " + "\n- ".join(errors))
+
+
+def verify_platform_client_config(state: AppState) -> None:
+    """Ensure PLATFORM_CLIENT_SECRET matches a client in clients.yaml."""
+    secret = state.settings.platform_client_secret
+    client = state.clients.get_by_secret(secret)
+    if client is not None:
+        return
+
+    path = state.settings.clients_config_path
+    msg = (
+        f"Platform internal client not configured: PLATFORM_CLIENT_SECRET does not match "
+        f"any client secret in {path}. Add a client named platform-internal with the same "
+        f"secret, then POST /admin/reload-config or restart the gateway."
+    )
+    if state.settings.app_env in ("production", "staging"):
+        raise RuntimeError(msg)
+    logger.warning(msg)

@@ -60,9 +60,18 @@ class PlatformChatService:
     self._gateway = GatewayService(state)
 
   def _get_platform_client(self):
-    client = self._state.clients.get_by_secret(self._state.settings.platform_client_secret)
+    secret = self._state.settings.platform_client_secret
+    client = self._state.clients.get_by_secret(secret)
     if client is None:
-      raise HTTPException(status_code=500, detail="Platform internal client not configured")
+      path = self._state.settings.clients_config_path
+      raise HTTPException(
+        status_code=500,
+        detail=(
+          "Platform internal client not configured: PLATFORM_CLIENT_SECRET 与 "
+          f"{path} 中任一 client 的 secret 不一致，或未加载 clients.yaml。"
+          "请确保存在 platform-internal 且 secret 与 .env 相同，然后热加载或重启。"
+        ),
+      )
     return client
 
   async def _validate_datasets(

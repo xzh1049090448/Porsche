@@ -6,6 +6,16 @@
 # daily_token_limit: 每日 token 上限（输入+输出近似累计，Redis 持久时跨重启）
 
 clients:
+  # 平台 Web 对话内部调用（secret 必须与 .env 中 PLATFORM_CLIENT_SECRET 完全一致）
+  - name: platform-internal
+    secret: "sk-platform-internal"
+    allowed_models: []
+    rpm: 1000
+    tpm: 10000000
+    daily_token_limit: 0
+    monthly_token_limit: 0
+    ip_allowlist: []
+
   - name: internal-dev
     secret: "sk-client-dev-change-me"
     allowed_models:
