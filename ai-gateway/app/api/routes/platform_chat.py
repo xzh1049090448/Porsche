@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import get_client_ip, get_current_user, get_state, require_authenticated_user
 from app.db.models import User
 from app.db.session import get_db
+from app.constants.platform_models import PLATFORM_MODEL_IDS
 from app.schemas.platform import (
     PlatformChatRequest,
     PlatformCompareRequest,
@@ -33,9 +34,12 @@ async def list_models(
     state: Annotated[AppState, Depends(get_state)],
     _user_id: Annotated[int, Depends(require_authenticated_user)],
 ):
-    """获取平台可用的大模型列表（逻辑名、厂商、上游模型 ID）。"""
+    """获取平台可用的大模型列表（仅 glm-5.1 / glm-4.5-air / glm-4.7-flash）。"""
     models = []
-    for name, route in state.models.routes.items():
+    for name in PLATFORM_MODEL_IDS:
+        route = state.models.routes.get(name)
+        if not route:
+            continue
         models.append(
             {
                 "id": name,
