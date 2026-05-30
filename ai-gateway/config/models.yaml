@@ -63,17 +63,11 @@ routes:
     base_url: https://ark.cn-beijing.volces.com/api/v3
     api_keys_env: DOUBAO_API_KEYS
 
-  # 深度求索 DeepSeek
-  deepseek-chat:
+  # 深度求索 DeepSeek（仅 V4 Flash）
+  deepseek-v4-flash:
     provider: openai_compatible
-    upstream_model: deepseek-chat
-    base_url: https://api.deepseek.com/v1
-    api_keys_env: DEEPSEEK_API_KEYS
-
-  deepseek-coder:
-    provider: openai_compatible
-    upstream_model: deepseek-coder
-    base_url: https://api.deepseek.com/v1
+    upstream_model: deepseek-v4-flash
+    base_url: https://api.deepseek.com
     api_keys_env: DEEPSEEK_API_KEYS
 
   # 智谱清言 GLM（平台仅开放以下三个逻辑模型）

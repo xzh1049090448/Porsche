@@ -34,7 +34,7 @@ async def list_models(
     state: Annotated[AppState, Depends(get_state)],
     _user_id: Annotated[int, Depends(require_authenticated_user)],
 ):
-    """获取平台可用的大模型列表（仅 glm-5.1 / glm-4.5-air / glm-4.7-flash）。"""
+    """获取平台可用的大模型列表（智谱 GLM 三型 + DeepSeek V4 Flash）。"""
     models = []
     for name in PLATFORM_MODEL_IDS:
         route = state.models.routes.get(name)

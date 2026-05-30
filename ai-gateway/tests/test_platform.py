@@ -162,10 +162,11 @@ async def test_list_models(client: AsyncClient):
     assert models_resp.status_code == 200
     models = models_resp.json()["models"]
     model_ids = {m["id"] for m in models}
-    assert model_ids <= {"glm-5.1", "glm-4.5-air", "glm-4.7-flash"}
+    assert model_ids <= {"glm-5.1", "glm-4.5-air", "glm-4.7-flash", "deepseek-v4-flash"}
     assert "glm-5.1" in model_ids
     assert "glm-4.5-air" in model_ids
     assert "glm-4.7-flash" in model_ids
+    assert "deepseek-v4-flash" in model_ids
 
 
 @pytest.mark.asyncio

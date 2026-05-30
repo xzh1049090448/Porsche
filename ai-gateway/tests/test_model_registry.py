@@ -29,3 +29,9 @@ def test_models_yaml_includes_glm_platform_routes():
     flash = registry.get("glm-4.7-flash")
     assert flash is not None
     assert flash.upstream_model == "glm-4.7-flash"
+
+    ds = registry.get("deepseek-v4-flash")
+    assert ds is not None
+    assert ds.upstream_model == "deepseek-v4-flash"
+    assert "deepseek-chat" not in ids
+    assert "deepseek-coder" not in ids
