@@ -21,10 +21,18 @@ from app.services.rag_engine import DATASET_ATTRIBUTION, RagEngine
 from app.state import AppState
 
 
-def _parse_sse_chunk(chunk: bytes) -> tuple[str, str | None]:
-  """Extract text delta and optional error from one SSE chunk."""
+def _estimate_text_tokens(text: str) -> int:
+  """上游未返回 usage 时，按字符数粗估 token。"""
+  if not text or not text.strip():
+    return 0
+  return max(1, len(text) // 2)
+
+
+def _parse_sse_chunk(chunk: bytes) -> tuple[str, str | None, int]:
+  """Extract text delta, optional error, and usage.total_tokens from one SSE chunk."""
   delta_parts: list[str] = []
   error: str | None = None
+  usage_tokens = 0
   text = chunk.decode("utf-8", errors="ignore")
   for line in text.split("\n"):
     if not line.startswith("data:"):
@@ -36,16 +44,35 @@ def _parse_sse_chunk(chunk: bytes) -> tuple[str, str | None]:
       data = json.loads(payload)
     except json.JSONDecodeError:
       continue
-    if isinstance(data, dict) and data.get("error"):
+    if not isinstance(data, dict):
+      continue
+    if data.get("type") == "done":
+      usage_tokens = int(data.get("tokens") or 0)
+      continue
+    if data.get("error"):
       err = data["error"]
       error = err if isinstance(err, str) else str(err.get("message", err))
       continue
-    choices = data.get("choices") if isinstance(data, dict) else None
+    usage = data.get("usage")
+    if isinstance(usage, dict):
+      reported = int(usage.get("total_tokens") or 0)
+      if reported:
+        usage_tokens = reported
+    choices = data.get("choices")
     if choices:
       delta = choices[0].get("delta", {}).get("content")
       if delta:
         delta_parts.append(delta)
-  return "".join(delta_parts), error
+  return "".join(delta_parts), error, usage_tokens
+
+
+def _platform_done_line(tokens: int, total_tokens_used: int) -> bytes:
+  payload = {
+    "type": "done",
+    "tokens": tokens,
+    "total_tokens_used": total_tokens_used,
+  }
+  return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n".encode()
 
 
 def _compare_sse_line(payload: dict) -> bytes:
@@ -279,18 +306,24 @@ class PlatformChatService:
 
     content_parts: list[str] = []
     stream_error: str | None = None
+    stream_tokens = 0
 
     async for chunk in self._gateway.stream(client=client, body=body):
-      delta, err = _parse_sse_chunk(chunk)
+      delta, err, chunk_tokens = _parse_sse_chunk(chunk)
       if delta:
         content_parts.append(delta)
       if err:
         stream_error = err
+      if chunk_tokens:
+        stream_tokens = chunk_tokens
       yield chunk
 
     content = "".join(content_parts)
     if stream_error and not content:
       content = f"[错误] {stream_error}"
+
+    if stream_tokens <= 0 and content and not content.startswith("[错误]"):
+      stream_tokens = _estimate_text_tokens(content)
 
     await ConversationService.add_message(
       db,
@@ -300,12 +333,22 @@ class PlatformChatService:
       model=model,
       dataset_used=dataset_used,
       dataset_attribution=attribution,
-      tokens=0,
+      tokens=stream_tokens,
     )
+    if stream_tokens > 0:
+      user.total_tokens_used += stream_tokens
     if dataset_used:
       user.dataset_calls += 1
-    db.add(UsageRecord(user_id=user.id, record_type="chat", tokens=0, model=model))
+    db.add(
+      UsageRecord(
+        user_id=user.id,
+        record_type="chat",
+        tokens=stream_tokens,
+        model=model,
+      )
+    )
     await db.flush()
+    yield _platform_done_line(stream_tokens, int(user.total_tokens_used or 0))
 
   async def compare(
     self,
@@ -362,7 +405,6 @@ class PlatformChatService:
             content = choices[0].get("message", {}).get("content", "") or ""
           usage = data.get("usage", {})
           tokens = int(usage.get("total_tokens", 0))
-        user.total_tokens_used += tokens
         return {
           "model": model_name,
           "content": content,
@@ -457,8 +499,9 @@ class PlatformChatService:
           stream=True,
         )
         stream_error: str | None = None
+        stream_tokens = 0
         async for chunk in self._gateway.stream(client=client, body=body):
-          delta, err = _parse_sse_chunk(chunk)
+          delta, err, chunk_tokens = _parse_sse_chunk(chunk)
           if delta:
             parts.append(delta)
             await out_queue.put(
@@ -468,10 +511,15 @@ class PlatformChatService:
             )
           if err:
             stream_error = err
+          if chunk_tokens:
+            stream_tokens = chunk_tokens
         content = "".join(parts)
         if stream_error and not content:
           content = f"[错误] {stream_error}"
         latency = round((time.perf_counter() - t0) * 1000, 2)
+        tokens = stream_tokens
+        if tokens <= 0 and content and not content.startswith("[错误]"):
+          tokens = _estimate_text_tokens(content)
         if content.startswith("[错误]"):
           results_by_model[model_name] = {
             "model": model_name,
@@ -485,7 +533,7 @@ class PlatformChatService:
             "model": model_name,
             "content": content,
             "error": None,
-            "tokens": 0,
+            "tokens": tokens,
             "latency_ms": latency,
           }
       except HTTPException as exc:
@@ -539,6 +587,7 @@ class PlatformChatService:
       user.dataset_calls += 1
 
     results = [results_by_model[m] for m in models if m in results_by_model]
+    total_tokens = sum(int(r.get("tokens", 0)) for r in results)
     conv_id = await self._persist_compare_exchange(
       db,
       user,
@@ -557,6 +606,8 @@ class PlatformChatService:
       "conversation_id": conv_id,
       "dataset_attribution": attribution,
       "dataset_used": dataset_used,
+      "tokens": total_tokens,
+      "total_tokens_used": int(user.total_tokens_used or 0),
     }
     yield _compare_sse_line(done)
 
@@ -618,8 +669,17 @@ class PlatformChatService:
         dataset_attribution=attribution,
         tokens=total_tokens,
       )
-      for model_name in models:
-        db.add(UsageRecord(user_id=user.id, record_type="chat", tokens=0, model=model_name))
+      if total_tokens > 0:
+        user.total_tokens_used += total_tokens
+      for r in results:
+        db.add(
+          UsageRecord(
+            user_id=user.id,
+            record_type="chat",
+            tokens=int(r.get("tokens", 0)),
+            model=r["model"],
+          )
+        )
       await db.flush()
 
     return conv_id

@@ -30,12 +30,28 @@ def test_user_profile_response_accepts_enum_and_str_plan_type():
 
 
 def test_parse_sse_chunk_delta_and_error():
-    delta, err = _parse_sse_chunk(b'data: {"choices":[{"delta":{"content":"你好"}}]}\n\n')
+    delta, err, usage = _parse_sse_chunk(
+        b'data: {"choices":[{"delta":{"content":"你好"}}]}\n\n'
+    )
     assert delta == "你好"
     assert err is None
+    assert usage == 0
 
-    _, err = _parse_sse_chunk(b'data: {"error":{"message":"upstream down"}}\n\n')
+    _, err, usage = _parse_sse_chunk(b'data: {"error":{"message":"upstream down"}}\n\n')
     assert err == "upstream down"
+    assert usage == 0
+
+    _, err, usage = _parse_sse_chunk(
+        b'data: {"choices":[],"usage":{"total_tokens":128}}\n\n'
+    )
+    assert err is None
+    assert usage == 128
+
+    _, err, usage = _parse_sse_chunk(
+        b'data: {"type":"done","tokens":42,"total_tokens_used":1000}\n\n'
+    )
+    assert err is None
+    assert usage == 42
 
 
 @pytest.fixture
