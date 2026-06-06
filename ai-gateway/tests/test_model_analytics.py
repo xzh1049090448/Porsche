@@ -153,6 +153,9 @@ async def test_summary_and_charts_for_admin(client: AsyncClient):
     chart_body = chart.json()
     assert chart_body["view"] == "consumption_distribution"
     assert len(chart_body["series"]) >= 1
+    if chart_body["time_labels"]:
+        for s in chart_body["series"]:
+            assert len(s["data"]) == len(chart_body["time_labels"])
 
     ranking = await client.get(
         f"{PREFIX}/charts/call_ranking",
@@ -161,6 +164,27 @@ async def test_summary_and_charts_for_admin(client: AsyncClient):
     )
     assert ranking.status_code == 200, ranking.text
     assert len(ranking.json()["ranking"]) >= 1
+
+    trend = await client.get(
+        f"{PREFIX}/charts/call_trend",
+        headers=headers,
+        params={"granularity": "2h"},
+    )
+    assert trend.status_code == 200, trend.text
+    trend_body = trend.json()
+    assert trend_body["view"] == "call_trend"
+    assert len(trend_body["time_labels"]) >= 1
+    assert len(trend_body["series"][0]["data"]) == len(trend_body["time_labels"])
+
+    user_trend = await client.get(
+        f"{PREFIX}/charts/user_consumption_trend",
+        headers=headers,
+        params={"granularity": "2h", "user_id": admin_id},
+    )
+    assert user_trend.status_code == 200, user_trend.text
+    user_trend_body = user_trend.json()
+    assert user_trend_body["view"] == "user_consumption_trend"
+    assert len(user_trend_body["series"][0]["data"]) == len(user_trend_body["time_labels"])
 
 
 @pytest.mark.asyncio

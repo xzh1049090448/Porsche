@@ -137,11 +137,48 @@ def _parse_models(models: str) -> list[str]:
     return [m.strip() for m in models.split(",") if m.strip()]
 
 
-def _bucket_expr(granularity: str):
+def _dialect_name(db: AsyncSession) -> str:
+    bind = db.get_bind()
+    return bind.dialect.name if bind is not None else "sqlite"
+
+
+def _bucket_expr(dialect_name: str, granularity: str):
+    """Time bucket expression compatible with SQLite and MySQL/MariaDB."""
     secs = GRANULARITY_SECONDS[granularity]
-    ts = cast(func.strftime("%s", UsageRecord.created_at), Integer)
-    bucket_ts = cast(ts / secs, Integer) * secs
-    return func.datetime(bucket_ts, "unixepoch")
+    if dialect_name == "sqlite":
+        ts = cast(func.strftime("%s", UsageRecord.created_at), Integer)
+        bucket_ts = cast(ts / secs, Integer) * secs
+        return func.datetime(bucket_ts, "unixepoch")
+    # mysql, mariadb, and other unix-timestamp dialects
+    ts = func.unix_timestamp(UsageRecord.created_at)
+    bucket_ts = func.floor(ts / secs) * secs
+    return func.from_unixtime(bucket_ts)
+
+
+def _align_series_to_buckets(
+    by_model: dict[str, list[dict]], buckets: list[datetime]
+) -> list[dict[str, Any]]:
+    """Ensure every model series has one point per bucket (zeros for gaps)."""
+    bucket_keys = [b.isoformat() for b in buckets]
+    series = []
+    for model in sorted(by_model):
+        points_by_key = {p["time"].isoformat(): p for p in by_model[model]}
+        aligned = []
+        for b, key in zip(buckets, bucket_keys):
+            if key in points_by_key:
+                aligned.append(points_by_key[key])
+            else:
+                aligned.append(
+                    {
+                        "time": b,
+                        "tokens": 0,
+                        "cost": 0.0,
+                        "calls": 0,
+                        "ratio": 0.0,
+                    }
+                )
+        series.append({"name": model, "data": aligned})
+    return series
 
 
 def _format_time_label(dt: datetime) -> str:
@@ -262,7 +299,7 @@ class ModelAnalyticsService:
     async def _consumption_distribution(
         self, db: AsyncSession, filters: AnalyticsFilters
     ) -> dict[str, Any]:
-        bucket = _bucket_expr(filters.granularity)
+        bucket = _bucket_expr(_dialect_name(db), filters.granularity)
         where = _base_where(filters)
         where.append(UsageRecord.model.isnot(None))
         rows = await db.execute(
@@ -297,11 +334,11 @@ class ModelAnalyticsService:
             by_model.setdefault(model, []).append(point)
 
         time_labels = [_format_time_label(b) for b in buckets]
-        series = [{"name": m, "data": by_model[m]} for m in sorted(by_model)]
+        series = _align_series_to_buckets(by_model, buckets)
         return {"time_labels": time_labels, "series": series, "ranking": []}
 
     async def _call_trend(self, db: AsyncSession, filters: AnalyticsFilters) -> dict[str, Any]:
-        bucket = _bucket_expr(filters.granularity)
+        bucket = _bucket_expr(_dialect_name(db), filters.granularity)
         where = _base_where(filters)
         rows = await db.execute(
             select(bucket.label("bucket"), func.count())
@@ -420,7 +457,7 @@ class ModelAnalyticsService:
     async def _user_consumption_trend(
         self, db: AsyncSession, filters: AnalyticsFilters
     ) -> dict[str, Any]:
-        bucket = _bucket_expr(filters.granularity)
+        bucket = _bucket_expr(_dialect_name(db), filters.granularity)
         where = _base_where(filters)
         where.append(UsageRecord.user_id == filters.user_id)
         rows = await db.execute(
