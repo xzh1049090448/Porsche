@@ -129,12 +129,18 @@ class Settings(BaseSettings):
     plan_professional_price: float = 99.0
     plan_enterprise_price: float = 999.0
 
+    # Model analytics (admin phones comma-separated; dev defaults to fixed_login_phone)
+    analytics_admin_phones: str = ""
+    analytics_token_price_per_1k: float = 1.0
+
     @model_validator(mode="after")
     def _development_defaults(self) -> Settings:
         """Enable safe local-dev defaults only when not explicitly set in environment."""
         if self.app_env == "development":
             if "BILLING_ALLOW_MOCK_PAYMENT" not in os.environ:
                 self.billing_allow_mock_payment = True
+            if not self.analytics_admin_phones.strip():
+                self.analytics_admin_phones = self.fixed_login_phone
         return self
 
 

@@ -19,6 +19,7 @@ from app.api.routes import admin_logs as admin_logs_routes
 from app.api.routes import admin_users as admin_users_routes
 from app.api.routes import auth as auth_routes
 from app.api.routes import billing as billing_routes
+from app.api.routes import model_analytics as model_analytics_routes
 from app.api.routes import chat as chat_routes
 from app.api.routes import conversations as conversations_routes
 from app.api.routes import datasets as datasets_routes
@@ -88,6 +89,7 @@ def create_app() -> FastAPI:
     app.include_router(conversations_routes.router)
     app.include_router(datasets_routes.router)
     app.include_router(billing_routes.router)
+    app.include_router(model_analytics_routes.router)
     app.include_router(admin_datasets_routes.router)
     app.include_router(admin_users_routes.router)
     app.include_router(admin_logs_routes.router)

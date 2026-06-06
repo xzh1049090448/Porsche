@@ -13,6 +13,7 @@ from app.db.enum_utils import enum_is
 from app.db.models import User, UserStatus
 from app.db.session import get_db
 from app.services.client_registry import ClientConfig, ClientRegistry
+from app.services.model_analytics_service import is_analytics_admin
 from app.state import AppState
 
 
@@ -70,6 +71,16 @@ async def get_current_user(
     user = await db.scalar(select(User).where(User.id == user_id))
     if not user or not enum_is(user.status, UserStatus.ACTIVE):
         raise HTTPException(status_code=401, detail="用户不存在或已被禁用")
+    return user
+
+
+async def require_analytics_admin(
+    user: Annotated[User, Depends(get_current_user)],
+    state: Annotated[AppState, Depends(get_state)],
+) -> User:
+    """Only phones listed in ``analytics_admin_phones`` may access analytics."""
+    if not is_analytics_admin(user.phone, state.settings):
+        raise HTTPException(status_code=403, detail="无分析权限")
     return user
 
 
