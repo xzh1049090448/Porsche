@@ -1,0 +1,20 @@
+# Test-only client secrets (used by pytest via CLIENTS_CONFIG_PATH)
+
+clients:
+  - name: platform-internal
+    secret: "sk-platform-internal"
+    allowed_models: []
+    rpm: 1000
+    tpm: 10000000
+    daily_token_limit: 0
+    monthly_token_limit: 0
+    ip_allowlist: []
+
+  - name: api-external
+    secret: "sk-client-dev-change-me"
+    allowed_models: []
+    rpm: 120
+    tpm: 500000
+    daily_token_limit: 2000000
+    monthly_token_limit: 0
+    ip_allowlist: []

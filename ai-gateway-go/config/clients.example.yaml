@@ -1,0 +1,38 @@
+# 下游客户端密钥与策略（仅服务端持有上游密钥；此处为客户端鉴权用 secret）
+# secret: 客户端在 Authorization: Bearer <secret> 中传递的值（生产建议轮换并限制文件权限）
+#
+# allowed_models: 允许访问的逻辑模型名列表；为空表示不限制（仍受全局路由是否存在约束）
+# rpm: 每分钟请求数上限（单实例或 Redis 分布式）
+# daily_token_limit: 每日 token 上限（输入+输出近似累计，Redis 持久时跨重启）
+
+clients:
+  # 平台 Web 对话内部调用（secret 必须与 .env 中 PLATFORM_CLIENT_SECRET 完全一致）
+  - name: platform-internal
+    secret: "sk-platform-internal"
+    allowed_models: []
+    rpm: 1000
+    tpm: 10000000
+    daily_token_limit: 0
+    monthly_token_limit: 0
+    ip_allowlist: []
+
+  - name: internal-dev
+    secret: "sk-client-dev-change-me"
+    allowed_models:
+      - gpt-3.5-turbo
+      - gpt-4o
+    rpm: 60
+    tpm: 100000
+    daily_token_limit: 500000
+    monthly_token_limit: 0
+    ip_allowlist: []
+
+  - name: restricted-alias-demo
+    secret: "sk-client-alias-demo"
+    allowed_models:
+      - gpt-3.5-turbo-claude
+    rpm: 30
+    tpm: 50000
+    daily_token_limit: 200000
+    monthly_token_limit: 0
+    ip_allowlist: []

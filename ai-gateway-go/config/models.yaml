@@ -1,0 +1,116 @@
+# 国内大模型路由配置
+# 修改后可通过 POST /admin/reload-config 热加载
+#
+# provider: openai_compatible（国内厂商多数兼容 OpenAI Chat Completions 格式）
+# api_keys_env: 对应 .env 中的密钥环境变量名
+
+routes:
+  # 阿里通义千问 Qwen
+  qwen-turbo:
+    provider: openai_compatible
+    upstream_model: qwen-turbo
+    base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+    api_keys_env: QWEN_API_KEYS
+
+  qwen-plus:
+    provider: openai_compatible
+    upstream_model: qwen-plus
+    base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+    api_keys_env: QWEN_API_KEYS
+
+  qwen-max:
+    provider: openai_compatible
+    upstream_model: qwen-max
+    base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+    api_keys_env: QWEN_API_KEYS
+
+  # 百度文心一言 ERNIE
+  ernie-4.0:
+    provider: openai_compatible
+    upstream_model: ernie-4.0-8k
+    base_url: https://qianfan.baidubce.com/v2
+    api_keys_env: ERNIE_API_KEYS
+
+  ernie-3.5:
+    provider: openai_compatible
+    upstream_model: ernie-3.5-8k
+    base_url: https://qianfan.baidubce.com/v2
+    api_keys_env: ERNIE_API_KEYS
+
+  # 腾讯混元 Hunyuan
+  hunyuan-lite:
+    provider: openai_compatible
+    upstream_model: hunyuan-lite
+    base_url: https://api.hunyuan.cloud.tencent.com/v1
+    api_keys_env: HUNYUAN_API_KEYS
+
+  hunyuan-pro:
+    provider: openai_compatible
+    upstream_model: hunyuan-pro
+    base_url: https://api.hunyuan.cloud.tencent.com/v1
+    api_keys_env: HUNYUAN_API_KEYS
+
+  # 字节豆包 Doubao
+  doubao-pro:
+    provider: openai_compatible
+    upstream_model: doubao-pro-32k
+    base_url: https://ark.cn-beijing.volces.com/api/v3
+    api_keys_env: DOUBAO_API_KEYS
+
+  doubao-lite:
+    provider: openai_compatible
+    upstream_model: doubao-lite-32k
+    base_url: https://ark.cn-beijing.volces.com/api/v3
+    api_keys_env: DOUBAO_API_KEYS
+
+  # 深度求索 DeepSeek（平台仅开放 deepseek-v4-flash，逻辑名须加引号）
+  "deepseek-v4-flash":
+    provider: openai_compatible
+    upstream_model: deepseek-v4-flash
+    base_url: https://api.deepseek.com
+    api_keys_env: DEEPSEEK_API_KEYS
+
+  # 智谱清言 GLM（平台开放 glm-5.1 / glm-4.5-air / glm-4.7-flash）
+  "glm-5.1":
+    provider: openai_compatible
+    upstream_model: glm-5.1
+    base_url: https://open.bigmodel.cn/api/paas/v4
+    api_keys_env: GLM_API_KEYS
+
+  "glm-4.5-air":
+    provider: openai_compatible
+    upstream_model: glm-4.5-air
+    base_url: https://open.bigmodel.cn/api/paas/v4
+    api_keys_env: GLM_API_KEYS
+
+  "glm-4.7-flash":
+    provider: openai_compatible
+    upstream_model: glm-4.7-flash
+    base_url: https://open.bigmodel.cn/api/paas/v4
+    api_keys_env: GLM_API_KEYS
+
+  # 月之暗面 Moonshot
+  moonshot-v1-8k:
+    provider: openai_compatible
+    upstream_model: moonshot-v1-8k
+    base_url: https://api.moonshot.cn/v1
+    api_keys_env: MOONSHOT_API_KEYS
+
+  moonshot-v1-32k:
+    provider: openai_compatible
+    upstream_model: moonshot-v1-32k
+    base_url: https://api.moonshot.cn/v1
+    api_keys_env: MOONSHOT_API_KEYS
+
+  # 零一万物 Yi
+  yi-large:
+    provider: openai_compatible
+    upstream_model: yi-large
+    base_url: https://api.lingyiwanwu.com/v1
+    api_keys_env: YI_API_KEYS
+
+  yi-medium:
+    provider: openai_compatible
+    upstream_model: yi-medium
+    base_url: https://api.lingyiwanwu.com/v1
+    api_keys_env: YI_API_KEYS

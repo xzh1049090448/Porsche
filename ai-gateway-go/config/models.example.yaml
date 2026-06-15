@@ -1,0 +1,47 @@
+# 模型路由：logical_model -> 上游 provider 与真实模型名
+# 修改后可通过 POST /admin/reload-config 热加载（无需重启）
+#
+# provider 可选: openai_compatible | anthropic | gemini
+# openai_compatible: 使用 OpenAI Chat Completions 兼容路径 /v1/chat/completions
+
+routes:
+  gpt-3.5-turbo:
+    provider: openai_compatible
+    upstream_model: gpt-3.5-turbo
+    base_url: https://api.openai.com/v1
+    api_keys_env: OPENAI_API_KEYS
+
+  gpt-4o:
+    provider: openai_compatible
+    upstream_model: gpt-4o
+    base_url: https://api.openai.com/v1
+    api_keys_env: OPENAI_API_KEYS
+
+  # 别名示例：对外名称映射到 Claude
+  gpt-3.5-turbo-claude:
+    provider: anthropic
+    upstream_model: claude-3-5-sonnet-20241022
+    api_keys_env: ANTHROPIC_API_KEYS
+
+  claude-3-5-sonnet:
+    provider: anthropic
+    upstream_model: claude-3-5-sonnet-20241022
+    api_keys_env: ANTHROPIC_API_KEYS
+
+  gemini-1.5-flash:
+    provider: gemini
+    upstream_model: gemini-1.5-flash
+    api_keys_env: GOOGLE_API_KEYS
+
+  mistral-small:
+    provider: openai_compatible
+    upstream_model: mistral-small-latest
+    base_url: https://api.mistral.ai/v1
+    api_keys_env: MISTRAL_API_KEYS
+
+  # 深度求索 DeepSeek（仅 V4 Flash，需配置 DEEPSEEK_API_KEYS）
+  "deepseek-v4-flash":
+    provider: openai_compatible
+    upstream_model: deepseek-v4-flash
+    base_url: https://api.deepseek.com
+    api_keys_env: DEEPSEEK_API_KEYS

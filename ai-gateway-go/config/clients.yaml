@@ -1,0 +1,21 @@
+# 下游客户端密钥 — 生产环境请复制 clients.example.yaml 并替换 secret，勿提交真实密钥
+# 平台内部密钥需与环境变量 PLATFORM_CLIENT_SECRET 一致
+
+clients:
+  - name: platform-internal
+    secret: "sk-platform-internal"
+    allowed_models: []
+    rpm: 1000
+    tpm: 10000000
+    daily_token_limit: 0
+    monthly_token_limit: 0
+    ip_allowlist: []
+
+  - name: api-external
+    secret: "REPLACE-WITH-STRONG-RANDOM-SECRET"
+    allowed_models: []
+    rpm: 120
+    tpm: 500000
+    daily_token_limit: 2000000
+    monthly_token_limit: 0
+    ip_allowlist: []
