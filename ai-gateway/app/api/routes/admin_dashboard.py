@@ -17,10 +17,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_state
 from app.api.routes.admin import verify_admin
-from app.db.models import ModelHealth
-from app.db.session import get_db
-from app.schemas.admin_platform import DashboardResponse, ModelHealthResponse
-from app.services.dashboard_service import DashboardService
+from app.repository.models import ModelHealth
+from app.repository.session import get_db
+from app.common.schemas.admin_platform import DashboardResponse, ModelHealthResponse
+from app.service.dashboard_service import DashboardService
 from app.state import AppState
 
 router = APIRouter(
@@ -80,8 +80,8 @@ async def check_model_health(
         t0 = time.perf_counter()
         is_ok = True
         try:
-            from app.schemas.openai import ChatCompletionRequest, ChatMessage
-            from app.services.gateway import GatewayService
+            from app.common.schemas.openai import ChatCompletionRequest, ChatMessage
+            from app.service.gateway import GatewayService
 
             gw = GatewayService(state)
             body = ChatCompletionRequest(

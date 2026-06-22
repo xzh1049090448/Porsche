@@ -13,7 +13,7 @@ from sqlalchemy import Integer, cast, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
-from app.db.models import UsageRecord, User
+from app.repository.models import UsageRecord, User
 
 GRANULARITY_SECONDS = {"1h": 3600, "2h": 7200, "4h": 14400, "1d": 86400}
 

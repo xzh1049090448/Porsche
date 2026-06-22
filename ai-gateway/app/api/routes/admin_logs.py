@@ -15,9 +15,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.routes.admin import verify_admin
-from app.db.models import AuditLog
-from app.db.session import get_db
-from app.schemas.admin_platform import AuditLogResponse
+from app.repository.models import AuditLog
+from app.repository.session import get_db
+from app.common.schemas.admin_platform import AuditLogResponse
 
 router = APIRouter(prefix="/admin/logs", tags=["admin-logs"], dependencies=[Depends(verify_admin)])
 

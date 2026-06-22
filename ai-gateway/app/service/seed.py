@@ -5,8 +5,8 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Dataset, DatasetCategory, DatasetStatus, VectorStatus
-from app.services.rag_engine import RagEngine
+from app.repository.models import Dataset, DatasetCategory, DatasetStatus, VectorStatus
+from app.service.rag_engine import RagEngine
 
 
 DEFAULT_DATASETS = [

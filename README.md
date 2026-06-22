@@ -5,7 +5,8 @@
 | 目录 | 说明 |
 |------|------|
 | [`spring-app/`](spring-app/) | Java 17 + Spring Boot + Maven（博客 API 等后端） |
-| [`ai-gateway/`](ai-gateway/) | Python + FastAPI AI 网关（OpenAI 兼容中转） |
+| [`ai-gateway/`](ai-gateway/) | Python + FastAPI AI 网关（国内大模型聚合、RAG、计费） |
+| [`ai-gateway-go/`](ai-gateway-go/) | Go AI 网关（高并发代理与路由） |
 
 两者无代码依赖；若你希望拆成两个 Git 仓库，可将对应目录各自 `git init` 或使用子树/子模块策略迁移。
 

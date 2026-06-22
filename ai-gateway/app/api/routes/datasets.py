@@ -14,10 +14,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user
-from app.db.enum_utils import enum_value
-from app.db.models import Dataset, DatasetStatus, User
-from app.db.session import get_db
-from app.schemas.dataset import DatasetListResponse, DatasetResponse
+from app.repository.enum_utils import enum_value
+from app.repository.models import Dataset, DatasetStatus, User
+from app.repository.session import get_db
+from app.common.schemas.dataset import DatasetListResponse, DatasetResponse
 
 router = APIRouter(prefix="/api/v1/datasets", tags=["datasets"])
 

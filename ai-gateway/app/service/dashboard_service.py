@@ -7,8 +7,8 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Conversation, UsageRecord, User, UserStatus
-from app.services.billing_service import BillingService
+from app.repository.models import Conversation, UsageRecord, User, UserStatus
+from app.service.billing_service import BillingService
 
 
 class DashboardService:

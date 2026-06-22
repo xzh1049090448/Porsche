@@ -1,7 +1,7 @@
 """Enum helper unit tests."""
 
-from app.db.enum_utils import StrEnumType, enum_is, enum_value
-from app.db.models import PlanType, UserStatus
+from app.repository.enum_utils import StrEnumType, enum_is, enum_value
+from app.repository.models import PlanType, UserStatus
 
 
 def test_enum_value_from_enum_and_str():

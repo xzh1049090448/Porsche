@@ -9,7 +9,7 @@ from typing import Any, AsyncIterator
 
 import httpx
 
-from app.core.exceptions import UpstreamError
+from app.common.exceptions import UpstreamError
 
 
 ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"

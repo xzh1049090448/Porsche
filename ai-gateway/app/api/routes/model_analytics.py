@@ -13,15 +13,15 @@ from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user, get_state, require_analytics_admin
-from app.db.models import User
-from app.db.session import get_db
-from app.schemas.model_analytics import (
+from app.repository.models import User
+from app.repository.session import get_db
+from app.common.schemas.model_analytics import (
     AnalyticsAccessResponse,
     AnalyticsSummaryResponse,
     ChartResponse,
     ModelsListResponse,
 )
-from app.services.model_analytics_service import (
+from app.service.model_analytics_service import (
     ModelAnalyticsService,
     is_analytics_admin,
     parse_filters,

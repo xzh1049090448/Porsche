@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from loguru import logger
 
 from app.config import Settings
-from app.services.model_registry import ModelRoute, read_keys_from_env
+from app.service.model_registry import ModelRoute, read_keys_from_env
 
 
 @dataclass

@@ -10,8 +10,8 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
-from app.db.enum_utils import enum_is, enum_value
-from app.db.models import Order, OrderStatus, PlanType, User
+from app.repository.enum_utils import enum_is, enum_value
+from app.repository.models import Order, OrderStatus, PlanType, User
 
 
 PLAN_LIMITS = {

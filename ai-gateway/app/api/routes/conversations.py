@@ -14,16 +14,16 @@ from fastapi.responses import PlainTextResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user
-from app.db.models import User
-from app.db.session import get_db
-from app.schemas.conversation import (
+from app.repository.models import User
+from app.repository.session import get_db
+from app.common.schemas.conversation import (
     ConversationCreate,
     ConversationListResponse,
     ConversationResponse,
     ConversationUpdate,
 )
-from app.schemas.serializers import conversation_response
-from app.services.conversation_service import ConversationService
+from app.common.schemas.serializers import conversation_response
+from app.service.conversation_service import ConversationService
 
 router = APIRouter(prefix="/api/v1/conversations", tags=["conversations"])
 

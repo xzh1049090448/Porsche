@@ -202,18 +202,31 @@ ai-gateway/
   app/
     main.py                 # FastAPI 入口
     config.py               # 环境变量配置
-    api/routes/             # health / chat / admin
-    providers/              # openai_compat / anthropic / gemini
-    services/               # registry, pool, gateway, limiter, usage
-    observability/metrics.py
+    state.py                # 运行时状态
+    api/routes/             # Controller 层（HTTP 接口）
+    common/
+      schemas/              # Req/Resp DTO
+      constants/            # 常量
+      errors.py             # 错误响应
+      exceptions.py         # 上游异常
+      security.py           # JWT / 密码
+    service/                # 业务逻辑
+    repository/             # 数据访问（models / session）
+    task/                   # 定时任务（预留）
+    tool/                   # 工具（日志、启动检查等）
+    providers/              # 上游 LLM 适配
+    observability/          # Prometheus 指标
   config/
-    models.yaml             # 路由（可挂载覆盖）
-    clients.yaml            # 下游策略（可挂载覆盖）
+    models.yaml
+    clients.yaml
+  CONTEXT.md                # 领域上下文与模块说明
   Dockerfile
   docker-compose.yml
   requirements.txt
   README.md
 ```
+
+模块分层说明见 [CONTEXT.md](CONTEXT.md) 与仓库根目录 [docs/conventions/module-structure.md](../docs/conventions/module-structure.md)。
 
 ---
 

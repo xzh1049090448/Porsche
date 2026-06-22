@@ -8,8 +8,8 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete, select
 
-from app.db.models import UsageRecord, User
-from app.db.session import async_session_factory
+from app.repository.models import UsageRecord, User
+from app.repository.session import async_session_factory
 from app.main import app
 
 ADMIN_PHONE = "13800138000"

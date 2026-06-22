@@ -18,21 +18,21 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import get_state
 from app.api.routes.admin import verify_admin
 from app.config import get_settings
-from app.db.models import (
+from app.repository.models import (
     Dataset,
     DatasetCategory,
     DatasetStatus,
     DatasetVersion,
     VectorStatus,
 )
-from app.db.session import get_db
-from app.schemas.dataset import (
+from app.repository.session import get_db
+from app.common.schemas.dataset import (
     DatasetCreateRequest,
     DatasetProcessResponse,
     DatasetResponse,
     DatasetVersionResponse,
 )
-from app.services.dataset_processor import DatasetProcessor
+from app.service.dataset_processor import DatasetProcessor
 from app.state import AppState
 
 router = APIRouter(prefix="/admin/datasets", tags=["admin-datasets"], dependencies=[Depends(verify_admin)])

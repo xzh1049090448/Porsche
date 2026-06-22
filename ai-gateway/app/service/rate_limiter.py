@@ -9,7 +9,7 @@ from dataclasses import dataclass
 import redis.asyncio as redis
 from loguru import logger
 
-from app.services.client_registry import ClientConfig
+from app.service.client_registry import ClientConfig
 
 
 def _minute_bucket() -> int:

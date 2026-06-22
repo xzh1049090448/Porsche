@@ -16,12 +16,12 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from loguru import logger
 
 from app.api.deps import get_client_config, get_state
-from app.core.errors import error_body
+from app.common.errors import error_body
 from app.observability.metrics import REQUEST_LATENCY, TOKENS_TOTAL
-from app.schemas.openai import ChatCompletionRequest
-from app.services.client_registry import ClientConfig
-from app.services.gateway import GatewayService
-from app.services.rate_limiter import estimate_request_tokens
+from app.common.schemas.openai import ChatCompletionRequest
+from app.service.client_registry import ClientConfig
+from app.service.gateway import GatewayService
+from app.service.rate_limiter import estimate_request_tokens
 from app.state import AppState
 
 router = APIRouter(prefix="/v1", tags=["openai"])

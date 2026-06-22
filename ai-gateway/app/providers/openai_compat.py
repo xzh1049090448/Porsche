@@ -7,7 +7,7 @@ from typing import Any, AsyncIterator
 import httpx
 from loguru import logger
 
-from app.core.exceptions import UpstreamError
+from app.common.exceptions import UpstreamError
 
 
 async def forward_chat_completions_stream(

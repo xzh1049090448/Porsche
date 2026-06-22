@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import AuditLog
+from app.repository.models import AuditLog
 
 
 class AuditService:

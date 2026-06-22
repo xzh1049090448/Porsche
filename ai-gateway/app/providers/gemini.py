@@ -9,7 +9,7 @@ from typing import Any, AsyncIterator
 
 import httpx
 
-from app.core.exceptions import UpstreamError
+from app.common.exceptions import UpstreamError
 
 
 def _contents_from_openai(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:

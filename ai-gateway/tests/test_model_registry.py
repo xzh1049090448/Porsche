@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from app.services.model_registry import ModelRegistry
+from app.service.model_registry import ModelRegistry
 
 ROOT = Path(__file__).resolve().parents[1]
 MODELS_PATH = ROOT / "config" / "models.yaml"

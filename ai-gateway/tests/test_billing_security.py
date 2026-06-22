@@ -6,7 +6,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.config import Settings
-from app.services.billing_service import BillingService
+from app.service.billing_service import BillingService
 
 
 @pytest.mark.asyncio

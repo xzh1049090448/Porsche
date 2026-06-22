@@ -3,8 +3,8 @@
 from sqlalchemy import select
 from sqlalchemy.dialects import mysql, sqlite
 
-from app.db.models import UsageRecord
-from app.services.model_analytics_service import _align_series_to_buckets, _bucket_expr
+from app.repository.models import UsageRecord
+from app.service.model_analytics_service import _align_series_to_buckets, _bucket_expr
 
 
 def test_bucket_expr_sqlite_uses_strftime():

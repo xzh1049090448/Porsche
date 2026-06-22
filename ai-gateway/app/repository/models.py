@@ -18,7 +18,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
-from app.db.enum_utils import str_enum
+from app.repository.enum_utils import str_enum
 
 
 def utcnow() -> datetime:

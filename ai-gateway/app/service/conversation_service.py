@@ -7,7 +7,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.db.models import Conversation, Message, User
+from app.repository.models import Conversation, Message, User
 
 
 class ConversationService:

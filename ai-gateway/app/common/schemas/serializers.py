@@ -6,10 +6,10 @@ from datetime import datetime, timezone
 
 from sqlalchemy.orm import attributes
 
-from app.db.enum_utils import enum_value
-from app.db.models import Conversation, Message, User
-from app.schemas.conversation import ConversationResponse, MessageResponse
-from app.schemas.user import UserProfileResponse
+from app.repository.enum_utils import enum_value
+from app.repository.models import Conversation, Message, User
+from app.common.schemas.conversation import ConversationResponse, MessageResponse
+from app.common.schemas.user import UserProfileResponse
 
 
 def _as_utc(dt: datetime) -> datetime:

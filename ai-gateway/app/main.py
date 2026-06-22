@@ -27,10 +27,10 @@ from app.api.routes import health as health_routes
 from app.api.routes import platform_chat as platform_chat_routes
 from app.api.routes import users as users_routes
 from app.config import clear_settings_cache, get_settings
-from app.core.logging_config import setup_logging
-from app.core.startup_checks import validate_settings, verify_platform_client_config
-from app.db.session import async_session_factory, init_db, shutdown_db
-from app.services.seed import seed_default_datasets
+from app.tool.logging_config import setup_logging
+from app.tool.startup_checks import validate_settings, verify_platform_client_config
+from app.repository.session import async_session_factory, init_db, shutdown_db
+from app.service.seed import seed_default_datasets
 from app.state import AppState
 
 

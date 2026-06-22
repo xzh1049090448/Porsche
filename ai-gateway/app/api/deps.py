@@ -8,12 +8,12 @@ from fastapi import Depends, Header, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.security import decode_access_token
-from app.db.enum_utils import enum_is
-from app.db.models import User, UserStatus
-from app.db.session import get_db
-from app.services.client_registry import ClientConfig, ClientRegistry
-from app.services.model_analytics_service import is_analytics_admin
+from app.common.security import decode_access_token
+from app.repository.enum_utils import enum_is
+from app.repository.models import User, UserStatus
+from app.repository.session import get_db
+from app.service.client_registry import ClientConfig, ClientRegistry
+from app.service.model_analytics_service import is_analytics_admin
 from app.state import AppState
 
 

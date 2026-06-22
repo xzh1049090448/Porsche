@@ -14,16 +14,16 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_client_ip, get_current_user, get_state, require_authenticated_user
-from app.db.models import User
-from app.db.session import get_db
-from app.constants.platform_models import PLATFORM_MODEL_IDS
-from app.schemas.platform import (
+from app.repository.models import User
+from app.repository.session import get_db
+from app.common.constants.platform_models import PLATFORM_MODEL_IDS
+from app.common.schemas.platform import (
     PlatformChatRequest,
     PlatformCompareRequest,
     PlatformCompareResponse,
 )
-from app.services.audit_service import AuditService
-from app.services.rag_engine import DATASET_ATTRIBUTION
+from app.service.audit_service import AuditService
+from app.service.rag_engine import DATASET_ATTRIBUTION
 from app.state import AppState
 
 router = APIRouter(prefix="/api/v1/platform", tags=["platform"])

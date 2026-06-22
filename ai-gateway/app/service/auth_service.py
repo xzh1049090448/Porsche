@@ -8,10 +8,10 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.security import create_access_token, hash_password, verify_password
-from app.db.enum_utils import enum_is, enum_value
-from app.db.models import PlanType, User, UserStatus
-from app.services.sms import SmsService
+from app.common.security import create_access_token, hash_password, verify_password
+from app.repository.enum_utils import enum_is, enum_value
+from app.repository.models import PlanType, User, UserStatus
+from app.service.sms import SmsService
 
 
 class AuthService:

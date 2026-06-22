@@ -14,10 +14,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.routes.admin import verify_admin
-from app.db.models import PlanType, User, UserStatus
-from app.db.session import get_db
-from app.schemas.admin_platform import AdminUserResponse, AdminUserUpdateRequest
-from app.services.dashboard_service import DashboardService
+from app.repository.models import PlanType, User, UserStatus
+from app.repository.session import get_db
+from app.common.schemas.admin_platform import AdminUserResponse, AdminUserUpdateRequest
+from app.service.dashboard_service import DashboardService
 
 router = APIRouter(prefix="/admin/users", tags=["admin-users"], dependencies=[Depends(verify_admin)])
 

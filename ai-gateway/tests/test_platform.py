@@ -8,9 +8,9 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from app.main import app
-from app.schemas.serializers import user_profile_response
-from app.services.platform_chat import _parse_sse_chunk
-from app.db.models import PlanType, User, UserStatus
+from app.common.schemas.serializers import user_profile_response
+from app.service.platform_chat import _parse_sse_chunk
+from app.repository.models import PlanType, User, UserStatus
 
 
 def test_user_profile_response_accepts_enum_and_str_plan_type():

@@ -10,14 +10,14 @@ from fastapi import HTTPException
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.enum_utils import enum_is, enum_value
-from app.db.models import Dataset, DatasetStatus, PlanType, UsageRecord, User
-from app.schemas.openai import ChatCompletionRequest, ChatMessage
-from app.services.billing_service import BillingService
-from app.services.conversation_service import ConversationService
-from app.services.gateway import GatewayService
-from app.services.multi_model_message import encode_multi_model_replies
-from app.services.rag_engine import DATASET_ATTRIBUTION, RagEngine
+from app.repository.enum_utils import enum_is, enum_value
+from app.repository.models import Dataset, DatasetStatus, PlanType, UsageRecord, User
+from app.common.schemas.openai import ChatCompletionRequest, ChatMessage
+from app.service.billing_service import BillingService
+from app.service.conversation_service import ConversationService
+from app.service.gateway import GatewayService
+from app.service.multi_model_message import encode_multi_model_replies
+from app.service.rag_engine import DATASET_ATTRIBUTION, RagEngine
 from app.state import AppState
 
 

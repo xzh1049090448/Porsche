@@ -7,18 +7,18 @@ from typing import TYPE_CHECKING
 import httpx
 
 from app.config import Settings
-from app.services.auth_service import AuthService
-from app.services.billing_service import BillingService
-from app.services.client_registry import ClientRegistry
-from app.services.model_registry import ModelRegistry
-from app.services.rag_engine import RagEngine
-from app.services.rate_limiter import RateLimiter
-from app.services.sms import SmsService
-from app.services.upstream_pool import UpstreamKeyPool
-from app.services.usage_tracker import UsageTracker
+from app.service.auth_service import AuthService
+from app.service.billing_service import BillingService
+from app.service.client_registry import ClientRegistry
+from app.service.model_registry import ModelRegistry
+from app.service.rag_engine import RagEngine
+from app.service.rate_limiter import RateLimiter
+from app.service.sms import SmsService
+from app.service.upstream_pool import UpstreamKeyPool
+from app.service.usage_tracker import UsageTracker
 
 if TYPE_CHECKING:
-    from app.services.platform_chat import PlatformChatService
+    from app.service.platform_chat import PlatformChatService
 
 
 class AppState:
@@ -58,7 +58,7 @@ class AppState:
         self.pool.rebuild(self.models.routes, self.settings)
 
     def init_platform_chat(self) -> None:
-        from app.services.platform_chat import PlatformChatService
+        from app.service.platform_chat import PlatformChatService
 
         self.platform_chat = PlatformChatService(self, self.rag, self.billing)
 

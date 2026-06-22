@@ -11,15 +11,15 @@ import httpx
 from fastapi import HTTPException
 from loguru import logger
 
-from app.core.exceptions import UpstreamError
+from app.common.exceptions import UpstreamError
 from app.observability.metrics import REQUESTS_TOTAL
 from app.providers import anthropic as anthropic_provider
 from app.providers import gemini as gemini_provider
 from app.providers import openai_compat
-from app.schemas.openai import ChatCompletionRequest
-from app.services.client_registry import ClientConfig
-from app.services.model_registry import ModelRoute
-from app.services.upstream_pool import UpstreamKeyEntry
+from app.common.schemas.openai import ChatCompletionRequest
+from app.service.client_registry import ClientConfig
+from app.service.model_registry import ModelRoute
+from app.service.upstream_pool import UpstreamKeyEntry
 from app.state import AppState
 
 
