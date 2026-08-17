@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"context"
 	"io"
 	"net/http"
 	"strconv"
@@ -48,20 +47,35 @@ func RegisterOpenAIChat(r *gin.Engine, state *app.State) {
 				return
 			}
 			defer resp.Body.Close()
-			c.Status(resp.StatusCode)
 			for k, vals := range resp.Header {
 				for _, v := range vals {
 					c.Header(k, v)
 				}
 			}
-			if c.GetHeader("Content-Type") == "" {
+			if c.Writer.Header().Get("Content-Type") == "" {
 				c.Header("Content-Type", "text/event-stream")
 			}
-			_, _ = io.Copy(c.Writer, resp.Body)
+			c.Status(resp.StatusCode)
+			buf := make([]byte, 4096)
+			for {
+				n, readErr := resp.Body.Read(buf)
+				if n > 0 {
+					if _, err := c.Writer.Write(buf[:n]); err != nil {
+						return
+					}
+					c.Writer.Flush()
+				}
+				if readErr == io.EOF {
+					break
+				}
+				if readErr != nil {
+					return
+				}
+			}
 			return
 		}
 
-		data, err := state.Gateway.Complete(context.Background(), client, body)
+		data, err := state.Gateway.Complete(c.Request.Context(), client, body)
 		if err != nil {
 			httpx.AbortJSON(c, http.StatusBadGateway, err.Error())
 			return

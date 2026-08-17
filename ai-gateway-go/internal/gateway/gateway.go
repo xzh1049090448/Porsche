@@ -130,6 +130,9 @@ func (s *Service) Complete(ctx context.Context, client registry.ClientConfig, bo
 	if !ok {
 		return nil, fmt.Errorf("unknown model: %s", logicalModel)
 	}
+	if strings.TrimSpace(route.BaseURL) == "" {
+		return nil, fmt.Errorf("route missing base_url for model %s", logicalModel)
+	}
 
 	if route.Provider != "openai_compatible" {
 		return nil, fmt.Errorf("unsupported provider: %s", route.Provider)
@@ -154,7 +157,7 @@ func (s *Service) Complete(ctx context.Context, client registry.ClientConfig, bo
 			payload["max_tokens"] = *body.MaxTokens
 		}
 
-		status, data, err := s.forwardJSON(ctx, route.BaseURL+"/chat/completions", key.Secret, payload)
+		status, data, err := s.forwardJSON(ctx, chatCompletionsURL(route.BaseURL), key.Secret, payload)
 		if err != nil {
 			lastErr = err
 			s.pool.ReportFailure(logicalModel, true)
@@ -189,6 +192,9 @@ func (s *Service) Stream(ctx context.Context, client registry.ClientConfig, body
 	if !ok {
 		return nil, fmt.Errorf("unknown model")
 	}
+	if strings.TrimSpace(route.BaseURL) == "" {
+		return nil, fmt.Errorf("route missing base_url for model %s", logicalModel)
+	}
 	key := s.pool.NextKey(logicalModel)
 	if key == nil {
 		return nil, fmt.Errorf("no upstream keys")
@@ -207,7 +213,7 @@ func (s *Service) Stream(ctx context.Context, client registry.ClientConfig, body
 	}
 
 	b, _ := json.Marshal(payload)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, route.BaseURL+"/chat/completions", bytes.NewReader(b))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, chatCompletionsURL(route.BaseURL), bytes.NewReader(b))
 	if err != nil {
 		return nil, err
 	}
@@ -222,8 +228,15 @@ func (s *Service) Stream(ctx context.Context, client registry.ClientConfig, body
 	}
 	if resp.StatusCode >= 400 {
 		s.pool.ReportFailure(logicalModel, true)
+		raw, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		return nil, fmt.Errorf("upstream status %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
 	}
 	return resp, nil
+}
+
+func chatCompletionsURL(baseURL string) string {
+	return strings.TrimRight(strings.TrimSpace(baseURL), "/") + "/chat/completions"
 }
 
 func (s *Service) forwardJSON(ctx context.Context, url, apiKey string, payload map[string]interface{}) (int, map[string]interface{}, error) {
