@@ -40,6 +40,9 @@ cp .env.example .env
 - `config/models.yaml` — 模型路由
 - `config/clients.yaml` — 下游客户端密钥
 
+若 Python 服务使用 MySQL，请将其 `DATABASE_URL` 原样写入 Go 的 `.env`；Go 同时支持
+`mysql+aiomysql://...` 与 `mysql://...`，两端会连接同一数据库。
+
 ### 3. 运行
 
 ```bash
