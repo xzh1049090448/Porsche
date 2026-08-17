@@ -77,7 +77,17 @@ func RegisterPlatform(r *gin.Engine, state *app.State) {
 		params := body.toParams()
 		if body.Stream {
 			c.Header("Content-Type", "text/event-stream")
-			c.JSON(http.StatusNotImplemented, gin.H{"detail": "compare stream not yet implemented in go gateway"})
+			c.Header("Cache-Control", "no-cache")
+			c.Header("Connection", "keep-alive")
+			err := state.Platform.CompareStream(c.Request.Context(), state.DB, user, body.Models, params, func(b []byte) error {
+				_, werr := c.Writer.Write(b)
+				c.Writer.Flush()
+				return werr
+			})
+			if err != nil {
+				_, msg := service.StatusFromError(err)
+				_, _ = c.Writer.Write([]byte("data: {\"error\":\"" + msg + "\"}\n\n"))
+			}
 			return
 		}
 		result, err := state.Platform.Compare(c.Request.Context(), state.DB, user, body.Models, params)
