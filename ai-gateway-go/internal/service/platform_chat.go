@@ -161,6 +161,9 @@ func (p *PlatformChatService) Chat(ctx context.Context, db *gorm.DB, user *model
 }
 
 func (p *PlatformChatService) Compare(ctx context.Context, db *gorm.DB, user *models.User, modelsList []string, params ChatParams) (map[string]interface{}, error) {
+	if len(modelsList) == 0 {
+		return nil, errBadRequest("至少选择一个模型")
+	}
 	count := len(modelsList)
 	if err := p.deps.Billing.CheckAndConsumeCall(db, user, count); err != nil {
 		return nil, err
@@ -197,9 +200,70 @@ func (p *PlatformChatService) Compare(ctx context.Context, db *gorm.DB, user *mo
 		results = append(results, item)
 	}
 
+	// Keep compare conversations readable from /api/v1/conversations/:id, just
+	// like the original service: persist the submitted prompt and one aggregate
+	// assistant message containing the replies for each model.
+	var conv *models.Conversation
+	trimmed := TrimMessages(params.Messages, params.ContextWindow)
+	if params.ConversationID != nil {
+		conv, err = GetConversation(db, user, *params.ConversationID, false)
+	} else if len(trimmed) > 0 {
+		primaryModel := modelsList[0]
+		conv, err = CreateConversation(db, user, "", primaryModel, params.DatasetEnabled, params.DatasetIDs)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if conv != nil {
+		if last := lastUserMessage(trimmed); last != "" {
+			if _, err := AddMessage(db, conv, "user", last, "", false, nil, 0); err != nil {
+				return nil, err
+			}
+			if conv.Title == "新对话" {
+				conv.Title = truncateTitle(last)
+				if err := db.Save(conv).Error; err != nil {
+					return nil, err
+				}
+			}
+		}
+
+		replies := make(map[string]string, len(results))
+		totalTokens := 0
+		for _, result := range results {
+			model := fmt.Sprint(result["model"])
+			if message, ok := result["error"].(string); ok && message != "" {
+				replies[model] = "[错误] " + message
+			} else {
+				replies[model] = fmt.Sprint(result["content"])
+			}
+			if tokens, ok := result["tokens"].(int); ok {
+				totalTokens += tokens
+			}
+		}
+		payload, err := json.Marshal(replies)
+		if err != nil {
+			return nil, err
+		}
+		primaryModel := modelsList[0]
+		if _, err := AddMessage(db, conv, "assistant", "__MULTI_MODEL__"+string(payload), primaryModel, false, nil, totalTokens); err != nil {
+			return nil, err
+		}
+		user.TotalTokensUsed += totalTokens
+		if err := db.Save(user).Error; err != nil {
+			return nil, err
+		}
+		for _, result := range results {
+			model := fmt.Sprint(result["model"])
+			tokens, _ := result["tokens"].(int)
+			if err := db.Create(&models.UsageRecord{UserID: user.ID, RecordType: "chat", Tokens: tokens, Model: &model}).Error; err != nil {
+				return nil, err
+			}
+		}
+	}
+
 	out := map[string]interface{}{
 		"results":         results,
-		"conversation_id": params.ConversationID,
+		"conversation_id": conversationID(conv),
 	}
 	if params.DatasetEnabled {
 		out["dataset_attribution"] = rag.DatasetAttribution
@@ -222,7 +286,6 @@ func (p *PlatformChatService) Stream(ctx context.Context, db *gorm.DB, user *mod
 	if params.DatasetEnabled && len(datasets) == 0 {
 		return errBadRequest("启用数据集时必须选择至少一个子数据集")
 	}
-
 	trimmed := TrimMessages(params.Messages, params.ContextWindow)
 	query := lastUserQuery(trimmed)
 	ragMsgs := trimmed
@@ -243,6 +306,17 @@ func (p *PlatformChatService) Stream(ctx context.Context, db *gorm.DB, user *mod
 	}
 	if err != nil {
 		return err
+	}
+	if last := lastUserMessage(trimmed); last != "" {
+		if _, err := AddMessage(db, conv, "user", last, "", false, nil, 0); err != nil {
+			return err
+		}
+		if conv.Title == "新对话" {
+			conv.Title = truncateTitle(last)
+			if err := db.Save(conv).Error; err != nil {
+				return err
+			}
+		}
 	}
 
 	attr := (*string)(nil)
@@ -352,6 +426,24 @@ func lastUserQuery(msgs []map[string]interface{}) string {
 }
 
 func lastUserMessage(msgs []map[string]interface{}) string { return lastUserQuery(msgs) }
+
+func truncateTitle(content string) string {
+	title := []rune(strings.TrimSpace(content))
+	if len(title) > 24 {
+		title = title[:24]
+	}
+	if len(title) == 0 {
+		return "新对话"
+	}
+	return string(title)
+}
+
+func conversationID(conv *models.Conversation) interface{} {
+	if conv == nil {
+		return nil
+	}
+	return conv.ID
+}
 
 func parseSSEDelta(chunk []byte) string {
 	var parts []string
