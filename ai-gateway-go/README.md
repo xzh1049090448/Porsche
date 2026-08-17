@@ -1,8 +1,6 @@
 # ai-gateway-go
 
-Go 语言重构版 **国内大模型聚合平台 API**，与原 Python 项目 [`ai-gateway`](../ai-gateway) **路径与 JSON 契约完全对齐**，前端无需改动即可切换后端。
-
-原 `ai-gateway` 目录保持不变；本目录为独立新项目。
+Go 语言实现的 **国内大模型聚合平台 API**。服务路径与既有前端契约保持一致。
 
 ## 功能对齐
 
@@ -15,7 +13,7 @@ Go 语言重构版 **国内大模型聚合平台 API**，与原 Python 项目 [`
 | 对话 CRUD | `/api/v1/conversations/*` | ✅ |
 | 数据集列表 | `/api/v1/datasets` | ✅ |
 | 套餐/订单 | `/api/v1/billing/*` | ✅ |
-| 平台对话/对比 | `/api/v1/platform/*` | ✅（compare 流式待补） |
+| 平台对话/对比 | `/api/v1/platform/*` | ✅ |
 | 模型分析 | `/api/v1/billing/analytics/*` | ✅（图表序列简化实现） |
 | 管理端 | `/admin/*` | ✅ |
 | Prometheus | `GET /metrics` | ✅ |
@@ -35,13 +33,20 @@ cp .env.example .env
 # 填写 DEEPSEEK_API_KEYS、GLM_API_KEYS、JWT_SECRET_KEY、ADMIN_TOKEN 等
 ```
 
-配置文件与 Python 版共用相同 YAML：
+配置文件：
 
 - `config/models.yaml` — 模型路由
 - `config/clients.yaml` — 下游客户端密钥
 
-若 Python 服务使用 MySQL，请将其 `DATABASE_URL` 原样写入 Go 的 `.env`；Go 同时支持
-`mysql+aiomysql://...` 与 `mysql://...`，两端会连接同一数据库。
+如需使用既有 MySQL 数据，请在 `.env` 中设置原有的连接串。Go 同时支持
+`mysql+aiomysql://...` 与 `mysql://...`，例如：
+
+```dotenv
+DATABASE_URL=mysql+aiomysql://platform:platform@127.0.0.1:3306/platform
+```
+
+删除旧代码目录不会删除 MySQL 数据：数据保存在外部 MySQL 服务或 Docker 命名卷中。不要执行
+`docker compose down -v` 或 `docker volume rm`，否则才会删除 Docker 卷中的数据库文件。
 
 ### 3. 运行
 
@@ -59,17 +64,7 @@ go run ./cmd/server
 - 手机号：`13800138000`
 - 密码：`Porsche@2026`
 
-## 与 Python 版的差异（实现层）
-
-| 项目 | Python 版 | Go 版 |
-|------|-----------|-------|
-| Web 框架 | FastAPI | Gin |
-| ORM | SQLAlchemy async | GORM |
-| 向量检索 | ChromaDB | 本地 JSON + 关键词检索（API 行为一致，精度略低） |
-| 模型分析图表 | 完整时序聚合 | 汇总/排行已实现，时序 series 返回空数组 |
-| compare 流式 | SSE 多路输出 | 暂返回 501，非流式正常 |
-
-数据库文件默认 `./data/platform.db`（SQLite），可与 Python 版共用同一库文件（表结构兼容）。
+数据库默认使用 `./data/platform.db`（SQLite）。生产环境建议配置 MySQL；已有 MySQL 数据库可直接复用。
 
 ## 测试
 
