@@ -77,7 +77,7 @@ func RequireUser(state *app.State) gin.HandlerFunc {
 			return
 		}
 		var user models.User
-		if err := state.DB.First(&user, id).Error; err != nil || user.Status != models.UserStatusActive {
+		if err := state.DB.First(&user, id).Error; err != nil || !user.Status.IsActive() {
 			httpx.AbortJSON(c, http.StatusUnauthorized, "用户不存在或已被禁用")
 			return
 		}

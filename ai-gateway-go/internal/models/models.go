@@ -1,6 +1,7 @@
 package models
 
 import (
+	"strings"
 	"time"
 )
 
@@ -10,6 +11,12 @@ const (
 	UserStatusActive   UserStatus = "active"
 	UserStatusDisabled UserStatus = "disabled"
 )
+
+// IsActive accepts legacy enum names stored by the Python service (for
+// example, "ACTIVE") as well as the canonical lower-case value.
+func (s UserStatus) IsActive() bool {
+	return strings.EqualFold(strings.TrimSpace(string(s)), string(UserStatusActive))
+}
 
 type PlanType string
 

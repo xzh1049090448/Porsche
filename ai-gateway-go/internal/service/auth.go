@@ -150,7 +150,7 @@ func HashIDCard(idCard string) string {
 }
 
 func ensureActive(user *models.User) error {
-	if user.Status != models.UserStatusActive {
+	if !user.Status.IsActive() {
 		return errForbidden("账号已被禁用")
 	}
 	return nil
