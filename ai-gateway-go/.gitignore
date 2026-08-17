@@ -1,6 +1,0 @@
-.env
-data/
-*.exe
-*.test
-/vendor/
-.idea/
