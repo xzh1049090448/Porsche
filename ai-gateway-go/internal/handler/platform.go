@@ -103,7 +103,7 @@ func RegisterPlatform(r *gin.Engine, state *app.State) {
 type platformChatBody struct {
 	Model          string                   `json:"model" binding:"required"`
 	Messages       []map[string]interface{} `json:"messages" binding:"required"`
-	ConversationID *uint                    `json:"conversation_id"`
+	ConversationID *int                     `json:"conversation_id"`
 	Temperature    *float64                 `json:"temperature"`
 	MaxTokens      *int                     `json:"max_tokens"`
 	ContextWindow  *int                     `json:"context_window"`
@@ -128,7 +128,7 @@ func (b platformChatBody) toParams() service.ChatParams {
 type platformCompareBody struct {
 	Models         []string                 `json:"models" binding:"required"`
 	Messages       []map[string]interface{} `json:"messages" binding:"required"`
-	ConversationID *uint                    `json:"conversation_id"`
+	ConversationID *int                     `json:"conversation_id"`
 	Temperature    *float64                 `json:"temperature"`
 	MaxTokens      *int                     `json:"max_tokens"`
 	ContextWindow  *int                     `json:"context_window"`

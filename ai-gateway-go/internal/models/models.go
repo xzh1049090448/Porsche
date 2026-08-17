@@ -56,7 +56,7 @@ const (
 )
 
 type User struct {
-	ID                 uint       `gorm:"primaryKey" json:"id"`
+	ID                 int        `gorm:"primaryKey;type:int" json:"id"`
 	Phone              string     `gorm:"size:20;uniqueIndex" json:"phone"`
 	PasswordHash       *string    `gorm:"size:255" json:"-"`
 	Nickname           *string    `gorm:"size:64" json:"nickname"`
@@ -77,8 +77,8 @@ type User struct {
 }
 
 type Conversation struct {
-	ID             uint      `gorm:"primaryKey" json:"id"`
-	UserID         uint      `gorm:"index" json:"user_id"`
+	ID             int       `gorm:"primaryKey;type:int" json:"id"`
+	UserID         int       `gorm:"type:int;index" json:"user_id"`
 	Title          string    `gorm:"size:256;default:新对话" json:"title"`
 	Model          *string   `gorm:"size:128" json:"model"`
 	DatasetEnabled bool      `gorm:"default:false" json:"dataset_enabled"`
@@ -89,8 +89,8 @@ type Conversation struct {
 }
 
 type Message struct {
-	ID                  uint      `gorm:"primaryKey" json:"id"`
-	ConversationID      uint      `gorm:"index" json:"conversation_id"`
+	ID                  int       `gorm:"primaryKey;type:int" json:"id"`
+	ConversationID      int       `gorm:"type:int;index" json:"conversation_id"`
 	Role                string    `gorm:"size:32" json:"role"`
 	Content             string    `gorm:"type:text" json:"content"`
 	Model               *string   `gorm:"size:128" json:"model"`
@@ -101,7 +101,7 @@ type Message struct {
 }
 
 type Dataset struct {
-	ID                uint            `gorm:"primaryKey" json:"id"`
+	ID                int             `gorm:"primaryKey;type:int" json:"id"`
 	Name              string          `gorm:"size:128" json:"name"`
 	Slug              string          `gorm:"size:64;uniqueIndex" json:"slug"`
 	Category          DatasetCategory `gorm:"size:64" json:"category"`
@@ -119,8 +119,8 @@ type Dataset struct {
 }
 
 type DatasetVersion struct {
-	ID                uint      `gorm:"primaryKey" json:"id"`
-	DatasetID         uint      `gorm:"index;uniqueIndex:idx_dataset_version" json:"dataset_id"`
+	ID                int       `gorm:"primaryKey;type:int" json:"id"`
+	DatasetID         int       `gorm:"type:int;index;uniqueIndex:idx_dataset_version" json:"dataset_id"`
 	Version           string    `gorm:"size:32;uniqueIndex:idx_dataset_version" json:"version"`
 	FilePath          *string   `gorm:"size:512" json:"file_path,omitempty"`
 	TokenCount        int       `gorm:"default:0" json:"token_count"`
@@ -131,19 +131,19 @@ type DatasetVersion struct {
 }
 
 type UsageRecord struct {
-	ID         uint      `gorm:"primaryKey" json:"id"`
-	UserID     uint      `gorm:"index" json:"user_id"`
+	ID         int       `gorm:"primaryKey;type:int" json:"id"`
+	UserID     int       `gorm:"type:int;index" json:"user_id"`
 	RecordType string    `gorm:"size:32" json:"record_type"`
 	Tokens     int       `gorm:"default:0" json:"tokens"`
 	Model      *string   `gorm:"size:128" json:"model"`
-	DatasetID  *uint     `json:"dataset_id"`
+	DatasetID  *int      `gorm:"type:int" json:"dataset_id"`
 	CreatedAt  time.Time `gorm:"index" json:"created_at"`
 }
 
 type Order struct {
-	ID               uint        `gorm:"primaryKey" json:"id"`
+	ID               int         `gorm:"primaryKey;type:int" json:"id"`
 	OrderNo          string      `gorm:"size:64;uniqueIndex" json:"order_no"`
-	UserID           uint        `gorm:"index" json:"user_id"`
+	UserID           int         `gorm:"type:int;index" json:"user_id"`
 	PlanType         PlanType    `gorm:"size:32" json:"plan_type"`
 	Amount           float64     `gorm:"default:0" json:"amount"`
 	Status           OrderStatus `gorm:"size:32;default:pending" json:"status"`
@@ -153,8 +153,8 @@ type Order struct {
 }
 
 type AuditLog struct {
-	ID        uint      `gorm:"primaryKey" json:"id"`
-	UserID    *uint     `gorm:"index" json:"user_id"`
+	ID        int       `gorm:"primaryKey;type:int" json:"id"`
+	UserID    *int      `gorm:"type:int;index" json:"user_id"`
 	Action    string    `gorm:"size:64;index" json:"action"`
 	Resource  *string   `gorm:"size:128" json:"resource"`
 	Detail    JSONMap   `gorm:"type:json" json:"detail"`
@@ -163,7 +163,7 @@ type AuditLog struct {
 }
 
 type ModelHealth struct {
-	ID             uint       `gorm:"primaryKey" json:"id"`
+	ID             int        `gorm:"primaryKey;type:int" json:"id"`
 	ModelName      string     `gorm:"size:128;uniqueIndex" json:"model_name"`
 	Provider       string     `gorm:"size:64" json:"provider"`
 	IsAvailable    bool       `gorm:"default:true" json:"is_available"`

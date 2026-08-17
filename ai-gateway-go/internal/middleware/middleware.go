@@ -50,7 +50,7 @@ func RequireUserID(state *app.State) gin.HandlerFunc {
 			httpx.AbortJSON(c, http.StatusUnauthorized, "Token无效或已过期")
 			return
 		}
-		c.Set(ContextUserID, uint(id))
+		c.Set(ContextUserID, int(id))
 		c.Next()
 	}
 }
@@ -124,8 +124,8 @@ func CurrentUser(c *gin.Context) *models.User {
 	return user
 }
 
-func CurrentUserID(c *gin.Context) uint {
+func CurrentUserID(c *gin.Context) int {
 	v, _ := c.Get(ContextUserID)
-	id, _ := v.(uint)
+	id, _ := v.(int)
 	return id
 }

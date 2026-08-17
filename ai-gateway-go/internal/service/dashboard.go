@@ -38,7 +38,7 @@ func GetDashboard(db *gorm.DB) map[string]interface{} {
 
 	datasetUsage := map[string]int64{}
 	var dsRows []struct {
-		DatasetID uint
+		DatasetID int
 		Count     int64
 	}
 	db.Model(&models.UsageRecord{}).Select("dataset_id, count(*) as count").
@@ -71,7 +71,7 @@ func GetDashboard(db *gorm.DB) map[string]interface{} {
 	}
 }
 
-func UserBehavior(db *gorm.DB, userID uint) map[string]interface{} {
+func UserBehavior(db *gorm.DB, userID int) map[string]interface{} {
 	var modelRows []struct {
 		Model  string
 		Calls  int64
@@ -94,7 +94,7 @@ func UserBehavior(db *gorm.DB, userID uint) map[string]interface{} {
 
 	datasetUsage := map[string]int64{}
 	var dsRows []struct {
-		DatasetID uint
+		DatasetID int
 		Count     int64
 	}
 	db.Model(&models.UsageRecord{}).

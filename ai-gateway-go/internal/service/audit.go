@@ -9,7 +9,7 @@ type AuditService struct{}
 
 func NewAuditService() *AuditService { return &AuditService{} }
 
-func (a *AuditService) Log(db *gorm.DB, action string, userID *uint, resource string, detail models.JSONMap, ip string) error {
+func (a *AuditService) Log(db *gorm.DB, action string, userID *int, resource string, detail models.JSONMap, ip string) error {
 	var resourcePtr *string
 	if resource != "" {
 		resourcePtr = &resource

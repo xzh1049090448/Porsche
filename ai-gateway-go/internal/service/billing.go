@@ -96,7 +96,7 @@ func (b *BillingService) CreateOrder(db *gorm.DB, user *models.User, planType st
 	return &order, db.Create(&order).Error
 }
 
-func (b *BillingService) PayOrder(db *gorm.DB, user *models.User, orderID uint) (*models.Order, error) {
+func (b *BillingService) PayOrder(db *gorm.DB, user *models.User, orderID int) (*models.Order, error) {
 	if !b.settings.BillingAllowMockPayment {
 		return nil, errForbidden("在线支付未开通，请通过支付渠道完成付款后由系统确认")
 	}
@@ -121,7 +121,7 @@ func (b *BillingService) PayOrder(db *gorm.DB, user *models.User, orderID uint) 
 	return &order, nil
 }
 
-func (b *BillingService) RequestInvoice(db *gorm.DB, user *models.User, orderID uint) (*models.Order, error) {
+func (b *BillingService) RequestInvoice(db *gorm.DB, user *models.User, orderID int) (*models.Order, error) {
 	var order models.Order
 	if err := db.Where("id = ? AND user_id = ?", orderID, user.ID).First(&order).Error; err != nil {
 		return nil, errNotFound("订单不存在")

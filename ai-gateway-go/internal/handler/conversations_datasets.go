@@ -62,7 +62,7 @@ func RegisterConversations(r *gin.Engine, state *app.State) {
 	g.GET("/:id", func(c *gin.Context) {
 		user := middleware.CurrentUser(c)
 		id, _ := strconv.ParseUint(c.Param("id"), 10, 64)
-		conv, err := service.GetConversation(state.DB, user, uint(id), true)
+		conv, err := service.GetConversation(state.DB, user, int(id), true)
 		if err != nil {
 			code, msg := service.StatusFromError(err)
 			httpx.AbortJSON(c, code, msg)
@@ -81,9 +81,9 @@ func RegisterConversations(r *gin.Engine, state *app.State) {
 		var conv *models.Conversation
 		var err error
 		if body.Title != nil && *body.Title != "" {
-			conv, err = service.UpdateConversationTitle(state.DB, user, uint(id), *body.Title)
+			conv, err = service.UpdateConversationTitle(state.DB, user, int(id), *body.Title)
 		} else {
-			conv, err = service.GetConversation(state.DB, user, uint(id), true)
+			conv, err = service.GetConversation(state.DB, user, int(id), true)
 		}
 		if err != nil {
 			code, msg := service.StatusFromError(err)
@@ -96,7 +96,7 @@ func RegisterConversations(r *gin.Engine, state *app.State) {
 	g.DELETE("/:id", func(c *gin.Context) {
 		user := middleware.CurrentUser(c)
 		id, _ := strconv.ParseUint(c.Param("id"), 10, 64)
-		if err := service.DeleteConversation(state.DB, user, uint(id)); err != nil {
+		if err := service.DeleteConversation(state.DB, user, int(id)); err != nil {
 			code, msg := service.StatusFromError(err)
 			httpx.AbortJSON(c, code, msg)
 			return
@@ -107,7 +107,7 @@ func RegisterConversations(r *gin.Engine, state *app.State) {
 	g.GET("/:id/export/markdown", func(c *gin.Context) {
 		user := middleware.CurrentUser(c)
 		id, _ := strconv.ParseUint(c.Param("id"), 10, 64)
-		conv, err := service.GetConversation(state.DB, user, uint(id), true)
+		conv, err := service.GetConversation(state.DB, user, int(id), true)
 		if err != nil {
 			code, msg := service.StatusFromError(err)
 			httpx.AbortJSON(c, code, msg)

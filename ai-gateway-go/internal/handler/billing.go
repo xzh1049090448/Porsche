@@ -45,7 +45,7 @@ func RegisterBilling(r *gin.Engine, state *app.State) {
 	g.POST("/orders/:id/pay", func(c *gin.Context) {
 		user := middleware.CurrentUser(c)
 		id, _ := strconv.ParseUint(c.Param("id"), 10, 64)
-		order, err := state.Billing.PayOrder(state.DB, user, uint(id))
+		order, err := state.Billing.PayOrder(state.DB, user, int(id))
 		if err != nil {
 			code, msg := service.StatusFromError(err)
 			httpx.AbortJSON(c, code, msg)
@@ -68,7 +68,7 @@ func RegisterBilling(r *gin.Engine, state *app.State) {
 	g.POST("/invoice", func(c *gin.Context) {
 		user := middleware.CurrentUser(c)
 		var body struct {
-			OrderID uint `json:"order_id" binding:"required"`
+			OrderID int `json:"order_id" binding:"required"`
 		}
 		if err := c.ShouldBindJSON(&body); err != nil {
 			httpx.AbortJSON(c, http.StatusUnprocessableEntity, err.Error())

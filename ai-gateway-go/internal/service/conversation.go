@@ -29,7 +29,7 @@ func CreateConversation(db *gorm.DB, user *models.User, title, model string, dat
 	return &conv, db.Create(&conv).Error
 }
 
-func GetConversation(db *gorm.DB, user *models.User, id uint, withMessages bool) (*models.Conversation, error) {
+func GetConversation(db *gorm.DB, user *models.User, id int, withMessages bool) (*models.Conversation, error) {
 	q := db.Where("id = ? AND user_id = ?", id, user.ID)
 	if withMessages {
 		q = q.Preload("Messages", func(tx *gorm.DB) *gorm.DB {
@@ -53,7 +53,7 @@ func ListConversations(db *gorm.DB, user *models.User, skip, limit int) ([]model
 	return items, total, err
 }
 
-func UpdateConversationTitle(db *gorm.DB, user *models.User, id uint, title string) (*models.Conversation, error) {
+func UpdateConversationTitle(db *gorm.DB, user *models.User, id int, title string) (*models.Conversation, error) {
 	conv, err := GetConversation(db, user, id, true)
 	if err != nil {
 		return nil, err
@@ -62,7 +62,7 @@ func UpdateConversationTitle(db *gorm.DB, user *models.User, id uint, title stri
 	return conv, db.Save(conv).Error
 }
 
-func DeleteConversation(db *gorm.DB, user *models.User, id uint) error {
+func DeleteConversation(db *gorm.DB, user *models.User, id int) error {
 	conv, err := GetConversation(db, user, id, false)
 	if err != nil {
 		return err

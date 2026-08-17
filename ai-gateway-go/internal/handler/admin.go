@@ -151,7 +151,7 @@ func RegisterAdminUsers(r *gin.Engine, state *app.State) {
 			httpx.AbortJSON(c, http.StatusNotFound, "用户不存在")
 			return
 		}
-		c.JSON(http.StatusOK, service.UserBehavior(state.DB, uint(id)))
+		c.JSON(http.StatusOK, service.UserBehavior(state.DB, int(id)))
 	})
 }
 

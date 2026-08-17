@@ -70,7 +70,7 @@ func (p *PlatformChatService) validateDatasets(db *gorm.DB, user *models.User, i
 type ChatParams struct {
 	Model          string
 	Messages       []map[string]interface{}
-	ConversationID *uint
+	ConversationID *int
 	Temperature    *float64
 	MaxTokens      *int
 	ContextWindow  *int
