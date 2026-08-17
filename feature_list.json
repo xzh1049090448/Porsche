@@ -1,0 +1,79 @@
+{
+  "project": "Porsche Go AI Gateway",
+  "last_updated": "2026-08-17",
+  "rules": {
+    "single_active_feature": true,
+    "passing_requires_evidence": true,
+    "do_not_skip_verification": true
+  },
+  "status_legend": {
+    "not_started": "尚未开始验证或实现。",
+    "in_progress": "当前唯一正在处理的功能。",
+    "blocked": "已记录外部阻塞，不能继续验证。",
+    "passing": "验证命令和证据均已记录。"
+  },
+  "features": [
+    {
+      "id": "go-001",
+      "priority": 1,
+      "area": "runtime",
+      "title": "Go 服务基础验证",
+      "user_visible_behavior": "服务可编译、测试通过，启动后 GET /health 返回 200。",
+      "status": "blocked",
+      "verification": [
+        "go test ./...",
+        "go run ./cmd/server",
+        "curl -i http://127.0.0.1:8000/health"
+      ],
+      "evidence": [
+        "仓库布局和 git diff 检查已通过；本机缺少 go 命令，尚未运行 Go 测试。"
+      ],
+      "notes": "在部署服务器安装或确认 Go 1.22+ 后优先验证。"
+    },
+    {
+      "id": "go-002",
+      "priority": 2,
+      "area": "database",
+      "title": "既有 MySQL 数据兼容",
+      "user_visible_behavior": "Go 服务使用原有 DATABASE_URL 后可读取已有用户、对话与计费数据。",
+      "status": "not_started",
+      "verification": [
+        "设置既有 MySQL DATABASE_URL",
+        "启动服务并登录现有账号",
+        "读取已有对话和用户资料"
+      ],
+      "evidence": [],
+      "notes": "禁止删除 Docker 数据卷。"
+    },
+    {
+      "id": "go-003",
+      "priority": 3,
+      "area": "platform-chat",
+      "title": "平台模型对话与 SSE",
+      "user_visible_behavior": "POST /api/v1/platform/chat/completions 能返回非流式结果或持续输出 SSE 数据。",
+      "status": "not_started",
+      "verification": [
+        "使用有效 Bearer Token 调用非流式请求",
+        "以 stream=true 调用并确认收到 meta、chunk 和 done SSE 事件",
+        "确认上游异常会返回明确错误而非无限等待"
+      ],
+      "evidence": [],
+      "notes": "需使用可用模型密钥和反向代理的 SSE 配置完成验证。"
+    },
+    {
+      "id": "go-004",
+      "priority": 4,
+      "area": "gateway",
+      "title": "OpenAI 兼容网关",
+      "user_visible_behavior": "POST /v1/chat/completions 能将请求路由到已配置上游模型。",
+      "status": "not_started",
+      "verification": [
+        "go test ./...",
+        "携带客户端密钥调用 /v1/chat/completions",
+        "验证 stream=true 响应可持续读取"
+      ],
+      "evidence": [],
+      "notes": "需要有效 clients.yaml、models.yaml 和上游 API 密钥。"
+    }
+  ]
+}

@@ -1,21 +1,40 @@
 # Agent Instructions
 
-Porsche monorepo — see [README.md](README.md) for project overview and subproject entry points.
+Porsche 是一个位于仓库根目录的 Go 模型聚合网关。入口为 `cmd/server/main.go`，业务代码位于 `internal/`，运行配置位于 `config/`。
 
-## Project conventions
+## 开工流程
 
-Backend module layering (api / common / service / repository / task / tool). See [`docs/conventions/module-structure.md`](docs/conventions/module-structure.md).
+开始任何改动前：
 
-## Agent skills
+1. 用 `pwd` 确认位于仓库根目录。
+2. 阅读 `progress.md`、`feature_list.json` 与最近 5 条提交。
+3. 运行 `./init.sh`；若基础验证失败，先记录并修复基础状态。
+4. 一次只将一个功能设为 `in_progress`。
 
-### Issue tracker
+## 项目命令
 
-GitHub Issues on `xzh1049090448/Porsche`; external PRs are not a triage surface. See `docs/agents/issue-tracker.md`.
+- 安装/同步依赖：`go mod tidy`
+- 验证：`go test ./...`
+- 启动：`go run ./cmd/server`
+- 构建镜像：`docker build -t ai-gateway-go .`
 
-### Triage labels
+## 数据库安全
 
-Five canonical roles mapped 1:1 (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). See `docs/agents/triage-labels.md`.
+- 生产环境通过 `.env` 的 `DATABASE_URL` 连接既有 MySQL。
+- 可直接使用 `mysql+aiomysql://...` 或 `mysql://...` URL。
+- 不得执行 `docker compose down -v` 或 `docker volume rm`；它们可能删除 MySQL 命名卷中的数据。
 
-### Domain docs
+## 工作规则
 
-Multi-context monorepo — see `CONTEXT-MAP.md` for per-subproject `CONTEXT.md` files. See `docs/agents/domain.md`.
+- 不要因代码已存在就标记功能完成；必须运行并记录验证证据。
+- 不要在未验证或失败的基础状态上叠加无关改动。
+- 保持 API 路径和 JSON 契约向后兼容，除非用户明确要求变更。
+- 不提交 `.env`、`data/` 或 Harness 日志文件。
+
+## 完成与收尾
+
+一个功能只有在实现、验证命令和证据均已记录后才能标为 `passing`。结束会话前：
+
+1. 更新 `progress.md`、`feature_list.json` 与必要时的 `session-handoff.md`。
+2. 记录未解决风险和下一步。
+3. 仅提交本轮目标相关的文件。
