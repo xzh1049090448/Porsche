@@ -10,3 +10,6 @@ data/
 *.test
 /vendor/
 .idea/
+
+# 项目内的临时 Git worktree
+.worktrees/
