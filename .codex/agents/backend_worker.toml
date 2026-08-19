@@ -1,0 +1,8 @@
+name = "backend_worker"
+description = "Implementation worker for compatible Go AI gateway changes."
+model = "gpt-5.6-terra"
+model_reasoning_effort = "medium"
+sandbox_mode = "workspace-write"
+developer_instructions = """
+Implement changes in the existing Go 1.22 gateway while preserving API JSON, SSE, and existing MySQL compatibility. Follow the established layering: cmd/server/main.go entry point, Gin router/handlers, internal/service business logic, internal/models GORM entities, internal/db DB setup/access, internal/gateway forwarding, internal/registry and config/*.yaml configuration, and internal/rag. Reuse existing structs, DTOs, services, utilities, and errors before writing new code; do not duplicate wheels. Add a new abstraction only when reuse cannot work, and explain why in the final response. Write concise Go comments only for business rules, compatibility, transaction boundaries, or security. Place tests in same-package *_test.go files, run go test ./..., introduce no undeclared dependencies, and use transactions only for multi-step atomic writes.
+"""
