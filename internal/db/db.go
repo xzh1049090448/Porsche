@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/glebarez/sqlite"
 	drivermysql "github.com/go-sql-driver/mysql"
 	"github.com/porsche/ai-gateway-go/internal/models"
-	"github.com/glebarez/sqlite"
 	gormmysql "gorm.io/driver/mysql"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
@@ -62,17 +62,17 @@ func Open(databaseURL string, appEnv string) (*gorm.DB, error) {
 		return nil, err
 	}
 
-	if err := gdb.AutoMigrate(
-		&models.User{},
-		&models.Conversation{},
-		&models.Message{},
-		&models.Dataset{},
-		&models.DatasetVersion{},
-		&models.UsageRecord{},
-		&models.Order{},
-		&models.AuditLog{},
-		&models.ModelHealth{},
-	); err != nil {
+	// The existing MySQL schema is shared with the retired Python service.
+	// Only the gateway-owned table may be created there; mutating legacy tables
+	// would be an unsafe, implicit data migration. SQLite remains self-contained.
+	migrate := []interface{}{&models.GatewayAPIToken{}}
+	if !strings.HasPrefix(url, "mysql") {
+		migrate = append([]interface{}{
+			&models.User{}, &models.Conversation{}, &models.Message{}, &models.Dataset{}, &models.DatasetVersion{},
+			&models.UsageRecord{}, &models.Order{}, &models.AuditLog{}, &models.ModelHealth{},
+		}, migrate...)
+	}
+	if err := gdb.AutoMigrate(migrate...); err != nil {
 		return nil, err
 	}
 

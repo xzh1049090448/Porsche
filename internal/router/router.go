@@ -22,6 +22,7 @@ func New(state *app.State) *gin.Engine {
 
 	handler.RegisterHealth(r, state)
 	handler.RegisterOpenAIChat(r, state)
+	handler.RegisterGatewayTokens(r, state)
 	handler.RegisterAuth(r, state)
 	handler.RegisterUsers(r, state)
 	handler.RegisterConversations(r, state)

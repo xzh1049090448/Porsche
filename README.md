@@ -7,7 +7,8 @@ Go 语言实现的 **国内大模型聚合平台 API**。服务路径与既有�
 | 模块 | 路径前缀 | 状态 |
 |------|----------|------|
 | 健康检查 | `GET /health` | ✅ |
-| OpenAI 兼容网关 | `POST /v1/chat/completions` | ✅ |
+| OpenAI 兼容网关 | `GET /v1/models`、`POST /v1/chat/completions` | ✅ |
+| 网关 API Token | `/api/v1/tokens` | ✅ |
 | 用户认证 | `/api/v1/auth/*` | ✅ |
 | 用户资料 | `/api/v1/users/*` | ✅ |
 | 对话 CRUD | `/api/v1/conversations/*` | ✅ |
@@ -36,6 +37,8 @@ cp .env.example .env
 
 - `config/models.yaml` — 模型路由
 - `config/clients.yaml` — 下游客户端密钥
+
+网关调用使用用户在 `POST /api/v1/tokens` 创建的 `sk-gw-...` API Token；完整密钥仅在创建响应中返回一次，数据库只保存 SHA-256 哈希。旧的 `config/clients.yaml` 静态客户端默认不再接受；如需迁移期间兼容，必须显式设置 `GATEWAY_ALLOW_LEGACY_STATIC_CLIENTS=true`。
 
 如需使用既有 MySQL 数据，请在 `.env` 中设置原有的连接串。Go 同时支持
 `mysql+aiomysql://...` 与 `mysql://...`，例如：

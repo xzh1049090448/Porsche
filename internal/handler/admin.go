@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"io"
 	"net/http"
 	"strconv"
 
@@ -12,76 +11,11 @@ import (
 	"github.com/porsche/ai-gateway-go/internal/httpx"
 	"github.com/porsche/ai-gateway-go/internal/middleware"
 	"github.com/porsche/ai-gateway-go/internal/models"
-	"github.com/porsche/ai-gateway-go/internal/registry"
 	"github.com/porsche/ai-gateway-go/internal/service"
 )
 
 func RegisterOpenAIChat(r *gin.Engine, state *app.State) {
-	r.POST("/v1/chat/completions", func(c *gin.Context) {
-		secret := httpx.BearerToken(c)
-		if secret == "" {
-			httpx.AbortJSON(c, http.StatusUnauthorized, "Missing or invalid Authorization header")
-			return
-		}
-		client, ok := state.Clients.GetBySecret(secret)
-		if !ok {
-			httpx.AbortJSON(c, http.StatusUnauthorized, "Invalid API key")
-			return
-		}
-		ip := httpx.ClientIP(c, state.Settings.TrustProxyHeaders)
-		if !registry.IPAllowed(client, ip) {
-			httpx.AbortJSON(c, http.StatusForbidden, "IP not allowed")
-			return
-		}
-
-		var body gateway.ChatCompletionRequest
-		if err := c.ShouldBindJSON(&body); err != nil {
-			httpx.AbortJSON(c, http.StatusUnprocessableEntity, err.Error())
-			return
-		}
-
-		if body.Stream {
-			resp, err := state.Gateway.Stream(c.Request.Context(), client, body)
-			if err != nil {
-				httpx.AbortJSON(c, http.StatusBadGateway, err.Error())
-				return
-			}
-			defer resp.Body.Close()
-			for k, vals := range resp.Header {
-				for _, v := range vals {
-					c.Header(k, v)
-				}
-			}
-			if c.Writer.Header().Get("Content-Type") == "" {
-				c.Header("Content-Type", "text/event-stream")
-			}
-			c.Status(resp.StatusCode)
-			buf := make([]byte, 4096)
-			for {
-				n, readErr := resp.Body.Read(buf)
-				if n > 0 {
-					if _, err := c.Writer.Write(buf[:n]); err != nil {
-						return
-					}
-					c.Writer.Flush()
-				}
-				if readErr == io.EOF {
-					break
-				}
-				if readErr != nil {
-					return
-				}
-			}
-			return
-		}
-
-		data, err := state.Gateway.Complete(c.Request.Context(), client, body)
-		if err != nil {
-			httpx.AbortJSON(c, http.StatusBadGateway, err.Error())
-			return
-		}
-		c.JSON(http.StatusOK, data)
-	})
+	registerGatewayRoutes(r, state)
 }
 
 func RegisterAdminUsers(r *gin.Engine, state *app.State) {
@@ -119,11 +53,11 @@ func RegisterAdminUsers(r *gin.Engine, state *app.State) {
 			return
 		}
 		var body struct {
-			Status         *string  `json:"status"`
-			PlanType       *string  `json:"plan_type"`
-			AllowedModels  []string `json:"allowed_models"`
-			AllowedDatasets []int   `json:"allowed_datasets"`
-			DailyCallLimit *int     `json:"daily_call_limit"`
+			Status          *string  `json:"status"`
+			PlanType        *string  `json:"plan_type"`
+			AllowedModels   []string `json:"allowed_models"`
+			AllowedDatasets []int    `json:"allowed_datasets"`
+			DailyCallLimit  *int     `json:"daily_call_limit"`
 		}
 		_ = c.ShouldBindJSON(&body)
 		if body.Status != nil {

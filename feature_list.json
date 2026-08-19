@@ -66,14 +66,16 @@
       "area": "gateway",
       "title": "OpenAI 兼容网关",
       "user_visible_behavior": "POST /v1/chat/completions 能将请求路由到已配置上游模型。",
-      "status": "not_started",
+      "status": "in_progress",
       "verification": [
-        "go test ./...",
-        "携带客户端密钥调用 /v1/chat/completions",
-        "验证 stream=true 响应可持续读取"
+        "GOCACHE=/private/tmp/porsche-go-build-cache go test -count=1 ./...",
+        "使用数据库生成的 sk-gw Token 调用 GET /v1/models 并验证 ACL 过滤",
+        "验证模型/IP/过期/撤销拒绝发生在上游调用前"
       ],
-      "evidence": [],
-      "notes": "需要有效 clients.yaml、models.yaml 和上游 API 密钥。"
+      "evidence": [
+        "2026-08-19 全量 Go 测试通过；router/service 测试覆盖 Token 哈希、ACL、状态/过期、所有者禁用与伪造 XFF 拒绝。"
+      ],
+      "notes": "真实上游流式联调仍需要部署环境的模型 API 密钥。"
     }
   ]
 }

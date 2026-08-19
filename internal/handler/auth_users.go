@@ -34,7 +34,7 @@ func RegisterAuth(r *gin.Engine, state *app.State) {
 			httpx.AbortJSON(c, http.StatusUnprocessableEntity, err.Error())
 			return
 		}
-		ip := httpx.ClientIP(c, state.Settings.TrustProxyHeaders)
+		ip := httpx.ClientIP(c, state.Settings.TrustProxyHeaders, state.Settings.TrustedProxyCIDRs)
 		if err := state.SMS.CheckSendAllowed(body.Phone, ip); err != nil {
 			code, msg := service.StatusFromError(err)
 			httpx.AbortJSON(c, code, msg)
@@ -69,7 +69,7 @@ func RegisterAuth(r *gin.Engine, state *app.State) {
 			return
 		}
 		uid := user.ID
-		_ = state.Audit.Log(state.DB, "user.register", &uid, "", nil, httpx.ClientIP(c, state.Settings.TrustProxyHeaders))
+		_ = state.Audit.Log(state.DB, "user.register", &uid, "", nil, httpx.ClientIP(c, state.Settings.TrustProxyHeaders, state.Settings.TrustedProxyCIDRs))
 		c.JSON(http.StatusOK, gin.H{
 			"access_token": token,
 			"token_type":   "bearer",
@@ -94,7 +94,7 @@ func RegisterAuth(r *gin.Engine, state *app.State) {
 			return
 		}
 		uid := user.ID
-		_ = state.Audit.Log(state.DB, "user.login", &uid, "", map[string]interface{}{"method": "password"}, httpx.ClientIP(c, state.Settings.TrustProxyHeaders))
+		_ = state.Audit.Log(state.DB, "user.login", &uid, "", map[string]interface{}{"method": "password"}, httpx.ClientIP(c, state.Settings.TrustProxyHeaders, state.Settings.TrustedProxyCIDRs))
 		c.JSON(http.StatusOK, gin.H{
 			"access_token": token,
 			"token_type":   "bearer",
@@ -122,7 +122,7 @@ func RegisterAuth(r *gin.Engine, state *app.State) {
 			return
 		}
 		uid := user.ID
-		_ = state.Audit.Log(state.DB, "user.login", &uid, "", map[string]interface{}{"method": "code"}, httpx.ClientIP(c, state.Settings.TrustProxyHeaders))
+		_ = state.Audit.Log(state.DB, "user.login", &uid, "", map[string]interface{}{"method": "code"}, httpx.ClientIP(c, state.Settings.TrustProxyHeaders, state.Settings.TrustedProxyCIDRs))
 		c.JSON(http.StatusOK, gin.H{
 			"access_token": token,
 			"token_type":   "bearer",

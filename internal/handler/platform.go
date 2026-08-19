@@ -63,7 +63,7 @@ func RegisterPlatform(r *gin.Engine, state *app.State) {
 			return
 		}
 		uid := user.ID
-		_ = state.Audit.Log(state.DB, "chat.complete", &uid, "", nil, httpx.ClientIP(c, state.Settings.TrustProxyHeaders))
+		_ = state.Audit.Log(state.DB, "chat.complete", &uid, "", nil, httpx.ClientIP(c, state.Settings.TrustProxyHeaders, state.Settings.TrustedProxyCIDRs))
 		c.JSON(http.StatusOK, result)
 	})
 

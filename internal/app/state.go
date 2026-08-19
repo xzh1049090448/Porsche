@@ -14,19 +14,20 @@ import (
 )
 
 type State struct {
-	Settings *config.Settings
-	DB       *gorm.DB
-	Models   *registry.ModelRegistry
-	Clients  *registry.ClientRegistry
-	Pool     *gateway.KeyPool
-	Gateway  *gateway.Service
-	RAG      *rag.Engine
-	Auth     *service.AuthService
-	Billing  *service.BillingService
-	SMS      *service.SMSService
-	Platform *service.PlatformChatService
-	Audit    *service.AuditService
-	HTTP     *http.Client
+	Settings      *config.Settings
+	DB            *gorm.DB
+	Models        *registry.ModelRegistry
+	Clients       *registry.ClientRegistry
+	Pool          *gateway.KeyPool
+	Gateway       *gateway.Service
+	RAG           *rag.Engine
+	Auth          *service.AuthService
+	Billing       *service.BillingService
+	SMS           *service.SMSService
+	Platform      *service.PlatformChatService
+	GatewayTokens *service.GatewayTokenService
+	Audit         *service.AuditService
+	HTTP          *http.Client
 }
 
 func NewState(settings *config.Settings, db *gorm.DB) (*State, error) {
@@ -52,6 +53,7 @@ func NewState(settings *config.Settings, db *gorm.DB) (*State, error) {
 		HTTP:     &http.Client{},
 	}
 	s.Billing = service.NewBillingService(settings)
+	s.GatewayTokens = service.NewGatewayTokenService(db)
 	s.Auth = service.NewAuthService(settings, s.SMS, db)
 	s.Platform = service.NewPlatformChatService(service.PlatformDeps{
 		Settings: settings,
