@@ -22,6 +22,7 @@ func TestHealthOK(t *testing.T) {
 	settings := &config.Settings{
 		AppEnv:               "development",
 		DatabaseURL:          "sqlite://./data/test_platform.db",
+		AllowedHosts:         "example.com",
 		ModelsConfigPath:     "../../config/models.yaml",
 		ClientsConfigPath:    "../../config/clients.yaml",
 		JWTSecretKey:         "test-secret",
@@ -61,6 +62,28 @@ func TestHealthOK(t *testing.T) {
 	}
 	if models, ok := data["models_loaded"].(float64); !ok || models < 1 {
 		t.Fatalf("expected models_loaded >= 1, got %v", data["models_loaded"])
+	}
+}
+
+func TestHostAllowlistAcceptsDomainAndRejectsDirectIPAddress(t *testing.T) {
+	state := newGatewayTestState(t)
+	state.Settings.AllowedHosts = "aiportcloud.com"
+	engine := router.New(state)
+
+	allowed := httptest.NewRequest(http.MethodGet, "/health", nil)
+	allowed.Host = "aiportcloud.com:8000"
+	allowedRec := httptest.NewRecorder()
+	engine.ServeHTTP(allowedRec, allowed)
+	if allowedRec.Code != http.StatusOK {
+		t.Fatalf("allowed host status=%d body=%s", allowedRec.Code, allowedRec.Body.String())
+	}
+
+	blocked := httptest.NewRequest(http.MethodGet, "/health", nil)
+	blocked.Host = "127.0.0.1:8000"
+	blockedRec := httptest.NewRecorder()
+	engine.ServeHTTP(blockedRec, blocked)
+	if blockedRec.Code != http.StatusForbidden {
+		t.Fatalf("direct IP status=%d body=%s", blockedRec.Code, blockedRec.Body.String())
 	}
 }
 
@@ -299,7 +322,7 @@ func newGatewayTestState(t *testing.T) *app.State {
 	t.Helper()
 	dir := t.TempDir()
 	settings := &config.Settings{
-		AppEnv: "test", DatabaseURL: "sqlite://" + dir + "/platform.db", ModelsConfigPath: "../../config/models.yaml", ClientsConfigPath: "../../config/clients.yaml",
+		AppEnv: "test", DatabaseURL: "sqlite://" + dir + "/platform.db", AllowedHosts: "example.com", ModelsConfigPath: "../../config/models.yaml", ClientsConfigPath: "../../config/clients.yaml",
 		JWTSecretKey: "test-secret", AdminToken: "admin-test", PlatformClientSecret: "sk-platform-internal", ChromaPersistDir: dir + "/chroma", DatasetUploadDir: dir + "/uploads", EnvKeys: map[string]string{},
 	}
 	gdb, err := db.Open(settings.DatabaseURL, "test")

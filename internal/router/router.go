@@ -18,6 +18,7 @@ func New(state *app.State) *gin.Engine {
 
 	r := gin.New()
 	r.Use(gin.Recovery(), gin.Logger())
+	r.Use(middleware.RequireAllowedHost(state.Settings.AllowedHosts))
 	r.Use(middleware.InjectState(state))
 
 	handler.RegisterHealth(r, state)

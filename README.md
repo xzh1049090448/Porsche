@@ -81,6 +81,23 @@ docker build -t ai-gateway-go .
 docker run --env-file .env -p 8000:8000 ai-gateway-go
 ```
 
+## Production domain access
+
+Production traffic must enter through `https://aiportcloud.com`; direct IP
+requests are rejected by the application Host allowlist and Nginx's default
+HTTP server. Keep `ALLOWED_HOSTS=aiportcloud.com` in `.env`, install
+`deploy/nginx/aiportcloud.conf`, and bind the application port only to the
+loopback interface:
+
+```bash
+docker run --env-file .env --network ai-gateway_default \
+  -p 127.0.0.1:8000:8000 ai-gateway-go
+```
+
+The Nginx TLS certificate paths in the included configuration assume
+Let's Encrypt. A direct HTTPS request to an IP is rejected during TLS hostname
+validation before HTTP can return a 403; direct HTTP requests return 403.
+
 ## 目录结构
 
 ```

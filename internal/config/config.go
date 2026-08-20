@@ -12,6 +12,7 @@ type Settings struct {
 	AppEnv                    string
 	Host                      string
 	Port                      int
+	AllowedHosts              string
 	AdminToken                string
 	ModelsConfigPath          string
 	ClientsConfigPath         string
@@ -59,6 +60,7 @@ func Load() (*Settings, error) {
 		AppEnv:                    getEnv("APP_ENV", "development"),
 		Host:                      getEnv("HOST", "0.0.0.0"),
 		Port:                      getEnvInt("PORT", 8000),
+		AllowedHosts:              getEnv("ALLOWED_HOSTS", "aiportcloud.com"),
 		AdminToken:                getEnv("ADMIN_TOKEN", "change-me-for-dev-only"),
 		ModelsConfigPath:          getEnv("MODELS_CONFIG_PATH", "config/models.yaml"),
 		ClientsConfigPath:         getEnv("CLIENTS_CONFIG_PATH", "config/clients.yaml"),
