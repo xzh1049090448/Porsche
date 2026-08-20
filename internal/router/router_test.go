@@ -176,6 +176,20 @@ func TestGatewayRejectsSpoofedForwardedIPFromUntrustedPeer(t *testing.T) {
 	}
 }
 
+func TestAnalyticsChartsRejectInvalidQueriesAfterAdminAuthorization(t *testing.T) {
+	state := newGatewayTestState(t)
+	state.Settings.AnalyticsAdminPhones = "13900139999"
+	admin := createGatewayTestUser(t, state, "13900139999")
+	engine := router.New(state)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/billing/analytics/charts/unknown?top_n=999", nil)
+	req.Header.Set("Authorization", "Bearer "+gatewayTestJWT(t, state, admin))
+	rec := httptest.NewRecorder()
+	engine.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest || !bytes.Contains(rec.Body.Bytes(), []byte(`"invalid_analytics_query"`)) || bytes.Contains(rec.Body.Bytes(), []byte("999")) {
+		t.Fatalf("invalid analytics contract must be a generic 400: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestGatewayTokenJWTCRUDScopesOwnerAndNeverReturnsPlaintextAgain(t *testing.T) {
 	state := newGatewayTestState(t)
 	owner := createGatewayTestUser(t, state, "13900139003")
