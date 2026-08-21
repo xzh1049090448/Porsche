@@ -69,16 +69,16 @@
       "status": "in_progress",
       "verification": [
         "GOCACHE=/private/tmp/porsche-go-build-cache go test -count=1 ./...",
-        "在包含已追踪 lockfile 的前端工作树中运行 npm ci、npm test 与 npm run build",
+        "在前端 llm-platform 工作树中运行 npm ping、npm install --package-lock=false、npm test 与 npm run build",
         "使用部署环境的 JieKou AI 配置完成白牌目录与 Chat/SSE 冒烟验证"
       ],
       "evidence": [
         "2026-08-21：GOCACHE=/private/tmp/porsche-go-build-cache ./init.sh 通过；Go 1.22.12，go test ./... 全部通过。",
         "2026-08-21：Porsche-Web/.worktrees 已确认被 Git 忽略，并创建 feature/white-label-upstream 工作树。",
-        "2026-08-21：前端已追踪的 llm-platform 不含 package-lock.json；npm ci 以 EUSAGE 失败，因此 npm test 和 npm run build 未运行。",
+        "2026-08-21：前端恢复验证：npm ping 成功；npm install --package-lock=false 完成，未产生 package-lock.json 变更；npm test 8/8 通过；npm run build 通过，仅输出既有警告。",
         "尚未执行真实 JieKou AI 上游冒烟。"
       ],
-      "notes": "这是当前唯一 in_progress 功能。不要将前端基线或真实上游联调标记为已通过，直到存在可用的已追踪 lockfile 和部署环境的白牌配置。"
+      "notes": "这是当前唯一 in_progress 功能。前端恢复基线已验证；真实上游目录、Chat 与 SSE 联调仍需部署环境的白牌配置，不能标记为已通过。"
     }
   ]
 }
