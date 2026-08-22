@@ -119,6 +119,22 @@ func TestGatewaySSEPostFirstChunkEmitsErrorAndDone(t *testing.T) {
 	if first == -1 || errorFrame < first || doneFrame < errorFrame {
 		t.Fatalf("expected post-first event:error followed by data:[DONE], got %q", got)
 	}
+	var errorEnvelope struct {
+		Error struct {
+			Code      string `json:"code"`
+			Type      string `json:"type"`
+			RequestID string `json:"request_id"`
+		} `json:"error"`
+	}
+	errorData := got[errorFrame+len("event: error\n") : doneFrame]
+	errorData = strings.TrimPrefix(errorData, "data: ")
+	errorData = strings.TrimSpace(errorData)
+	if err := json.Unmarshal([]byte(errorData), &errorEnvelope); err != nil {
+		t.Fatalf("post-first error is not a JSON envelope: %v; data=%q", err, errorData)
+	}
+	if errorEnvelope.Error.Code != "gateway_upstream_unavailable" || errorEnvelope.Error.Type != "api_error" || errorEnvelope.Error.RequestID == "" {
+		t.Fatalf("unexpected post-first error envelope: %s", errorData)
+	}
 }
 
 func TestGatewaySSEProjectsChunksAndDropsUpstreamFields(t *testing.T) {

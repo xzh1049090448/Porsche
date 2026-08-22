@@ -121,6 +121,13 @@ func (s *WhiteLabelService) GetModel(ctx context.Context, id string, acl []strin
 	if !validModelID(id) || !s.permitted(id, acl) {
 		return Model{}, &Error{Code: CodeModelUnavailable, Status: http.StatusNotFound, Type: TypeInvalidRequest}
 	}
+	catalog, catalogErr := s.ListModels(ctx, acl)
+	if catalogErr != nil {
+		return Model{}, catalogErr
+	}
+	if !catalogContains(catalog, id) {
+		return Model{}, &Error{Code: CodeModelUnavailable, Status: http.StatusNotFound, Type: TypeInvalidRequest}
+	}
 	now := s.now()
 	s.mu.Lock()
 	if s.disabled[id] {
@@ -156,6 +163,15 @@ func (s *WhiteLabelService) GetModel(ctx context.Context, id string, acl []strin
 		s.details[id] = cachedDetail{model: model, fetchedAt: now}
 	}
 	return model, nil
+}
+
+func catalogContains(catalog Catalog, id string) bool {
+	for _, model := range catalog.Data {
+		if model.ID == id {
+			return true
+		}
+	}
+	return false
 }
 
 // AuthorizeModel verifies the configured allowlist and caller ACL without

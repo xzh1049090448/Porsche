@@ -142,6 +142,17 @@ func TestInvalidOrDeniedIDDoesNotCallDetailUpstream(t *testing.T) {
 	}
 }
 
+func TestCatalogAbsentModelDoesNotCallDetailUpstream(t *testing.T) {
+	up := newWhiteLabelServer(t, []map[string]any{{"id": "other"}})
+	svc := newServiceWithAllowed(t, up.URL(), &testClock{now: time.Now().UTC()}, "model-a", "other")
+
+	_, err := svc.GetModel(context.Background(), "model-a", nil)
+	requireServiceCode(t, err, CodeModelUnavailable)
+	if got := up.detailCalls(); got != 0 {
+		t.Fatalf("catalog-absent model made %d detail upstream calls, want 0", got)
+	}
+}
+
 func TestNewWhiteLabelServiceRejectsUnsafeConfiguredIDs(t *testing.T) {
 	_, err := NewWhiteLabelService(config.WhiteLabelSettings{BaseURL: "https://example.test/v1", APIKey: "key", AllowedModels: map[string]struct{}{"a/b": {}}}, &http.Client{}, time.Now)
 	if err == nil {
@@ -374,6 +385,7 @@ type whiteLabelServer struct {
 	catalogStatus int
 	detailStatus  map[string]int
 	detailEscaped string
+	detailCount   int
 }
 
 func newWhiteLabelServer(t *testing.T, catalog []map[string]any) *whiteLabelServer {
@@ -400,6 +412,11 @@ func (s *whiteLabelServer) lastDetailEscapedPath() string {
 	defer s.mu.Unlock()
 	return s.detailEscaped
 }
+func (s *whiteLabelServer) detailCalls() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.detailCount
+}
 
 func (s *whiteLabelServer) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Header.Get("Authorization") != "Bearer test-key" {
@@ -417,6 +434,7 @@ func (s *whiteLabelServer) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.detailEscaped = r.URL.EscapedPath()
+	s.detailCount++
 	id := r.URL.Path[len("/models/"):]
 	status := s.detailStatus[id]
 	if status == 0 {

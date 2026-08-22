@@ -285,7 +285,7 @@ func catalogContains(catalog whitelabel.Catalog, id string) bool {
 
 func gatewaySSEError(c *gin.Context) {
 	response := whitelabel.PublicError(whitelabel.ErrUpstreamUnavailable("stream ended before done"), c.Writer.Header().Get("X-Request-ID"))
-	payload, _ := json.Marshal(response.Error)
+	payload, _ := json.Marshal(response)
 	_, _ = c.Writer.Write([]byte("event: error\n"))
 	_, _ = c.Writer.Write([]byte("data: "))
 	_, _ = c.Writer.Write(payload)
