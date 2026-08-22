@@ -1,7 +1,6 @@
 package whitelabel
 
 import (
-	"bytes"
 	"encoding/json"
 	"math"
 	"sort"
@@ -21,11 +20,38 @@ type ChatCompletion struct {
 	Usage   *ChatCompletionUsage   `json:"usage,omitempty"`
 }
 
+// ChatCompletionChoice omits logprobs intentionally: no stable, minimal
+// public logprobs schema is required by this gateway, so upstream nested data
+// is never forwarded as an opaque value.
 type ChatCompletionChoice struct {
-	Index        int             `json:"index"`
-	Message      json.RawMessage `json:"message,omitempty"`
-	FinishReason *string         `json:"finish_reason"`
-	Logprobs     json.RawMessage `json:"logprobs,omitempty"`
+	Index        int                   `json:"index"`
+	Message      ChatCompletionMessage `json:"message"`
+	FinishReason *string               `json:"finish_reason"`
+}
+
+// ChatCompletionMessage is the allowed public completion-message surface.
+// It deliberately excludes provider-specific nested fields.
+type ChatCompletionMessage struct {
+	Role      string                   `json:"role"`
+	Content   any                      `json:"content"`
+	Refusal   *string                  `json:"refusal,omitempty"`
+	ToolCalls []ChatCompletionToolCall `json:"tool_calls,omitempty"`
+}
+
+type ChatCompletionContentPart struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
+}
+
+type ChatCompletionToolCall struct {
+	ID       string                     `json:"id"`
+	Type     string                     `json:"type"`
+	Function ChatCompletionFunctionCall `json:"function"`
+}
+
+type ChatCompletionFunctionCall struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
 }
 
 type ChatCompletionUsage struct {
@@ -38,37 +64,102 @@ type ChatCompletionUsage struct {
 // drops all upstream-owned fields that are not part of the public contract.
 func (s *WhiteLabelService) ProjectChatCompletion(data []byte, logicalModelID string) (ChatCompletion, *Error) {
 	var upstream struct {
-		ID      string                 `json:"id"`
-		Object  string                 `json:"object"`
-		Created int64                  `json:"created"`
-		Choices []ChatCompletionChoice `json:"choices"`
-		Usage   *ChatCompletionUsage   `json:"usage"`
+		ID      string                     `json:"id"`
+		Object  string                     `json:"object"`
+		Created int64                      `json:"created"`
+		Choices []upstreamCompletionChoice `json:"choices"`
+		Usage   *ChatCompletionUsage       `json:"usage"`
 	}
-	if !validModelID(logicalModelID) || json.Unmarshal(data, &upstream) != nil || upstream.ID == "" || upstream.Object != "chat.completion" || upstream.Created < 0 || len(upstream.Choices) == 0 || !validCompletionChoices(upstream.Choices) || !validCompletionUsage(upstream.Usage) {
+	if !validModelID(logicalModelID) || json.Unmarshal(data, &upstream) != nil || upstream.ID == "" || upstream.Object != "chat.completion" || upstream.Created < 0 || len(upstream.Choices) == 0 || !validCompletionUsage(upstream.Usage) {
 		return ChatCompletion{}, ErrUpstreamUnavailable("malformed chat completion")
 	}
-	return ChatCompletion{ID: upstream.ID, Object: upstream.Object, Created: upstream.Created, Model: logicalModelID, Choices: upstream.Choices, Usage: upstream.Usage}, nil
+	choices, choicesErr := projectCompletionChoices(upstream.Choices)
+	if choicesErr != nil {
+		return ChatCompletion{}, ErrUpstreamUnavailable("malformed chat completion")
+	}
+	return ChatCompletion{ID: upstream.ID, Object: upstream.Object, Created: upstream.Created, Model: logicalModelID, Choices: choices, Usage: upstream.Usage}, nil
 }
 
-func validCompletionChoices(choices []ChatCompletionChoice) bool {
-	for _, choice := range choices {
-		if choice.Index < 0 || !validJSONObject(choice.Message) || !validNullableJSONObject(choice.Logprobs) {
-			return false
+type upstreamCompletionChoice struct {
+	Index        int             `json:"index"`
+	Message      json.RawMessage `json:"message"`
+	FinishReason *string         `json:"finish_reason"`
+}
+
+func projectCompletionChoices(upstream []upstreamCompletionChoice) ([]ChatCompletionChoice, error) {
+	choices := make([]ChatCompletionChoice, 0, len(upstream))
+	for _, choice := range upstream {
+		message, err := projectCompletionMessage(choice.Message)
+		if choice.Index < 0 || err != nil {
+			return nil, errMalformedCompletion
+		}
+		choices = append(choices, ChatCompletionChoice{Index: choice.Index, Message: message, FinishReason: choice.FinishReason})
+	}
+	return choices, nil
+}
+
+var errMalformedCompletion = &completionProjectionError{}
+
+type completionProjectionError struct{}
+
+func (*completionProjectionError) Error() string { return "malformed completion" }
+
+func projectCompletionMessage(raw json.RawMessage) (ChatCompletionMessage, error) {
+	var upstream struct {
+		Role      string          `json:"role"`
+		Content   json.RawMessage `json:"content"`
+		Refusal   *string         `json:"refusal"`
+		ToolCalls json.RawMessage `json:"tool_calls"`
+	}
+	if json.Unmarshal(raw, &upstream) != nil || strings.TrimSpace(upstream.Role) == "" {
+		return ChatCompletionMessage{}, errMalformedCompletion
+	}
+	content, err := projectCompletionContent(upstream.Content)
+	if err != nil {
+		return ChatCompletionMessage{}, errMalformedCompletion
+	}
+	toolCalls, err := projectToolCalls(upstream.ToolCalls)
+	if err != nil {
+		return ChatCompletionMessage{}, errMalformedCompletion
+	}
+	return ChatCompletionMessage{Role: upstream.Role, Content: content, Refusal: upstream.Refusal, ToolCalls: toolCalls}, nil
+}
+
+func projectCompletionContent(raw json.RawMessage) (any, error) {
+	var text string
+	if json.Unmarshal(raw, &text) == nil {
+		return text, nil
+	}
+	var parts []ChatCompletionContentPart
+	if json.Unmarshal(raw, &parts) != nil || len(parts) == 0 {
+		return nil, errMalformedCompletion
+	}
+	for _, part := range parts {
+		if part.Type != "text" {
+			return nil, errMalformedCompletion
 		}
 	}
-	return true
+	return parts, nil
+}
+
+func projectToolCalls(raw json.RawMessage) ([]ChatCompletionToolCall, error) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil, nil
+	}
+	var calls []ChatCompletionToolCall
+	if json.Unmarshal(raw, &calls) != nil {
+		return nil, errMalformedCompletion
+	}
+	for _, call := range calls {
+		if call.ID == "" || call.Type != "function" || call.Function.Name == "" {
+			return nil, errMalformedCompletion
+		}
+	}
+	return calls, nil
 }
 
 func validCompletionUsage(usage *ChatCompletionUsage) bool {
 	return usage == nil || (usage.PromptTokens >= 0 && usage.CompletionTokens >= 0 && usage.TotalTokens >= 0)
-}
-
-func validJSONObject(value json.RawMessage) bool {
-	return len(value) > 0 && bytes.HasPrefix(bytes.TrimSpace(value), []byte("{")) && json.Valid(value)
-}
-
-func validNullableJSONObject(value json.RawMessage) bool {
-	return len(value) == 0 || bytes.Equal(bytes.TrimSpace(value), []byte("null")) || validJSONObject(value)
 }
 
 const CodeModelUnavailable Code = "model_unavailable"
