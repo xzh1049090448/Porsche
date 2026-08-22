@@ -237,6 +237,13 @@ func TestDetailOlderRefreshCannotOverwriteNewerCache(t *testing.T) {
 		count int
 	}
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// GetModel now verifies catalog membership before fetching a detail.
+		// Keep that gate realistic but cached, so the two detail fetches below
+		// still exercise their intended concurrent-refresh ordering.
+		if r.URL.Path == "/models" {
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": []map[string]any{{"id": "model-a"}}})
+			return
+		}
 		if r.URL.Path != "/models/model-a" {
 			t.Errorf("path = %q, want /models/model-a", r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)
@@ -285,6 +292,13 @@ func TestDetailOlder404CannotDisableNewerCachedModel(t *testing.T) {
 		count int
 	}
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// GetModel now verifies catalog membership before fetching a detail.
+		// Keep that gate realistic but cached, so the two detail fetches below
+		// still exercise their intended concurrent-refresh ordering.
+		if r.URL.Path == "/models" {
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": []map[string]any{{"id": "model-a"}}})
+			return
+		}
 		if r.URL.Path != "/models/model-a" {
 			t.Errorf("path = %q, want /models/model-a", r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)
