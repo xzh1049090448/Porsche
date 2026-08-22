@@ -1,8 +1,10 @@
 package handler
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -12,12 +14,12 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/porsche/ai-gateway-go/internal/app"
-	"github.com/porsche/ai-gateway-go/internal/gateway"
 	"github.com/porsche/ai-gateway-go/internal/httpx"
 	"github.com/porsche/ai-gateway-go/internal/middleware"
 	"github.com/porsche/ai-gateway-go/internal/models"
 	"github.com/porsche/ai-gateway-go/internal/registry"
 	"github.com/porsche/ai-gateway-go/internal/service"
+	"github.com/porsche/ai-gateway-go/internal/whitelabel"
 	"gorm.io/gorm"
 )
 
@@ -28,57 +30,99 @@ func registerGatewayRoutes(r *gin.Engine, state *app.State) {
 		if !ok {
 			return
 		}
-		data := make([]gin.H, 0)
-		for name, route := range state.Models.Routes() {
-			if modelAllowedForToken(token, name) {
-				data = append(data, gin.H{"id": name, "object": "model", "owned_by": route.Provider})
-			}
-		}
-		c.JSON(http.StatusOK, gin.H{"object": "list", "data": data})
-	})
-	g.POST("/chat/completions", func(c *gin.Context) {
-		var body gateway.ChatCompletionRequest
-		if err := c.ShouldBindJSON(&body); err != nil {
-			gatewayError(c, http.StatusBadRequest, "gateway_invalid_request", "invalid chat completion request")
+		if state.WhiteLabel == nil {
+			gatewayWhiteLabelError(c, whitelabel.ErrUpstreamUnavailable("white-label service unavailable"))
 			return
 		}
-		client, ok := authenticateGatewayToken(c, state, body.Model)
+		catalog, err := state.WhiteLabel.ListModels(c.Request.Context(), token.AllowedModels)
+		if err != nil {
+			gatewayWhiteLabelError(c, err)
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"object": "list", "data": catalog.Data})
+	})
+	g.GET("/models/:id", func(c *gin.Context) {
+		token, ok := authenticateGatewayToken(c, state, "")
 		if !ok {
 			return
 		}
-		if body.Stream {
-			resp, err := state.Gateway.Stream(c.Request.Context(), client, body)
-			if err != nil {
-				gatewayError(c, http.StatusBadGateway, "gateway_upstream_error", "upstream request failed")
-				return
-			}
-			defer resp.Body.Close()
-			c.Header("Content-Type", "text/event-stream")
-			c.Header("Cache-Control", "no-cache")
-			c.Status(resp.StatusCode)
-			buf := make([]byte, 4096)
-			for {
-				n, readErr := resp.Body.Read(buf)
-				if n > 0 {
-					if _, err := c.Writer.Write(buf[:n]); err != nil {
-						return
-					}
-					c.Writer.Flush()
-				}
-				if readErr == io.EOF {
-					return
-				}
-				if readErr != nil {
-					return
-				}
-			}
-		}
-		data, err := state.Gateway.Complete(c.Request.Context(), client, body)
-		if err != nil {
-			gatewayError(c, http.StatusBadGateway, "gateway_upstream_error", "upstream request failed")
+		if state.WhiteLabel == nil {
+			gatewayWhiteLabelError(c, whitelabel.ErrUpstreamUnavailable("white-label service unavailable"))
 			return
 		}
-		c.JSON(http.StatusOK, data)
+		model, err := state.WhiteLabel.GetModel(c.Request.Context(), c.Param("id"), token.AllowedModels)
+		if err != nil {
+			gatewayWhiteLabelError(c, err)
+			return
+		}
+		c.JSON(http.StatusOK, model)
+	})
+	g.POST("/chat/completions", func(c *gin.Context) {
+		if !strings.HasPrefix(strings.ToLower(c.GetHeader("Content-Type")), "application/json") {
+			gatewayError(c, http.StatusUnsupportedMediaType, "gateway_invalid_request", "content type must be application/json")
+			return
+		}
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, whitelabel.MaxRequestBodyBytes)
+		body, readErr := io.ReadAll(c.Request.Body)
+		if readErr != nil {
+			gatewayWhiteLabelError(c, &whitelabel.Error{Code: whitelabel.CodeRequestTooLarge, Status: http.StatusRequestEntityTooLarge, Type: whitelabel.TypeInvalidRequest})
+			return
+		}
+		if validationErr := whitelabel.ValidateRequest(body, whitelabel.GatewayValidation); validationErr != nil {
+			gatewayWhiteLabelError(c, validationErr)
+			return
+		}
+		modelID, stream := whitelabel.RequestModelAndStream(body)
+		token, ok := authenticateGatewayToken(c, state, modelID)
+		if !ok {
+			return
+		}
+		if state.WhiteLabel == nil {
+			gatewayWhiteLabelError(c, whitelabel.ErrUpstreamUnavailable("white-label service unavailable"))
+			return
+		}
+		if authErr := state.WhiteLabel.AuthorizeModel(modelID, token.AllowedModels); authErr != nil {
+			gatewayWhiteLabelError(c, authErr)
+			return
+		}
+		response, upstreamErr := state.WhiteLabel.Chat(c.Request.Context(), body)
+		if upstreamErr != nil {
+			gatewayWhiteLabelError(c, upstreamErr)
+			return
+		}
+		defer response.Body.Close()
+		if !stream {
+			data, err := io.ReadAll(io.LimitReader(response.Body, whitelabel.MaxRequestBodyBytes))
+			if err != nil {
+				gatewayWhiteLabelError(c, whitelabel.ErrUpstreamUnavailable("chat body read failed"))
+				return
+			}
+			c.Data(http.StatusOK, "application/json", data)
+			return
+		}
+		c.Header("Content-Type", "text/event-stream")
+		c.Header("Cache-Control", "no-cache")
+		c.Header("Connection", "keep-alive")
+		buf := make([]byte, 4096)
+		sawDone := false
+		for {
+			n, err := response.Body.Read(buf)
+			if n > 0 {
+				chunk := buf[:n]
+				sawDone = sawDone || bytes.Contains(chunk, []byte("[DONE]"))
+				if _, writeErr := c.Writer.Write(chunk); writeErr != nil {
+					return
+				}
+				c.Writer.Flush()
+			}
+			if err == io.EOF && sawDone {
+				return
+			}
+			if err != nil || n == 0 {
+				gatewaySSEError(c)
+				return
+			}
+		}
 	})
 }
 
@@ -205,7 +249,22 @@ func validRequestID(id string) bool {
 	return true
 }
 func gatewayError(c *gin.Context, status int, code, message string) {
-	c.AbortWithStatusJSON(status, gin.H{"error": gin.H{"message": message, "type": "gateway_error", "code": code}})
+	c.AbortWithStatusJSON(status, gin.H{"error": gin.H{"message": message, "type": "gateway_error", "code": code, "request_id": c.Writer.Header().Get("X-Request-ID")}})
+}
+
+func gatewayWhiteLabelError(c *gin.Context, err *whitelabel.Error) {
+	response := whitelabel.PublicError(err, c.Writer.Header().Get("X-Request-ID"))
+	c.AbortWithStatusJSON(response.Status, response)
+}
+
+func gatewaySSEError(c *gin.Context) {
+	response := whitelabel.PublicError(whitelabel.ErrUpstreamUnavailable("stream ended before done"), c.Writer.Header().Get("X-Request-ID"))
+	payload, _ := json.Marshal(response.Error)
+	_, _ = c.Writer.Write([]byte("event: error\n"))
+	_, _ = c.Writer.Write([]byte("data: "))
+	_, _ = c.Writer.Write(payload)
+	_, _ = c.Writer.Write([]byte("\n\ndata: [DONE]\n\n"))
+	c.Writer.Flush()
 }
 
 type gatewayTokenInput struct {

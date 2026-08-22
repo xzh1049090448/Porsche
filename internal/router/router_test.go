@@ -3,6 +3,7 @@ package router_test
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -16,6 +17,7 @@ import (
 	"github.com/porsche/ai-gateway-go/internal/router"
 	"github.com/porsche/ai-gateway-go/internal/security"
 	"github.com/porsche/ai-gateway-go/internal/service"
+	"github.com/porsche/ai-gateway-go/internal/whitelabel"
 )
 
 func TestHealthOK(t *testing.T) {
@@ -132,7 +134,7 @@ func TestGatewayRejectsTokenModelBeforeUpstream(t *testing.T) {
 		t.Fatal(err)
 	}
 	engine := router.New(state)
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(`{"model":"qwen-plus","messages":[{"role":"user","content":"hello"}]}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(`{"model":"qwen-plus","messages":[{"role":"user","content":"hello"}],"max_tokens":1}`))
 	req.Header.Set("Authorization", "Bearer "+secret)
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -259,7 +261,7 @@ func TestGatewayRejectsIPBeforeUpstreamAndHonorsTrustedProxy(t *testing.T) {
 	}
 	engine := router.New(state)
 
-	denied := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(`{"model":"qwen-turbo","messages":[{"role":"user","content":"hello"}]}`))
+	denied := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(`{"model":"qwen-turbo","messages":[{"role":"user","content":"hello"}],"max_tokens":1}`))
 	denied.RemoteAddr = "198.51.100.24:5000"
 	denied.Header.Set("Authorization", "Bearer "+secret)
 	denied.Header.Set("Content-Type", "application/json")
@@ -333,5 +335,22 @@ func newGatewayTestState(t *testing.T) *app.State {
 	if err != nil {
 		t.Fatal(err)
 	}
+	whiteLabel, err := whitelabel.NewWhiteLabelService(config.WhiteLabelSettings{
+		BaseURL: "https://white-label.test/v1", APIKey: "test-key", AllowedModels: map[string]struct{}{"qwen-turbo": {}, "qwen-plus": {}},
+	}, &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		body := `{"data":[{"id":"qwen-turbo"},{"id":"qwen-plus"}]}`
+		if strings.HasPrefix(req.URL.Path, "/v1/chat/completions") {
+			body = `{"id":"chatcmpl-test"}`
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: req}, nil
+	})}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.WhiteLabel = whiteLabel
 	return state
 }
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }

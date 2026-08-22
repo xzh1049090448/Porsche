@@ -1,6 +1,7 @@
 package whitelabel
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -155,6 +156,38 @@ func (s *WhiteLabelService) GetModel(ctx context.Context, id string, acl []strin
 		s.details[id] = cachedDetail{model: model, fetchedAt: now}
 	}
 	return model, nil
+}
+
+// AuthorizeModel verifies the configured allowlist and caller ACL without
+// contacting the upstream. Handlers use it before a chat request so denied
+// models never trigger an upstream call.
+func (s *WhiteLabelService) AuthorizeModel(id string, acl []string) *Error {
+	if !validModelID(id) || !s.permitted(id, acl) {
+		return &Error{Code: CodeModelUnavailable, Status: http.StatusNotFound, Type: TypeInvalidRequest}
+	}
+	return nil
+}
+
+// Chat sends an already validated OpenAI-compatible request to the fixed
+// upstream. Non-2xx responses are discarded here so neither their headers nor
+// bodies can reach clients.
+func (s *WhiteLabelService) Chat(ctx context.Context, body []byte) (*http.Response, *Error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, s.baseURL+"/chat/completions", bytes.NewReader(body))
+	if err != nil {
+		return nil, ErrUpstreamUnavailable("chat request creation failed")
+	}
+	request.Header.Set("Authorization", "Bearer "+s.apiKey)
+	request.Header.Set("Accept", "application/json, text/event-stream")
+	request.Header.Set("Content-Type", "application/json")
+	response, err := s.client.Do(request)
+	if err != nil {
+		return nil, ErrUpstreamUnavailable("chat request failed")
+	}
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		response.Body.Close()
+		return nil, ErrUpstreamUnavailable("chat response failed")
+	}
+	return response, nil
 }
 
 func (s *WhiteLabelService) permitted(id string, acl []string) bool {

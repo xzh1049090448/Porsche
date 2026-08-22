@@ -131,6 +131,16 @@ func ValidateRequest(body []byte, mode ValidationMode) *Error {
 	return nil
 }
 
+// RequestModelAndStream extracts only routing fields after ValidateRequest has
+// established the complete strict request contract.
+func RequestModelAndStream(body []byte) (string, bool) {
+	var request chatRequest
+	if decodeStrict(body, &request) != nil {
+		return "", false
+	}
+	return request.Model, request.Stream != nil && *request.Stream
+}
+
 var chatRequestFields = map[string]struct{}{
 	"model": {}, "messages": {}, "max_tokens": {}, "n": {}, "temperature": {}, "top_p": {},
 	"frequency_penalty": {}, "presence_penalty": {}, "stop": {}, "tools": {}, "response_format": {},
