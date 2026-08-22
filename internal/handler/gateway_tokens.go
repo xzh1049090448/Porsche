@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"mime"
 	"net/http"
 	"strconv"
 	"strings"
@@ -58,11 +59,16 @@ func registerGatewayRoutes(r *gin.Engine, state *app.State) {
 		c.JSON(http.StatusOK, model)
 	})
 	g.POST("/chat/completions", func(c *gin.Context) {
-		if !strings.HasPrefix(strings.ToLower(c.GetHeader("Content-Type")), "application/json") {
-			gatewayError(c, http.StatusUnsupportedMediaType, "gateway_invalid_request", "content type must be application/json")
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, whitelabel.MaxRequestBodyBytes)
+		token, ok := authenticateGatewayToken(c, state, "")
+		if !ok {
 			return
 		}
-		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, whitelabel.MaxRequestBodyBytes)
+		mediaType, _, contentTypeErr := mime.ParseMediaType(c.GetHeader("Content-Type"))
+		if contentTypeErr != nil || mediaType != "application/json" {
+			gatewayWhiteLabelError(c, &whitelabel.Error{Code: whitelabel.CodeInvalidRequest, Status: http.StatusUnsupportedMediaType, Type: whitelabel.TypeInvalidRequest})
+			return
+		}
 		body, readErr := io.ReadAll(c.Request.Body)
 		if readErr != nil {
 			gatewayWhiteLabelError(c, &whitelabel.Error{Code: whitelabel.CodeRequestTooLarge, Status: http.StatusRequestEntityTooLarge, Type: whitelabel.TypeInvalidRequest})
@@ -73,12 +79,21 @@ func registerGatewayRoutes(r *gin.Engine, state *app.State) {
 			return
 		}
 		modelID, stream := whitelabel.RequestModelAndStream(body)
-		token, ok := authenticateGatewayToken(c, state, modelID)
-		if !ok {
+		if !modelAllowedForToken(token, modelID) {
+			gatewayAuthenticationError(c, http.StatusForbidden, service.GatewayTokenModelDenied)
 			return
 		}
 		if state.WhiteLabel == nil {
 			gatewayWhiteLabelError(c, whitelabel.ErrUpstreamUnavailable("white-label service unavailable"))
+			return
+		}
+		catalog, catalogErr := state.WhiteLabel.ListModels(c.Request.Context(), token.AllowedModels)
+		if catalogErr != nil {
+			gatewayWhiteLabelError(c, catalogErr)
+			return
+		}
+		if !catalogContains(catalog, modelID) {
+			gatewayWhiteLabelError(c, &whitelabel.Error{Code: whitelabel.CodeModelUnavailable, Status: http.StatusNotFound, Type: whitelabel.TypeInvalidRequest})
 			return
 		}
 		if authErr := state.WhiteLabel.AuthorizeModel(modelID, token.AllowedModels); authErr != nil {
@@ -100,11 +115,28 @@ func registerGatewayRoutes(r *gin.Engine, state *app.State) {
 			c.Data(http.StatusOK, "application/json", data)
 			return
 		}
+		buf := make([]byte, 4096)
+		n, readErr := response.Body.Read(buf)
+		if n == 0 {
+			gatewayWhiteLabelError(c, whitelabel.ErrUpstreamUnavailable("stream ended before first payload"))
+			return
+		}
 		c.Header("Content-Type", "text/event-stream")
 		c.Header("Cache-Control", "no-cache")
 		c.Header("Connection", "keep-alive")
-		buf := make([]byte, 4096)
-		sawDone := false
+		chunk := buf[:n]
+		sawDone := bytes.Contains(chunk, []byte("[DONE]"))
+		if _, writeErr := c.Writer.Write(chunk); writeErr != nil {
+			return
+		}
+		c.Writer.Flush()
+		if readErr == io.EOF && sawDone {
+			return
+		}
+		if readErr != nil {
+			gatewaySSEError(c)
+			return
+		}
 		for {
 			n, err := response.Body.Read(buf)
 			if n > 0 {
@@ -192,7 +224,7 @@ func RegisterGatewayTokens(r *gin.Engine, state *app.State) {
 func authenticateGatewayToken(c *gin.Context, state *app.State, model string) (registry.ClientConfig, bool) {
 	secret := httpx.BearerToken(c)
 	if secret == "" {
-		gatewayError(c, http.StatusUnauthorized, "gateway_invalid_token", "missing bearer token")
+		gatewayAuthenticationError(c, http.StatusUnauthorized, service.GatewayTokenInvalid)
 		return registry.ClientConfig{}, false
 	}
 	ip := httpx.ClientIP(c, state.Settings.TrustProxyHeaders, state.Settings.TrustedProxyCIDRs)
@@ -206,15 +238,15 @@ func authenticateGatewayToken(c *gin.Context, state *app.State, model string) (r
 		}
 	}
 	status := http.StatusUnauthorized
-	code := "gateway_invalid_token"
+	code := service.GatewayTokenInvalid
 	if service.IsGatewayTokenError(err, service.GatewayTokenModelDenied) || service.IsGatewayTokenError(err, service.GatewayTokenIPDenied) {
 		status = http.StatusForbidden
-		code = err.Error()
+		code = service.GatewayTokenError(err.Error())
 	}
 	if service.IsGatewayTokenError(err, service.GatewayTokenExpired) || service.IsGatewayTokenError(err, service.GatewayTokenDisabled) || service.IsGatewayTokenError(err, service.GatewayTokenRevoked) {
-		code = err.Error()
+		code = service.GatewayTokenError(err.Error())
 	}
-	gatewayError(c, status, code, "gateway token is not authorized")
+	gatewayAuthenticationError(c, status, code)
 	return registry.ClientConfig{}, false
 }
 
@@ -248,13 +280,22 @@ func validRequestID(id string) bool {
 	}
 	return true
 }
-func gatewayError(c *gin.Context, status int, code, message string) {
-	c.AbortWithStatusJSON(status, gin.H{"error": gin.H{"message": message, "type": "gateway_error", "code": code, "request_id": c.Writer.Header().Get("X-Request-ID")}})
+func gatewayAuthenticationError(c *gin.Context, status int, code service.GatewayTokenError) {
+	gatewayWhiteLabelError(c, whitelabel.ErrGatewayAuthentication(whitelabel.Code(code), status))
 }
 
 func gatewayWhiteLabelError(c *gin.Context, err *whitelabel.Error) {
 	response := whitelabel.PublicError(err, c.Writer.Header().Get("X-Request-ID"))
 	c.AbortWithStatusJSON(response.Status, response)
+}
+
+func catalogContains(catalog whitelabel.Catalog, id string) bool {
+	for _, model := range catalog.Data {
+		if model.ID == id {
+			return true
+		}
+	}
+	return false
 }
 
 func gatewaySSEError(c *gin.Context) {

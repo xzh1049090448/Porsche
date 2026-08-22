@@ -2,9 +2,12 @@ package handler_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -111,6 +114,197 @@ func TestGatewaySSEPostFirstChunkEmitsErrorAndDone(t *testing.T) {
 	}
 }
 
+func TestGatewaySSEBeforeFirstPayloadReturnsJSONError(t *testing.T) {
+	state, _, _ := gatewayWhiteLabelState(t, `{"data":[{"id":"model-a"}]}`)
+	user := &models.User{Phone: "13900200008", Status: models.UserStatusActive}
+	if err := state.DB.Create(user).Error; err != nil {
+		t.Fatal(err)
+	}
+	_, secret, err := state.GatewayTokens.Create(user, service.GatewayTokenCreateInput{Name: "stream-first", AllowedModels: models.JSONSlice{"model-a"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(strings.Replace(validGatewayChatBody(true), `"seed":1`, `"seed":0`, 1)))
+	req.Header.Set("Authorization", "Bearer "+secret)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	router.New(state).ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable || rec.Header().Get("Content-Type") != "application/json; charset=utf-8" {
+		t.Fatalf("status=%d content-type=%q body=%s", rec.Code, rec.Header().Get("Content-Type"), rec.Body.String())
+	}
+	assertGatewayError(t, rec, "api_error")
+}
+
+func TestGatewayChatAuthenticatesBeforeReadingOrValidatingBody(t *testing.T) {
+	state, _, calls := gatewayWhiteLabelState(t, `{"data":[{"id":"model-a"}]}`)
+	user := &models.User{Phone: "13900200004", Status: models.UserStatusActive}
+	if err := state.DB.Create(user).Error; err != nil {
+		t.Fatal(err)
+	}
+	revoked, revokedSecret, err := state.GatewayTokens.Create(user, service.GatewayTokenCreateInput{Name: "revoked", AllowedModels: models.JSONSlice{"model-a"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := state.GatewayTokens.Revoke(user.ID, revoked.ID); err != nil {
+		t.Fatal(err)
+	}
+	_, deniedSecret, err := state.GatewayTokens.Create(user, service.GatewayTokenCreateInput{Name: "ip", AllowedModels: models.JSONSlice{"model-a"}, IPAllowlist: models.JSONSlice{"203.0.113.1"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, secret := range []string{"", "not-a-gateway-token", revokedSecret, deniedSecret} {
+		req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader("not json"))
+		if secret != "" {
+			req.Header.Set("Authorization", "Bearer "+secret)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		router.New(state).ServeHTTP(rec, req)
+		if rec.Code != http.StatusUnauthorized && rec.Code != http.StatusForbidden {
+			t.Fatalf("secret=%q status=%d body=%s", secret, rec.Code, rec.Body.String())
+		}
+		assertGatewayError(t, rec, "authentication_error")
+	}
+	if got := calls.Load(); got != 0 {
+		t.Fatalf("upstream calls=%d, want 0", got)
+	}
+}
+
+func TestGatewayChatRequiresExactJSONMediaTypeAndStableErrors(t *testing.T) {
+	state, _, _ := gatewayWhiteLabelState(t, `{"data":[{"id":"model-a"}]}`)
+	user := &models.User{Phone: "13900200005", Status: models.UserStatusActive}
+	if err := state.DB.Create(user).Error; err != nil {
+		t.Fatal(err)
+	}
+	_, secret, err := state.GatewayTokens.Create(user, service.GatewayTokenCreateInput{Name: "content-type", AllowedModels: models.JSONSlice{"model-a"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, contentType := range []string{"", "application/jsonp"} {
+		req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(validGatewayChatBody(false)))
+		req.Header.Set("Authorization", "Bearer "+secret)
+		if contentType != "" {
+			req.Header.Set("Content-Type", contentType)
+		}
+		rec := httptest.NewRecorder()
+		router.New(state).ServeHTTP(rec, req)
+		if rec.Code != http.StatusUnsupportedMediaType {
+			t.Fatalf("content-type=%q status=%d body=%s", contentType, rec.Code, rec.Body.String())
+		}
+		assertGatewayError(t, rec, "invalid_request_error")
+	}
+}
+
+func TestGatewayChatKeepsAuthenticatedRequestBodyLimit(t *testing.T) {
+	state, _, calls := gatewayWhiteLabelState(t, `{"data":[{"id":"model-a"}]}`)
+	user := &models.User{Phone: "13900200009", Status: models.UserStatusActive}
+	if err := state.DB.Create(user).Error; err != nil {
+		t.Fatal(err)
+	}
+	_, secret, err := state.GatewayTokens.Create(user, service.GatewayTokenCreateInput{Name: "size", AllowedModels: models.JSONSlice{"model-a"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(bytes.Repeat([]byte("x"), whitelabel.MaxRequestBodyBytes+1)))
+	req.Header.Set("Authorization", "Bearer "+secret)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	router.New(state).ServeHTTP(rec, req)
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	assertGatewayError(t, rec, "invalid_request_error")
+	if got := calls.Load(); got != 0 {
+		t.Fatalf("upstream calls=%d, want 0", got)
+	}
+}
+
+func TestGatewayChatRequiresCurrentCatalogAndEnabledModelBeforeChat(t *testing.T) {
+	state, _, calls := gatewayWhiteLabelState(t, `{"data":[{"id":"model-a"}]}`)
+	user := &models.User{Phone: "13900200006", Status: models.UserStatusActive}
+	if err := state.DB.Create(user).Error; err != nil {
+		t.Fatal(err)
+	}
+	_, secret, err := state.GatewayTokens.Create(user, service.GatewayTokenCreateInput{Name: "catalog", AllowedModels: models.JSONSlice{"model-a", "model-b"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := state.WhiteLabel.ListModels(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	baseline := calls.Load()
+	for _, model := range []string{"model-b", "model-a"} {
+		if model == "model-a" {
+			// A trusted detail 404 marks the model disabled until catalog refresh.
+			if _, detailErr := state.WhiteLabel.GetModel(context.Background(), model, nil); detailErr == nil {
+				t.Fatal("expected detail 404 to disable model")
+			}
+			baseline = calls.Load()
+		}
+		req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(strings.Replace(validGatewayChatBody(false), "model-a", model, 1)))
+		req.Header.Set("Authorization", "Bearer "+secret)
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		router.New(state).ServeHTTP(rec, req)
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("model=%s status=%d body=%s", model, rec.Code, rec.Body.String())
+		}
+		assertGatewayError(t, rec, "invalid_request_error")
+		if got := calls.Load(); got != baseline {
+			t.Fatalf("model=%s upstream calls=%d, want %d", model, got, baseline)
+		}
+	}
+}
+
+func TestGatewayChatForwardsValidFullDTO(t *testing.T) {
+	state, _, calls := gatewayWhiteLabelState(t, `{"data":[{"id":"model-a"}]}`)
+	user := &models.User{Phone: "13900200007", Status: models.UserStatusActive}
+	if err := state.DB.Create(user).Error; err != nil {
+		t.Fatal(err)
+	}
+	_, secret, err := state.GatewayTokens.Create(user, service.GatewayTokenCreateInput{Name: "valid", AllowedModels: models.JSONSlice{"model-a"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := state.WhiteLabel.ListModels(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(validGatewayChatBody(false)))
+	req.Header.Set("Authorization", "Bearer "+secret)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	router.New(state).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || rec.Body.String() != `{"id":"safe"}` {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := calls.Load(); got != 2 { // catalog + chat
+		t.Fatalf("upstream calls=%d, want 2", got)
+	}
+}
+
+func assertGatewayError(t *testing.T, rec *httptest.ResponseRecorder, wantType string) {
+	t.Helper()
+	var body struct {
+		Error struct {
+			Type      string `json:"type"`
+			Code      string `json:"code"`
+			RequestID string `json:"request_id"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Error.Type != wantType || body.Error.Code == "" || body.Error.RequestID == "" {
+		t.Fatalf("unexpected error envelope: %s", rec.Body.String())
+	}
+}
+
+func validGatewayChatBody(stream bool) string {
+	return `{"model":"model-a","messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}],"max_tokens":1,"n":1,"temperature":1,"top_p":1,"frequency_penalty":0,"presence_penalty":0,"stop":["END"],"tools":[{"type":"function","function":{"name":"lookup","parameters":{"type":"object"}}}],"response_format":{"type":"text"},"stream_options":{"include_usage":true},"stream":` + strconv.FormatBool(stream) + `,"seed":1}`
+}
+
 func gatewayWhiteLabelState(t *testing.T, catalog string) (*app.State, *httptest.Server, *atomic.Int64) {
 	t.Helper()
 	var calls atomic.Int64
@@ -125,8 +319,12 @@ func gatewayWhiteLabelState(t *testing.T, catalog string) (*app.State, *httptest
 				http.Error(w, "secret upstream failure", http.StatusBadGateway)
 				return
 			}
-			if bytes.Contains(mustRead(t, r), []byte(`"stream":true`)) {
+			body := mustRead(t, r)
+			if bytes.Contains(body, []byte(`"stream":true`)) {
 				w.Header().Set("Content-Type", "text/event-stream")
+				if bytes.Contains(body, []byte(`"seed":0`)) {
+					return
+				}
 				_, _ = w.Write([]byte("data: first\n\n"))
 				return
 			}

@@ -17,6 +17,7 @@ type ErrorType string
 const (
 	TypeInvalidRequest ErrorType = "invalid_request_error"
 	TypeAPI            ErrorType = "api_error"
+	TypeAuthentication ErrorType = "authentication_error"
 )
 
 // Error is an internal classification. Detail is intentionally never included
@@ -26,6 +27,12 @@ type Error struct {
 	Status int
 	Type   ErrorType
 	Detail string
+}
+
+// ErrGatewayAuthentication produces the stable public envelope for rejected
+// Gateway credentials without exposing token or allowlist details.
+func ErrGatewayAuthentication(code Code, status int) *Error {
+	return &Error{Code: code, Status: status, Type: TypeAuthentication}
 }
 
 func (e *Error) Error() string {
