@@ -139,8 +139,10 @@ func (s *WhiteLabelService) GetModel(ctx context.Context, id string, acl []strin
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if status == http.StatusNotFound {
-		s.disabled[id] = true
-		delete(s.details, id)
+		if refreshGeneration == s.detailGenerations[id] {
+			s.disabled[id] = true
+			delete(s.details, id)
+		}
 		return Model{}, &Error{Code: CodeModelUnavailable, Status: http.StatusNotFound, Type: TypeInvalidRequest}
 	}
 	if fetchErr != nil {

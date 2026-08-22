@@ -266,6 +266,58 @@ func TestDetailOlderRefreshCannotOverwriteNewerCache(t *testing.T) {
 	}
 }
 
+func TestDetailOlder404CannotDisableNewerCachedModel(t *testing.T) {
+	oldStarted := make(chan struct{})
+	releaseOld := make(chan struct{})
+	var requests struct {
+		sync.Mutex
+		count int
+	}
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/models/model-a" {
+			t.Errorf("path = %q, want /models/model-a", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		requests.Lock()
+		requests.count++
+		request := requests.count
+		requests.Unlock()
+		if request == 1 {
+			close(oldStarted)
+			<-releaseOld
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": "model-a", "title": "new"})
+	}))
+	t.Cleanup(up.Close)
+	clock := &testClock{now: time.Date(2026, 8, 22, 0, 0, 0, 0, time.UTC)}
+	svc := newServiceWithAllowed(t, up.URL, clock, "model-a")
+
+	oldResult := make(chan *Error, 1)
+	go func() { _, err := svc.GetModel(context.Background(), "model-a", nil); oldResult <- err }()
+	<-oldStarted
+	clock.Add(time.Second)
+	if _, err := svc.GetModel(context.Background(), "model-a", nil); err != nil {
+		t.Fatalf("newer detail refresh: %v", err)
+	}
+	close(releaseOld)
+	requireServiceCode(t, <-oldResult, CodeModelUnavailable)
+
+	model, err := svc.GetModel(context.Background(), "model-a", nil)
+	requireNoServiceError(t, err)
+	if model.Title != "new" {
+		t.Fatalf("cached detail title = %q, want newer response", model.Title)
+	}
+	svc.mu.Lock()
+	disabled := svc.disabled["model-a"]
+	svc.mu.Unlock()
+	if disabled {
+		t.Fatal("older 404 disabled the model after a newer refresh succeeded")
+	}
+}
+
 func TestModelMetadataTextIsBounded(t *testing.T) {
 	withinLimit := strings.Repeat("x", maxModelMetadataTextBytes)
 	overLimit := strings.Repeat("x", maxModelMetadataTextBytes+1)
