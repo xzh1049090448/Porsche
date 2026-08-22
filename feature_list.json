@@ -1,6 +1,6 @@
 {
   "project": "Porsche Go AI Gateway",
-  "last_updated": "2026-08-21",
+  "last_updated": "2026-08-22",
   "rules": {
     "single_active_feature": true,
     "passing_requires_evidence": true,
@@ -76,6 +76,7 @@
         "2026-08-21：GOCACHE=/private/tmp/porsche-go-build-cache ./init.sh 通过；Go 1.22.12，go test ./... 全部通过。",
         "2026-08-21：Porsche-Web/.worktrees 已确认被 Git 忽略，并创建 feature/white-label-upstream 工作树。",
         "2026-08-21：前端恢复验证：npm ping 成功；npm install --package-lock=false 完成，未产生 package-lock.json 变更；npm test 8/8 通过；npm run build 通过，仅输出既有警告。",
+        "2026-08-22：Task 2 P2 修正使用测试先行：两/三/四标签十六进制 IPv4-like host 与 8 MiB + 1 字节 data 图片的回归测试先失败；随后 GOCACHE=/private/tmp/porsche-go-build-cache go test ./internal/whitelabel -count=1、GOCACHE=/private/tmp/porsche-go-build-cache go test ./... 和 git diff --check 通过。",
         "尚未执行真实 JieKou AI 上游冒烟。"
       ],
       "notes": "这是当前唯一 in_progress 功能。前端恢复基线已验证；真实上游目录、Chat 与 SSE 联调仍需部署环境的白牌配置，不能标记为已通过。"

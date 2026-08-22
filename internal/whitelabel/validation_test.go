@@ -89,7 +89,8 @@ func TestValidateMediaURLRejectsLocalAndMappedAddresses(t *testing.T) {
 		"https://LOCALHOST/x", "https:///x", "https://:443/x", "https://example.com:0/x",
 		"https://192.0.2.1/x", "https://0.0.0.0/x", "https://10.0.0.1/x", "https://224.0.0.1/x",
 		"https://240.0.0.1/x", "https://999.1.1.1/x", "https://[fe80::1]/x", "https://[fc00::1]/x",
-		"https://0x7f.0x0.0x0.0x1/x", "https://0x7f.0.0.1/x", "https://0x7f000001/x",
+		"https://0x7f.1/x", "https://0x7f.0.1/x", "https://0x7f.0x0.0x0.0x1/x",
+		"https://0x7f.0.0.1/x", "https://0x7f000001/x",
 		"https://[::]/x", "https://[ff00::1]/x", "https://[2001:db8::1]/x",
 	} {
 		requireCode(t, ValidateMediaURL(raw), CodeInvalidRequest)
@@ -130,11 +131,18 @@ func TestValidateDataImageRejectsInvalidMimeSVGAndBase64(t *testing.T) {
 	}
 }
 
-func TestValidateDataImageAcceptsTenMiB(t *testing.T) {
-	raw := "data:image/png;base64," + base64.StdEncoding.EncodeToString(make([]byte, 10*1024*1024))
-	if err := ValidateDataImage(raw); err != nil {
-		t.Fatalf("10 MiB data image rejected: %#v", err)
+func TestValidateRequestAcceptsEightMiBDataImageWithinBodyLimit(t *testing.T) {
+	image := "data:image/png;base64," + base64.StdEncoding.EncodeToString(make([]byte, 8*1024*1024))
+	body := chatRequestWithImage(t, image)
+	if len(body) > MaxRequestBodyBytes {
+		t.Fatalf("8 MiB data image request size = %d, want at most %d", len(body), MaxRequestBodyBytes)
 	}
+	if err := ValidateRequest(body, GatewayValidation); err != nil {
+		t.Fatalf("8 MiB data image request rejected: %#v", err)
+	}
+
+	overLimit := "data:image/png;base64," + base64.StdEncoding.EncodeToString(make([]byte, 8*1024*1024+1))
+	requireCode(t, ValidateRequest(chatRequestWithImage(t, overLimit), GatewayValidation), CodeInvalidRequest)
 }
 
 func TestValidateRequestRejectsTooManyOrMalformedTools(t *testing.T) {
@@ -173,4 +181,9 @@ func mustJSON(t *testing.T, value string) string {
 
 func oversizedPNGDataURI() string {
 	return "data:image/png;base64," + base64.StdEncoding.EncodeToString(make([]byte, MaxDataImageBytes+1))
+}
+
+func chatRequestWithImage(t *testing.T, image string) []byte {
+	t.Helper()
+	return []byte(`{"model":"x","messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":` + mustJSON(t, image) + `}}]}],"max_tokens":1}`)
 }

@@ -16,7 +16,7 @@ const (
 	MaxRequestBodyBytes = 12 * 1024 * 1024
 	MaxMessages         = 128
 	MaxTextContentBytes = 1 * 1024 * 1024
-	MaxDataImageBytes   = 10 * 1024 * 1024
+	MaxDataImageBytes   = 8 * 1024 * 1024
 	MaxTools            = 32
 )
 
@@ -409,7 +409,7 @@ func numericAddressLike(host string) bool {
 
 func nonDecimalIPv4Like(host string) bool {
 	labels := strings.Split(host, ".")
-	if len(labels) != 4 {
+	if len(labels) < 2 || len(labels) > 4 {
 		return false
 	}
 	hasNonDecimalLabel := false
