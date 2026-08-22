@@ -16,7 +16,7 @@ const (
 	MaxRequestBodyBytes = 12 * 1024 * 1024
 	MaxMessages         = 128
 	MaxTextContentBytes = 1 * 1024 * 1024
-	MaxDataImageBytes   = 4 * 1024 * 1024
+	MaxDataImageBytes   = 10 * 1024 * 1024
 	MaxTools            = 32
 )
 
@@ -40,6 +40,8 @@ type chatRequest struct {
 	Tools            []tool          `json:"tools"`
 	ResponseFormat   *responseFormat `json:"response_format"`
 	StreamOptions    *streamOptions  `json:"stream_options"`
+	Stream           *bool           `json:"stream"`
+	Seed             *json.Number    `json:"seed"`
 }
 
 type chatMessage struct {
@@ -69,7 +71,15 @@ type functionDefinition struct {
 }
 
 type responseFormat struct {
-	Type string `json:"type"`
+	Type       string          `json:"type"`
+	JSONSchema json.RawMessage `json:"json_schema"`
+}
+
+type jsonSchema struct {
+	Name        string          `json:"name"`
+	Description *string         `json:"description"`
+	Schema      json.RawMessage `json:"schema"`
+	Strict      *bool           `json:"strict"`
 }
 
 type streamOptions struct {
@@ -98,8 +108,11 @@ func ValidateRequest(body []byte, mode ValidationMode) *Error {
 	if mode == PlatformValidation && request.N != nil && *request.N != "1" {
 		return invalidRequest(CodeInvalidRequest)
 	}
-	if !validOptionalFloat(request.Temperature, 0, 1) || !validOptionalFloat(request.TopP, 0, 1) ||
-		!validOptionalFloat(request.FrequencyPenalty, -2, 2) || !validOptionalFloat(request.PresencePenalty, -2, 2) {
+	if !validOptionalInteger(request.Seed, math.MinInt64, math.MaxInt64) ||
+		!validOptionalFloatInRange(request.Temperature, 0, 2, false, false) ||
+		!validOptionalFloatInRange(request.TopP, 0, 1, false, true) ||
+		!validOptionalFloatInRange(request.FrequencyPenalty, -2, 2, false, false) ||
+		!validOptionalFloatInRange(request.PresencePenalty, -2, 2, false, false) {
 		return invalidRequest(CodeInvalidRequest)
 	}
 	if err := validateStop(request.Stop); err != nil || len(request.Tools) > MaxTools ||
@@ -150,12 +163,18 @@ func validOptionalInteger(value *json.Number, min, max int64) bool {
 	return value == nil || validInteger(*value, min, max)
 }
 
-func validOptionalFloat(value *json.Number, min, max float64) bool {
+func validOptionalFloatInRange(value *json.Number, min, max float64, includeMin, includeMax bool) bool {
 	if value == nil {
 		return true
 	}
 	n, err := value.Float64()
-	return err == nil && !math.IsNaN(n) && !math.IsInf(n, 0) && n >= min && n <= max
+	if err != nil || math.IsNaN(n) || math.IsInf(n, 0) {
+		return false
+	}
+	if (includeMin && n < min) || (!includeMin && n <= min) {
+		return false
+	}
+	return (includeMax && n <= max) || (!includeMax && n < max)
 }
 
 func validRole(role string) bool {
@@ -235,7 +254,26 @@ var functionName = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 func validFunctionName(name string) bool { return functionName.MatchString(name) }
 
 func validateResponseFormat(format *responseFormat) bool {
-	return format == nil || format.Type == "text" || format.Type == "json_object"
+	if format == nil {
+		return true
+	}
+	switch format.Type {
+	case "text", "json_object":
+		return len(format.JSONSchema) == 0
+	case "json_schema":
+		return validateJSONSchema(format.JSONSchema)
+	default:
+		return false
+	}
+}
+
+func validateJSONSchema(raw json.RawMessage) bool {
+	var schema jsonSchema
+	if len(raw) == 0 || decodeStrict(raw, &schema) != nil || strings.TrimSpace(schema.Name) == "" || len(schema.Schema) == 0 {
+		return false
+	}
+	var structured map[string]json.RawMessage
+	return decodeStrict(schema.Schema, &structured) == nil && structured != nil
 }
 
 func validateStreamOptions(options *streamOptions) bool {
@@ -299,7 +337,7 @@ func ValidateMediaURL(raw string) *Error {
 		if !publicAddress(address) {
 			return invalidRequest(CodeInvalidRequest)
 		}
-	} else if numericAddressLike(host) || !validHostname(host) {
+	} else if numericAddressLike(host) || nonDecimalIPv4Like(host) || !validHostname(host) {
 		return invalidRequest(CodeInvalidRequest)
 	}
 	return nil
@@ -337,6 +375,41 @@ func numericAddressLike(host string) bool {
 			if r < '0' || r > '9' {
 				return false
 			}
+		}
+	}
+	return true
+}
+
+func nonDecimalIPv4Like(host string) bool {
+	labels := strings.Split(host, ".")
+	if len(labels) != 4 {
+		return false
+	}
+	hasNonDecimalLabel := false
+	for _, label := range labels {
+		if isDecimal(label) {
+			continue
+		}
+		if len(label) < 3 || !strings.HasPrefix(label, "0x") {
+			return false
+		}
+		for _, r := range label[2:] {
+			if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+				return false
+			}
+		}
+		hasNonDecimalLabel = true
+	}
+	return hasNonDecimalLabel
+}
+
+func isDecimal(label string) bool {
+	if label == "" {
+		return false
+	}
+	for _, r := range label {
+		if r < '0' || r > '9' {
+			return false
 		}
 	}
 	return true

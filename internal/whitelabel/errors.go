@@ -5,7 +5,7 @@ import "fmt"
 type Code string
 
 const (
-	CodeInvalidRequest             Code = "invalid_request_error"
+	CodeInvalidRequest             Code = "invalid_request"
 	CodeMissingMaxTokens           Code = "missing_max_tokens"
 	CodeRequestTooLarge            Code = "request_too_large"
 	CodeGatewayUpstreamUnavailable Code = "gateway_upstream_unavailable"
@@ -43,15 +43,15 @@ func ErrUpstreamUnavailable(detail string) *Error {
 }
 
 type PublicAPIError struct {
-	Message string    `json:"message"`
-	Type    ErrorType `json:"type"`
-	Code    Code      `json:"code"`
+	Code      Code      `json:"code"`
+	Message   string    `json:"message"`
+	Type      ErrorType `json:"type"`
+	RequestID string    `json:"request_id"`
 }
 
 type PublicErrorResponse struct {
-	Status    int            `json:"-"`
-	Error     PublicAPIError `json:"error"`
-	RequestID string         `json:"request_id"`
+	Status int            `json:"-"`
+	Error  PublicAPIError `json:"error"`
 }
 
 // PublicError emits only fixed, client-safe values. It deliberately discards
@@ -79,8 +79,7 @@ func PublicError(err *Error, requestID string) PublicErrorResponse {
 		errorType = TypeInvalidRequest
 	}
 	return PublicErrorResponse{
-		Status:    status,
-		Error:     PublicAPIError{Message: message, Type: errorType, Code: err.Code},
-		RequestID: requestID,
+		Status: status,
+		Error:  PublicAPIError{Message: message, Type: errorType, Code: err.Code, RequestID: requestID},
 	}
 }

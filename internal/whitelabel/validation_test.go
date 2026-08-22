@@ -2,6 +2,7 @@ package whitelabel
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -26,8 +27,19 @@ func TestErrorResponseNeverLeaksUpstream(t *testing.T) {
 	if got.Error.Code != CodeGatewayUpstreamUnavailable || got.Error.Type != TypeAPI || got.Status != 503 {
 		t.Fatalf("unexpected public error: %#v", got)
 	}
-	if got.RequestID != "req_test" {
-		t.Fatalf("request ID = %q, want req_test", got.RequestID)
+	if got.Error.RequestID != "req_test" {
+		t.Fatalf("request ID = %q, want req_test", got.Error.RequestID)
+	}
+}
+
+func TestPublicInvalidRequestErrorMatchesContract(t *testing.T) {
+	raw, err := json.Marshal(PublicError(invalidRequest(CodeInvalidRequest), "req_test"))
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	const want = `{"error":{"code":"invalid_request","message":"Invalid request.","type":"invalid_request_error","request_id":"req_test"}}`
+	if string(raw) != want {
+		t.Fatalf("error JSON = %s, want %s", raw, want)
 	}
 }
 
@@ -35,9 +47,9 @@ func TestValidateRequestEnforcesChatContract(t *testing.T) {
 	valid := []byte(`{
 		"model":"example",
 		"messages":[{"role":"user","content":[{"type":"text","text":"hello"},{"type":"image_url","image_url":{"url":"https://example.com/image.png"}}]}],
-		"max_tokens":1,"n":128,"temperature":1,"top_p":1,"frequency_penalty":0,"presence_penalty":0,
+		"max_tokens":1,"n":128,"temperature":1.5,"top_p":1,"frequency_penalty":-1.5,"presence_penalty":1.5,"stream":true,"seed":42,
 		"stop":["a","b"],"tools":[{"type":"function","function":{"name":"lookup"}}],
-		"response_format":{"type":"json_object"},"stream_options":{"include_usage":true}
+		"response_format":{"type":"json_schema","json_schema":{"name":"answer","schema":{"type":"object"},"strict":true}},"stream_options":{"include_usage":true}
 	}`)
 	if err := ValidateRequest(valid, GatewayValidation); err != nil {
 		t.Fatalf("valid request rejected: %#v", err)
@@ -45,12 +57,20 @@ func TestValidateRequestEnforcesChatContract(t *testing.T) {
 
 	for _, body := range [][]byte{
 		[]byte(`{"model":"x","messages":[],"max_tokens":1,"unknown":true}`),
+		[]byte(`{"model":"x","messages":[],"max_tokens":1,"stream":"true"}`),
+		[]byte(`{"model":"x","messages":[],"max_tokens":1,"seed":1.5}`),
+		[]byte(`{"model":"x","messages":[],"max_tokens":1,"temperature":0}`),
 		[]byte(`{"model":"x","messages":[],"max_tokens":1,"temperature":2}`),
+		[]byte(`{"model":"x","messages":[],"max_tokens":1,"top_p":0}`),
+		[]byte(`{"model":"x","messages":[],"max_tokens":1,"frequency_penalty":-2}`),
+		[]byte(`{"model":"x","messages":[],"max_tokens":1,"presence_penalty":2}`),
 		[]byte(`{"model":"x","messages":[],"max_tokens":1,"n":129}`),
 		[]byte(`{"model":"x","messages":[],"max_tokens":1,"stop":["1","2","3","4","5"]}`),
 		[]byte(`{"model":"x","messages":[],"max_tokens":1,"tools":[{"type":"function","function":{}}]}`),
 		[]byte(`{"model":"x","messages":[],"max_tokens":1,"response_format":{"type":"xml"}}`),
 		[]byte(`{"model":"x","messages":[],"max_tokens":1,"response_format":{"type":"text","extra":true}}`),
+		[]byte(`{"model":"x","messages":[],"max_tokens":1,"response_format":{"type":"json_schema"}}`),
+		[]byte(`{"model":"x","messages":[],"max_tokens":1,"response_format":{"type":"json_schema","json_schema":{"name":"answer","schema":"not-an-object"}}}`),
 		[]byte(`{"model":"x","messages":[],"max_tokens":1,"stream_options":{"unexpected":true}}`),
 		[]byte(`{"model":"x","messages":[],"max_tokens":1,"stream_options":{"include_usage":"true"}}`),
 	} {
@@ -66,6 +86,7 @@ func TestValidateMediaURLRejectsLocalAndMappedAddresses(t *testing.T) {
 		"https://LOCALHOST/x", "https:///x", "https://:443/x", "https://example.com:0/x",
 		"https://192.0.2.1/x", "https://0.0.0.0/x", "https://10.0.0.1/x", "https://224.0.0.1/x",
 		"https://240.0.0.1/x", "https://999.1.1.1/x", "https://[fe80::1]/x", "https://[fc00::1]/x",
+		"https://0x7f.0x0.0x0.0x1/x", "https://0x7f.0.0.1/x",
 		"https://[::]/x", "https://[ff00::1]/x", "https://[2001:db8::1]/x",
 	} {
 		requireCode(t, ValidateMediaURL(raw), CodeInvalidRequest)
@@ -86,6 +107,13 @@ func TestValidateDataImageRejectsInvalidMimeSVGAndBase64(t *testing.T) {
 	}
 	if err := ValidateDataImage("data:image/png;base64,aGVsbG8="); err != nil {
 		t.Fatalf("valid PNG data image rejected: %#v", err)
+	}
+}
+
+func TestValidateDataImageAcceptsTenMiB(t *testing.T) {
+	raw := "data:image/png;base64," + base64.StdEncoding.EncodeToString(make([]byte, 10*1024*1024))
+	if err := ValidateDataImage(raw); err != nil {
+		t.Fatalf("10 MiB data image rejected: %#v", err)
 	}
 }
 
