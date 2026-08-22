@@ -119,7 +119,7 @@ func RegisterPlatform(r *gin.Engine, state *app.State) {
 		}
 		if body.Stream {
 			started := false
-			err := state.Platform.CompareStream(c.Request.Context(), state.DB, user, body.Models, params, func(b []byte) error {
+			err := state.Platform.CompareStream(c.Request.Context(), state.DB, user, body.Models, params, c.Writer.Header().Get("X-Request-ID"), func(b []byte) error {
 				if !started {
 					c.Header("Content-Type", "text/event-stream")
 					c.Header("Cache-Control", "no-cache")

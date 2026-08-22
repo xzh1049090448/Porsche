@@ -80,7 +80,7 @@ func TestCompareWhiteLabelStreamsKeepsOtherModelsRunningAfterOneFails(t *testing
 		Messages:       []map[string]interface{}{{"role": "user", "content": "hello"}},
 		MaxTokens:      intPtr(5),
 		WhiteLabelBody: []byte(`{"max_tokens":5}`),
-	}, func(frame []byte) error {
+	}, "req_compare_test", func(frame []byte) error {
 		outputMu.Lock()
 		defer outputMu.Unlock()
 		_, err := output.Write(frame)

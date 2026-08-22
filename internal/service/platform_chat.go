@@ -515,7 +515,7 @@ func (p *PlatformChatService) finishPlatformStream(db *gorm.DB, user *models.Use
 
 // CompareStream emits model_chunk SSE events while each selected model responds,
 // then stores the same conversation history as non-streaming compare requests.
-func (p *PlatformChatService) CompareStream(ctx context.Context, db *gorm.DB, user *models.User, modelsList []string, params ChatParams, write func([]byte) error) error {
+func (p *PlatformChatService) CompareStream(ctx context.Context, db *gorm.DB, user *models.User, modelsList []string, params ChatParams, requestID string, write func([]byte) error) error {
 	if err := validateCompareModels(modelsList); err != nil {
 		return err
 	}
@@ -541,7 +541,7 @@ func (p *PlatformChatService) CompareStream(ctx context.Context, db *gorm.DB, us
 		ragMsgs, datasetUsed = p.deps.RAG.BuildRAGMessages(trimmed, ids, lastUserQuery(trimmed))
 	}
 	if p.deps.WhiteLabel != nil {
-		return p.compareWhiteLabelStreams(ctx, db, user, modelsList, params, trimmed, ragMsgs, datasetUsed, write)
+		return p.compareWhiteLabelStreams(ctx, db, user, modelsList, params, trimmed, ragMsgs, datasetUsed, requestID, write)
 	}
 
 	client, err := p.platformClient()
@@ -575,20 +575,26 @@ func (p *PlatformChatService) CompareStream(ctx context.Context, db *gorm.DB, us
 // compareWhiteLabelStreams multiplexes independently projected model streams.
 // A single upstream failure produces a model_error event but never cancels the
 // other selected models; only the final coordinator writes [DONE].
-func (p *PlatformChatService) compareWhiteLabelStreams(ctx context.Context, db *gorm.DB, user *models.User, modelsList []string, params ChatParams, trimmed, ragMsgs []map[string]interface{}, datasetUsed bool, write func([]byte) error) error {
+func (p *PlatformChatService) compareWhiteLabelStreams(ctx context.Context, db *gorm.DB, user *models.User, modelsList []string, params ChatParams, trimmed, ragMsgs []map[string]interface{}, datasetUsed bool, requestID string, write func([]byte) error) error {
 	results := make([]map[string]interface{}, len(modelsList))
 	var writers sync.Mutex
 	var workers sync.WaitGroup
+	var streamWriteErr error
 	hasOutput := false
 	pendingFailures := make([]string, 0, len(modelsList))
 	emitFailure := func(model string) {
 		writers.Lock()
 		defer writers.Unlock()
+		if streamWriteErr != nil {
+			return
+		}
 		if !hasOutput {
 			pendingFailures = append(pendingFailures, model)
 			return
 		}
-		_ = writeCompareError(write, model)
+		if err := writeCompareError(write, model, requestID); err != nil {
+			streamWriteErr = err
+		}
 	}
 	emitChunk := func(model string, frame []byte) error {
 		payload := bytes.TrimSpace(bytes.TrimPrefix(frame, []byte("data:")))
@@ -597,16 +603,23 @@ func (p *PlatformChatService) compareWhiteLabelStreams(ctx context.Context, db *
 		}
 		writers.Lock()
 		defer writers.Unlock()
+		if streamWriteErr != nil {
+			return streamWriteErr
+		}
 		if !hasOutput {
 			hasOutput = true
 			for _, failedModel := range pendingFailures {
-				if err := writeCompareError(write, failedModel); err != nil {
+				if err := writeCompareError(write, failedModel, requestID); err != nil {
 					return err
 				}
 			}
 			pendingFailures = nil
 		}
-		return writeCompareEvent(write, "chunk", map[string]interface{}{"model": model, "chunk": json.RawMessage(payload)})
+		if err := writeCompareEvent(write, "chunk", map[string]interface{}{"model": model, "chunk": json.RawMessage(payload)}); err != nil {
+			streamWriteErr = err
+			return err
+		}
+		return nil
 	}
 	for index, model := range modelsList {
 		index, model := index, model
@@ -645,14 +658,26 @@ func (p *PlatformChatService) compareWhiteLabelStreams(ctx context.Context, db *
 				result["tokens"] = max(1, len([]rune(content.String()))/2)
 			}
 			writers.Lock()
+			if streamWriteErr != nil {
+				writers.Unlock()
+				results[index] = result
+				return
+			}
 			if !hasOutput {
 				hasOutput = true
 				for _, failedModel := range pendingFailures {
-					_ = writeCompareError(write, failedModel)
+					if err := writeCompareError(write, failedModel, requestID); err != nil {
+						streamWriteErr = err
+						writers.Unlock()
+						results[index] = result
+						return
+					}
 				}
 				pendingFailures = nil
 			}
-			_ = writeCompareEvent(write, "model_done", map[string]interface{}{"model": model})
+			if err := writeCompareEvent(write, "model_done", map[string]interface{}{"model": model}); err != nil {
+				streamWriteErr = err
+			}
 			writers.Unlock()
 			results[index] = result
 		}()
@@ -660,7 +685,11 @@ func (p *PlatformChatService) compareWhiteLabelStreams(ctx context.Context, db *
 	workers.Wait()
 	writers.Lock()
 	noOutput := !hasOutput
+	writeErr := streamWriteErr
 	writers.Unlock()
+	if writeErr != nil {
+		return writeErr
+	}
 	if noOutput {
 		return whitelabel.ErrUpstreamUnavailable("all compare streams failed before first frame")
 	}
@@ -679,8 +708,8 @@ func writeCompareChunk(write func([]byte) error, model string, frame []byte) err
 	return writeCompareEvent(write, "chunk", map[string]interface{}{"model": model, "chunk": json.RawMessage(payload)})
 }
 
-func writeCompareError(write func([]byte) error, model string) error {
-	public := whitelabel.PublicError(whitelabel.ErrUpstreamUnavailable("compare stream failed"), "")
+func writeCompareError(write func([]byte) error, model, requestID string) error {
+	public := whitelabel.PublicError(whitelabel.ErrUpstreamUnavailable("compare stream failed"), requestID)
 	return writeCompareEvent(write, "model_error", map[string]interface{}{"model": model, "error": public.Error})
 }
 
