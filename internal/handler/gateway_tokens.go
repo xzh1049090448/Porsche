@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -120,46 +119,27 @@ func registerGatewayRoutes(r *gin.Engine, state *app.State) {
 			c.JSON(http.StatusOK, completion)
 			return
 		}
-		buf := make([]byte, 4096)
-		n, readErr := response.Body.Read(buf)
-		if n == 0 {
-			gatewayWhiteLabelError(c, whitelabel.ErrUpstreamUnavailable("stream ended before first payload"))
-			return
-		}
-		c.Header("Content-Type", "text/event-stream")
-		c.Header("Cache-Control", "no-cache")
-		c.Header("Connection", "keep-alive")
-		chunk := buf[:n]
-		sawDone := bytes.Contains(chunk, []byte("[DONE]"))
-		if _, writeErr := c.Writer.Write(chunk); writeErr != nil {
-			return
-		}
-		c.Writer.Flush()
-		if readErr == io.EOF && sawDone {
-			return
-		}
-		if readErr != nil {
-			gatewaySSEError(c)
-			return
-		}
-		for {
-			n, err := response.Body.Read(buf)
-			if n > 0 {
-				chunk := buf[:n]
-				sawDone = sawDone || bytes.Contains(chunk, []byte("[DONE]"))
-				if _, writeErr := c.Writer.Write(chunk); writeErr != nil {
-					return
-				}
-				c.Writer.Flush()
+		started := false
+		streamErr := state.WhiteLabel.ProjectChatCompletionSSE(response.Body, modelID, func(frame []byte) error {
+			if !started {
+				c.Header("Content-Type", "text/event-stream")
+				c.Header("Cache-Control", "no-cache")
+				c.Header("Connection", "keep-alive")
+				started = true
 			}
-			if err == io.EOF && sawDone {
-				return
-			}
-			if err != nil || n == 0 {
-				gatewaySSEError(c)
-				return
-			}
+			_, writeErr := c.Writer.Write(frame)
+			c.Writer.Flush()
+			return writeErr
+		})
+		if streamErr == nil {
+			return
 		}
+		if !started {
+			gatewayWhiteLabelError(c, streamErr)
+			return
+		}
+		gatewaySSEError(c)
+		return
 	})
 }
 

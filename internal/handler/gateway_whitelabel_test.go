@@ -101,7 +101,7 @@ func TestGatewaySSEPostFirstChunkEmitsErrorAndDone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(`{"model":"model-a","messages":[{"role":"user","content":"hello"}],"max_tokens":1,"stream":true}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(`{"model":"model-a","messages":[{"role":"user","content":"hello"}],"max_tokens":1,"stream":true,"seed":4}`))
 	req.Header.Set("Authorization", "Bearer "+secret)
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -109,9 +109,59 @@ func TestGatewaySSEPostFirstChunkEmitsErrorAndDone(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
-	if got := rec.Body.String(); !bytes.Contains([]byte(got), []byte("data: first\n\n")) || !bytes.Contains([]byte(got), []byte("event: error\n")) || !bytes.Contains([]byte(got), []byte("data: [DONE]\n\n")) {
+	if got := rec.Body.String(); !bytes.Contains([]byte(got), []byte(`data: {"id":"safe","object":"chat.completion.chunk","created":1,"model":"model-a","choices":[{"index":0,"delta":{"content":"first"},"finish_reason":null}]}`)) || !bytes.Contains([]byte(got), []byte("event: error\n")) || !bytes.Contains([]byte(got), []byte("data: [DONE]\n\n")) {
 		t.Fatalf("SSE boundary = %q", got)
 	}
+}
+
+func TestGatewaySSEProjectsChunksAndDropsUpstreamFields(t *testing.T) {
+	state, _, _ := gatewayWhiteLabelState(t, `{"data":[{"id":"model-a"}]}`)
+	user := &models.User{Phone: "13900200011", Status: models.UserStatusActive}
+	if err := state.DB.Create(user).Error; err != nil {
+		t.Fatal(err)
+	}
+	_, secret, err := state.GatewayTokens.Create(user, service.GatewayTokenCreateInput{Name: "stream-project", AllowedModels: models.JSONSlice{"model-a"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(strings.Replace(validGatewayChatBody(true), `"seed":1`, `"seed":3`, 1)))
+	req.Header.Set("Authorization", "Bearer "+secret)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	router.New(state).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	got := rec.Body.String()
+	for _, secret := range []string{"top-secret", "delta-secret", "tool-secret", "function-secret", "event-secret", "header-secret"} {
+		if strings.Contains(got, secret) {
+			t.Fatalf("stream leaked %q: %s", secret, got)
+		}
+	}
+	if !strings.Contains(got, `"model":"model-a"`) || !strings.Contains(got, `"content":"hello"`) || !strings.Contains(got, `"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{}`) || !strings.Contains(got, "data: [DONE]\n\n") {
+		t.Fatalf("allowed projection missing: %s", got)
+	}
+}
+
+func TestGatewaySSEMalformedFirstChunkReturnsJSON503(t *testing.T) {
+	state, _, _ := gatewayWhiteLabelState(t, `{"data":[{"id":"model-a"}]}`)
+	user := &models.User{Phone: "13900200012", Status: models.UserStatusActive}
+	if err := state.DB.Create(user).Error; err != nil {
+		t.Fatal(err)
+	}
+	_, secret, err := state.GatewayTokens.Create(user, service.GatewayTokenCreateInput{Name: "stream-malformed", AllowedModels: models.JSONSlice{"model-a"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(strings.Replace(validGatewayChatBody(true), `"seed":1`, `"seed":5`, 1)))
+	req.Header.Set("Authorization", "Bearer "+secret)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	router.New(state).ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable || rec.Header().Get("Content-Type") != "application/json; charset=utf-8" {
+		t.Fatalf("status=%d content-type=%q body=%s", rec.Code, rec.Header().Get("Content-Type"), rec.Body.String())
+	}
+	assertGatewayError(t, rec, "api_error")
 }
 
 func TestGatewaySSEBeforeFirstPayloadReturnsJSONError(t *testing.T) {
@@ -365,6 +415,19 @@ func gatewayWhiteLabelState(t *testing.T, catalog string) (*app.State, *httptest
 			if bytes.Contains(body, []byte(`"stream":true`)) {
 				w.Header().Set("Content-Type", "text/event-stream")
 				if bytes.Contains(body, []byte(`"seed":0`)) {
+					return
+				}
+				if bytes.Contains(body, []byte(`"seed":3`)) {
+					_, _ = w.Write([]byte("event: event-secret\nX-Upstream: header-secret\ndata: {\"id\":\"safe\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"upstream\",\"top\":\"top-secret\",\"choices\":[{\"index\":0,\"finish_reason\":null,\"delta\":{\"content\":\"hello\",\"delta_secret\":\"delta-secret\",\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"tool_secret\":\"tool-secret\",\"function\":{\"name\":\"lookup\",\"arguments\":\"{}\",\"function_secret\":\"function-secret\"}}]} }],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":2,\"total_tokens\":3,\"secret\":\"usage-secret\"}}\n\n"))
+					_, _ = w.Write([]byte("data: [DONE]\n\n"))
+					return
+				}
+				if bytes.Contains(body, []byte(`"seed":4`)) {
+					_, _ = w.Write([]byte("data: {\"id\":\"safe\",\"object\":\"chat.completion.chunk\",\"created\":1,\"choices\":[{\"index\":0,\"delta\":{\"content\":\"first\"},\"finish_reason\":null}]}\n\ndata: not-json\n\n"))
+					return
+				}
+				if bytes.Contains(body, []byte(`"seed":5`)) {
+					_, _ = w.Write([]byte("data: {\"id\":\"safe\",\"object\":\"chat.completion.chunk\",\"created\":1,\"choices\":[{\"index\":0,\"delta\":{\"content\":123},\"finish_reason\":null}]}\n\n"))
 					return
 				}
 				_, _ = w.Write([]byte("data: first\n\n"))
