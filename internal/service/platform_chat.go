@@ -613,6 +613,8 @@ func (p *PlatformChatService) compareWhiteLabelStreams(ctx context.Context, db *
 			hasOutput = true
 			for _, failedModel := range pendingFailures {
 				if err := writeCompareError(write, failedModel, requestID); err != nil {
+					streamWriteErr = err
+					cancel()
 					return err
 				}
 			}
