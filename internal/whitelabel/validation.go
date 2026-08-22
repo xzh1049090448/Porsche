@@ -53,6 +53,7 @@ type contentPart struct {
 	Type     string    `json:"type"`
 	Text     *string   `json:"text"`
 	ImageURL *imageURL `json:"image_url"`
+	VideoURL *imageURL `json:"video_url"`
 }
 
 type imageURL struct {
@@ -92,6 +93,9 @@ func ValidateRequest(body []byte, mode ValidationMode) *Error {
 	if len(body) > MaxRequestBodyBytes {
 		return &Error{Code: CodeRequestTooLarge, Status: 413, Type: TypeInvalidRequest}
 	}
+	if hasUnknownTopLevelField(body) {
+		return invalidRequest(CodeUnsupportedParameter)
+	}
 	var request chatRequest
 	if err := decodeStrict(body, &request); err != nil {
 		return invalidRequest(CodeInvalidRequest)
@@ -102,7 +106,7 @@ func ValidateRequest(body []byte, mode ValidationMode) *Error {
 	if request.MaxTokens == nil {
 		return invalidRequest(CodeMissingMaxTokens)
 	}
-	if !validInteger(*request.MaxTokens, 1, 16384) || !validOptionalInteger(request.N, 1, 128) {
+	if !validInteger(*request.MaxTokens, 1, math.MaxInt64) || !validOptionalInteger(request.N, 1, 128) {
 		return invalidRequest(CodeInvalidRequest)
 	}
 	if mode == PlatformValidation && request.N != nil && *request.N != "1" {
@@ -125,6 +129,25 @@ func ValidateRequest(body []byte, mode ValidationMode) *Error {
 		}
 	}
 	return nil
+}
+
+var chatRequestFields = map[string]struct{}{
+	"model": {}, "messages": {}, "max_tokens": {}, "n": {}, "temperature": {}, "top_p": {},
+	"frequency_penalty": {}, "presence_penalty": {}, "stop": {}, "tools": {}, "response_format": {},
+	"stream_options": {}, "stream": {}, "seed": {},
+}
+
+func hasUnknownTopLevelField(body []byte) bool {
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(body, &fields) != nil {
+		return false
+	}
+	for field := range fields {
+		if _, known := chatRequestFields[field]; !known {
+			return true
+		}
+	}
+	return false
 }
 
 func decodeStrict(raw []byte, dest any) error {
@@ -202,11 +225,15 @@ func validateContent(raw json.RawMessage) bool {
 		}
 		switch part.Type {
 		case "text":
-			if part.Text == nil || part.ImageURL != nil || len(*part.Text) > MaxTextContentBytes {
+			if part.Text == nil || part.ImageURL != nil || part.VideoURL != nil || len(*part.Text) > MaxTextContentBytes {
 				return false
 			}
 		case "image_url":
-			if part.Text != nil || part.ImageURL == nil || validateImageSource(part.ImageURL.URL) != nil {
+			if part.Text != nil || part.ImageURL == nil || part.VideoURL != nil || validateImageSource(part.ImageURL.URL) != nil {
+				return false
+			}
+		case "video_url":
+			if part.Text != nil || part.ImageURL != nil || part.VideoURL == nil || ValidateMediaURL(part.VideoURL.URL) != nil {
 				return false
 			}
 		default:
@@ -337,7 +364,7 @@ func ValidateMediaURL(raw string) *Error {
 		if !publicAddress(address) {
 			return invalidRequest(CodeInvalidRequest)
 		}
-	} else if numericAddressLike(host) || nonDecimalIPv4Like(host) || !validHostname(host) {
+	} else if numericAddressLike(host) || nonDecimalIPv4Like(host) || singleLabelHexIPv4Like(host) || !validHostname(host) {
 		return invalidRequest(CodeInvalidRequest)
 	}
 	return nil
@@ -401,6 +428,18 @@ func nonDecimalIPv4Like(host string) bool {
 		hasNonDecimalLabel = true
 	}
 	return hasNonDecimalLabel
+}
+
+func singleLabelHexIPv4Like(host string) bool {
+	if strings.Contains(host, ".") || !strings.HasPrefix(host, "0x") || len(host) == 2 {
+		return false
+	}
+	for _, r := range host[2:] {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 func isDecimal(label string) bool {

@@ -54,9 +54,12 @@ func TestValidateRequestEnforcesChatContract(t *testing.T) {
 	if err := ValidateRequest(valid, GatewayValidation); err != nil {
 		t.Fatalf("valid request rejected: %#v", err)
 	}
+	if err := ValidateRequest([]byte(`{"model":"x","messages":[],"max_tokens":16385}`), GatewayValidation); err != nil {
+		t.Fatalf("large positive max_tokens rejected: %#v", err)
+	}
+	requireCode(t, ValidateRequest([]byte(`{"model":"x","messages":[],"max_tokens":1,"unknown":true}`), GatewayValidation), Code("unsupported_parameter"))
 
 	for _, body := range [][]byte{
-		[]byte(`{"model":"x","messages":[],"max_tokens":1,"unknown":true}`),
 		[]byte(`{"model":"x","messages":[],"max_tokens":1,"stream":"true"}`),
 		[]byte(`{"model":"x","messages":[],"max_tokens":1,"seed":1.5}`),
 		[]byte(`{"model":"x","messages":[],"max_tokens":1,"temperature":0}`),
@@ -86,13 +89,30 @@ func TestValidateMediaURLRejectsLocalAndMappedAddresses(t *testing.T) {
 		"https://LOCALHOST/x", "https:///x", "https://:443/x", "https://example.com:0/x",
 		"https://192.0.2.1/x", "https://0.0.0.0/x", "https://10.0.0.1/x", "https://224.0.0.1/x",
 		"https://240.0.0.1/x", "https://999.1.1.1/x", "https://[fe80::1]/x", "https://[fc00::1]/x",
-		"https://0x7f.0x0.0x0.0x1/x", "https://0x7f.0.0.1/x",
+		"https://0x7f.0x0.0x0.0x1/x", "https://0x7f.0.0.1/x", "https://0x7f000001/x",
 		"https://[::]/x", "https://[ff00::1]/x", "https://[2001:db8::1]/x",
 	} {
 		requireCode(t, ValidateMediaURL(raw), CodeInvalidRequest)
 	}
 	if err := ValidateMediaURL("https://cdn.example.com:443/path"); err != nil {
 		t.Fatalf("safe https URL rejected: %#v", err)
+	}
+}
+
+func TestValidateRequestAcceptsSafeVideoURLAndRejectsUnsafeSources(t *testing.T) {
+	valid := []byte(`{"model":"x","messages":[{"role":"user","content":[{"type":"video_url","video_url":{"url":"https://cdn.example.com/video.mp4"}}]}],"max_tokens":1}`)
+	if err := ValidateRequest(valid, GatewayValidation); err != nil {
+		t.Fatalf("safe video_url rejected: %#v", err)
+	}
+	for _, source := range []string{
+		"data:video/mp4;base64,AAAA",
+		"http://cdn.example.com/video.mp4",
+		"https://127.0.0.1/video.mp4",
+		"https://u:p@cdn.example.com/video.mp4",
+		"https://0x7f000001/video.mp4",
+	} {
+		body := []byte(`{"model":"x","messages":[{"role":"user","content":[{"type":"video_url","video_url":{"url":` + mustJSON(t, source) + `}}]}],"max_tokens":1}`)
+		requireCode(t, ValidateRequest(body, GatewayValidation), CodeInvalidRequest)
 	}
 }
 
@@ -140,6 +160,15 @@ func requireCode(t *testing.T, err *Error, want Code) {
 	if err == nil || err.Code != want {
 		t.Fatalf("code = %#v, want %q", err, want)
 	}
+}
+
+func mustJSON(t *testing.T, value string) string {
+	t.Helper()
+	raw, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("Marshal(%q) error = %v", value, err)
+	}
+	return string(raw)
 }
 
 func oversizedPNGDataURI() string {

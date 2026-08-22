@@ -6,6 +6,7 @@ type Code string
 
 const (
 	CodeInvalidRequest             Code = "invalid_request"
+	CodeUnsupportedParameter       Code = "unsupported_parameter"
 	CodeMissingMaxTokens           Code = "missing_max_tokens"
 	CodeRequestTooLarge            Code = "request_too_large"
 	CodeGatewayUpstreamUnavailable Code = "gateway_upstream_unavailable"
