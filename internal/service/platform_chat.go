@@ -576,6 +576,8 @@ func (p *PlatformChatService) CompareStream(ctx context.Context, db *gorm.DB, us
 // A single upstream failure produces a model_error event but never cancels the
 // other selected models; only the final coordinator writes [DONE].
 func (p *PlatformChatService) compareWhiteLabelStreams(ctx context.Context, db *gorm.DB, user *models.User, modelsList []string, params ChatParams, trimmed, ragMsgs []map[string]interface{}, datasetUsed bool, requestID string, write func([]byte) error) error {
+	streamCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	results := make([]map[string]interface{}, len(modelsList))
 	var writers sync.Mutex
 	var workers sync.WaitGroup
@@ -594,6 +596,7 @@ func (p *PlatformChatService) compareWhiteLabelStreams(ctx context.Context, db *
 		}
 		if err := writeCompareError(write, model, requestID); err != nil {
 			streamWriteErr = err
+			cancel()
 		}
 	}
 	emitChunk := func(model string, frame []byte) error {
@@ -617,6 +620,7 @@ func (p *PlatformChatService) compareWhiteLabelStreams(ctx context.Context, db *
 		}
 		if err := writeCompareEvent(write, "chunk", map[string]interface{}{"model": model, "chunk": json.RawMessage(payload)}); err != nil {
 			streamWriteErr = err
+			cancel()
 			return err
 		}
 		return nil
@@ -634,7 +638,7 @@ func (p *PlatformChatService) compareWhiteLabelStreams(ctx context.Context, db *
 				results[index] = result
 				return
 			}
-			resp, upstreamErr := p.deps.WhiteLabel.Chat(ctx, payload)
+			resp, upstreamErr := p.deps.WhiteLabel.Chat(streamCtx, payload)
 			if upstreamErr != nil {
 				result["error"] = "upstream unavailable"
 				emitFailure(model)
@@ -668,6 +672,7 @@ func (p *PlatformChatService) compareWhiteLabelStreams(ctx context.Context, db *
 				for _, failedModel := range pendingFailures {
 					if err := writeCompareError(write, failedModel, requestID); err != nil {
 						streamWriteErr = err
+						cancel()
 						writers.Unlock()
 						results[index] = result
 						return
@@ -677,6 +682,7 @@ func (p *PlatformChatService) compareWhiteLabelStreams(ctx context.Context, db *
 			}
 			if err := writeCompareEvent(write, "model_done", map[string]interface{}{"model": model}); err != nil {
 				streamWriteErr = err
+				cancel()
 			}
 			writers.Unlock()
 			results[index] = result

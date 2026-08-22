@@ -84,6 +84,23 @@ func TestPlatformStreamFailureBeforeFirstFrameReturnsJSON(t *testing.T) {
 	}
 }
 
+func TestAdminHealthCheckRejectsConcurrentSameModel(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	state := newPlatformWhiteLabelTestState(t)
+	state.Settings.AdminToken = "admin-test"
+	modelHealthChecks.Store("model-a", struct{}{})
+	t.Cleanup(func() { modelHealthChecks.Delete("model-a") })
+	engine := gin.New()
+	RegisterAdmin(engine, state)
+	req := httptest.NewRequest(http.MethodPost, "/admin/models/model-a/health-check", nil)
+	req.Header.Set("Authorization", "Bearer admin-test")
+	rec := httptest.NewRecorder()
+	engine.ServeHTTP(rec, req)
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "health_check_in_progress") {
+		t.Fatalf("expected 409 concurrent health check, status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func newPlatformWhiteLabelTestState(t *testing.T) *app.State {
 	t.Helper()
 	dir := t.TempDir()
