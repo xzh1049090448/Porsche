@@ -60,6 +60,27 @@ func TestPlatformModelDetailHidesUnauthorizedAs404(t *testing.T) {
 	}
 }
 
+// A failure before the platform emits an SSE frame must remain a normal JSON
+// API error, so clients can distinguish it from a truncated live stream.
+func TestPlatformStreamFailureBeforeFirstFrameReturnsJSON(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	state := newPlatformWhiteLabelTestState(t)
+	user := &models.User{Phone: "13900139005", Status: models.UserStatusActive}
+	if err := state.DB.Create(user).Error; err != nil {
+		t.Fatal(err)
+	}
+	engine := gin.New()
+	RegisterPlatform(engine, state)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/platform/chat/completions", strings.NewReader(`{"model":"model-a","messages":[{"role":"user","content":"hi"}],"max_tokens":5,"stream":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+platformJWT(t, state, user))
+	rec := httptest.NewRecorder()
+	engine.ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable || !strings.Contains(rec.Body.String(), `"error"`) || strings.Contains(rec.Body.String(), "data:") {
+		t.Fatalf("expected pre-frame JSON 503, status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func newPlatformWhiteLabelTestState(t *testing.T) *app.State {
 	t.Helper()
 	dir := t.TempDir()

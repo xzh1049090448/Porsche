@@ -425,8 +425,16 @@ func (p *PlatformChatService) Stream(ctx context.Context, db *gorm.DB, user *mod
 		"dataset_attribution": attr,
 	}
 	metaBytes, _ := json.Marshal(meta)
-	if err := write([]byte(fmt.Sprintf("data: %s\n\n", metaBytes))); err != nil {
-		return err
+	metaFrame := []byte(fmt.Sprintf("data: %s\n\n", metaBytes))
+	metaSent := false
+	emitFrame := func(frame []byte) error {
+		if !metaSent {
+			if err := write(metaFrame); err != nil {
+				return err
+			}
+			metaSent = true
+		}
+		return write(frame)
 	}
 
 	body := gateway.ChatCompletionRequest{
@@ -449,7 +457,7 @@ func (p *PlatformChatService) Stream(ctx context.Context, db *gorm.DB, user *mod
 		var content strings.Builder
 		streamErr := p.deps.WhiteLabel.ProjectChatCompletionSSE(resp.Body, params.Model, func(frame []byte) error {
 			content.WriteString(parseSSEDelta(frame))
-			return write(frame)
+			return emitFrame(frame)
 		})
 		if streamErr != nil {
 			return streamErr
@@ -472,7 +480,9 @@ func (p *PlatformChatService) Stream(ctx context.Context, db *gorm.DB, user *mod
 		n, readErr := resp.Body.Read(buf)
 		if n > 0 {
 			chunk := buf[:n]
-			_ = write(chunk)
+			if err := emitFrame(chunk); err != nil {
+				return err
+			}
 			content.WriteString(parseSSEDelta(chunk))
 		}
 		if readErr == io.EOF {
@@ -569,6 +579,35 @@ func (p *PlatformChatService) compareWhiteLabelStreams(ctx context.Context, db *
 	results := make([]map[string]interface{}, len(modelsList))
 	var writers sync.Mutex
 	var workers sync.WaitGroup
+	hasOutput := false
+	pendingFailures := make([]string, 0, len(modelsList))
+	emitFailure := func(model string) {
+		writers.Lock()
+		defer writers.Unlock()
+		if !hasOutput {
+			pendingFailures = append(pendingFailures, model)
+			return
+		}
+		_ = writeCompareError(write, model)
+	}
+	emitChunk := func(model string, frame []byte) error {
+		payload := bytes.TrimSpace(bytes.TrimPrefix(frame, []byte("data:")))
+		if bytes.Equal(payload, []byte("[DONE]")) {
+			return nil
+		}
+		writers.Lock()
+		defer writers.Unlock()
+		if !hasOutput {
+			hasOutput = true
+			for _, failedModel := range pendingFailures {
+				if err := writeCompareError(write, failedModel); err != nil {
+					return err
+				}
+			}
+			pendingFailures = nil
+		}
+		return writeCompareEvent(write, "chunk", map[string]interface{}{"model": model, "chunk": json.RawMessage(payload)})
+	}
 	for index, model := range modelsList {
 		index, model := index, model
 		workers.Add(1)
@@ -585,9 +624,7 @@ func (p *PlatformChatService) compareWhiteLabelStreams(ctx context.Context, db *
 			resp, upstreamErr := p.deps.WhiteLabel.Chat(ctx, payload)
 			if upstreamErr != nil {
 				result["error"] = "upstream unavailable"
-				writers.Lock()
-				_ = writeCompareError(write, model)
-				writers.Unlock()
+				emitFailure(model)
 				results[index] = result
 				return
 			}
@@ -595,15 +632,11 @@ func (p *PlatformChatService) compareWhiteLabelStreams(ctx context.Context, db *
 			var content strings.Builder
 			streamErr := p.deps.WhiteLabel.ProjectChatCompletionSSE(resp.Body, model, func(frame []byte) error {
 				content.WriteString(parseSSEDelta(frame))
-				writers.Lock()
-				defer writers.Unlock()
-				return writeCompareChunk(write, model, frame)
+				return emitChunk(model, frame)
 			})
 			if streamErr != nil {
 				result["error"] = "upstream unavailable"
-				writers.Lock()
-				_ = writeCompareError(write, model)
-				writers.Unlock()
+				emitFailure(model)
 				results[index] = result
 				return
 			}
@@ -612,12 +645,25 @@ func (p *PlatformChatService) compareWhiteLabelStreams(ctx context.Context, db *
 				result["tokens"] = max(1, len([]rune(content.String()))/2)
 			}
 			writers.Lock()
+			if !hasOutput {
+				hasOutput = true
+				for _, failedModel := range pendingFailures {
+					_ = writeCompareError(write, failedModel)
+				}
+				pendingFailures = nil
+			}
 			_ = writeCompareEvent(write, "model_done", map[string]interface{}{"model": model})
 			writers.Unlock()
 			results[index] = result
 		}()
 	}
 	workers.Wait()
+	writers.Lock()
+	noOutput := !hasOutput
+	writers.Unlock()
+	if noOutput {
+		return whitelabel.ErrUpstreamUnavailable("all compare streams failed before first frame")
+	}
 	_, persistErr := p.persistCompareExchange(db, user, modelsList, params, trimmed, results, datasetUsed)
 	if persistErr != nil {
 		return persistErr

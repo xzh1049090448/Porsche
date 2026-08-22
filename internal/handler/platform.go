@@ -64,18 +64,28 @@ func RegisterPlatform(r *gin.Engine, state *app.State) {
 			c.Header("Content-Type", "text/event-stream")
 			c.Header("Cache-Control", "no-cache")
 			c.Header("Connection", "keep-alive")
+			started := false
 			err := state.Platform.Stream(c.Request.Context(), state.DB, user, params, func(b []byte) error {
+				started = true
 				_, werr := c.Writer.Write(b)
 				c.Writer.Flush()
 				return werr
 			})
 			if err != nil {
-				platformSSEError(c)
+				if !started {
+					platformStreamPreError(c, err)
+				} else {
+					platformSSEError(c)
+				}
 			}
 			return
 		}
 		result, err := state.Platform.Chat(c.Request.Context(), state.DB, user, params)
 		if err != nil {
+			if whiteLabelErr, ok := err.(*whitelabel.Error); ok {
+				platformWhiteLabelError(c, whiteLabelErr)
+				return
+			}
 			code, msg := service.StatusFromError(err)
 			httpx.AbortJSON(c, code, msg)
 			return
@@ -109,24 +119,42 @@ func RegisterPlatform(r *gin.Engine, state *app.State) {
 			c.Header("Content-Type", "text/event-stream")
 			c.Header("Cache-Control", "no-cache")
 			c.Header("Connection", "keep-alive")
+			started := false
 			err := state.Platform.CompareStream(c.Request.Context(), state.DB, user, body.Models, params, func(b []byte) error {
+				started = true
 				_, werr := c.Writer.Write(b)
 				c.Writer.Flush()
 				return werr
 			})
 			if err != nil {
-				platformSSEError(c)
+				if !started {
+					platformStreamPreError(c, err)
+				} else {
+					platformSSEError(c)
+				}
 			}
 			return
 		}
 		result, err := state.Platform.Compare(c.Request.Context(), state.DB, user, body.Models, params)
 		if err != nil {
+			if whiteLabelErr, ok := err.(*whitelabel.Error); ok {
+				platformWhiteLabelError(c, whiteLabelErr)
+				return
+			}
 			code, msg := service.StatusFromError(err)
 			httpx.AbortJSON(c, code, msg)
 			return
 		}
 		c.JSON(http.StatusOK, result)
 	})
+}
+
+func platformStreamPreError(c *gin.Context, err error) {
+	if whiteLabelErr, ok := err.(*whitelabel.Error); ok {
+		platformWhiteLabelError(c, whiteLabelErr)
+		return
+	}
+	platformWhiteLabelError(c, whitelabel.ErrUpstreamUnavailable("platform stream failed"))
 }
 
 // decodePlatformRequest separates local conversation/RAG fields from the
