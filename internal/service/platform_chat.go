@@ -1,11 +1,13 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/porsche/ai-gateway-go/internal/config"
@@ -13,17 +15,73 @@ import (
 	"github.com/porsche/ai-gateway-go/internal/models"
 	"github.com/porsche/ai-gateway-go/internal/rag"
 	"github.com/porsche/ai-gateway-go/internal/registry"
+	"github.com/porsche/ai-gateway-go/internal/whitelabel"
 	"gorm.io/gorm"
 )
 
 type PlatformDeps struct {
-	Settings *config.Settings
-	DB       *gorm.DB
-	Models   *registry.ModelRegistry
-	Clients  *registry.ClientRegistry
-	Gateway  *gateway.Service
-	RAG      *rag.Engine
-	Billing  *BillingService
+	Settings   *config.Settings
+	DB         *gorm.DB
+	Models     *registry.ModelRegistry
+	Clients    *registry.ClientRegistry
+	Gateway    *gateway.Service
+	RAG        *rag.Engine
+	Billing    *BillingService
+	WhiteLabel *whitelabel.WhiteLabelService
+}
+
+// whiteLabelCompletion sends only the platform's supported completion fields
+// to the fixed white-label adapter, then projects the response before it can
+// be persisted or returned. No provider response is treated as opaque data.
+func (p *PlatformChatService) whiteLabelCompletion(ctx context.Context, validated []byte, body gateway.ChatCompletionRequest) (map[string]interface{}, error) {
+	if p.deps.WhiteLabel == nil {
+		return nil, errBadRequest("模型服务不可用")
+	}
+	payload, err := whiteLabelPayload(validated, body)
+	if err != nil {
+		return nil, err
+	}
+	resp, upstreamErr := p.deps.WhiteLabel.Chat(ctx, payload)
+	if upstreamErr != nil {
+		return nil, upstreamErr
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, whitelabel.ErrUpstreamUnavailable("chat body read failed")
+	}
+	completion, completionErr := p.deps.WhiteLabel.ProjectChatCompletion(raw, body.Model)
+	if completionErr != nil {
+		return nil, completionErr
+	}
+	projected, err := json.Marshal(completion)
+	if err != nil {
+		return nil, err
+	}
+	var out map[string]interface{}
+	if err := json.Unmarshal(projected, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func whiteLabelPayload(validated []byte, body gateway.ChatCompletionRequest) ([]byte, error) {
+	// Keep every already-validated OpenAI parameter (top_p, tools, response
+	// format, etc.) while replacing only the model/messages that RAG prepared.
+	fields := map[string]json.RawMessage{}
+	if len(validated) > 0 {
+		if err := json.Unmarshal(validated, &fields); err != nil {
+			return nil, err
+		}
+	}
+	model, _ := json.Marshal(body.Model)
+	messages, _ := json.Marshal(body.Messages)
+	fields["model"], fields["messages"] = model, messages
+	if body.Stream {
+		stream, _ := json.Marshal(true)
+		fields["stream"] = stream
+	}
+	return json.Marshal(fields)
 }
 
 type PlatformChatService struct {
@@ -76,6 +134,29 @@ type ChatParams struct {
 	ContextWindow  *int
 	DatasetEnabled bool
 	DatasetIDs     []int
+	WhiteLabelBody []byte
+}
+
+// validateCompareModels applies the platform's deliberately small fan-out
+// limit before billing, persistence, or any upstream request is attempted.
+func validateCompareModels(modelsList []string) error {
+	if len(modelsList) == 0 {
+		return errBadRequest("至少选择一个模型")
+	}
+	if len(modelsList) > 3 {
+		return errBadRequest("compare_model_limit_exceeded")
+	}
+	seen := make(map[string]struct{}, len(modelsList))
+	for _, model := range modelsList {
+		if strings.TrimSpace(model) == "" {
+			return errBadRequest("invalid_request")
+		}
+		if _, exists := seen[model]; exists {
+			return errBadRequest("invalid_request")
+		}
+		seen[model] = struct{}{}
+	}
+	return nil
 }
 
 func (p *PlatformChatService) Chat(ctx context.Context, db *gorm.DB, user *models.User, params ChatParams) (map[string]interface{}, error) {
@@ -120,20 +201,24 @@ func (p *PlatformChatService) Chat(ctx context.Context, db *gorm.DB, user *model
 		_, _ = AddMessage(db, conv, "user", last, "", false, nil, 0)
 	}
 
-	client, err := p.platformClient()
-	if err != nil {
-		return nil, err
-	}
-
 	body := gateway.ChatCompletionRequest{
 		Model:       params.Model,
 		Messages:    toGatewayMessages(ragMsgs),
 		Temperature: params.Temperature,
 		MaxTokens:   params.MaxTokens,
 	}
-	data, err := p.deps.Gateway.Complete(ctx, client, body)
+	var data map[string]interface{}
+	if p.deps.WhiteLabel != nil {
+		data, err = p.whiteLabelCompletion(ctx, params.WhiteLabelBody, body)
+	} else {
+		client, clientErr := p.platformClient()
+		if clientErr != nil {
+			return nil, clientErr
+		}
+		data, err = p.deps.Gateway.Complete(ctx, client, body)
+	}
 	if err != nil {
-		return nil, errBadRequest(err.Error())
+		return nil, err
 	}
 
 	content, tokens := extractCompletion(data)
@@ -161,18 +246,22 @@ func (p *PlatformChatService) Chat(ctx context.Context, db *gorm.DB, user *model
 }
 
 func (p *PlatformChatService) Compare(ctx context.Context, db *gorm.DB, user *models.User, modelsList []string, params ChatParams) (map[string]interface{}, error) {
-	if len(modelsList) == 0 {
-		return nil, errBadRequest("至少选择一个模型")
+	if err := validateCompareModels(modelsList); err != nil {
+		return nil, err
 	}
 	count := len(modelsList)
+	var err error
 	if err := p.deps.Billing.CheckAndConsumeCall(db, user, count); err != nil {
 		return nil, err
 	}
 
 	var results []map[string]interface{}
-	client, err := p.platformClient()
-	if err != nil {
-		return nil, err
+	var client registry.ClientConfig
+	if p.deps.WhiteLabel == nil {
+		client, err = p.platformClient()
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	for _, model := range modelsList {
@@ -183,7 +272,12 @@ func (p *PlatformChatService) Compare(ctx context.Context, db *gorm.DB, user *mo
 			Temperature: params.Temperature,
 			MaxTokens:   params.MaxTokens,
 		}
-		data, err := p.deps.Gateway.Complete(ctx, client, body)
+		var data map[string]interface{}
+		if p.deps.WhiteLabel != nil {
+			data, err = p.whiteLabelCompletion(ctx, params.WhiteLabelBody, body)
+		} else {
+			data, err = p.deps.Gateway.Complete(ctx, client, body)
+		}
 		latency := time.Since(start).Seconds() * 1000
 		item := map[string]interface{}{
 			"model":      model,
@@ -335,16 +429,36 @@ func (p *PlatformChatService) Stream(ctx context.Context, db *gorm.DB, user *mod
 		return err
 	}
 
-	client, err := p.platformClient()
-	if err != nil {
-		return err
-	}
 	body := gateway.ChatCompletionRequest{
 		Model:       params.Model,
 		Messages:    toGatewayMessages(ragMsgs),
 		Temperature: params.Temperature,
 		MaxTokens:   params.MaxTokens,
 		Stream:      true,
+	}
+	if p.deps.WhiteLabel != nil {
+		payload, marshalErr := whiteLabelPayload(params.WhiteLabelBody, body)
+		if marshalErr != nil {
+			return marshalErr
+		}
+		resp, upstreamErr := p.deps.WhiteLabel.Chat(ctx, payload)
+		if upstreamErr != nil {
+			return upstreamErr
+		}
+		defer resp.Body.Close()
+		var content strings.Builder
+		streamErr := p.deps.WhiteLabel.ProjectChatCompletionSSE(resp.Body, params.Model, func(frame []byte) error {
+			content.WriteString(parseSSEDelta(frame))
+			return write(frame)
+		})
+		if streamErr != nil {
+			return streamErr
+		}
+		return p.finishPlatformStream(db, user, conv, params, datasetUsed, attr, content.String(), write)
+	}
+	client, err := p.platformClient()
+	if err != nil {
+		return err
 	}
 	resp, err := p.deps.Gateway.Stream(ctx, client, body)
 	if err != nil {
@@ -369,29 +483,31 @@ func (p *PlatformChatService) Stream(ctx context.Context, db *gorm.DB, user *mod
 		}
 	}
 
-	tokens := len(content.String()) / 2
-	if tokens < 1 && content.Len() > 0 {
+	return p.finishPlatformStream(db, user, conv, params, datasetUsed, attr, content.String(), write)
+}
+
+// finishPlatformStream keeps the pre-existing conversation and usage
+// semantics after either legacy or white-label SSE delivers a final response.
+func (p *PlatformChatService) finishPlatformStream(db *gorm.DB, user *models.User, conv *models.Conversation, params ChatParams, datasetUsed bool, attr *string, content string, write func([]byte) error) error {
+	tokens := len(content) / 2
+	if tokens < 1 && content != "" {
 		tokens = 1
 	}
-	_, _ = AddMessage(db, conv, "assistant", content.String(), params.Model, datasetUsed, attr, tokens)
+	_, _ = AddMessage(db, conv, "assistant", content, params.Model, datasetUsed, attr, tokens)
 	user.TotalTokensUsed += tokens
 	if datasetUsed {
 		user.DatasetCalls++
 	}
 	_ = db.Save(user)
-	done, _ := json.Marshal(map[string]interface{}{
-		"type":              "done",
-		"tokens":            tokens,
-		"total_tokens_used": user.TotalTokensUsed,
-	})
+	done, _ := json.Marshal(map[string]interface{}{"type": "done", "tokens": tokens, "total_tokens_used": user.TotalTokensUsed})
 	return write([]byte(fmt.Sprintf("data: %s\n\n", done)))
 }
 
 // CompareStream emits model_chunk SSE events while each selected model responds,
 // then stores the same conversation history as non-streaming compare requests.
 func (p *PlatformChatService) CompareStream(ctx context.Context, db *gorm.DB, user *models.User, modelsList []string, params ChatParams, write func([]byte) error) error {
-	if len(modelsList) == 0 {
-		return errBadRequest("至少选择一个模型")
+	if err := validateCompareModels(modelsList); err != nil {
+		return err
 	}
 	if err := p.deps.Billing.CheckAndConsumeCall(db, user, len(modelsList)); err != nil {
 		return err
@@ -413,6 +529,9 @@ func (p *PlatformChatService) CompareStream(ctx context.Context, db *gorm.DB, us
 			ids[i] = int(dataset.ID)
 		}
 		ragMsgs, datasetUsed = p.deps.RAG.BuildRAGMessages(trimmed, ids, lastUserQuery(trimmed))
+	}
+	if p.deps.WhiteLabel != nil {
+		return p.compareWhiteLabelStreams(ctx, db, user, modelsList, params, trimmed, ragMsgs, datasetUsed, write)
 	}
 
 	client, err := p.platformClient()
@@ -441,6 +560,90 @@ func (p *PlatformChatService) CompareStream(ctx context.Context, db *gorm.DB, us
 		done["dataset_attribution"] = rag.DatasetAttribution
 	}
 	return writeSSE(write, done)
+}
+
+// compareWhiteLabelStreams multiplexes independently projected model streams.
+// A single upstream failure produces a model_error event but never cancels the
+// other selected models; only the final coordinator writes [DONE].
+func (p *PlatformChatService) compareWhiteLabelStreams(ctx context.Context, db *gorm.DB, user *models.User, modelsList []string, params ChatParams, trimmed, ragMsgs []map[string]interface{}, datasetUsed bool, write func([]byte) error) error {
+	results := make([]map[string]interface{}, len(modelsList))
+	var writers sync.Mutex
+	var workers sync.WaitGroup
+	for index, model := range modelsList {
+		index, model := index, model
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			result := map[string]interface{}{"model": model, "tokens": 0}
+			body := gateway.ChatCompletionRequest{Model: model, Messages: toGatewayMessages(ragMsgs), Temperature: params.Temperature, MaxTokens: params.MaxTokens, Stream: true}
+			payload, marshalErr := whiteLabelPayload(params.WhiteLabelBody, body)
+			if marshalErr != nil {
+				result["error"] = "upstream unavailable"
+				results[index] = result
+				return
+			}
+			resp, upstreamErr := p.deps.WhiteLabel.Chat(ctx, payload)
+			if upstreamErr != nil {
+				result["error"] = "upstream unavailable"
+				writers.Lock()
+				_ = writeCompareError(write, model)
+				writers.Unlock()
+				results[index] = result
+				return
+			}
+			defer resp.Body.Close()
+			var content strings.Builder
+			streamErr := p.deps.WhiteLabel.ProjectChatCompletionSSE(resp.Body, model, func(frame []byte) error {
+				content.WriteString(parseSSEDelta(frame))
+				writers.Lock()
+				defer writers.Unlock()
+				return writeCompareChunk(write, model, frame)
+			})
+			if streamErr != nil {
+				result["error"] = "upstream unavailable"
+				writers.Lock()
+				_ = writeCompareError(write, model)
+				writers.Unlock()
+				results[index] = result
+				return
+			}
+			result["content"] = content.String()
+			if content.Len() > 0 {
+				result["tokens"] = max(1, len([]rune(content.String()))/2)
+			}
+			writers.Lock()
+			_ = writeCompareEvent(write, "model_done", map[string]interface{}{"model": model})
+			writers.Unlock()
+			results[index] = result
+		}()
+	}
+	workers.Wait()
+	_, persistErr := p.persistCompareExchange(db, user, modelsList, params, trimmed, results, datasetUsed)
+	if persistErr != nil {
+		return persistErr
+	}
+	return write([]byte("data: [DONE]\n\n"))
+}
+
+func writeCompareChunk(write func([]byte) error, model string, frame []byte) error {
+	payload := bytes.TrimSpace(bytes.TrimPrefix(frame, []byte("data:")))
+	if bytes.Equal(payload, []byte("[DONE]")) {
+		return nil
+	}
+	return writeCompareEvent(write, "chunk", map[string]interface{}{"model": model, "chunk": json.RawMessage(payload)})
+}
+
+func writeCompareError(write func([]byte) error, model string) error {
+	public := whitelabel.PublicError(whitelabel.ErrUpstreamUnavailable("compare stream failed"), "")
+	return writeCompareEvent(write, "model_error", map[string]interface{}{"model": model, "error": public.Error})
+}
+
+func writeCompareEvent(write func([]byte) error, name string, payload interface{}) error {
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	return write([]byte("event: " + name + "\ndata: " + string(encoded) + "\n\n"))
 }
 
 func (p *PlatformChatService) streamCompareModel(ctx context.Context, user *models.User, client registry.ClientConfig, model string, messages []map[string]interface{}, params ChatParams, write func([]byte) error) map[string]interface{} {

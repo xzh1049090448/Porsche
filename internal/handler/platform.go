@@ -1,43 +1,65 @@
 package handler
 
 import (
+	"encoding/json"
+	"io"
+	"mime"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
 	"github.com/porsche/ai-gateway-go/internal/app"
-	"github.com/porsche/ai-gateway-go/internal/constants"
 	"github.com/porsche/ai-gateway-go/internal/httpx"
 	"github.com/porsche/ai-gateway-go/internal/middleware"
+	"github.com/porsche/ai-gateway-go/internal/models"
 	"github.com/porsche/ai-gateway-go/internal/service"
+	"github.com/porsche/ai-gateway-go/internal/whitelabel"
 )
 
 func RegisterPlatform(r *gin.Engine, state *app.State) {
-	g := r.Group("/api/v1/platform", middleware.RequireUser(state))
+	g := r.Group("/api/v1/platform", gatewayRequestID(), middleware.RequireUser(state))
 
 	g.GET("/models", func(c *gin.Context) {
-		modelsOut := make([]map[string]interface{}, 0)
-		for _, name := range constants.PlatformModelIDs {
-			route, ok := state.Models.Get(name)
-			if !ok {
-				continue
-			}
-			modelsOut = append(modelsOut, map[string]interface{}{
-				"id":             name,
-				"provider":       route.Provider,
-				"upstream_model": route.UpstreamModel,
-			})
+		if state.WhiteLabel == nil {
+			platformWhiteLabelError(c, whitelabel.ErrUpstreamUnavailable("white-label service unavailable"))
+			return
 		}
-		c.JSON(http.StatusOK, gin.H{"models": modelsOut})
+		catalog, err := state.WhiteLabel.ListModels(c.Request.Context(), middleware.CurrentUser(c).AllowedModels)
+		if err != nil {
+			platformWhiteLabelError(c, err)
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"data": catalog.Data, "catalog_stale": catalog.CatalogStale})
+	})
+
+	g.GET("/models/:id", func(c *gin.Context) {
+		if state.WhiteLabel == nil {
+			platformWhiteLabelError(c, whitelabel.ErrUpstreamUnavailable("white-label service unavailable"))
+			return
+		}
+		model, err := state.WhiteLabel.GetModel(c.Request.Context(), c.Param("id"), middleware.CurrentUser(c).AllowedModels)
+		if err != nil {
+			platformWhiteLabelError(c, err)
+			return
+		}
+		c.JSON(http.StatusOK, model)
 	})
 
 	g.POST("/chat/completions", func(c *gin.Context) {
 		user := middleware.CurrentUser(c)
 		var body platformChatBody
-		if err := c.ShouldBindJSON(&body); err != nil {
-			httpx.AbortJSON(c, http.StatusUnprocessableEntity, err.Error())
+		if err := decodePlatformRequest(c, &body, false); err != nil {
+			platformWhiteLabelError(c, err)
 			return
 		}
 		params := body.toParams()
+		if body.MaxTokens == nil {
+			platformWhiteLabelError(c, &whitelabel.Error{Code: whitelabel.CodeMissingMaxTokens, Status: http.StatusBadRequest, Type: whitelabel.TypeInvalidRequest})
+			return
+		}
+		if err := platformAuthorizeModels(c, state, user, []string{params.Model}); err != nil {
+			platformWhiteLabelError(c, err)
+			return
+		}
 		if body.Stream {
 			c.Header("Content-Type", "text/event-stream")
 			c.Header("Cache-Control", "no-cache")
@@ -48,11 +70,7 @@ func RegisterPlatform(r *gin.Engine, state *app.State) {
 				return werr
 			})
 			if err != nil {
-				code, msg := service.StatusFromError(err)
-				if code >= 500 {
-					code = http.StatusBadRequest
-				}
-				_, _ = c.Writer.Write([]byte("data: {\"error\":\"" + msg + "\"}\n\n"))
+				platformSSEError(c)
 			}
 			return
 		}
@@ -70,11 +88,23 @@ func RegisterPlatform(r *gin.Engine, state *app.State) {
 	g.POST("/chat/compare", func(c *gin.Context) {
 		user := middleware.CurrentUser(c)
 		var body platformCompareBody
-		if err := c.ShouldBindJSON(&body); err != nil {
-			httpx.AbortJSON(c, http.StatusUnprocessableEntity, err.Error())
+		if err := decodePlatformRequest(c, &body, true); err != nil {
+			platformWhiteLabelError(c, err)
 			return
 		}
 		params := body.toParams()
+		if body.MaxTokens == nil {
+			platformWhiteLabelError(c, &whitelabel.Error{Code: whitelabel.CodeMissingMaxTokens, Status: http.StatusBadRequest, Type: whitelabel.TypeInvalidRequest})
+			return
+		}
+		if len(body.Models) == 0 || len(body.Models) > 3 {
+			platformWhiteLabelError(c, &whitelabel.Error{Code: whitelabel.CodeInvalidRequest, Status: http.StatusBadRequest, Type: whitelabel.TypeInvalidRequest})
+			return
+		}
+		if err := platformAuthorizeModels(c, state, user, body.Models); err != nil {
+			platformWhiteLabelError(c, err)
+			return
+		}
 		if body.Stream {
 			c.Header("Content-Type", "text/event-stream")
 			c.Header("Cache-Control", "no-cache")
@@ -85,8 +115,7 @@ func RegisterPlatform(r *gin.Engine, state *app.State) {
 				return werr
 			})
 			if err != nil {
-				_, msg := service.StatusFromError(err)
-				_, _ = c.Writer.Write([]byte("data: {\"error\":\"" + msg + "\"}\n\n"))
+				platformSSEError(c)
 			}
 			return
 		}
@@ -100,6 +129,86 @@ func RegisterPlatform(r *gin.Engine, state *app.State) {
 	})
 }
 
+// decodePlatformRequest separates local conversation/RAG fields from the
+// OpenAI-compatible payload, then applies the same closed validation used by
+// /v1 before any catalog lookup or upstream request.
+func decodePlatformRequest(c *gin.Context, dest interface{}, compare bool) *whitelabel.Error {
+	mediaType, _, contentTypeErr := mime.ParseMediaType(c.GetHeader("Content-Type"))
+	if contentTypeErr != nil || mediaType != "application/json" {
+		return &whitelabel.Error{Code: whitelabel.CodeInvalidRequest, Status: http.StatusUnsupportedMediaType, Type: whitelabel.TypeInvalidRequest}
+	}
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, whitelabel.MaxRequestBodyBytes)
+	raw, readErr := io.ReadAll(c.Request.Body)
+	if readErr != nil {
+		return &whitelabel.Error{Code: whitelabel.CodeRequestTooLarge, Status: http.StatusRequestEntityTooLarge, Type: whitelabel.TypeInvalidRequest}
+	}
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(raw, &fields) != nil {
+		return &whitelabel.Error{Code: whitelabel.CodeInvalidRequest, Status: http.StatusBadRequest, Type: whitelabel.TypeInvalidRequest}
+	}
+	for _, field := range []string{"conversation_id", "context_window", "dataset_enabled", "dataset_ids"} {
+		delete(fields, field)
+	}
+	if compare {
+		delete(fields, "models")
+	}
+	upstreamBody, marshalErr := json.Marshal(fields)
+	if marshalErr != nil {
+		return whitelabel.ErrUpstreamUnavailable("request encoding failed")
+	}
+	if validationErr := whitelabel.ValidateRequest(upstreamBody, whitelabel.PlatformValidation); validationErr != nil {
+		return validationErr
+	}
+	if json.Unmarshal(raw, dest) != nil {
+		return &whitelabel.Error{Code: whitelabel.CodeInvalidRequest, Status: http.StatusBadRequest, Type: whitelabel.TypeInvalidRequest}
+	}
+	switch body := dest.(type) {
+	case *platformChatBody:
+		body.WhiteLabelBody = upstreamBody
+	case *platformCompareBody:
+		body.WhiteLabelBody = upstreamBody
+	}
+	return nil
+}
+
+func platformSSEError(c *gin.Context) {
+	response := whitelabel.PublicError(whitelabel.ErrUpstreamUnavailable("platform stream failed"), c.Writer.Header().Get("X-Request-ID"))
+	payload, _ := json.Marshal(response)
+	_, _ = c.Writer.Write([]byte("event: error\n"))
+	_, _ = c.Writer.Write([]byte("data: "))
+	_, _ = c.Writer.Write(payload)
+	_, _ = c.Writer.Write([]byte("\n\ndata: [DONE]\n\n"))
+	c.Writer.Flush()
+}
+
+// platformAuthorizeModels resolves the catalog once before billing or chat.
+// This prevents a user ACL miss or a removed model from reaching an upstream.
+func platformAuthorizeModels(c *gin.Context, state *app.State, user *models.User, ids []string) *whitelabel.Error {
+	if state.WhiteLabel == nil {
+		return whitelabel.ErrUpstreamUnavailable("white-label service unavailable")
+	}
+	catalog, err := state.WhiteLabel.ListModels(c.Request.Context(), user.AllowedModels)
+	if err != nil {
+		return err
+	}
+	for _, id := range ids {
+		if !catalogContains(catalog, id) {
+			return &whitelabel.Error{Code: whitelabel.CodeModelUnavailable, Status: http.StatusNotFound, Type: whitelabel.TypeInvalidRequest}
+		}
+		if authErr := state.WhiteLabel.AuthorizeModel(id, user.AllowedModels); authErr != nil {
+			return authErr
+		}
+	}
+	return nil
+}
+
+// platformWhiteLabelError uses the same scrubbed envelope as the public
+// gateway. Platform callers never receive upstream response text or IDs.
+func platformWhiteLabelError(c *gin.Context, err *whitelabel.Error) {
+	response := whitelabel.PublicError(err, c.Writer.Header().Get("X-Request-ID"))
+	c.AbortWithStatusJSON(response.Status, response)
+}
+
 type platformChatBody struct {
 	Model          string                   `json:"model" binding:"required"`
 	Messages       []map[string]interface{} `json:"messages" binding:"required"`
@@ -110,6 +219,7 @@ type platformChatBody struct {
 	Stream         bool                     `json:"stream"`
 	DatasetEnabled bool                     `json:"dataset_enabled"`
 	DatasetIDs     []int                    `json:"dataset_ids"`
+	WhiteLabelBody []byte                   `json:"-"`
 }
 
 func (b platformChatBody) toParams() service.ChatParams {
@@ -122,6 +232,7 @@ func (b platformChatBody) toParams() service.ChatParams {
 		ContextWindow:  b.ContextWindow,
 		DatasetEnabled: b.DatasetEnabled,
 		DatasetIDs:     b.DatasetIDs,
+		WhiteLabelBody: b.WhiteLabelBody,
 	}
 }
 
@@ -135,6 +246,7 @@ type platformCompareBody struct {
 	Stream         bool                     `json:"stream"`
 	DatasetEnabled bool                     `json:"dataset_enabled"`
 	DatasetIDs     []int                    `json:"dataset_ids"`
+	WhiteLabelBody []byte                   `json:"-"`
 }
 
 func (b platformCompareBody) toParams() service.ChatParams {
@@ -146,5 +258,6 @@ func (b platformCompareBody) toParams() service.ChatParams {
 		ContextWindow:  b.ContextWindow,
 		DatasetEnabled: b.DatasetEnabled,
 		DatasetIDs:     b.DatasetIDs,
+		WhiteLabelBody: b.WhiteLabelBody,
 	}
 }

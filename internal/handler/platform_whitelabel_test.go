@@ -1,0 +1,96 @@
+package handler
+
+import (
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strconv"
+	"strings"
+	"testing"
+
+	"github.com/gin-gonic/gin"
+	"github.com/porsche/ai-gateway-go/internal/app"
+	"github.com/porsche/ai-gateway-go/internal/config"
+	"github.com/porsche/ai-gateway-go/internal/db"
+	"github.com/porsche/ai-gateway-go/internal/models"
+	"github.com/porsche/ai-gateway-go/internal/security"
+	"github.com/porsche/ai-gateway-go/internal/whitelabel"
+)
+
+type platformRoundTripper func(*http.Request) (*http.Response, error)
+
+func (f platformRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
+
+func TestPlatformModelsUseWhiteLabelCatalogAndUserACL(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	state := newPlatformWhiteLabelTestState(t)
+	user := &models.User{Phone: "13900139003", Status: models.UserStatusActive, AllowedModels: models.JSONSlice{"model-a"}}
+	if err := state.DB.Create(user).Error; err != nil {
+		t.Fatal(err)
+	}
+	engine := gin.New()
+	RegisterPlatform(engine, state)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/platform/models", nil)
+	req.Header.Set("Authorization", "Bearer "+platformJWT(t, state, user))
+	rec := httptest.NewRecorder()
+	engine.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"data":[{"id":"model-a"`) || strings.Contains(rec.Body.String(), "model-b") {
+		t.Fatalf("unexpected catalog body=%s", rec.Body.String())
+	}
+}
+
+func TestPlatformModelDetailHidesUnauthorizedAs404(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	state := newPlatformWhiteLabelTestState(t)
+	user := &models.User{Phone: "13900139004", Status: models.UserStatusActive, AllowedModels: models.JSONSlice{"model-a"}}
+	if err := state.DB.Create(user).Error; err != nil {
+		t.Fatal(err)
+	}
+	engine := gin.New()
+	RegisterPlatform(engine, state)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/platform/models/model-b", nil)
+	req.Header.Set("Authorization", "Bearer "+platformJWT(t, state, user))
+	rec := httptest.NewRecorder()
+	engine.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func newPlatformWhiteLabelTestState(t *testing.T) *app.State {
+	t.Helper()
+	dir := t.TempDir()
+	settings := &config.Settings{AppEnv: "test", DatabaseURL: "sqlite://" + dir + "/platform.db", JWTSecretKey: "test-secret", ChromaPersistDir: dir + "/chroma", DatasetUploadDir: dir + "/uploads", ModelsConfigPath: "../../config/models.yaml", ClientsConfigPath: "../../config/clients.yaml", EnvKeys: map[string]string{}}
+	gdb, err := db.Open(settings.DatabaseURL, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := app.NewState(settings, gdb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	whiteLabel, err := whitelabel.NewWhiteLabelService(config.WhiteLabelSettings{BaseURL: "https://white-label.test/v1", APIKey: "test-key", AllowedModels: map[string]struct{}{"model-a": {}, "model-b": {}}}, &http.Client{Transport: platformRoundTripper(func(req *http.Request) (*http.Response, error) {
+		body := `{"data":[{"id":"model-a","title":"Model A"},{"id":"model-b","title":"Model B"}]}`
+		if strings.HasSuffix(req.URL.Path, "/models/model-a") {
+			body = `{"id":"model-a","title":"Model A"}`
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: req}, nil
+	})}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.WhiteLabel = whiteLabel
+	return state
+}
+
+func platformJWT(t *testing.T, state *app.State, user *models.User) string {
+	t.Helper()
+	token, err := security.CreateAccessToken(strconv.Itoa(user.ID), state.Settings.JWTSecretKey, 10, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return token
+}

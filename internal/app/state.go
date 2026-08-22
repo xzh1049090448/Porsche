@@ -67,13 +67,14 @@ func NewState(settings *config.Settings, db *gorm.DB) (*State, error) {
 	s.GatewayTokens = service.NewGatewayTokenService(db)
 	s.Auth = service.NewAuthService(settings, s.SMS, db)
 	s.Platform = service.NewPlatformChatService(service.PlatformDeps{
-		Settings: settings,
-		DB:       db,
-		Models:   models,
-		Clients:  clients,
-		Gateway:  s.Gateway,
-		RAG:      s.RAG,
-		Billing:  s.Billing,
+		Settings:   settings,
+		DB:         db,
+		Models:     models,
+		Clients:    clients,
+		Gateway:    s.Gateway,
+		RAG:        s.RAG,
+		Billing:    s.Billing,
+		WhiteLabel: s.WhiteLabel,
 	})
 
 	if err := service.SeedDefaultDatasets(db, s.RAG); err != nil {
