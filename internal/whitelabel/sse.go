@@ -16,7 +16,6 @@ func (s *WhiteLabelService) ProjectChatCompletionSSE(reader io.Reader, logicalMo
 	}
 	buffered := bufio.NewReader(reader)
 	var dataLines []string
-	sawData := false
 	for {
 		line, err := buffered.ReadString('\n')
 		if err != nil && err != io.EOF {
@@ -53,14 +52,10 @@ func (s *WhiteLabelService) ProjectChatCompletionSSE(reader io.Reader, logicalMo
 			} else if strings.HasPrefix(line, "data:") {
 				value := strings.TrimPrefix(line, "data:")
 				dataLines = append(dataLines, strings.TrimPrefix(value, " "))
-				sawData = true
 			}
 		}
 		if err == io.EOF {
-			if len(dataLines) != 0 || !sawData {
-				return ErrUpstreamUnavailable("incomplete stream")
-			}
-			return nil
+			return ErrUpstreamUnavailable("incomplete stream")
 		}
 	}
 }

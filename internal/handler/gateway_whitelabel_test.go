@@ -101,7 +101,7 @@ func TestGatewaySSEPostFirstChunkEmitsErrorAndDone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(`{"model":"model-a","messages":[{"role":"user","content":"hello"}],"max_tokens":1,"stream":true,"seed":4}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(`{"model":"model-a","messages":[{"role":"user","content":"hello"}],"max_tokens":1,"stream":true,"seed":6}`))
 	req.Header.Set("Authorization", "Bearer "+secret)
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -109,8 +109,15 @@ func TestGatewaySSEPostFirstChunkEmitsErrorAndDone(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
-	if got := rec.Body.String(); !bytes.Contains([]byte(got), []byte(`data: {"id":"safe","object":"chat.completion.chunk","created":1,"model":"model-a","choices":[{"index":0,"delta":{"content":"first"},"finish_reason":null}]}`)) || !bytes.Contains([]byte(got), []byte("event: error\n")) || !bytes.Contains([]byte(got), []byte("data: [DONE]\n\n")) {
+	got := rec.Body.String()
+	if !bytes.Contains([]byte(got), []byte(`data: {"id":"safe","object":"chat.completion.chunk","created":1,"model":"model-a","choices":[{"index":0,"delta":{"content":"first"},"finish_reason":null}]}`)) || !bytes.Contains([]byte(got), []byte("event: error\n")) || !bytes.Contains([]byte(got), []byte("data: [DONE]\n\n")) {
 		t.Fatalf("SSE boundary = %q", got)
+	}
+	first := strings.Index(got, `"content":"first"`)
+	errorFrame := strings.Index(got, "event: error\n")
+	doneFrame := strings.Index(got, "data: [DONE]\n\n")
+	if first == -1 || errorFrame < first || doneFrame < errorFrame {
+		t.Fatalf("expected post-first event:error followed by data:[DONE], got %q", got)
 	}
 }
 
@@ -428,6 +435,10 @@ func gatewayWhiteLabelState(t *testing.T, catalog string) (*app.State, *httptest
 				}
 				if bytes.Contains(body, []byte(`"seed":5`)) {
 					_, _ = w.Write([]byte("data: {\"id\":\"safe\",\"object\":\"chat.completion.chunk\",\"created\":1,\"choices\":[{\"index\":0,\"delta\":{\"content\":123},\"finish_reason\":null}]}\n\n"))
+					return
+				}
+				if bytes.Contains(body, []byte(`"seed":6`)) {
+					_, _ = w.Write([]byte("data: {\"id\":\"safe\",\"object\":\"chat.completion.chunk\",\"created\":1,\"choices\":[{\"index\":0,\"delta\":{\"content\":\"first\"},\"finish_reason\":null}]}\n\n"))
 					return
 				}
 				_, _ = w.Write([]byte("data: first\n\n"))
