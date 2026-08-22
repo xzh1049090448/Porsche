@@ -258,7 +258,7 @@ func TestGatewayChatRequiresCurrentCatalogAndEnabledModelBeforeChat(t *testing.T
 	}
 }
 
-func TestGatewayChatForwardsValidFullDTO(t *testing.T) {
+func TestGatewayChatProjectsValidatedCompletionAndMasksUpstreamFields(t *testing.T) {
 	state, _, calls := gatewayWhiteLabelState(t, `{"data":[{"id":"model-a"}]}`)
 	user := &models.User{Phone: "13900200007", Status: models.UserStatusActive}
 	if err := state.DB.Create(user).Error; err != nil {
@@ -276,12 +276,54 @@ func TestGatewayChatForwardsValidFullDTO(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	router.New(state).ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK || rec.Body.String() != `{"id":"safe"}` {
+	var completion struct {
+		ID      string `json:"id"`
+		Object  string `json:"object"`
+		Created int64  `json:"created"`
+		Model   string `json:"model"`
+		Choices []struct {
+			Index int `json:"index"`
+		} `json:"choices"`
+		Usage struct {
+			TotalTokens int `json:"total_tokens"`
+		} `json:"usage"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &completion); err != nil {
+		t.Fatal(err)
+	}
+	if rec.Code != http.StatusOK || completion.ID != "safe" || completion.Object != "chat.completion" || completion.Created != 1 || completion.Model != "model-a" || len(completion.Choices) != 1 || completion.Choices[0].Index != 0 || completion.Usage.TotalTokens != 3 {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if bytes.Contains(rec.Body.Bytes(), []byte("upstream-secret")) {
+		t.Fatalf("upstream secret leaked: %s", rec.Body.String())
 	}
 	if got := calls.Load(); got != 2 { // catalog + chat
 		t.Fatalf("upstream calls=%d, want 2", got)
 	}
+}
+
+func TestGatewayChatRejectsMalformedUpstreamCompletion(t *testing.T) {
+	state, _, _ := gatewayWhiteLabelState(t, `{"data":[{"id":"model-a"}]}`)
+	user := &models.User{Phone: "13900200010", Status: models.UserStatusActive}
+	if err := state.DB.Create(user).Error; err != nil {
+		t.Fatal(err)
+	}
+	_, secret, err := state.GatewayTokens.Create(user, service.GatewayTokenCreateInput{Name: "malformed", AllowedModels: models.JSONSlice{"model-a"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := state.WhiteLabel.ListModels(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(strings.Replace(validGatewayChatBody(false), `"seed":1`, `"seed":2`, 1)))
+	req.Header.Set("Authorization", "Bearer "+secret)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	router.New(state).ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	assertGatewayError(t, rec, "api_error")
 }
 
 func assertGatewayError(t *testing.T, rec *httptest.ResponseRecorder, wantType string) {
@@ -329,7 +371,11 @@ func gatewayWhiteLabelState(t *testing.T, catalog string) (*app.State, *httptest
 				return
 			}
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"id":"safe"}`))
+			if bytes.Contains(body, []byte(`"seed":2`)) {
+				_, _ = w.Write([]byte(`{"id":"malformed"}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"id":"safe","object":"chat.completion","created":1,"model":"upstream-model","choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3},"internal":"upstream-secret"}`))
 		default:
 			http.NotFound(w, r)
 		}

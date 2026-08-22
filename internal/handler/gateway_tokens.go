@@ -112,7 +112,12 @@ func registerGatewayRoutes(r *gin.Engine, state *app.State) {
 				gatewayWhiteLabelError(c, whitelabel.ErrUpstreamUnavailable("chat body read failed"))
 				return
 			}
-			c.Data(http.StatusOK, "application/json", data)
+			completion, completionErr := state.WhiteLabel.ProjectChatCompletion(data, modelID)
+			if completionErr != nil {
+				gatewayWhiteLabelError(c, completionErr)
+				return
+			}
+			c.JSON(http.StatusOK, completion)
 			return
 		}
 		buf := make([]byte, 4096)

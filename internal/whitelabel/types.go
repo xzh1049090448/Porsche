@@ -1,11 +1,75 @@
 package whitelabel
 
 import (
+	"bytes"
+	"encoding/json"
 	"math"
 	"sort"
 	"strings"
 	"unicode/utf8"
 )
+
+// ChatCompletion is the client-safe subset of a non-streaming OpenAI chat
+// completion. Model is always the logical model ID selected by this gateway,
+// rather than an upstream provider identifier.
+type ChatCompletion struct {
+	ID      string                 `json:"id"`
+	Object  string                 `json:"object"`
+	Created int64                  `json:"created"`
+	Model   string                 `json:"model"`
+	Choices []ChatCompletionChoice `json:"choices"`
+	Usage   *ChatCompletionUsage   `json:"usage,omitempty"`
+}
+
+type ChatCompletionChoice struct {
+	Index        int             `json:"index"`
+	Message      json.RawMessage `json:"message,omitempty"`
+	FinishReason *string         `json:"finish_reason"`
+	Logprobs     json.RawMessage `json:"logprobs,omitempty"`
+}
+
+type ChatCompletionUsage struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens      int `json:"total_tokens"`
+}
+
+// ProjectChatCompletion validates the minimal OpenAI completion shape and
+// drops all upstream-owned fields that are not part of the public contract.
+func (s *WhiteLabelService) ProjectChatCompletion(data []byte, logicalModelID string) (ChatCompletion, *Error) {
+	var upstream struct {
+		ID      string                 `json:"id"`
+		Object  string                 `json:"object"`
+		Created int64                  `json:"created"`
+		Choices []ChatCompletionChoice `json:"choices"`
+		Usage   *ChatCompletionUsage   `json:"usage"`
+	}
+	if !validModelID(logicalModelID) || json.Unmarshal(data, &upstream) != nil || upstream.ID == "" || upstream.Object != "chat.completion" || upstream.Created < 0 || len(upstream.Choices) == 0 || !validCompletionChoices(upstream.Choices) || !validCompletionUsage(upstream.Usage) {
+		return ChatCompletion{}, ErrUpstreamUnavailable("malformed chat completion")
+	}
+	return ChatCompletion{ID: upstream.ID, Object: upstream.Object, Created: upstream.Created, Model: logicalModelID, Choices: upstream.Choices, Usage: upstream.Usage}, nil
+}
+
+func validCompletionChoices(choices []ChatCompletionChoice) bool {
+	for _, choice := range choices {
+		if choice.Index < 0 || !validJSONObject(choice.Message) || !validNullableJSONObject(choice.Logprobs) {
+			return false
+		}
+	}
+	return true
+}
+
+func validCompletionUsage(usage *ChatCompletionUsage) bool {
+	return usage == nil || (usage.PromptTokens >= 0 && usage.CompletionTokens >= 0 && usage.TotalTokens >= 0)
+}
+
+func validJSONObject(value json.RawMessage) bool {
+	return len(value) > 0 && bytes.HasPrefix(bytes.TrimSpace(value), []byte("{")) && json.Valid(value)
+}
+
+func validNullableJSONObject(value json.RawMessage) bool {
+	return len(value) == 0 || bytes.Equal(bytes.TrimSpace(value), []byte("null")) || validJSONObject(value)
+}
 
 const CodeModelUnavailable Code = "model_unavailable"
 
