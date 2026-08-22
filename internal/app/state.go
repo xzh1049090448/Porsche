@@ -10,6 +10,7 @@ import (
 	"github.com/porsche/ai-gateway-go/internal/rag"
 	"github.com/porsche/ai-gateway-go/internal/registry"
 	"github.com/porsche/ai-gateway-go/internal/service"
+	"github.com/porsche/ai-gateway-go/internal/whitelabel"
 	"gorm.io/gorm"
 )
 
@@ -26,6 +27,7 @@ type State struct {
 	SMS           *service.SMSService
 	Platform      *service.PlatformChatService
 	GatewayTokens *service.GatewayTokenService
+	WhiteLabel    *whitelabel.WhiteLabelService
 	Audit         *service.AuditService
 	HTTP          *http.Client
 }
@@ -53,6 +55,15 @@ func NewState(settings *config.Settings, db *gorm.DB) (*State, error) {
 		HTTP:     &http.Client{},
 	}
 	s.Billing = service.NewBillingService(settings)
+	// Legacy tests can construct Settings directly; production Settings are
+	// fail-closed in config.Load and always supply the white-label settings.
+	if settings.WhiteLabel.BaseURL != "" {
+		whiteLabel, err := whitelabel.NewWhiteLabelService(settings.WhiteLabel, s.HTTP, nil)
+		if err != nil {
+			return nil, err
+		}
+		s.WhiteLabel = whiteLabel
+	}
 	s.GatewayTokens = service.NewGatewayTokenService(db)
 	s.Auth = service.NewAuthService(settings, s.SMS, db)
 	s.Platform = service.NewPlatformChatService(service.PlatformDeps{
