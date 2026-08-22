@@ -13,6 +13,9 @@ const (
 	catalogTTL = 5 * 60 * 1_000_000_000
 	detailTTL  = 60 * 60 * 1_000_000_000
 	staleTTL   = 24 * 60 * 60 * 1_000_000_000
+	// maxModelMetadataTextBytes bounds retained upstream title and description
+	// text, limiting memory consumed by an individual model response.
+	maxModelMetadataTextBytes = 4 * 1024
 )
 
 // Model is a safe, normalized view of an upstream model. IDs remain opaque:
@@ -63,7 +66,7 @@ func normalizeModels(models []upstreamModel) []Model {
 		seen[upstream.ID] = struct{}{}
 		out = append(out, Model{
 			ID: upstream.ID, Object: safeText(upstream.Object), OwnedBy: safeText(upstream.OwnedBy),
-			Title: safeText(upstream.Title), Description: safeText(upstream.Description),
+			Title: safeModelMetadataText(upstream.Title), Description: safeModelMetadataText(upstream.Description),
 			Created: safeWhole(upstream.Created), ContextWindow: safeWhole(upstream.ContextWindow),
 			MaxTokens: safeWhole(upstream.MaxTokens), InputTokenPricePerM: safeNonNegative(upstream.InputTokenPricePerM),
 			OutputTokenPricePerM: safeNonNegative(upstream.OutputTokenPricePerM),
@@ -78,6 +81,13 @@ func safeText(value string) string {
 		return ""
 	}
 	return value
+}
+
+func safeModelMetadataText(value string) string {
+	if len(value) > maxModelMetadataTextBytes {
+		return ""
+	}
+	return safeText(value)
 }
 
 func safeWhole(value float64) int64 {

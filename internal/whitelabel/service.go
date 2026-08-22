@@ -24,10 +24,12 @@ type WhiteLabelService struct {
 	client  *http.Client
 	now     func() time.Time
 
-	mu       sync.Mutex
-	catalog  cachedCatalog
-	details  map[string]cachedDetail
-	disabled map[string]bool
+	mu                sync.Mutex
+	catalog           cachedCatalog
+	catalogGeneration uint64
+	details           map[string]cachedDetail
+	detailGenerations map[string]uint64
+	disabled          map[string]bool
 }
 
 type cachedCatalog struct {
@@ -66,7 +68,7 @@ func NewWhiteLabelService(settings config.WhiteLabelSettings, client *http.Clien
 	if now == nil {
 		now = time.Now
 	}
-	return &WhiteLabelService{baseURL: strings.TrimRight(settings.BaseURL, "/"), apiKey: settings.APIKey, allowed: allowed, client: client, now: now, details: make(map[string]cachedDetail), disabled: make(map[string]bool)}, nil
+	return &WhiteLabelService{baseURL: strings.TrimRight(settings.BaseURL, "/"), apiKey: settings.APIKey, allowed: allowed, client: client, now: now, details: make(map[string]cachedDetail), detailGenerations: make(map[string]uint64), disabled: make(map[string]bool)}, nil
 }
 
 // ListModels intersects the fixed service allowlist with the supplied user or
@@ -81,12 +83,14 @@ func (s *WhiteLabelService) ListModels(ctx context.Context, acl []string) (Catal
 		s.mu.Unlock()
 		return Catalog{Data: out}, nil
 	}
+	s.catalogGeneration++
+	refreshGeneration := s.catalogGeneration
 	s.mu.Unlock()
 
 	models, fetchErr := s.fetchCatalog(ctx)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if fetchErr == nil {
+	if fetchErr == nil && refreshGeneration == s.catalogGeneration {
 		s.catalog = cachedCatalog{models: models, fetchedAt: now}
 		// A successful catalog refresh is the sole recovery route for a model
 		// disabled by a trusted detail 404, and only models present can recover.
@@ -99,6 +103,8 @@ func (s *WhiteLabelService) ListModels(ctx context.Context, acl []string) (Catal
 				delete(s.disabled, id)
 			}
 		}
+	}
+	if fetchErr == nil {
 		return Catalog{Data: s.filteredCatalogLocked(models, acl)}, nil
 	}
 	if !cache.fetchedAt.IsZero() && now.Sub(cache.fetchedAt) <= staleTTL {
@@ -125,6 +131,8 @@ func (s *WhiteLabelService) GetModel(ctx context.Context, id string, acl []strin
 		s.mu.Unlock()
 		return model, nil
 	}
+	s.detailGenerations[id]++
+	refreshGeneration := s.detailGenerations[id]
 	s.mu.Unlock()
 
 	model, status, fetchErr := s.fetchDetail(ctx, id)
@@ -141,7 +149,9 @@ func (s *WhiteLabelService) GetModel(ctx context.Context, id string, acl []strin
 	if model.ID != id {
 		return Model{}, ErrUpstreamUnavailable("model detail identity mismatch")
 	}
-	s.details[id] = cachedDetail{model: model, fetchedAt: now}
+	if refreshGeneration == s.detailGenerations[id] {
+		s.details[id] = cachedDetail{model: model, fetchedAt: now}
+	}
 	return model, nil
 }
 

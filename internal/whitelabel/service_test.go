@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -171,12 +172,133 @@ func TestServiceSanitizesMetadataAndEscapesOpaqueDetailIDOnce(t *testing.T) {
 	}
 }
 
+func TestCatalogOlderRefreshCannotOverwriteNewerCache(t *testing.T) {
+	oldStarted := make(chan struct{})
+	releaseOld := make(chan struct{})
+	var requests struct {
+		sync.Mutex
+		count int
+	}
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/models" {
+			t.Errorf("path = %q, want /models", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		requests.Lock()
+		requests.count++
+		request := requests.count
+		requests.Unlock()
+		if request == 1 {
+			close(oldStarted)
+			<-releaseOld
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": []map[string]any{{"id": "model-old"}}})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": []map[string]any{{"id": "model-new"}}})
+	}))
+	t.Cleanup(up.Close)
+	clock := &testClock{now: time.Date(2026, 8, 22, 0, 0, 0, 0, time.UTC)}
+	svc := newServiceWithAllowed(t, up.URL, clock, "model-old", "model-new")
+
+	oldResult := make(chan *Error, 1)
+	go func() { _, err := svc.ListModels(context.Background(), nil); oldResult <- err }()
+	<-oldStarted
+	clock.Add(time.Second)
+	if _, err := svc.ListModels(context.Background(), nil); err != nil {
+		t.Fatalf("newer catalog refresh: %v", err)
+	}
+	close(releaseOld)
+	if err := <-oldResult; err != nil {
+		t.Fatalf("older catalog refresh: %v", err)
+	}
+
+	catalog, err := svc.ListModels(context.Background(), nil)
+	requireNoServiceError(t, err)
+	requireModelIDs(t, catalog.Data, "model-new")
+}
+
+func TestDetailOlderRefreshCannotOverwriteNewerCache(t *testing.T) {
+	oldStarted := make(chan struct{})
+	releaseOld := make(chan struct{})
+	var requests struct {
+		sync.Mutex
+		count int
+	}
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/models/model-a" {
+			t.Errorf("path = %q, want /models/model-a", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		requests.Lock()
+		requests.count++
+		request := requests.count
+		requests.Unlock()
+		if request == 1 {
+			close(oldStarted)
+			<-releaseOld
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": "model-a", "title": "old"})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": "model-a", "title": "new"})
+	}))
+	t.Cleanup(up.Close)
+	clock := &testClock{now: time.Date(2026, 8, 22, 0, 0, 0, 0, time.UTC)}
+	svc := newServiceWithAllowed(t, up.URL, clock, "model-a")
+
+	oldResult := make(chan *Error, 1)
+	go func() { _, err := svc.GetModel(context.Background(), "model-a", nil); oldResult <- err }()
+	<-oldStarted
+	clock.Add(time.Second)
+	if _, err := svc.GetModel(context.Background(), "model-a", nil); err != nil {
+		t.Fatalf("newer detail refresh: %v", err)
+	}
+	close(releaseOld)
+	if err := <-oldResult; err != nil {
+		t.Fatalf("older detail refresh: %v", err)
+	}
+
+	model, err := svc.GetModel(context.Background(), "model-a", nil)
+	requireNoServiceError(t, err)
+	if model.Title != "new" {
+		t.Fatalf("cached detail title = %q, want newer response", model.Title)
+	}
+}
+
+func TestModelMetadataTextIsBounded(t *testing.T) {
+	withinLimit := strings.Repeat("x", maxModelMetadataTextBytes)
+	overLimit := strings.Repeat("x", maxModelMetadataTextBytes+1)
+	models := normalizeModels([]upstreamModel{
+		{ID: "model-a", Title: withinLimit, Description: withinLimit},
+		{ID: "model-b", Title: overLimit, Description: overLimit},
+	})
+	if len(models) != 2 {
+		t.Fatalf("normalized models = %d, want 2", len(models))
+	}
+	if models[0].Title != withinLimit || models[0].Description != withinLimit {
+		t.Fatal("metadata at the limit was not retained")
+	}
+	if models[1].Title != "" || models[1].Description != "" {
+		t.Fatal("oversized metadata was retained")
+	}
+}
+
 func newService(t *testing.T, baseURL string, clock *testClock) *WhiteLabelService {
 	t.Helper()
+	return newServiceWithAllowed(t, baseURL, clock, "model-a", "configured", "vendor:model@2026.08")
+}
+
+func newServiceWithAllowed(t *testing.T, baseURL string, clock *testClock, allowedIDs ...string) *WhiteLabelService {
+	t.Helper()
+	allowed := make(map[string]struct{}, len(allowedIDs))
+	for _, id := range allowedIDs {
+		allowed[id] = struct{}{}
+	}
 	svc, err := NewWhiteLabelService(config.WhiteLabelSettings{
 		BaseURL:       baseURL,
 		APIKey:        "test-key",
-		AllowedModels: map[string]struct{}{"model-a": {}, "configured": {}, "vendor:model@2026.08": {}},
+		AllowedModels: allowed,
 	}, &http.Client{}, clock.Now)
 	if err != nil {
 		t.Fatalf("NewWhiteLabelService() error = %v", err)
