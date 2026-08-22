@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -16,6 +17,10 @@ import (
 	"github.com/porsche/ai-gateway-go/internal/models"
 	"github.com/porsche/ai-gateway-go/internal/whitelabel"
 )
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
 
 // The platform compare endpoint must reject an excessive fan-out locally so a
 // malformed client request cannot create unbounded upstream work or charges.
@@ -100,6 +105,49 @@ func TestCompareWhiteLabelStreamsKeepsOtherModelsRunningAfterOneFails(t *testing
 	}
 	if peak.Load() < 2 {
 		t.Fatalf("expected concurrent healthy streams, peak=%d", peak.Load())
+	}
+}
+
+func TestComparePendingModelErrorWriteFailureStopsFurtherFrames(t *testing.T) {
+	writeErr := errors.New("client disconnected")
+	failed := make(chan struct{})
+	transport := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		body, _ := io.ReadAll(req.Body)
+		model, _ := whitelabel.RequestModelAndStream(body)
+		if model == "model-a" {
+			close(failed)
+			return &http.Response{StatusCode: http.StatusBadGateway, Body: io.NopCloser(strings.NewReader("")), Header: make(http.Header)}, nil
+		}
+		<-failed
+		chunk := `data: {"id":"chunk-b","object":"chat.completion.chunk","created":1,"choices":[{"index":0,"delta":{"content":"b"}}]}` + "\n\ndata: [DONE]\n\n"
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(chunk)), Header: make(http.Header)}, nil
+	})
+	whiteLabel, err := whitelabel.NewWhiteLabelService(config.WhiteLabelSettings{BaseURL: "https://white-label.test/v1", APIKey: "test-key", AllowedModels: map[string]struct{}{"model-a": {}, "model-b": {}}}, &http.Client{Transport: transport}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	database, err := db.Open("sqlite://"+t.TempDir()+"/platform.db", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	user := &models.User{Phone: "13900139101", Status: models.UserStatusActive, PlanType: models.PlanEnterprise}
+	if err := database.Create(user).Error; err != nil {
+		t.Fatal(err)
+	}
+	platform := NewPlatformChatService(PlatformDeps{WhiteLabel: whiteLabel, Billing: NewBillingService(&config.Settings{})})
+	writes := 0
+	err = platform.CompareStream(context.Background(), database, user, []string{"model-a", "model-b"}, ChatParams{Messages: []map[string]interface{}{{"role": "user", "content": "hello"}}, MaxTokens: intPtr(5), WhiteLabelBody: []byte(`{"max_tokens":5}`)}, "req_write_failure", func(frame []byte) error {
+		writes++
+		if strings.Contains(string(frame), "event: model_error") {
+			return writeErr
+		}
+		return nil
+	})
+	if !errors.Is(err, writeErr) {
+		t.Fatalf("error=%v, want write error", err)
+	}
+	if writes != 1 {
+		t.Fatalf("writes=%d, want only failed pending model_error", writes)
 	}
 }
 
