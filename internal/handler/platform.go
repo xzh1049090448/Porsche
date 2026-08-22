@@ -61,11 +61,13 @@ func RegisterPlatform(r *gin.Engine, state *app.State) {
 			return
 		}
 		if body.Stream {
-			c.Header("Content-Type", "text/event-stream")
-			c.Header("Cache-Control", "no-cache")
-			c.Header("Connection", "keep-alive")
 			started := false
 			err := state.Platform.Stream(c.Request.Context(), state.DB, user, params, func(b []byte) error {
+				if !started {
+					c.Header("Content-Type", "text/event-stream")
+					c.Header("Cache-Control", "no-cache")
+					c.Header("Connection", "keep-alive")
+				}
 				started = true
 				_, werr := c.Writer.Write(b)
 				c.Writer.Flush()
@@ -116,11 +118,13 @@ func RegisterPlatform(r *gin.Engine, state *app.State) {
 			return
 		}
 		if body.Stream {
-			c.Header("Content-Type", "text/event-stream")
-			c.Header("Cache-Control", "no-cache")
-			c.Header("Connection", "keep-alive")
 			started := false
 			err := state.Platform.CompareStream(c.Request.Context(), state.DB, user, body.Models, params, func(b []byte) error {
+				if !started {
+					c.Header("Content-Type", "text/event-stream")
+					c.Header("Cache-Control", "no-cache")
+					c.Header("Connection", "keep-alive")
+				}
 				started = true
 				_, werr := c.Writer.Write(b)
 				c.Writer.Flush()

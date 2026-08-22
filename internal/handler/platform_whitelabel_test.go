@@ -79,6 +79,9 @@ func TestPlatformStreamFailureBeforeFirstFrameReturnsJSON(t *testing.T) {
 	if rec.Code != http.StatusServiceUnavailable || !strings.Contains(rec.Body.String(), `"error"`) || strings.Contains(rec.Body.String(), "data:") {
 		t.Fatalf("expected pre-frame JSON 503, status=%d body=%s", rec.Code, rec.Body.String())
 	}
+	if contentType := rec.Header().Get("Content-Type"); !strings.HasPrefix(contentType, "application/json") {
+		t.Fatalf("expected JSON content type before first frame, got %q", contentType)
+	}
 }
 
 func newPlatformWhiteLabelTestState(t *testing.T) *app.State {
