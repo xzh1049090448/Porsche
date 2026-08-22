@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"strconv"
 	"strings"
@@ -48,13 +49,65 @@ type Settings struct {
 	AnalyticsAdminPhones      string
 	AnalyticsTokenPricePer1K  float64
 	GatewayAllowLegacyClients bool
+	WhiteLabel                WhiteLabelSettings
 
 	// Upstream API keys from env (env name -> value)
 	EnvKeys map[string]string
 }
 
+// WhiteLabelSettings contains the only supported upstream configuration. BaseURL
+// is selected from a fixed region mapping and must never be supplied by callers.
+type WhiteLabelSettings struct {
+	Region        string
+	BaseURL       string
+	APIKey        string
+	AllowedModels map[string]struct{}
+}
+
+func (s WhiteLabelSettings) Allows(model string) bool {
+	_, ok := s.AllowedModels[strings.TrimSpace(model)]
+	return ok
+}
+
+func ParseWhiteLabelSettings(region, apiKey, allowedModels string) (WhiteLabelSettings, error) {
+	region = strings.TrimSpace(region)
+	apiKey = strings.TrimSpace(apiKey)
+	if apiKey == "" {
+		return WhiteLabelSettings{}, fmt.Errorf("JIEKOU_API_KEY must be non-empty")
+	}
+
+	baseURLs := map[string]string{
+		"cn":     "https://api.highwayapi.ai/openai/v1",
+		"global": "https://api.jiekou.ai/openai/v1",
+	}
+	baseURL, ok := baseURLs[region]
+	if !ok {
+		return WhiteLabelSettings{}, fmt.Errorf("UPSTREAM_REGION must be cn or global")
+	}
+
+	models := make(map[string]struct{})
+	for _, model := range strings.Split(allowedModels, ",") {
+		if model = strings.TrimSpace(model); model != "" {
+			models[model] = struct{}{}
+		}
+	}
+	if len(models) == 0 {
+		return WhiteLabelSettings{}, fmt.Errorf("JIEKOU_ALLOWED_MODELS must contain at least one model")
+	}
+
+	return WhiteLabelSettings{Region: region, BaseURL: baseURL, APIKey: apiKey, AllowedModels: models}, nil
+}
+
 func Load() (*Settings, error) {
 	_ = godotenv.Load()
+	whiteLabel, err := ParseWhiteLabelSettings(
+		os.Getenv("UPSTREAM_REGION"),
+		os.Getenv("JIEKOU_API_KEY"),
+		os.Getenv("JIEKOU_ALLOWED_MODELS"),
+	)
+	if err != nil {
+		return nil, err
+	}
 
 	s := &Settings{
 		AppEnv:                    getEnv("APP_ENV", "development"),
@@ -96,6 +149,7 @@ func Load() (*Settings, error) {
 		AnalyticsAdminPhones:      strings.TrimSpace(os.Getenv("ANALYTICS_ADMIN_PHONES")),
 		AnalyticsTokenPricePer1K:  getEnvFloat("ANALYTICS_TOKEN_PRICE_PER_1K", 1),
 		GatewayAllowLegacyClients: getEnvBool("GATEWAY_ALLOW_LEGACY_STATIC_CLIENTS", false),
+		WhiteLabel:                whiteLabel,
 		EnvKeys:                   make(map[string]string),
 	}
 
