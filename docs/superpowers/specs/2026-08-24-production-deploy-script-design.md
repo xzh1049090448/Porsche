@@ -36,11 +36,11 @@ If `.env` uses a Docker hostname such as `mysql`, the operator must set `APP_DOC
 ## Deployment Flow
 
 1. Require Bash, Git, Docker, a Git worktree, and an existing `.env` without printing its contents.
-2. Fetch `origin/main`, require a clean tracked worktree, switch to `main`, and reset it exactly to `origin/main`. This deliberately updates only tracked code; untracked local deployment files remain untouched.
+2. Fetch `origin/main`, require a clean tracked worktree, switch to `main`, and reset it exactly to `origin/main`. This deliberately updates only tracked code; untracked local deployment files remain untouched. The build context excludes untracked `.env` files and local state through `.dockerignore`.
 3. Build `IMAGE_NAME` from the fetched source.
 4. If an `APP_NAME` container exists, stop it and rename it to a unique rollback name. This releases the fixed loopback port without deleting the known-good container.
 5. Start the new version using the final `APP_NAME`, `--env-file .env`, `127.0.0.1:${HOST_PORT}:8000`, and optional `--network ${APP_DOCKER_NETWORK}`.
-6. Poll the new container's loopback `/health` endpoint for a bounded time. If startup or health fails, remove the new container, rename the rollback container to `APP_NAME`, start it, and exit non-zero.
+6. Poll the new container's loopback `/health` endpoint at most 30 times. Each curl has a two-second connect timeout and three-second total timeout. If startup or health fails, remove the new container, rename the rollback container to `APP_NAME`, start it, and exit non-zero.
 7. After health succeeds, remove the stopped rollback container and print the new container ID and deployed Git revision. This gives a brief interruption during port handoff but does not require Nginx changes.
 
 ## Safety and Error Handling
@@ -48,11 +48,12 @@ If `.env` uses a Docker hostname such as `mysql`, the operator must set `APP_DOC
 - Use `set -Eeuo pipefail` and a cleanup trap that removes only the failed new application container and restores only the renamed previous application container.
 - Never use `docker system prune`, `docker volume rm`, `docker compose down -v`, `git clean`, or a force push.
 - Reject `HOST_PORT` values other than numeric TCP ports and reject an empty optional network value when explicitly set.
+- Acquire a non-blocking `flock` lock at `/var/lock/${APP_NAME}.deploy.lock` before Docker writes; lock contention exits with a readable error and leaves containers untouched.
 - Require `.env` permissions are left to the operator; the script does not read its content.
 - The health endpoint proves process/database startup only. White-label directory, chat, and SSE smoke tests remain separate operator commands because they require secrets and authorized tokens.
 
 ## Verification
 
 - A shell syntax check validates the script with `bash -n`.
-- A behavior test with mocked Git, Docker and curl verifies the script fetches and resets to `origin/main`, uses `--env-file .env`, binds only `127.0.0.1`, performs stop/rename/new-start/health/old-remove in order, restores the old container after startup or health failure, and contains no database/volume destructive commands.
+- A behavior test with mocked Git, Docker, curl, and flock runs a real script symlink inside a disposable fixture repository. It creates only the fixture `.env`, verifies no production environment-file override exists, checks thirty bounded health attempts and rollback on timeout, and confirms a contending deployment performs no Docker writes.
 - Existing Go tests run with an explicit writable `GOCACHE` when the local sandbox blocks the default cache.

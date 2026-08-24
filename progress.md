@@ -52,6 +52,16 @@
   `TRUSTED_PROXY_CIDRS`。真实 JieKou 目录、Chat 与 SSE 冒烟必须在部署环境另行执行，
   未标记为已通过。
 
+## 生产部署预发布加固（2026-08-24）
+
+- 部署脚本只读取所在 checkout 的 `.env`；mock 回归测试在临时 fixture repository 中
+  创建该文件并 symlink 真实脚本，因此不会触碰真实 checkout 的 `.env`。
+- 每次健康探测使用 2 秒连接和 3 秒总超时，至多 30 次；超时会删除候选并恢复旧容器。
+  `/var/lock/${APP_NAME}.deploy.lock` 的非阻塞 `flock` 会拒绝并发部署，且竞争者没有
+  Docker 写操作。
+- 新增严格 `.dockerignore`，排除 `.env`、Git/worktree/agent 本地目录、data 与测试/IDE
+  输出，同时保留 Go 源码、Dockerfile 和 `.env.example`。成功部署输出容器 ID 与 Git revision。
+
 ## 下一步（部署冒烟）
 
 在具备部署环境的白牌配置后，完成真实上游目录、Chat 与 SSE 冒烟。

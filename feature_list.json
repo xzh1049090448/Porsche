@@ -80,6 +80,7 @@
         "2026-08-24：Task 6 删除静态模型路由、静态客户端、旧厂商密钥环境变量及旧 Gateway/Registry 实现；真实白牌上游冒烟仍待部署环境执行。",
         "2026-08-24：预发布 Nginx 配置以 $remote_addr 覆盖客户端 XFF 链，并为 SSE 设置 HTTP/1.1、无缓冲和 300 秒 read/send timeout；静态配置检查、Go 全量测试与 go vet ./... 通过。",
         "2026-08-24：Task 3 生产部署脚本的 bash 静态检查、隔离 mock 部署回归检查、Nginx 配置静态检查，以及 Go 全量测试与 go vet ./... 通过；真实 JieKou AI 上游冒烟仍未执行。",
+        "2026-08-24：生产部署预发布加固：fixture mock 测试仅创建 fixture/.env 并执行真实脚本 symlink；ENV_FILE 不会覆盖生产环境，健康检查每次使用 2s/3s curl 超时、至多 30 次并在 timeout 回滚；flock 并发竞争无 Docker 写操作；.dockerignore 排除 .env 与本地状态，成功输出容器 ID 和 Git revision。",
         "尚未执行真实 JieKou AI 上游冒烟。"
       ],
       "notes": "这是当前唯一 in_progress 功能。前后端本地实现与旧上游清理已完成；真实上游目录、Chat 与 SSE 联调仍需部署环境的白牌配置，不能标记为已通过。"

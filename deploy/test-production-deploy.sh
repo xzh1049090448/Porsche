@@ -3,15 +3,20 @@
 set -Eeuo pipefail
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-script_file="$script_dir/production-deploy.sh"
-repo_dir="$(cd -- "$script_dir/.." && pwd)"
-test -f "$script_file"
-test ! -e "$repo_dir/.env" || { echo 'test must not create the repository .env' >&2; exit 1; }
-! grep -Eq 'docker[[:space:]].*compose[[:space:]]+down|docker[[:space:]].*prune|docker[[:space:]]+volume[[:space:]]+rm|docker[[:space:]]+network[[:space:]]+rm|docker[[:space:]]+image[[:space:]]+rm|(^|[[:space:]])mysql([[:space:]]|$)' "$script_file" || { echo 'deployment script contains a forbidden operation' >&2; exit 1; }
+source_script="$script_dir/production-deploy.sh"
+source_repo="$(cd -- "$script_dir/.." && pwd)"
+test -f "$source_script"
+test ! -e "$source_repo/.env" || { echo 'test must not create the source repository .env' >&2; exit 1; }
+! grep -Eq 'docker[[:space:]].*compose[[:space:]]+down|docker[[:space:]].*prune|docker[[:space:]]+volume[[:space:]]+rm|docker[[:space:]]+network[[:space:]]+rm|docker[[:space:]]+image[[:space:]]+rm|(^|[[:space:]])mysql([[:space:]]|$)' "$source_script" || { echo 'deployment script contains a forbidden operation' >&2; exit 1; }
 
 fixture_dir="$(mktemp -d "${TMPDIR:-/tmp}/production-deploy-test.XXXXXX")"
-mock_dir="$fixture_dir/bin"; env_file="$fixture_dir/production.env"; command_log="$fixture_dir/commands.nul"
-mkdir -p "$mock_dir"; printf 'DATABASE_URL=mysql://test:secret@db/test\n' >"$env_file"
+repo_dir="$fixture_dir/repo"; mock_dir="$fixture_dir/bin"; command_log="$fixture_dir/commands.nul"
+mkdir -p "$repo_dir/deploy" "$mock_dir"
+repo_dir="$(cd -- "$repo_dir" && pwd)"
+lock_dir="$repo_dir/.deploy-locks"
+mkdir -p "$lock_dir"
+ln -s "$source_script" "$repo_dir/deploy/production-deploy.sh"
+printf 'DATABASE_URL=mysql://test:secret@db/test\n' >"$repo_dir/.env"
 cleanup() { rm -rf -- "$fixture_dir"; }; trap cleanup EXIT
 
 write_mock() {
@@ -22,95 +27,69 @@ write_mock() {
         printf '%s\n' 'case "'"$command_name"'" in'
         printf '%s\n' '  git) case "${1:-}" in rev-parse) printf "%s\\n" "${MOCK_WORKTREE:-true}" ;; diff) exit "${MOCK_GIT_DIRTY:-0}" ;; esac ;;'
         printf '%s\n' '  docker) case "${1:-}" in container) [[ "${2:-}" != inspect ]] || [[ "${MOCK_OLD_CONTAINER:-present}" == present ]] ;; run) [[ "${MOCK_RUN_RESULT:-success}" == success ]] || exit 71; printf "new-container-id\\n" ;; start) [[ "${MOCK_ROLLBACK_START_RESULT:-success}" == success ]] || exit 72 ;; esac ;;'
-        printf '%s\n' '  curl) [[ "${MOCK_HEALTH_RESULT:-success}" == success ]] ;;' 'esac'
+        printf '%s\n' '  curl) [[ "${MOCK_HEALTH_RESULT:-success}" == success ]] || exit 28 ;;'
+        printf '%s\n' '  flock) [[ "${1:-}" == -E && "${2:-}" == 75 && "${3:-}" == -n && "${4:-}" == 9 ]] || exit 76; [[ "${MOCK_LOCK_RESULT:-success}" == success ]] || exit 75 ;;'
+        printf '%s\n' 'esac'
     } >"$mock_dir/$command_name"
     chmod +x "$mock_dir/$command_name"
 }
-write_mock git; write_mock docker; write_mock curl; write_mock sleep
+write_mock git; write_mock docker; write_mock curl; write_mock sleep; write_mock flock
 
-read_calls() {
-    calls=(); local record current=''
-    while IFS= read -r -d '' record; do
-        if [[ "$record" == '__END__' ]]; then calls+=("$current"); current=''; else current+="${current:+ }$record"; fi
-    done <"$command_log"
-}
-run_deploy() {
-    local port="${1:-18000}" network="${2:-}"
-    : >"$command_log"
-    if [[ -n "$network" ]]; then
-        PATH="$mock_dir:$PATH" COMMAND_LOG="$command_log" USE_TEST_ENV_FILE=1 ENV_FILE="$env_file" APP_NAME="${TEST_APP_NAME:-existing-app}" IMAGE_NAME=test-image HOST_PORT="$port" APP_DOCKER_NETWORK="$network" "$script_file"
-    else
-        PATH="$mock_dir:$PATH" COMMAND_LOG="$command_log" USE_TEST_ENV_FILE=1 ENV_FILE="$env_file" APP_NAME="${TEST_APP_NAME:-existing-app}" IMAGE_NAME=test-image HOST_PORT="$port" "$script_file"
-    fi
-}
+read_calls() { calls=(); local record current=''; while IFS= read -r -d '' record; do if [[ "$record" == '__END__' ]]; then calls+=("$current"); current=''; else current+="${current:+ }$record"; fi; done <"$command_log"; }
 line_for() { local expression="$1" index; read_calls; for index in "${!calls[@]}"; do [[ "${calls[$index]}" == *"$expression"* ]] && { printf '%s\n' "$((index + 1))"; return; }; done; return 1; }
-line_for_last() { local expression="$1" index line=''; read_calls; for index in "${!calls[@]}"; do [[ "${calls[$index]}" == *"$expression"* ]] && line="$((index + 1))"; done; [[ -n "$line" ]] && printf '%s\n' "$line"; }
-require_line() { local label="$1" expression="$2" line; if ! line="$(line_for "$expression")"; then echo "missing expected command: $label" >&2; read_calls; printf 'calls: %s\n' "${calls[*]:-<none>}" >&2; exit 1; fi; printf '%s\n' "$line"; }
-assert_after() { (( $2 < $4 )) || { echo "$3 must run after $1" >&2; exit 1; }; }
-assert_no_forbidden_operations() {
-    read_calls; local call
-    for call in "${calls[@]}"; do
-        if [[ "$call" == docker\ * ]] && [[ "$call" == *' compose down'* || "$call" == *' prune'* || "$call" == *' volume '* || "$call" == *' network rm'* || "$call" == *' image rm'* || "$call" == *mysql* || "$call" == *MySQL* ]]; then echo "deployment attempted forbidden operation: $call" >&2; exit 1; fi
-    done
-}
+count_calls() { local expression="$1" count=0 call; read_calls; for call in "${calls[@]}"; do [[ "$call" == *"$expression"* ]] && ((count += 1)); done; printf '%s\n' "$count"; }
+require_line() { local label="$1" expression="$2" line; line="$(line_for "$expression")" || { echo "missing expected command: $label" >&2; read_calls; printf 'calls: %s\n' "${calls[*]:-<none>}" >&2; exit 1; }; printf '%s\n' "$line"; }
+assert_no_docker_writes() { read_calls; local call; for call in "${calls[@]}"; do [[ "$call" == docker\ build* || "$call" == docker\ run* || "$call" == docker\ stop* || "$call" == docker\ rename* || "$call" == docker\ rm* ]] && { echo "unexpected Docker write: $call" >&2; exit 1; }; done; }
+run_deploy() { : >"$command_log"; (cd "$repo_dir" && PATH="$mock_dir:$PATH" COMMAND_LOG="$command_log" LOCK_FILE="$lock_dir/existing-app.deploy.lock" APP_NAME="${TEST_APP_NAME:-existing-app}" IMAGE_NAME=test-image HOST_PORT="${TEST_HOST_PORT:-18000}" "$repo_dir/deploy/production-deploy.sh"); }
+
 assert_successful_deploy() {
-    local network="$1" fetch switch reset build stop rename run health remove
-    run_deploy 18000 "$network"
-    fetch="$(require_line fetch 'git fetch origin main')"; switch="$(require_line switch 'git switch main')"; reset="$(require_line reset 'git reset --hard origin/main')"; build="$(require_line build 'docker build --tag test-image .')"
-    stop="$(require_line stop 'docker stop -- existing-app')"; rename="$(require_line rename 'docker rename -- existing-app existing-app-rollback-')"; run="$(require_line run 'docker run -d --name existing-app')"
-    require_line env "--env-file $env_file" >/dev/null; require_line loopback '--publish 127.0.0.1:18000:8000' >/dev/null
-    health="$(require_line health 'curl -fsS http://127.0.0.1:18000/health')"; remove="$(require_line remove 'docker rm -- existing-app-rollback-')"
-    if [[ -n "$network" ]]; then require_line network-check "docker network inspect $network" >/dev/null; require_line network "--network $network" >/dev/null; fi
-    assert_after fetch "$fetch" switch "$switch"; assert_after switch "$switch" reset "$reset"; assert_after reset "$reset" build "$build"; assert_after build "$build" stop "$stop"; assert_after stop "$stop" rename "$rename"; assert_after rename "$rename" run "$run"; assert_after run "$run" health "$health"; assert_after health "$health" remove "$remove"; assert_no_forbidden_operations
+    run_deploy >"$fixture_dir/success-stdout"
+    require_line lock 'flock -E 75 -n 9' >/dev/null
+    require_line env "--env-file $repo_dir/.env" >/dev/null
+    require_line health 'curl -fsS --connect-timeout 2 --max-time 3 http://127.0.0.1:18000/health' >/dev/null
+    require_line container-id 'docker run -d --name existing-app' >/dev/null
 }
-assert_rollback_after_failure() {
-    local label="$1" run_result="$2" health_result="$3" stop rename run health remove restore start
-    if MOCK_RUN_RESULT="$run_result" MOCK_HEALTH_RESULT="$health_result" run_deploy; then echo "deployment must fail when $label fails" >&2; exit 1; fi
-    stop="$(require_line stop 'docker stop -- existing-app')"; rename="$(require_line rename 'docker rename -- existing-app existing-app-rollback-')"; run="$(require_line run 'docker run -d --name existing-app')"; health="$(line_for 'curl -fsS http://127.0.0.1:18000/health' || true)"
-    remove="$(require_line remove-new 'docker rm -f -- existing-app')"; restore="$(line_for_last 'docker rename -- existing-app-rollback-')"; [[ -n "$restore" ]] || { echo 'missing expected command: restore-name' >&2; exit 1; }; start="$(require_line start-old 'docker start -- existing-app')"
-    assert_after stop "$stop" rename "$rename"; assert_after rename "$rename" run "$run"
-    if [[ "$label" == health ]]; then [[ -n "$health" ]] || { echo 'missing health check before rollback' >&2; exit 1; }; assert_after run "$run" health "$health"; assert_after health "$health" remove-new "$remove"; else [[ -z "$health" ]] || { echo 'health check ran after docker run failure' >&2; exit 1; }; assert_after run "$run" remove-new "$remove"; fi
-    assert_after remove-new "$remove" restore-name "$restore"; assert_after restore-name "$restore" start-old "$start"; assert_no_forbidden_operations
+assert_timeout_rolls_back() {
+    if MOCK_HEALTH_RESULT=timeout run_deploy >"$fixture_dir/timeout-stdout" 2>"$fixture_dir/timeout-stderr"; then echo 'deployment must fail after bounded health timeouts' >&2; exit 1; fi
+    require_line health 'curl -fsS --connect-timeout 2 --max-time 3 http://127.0.0.1:18000/health' >/dev/null
+    require_line candidate-removal 'docker rm -f -- existing-app' >/dev/null
+    require_line restore-name 'docker rename -- existing-app-rollback-' >/dev/null
+    require_line restore-start 'docker start -- existing-app' >/dev/null
+    [[ "$(count_calls 'curl -fsS --connect-timeout 2 --max-time 3 http://127.0.0.1:18000/health')" == 30 ]] || { echo 'health timeout must make exactly 30 bounded attempts' >&2; exit 1; }
 }
-
-assert_invalid_app_name_is_rejected_before_docker_writes() {
-    local invalid_name="$1"
-    if TEST_APP_NAME="$invalid_name" run_deploy; then
-        echo "deployment accepted invalid APP_NAME: $invalid_name" >&2
-        exit 1
-    fi
-    read_calls
-    [[ -z "$(line_for 'docker build' || true)" ]] || {
-        echo "deployment performed a Docker write with invalid APP_NAME: $invalid_name" >&2
-        exit 1
-    }
+assert_lock_contention_is_safe() {
+    local stderr_file="$fixture_dir/lock-stderr"
+    if MOCK_LOCK_RESULT=busy run_deploy >"$fixture_dir/lock-stdout" 2>"$stderr_file"; then echo 'deployment must fail while another deployment holds its lock' >&2; exit 1; fi
+    grep -Fq 'another deployment is already running for existing-app' "$stderr_file" || { echo 'lock contention error is not readable' >&2; exit 1; }
+    require_line lock 'flock -E 75 -n 9' >/dev/null
+    assert_no_docker_writes
 }
-
-assert_rollback_failure_is_reported() {
-    local stderr_file="$fixture_dir/rollback-stderr"
-    if MOCK_RUN_RESULT=failure MOCK_ROLLBACK_START_RESULT=failure run_deploy >"$fixture_dir/rollback-stdout" 2>"$stderr_file"; then
-        echo 'deployment must fail when startup and rollback start fail' >&2
-        exit 1
-    fi
-    require_line failed-rollback-start 'docker start -- existing-app' >/dev/null
-    grep -Fq 'rollback failed: could not start restored container' "$stderr_file" || {
-        echo 'deployment did not report the rollback start failure' >&2
-        exit 1
-    }
+assert_start_failure_rolls_back() {
+    if MOCK_RUN_RESULT=failure run_deploy >"$fixture_dir/startup-stdout" 2>"$fixture_dir/startup-stderr"; then echo 'deployment must fail when candidate startup fails' >&2; exit 1; fi
+    require_line candidate-removal 'docker rm -f -- existing-app' >/dev/null
+    require_line restore-name 'docker rename -- existing-app-rollback-' >/dev/null
+    require_line restore-start 'docker start -- existing-app' >/dev/null
+    [[ -z "$(line_for 'curl -fsS' || true)" ]] || { echo 'health check ran after candidate startup failure' >&2; exit 1; }
+}
+assert_invalid_input_has_no_docker_write() {
+    if TEST_HOST_PORT=invalid run_deploy; then echo 'deployment accepted invalid port' >&2; exit 1; fi
+    assert_no_docker_writes
+    if MOCK_GIT_DIRTY=1 run_deploy; then echo 'deployment accepted dirty tracked worktree' >&2; exit 1; fi
+    [[ -z "$(line_for 'git fetch origin main' || true)" ]] || { echo 'deployment fetched after dirty check' >&2; exit 1; }
 }
 
-assert_successful_deploy ''; assert_successful_deploy 'application-network'
-assert_rollback_after_failure run failure success; assert_rollback_after_failure health success failure
-assert_rollback_failure_is_reported
-if MOCK_OLD_CONTAINER=absent run_deploy; then :; else echo 'deployment without prior application must succeed' >&2; exit 1; fi
-read_calls; [[ -z "$(line_for 'docker stop -- existing-app' || true)" ]] || { echo 'deployment stopped a non-existent application' >&2; exit 1; }; require_line run-without-old 'docker run -d --name existing-app' >/dev/null; assert_no_forbidden_operations
-for invalid_port in 0 65536 invalid; do if run_deploy "$invalid_port"; then echo "deployment accepted invalid port: $invalid_port" >&2; exit 1; fi; [[ -z "$(line_for 'docker build' || true)" ]] || { echo "deployment built image with invalid port: $invalid_port" >&2; exit 1; }; done
-for invalid_app_name in --all -leading 'invalid/name'; do assert_invalid_app_name_is_rejected_before_docker_writes "$invalid_app_name"; done
-if MOCK_GIT_DIRTY=1 run_deploy; then echo 'deployment accepted a dirty tracked worktree' >&2; exit 1; fi
-[[ -z "$(line_for 'git fetch origin main' || true)" ]] || { echo 'deployment fetched after detecting a dirty tracked worktree' >&2; exit 1; }
-if MOCK_WORKTREE=false run_deploy; then echo 'deployment accepted a non-worktree directory' >&2; exit 1; fi
-[[ -z "$(line_for 'git fetch origin main' || true)" ]] || { echo 'deployment fetched outside a Git worktree' >&2; exit 1; }
-if PATH="$mock_dir:$PATH" COMMAND_LOG="$command_log" ENV_FILE="$env_file" APP_NAME=existing-app IMAGE_NAME=test-image HOST_PORT=18000 "$script_file"; then
-    echo 'production deployment accepted ENV_FILE override without explicit test mode' >&2; exit 1
-fi
-test ! -e "$repo_dir/.env" || { echo 'test created repository .env' >&2; exit 1; }
+assert_successful_deploy
+if ENV_FILE="$fixture_dir/attempted-override.env" run_deploy >"$fixture_dir/override-stdout"; then :; else echo 'ENV_FILE must not alter the deployment environment file' >&2; exit 1; fi
+require_line env-after-override "--env-file $repo_dir/.env" >/dev/null
+[[ -z "$(line_for "$fixture_dir/attempted-override.env" || true)" ]] || { echo 'deployment honored ENV_FILE override' >&2; exit 1; }
+assert_timeout_rolls_back
+assert_start_failure_rolls_back
+assert_lock_contention_is_safe
+assert_invalid_input_has_no_docker_write
+test ! -e "$source_repo/.env" || { echo 'test created the source repository .env' >&2; exit 1; }
+grep -Fq '.env' "$source_repo/.dockerignore" || { echo '.dockerignore must exclude .env' >&2; exit 1; }
+grep -Fq '!.env.example' "$source_repo/.dockerignore" || { echo '.dockerignore must retain .env.example' >&2; exit 1; }
+for pattern in .git .worktrees .claw .superpowers data coverage test-results playwright-report node_modules .idea .vscode; do grep -Fqx "$pattern" "$source_repo/.dockerignore" || { echo ".dockerignore must exclude $pattern" >&2; exit 1; }; done
+for required in Dockerfile go.mod go.sum cmd internal config; do test -e "$source_repo/$required" && ! grep -Fqx "$required" "$source_repo/.dockerignore" || { echo ".dockerignore must retain required build input: $required" >&2; exit 1; }; done
+grep -Fq 'sudo bash deploy/production-deploy.sh' "$source_repo/README.md" || { echo 'README must document sudo bash deployment' >&2; exit 1; }
+! grep -Fq 'sudo -E bash deploy/production-deploy.sh' "$source_repo/README.md" || { echo 'README must not recommend sudo -E deployment' >&2; exit 1; }

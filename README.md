@@ -94,18 +94,22 @@ The deployment can briefly interrupt the application while it swaps containers.
 If the new container cannot start or its `/health` check fails, the script
 automatically removes the candidate and restores the prior application
 container. It fetches `origin/main`, switches to `main`, and hard-resets that
-checkout to `origin/main` before building.
+checkout to `origin/main` before building. Deployment requires no tracked
+working-tree changes; an untracked `.env` is intentionally excluded from the
+Docker build context.
 
-It always uses that checkout's `.env`; production `ENV_FILE` overrides are
-rejected. `USE_TEST_ENV_FILE=1` exists only for the isolated mocked test
-harness and must never be set in production. The script replaces only the
-application container and neither manages nor changes MySQL.
+It always uses that checkout's `.env`; it does not accept an alternate
+environment-file override. A deployment lock at
+`/var/lock/<APP_NAME>.deploy.lock` prevents concurrent replacements of the
+same application container. The script replaces only the application container
+and neither manages nor changes MySQL. On success it prints the new container
+ID and deployed Git revision.
 
 If the `.env` database host is a Docker service name, attach the application to
 the Docker network that resolves it (replace the example network name):
 
 ```bash
-APP_DOCKER_NETWORK=ai-gateway_default sudo -E bash deploy/production-deploy.sh
+sudo APP_DOCKER_NETWORK=ai-gateway_default bash deploy/production-deploy.sh
 ```
 
 Run the real JieKou upstream directory, Chat, and SSE smoke checks separately
