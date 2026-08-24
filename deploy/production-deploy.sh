@@ -5,10 +5,25 @@ set -Eeuo pipefail
 APP_NAME="${APP_NAME:-ai-gateway-go}"
 IMAGE_NAME="${IMAGE_NAME:-ai-gateway-go:main}"
 HOST_PORT="${HOST_PORT:-8000}"
+network_was_set=false
+if [[ ${APP_DOCKER_NETWORK+x} ]]; then
+    network_was_set=true
+fi
 APP_DOCKER_NETWORK="${APP_DOCKER_NETWORK:-}"
 
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-ENV_FILE="${ENV_FILE:-$repo_root/.env}"
+requested_env_file="${ENV_FILE-}"
+env_file_was_set=false
+if [[ ${ENV_FILE+x} ]]; then
+    env_file_was_set=true
+fi
+ENV_FILE="$repo_root/.env"
+if [[ "${USE_TEST_ENV_FILE:-}" == 1 ]]; then
+    ENV_FILE="${requested_env_file:-$repo_root/.env}"
+elif [[ "$env_file_was_set" == true ]]; then
+    echo 'ENV_FILE is reserved for isolated tests; production uses the repository .env' >&2
+    exit 1
+fi
 
 cd "$repo_root"
 command -v git >/dev/null
@@ -19,43 +34,67 @@ if [[ ! "$HOST_PORT" =~ ^[1-9][0-9]{0,4}$ ]] || (( HOST_PORT > 65535 )); then
     echo 'HOST_PORT must be an integer from 1 through 65535' >&2
     exit 1
 fi
-
+if [[ "$network_was_set" == true && -z "$APP_DOCKER_NETWORK" ]]; then
+    echo 'APP_DOCKER_NETWORK must not be empty when set' >&2
+    exit 1
+fi
 if [[ ! -f "$ENV_FILE" ]]; then
-    echo 'ENV_FILE must name an existing regular file' >&2
+    echo 'deployment requires the repository .env' >&2
+    exit 1
+fi
+if [[ "$(git rev-parse --is-inside-work-tree)" != true ]]; then
+    echo 'deployment must run from a Git worktree' >&2
     exit 1
 fi
 
 # Deliberately exclude untracked files so operators can retain local credentials.
 git diff --quiet
 git diff --cached --quiet
-
 git fetch origin main
 git switch main
 git reset --hard origin/main
 
+network_args=()
 if [[ -n "$APP_DOCKER_NETWORK" ]]; then
     docker network inspect "$APP_DOCKER_NETWORK" >/dev/null
+    network_args=(--network "$APP_DOCKER_NETWORK")
 fi
 
-candidate_name="${APP_NAME}-candidate-$$"
-candidate_started=false
-cleanup_candidate() {
-    if [[ "$candidate_started" == true ]]; then
-        docker rm -f "$candidate_name" >/dev/null 2>&1 || true
+rollback_name="${APP_NAME}-rollback-$$"
+had_previous=false
+new_attempted=false
+deployment_succeeded=false
+
+restore_previous() {
+    local status=$?
+    if [[ "$deployment_succeeded" != true ]]; then
+        if [[ "$new_attempted" == true ]]; then
+            docker rm -f "$APP_NAME" >/dev/null 2>&1 || true
+        fi
+        if [[ "$had_previous" == true ]]; then
+            docker rename "$rollback_name" "$APP_NAME" >/dev/null 2>&1 || true
+            docker start "$APP_NAME" >/dev/null 2>&1 || true
+        fi
     fi
+    return "$status"
 }
-trap cleanup_candidate EXIT
+trap restore_previous EXIT
 
 docker build --tag "$IMAGE_NAME" .
+if docker container inspect "$APP_NAME" >/dev/null 2>&1; then
+    had_previous=true
+    docker stop "$APP_NAME" >/dev/null
+    docker rename "$APP_NAME" "$rollback_name" >/dev/null
+fi
+
+new_attempted=true
 if [[ -n "$APP_DOCKER_NETWORK" ]]; then
-    docker run -d --name "$candidate_name" --env-file "$ENV_FILE" \
-        --publish "127.0.0.1:${HOST_PORT}:8000" --network "$APP_DOCKER_NETWORK" \
-        "$IMAGE_NAME" >/dev/null
+    docker run -d --name "$APP_NAME" --env-file "$ENV_FILE" \
+        --publish "127.0.0.1:${HOST_PORT}:8000" "${network_args[@]}" "$IMAGE_NAME" >/dev/null
 else
-    docker run -d --name "$candidate_name" --env-file "$ENV_FILE" \
+    docker run -d --name "$APP_NAME" --env-file "$ENV_FILE" \
         --publish "127.0.0.1:${HOST_PORT}:8000" "$IMAGE_NAME" >/dev/null
 fi
-candidate_started=true
 
 healthy=false
 for _ in {1..30}; do
@@ -66,11 +105,12 @@ for _ in {1..30}; do
     sleep 1
 done
 if [[ "$healthy" != true ]]; then
-    echo 'candidate health check did not succeed within 30 seconds' >&2
+    echo 'application health check did not succeed within 30 seconds' >&2
     exit 1
 fi
 
-docker rm -f "$APP_NAME" >/dev/null 2>&1 || true
-docker rename "$candidate_name" "$APP_NAME"
-candidate_started=false
+if [[ "$had_previous" == true ]]; then
+    docker rm "$rollback_name" >/dev/null
+fi
+deployment_succeeded=true
 trap - EXIT
