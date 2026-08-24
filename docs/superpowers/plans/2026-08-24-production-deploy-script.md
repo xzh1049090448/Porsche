@@ -4,7 +4,7 @@
 
 **Goal:** Add a safe, repeatable production deployment script that synchronizes remote `main` and replaces only the Go application container using the existing `.env`.
 
-**Architecture:** A Bash script validates prerequisites and tracked-worktree cleanliness, resets only tracked source to `origin/main`, builds a candidate image, health-checks a candidate container, and only then replaces the current application container. A standalone static shell test locks in safety invariants without requiring Docker or credentials.
+**Architecture:** A Bash script validates prerequisites and tracked-worktree cleanliness, resets only tracked source to `origin/main`, builds a candidate image, stops and renames the old application to release the fixed loopback port, then health-checks the replacement container. If startup or health fails, it restores the renamed old container. A standalone mocked shell test locks in the exact safety behavior without requiring Docker or credentials.
 
 **Tech Stack:** Bash, Git, Docker CLI, existing Go Dockerfile.
 
@@ -43,13 +43,12 @@ Run: `bash deploy/test-production-deploy.sh`
 
 Expected: FAIL because `production-deploy.sh` does not yet exist.
 
-- [ ] **Step 3: Extend the test with candidate-before-replace ordering assertions**
+- [ ] **Step 3: Extend the test with bounded-interruption and rollback assertions**
 
 ```bash
-candidate_line=$(grep -n 'docker run -d' "$script" | head -n1 | cut -d: -f1)
-replace_line=$(grep -n 'docker rm -f' "$script" | head -n1 | cut -d: -f1)
-test "$candidate_line" -lt "$replace_line"
-grep -Fq 'curl -fsS http://127.0.0.1:${HOST_PORT}/health' "$script"
+assert_call_order stop-old rename-old run-new health remove-rollback
+run_with_failed_health
+assert_call_order stop-old rename-old run-new health remove-new restore-name start-old
 ```
 
 - [ ] **Step 4: Commit the red test**
@@ -88,12 +87,19 @@ git switch main
 git reset --hard origin/main
 ```
 
-- [ ] **Step 2: Add candidate lifecycle and bounded health check**
+- [ ] **Step 2: Add bounded-interruption lifecycle, rollback, and health check**
 
 ```bash
-candidate_name="${APP_NAME}-candidate-$$"
-cleanup_candidate() { docker rm -f "$candidate_name" >/dev/null 2>&1 || true; }
-trap cleanup_candidate EXIT
+rollback_name="${APP_NAME}-rollback-$$"
+had_previous=false
+restore_previous() {
+  docker rm -f "$APP_NAME" >/dev/null 2>&1 || true
+  if [[ "$had_previous" == true ]]; then
+    docker rename "$rollback_name" "$APP_NAME"
+    docker start "$APP_NAME"
+  fi
+}
+trap restore_previous ERR
 
 network_args=()
 if [[ -n "$APP_DOCKER_NETWORK" ]]; then
@@ -102,15 +108,21 @@ if [[ -n "$APP_DOCKER_NETWORK" ]]; then
 fi
 
 docker build --tag "$IMAGE_NAME" .
-docker run -d --name "$candidate_name" --env-file .env \
+if docker container inspect "$APP_NAME" >/dev/null 2>&1; then
+  had_previous=true
+  docker stop "$APP_NAME"
+  docker rename "$APP_NAME" "$rollback_name"
+fi
+docker run -d --name "$APP_NAME" --env-file "$ENV_FILE" \
   --publish "127.0.0.1:${HOST_PORT}:8000" "${network_args[@]}" "$IMAGE_NAME"
 for _ in $(seq 1 30); do
   curl -fsS "http://127.0.0.1:${HOST_PORT}/health" >/dev/null && break
   sleep 1
 done
 curl -fsS "http://127.0.0.1:${HOST_PORT}/health" >/dev/null
-docker rm -f "$APP_NAME" >/dev/null 2>&1 || true
-docker rename "$candidate_name" "$APP_NAME"
+if [[ "$had_previous" == true ]]; then
+  docker rm "$rollback_name"
+fi
 trap - EXIT
 ```
 
@@ -140,7 +152,7 @@ git commit -m "feat: add production deployment script"
 APP_DOCKER_NETWORK=ai-gateway_default sudo -E bash deploy/production-deploy.sh
 ```
 
-Document that `.env` remains the only database configuration source and that the script never starts, replaces, or deletes MySQL.
+Document that `.env` is the production default configuration source (with `ENV_FILE` reserved for isolated test fixtures) and that the script never starts, replaces, or deletes MySQL. Document the brief interruption and automatic rollback behavior.
 
 - [ ] **Step 2: Document the Nginx and white-label smoke boundary**
 
@@ -167,4 +179,3 @@ Expected: PASS. If `httptest` cannot bind in the sandbox, repeat the Go commands
 git add README.md feature_list.json progress.md
 git commit -m "docs: document production deployment workflow"
 ```
-

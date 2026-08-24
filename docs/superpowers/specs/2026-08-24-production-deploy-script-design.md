@@ -9,7 +9,7 @@ Provide a repeatable production deployment script for the Go gateway. The script
 - Add `deploy/production-deploy.sh`.
 - Use the deployment checkout's existing `.env` as the sole source of database and runtime configuration.
 - Build a new application image from the checked-out `main` revision.
-- Replace only the application container after its health check succeeds.
+- Replace only the application container with a bounded interruption and automatic rollback on candidate startup or health-check failure.
 - Document the required operator inputs and Nginx boundary.
 
 ## Explicit Non-Goals
@@ -38,14 +38,14 @@ If `.env` uses a Docker hostname such as `mysql`, the operator must set `APP_DOC
 1. Require Bash, Git, Docker, a Git worktree, and an existing `.env` without printing its contents.
 2. Fetch `origin/main`, require a clean tracked worktree, switch to `main`, and reset it exactly to `origin/main`. This deliberately updates only tracked code; untracked local deployment files remain untouched.
 3. Build `IMAGE_NAME` from the fetched source.
-4. Start a uniquely named candidate application container with `--env-file .env`, `127.0.0.1:${HOST_PORT}:8000`, and optional `--network ${APP_DOCKER_NETWORK}`.
-5. Poll the candidate's loopback `/health` endpoint for a bounded time. A failed candidate is removed; the existing application container is left untouched.
-6. After candidate health succeeds, stop and remove the previous `APP_NAME` container, rename the candidate to `APP_NAME`, and print its container ID and deployed Git revision.
-7. If the replacement step itself fails, report the failure clearly. The script does not claim rollback because Docker port ownership makes a fully parallel cutover impossible with the fixed loopback port.
+4. If an `APP_NAME` container exists, stop it and rename it to a unique rollback name. This releases the fixed loopback port without deleting the known-good container.
+5. Start the new version using the final `APP_NAME`, `--env-file .env`, `127.0.0.1:${HOST_PORT}:8000`, and optional `--network ${APP_DOCKER_NETWORK}`.
+6. Poll the new container's loopback `/health` endpoint for a bounded time. If startup or health fails, remove the new container, rename the rollback container to `APP_NAME`, start it, and exit non-zero.
+7. After health succeeds, remove the stopped rollback container and print the new container ID and deployed Git revision. This gives a brief interruption during port handoff but does not require Nginx changes.
 
 ## Safety and Error Handling
 
-- Use `set -Eeuo pipefail` and a cleanup trap for only the candidate container.
+- Use `set -Eeuo pipefail` and a cleanup trap that removes only the failed new application container and restores only the renamed previous application container.
 - Never use `docker system prune`, `docker volume rm`, `docker compose down -v`, `git clean`, or a force push.
 - Reject `HOST_PORT` values other than numeric TCP ports and reject an empty optional network value when explicitly set.
 - Require `.env` permissions are left to the operator; the script does not read its content.
@@ -54,5 +54,5 @@ If `.env` uses a Docker hostname such as `mysql`, the operator must set `APP_DOC
 ## Verification
 
 - A shell syntax check validates the script with `bash -n`.
-- A static test verifies the script fetches and resets to `origin/main`, uses `--env-file .env`, binds only `127.0.0.1`, contains candidate-before-replace logic, and contains no database/volume destructive commands.
+- A behavior test with mocked Git, Docker and curl verifies the script fetches and resets to `origin/main`, uses `--env-file .env`, binds only `127.0.0.1`, performs stop/rename/new-start/health/old-remove in order, restores the old container after startup or health failure, and contains no database/volume destructive commands.
 - Existing Go tests run with an explicit writable `GOCACHE` when the local sandbox blocks the default cache.
