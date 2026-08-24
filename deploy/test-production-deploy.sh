@@ -39,7 +39,7 @@ read_calls() { calls=(); local record current=''; while IFS= read -r -d '' recor
 line_for() { local expression="$1" index; read_calls; for index in "${!calls[@]}"; do [[ "${calls[$index]}" == *"$expression"* ]] && { printf '%s\n' "$((index + 1))"; return; }; done; return 1; }
 count_calls() { local expression="$1" count=0 call; read_calls; for call in "${calls[@]}"; do [[ "$call" == *"$expression"* ]] && ((count += 1)); done; printf '%s\n' "$count"; }
 require_line() { local label="$1" expression="$2" line; line="$(line_for "$expression")" || { echo "missing expected command: $label" >&2; read_calls; printf 'calls: %s\n' "${calls[*]:-<none>}" >&2; exit 1; }; printf '%s\n' "$line"; }
-assert_no_docker_writes() { read_calls; local call; for call in "${calls[@]}"; do [[ "$call" == docker\ build* || "$call" == docker\ run* || "$call" == docker\ stop* || "$call" == docker\ rename* || "$call" == docker\ rm* ]] && { echo "unexpected Docker write: $call" >&2; exit 1; }; done; }
+assert_no_docker_writes() { read_calls; local call; for call in "${calls[@]-}"; do [[ "$call" == docker\ build* || "$call" == docker\ run* || "$call" == docker\ stop* || "$call" == docker\ rename* || "$call" == docker\ rm* ]] && { echo "unexpected Docker write: $call" >&2; exit 1; }; done; return 0; }
 run_deploy() { : >"$command_log"; (cd "$repo_dir" && PATH="$mock_dir:$PATH" COMMAND_LOG="$command_log" LOCK_FILE="$lock_dir/existing-app.deploy.lock" APP_NAME="${TEST_APP_NAME:-existing-app}" IMAGE_NAME=test-image HOST_PORT="${TEST_HOST_PORT:-18000}" "$repo_dir/deploy/production-deploy.sh"); }
 
 assert_successful_deploy() {
@@ -72,7 +72,7 @@ assert_start_failure_rolls_back() {
     [[ -z "$(line_for 'curl -fsS' || true)" ]] || { echo 'health check ran after candidate startup failure' >&2; exit 1; }
 }
 assert_invalid_input_has_no_docker_write() {
-    if TEST_HOST_PORT=invalid run_deploy; then echo 'deployment accepted invalid port' >&2; exit 1; fi
+    if TEST_HOST_PORT=invalid run_deploy >"$fixture_dir/invalid-port-stdout" 2>"$fixture_dir/invalid-port-stderr"; then echo 'deployment accepted invalid port' >&2; exit 1; fi
     assert_no_docker_writes
     if MOCK_GIT_DIRTY=1 run_deploy; then echo 'deployment accepted dirty tracked worktree' >&2; exit 1; fi
     [[ -z "$(line_for 'git fetch origin main' || true)" ]] || { echo 'deployment fetched after dirty check' >&2; exit 1; }
@@ -90,6 +90,6 @@ test ! -e "$source_repo/.env" || { echo 'test created the source repository .env
 grep -Fq '.env' "$source_repo/.dockerignore" || { echo '.dockerignore must exclude .env' >&2; exit 1; }
 grep -Fq '!.env.example' "$source_repo/.dockerignore" || { echo '.dockerignore must retain .env.example' >&2; exit 1; }
 for pattern in .git .worktrees .claw .superpowers data coverage test-results playwright-report node_modules .idea .vscode; do grep -Fqx "$pattern" "$source_repo/.dockerignore" || { echo ".dockerignore must exclude $pattern" >&2; exit 1; }; done
-for required in Dockerfile go.mod go.sum cmd internal config; do test -e "$source_repo/$required" && ! grep -Fqx "$required" "$source_repo/.dockerignore" || { echo ".dockerignore must retain required build input: $required" >&2; exit 1; }; done
+for required in Dockerfile go.mod go.sum cmd internal config; do if test -e "$source_repo/$required" && grep -Fqx "$required" "$source_repo/.dockerignore"; then echo ".dockerignore must retain required build input: $required" >&2; exit 1; fi; done
 grep -Fq 'sudo bash deploy/production-deploy.sh' "$source_repo/README.md" || { echo 'README must document sudo bash deployment' >&2; exit 1; }
 ! grep -Fq 'sudo -E bash deploy/production-deploy.sh' "$source_repo/README.md" || { echo 'README must not recommend sudo -E deployment' >&2; exit 1; }
