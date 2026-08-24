@@ -2,6 +2,8 @@ package handler
 
 import (
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -10,62 +12,145 @@ import (
 	"github.com/porsche/ai-gateway-go/internal/service"
 )
 
+var analyticsViews = map[string]bool{
+	"consumption_distribution": true, "call_trend": true, "call_distribution": true,
+	"call_ranking": true, "user_consumption_ranking": true, "user_consumption_trend": true,
+}
+
 func RegisterAnalytics(r *gin.Engine, state *app.State) {
 	g := r.Group("/api/v1/billing/analytics", middleware.RequireUser(state))
-
 	g.GET("/access", func(c *gin.Context) {
-		user := middleware.CurrentUser(c)
-		c.JSON(http.StatusOK, gin.H{"allowed": state.Settings.IsAnalyticsAdmin(user.Phone)})
+		c.JSON(http.StatusOK, gin.H{"allowed": state.Settings.IsAnalyticsAdmin(middleware.CurrentUser(c).Phone)})
 	})
-
 	admin := g.Group("", middleware.RequireAnalyticsAdmin(state))
 	admin.GET("/summary", func(c *gin.Context) {
-		f := parseAnalyticsFilters(c)
-		c.JSON(http.StatusOK, service.AnalyticsSummary(state.DB, state.Settings, f))
+		f, ok := analyticsFiltersOrAbort(c, "")
+		if ok {
+			c.JSON(http.StatusOK, service.AnalyticsSummary(state.DB, state.Settings, f))
+		}
 	})
 	admin.GET("/models", func(c *gin.Context) {
-		f := parseAnalyticsFilters(c)
-		c.JSON(http.StatusOK, service.AnalyticsModels(state.DB, f))
+		f, ok := analyticsFiltersOrAbort(c, "")
+		if ok {
+			c.JSON(http.StatusOK, service.AnalyticsModels(state.DB, f))
+		}
 	})
 	admin.GET("/charts/:view", func(c *gin.Context) {
 		view := c.Param("view")
-		f := parseAnalyticsFilters(c)
-		c.JSON(http.StatusOK, service.AnalyticsChart(state.DB, state.Settings, view, f))
+		f, ok := analyticsFiltersOrAbort(c, view)
+		if ok {
+			c.JSON(http.StatusOK, service.AnalyticsChart(state.DB, state.Settings, view, f))
+		}
 	})
 	admin.GET("/export", func(c *gin.Context) {
+		view := c.Query("view")
+		if !analyticsViews[view] {
+			analyticsFiltersOrAbort(c, view)
+			return
+		}
+		f, ok := analyticsFiltersOrAbort(c, view)
+		if !ok {
+			return
+		}
 		c.Header("Content-Type", "text/csv; charset=utf-8")
 		c.Header("Content-Disposition", `attachment; filename="analytics.csv"`)
-		f := parseAnalyticsFilters(c)
-		view := c.Query("view")
 		c.String(http.StatusOK, service.AnalyticsExportCSV(state.DB, view, f))
 	})
 }
 
-func parseAnalyticsFilters(c *gin.Context) service.AnalyticsFilters {
-	preset := c.DefaultQuery("range", "24h")
-	granularity := c.DefaultQuery("granularity", "2h")
-	metric := c.DefaultQuery("metric", "cost")
-	topN := parseUintQuery(c, "top_n", 10)
+func analyticsFiltersOrAbort(c *gin.Context, view string) (service.AnalyticsFilters, bool) {
+	f, err := parseAnalyticsFilters(c, view)
+	if err == nil {
+		return f, true
+	}
+	c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": gin.H{"code": "invalid_analytics_query", "message": "invalid analytics query"}})
+	return service.AnalyticsFilters{}, false
+}
+
+func parseAnalyticsFilters(c *gin.Context, view string) (service.AnalyticsFilters, error) {
+	if view != "" && !analyticsViews[view] {
+		return service.AnalyticsFilters{}, errInvalidAnalyticsQuery
+	}
 	now := time.Now().UTC()
-	start := now.Add(-24 * time.Hour)
-	label := "近24小时"
-	switch preset {
-	case "1h":
-		start = now.Add(-1 * time.Hour)
-		label = "近1小时"
-	case "6h":
-		start = now.Add(-6 * time.Hour)
-		label = "近6小时"
-	case "7d":
-		start = now.Add(-7 * 24 * time.Hour)
-		label = "近7天"
+	rangeValue := c.DefaultQuery("range", "24h")
+	f := service.AnalyticsFilters{Granularity: c.DefaultQuery("granularity", "2h"), Metric: c.DefaultQuery("metric", "cost"), TopN: 10}
+	if f.Granularity != "1h" && f.Granularity != "2h" && f.Granularity != "4h" && f.Granularity != "1d" {
+		return f, errInvalidAnalyticsQuery
 	}
-	return service.AnalyticsFilters{
-		StartAt:     start,
-		EndAt:       now,
-		RangeLabel:  label,
-		Granularity: granularity,
-		Metric:      metric,
-		TopN:        topN,
+	if f.Metric != "cost" && f.Metric != "tokens" {
+		return f, errInvalidAnalyticsQuery
 	}
+	if raw, present := c.GetQuery("top_n"); present {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 5 || n > 50 {
+			return f, errInvalidAnalyticsQuery
+		}
+		f.TopN = n
+	}
+	if raw, present := c.GetQuery("models"); present {
+		f.Models = normalizeAnalyticsModels(raw)
+		if strings.TrimSpace(raw) != "" && (len(f.Models) == 0 || len(f.Models) > 50) {
+			return f, errInvalidAnalyticsQuery
+		}
+	}
+	startRaw, hasStart := c.GetQuery("start_at")
+	endRaw, hasEnd := c.GetQuery("end_at")
+	if hasStart != hasEnd {
+		return f, errInvalidAnalyticsQuery
+	}
+	if hasStart {
+		start, startErr := time.Parse(time.RFC3339, startRaw)
+		end, endErr := time.Parse(time.RFC3339, endRaw)
+		if startErr != nil || endErr != nil || !start.Before(end) || end.Sub(start) > 90*24*time.Hour {
+			return f, errInvalidAnalyticsQuery
+		}
+		f.StartAt, f.EndAt, f.RangeLabel = start.UTC(), end.UTC(), "自定义时间"
+	} else {
+		switch rangeValue {
+		case "1h":
+			f.StartAt, f.RangeLabel = now.Add(-time.Hour), "近1小时"
+		case "6h":
+			f.StartAt, f.RangeLabel = now.Add(-6*time.Hour), "近6小时"
+		case "24h":
+			f.StartAt, f.RangeLabel = now.Add(-24*time.Hour), "近24小时"
+		case "7d":
+			f.StartAt, f.RangeLabel = now.Add(-7*24*time.Hour), "近7天"
+		case "yesterday":
+			f.EndAt = now.Truncate(24 * time.Hour)
+			f.StartAt, f.RangeLabel = f.EndAt.Add(-24*time.Hour), "昨日"
+		default:
+			return f, errInvalidAnalyticsQuery
+		}
+		if f.EndAt.IsZero() {
+			f.EndAt = now
+		}
+	}
+	if raw, present := c.GetQuery("user_id"); present {
+		userID, err := strconv.Atoi(raw)
+		if err != nil || userID <= 0 || view != "user_consumption_trend" {
+			return f, errInvalidAnalyticsQuery
+		}
+		f.UserID = userID
+	}
+	if view == "user_consumption_trend" && f.UserID <= 0 {
+		return f, errInvalidAnalyticsQuery
+	}
+	return f, nil
+}
+
+var errInvalidAnalyticsQuery = strconv.ErrSyntax
+
+func normalizeAnalyticsModels(raw string) []string {
+	seen, out := map[string]bool{}, []string{}
+	for _, part := range strings.Split(raw, ",") {
+		model := strings.TrimSpace(part)
+		if len(model) > 128 {
+			return nil
+		}
+		if model != "" && !seen[model] {
+			seen[model] = true
+			out = append(out, model)
+		}
+	}
+	return out
 }
