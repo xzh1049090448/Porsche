@@ -1,17 +1,19 @@
 package handler
 
 import (
+	"encoding/json"
+	"io"
 	"net/http"
 	"strconv"
 
 	"github.com/gin-gonic/gin"
 	"github.com/porsche/ai-gateway-go/internal/app"
 	"github.com/porsche/ai-gateway-go/internal/dto"
-	"github.com/porsche/ai-gateway-go/internal/gateway"
 	"github.com/porsche/ai-gateway-go/internal/httpx"
 	"github.com/porsche/ai-gateway-go/internal/middleware"
 	"github.com/porsche/ai-gateway-go/internal/models"
 	"github.com/porsche/ai-gateway-go/internal/service"
+	"github.com/porsche/ai-gateway-go/internal/whitelabel"
 )
 
 func RegisterOpenAIChat(r *gin.Engine, state *app.State) {
@@ -192,12 +194,21 @@ func RegisterAdminDashboard(r *gin.Engine, state *app.State) {
 		c.JSON(http.StatusOK, service.GetDashboard(state.DB))
 	})
 	g.GET("/models/health", func(c *gin.Context) {
+		if state.WhiteLabel == nil {
+			platformWhiteLabelError(c, whitelabel.ErrUpstreamUnavailable("white-label service unavailable"))
+			return
+		}
+		catalog, err := state.WhiteLabel.ListModels(c.Request.Context(), nil)
+		if err != nil {
+			platformWhiteLabelError(c, err)
+			return
+		}
 		results := make([]map[string]interface{}, 0)
-		for name, route := range state.Models.Routes() {
+		for _, model := range catalog.Data {
 			var health models.ModelHealth
-			err := state.DB.Where("model_name = ?", name).First(&health).Error
+			err := state.DB.Where("model_name = ?", model.ID).First(&health).Error
 			if err != nil {
-				health = models.ModelHealth{ModelName: name, Provider: route.Provider, IsAvailable: true}
+				health = models.ModelHealth{ModelName: model.ID, Provider: "whitelabel", IsAvailable: true}
 				_ = state.DB.Create(&health).Error
 			}
 			results = append(results, dto.ModelHealth(&health))
@@ -205,33 +216,42 @@ func RegisterAdminDashboard(r *gin.Engine, state *app.State) {
 		c.JSON(http.StatusOK, results)
 	})
 	g.POST("/models/health/check", func(c *gin.Context) {
-		client, ok := state.Clients.GetBySecret(state.Settings.PlatformClientSecret)
-		if !ok {
-			c.JSON(http.StatusOK, gin.H{"message": "Platform client not configured"})
+		if state.WhiteLabel == nil {
+			platformWhiteLabelError(c, whitelabel.ErrUpstreamUnavailable("white-label service unavailable"))
+			return
+		}
+		catalog, err := state.WhiteLabel.ListModels(c.Request.Context(), nil)
+		if err != nil {
+			platformWhiteLabelError(c, err)
 			return
 		}
 		updated := make([]map[string]interface{}, 0)
-		for name, route := range state.Models.Routes() {
+		for _, model := range catalog.Data {
 			var health models.ModelHealth
-			_ = state.DB.Where("model_name = ?", name).First(&health).Error
+			_ = state.DB.Where("model_name = ?", model.ID).First(&health).Error
 			if health.ID == 0 {
-				health = models.ModelHealth{ModelName: name, Provider: route.Provider}
+				health = models.ModelHealth{ModelName: model.ID, Provider: "whitelabel"}
 			}
-			body := gateway.ChatCompletionRequest{
-				Model:    name,
-				Messages: []gateway.ChatMessage{{Role: "user", Content: "ping"}},
+			maxTokens := 5
+			payload, _ := json.Marshal(map[string]interface{}{"model": model.ID, "messages": []map[string]string{{"role": "user", "content": "Reply with OK."}}, "max_tokens": maxTokens, "n": 1, "stream": false})
+			response, chatErr := state.WhiteLabel.Chat(c.Request.Context(), payload)
+			if chatErr == nil {
+				raw, readErr := io.ReadAll(response.Body)
+				response.Body.Close()
+				if readErr != nil {
+					chatErr = whitelabel.ErrUpstreamUnavailable("health response read failed")
+				} else if _, projectErr := state.WhiteLabel.ProjectChatCompletion(raw, model.ID); projectErr != nil {
+					chatErr = projectErr
+				}
 			}
-			max := 5
-			body.MaxTokens = &max
-			_, err := state.Gateway.Complete(c.Request.Context(), client, body)
-			health.IsAvailable = err == nil
-			if err != nil {
+			health.IsAvailable = chatErr == nil
+			if chatErr != nil {
 				health.ErrorRate = minFloat(1, health.ErrorRate+0.1)
 			}
 			now := timeNowUTC()
 			health.LastCheckedAt = &now
 			_ = state.DB.Save(&health).Error
-			updated = append(updated, map[string]interface{}{"model": name, "available": err == nil})
+			updated = append(updated, map[string]interface{}{"model": model.ID, "available": chatErr == nil})
 		}
 		c.JSON(http.StatusOK, gin.H{"checked": updated})
 	})

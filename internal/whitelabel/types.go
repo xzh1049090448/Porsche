@@ -60,6 +60,23 @@ type ChatCompletionUsage struct {
 	TotalTokens      int `json:"total_tokens"`
 }
 
+// ChatMessage is the internal, OpenAI-compatible request message passed to
+// the sole white-label upstream. It is intentionally provider-neutral.
+type ChatMessage struct {
+	Role    string      `json:"role"`
+	Content interface{} `json:"content"`
+}
+
+// ChatCompletionRequest holds the platform fields needed to build a
+// white-label request after validation and optional RAG enrichment.
+type ChatCompletionRequest struct {
+	Model       string        `json:"model"`
+	Messages    []ChatMessage `json:"messages"`
+	Temperature *float64      `json:"temperature,omitempty"`
+	MaxTokens   *int          `json:"max_tokens,omitempty"`
+	Stream      bool          `json:"stream,omitempty"`
+}
+
 // ProjectChatCompletion validates the minimal OpenAI completion shape and
 // drops all upstream-owned fields that are not part of the public contract.
 func (s *WhiteLabelService) ProjectChatCompletion(data []byte, logicalModelID string) (ChatCompletion, *Error) {

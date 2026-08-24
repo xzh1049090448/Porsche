@@ -22,20 +22,16 @@ import (
 
 func TestHealthOK(t *testing.T) {
 	settings := &config.Settings{
-		AppEnv:               "development",
-		DatabaseURL:          "sqlite://./data/test_platform.db",
-		AllowedHosts:         "example.com",
-		ModelsConfigPath:     "../../config/models.yaml",
-		ClientsConfigPath:    "../../config/clients.yaml",
-		JWTSecretKey:         "test-secret",
-		AdminToken:           "admin-test",
-		PlatformClientSecret: "sk-platform-internal",
-		FixedLoginEnabled:    true,
-		FixedLoginPhone:      "13800138000",
-		FixedLoginPassword:   "test",
-		ChromaPersistDir:     "./data/test_chroma",
-		DatasetUploadDir:     "./data/test_uploads",
-		EnvKeys:              map[string]string{},
+		AppEnv:             "development",
+		DatabaseURL:        "sqlite://./data/test_platform.db",
+		AllowedHosts:       "example.com",
+		JWTSecretKey:       "test-secret",
+		AdminToken:         "admin-test",
+		FixedLoginEnabled:  true,
+		FixedLoginPhone:    "13800138000",
+		FixedLoginPassword: "test",
+		ChromaPersistDir:   "./data/test_chroma",
+		DatasetUploadDir:   "./data/test_uploads",
 	}
 
 	gdb, err := db.Open(settings.DatabaseURL, "test")
@@ -62,8 +58,8 @@ func TestHealthOK(t *testing.T) {
 	if data["status"] != "ok" {
 		t.Fatalf("expected status ok, got %v", data["status"])
 	}
-	if models, ok := data["models_loaded"].(float64); !ok || models < 1 {
-		t.Fatalf("expected models_loaded >= 1, got %v", data["models_loaded"])
+	if data["upstream"] != "whitelabel" {
+		t.Fatalf("expected whitelabel health status, got %v", data["upstream"])
 	}
 }
 
@@ -324,8 +320,8 @@ func newGatewayTestState(t *testing.T) *app.State {
 	t.Helper()
 	dir := t.TempDir()
 	settings := &config.Settings{
-		AppEnv: "test", DatabaseURL: "sqlite://" + dir + "/platform.db", AllowedHosts: "example.com", ModelsConfigPath: "../../config/models.yaml", ClientsConfigPath: "../../config/clients.yaml",
-		JWTSecretKey: "test-secret", AdminToken: "admin-test", PlatformClientSecret: "sk-platform-internal", ChromaPersistDir: dir + "/chroma", DatasetUploadDir: dir + "/uploads", EnvKeys: map[string]string{},
+		AppEnv: "test", DatabaseURL: "sqlite://" + dir + "/platform.db", AllowedHosts: "example.com",
+		JWTSecretKey: "test-secret", AdminToken: "admin-test", ChromaPersistDir: dir + "/chroma", DatasetUploadDir: dir + "/uploads",
 	}
 	gdb, err := db.Open(settings.DatabaseURL, "test")
 	if err != nil {

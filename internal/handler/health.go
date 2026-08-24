@@ -24,34 +24,14 @@ func RegisterHealth(r *gin.Engine, state *app.State) {
 			c.JSON(http.StatusOK, gin.H{"status": "ok"})
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{
-			"status":         "ok",
-			"models_loaded":  state.Models.Count(),
-			"clients_loaded": state.Clients.ClientCount(),
-		})
+		c.JSON(http.StatusOK, gin.H{"status": "ok", "upstream": "whitelabel"})
 	})
 }
 
 func RegisterAdmin(r *gin.Engine, state *app.State) {
 	g := r.Group("/admin", middleware.RequireAdmin(state))
 	g.GET("/status", func(c *gin.Context) {
-		routes := map[string]string{}
-		for name, route := range state.Models.Routes() {
-			routes[name] = route.Provider
-		}
-		c.JSON(http.StatusOK, gin.H{
-			"models":  state.Models.Count(),
-			"clients": state.Clients.ClientCount(),
-			"routes":  routes,
-		})
-	})
-	g.POST("/reload-config", func(c *gin.Context) {
-		state.ReloadConfig()
-		c.JSON(http.StatusOK, gin.H{
-			"status":  "reloaded",
-			"models":  state.Models.Count(),
-			"clients": state.Clients.ClientCount(),
-		})
+		c.JSON(http.StatusOK, gin.H{"upstream": "whitelabel", "configured_models": len(state.Settings.WhiteLabel.AllowedModels)})
 	})
 	g.POST("/models/:id/health-check", func(c *gin.Context) {
 		modelID := c.Param("id")

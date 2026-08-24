@@ -52,3 +52,18 @@ func TestLoadParsesWhiteLabelEnvironmentAndFailsClosed(t *testing.T) {
 		t.Fatal("Load() accepted a whitespace-only API key")
 	}
 }
+
+func TestLoadDoesNotRetainLegacyUpstreamKeys(t *testing.T) {
+	t.Setenv("UPSTREAM_REGION", "cn")
+	t.Setenv("JIEKOU_API_KEY", "test-key")
+	t.Setenv("JIEKOU_ALLOWED_MODELS", "model-a")
+	t.Setenv("DEEP"+"SEEK_API_KEYS", "obsolete-secret")
+
+	settings, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if settings.WhiteLabel.APIKey != "test-key" {
+		t.Fatalf("Load() did not retain white-label key")
+	}
+}

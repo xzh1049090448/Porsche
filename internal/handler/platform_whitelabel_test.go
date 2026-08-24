@@ -14,6 +14,7 @@ import (
 	"github.com/porsche/ai-gateway-go/internal/db"
 	"github.com/porsche/ai-gateway-go/internal/models"
 	"github.com/porsche/ai-gateway-go/internal/security"
+	"github.com/porsche/ai-gateway-go/internal/service"
 	"github.com/porsche/ai-gateway-go/internal/whitelabel"
 )
 
@@ -104,7 +105,7 @@ func TestAdminHealthCheckRejectsConcurrentSameModel(t *testing.T) {
 func newPlatformWhiteLabelTestState(t *testing.T) *app.State {
 	t.Helper()
 	dir := t.TempDir()
-	settings := &config.Settings{AppEnv: "test", DatabaseURL: "sqlite://" + dir + "/platform.db", JWTSecretKey: "test-secret", ChromaPersistDir: dir + "/chroma", DatasetUploadDir: dir + "/uploads", ModelsConfigPath: "../../config/models.yaml", ClientsConfigPath: "../../config/clients.yaml", EnvKeys: map[string]string{}}
+	settings := &config.Settings{AppEnv: "test", DatabaseURL: "sqlite://" + dir + "/platform.db", JWTSecretKey: "test-secret", ChromaPersistDir: dir + "/chroma", DatasetUploadDir: dir + "/uploads"}
 	gdb, err := db.Open(settings.DatabaseURL, "test")
 	if err != nil {
 		t.Fatal(err)
@@ -124,6 +125,9 @@ func newPlatformWhiteLabelTestState(t *testing.T) *app.State {
 		t.Fatal(err)
 	}
 	state.WhiteLabel = whiteLabel
+	state.Platform = service.NewPlatformChatService(service.PlatformDeps{
+		Settings: settings, DB: state.DB, RAG: state.RAG, Billing: state.Billing, WhiteLabel: whiteLabel,
+	})
 	return state
 }
 

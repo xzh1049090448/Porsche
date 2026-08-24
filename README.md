@@ -30,15 +30,14 @@ Go 语言实现的 **国内大模型聚合平台 API**。服务路径与既有�
 
 ```bash
 cp .env.example .env
-# 填写 DEEPSEEK_API_KEYS、GLM_API_KEYS、JWT_SECRET_KEY、ADMIN_TOKEN 等
+# 填写 JIEKOU_API_KEY、JIEKOU_ALLOWED_MODELS、JWT_SECRET_KEY、ADMIN_TOKEN 等
 ```
 
-配置文件：
-
-- `config/models.yaml` — 模型路由
-- `config/clients.yaml` — 下游客户端密钥
-
-网关调用使用用户在 `POST /api/v1/tokens` 创建的 `sk-gw-...` API Token；完整密钥仅在创建响应中返回一次，数据库只保存 SHA-256 哈希。旧的 `config/clients.yaml` 静态客户端默认不再接受；如需迁移期间兼容，必须显式设置 `GATEWAY_ALLOW_LEGACY_STATIC_CLIENTS=true`。
+服务只支持 JieKou AI OpenAI-compatible 白牌上游。`UPSTREAM_REGION` 仅可为
+`cn` 或 `global`，并由服务选择固定上游地址；`JIEKOU_API_KEY` 与非空
+`JIEKOU_ALLOWED_MODELS` 缺失或无效时服务会拒绝启动。网关调用使用用户在
+`POST /api/v1/tokens` 创建的 `sk-gw-...` API Token；完整密钥仅在创建响应中
+返回一次，数据库只保存 SHA-256 哈希。静态客户端和旧厂商 API Key 配置不再支持。
 
 如需使用既有 MySQL 数据，请在 `.env` 中设置原有的连接串。Go 同时支持
 `mysql+aiomysql://...` 与 `mysql://...`，例如：
@@ -103,12 +102,10 @@ validation before HTTP can return a 403; direct HTTP requests return 403.
 ```
 Porsche/
 ├── cmd/server/main.go      # 入口
-├── config/                 # models.yaml / clients.yaml
 ├── internal/
 │   ├── handler/            # HTTP 路由（与 Python routes 一一对应）
 │   ├── service/            # 业务逻辑
-│   ├── gateway/            # 上游模型代理
-│   ├── registry/           # 模型/客户端配置
+│   ├── whitelabel/         # 固定 JieKou AI 上游、目录、投影与 SSE
 │   ├── rag/                # RAG 检索
 │   ├── models/             # GORM 实体
 │   └── router/             # 路由注册

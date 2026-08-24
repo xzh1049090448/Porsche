@@ -214,7 +214,7 @@ git commit -m "feat: add dynamic platform models and compare streams"
 - Delete: internal/gateway/gateway.go、internal/registry/registry.go、config/models.yaml、静态模型常量（仅无引用时）
 - Modify: internal/handler/health.go、README.md、.env.example、feature_list.json、progress.md
 
-- [ ] **Step 1: 写旧路径不存在的检查**
+- [x] **Step 1: 写旧路径不存在的检查**
 
 ~~~bash
 rg -n "ModelRegistry|KeyPool|MODELS_CONFIG_PATH|APIKeysEnv|DeepSeek|Zhipu" internal config cmd
@@ -222,11 +222,11 @@ rg -n "ModelRegistry|KeyPool|MODELS_CONFIG_PATH|APIKeysEnv|DeepSeek|Zhipu" inter
 
 Expected: 无生产旧厂商路由引用。
 
-- [ ] **Step 2: 删除旧实现并更新说明**
+- [x] **Step 2: 删除旧实现并更新说明**
 
 健康端点报告白牌目录状态/模型数；README 与示例配置只列 UPSTREAM_REGION、JIEKOU_API_KEY、JIEKOU_ALLOWED_MODELS，示例只用假值。
 
-- [ ] **Step 3: 全量验证与提交**
+- [x] **Step 3: 全量验证与提交**
 
 ~~~bash
 GOCACHE=/private/tmp/porsche-go-build-cache go test -count=1 ./...

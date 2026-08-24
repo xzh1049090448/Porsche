@@ -9,7 +9,6 @@ import (
 	"mime"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -17,7 +16,6 @@ import (
 	"github.com/porsche/ai-gateway-go/internal/httpx"
 	"github.com/porsche/ai-gateway-go/internal/middleware"
 	"github.com/porsche/ai-gateway-go/internal/models"
-	"github.com/porsche/ai-gateway-go/internal/registry"
 	"github.com/porsche/ai-gateway-go/internal/service"
 	"github.com/porsche/ai-gateway-go/internal/whitelabel"
 	"gorm.io/gorm"
@@ -206,21 +204,20 @@ func RegisterGatewayTokens(r *gin.Engine, state *app.State) {
 	g.DELETE("/:id", func(c *gin.Context) { revokeGatewayToken(c, state) })
 }
 
-func authenticateGatewayToken(c *gin.Context, state *app.State, model string) (registry.ClientConfig, bool) {
+type gatewayPrincipal struct {
+	AllowedModels models.JSONSlice
+}
+
+func authenticateGatewayToken(c *gin.Context, state *app.State, model string) (gatewayPrincipal, bool) {
 	secret := httpx.BearerToken(c)
 	if secret == "" {
 		gatewayAuthenticationError(c, http.StatusUnauthorized, service.GatewayTokenInvalid)
-		return registry.ClientConfig{}, false
+		return gatewayPrincipal{}, false
 	}
 	ip := httpx.ClientIP(c, state.Settings.TrustProxyHeaders, state.Settings.TrustedProxyCIDRs)
 	token, err := state.GatewayTokens.Authenticate(secret, ip, model, time.Now().UTC())
 	if err == nil {
-		return registry.ClientConfig{Name: token.Name, AllowedModels: token.AllowedModels, IPAllowlist: token.IPAllowlist}, true
-	}
-	if state.Settings.GatewayAllowLegacyClients && !strings.HasPrefix(secret, "sk-gw-") {
-		if client, found := state.Clients.GetBySecret(secret); found && registry.IPAllowed(client, ip) && (model == "" || registry.ModelAllowed(client, model)) {
-			return client, true
-		}
+		return gatewayPrincipal{AllowedModels: token.AllowedModels}, true
 	}
 	status := http.StatusUnauthorized
 	code := service.GatewayTokenInvalid
@@ -232,11 +229,19 @@ func authenticateGatewayToken(c *gin.Context, state *app.State, model string) (r
 		code = service.GatewayTokenError(err.Error())
 	}
 	gatewayAuthenticationError(c, status, code)
-	return registry.ClientConfig{}, false
+	return gatewayPrincipal{}, false
 }
 
-func modelAllowedForToken(client registry.ClientConfig, model string) bool {
-	return registry.ModelAllowed(client, model)
+func modelAllowedForToken(client gatewayPrincipal, model string) bool {
+	if len(client.AllowedModels) == 0 {
+		return true
+	}
+	for _, allowed := range client.AllowedModels {
+		if allowed == model {
+			return true
+		}
+	}
+	return false
 }
 func gatewayRequestID() gin.HandlerFunc {
 	return func(c *gin.Context) {

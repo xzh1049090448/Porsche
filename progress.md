@@ -2,7 +2,7 @@
 
 ## 当前唯一活动功能
 
-`go-004`：JieKou AI 白牌上游接入（`in_progress`）。本轮已完成隔离环境、后端基线、前端恢复验证，以及 Task 2 的配置、错误与请求校验；Task 3 为下一步。
+`go-004`：JieKou AI 白牌上游接入（`in_progress`）。本轮已完成隔离环境、前后端实现、自动化验证，以及旧上游路由/配置清理；真实上游冒烟仍待部署环境执行。
 
 ## 已验证基线（2026-08-21）
 
@@ -21,6 +21,12 @@
 
 - 未进行任何真实 JieKou AI 上游目录、Chat 或 SSE 冒烟；该验证仍需要部署环境的白牌配置。
 
-## 下一步（Task 3）
+## Task 6 旧上游清理（2026-08-24）
+
+- 删除静态 `config/models.yaml`、`config/clients.yaml`、旧厂商密钥加载、旧 Gateway/Registry 运行时代码与静态客户端回退。
+- `.env.example`、README 与领域文档仅保留 `UPSTREAM_REGION`、`JIEKOU_API_KEY`、`JIEKOU_ALLOWED_MODELS` 白牌配置说明。
+- 不修改数据库连接、GORM 模型或迁移，因此不会删除或改写 Python 服务共享的 MySQL 数据。
+
+## 下一步（部署冒烟）
 
 在具备部署环境的白牌配置后，完成真实上游目录、Chat 与 SSE 冒烟。
