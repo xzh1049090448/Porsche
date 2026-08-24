@@ -40,6 +40,18 @@
   不可从其他主机照抄 Docker gateway；需要使用 XFF 时还必须设置
   `TRUST_PROXY_HEADERS=true`。
 
+## Task 3 生产部署文档与静态验证（2026-08-24）
+
+- README 记录默认部署命令 `sudo bash deploy/production-deploy.sh`，以及当 `.env`
+  使用 Docker host 时的 `APP_DOCKER_NETWORK=... sudo -E bash
+  deploy/production-deploy.sh`。部署会短暂中断应用；候选容器启动或健康检查失败时
+  脚本自动恢复旧应用容器。
+- README 明确脚本会 fetch、switch、hard-reset `main` 到 `origin/main`，只替换应用
+  容器、不管理 MySQL，拒绝生产 `ENV_FILE` 覆盖；部署前必须执行 `sudo nginx -t`。
+- 部署拓扑仍须正确设置 `TRUST_PROXY_HEADERS=true` 和 Nginx 实际源 IP/CIDR 的
+  `TRUSTED_PROXY_CIDRS`。真实 JieKou 目录、Chat 与 SSE 冒烟必须在部署环境另行执行，
+  未标记为已通过。
+
 ## 下一步（部署冒烟）
 
 在具备部署环境的白牌配置后，完成真实上游目录、Chat 与 SSE 冒烟。

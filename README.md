@@ -82,11 +82,35 @@ docker run --env-file .env -p 8000:8000 ai-gateway-go
 
 ## Production deployment
 
-Run `bash deploy/production-deploy.sh` from the production checkout. It always
-uses that checkout's `.env`; `ENV_FILE` overrides are rejected. The
-`USE_TEST_ENV_FILE=1` switch exists solely for the isolated mocked test harness
-and must never be set for a production deployment. The script replaces only the
-application container and does not manage MySQL.
+From a clean production checkout, first validate the installed Nginx
+configuration, then deploy:
+
+```bash
+sudo nginx -t
+sudo bash deploy/production-deploy.sh
+```
+
+The deployment can briefly interrupt the application while it swaps containers.
+If the new container cannot start or its `/health` check fails, the script
+automatically removes the candidate and restores the prior application
+container. It fetches `origin/main`, switches to `main`, and hard-resets that
+checkout to `origin/main` before building.
+
+It always uses that checkout's `.env`; production `ENV_FILE` overrides are
+rejected. `USE_TEST_ENV_FILE=1` exists only for the isolated mocked test
+harness and must never be set in production. The script replaces only the
+application container and neither manages nor changes MySQL.
+
+If the `.env` database host is a Docker service name, attach the application to
+the Docker network that resolves it (replace the example network name):
+
+```bash
+APP_DOCKER_NETWORK=ai-gateway_default sudo -E bash deploy/production-deploy.sh
+```
+
+Run the real JieKou upstream directory, Chat, and SSE smoke checks separately
+after deployment with the production white-label configuration; a successful
+local health check does not prove the real upstream path.
 
 ## Production domain access
 
