@@ -97,6 +97,18 @@ The Nginx TLS certificate paths in the included configuration assume
 Let's Encrypt. A direct HTTPS request to an IP is rejected during TLS hostname
 validation before HTTP can return a 403; direct HTTP requests return 403.
 
+### Reverse-proxy source IP and SSE
+
+To use Nginx's client address for IP allowlists, set `TRUST_PROXY_HEADERS=true`
+and set `TRUSTED_PROXY_CIDRS` to the actual source IP or CIDR Nginx uses when
+it connects to the application container. Do not copy the Docker gateway from
+another host: inspect the deployed container network and use the source address
+Nginx actually presents to the application.
+The included Nginx configuration replaces any client-supplied
+`X-Forwarded-For` chain with `$remote_addr`, and disables proxy buffering with
+300-second read/send timeouts so OpenAI-compatible SSE streams are forwarded
+without delay.
+
 ## 目录结构
 
 ```

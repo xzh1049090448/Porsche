@@ -27,6 +27,19 @@
 - `.env.example`、README 与领域文档仅保留 `UPSTREAM_REGION`、`JIEKOU_API_KEY`、`JIEKOU_ALLOWED_MODELS` 白牌配置说明。
 - 不修改数据库连接、GORM 模型或迁移，因此不会删除或改写 Python 服务共享的 MySQL 数据。
 
+## 预发布 Nginx 代理安全修复（2026-08-24）
+
+- `deploy/nginx/aiportcloud.conf` 不再转发客户端可控的 XFF 链；它以
+  `$remote_addr` 覆盖 `X-Forwarded-For`，避免在应用信任 Nginx 时绕过
+  Gateway Token IP allowlist。
+- 为 OpenAI-compatible SSE 配置 HTTP/1.1、`proxy_buffering off` 和 300 秒
+  read/send timeout。
+- `deploy/nginx/test-aiportcloud-conf.sh` 静态校验配置与部署说明；本机未安装
+  Nginx 二进制，因此未执行 `nginx -t`。Go 全量测试与 `go vet ./...` 已通过。
+- 部署时必须将 `TRUSTED_PROXY_CIDRS` 配置为 Nginx 实际连接容器时的源 IP/CIDR，
+  不可从其他主机照抄 Docker gateway；需要使用 XFF 时还必须设置
+  `TRUST_PROXY_HEADERS=true`。
+
 ## 下一步（部署冒烟）
 
 在具备部署环境的白牌配置后，完成真实上游目录、Chat 与 SSE 冒烟。
