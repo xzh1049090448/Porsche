@@ -80,6 +80,14 @@ docker build -t ai-gateway-go .
 docker run --env-file .env -p 8000:8000 ai-gateway-go
 ```
 
+## Production deployment
+
+Run `bash deploy/production-deploy.sh` from the production checkout. It always
+uses that checkout's `.env`; `ENV_FILE` overrides are rejected. The
+`USE_TEST_ENV_FILE=1` switch exists solely for the isolated mocked test harness
+and must never be set for a production deployment. The script replaces only the
+application container and does not manage MySQL.
+
 ## Production domain access
 
 Production traffic must enter through `https://aiportcloud.com`; direct IP

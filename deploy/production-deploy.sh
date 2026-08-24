@@ -34,6 +34,10 @@ if [[ ! "$HOST_PORT" =~ ^[1-9][0-9]{0,4}$ ]] || (( HOST_PORT > 65535 )); then
     echo 'HOST_PORT must be an integer from 1 through 65535' >&2
     exit 1
 fi
+if [[ ! "$APP_NAME" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$ ]]; then
+    echo 'APP_NAME must be a valid Docker container name' >&2
+    exit 1
+fi
 if [[ "$network_was_set" == true && -z "$APP_DOCKER_NETWORK" ]]; then
     echo 'APP_DOCKER_NETWORK must not be empty when set' >&2
     exit 1
@@ -69,11 +73,17 @@ restore_previous() {
     local status=$?
     if [[ "$deployment_succeeded" != true ]]; then
         if [[ "$new_attempted" == true ]]; then
-            docker rm -f "$APP_NAME" >/dev/null 2>&1 || true
+            if ! docker rm -f -- "$APP_NAME" >/dev/null 2>&1; then
+                echo 'rollback failed: could not remove candidate container' >&2
+            fi
         fi
         if [[ "$had_previous" == true ]]; then
-            docker rename "$rollback_name" "$APP_NAME" >/dev/null 2>&1 || true
-            docker start "$APP_NAME" >/dev/null 2>&1 || true
+            if ! docker rename -- "$rollback_name" "$APP_NAME" >/dev/null 2>&1; then
+                echo 'rollback failed: could not restore previous container name' >&2
+            fi
+            if ! docker start -- "$APP_NAME" >/dev/null 2>&1; then
+                echo 'rollback failed: could not start restored container' >&2
+            fi
         fi
     fi
     return "$status"
@@ -81,10 +91,10 @@ restore_previous() {
 trap restore_previous EXIT
 
 docker build --tag "$IMAGE_NAME" .
-if docker container inspect "$APP_NAME" >/dev/null 2>&1; then
+if docker container inspect -- "$APP_NAME" >/dev/null 2>&1; then
     had_previous=true
-    docker stop "$APP_NAME" >/dev/null
-    docker rename "$APP_NAME" "$rollback_name" >/dev/null
+    docker stop -- "$APP_NAME" >/dev/null
+    docker rename -- "$APP_NAME" "$rollback_name" >/dev/null
 fi
 
 new_attempted=true
@@ -110,7 +120,7 @@ if [[ "$healthy" != true ]]; then
 fi
 
 if [[ "$had_previous" == true ]]; then
-    docker rm "$rollback_name" >/dev/null
+    docker rm -- "$rollback_name" >/dev/null
 fi
 deployment_succeeded=true
 trap - EXIT

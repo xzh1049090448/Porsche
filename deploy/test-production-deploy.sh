@@ -21,7 +21,7 @@ write_mock() {
         printf '%s\n' 'printf "%s\\0" "'"$command_name"'" "$@" "__END__" >>"$COMMAND_LOG"'
         printf '%s\n' 'case "'"$command_name"'" in'
         printf '%s\n' '  git) case "${1:-}" in rev-parse) printf "%s\\n" "${MOCK_WORKTREE:-true}" ;; diff) exit "${MOCK_GIT_DIRTY:-0}" ;; esac ;;'
-        printf '%s\n' '  docker) case "${1:-}" in container) [[ "${2:-}" != inspect ]] || [[ "${MOCK_OLD_CONTAINER:-present}" == present ]] ;; run) [[ "${MOCK_RUN_RESULT:-success}" == success ]] || exit 71; printf "new-container-id\\n" ;; esac ;;'
+        printf '%s\n' '  docker) case "${1:-}" in container) [[ "${2:-}" != inspect ]] || [[ "${MOCK_OLD_CONTAINER:-present}" == present ]] ;; run) [[ "${MOCK_RUN_RESULT:-success}" == success ]] || exit 71; printf "new-container-id\\n" ;; start) [[ "${MOCK_ROLLBACK_START_RESULT:-success}" == success ]] || exit 72 ;; esac ;;'
         printf '%s\n' '  curl) [[ "${MOCK_HEALTH_RESULT:-success}" == success ]] ;;' 'esac'
     } >"$mock_dir/$command_name"
     chmod +x "$mock_dir/$command_name"
@@ -38,9 +38,9 @@ run_deploy() {
     local port="${1:-18000}" network="${2:-}"
     : >"$command_log"
     if [[ -n "$network" ]]; then
-        PATH="$mock_dir:$PATH" COMMAND_LOG="$command_log" USE_TEST_ENV_FILE=1 ENV_FILE="$env_file" APP_NAME=existing-app IMAGE_NAME=test-image HOST_PORT="$port" APP_DOCKER_NETWORK="$network" "$script_file"
+        PATH="$mock_dir:$PATH" COMMAND_LOG="$command_log" USE_TEST_ENV_FILE=1 ENV_FILE="$env_file" APP_NAME="${TEST_APP_NAME:-existing-app}" IMAGE_NAME=test-image HOST_PORT="$port" APP_DOCKER_NETWORK="$network" "$script_file"
     else
-        PATH="$mock_dir:$PATH" COMMAND_LOG="$command_log" USE_TEST_ENV_FILE=1 ENV_FILE="$env_file" APP_NAME=existing-app IMAGE_NAME=test-image HOST_PORT="$port" "$script_file"
+        PATH="$mock_dir:$PATH" COMMAND_LOG="$command_log" USE_TEST_ENV_FILE=1 ENV_FILE="$env_file" APP_NAME="${TEST_APP_NAME:-existing-app}" IMAGE_NAME=test-image HOST_PORT="$port" "$script_file"
     fi
 }
 line_for() { local expression="$1" index; read_calls; for index in "${!calls[@]}"; do [[ "${calls[$index]}" == *"$expression"* ]] && { printf '%s\n' "$((index + 1))"; return; }; done; return 1; }
@@ -57,27 +57,55 @@ assert_successful_deploy() {
     local network="$1" fetch switch reset build stop rename run health remove
     run_deploy 18000 "$network"
     fetch="$(require_line fetch 'git fetch origin main')"; switch="$(require_line switch 'git switch main')"; reset="$(require_line reset 'git reset --hard origin/main')"; build="$(require_line build 'docker build --tag test-image .')"
-    stop="$(require_line stop 'docker stop existing-app')"; rename="$(require_line rename 'docker rename existing-app existing-app-rollback-')"; run="$(require_line run 'docker run -d --name existing-app')"
+    stop="$(require_line stop 'docker stop -- existing-app')"; rename="$(require_line rename 'docker rename -- existing-app existing-app-rollback-')"; run="$(require_line run 'docker run -d --name existing-app')"
     require_line env "--env-file $env_file" >/dev/null; require_line loopback '--publish 127.0.0.1:18000:8000' >/dev/null
-    health="$(require_line health 'curl -fsS http://127.0.0.1:18000/health')"; remove="$(require_line remove 'docker rm existing-app-rollback-')"
+    health="$(require_line health 'curl -fsS http://127.0.0.1:18000/health')"; remove="$(require_line remove 'docker rm -- existing-app-rollback-')"
     if [[ -n "$network" ]]; then require_line network-check "docker network inspect $network" >/dev/null; require_line network "--network $network" >/dev/null; fi
     assert_after fetch "$fetch" switch "$switch"; assert_after switch "$switch" reset "$reset"; assert_after reset "$reset" build "$build"; assert_after build "$build" stop "$stop"; assert_after stop "$stop" rename "$rename"; assert_after rename "$rename" run "$run"; assert_after run "$run" health "$health"; assert_after health "$health" remove "$remove"; assert_no_forbidden_operations
 }
 assert_rollback_after_failure() {
     local label="$1" run_result="$2" health_result="$3" stop rename run health remove restore start
     if MOCK_RUN_RESULT="$run_result" MOCK_HEALTH_RESULT="$health_result" run_deploy; then echo "deployment must fail when $label fails" >&2; exit 1; fi
-    stop="$(require_line stop 'docker stop existing-app')"; rename="$(require_line rename 'docker rename existing-app existing-app-rollback-')"; run="$(require_line run 'docker run -d --name existing-app')"; health="$(line_for 'curl -fsS http://127.0.0.1:18000/health' || true)"
-    remove="$(require_line remove-new 'docker rm -f existing-app')"; restore="$(line_for_last 'docker rename existing-app-rollback-')"; [[ -n "$restore" ]] || { echo 'missing expected command: restore-name' >&2; exit 1; }; start="$(require_line start-old 'docker start existing-app')"
+    stop="$(require_line stop 'docker stop -- existing-app')"; rename="$(require_line rename 'docker rename -- existing-app existing-app-rollback-')"; run="$(require_line run 'docker run -d --name existing-app')"; health="$(line_for 'curl -fsS http://127.0.0.1:18000/health' || true)"
+    remove="$(require_line remove-new 'docker rm -f -- existing-app')"; restore="$(line_for_last 'docker rename -- existing-app-rollback-')"; [[ -n "$restore" ]] || { echo 'missing expected command: restore-name' >&2; exit 1; }; start="$(require_line start-old 'docker start -- existing-app')"
     assert_after stop "$stop" rename "$rename"; assert_after rename "$rename" run "$run"
     if [[ "$label" == health ]]; then [[ -n "$health" ]] || { echo 'missing health check before rollback' >&2; exit 1; }; assert_after run "$run" health "$health"; assert_after health "$health" remove-new "$remove"; else [[ -z "$health" ]] || { echo 'health check ran after docker run failure' >&2; exit 1; }; assert_after run "$run" remove-new "$remove"; fi
     assert_after remove-new "$remove" restore-name "$restore"; assert_after restore-name "$restore" start-old "$start"; assert_no_forbidden_operations
 }
 
+assert_invalid_app_name_is_rejected_before_docker_writes() {
+    local invalid_name="$1"
+    if TEST_APP_NAME="$invalid_name" run_deploy; then
+        echo "deployment accepted invalid APP_NAME: $invalid_name" >&2
+        exit 1
+    fi
+    read_calls
+    [[ -z "$(line_for 'docker build' || true)" ]] || {
+        echo "deployment performed a Docker write with invalid APP_NAME: $invalid_name" >&2
+        exit 1
+    }
+}
+
+assert_rollback_failure_is_reported() {
+    local stderr_file="$fixture_dir/rollback-stderr"
+    if MOCK_RUN_RESULT=failure MOCK_ROLLBACK_START_RESULT=failure run_deploy >"$fixture_dir/rollback-stdout" 2>"$stderr_file"; then
+        echo 'deployment must fail when startup and rollback start fail' >&2
+        exit 1
+    fi
+    require_line failed-rollback-start 'docker start -- existing-app' >/dev/null
+    grep -Fq 'rollback failed: could not start restored container' "$stderr_file" || {
+        echo 'deployment did not report the rollback start failure' >&2
+        exit 1
+    }
+}
+
 assert_successful_deploy ''; assert_successful_deploy 'application-network'
 assert_rollback_after_failure run failure success; assert_rollback_after_failure health success failure
+assert_rollback_failure_is_reported
 if MOCK_OLD_CONTAINER=absent run_deploy; then :; else echo 'deployment without prior application must succeed' >&2; exit 1; fi
-read_calls; [[ -z "$(line_for 'docker stop existing-app' || true)" ]] || { echo 'deployment stopped a non-existent application' >&2; exit 1; }; require_line run-without-old 'docker run -d --name existing-app' >/dev/null; assert_no_forbidden_operations
+read_calls; [[ -z "$(line_for 'docker stop -- existing-app' || true)" ]] || { echo 'deployment stopped a non-existent application' >&2; exit 1; }; require_line run-without-old 'docker run -d --name existing-app' >/dev/null; assert_no_forbidden_operations
 for invalid_port in 0 65536 invalid; do if run_deploy "$invalid_port"; then echo "deployment accepted invalid port: $invalid_port" >&2; exit 1; fi; [[ -z "$(line_for 'docker build' || true)" ]] || { echo "deployment built image with invalid port: $invalid_port" >&2; exit 1; }; done
+for invalid_app_name in --all -leading 'invalid/name'; do assert_invalid_app_name_is_rejected_before_docker_writes "$invalid_app_name"; done
 if MOCK_GIT_DIRTY=1 run_deploy; then echo 'deployment accepted a dirty tracked worktree' >&2; exit 1; fi
 [[ -z "$(line_for 'git fetch origin main' || true)" ]] || { echo 'deployment fetched after detecting a dirty tracked worktree' >&2; exit 1; }
 if MOCK_WORKTREE=false run_deploy; then echo 'deployment accepted a non-worktree directory' >&2; exit 1; fi
