@@ -1,0 +1,1 @@
+-- Porsche migrations are forward-only. Rollbacks require an approved, additive migration.

@@ -23,15 +23,13 @@ import (
 func TestHealthOK(t *testing.T) {
 	settings := &config.Settings{
 		AppEnv:             "development",
-		DatabaseURL:        "sqlite://./data/test_platform.db",
+		DatabaseURL:        "mysql://test:test@localhost:3306/platform",
 		AllowedHosts:       "example.com",
 		JWTSecretKey:       "test-secret",
 		AdminToken:         "admin-test",
 		FixedLoginEnabled:  true,
 		FixedLoginPhone:    "13800138000",
 		FixedLoginPassword: "test",
-		ChromaPersistDir:   "./data/test_chroma",
-		DatasetUploadDir:   "./data/test_uploads",
 	}
 
 	gdb, err := db.Open(settings.DatabaseURL, "test")
@@ -332,10 +330,9 @@ func gatewayTestJWT(t *testing.T, state *app.State, user *models.User) string {
 
 func newGatewayTestState(t *testing.T) *app.State {
 	t.Helper()
-	dir := t.TempDir()
 	settings := &config.Settings{
-		AppEnv: "test", DatabaseURL: "sqlite://" + dir + "/platform.db", AllowedHosts: "example.com",
-		JWTSecretKey: "test-secret", AdminToken: "admin-test", ChromaPersistDir: dir + "/chroma", DatasetUploadDir: dir + "/uploads",
+		AppEnv: "test", DatabaseURL: "mysql://test:test@localhost:3306/platform", AllowedHosts: "example.com",
+		JWTSecretKey: "test-secret", AdminToken: "admin-test",
 	}
 	gdb, err := db.Open(settings.DatabaseURL, "test")
 	if err != nil {

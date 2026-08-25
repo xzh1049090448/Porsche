@@ -12,7 +12,6 @@ import (
 
 	"github.com/porsche/ai-gateway-go/internal/config"
 	"github.com/porsche/ai-gateway-go/internal/models"
-	"github.com/porsche/ai-gateway-go/internal/rag"
 	"github.com/porsche/ai-gateway-go/internal/whitelabel"
 	"gorm.io/gorm"
 )
@@ -20,7 +19,6 @@ import (
 type PlatformDeps struct {
 	Settings   *config.Settings
 	DB         *gorm.DB
-	RAG        *rag.Engine
 	Billing    *BillingService
 	WhiteLabel *whitelabel.WhiteLabelService
 }
@@ -62,7 +60,7 @@ func (p *PlatformChatService) whiteLabelCompletion(ctx context.Context, validate
 
 func whiteLabelPayload(validated []byte, body whitelabel.ChatCompletionRequest) ([]byte, error) {
 	// Keep every already-validated OpenAI parameter (top_p, tools, response
-	// format, etc.) while replacing only the model/messages that RAG prepared.
+	// format, etc.) while replacing only the model/messages that the platform prepared.
 	fields := map[string]json.RawMessage{}
 	if len(validated) > 0 {
 		if err := json.Unmarshal(validated, &fields); err != nil {
@@ -87,29 +85,6 @@ func NewPlatformChatService(deps PlatformDeps) *PlatformChatService {
 	return &PlatformChatService{deps: deps}
 }
 
-func (p *PlatformChatService) validateDatasets(db *gorm.DB, user *models.User, ids []int) ([]models.Dataset, error) {
-	if len(ids) == 0 {
-		return nil, nil
-	}
-	var out []models.Dataset
-	for _, id := range ids {
-		var ds models.Dataset
-		if err := db.First(&ds, id).Error; err != nil || ds.Status != models.DatasetActive {
-			return nil, errBadRequest(fmt.Sprintf("数据集 %d 不可用", id))
-		}
-		if len(user.AllowedDatasets) > 0 && !containsInt(user.AllowedDatasets, id) {
-			return nil, errForbidden(fmt.Sprintf("无权访问数据集 %d", id))
-		}
-		if len(ds.AccessPlans) > 0 && !containsStr(ds.AccessPlans, string(user.PlanType)) {
-			if user.PlanType == models.PlanFree && !containsStr(ds.AccessPlans, "free") {
-				return nil, errForbidden(fmt.Sprintf("当前套餐无法访问数据集 %s", ds.Name))
-			}
-		}
-		out = append(out, ds)
-	}
-	return out, nil
-}
-
 type ChatParams struct {
 	Model          string
 	Messages       []map[string]interface{}
@@ -117,8 +92,6 @@ type ChatParams struct {
 	Temperature    *float64
 	MaxTokens      *int
 	ContextWindow  *int
-	DatasetEnabled bool
-	DatasetIDs     []int
 	WhiteLabelBody []byte
 }
 
@@ -152,43 +125,28 @@ func (p *PlatformChatService) Chat(ctx context.Context, db *gorm.DB, user *model
 		return nil, errForbidden("当前账号无权使用该模型")
 	}
 
-	datasets, err := p.validateDatasets(db, user, params.DatasetIDs)
-	if err != nil {
-		return nil, err
-	}
-	if params.DatasetEnabled && len(datasets) == 0 {
-		return nil, errBadRequest("启用数据集时必须选择至少一个子数据集")
-	}
-
 	trimmed := TrimMessages(params.Messages, params.ContextWindow)
-	query := lastUserQuery(trimmed)
-	ragMsgs := trimmed
-	datasetUsed := false
-	if params.DatasetEnabled && len(datasets) > 0 {
-		ids := make([]int, len(datasets))
-		for i, d := range datasets {
-			ids[i] = int(d.ID)
-		}
-		ragMsgs, datasetUsed = p.deps.RAG.BuildRAGMessages(trimmed, ids, query)
-	}
 
-	var conv *models.Conversation
+	var (
+		conv *models.Conversation
+		err  error
+	)
 	if params.ConversationID != nil {
 		conv, err = GetConversation(db, user, *params.ConversationID, false)
 	} else {
-		conv, err = CreateConversation(db, user, "", params.Model, params.DatasetEnabled, params.DatasetIDs)
+		conv, err = CreateConversation(db, user, "", params.Model)
 	}
 	if err != nil {
 		return nil, err
 	}
 
 	if last := lastUserMessage(trimmed); last != "" {
-		_, _ = AddMessage(db, conv, "user", last, "", false, nil, 0)
+		_, _ = AddMessage(db, conv, "user", last, "", 0)
 	}
 
 	body := whitelabel.ChatCompletionRequest{
 		Model:       params.Model,
-		Messages:    toGatewayMessages(ragMsgs),
+		Messages:    toGatewayMessages(trimmed),
 		Temperature: params.Temperature,
 		MaxTokens:   params.MaxTokens,
 	}
@@ -198,26 +156,16 @@ func (p *PlatformChatService) Chat(ctx context.Context, db *gorm.DB, user *model
 	}
 
 	content, tokens := extractCompletion(data)
-	attr := (*string)(nil)
-	if datasetUsed {
-		s := rag.DatasetAttribution
-		attr = &s
-	}
-	_, _ = AddMessage(db, conv, "assistant", content, params.Model, datasetUsed, attr, tokens)
+	_, _ = AddMessage(db, conv, "assistant", content, params.Model, tokens)
 	user.TotalTokensUsed += tokens
-	if datasetUsed {
-		user.DatasetCalls++
-	}
 	_ = db.Save(user)
 	_ = db.Create(&models.UsageRecord{UserID: user.ID, RecordType: "chat", Tokens: tokens, Model: &params.Model})
 
 	return map[string]interface{}{
-		"conversation_id":     conv.ID,
-		"model":               params.Model,
-		"content":             content,
-		"dataset_used":        datasetUsed,
-		"dataset_attribution": attr,
-		"usage":               map[string]interface{}{"total_tokens": tokens},
+		"conversation_id": conv.ID,
+		"model":           params.Model,
+		"content":         content,
+		"usage":           map[string]interface{}{"total_tokens": tokens},
 	}, nil
 }
 
@@ -266,14 +214,14 @@ func (p *PlatformChatService) Compare(ctx context.Context, db *gorm.DB, user *mo
 		conv, err = GetConversation(db, user, *params.ConversationID, false)
 	} else if len(trimmed) > 0 {
 		primaryModel := modelsList[0]
-		conv, err = CreateConversation(db, user, "", primaryModel, params.DatasetEnabled, params.DatasetIDs)
+		conv, err = CreateConversation(db, user, "", primaryModel)
 	}
 	if err != nil {
 		return nil, err
 	}
 	if conv != nil {
 		if last := lastUserMessage(trimmed); last != "" {
-			if _, err := AddMessage(db, conv, "user", last, "", false, nil, 0); err != nil {
+			if _, err := AddMessage(db, conv, "user", last, "", 0); err != nil {
 				return nil, err
 			}
 			if conv.Title == "新对话" {
@@ -302,7 +250,7 @@ func (p *PlatformChatService) Compare(ctx context.Context, db *gorm.DB, user *mo
 			return nil, err
 		}
 		primaryModel := modelsList[0]
-		if _, err := AddMessage(db, conv, "assistant", "__MULTI_MODEL__"+string(payload), primaryModel, false, nil, totalTokens); err != nil {
+		if _, err := AddMessage(db, conv, "assistant", "__MULTI_MODEL__"+string(payload), primaryModel, totalTokens); err != nil {
 			return nil, err
 		}
 		user.TotalTokensUsed += totalTokens
@@ -322,9 +270,6 @@ func (p *PlatformChatService) Compare(ctx context.Context, db *gorm.DB, user *mo
 		"results":         results,
 		"conversation_id": conversationID(conv),
 	}
-	if params.DatasetEnabled {
-		out["dataset_attribution"] = rag.DatasetAttribution
-	}
 	return out, nil
 }
 
@@ -336,36 +281,22 @@ func (p *PlatformChatService) Stream(ctx context.Context, db *gorm.DB, user *mod
 		return errForbidden("当前账号无权使用该模型")
 	}
 
-	datasets, err := p.validateDatasets(db, user, params.DatasetIDs)
-	if err != nil {
-		return err
-	}
-	if params.DatasetEnabled && len(datasets) == 0 {
-		return errBadRequest("启用数据集时必须选择至少一个子数据集")
-	}
 	trimmed := TrimMessages(params.Messages, params.ContextWindow)
-	query := lastUserQuery(trimmed)
-	ragMsgs := trimmed
-	datasetUsed := false
-	if params.DatasetEnabled && len(datasets) > 0 {
-		ids := make([]int, len(datasets))
-		for i, d := range datasets {
-			ids[i] = int(d.ID)
-		}
-		ragMsgs, datasetUsed = p.deps.RAG.BuildRAGMessages(trimmed, ids, query)
-	}
 
-	var conv *models.Conversation
+	var (
+		conv *models.Conversation
+		err  error
+	)
 	if params.ConversationID != nil {
 		conv, err = GetConversation(db, user, *params.ConversationID, false)
 	} else {
-		conv, err = CreateConversation(db, user, "", params.Model, params.DatasetEnabled, params.DatasetIDs)
+		conv, err = CreateConversation(db, user, "", params.Model)
 	}
 	if err != nil {
 		return err
 	}
 	if last := lastUserMessage(trimmed); last != "" {
-		if _, err := AddMessage(db, conv, "user", last, "", false, nil, 0); err != nil {
+		if _, err := AddMessage(db, conv, "user", last, "", 0); err != nil {
 			return err
 		}
 		if conv.Title == "新对话" {
@@ -376,16 +307,9 @@ func (p *PlatformChatService) Stream(ctx context.Context, db *gorm.DB, user *mod
 		}
 	}
 
-	attr := (*string)(nil)
-	if datasetUsed {
-		s := rag.DatasetAttribution
-		attr = &s
-	}
 	meta := map[string]interface{}{
-		"type":                "meta",
-		"conversation_id":     conv.ID,
-		"dataset_used":        datasetUsed,
-		"dataset_attribution": attr,
+		"type":            "meta",
+		"conversation_id": conv.ID,
 	}
 	metaBytes, _ := json.Marshal(meta)
 	metaFrame := []byte(fmt.Sprintf("data: %s\n\n", metaBytes))
@@ -402,7 +326,7 @@ func (p *PlatformChatService) Stream(ctx context.Context, db *gorm.DB, user *mod
 
 	body := whitelabel.ChatCompletionRequest{
 		Model:       params.Model,
-		Messages:    toGatewayMessages(ragMsgs),
+		Messages:    toGatewayMessages(trimmed),
 		Temperature: params.Temperature,
 		MaxTokens:   params.MaxTokens,
 		Stream:      true,
@@ -424,21 +348,18 @@ func (p *PlatformChatService) Stream(ctx context.Context, db *gorm.DB, user *mod
 	if streamErr != nil {
 		return streamErr
 	}
-	return p.finishPlatformStream(db, user, conv, params, datasetUsed, attr, content.String(), write)
+	return p.finishPlatformStream(db, user, conv, params, content.String(), write)
 }
 
 // finishPlatformStream keeps the pre-existing conversation and usage
 // semantics after either legacy or white-label SSE delivers a final response.
-func (p *PlatformChatService) finishPlatformStream(db *gorm.DB, user *models.User, conv *models.Conversation, params ChatParams, datasetUsed bool, attr *string, content string, write func([]byte) error) error {
+func (p *PlatformChatService) finishPlatformStream(db *gorm.DB, user *models.User, conv *models.Conversation, params ChatParams, content string, write func([]byte) error) error {
 	tokens := len(content) / 2
 	if tokens < 1 && content != "" {
 		tokens = 1
 	}
-	_, _ = AddMessage(db, conv, "assistant", content, params.Model, datasetUsed, attr, tokens)
+	_, _ = AddMessage(db, conv, "assistant", content, params.Model, tokens)
 	user.TotalTokensUsed += tokens
-	if datasetUsed {
-		user.DatasetCalls++
-	}
 	_ = db.Save(user)
 	done, _ := json.Marshal(map[string]interface{}{"type": "done", "tokens": tokens, "total_tokens_used": user.TotalTokensUsed})
 	return write([]byte(fmt.Sprintf("data: %s\n\n", done)))
@@ -454,30 +375,14 @@ func (p *PlatformChatService) CompareStream(ctx context.Context, db *gorm.DB, us
 		return err
 	}
 
-	datasets, err := p.validateDatasets(db, user, params.DatasetIDs)
-	if err != nil {
-		return err
-	}
-	if params.DatasetEnabled && len(datasets) == 0 {
-		return errBadRequest("启用数据集时必须选择至少一个子数据集")
-	}
 	trimmed := TrimMessages(params.Messages, params.ContextWindow)
-	ragMsgs := trimmed
-	datasetUsed := false
-	if params.DatasetEnabled {
-		ids := make([]int, len(datasets))
-		for i, dataset := range datasets {
-			ids[i] = int(dataset.ID)
-		}
-		ragMsgs, datasetUsed = p.deps.RAG.BuildRAGMessages(trimmed, ids, lastUserQuery(trimmed))
-	}
-	return p.compareWhiteLabelStreams(ctx, db, user, modelsList, params, trimmed, ragMsgs, datasetUsed, requestID, write)
+	return p.compareWhiteLabelStreams(ctx, db, user, modelsList, params, trimmed, requestID, write)
 }
 
 // compareWhiteLabelStreams multiplexes independently projected model streams.
 // A single upstream failure produces a model_error event but never cancels the
 // other selected models; only the final coordinator writes [DONE].
-func (p *PlatformChatService) compareWhiteLabelStreams(ctx context.Context, db *gorm.DB, user *models.User, modelsList []string, params ChatParams, trimmed, ragMsgs []map[string]interface{}, datasetUsed bool, requestID string, write func([]byte) error) error {
+func (p *PlatformChatService) compareWhiteLabelStreams(ctx context.Context, db *gorm.DB, user *models.User, modelsList []string, params ChatParams, trimmed []map[string]interface{}, requestID string, write func([]byte) error) error {
 	streamCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	results := make([]map[string]interface{}, len(modelsList))
@@ -535,7 +440,7 @@ func (p *PlatformChatService) compareWhiteLabelStreams(ctx context.Context, db *
 		go func() {
 			defer workers.Done()
 			result := map[string]interface{}{"model": model, "tokens": 0}
-			body := whitelabel.ChatCompletionRequest{Model: model, Messages: toGatewayMessages(ragMsgs), Temperature: params.Temperature, MaxTokens: params.MaxTokens, Stream: true}
+			body := whitelabel.ChatCompletionRequest{Model: model, Messages: toGatewayMessages(trimmed), Temperature: params.Temperature, MaxTokens: params.MaxTokens, Stream: true}
 			payload, marshalErr := whiteLabelPayload(params.WhiteLabelBody, body)
 			if marshalErr != nil {
 				result["error"] = "upstream unavailable"
@@ -603,7 +508,7 @@ func (p *PlatformChatService) compareWhiteLabelStreams(ctx context.Context, db *
 	if noOutput {
 		return whitelabel.ErrUpstreamUnavailable("all compare streams failed before first frame")
 	}
-	_, persistErr := p.persistCompareExchange(db, user, modelsList, params, trimmed, results, datasetUsed)
+	_, persistErr := p.persistCompareExchange(db, user, modelsList, params, trimmed, results)
 	if persistErr != nil {
 		return persistErr
 	}
@@ -631,19 +536,19 @@ func writeCompareEvent(write func([]byte) error, name string, payload interface{
 	return write([]byte("event: " + name + "\ndata: " + string(encoded) + "\n\n"))
 }
 
-func (p *PlatformChatService) persistCompareExchange(db *gorm.DB, user *models.User, modelsList []string, params ChatParams, trimmed []map[string]interface{}, results []map[string]interface{}, datasetUsed bool) (*models.Conversation, error) {
+func (p *PlatformChatService) persistCompareExchange(db *gorm.DB, user *models.User, modelsList []string, params ChatParams, trimmed []map[string]interface{}, results []map[string]interface{}) (*models.Conversation, error) {
 	var conv *models.Conversation
 	var err error
 	if params.ConversationID != nil {
 		conv, err = GetConversation(db, user, *params.ConversationID, false)
 	} else if len(trimmed) > 0 {
-		conv, err = CreateConversation(db, user, "", modelsList[0], params.DatasetEnabled, params.DatasetIDs)
+		conv, err = CreateConversation(db, user, "", modelsList[0])
 	}
 	if err != nil || conv == nil {
 		return conv, err
 	}
 	if last := lastUserMessage(trimmed); last != "" {
-		if _, err := AddMessage(db, conv, "user", last, "", false, nil, 0); err != nil {
+		if _, err := AddMessage(db, conv, "user", last, "", 0); err != nil {
 			return nil, err
 		}
 		if conv.Title == "新对话" {
@@ -667,18 +572,10 @@ func (p *PlatformChatService) persistCompareExchange(db *gorm.DB, user *models.U
 		return nil, err
 	}
 	tokens := totalResultTokens(results)
-	attr := (*string)(nil)
-	if datasetUsed {
-		value := rag.DatasetAttribution
-		attr = &value
-	}
-	if _, err := AddMessage(db, conv, "assistant", "__MULTI_MODEL__"+string(payload), modelsList[0], datasetUsed, attr, tokens); err != nil {
+	if _, err := AddMessage(db, conv, "assistant", "__MULTI_MODEL__"+string(payload), modelsList[0], tokens); err != nil {
 		return nil, err
 	}
 	user.TotalTokensUsed += tokens
-	if datasetUsed {
-		user.DatasetCalls++
-	}
 	if err := db.Save(user).Error; err != nil {
 		return nil, err
 	}

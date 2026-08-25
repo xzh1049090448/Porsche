@@ -144,7 +144,6 @@ func GetUsageStats(user *models.User) map[string]interface{} {
 	}
 	return map[string]interface{}{
 		"total_tokens_used":     user.TotalTokensUsed,
-		"dataset_calls":         user.DatasetCalls,
 		"daily_calls_used":      user.DailyCallsUsed,
 		"daily_call_limit":      user.DailyCallLimit,
 		"remaining_daily_calls": remaining,

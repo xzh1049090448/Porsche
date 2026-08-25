@@ -55,11 +55,10 @@ func RegisterAdminUsers(r *gin.Engine, state *app.State) {
 			return
 		}
 		var body struct {
-			Status          *string  `json:"status"`
-			PlanType        *string  `json:"plan_type"`
-			AllowedModels   []string `json:"allowed_models"`
-			AllowedDatasets []int    `json:"allowed_datasets"`
-			DailyCallLimit  *int     `json:"daily_call_limit"`
+			Status         *string  `json:"status"`
+			PlanType       *string  `json:"plan_type"`
+			AllowedModels  []string `json:"allowed_models"`
+			DailyCallLimit *int     `json:"daily_call_limit"`
 		}
 		_ = c.ShouldBindJSON(&body)
 		if body.Status != nil {
@@ -70,9 +69,6 @@ func RegisterAdminUsers(r *gin.Engine, state *app.State) {
 		}
 		if body.AllowedModels != nil {
 			user.AllowedModels = body.AllowedModels
-		}
-		if body.AllowedDatasets != nil {
-			user.AllowedDatasets = body.AllowedDatasets
 		}
 		if body.DailyCallLimit != nil {
 			user.DailyCallLimit = *body.DailyCallLimit
@@ -88,56 +84,6 @@ func RegisterAdminUsers(r *gin.Engine, state *app.State) {
 			return
 		}
 		c.JSON(http.StatusOK, service.UserBehavior(state.DB, int(id)))
-	})
-}
-
-func RegisterAdminDatasets(r *gin.Engine, state *app.State) {
-	g := r.Group("/admin/datasets", middleware.RequireAdmin(state))
-	g.GET("", func(c *gin.Context) {
-		var rows []models.Dataset
-		state.DB.Order("id asc").Find(&rows)
-		out := make([]map[string]interface{}, 0, len(rows))
-		for i := range rows {
-			out = append(out, dto.Dataset(&rows[i]))
-		}
-		c.JSON(http.StatusOK, out)
-	})
-	g.POST("", func(c *gin.Context) {
-		var body struct {
-			Name        string   `json:"name" binding:"required"`
-			Slug        string   `json:"slug" binding:"required"`
-			Category    string   `json:"category" binding:"required"`
-			Description *string  `json:"description"`
-			AccessPlans []string `json:"access_plans"`
-			AssetID     *string  `json:"asset_id"`
-		}
-		if err := c.ShouldBindJSON(&body); err != nil {
-			httpx.AbortJSON(c, http.StatusUnprocessableEntity, err.Error())
-			return
-		}
-		var existing models.Dataset
-		if err := state.DB.Where("slug = ?", body.Slug).First(&existing).Error; err == nil {
-			httpx.AbortJSON(c, http.StatusConflict, "slug 已存在")
-			return
-		}
-		plans := body.AccessPlans
-		if len(plans) == 0 {
-			plans = []string{"free", "professional", "enterprise"}
-		}
-		ds := models.Dataset{
-			Name:        body.Name,
-			Slug:        body.Slug,
-			Category:    models.DatasetCategory(body.Category),
-			Description: body.Description,
-			AccessPlans: plans,
-			AssetID:     body.AssetID,
-			Status:      models.DatasetDraft,
-		}
-		if err := state.DB.Create(&ds).Error; err != nil {
-			httpx.AbortJSON(c, http.StatusInternalServerError, err.Error())
-			return
-		}
-		c.JSON(http.StatusOK, dto.Dataset(&ds))
 	})
 }
 

@@ -2,11 +2,8 @@ package app
 
 import (
 	"net/http"
-	"os"
-	"path/filepath"
 
 	"github.com/porsche/ai-gateway-go/internal/config"
-	"github.com/porsche/ai-gateway-go/internal/rag"
 	"github.com/porsche/ai-gateway-go/internal/service"
 	"github.com/porsche/ai-gateway-go/internal/whitelabel"
 	"gorm.io/gorm"
@@ -15,7 +12,6 @@ import (
 type State struct {
 	Settings      *config.Settings
 	DB            *gorm.DB
-	RAG           *rag.Engine
 	Auth          *service.AuthService
 	Billing       *service.BillingService
 	SMS           *service.SMSService
@@ -27,14 +23,9 @@ type State struct {
 }
 
 func NewState(settings *config.Settings, db *gorm.DB) (*State, error) {
-	_ = os.MkdirAll(settings.ChromaPersistDir, 0o755)
-	_ = os.MkdirAll(settings.DatasetUploadDir, 0o755)
-	_ = os.MkdirAll(filepath.Dir("./data/platform.db"), 0o755)
-
 	s := &State{
 		Settings: settings,
 		DB:       db,
-		RAG:      rag.NewEngine(settings.ChromaPersistDir, settings.RAGTopK),
 		SMS:      service.NewSMSService(settings),
 		Audit:    service.NewAuditService(),
 		HTTP:     &http.Client{},
@@ -54,14 +45,9 @@ func NewState(settings *config.Settings, db *gorm.DB) (*State, error) {
 	s.Platform = service.NewPlatformChatService(service.PlatformDeps{
 		Settings:   settings,
 		DB:         db,
-		RAG:        s.RAG,
 		Billing:    s.Billing,
 		WhiteLabel: s.WhiteLabel,
 	})
-
-	if err := service.SeedDefaultDatasets(db, s.RAG); err != nil {
-		return nil, err
-	}
 
 	return s, nil
 }

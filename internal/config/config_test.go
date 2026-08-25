@@ -2,6 +2,16 @@ package config
 
 import "testing"
 
+func TestLoadRejectsNonMySQLDatabaseURL(t *testing.T) {
+	setLoadTestEnvironment(t)
+	t.Setenv("DATABASE_URL", "sqlite://./data/platform.db")
+	t.Setenv("SNOWFLAKE_NODE_ID", "0")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("Load() accepted a non-MySQL DATABASE_URL")
+	}
+}
+
 func TestWhiteLabelSettingsFailClosedAndUseFixedRegionURLs(t *testing.T) {
 	for _, tc := range []struct {
 		name, region, key, models, wantURL string
@@ -35,6 +45,7 @@ func TestWhiteLabelSettingsFailClosedAndUseFixedRegionURLs(t *testing.T) {
 }
 
 func TestLoadParsesWhiteLabelEnvironmentAndFailsClosed(t *testing.T) {
+	setLoadTestEnvironment(t)
 	t.Setenv("UPSTREAM_REGION", "global")
 	t.Setenv("JIEKOU_API_KEY", " test-key ")
 	t.Setenv("JIEKOU_ALLOWED_MODELS", " model-a, model-b ")
@@ -54,6 +65,7 @@ func TestLoadParsesWhiteLabelEnvironmentAndFailsClosed(t *testing.T) {
 }
 
 func TestLoadDoesNotRetainLegacyUpstreamKeys(t *testing.T) {
+	setLoadTestEnvironment(t)
 	t.Setenv("UPSTREAM_REGION", "cn")
 	t.Setenv("JIEKOU_API_KEY", "test-key")
 	t.Setenv("JIEKOU_ALLOWED_MODELS", "model-a")
@@ -66,4 +78,13 @@ func TestLoadDoesNotRetainLegacyUpstreamKeys(t *testing.T) {
 	if settings.WhiteLabel.APIKey != "test-key" {
 		t.Fatalf("Load() did not retain white-label key")
 	}
+}
+
+func setLoadTestEnvironment(t *testing.T) {
+	t.Helper()
+	t.Setenv("UPSTREAM_REGION", "cn")
+	t.Setenv("JIEKOU_API_KEY", "test-key")
+	t.Setenv("JIEKOU_ALLOWED_MODELS", "model-a")
+	t.Setenv("DATABASE_URL", "mysql://test:test@localhost:3306/platform")
+	t.Setenv("SNOWFLAKE_NODE_ID", "0")
 }
