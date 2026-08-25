@@ -2,6 +2,7 @@ package service
 
 import (
 	"math"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -43,7 +44,7 @@ func TestAnalyticsChartBuildsAllApprovedViewsFromFilteredUsage(t *testing.T) {
 		}
 		if view == "call_distribution" || view == "call_ranking" {
 			ranking := chart["ranking"].([]map[string]interface{})
-			if len(ranking) != 3 || ranking[0]["key"] != "model-b" || ranking[0]["calls"] != int64(3) {
+			if len(ranking) != 3 || !strings.HasPrefix(ranking[0]["key"].(string), "model-b-") || ranking[0]["calls"] != int64(3) {
 				t.Fatalf("%s must rank by calls and retain other: %#v", view, ranking)
 			}
 			assertRatioSum(t, ranking)
@@ -77,7 +78,8 @@ func analyticsFixtureDB(t *testing.T) (*gorm.DB, int64) {
 	if err := database.Create(&users).Error; err != nil {
 		t.Fatal(err)
 	}
-	a, b, c := "model-a", "model-b", "model-c"
+	fixtureSuffix := strconv.FormatInt(testSnowflake.Next(), 10)
+	a, b, c := "model-a-"+fixtureSuffix, "model-b-"+fixtureSuffix, "model-c-"+fixtureSuffix
 	records := []models.UsageRecord{
 		usageFixture(users[0].ID, &a, 1000, base.Add(5*time.Minute)),
 		usageFixture(users[0].ID, &b, 100, base.Add(10*time.Minute)),
