@@ -20,6 +20,12 @@
 - 不执行 `DROP DATABASE`、`DROP TABLE` 或任何删除数据/卷的命令。migration 仅在明确的新目标库上创建 schema。
 - 删除 RAG 全栈能力，保留会话、消息、用量、订单、Chat/Compare/SSE 和 context window。
 
+## 执行里程碑
+
+任务 1、任务 2、任务 3 与任务 4 构成一个**后端原子重构里程碑**。它们可以按测试先行提交内部检查点，但在四项均完成前不得部署、不得执行生产 migration、不得标记任一项为可交付：初始 MySQL schema、实体字段、枚举、读写服务和 HTTP 契约必须同步切换，不能让新 schema 与旧运行时代码共存。
+
+该里程碑完成后，先执行任务 5 的 MySQL 8 集成测试与后端安全门禁；只有后端门禁通过，才能开始任务 6 的 Porsche-Web 同步改造。任务 7 是全栈最终交付门禁。
+
 ### Task 1: 建立 MySQL 迁移、Snowflake 基础设施并前移移除 RAG
 
 **Files:**
@@ -105,7 +111,7 @@ git add internal/persistence internal/migration internal/rag internal/service/se
 git commit -m "refactor: initialize mysql schema without rag"
 ```
 
-### Task 2: 重建实体、整数枚举、审计与活动记录 Scope
+### Task 2: 重建实体、整数枚举、审计与活动记录 Scope（后端原子里程碑内部任务）
 
 **Files:**
 - Create: `internal/models/base.go`
@@ -166,7 +172,7 @@ git add internal/models internal/dto
 git commit -m "refactor: standardize persistent models"
 ```
 
-### Task 3: 重构认证、Token、会话、计费和审计写路径
+### Task 3: 重构认证、Token、会话、计费和审计写路径（后端原子里程碑内部任务）
 
 **Files:**
 - Create: `internal/service/persistence.go`
@@ -224,7 +230,7 @@ git add internal/service
 git commit -m "refactor: enforce guid audit and soft deletion"
 ```
 
-### Task 4: 移除 RAG 路由并切换后端 HTTP 契约到 GUID
+### Task 4: 完成 RAG HTTP 清理并切换后端 HTTP 契约到 GUID（后端原子里程碑内部任务）
 
 **Files:**
 - Modify: `cmd/server/main.go`
@@ -282,7 +288,7 @@ git add cmd internal
 git commit -m "refactor: remove rag and expose resource guids"
 ```
 
-### Task 5: MySQL 8 迁移集成测试与运行文档
+### Task 5: 后端原子里程碑的 MySQL 8 集成测试与运行文档门禁
 
 **Files:**
 - Create: `scripts/test-mysql-migrations.sh`
