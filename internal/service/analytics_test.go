@@ -13,13 +13,14 @@ import (
 )
 
 func TestAnalyticsChartBuildsAllApprovedViewsFromFilteredUsage(t *testing.T) {
-	database, analyticsAliceGUID := analyticsFixtureDB(t)
+	database, analyticsAliceGUID, fixtureModels := analyticsFixtureDB(t)
 	settings := &config.Settings{AnalyticsTokenPricePer1K: 2}
 	filters := AnalyticsFilters{
 		StartAtMillis: time.Date(2026, 8, 19, 10, 0, 0, 0, time.UTC).UnixMilli(),
 		EndAtMillis:   time.Date(2026, 8, 19, 12, 0, 0, 0, time.UTC).UnixMilli(),
 		Granularity:   "1h",
 		TopN:          2,
+		Models:        fixtureModels,
 	}
 
 	for _, view := range []string{
@@ -65,7 +66,7 @@ func TestAnalyticsChartBuildsAllApprovedViewsFromFilteredUsage(t *testing.T) {
 	}
 }
 
-func analyticsFixtureDB(t *testing.T) (*gorm.DB, int64) {
+func analyticsFixtureDB(t *testing.T) (*gorm.DB, int64, []string) {
 	t.Helper()
 	database := openTestMySQL(t)
 	alice, bob := "Alice", "Bob"
@@ -92,7 +93,7 @@ func analyticsFixtureDB(t *testing.T) (*gorm.DB, int64) {
 	if err := database.Create(&records).Error; err != nil {
 		t.Fatal(err)
 	}
-	return database, aliceGUID
+	return database, aliceGUID, []string{a, b, c}
 }
 
 func usageFixture(userID int64, model *string, tokens int, created time.Time) models.UsageRecord {
@@ -115,7 +116,7 @@ func assertRatioSum(t *testing.T, ranking []map[string]interface{}) {
 }
 
 func TestAnalyticsExportCSVEscapesFormulaLikeModelNames(t *testing.T) {
-	database, analyticsAliceGUID := analyticsFixtureDB(t)
+	database, analyticsAliceGUID, _ := analyticsFixtureDB(t)
 	model := "=SUM(1,1)"
 	var alice models.User
 	if err := database.Where("guid = ? AND is_deleted = 0", analyticsAliceGUID).First(&alice).Error; err != nil {
