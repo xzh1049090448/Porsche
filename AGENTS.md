@@ -23,6 +23,7 @@ Porsche 是一个位于仓库根目录的 Go 模型聚合网关。入口为 `cmd
 - 生产环境通过 `.env` 的 `DATABASE_URL` 连接既有 MySQL。
 - 可直接使用 `mysql+aiomysql://...` 或 `mysql://...` URL。
 - 不得执行 `docker compose down -v` 或 `docker volume rm`；它们可能删除 MySQL 命名卷中的数据。
+- **任何数据库模型、迁移、持久化写路径或用户关联改动前，必须完整阅读并严格遵守 [数据库建模与持久化约束](docs/conventions/database-standards.md)。** 该文档规定 `id`/雪花 `guid`、审计字段、非 `TIMESTAMP` 时间类型、整数枚举及用户关联规则；冲突必须先取得明确批准。
 
 ## 工作规则
 

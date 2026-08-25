@@ -9,6 +9,7 @@
 3. `.env.example`：唯一白牌上游及安全环境变量示例。
 4. `internal/models/models.go`：持久化实体及其状态字段。
 5. 与任务匹配的 `internal/handler/`、`internal/service/` 与 `internal/whitelabel/` 代码。
+6. 涉及数据库、迁移或实体时：[数据库建模与持久化约束](../conventions/database-standards.md)。
 
 如果未来新增 `docs/adr/`，仅在其与当前改动有关时阅读；该目录尚不存在时直接继续，不必创建占位文件。
 
