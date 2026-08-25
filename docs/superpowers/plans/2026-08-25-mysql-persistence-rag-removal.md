@@ -20,7 +20,7 @@
 - 不执行 `DROP DATABASE`、`DROP TABLE` 或任何删除数据/卷的命令。migration 仅在明确的新目标库上创建 schema。
 - 删除 RAG 全栈能力，保留会话、消息、用量、订单、Chat/Compare/SSE 和 context window。
 
-### Task 1: 建立 MySQL 迁移、Snowflake 与持久化基础设施
+### Task 1: 建立 MySQL 迁移、Snowflake 基础设施并前移移除 RAG
 
 **Files:**
 - Create: `internal/persistence/snowflake.go`
@@ -31,6 +31,15 @@
 - Create: `internal/migration/sql/0001_initial_schema.up.sql`
 - Create: `internal/migration/sql/0001_initial_schema.down.sql`
 - Create: `cmd/migrate/main.go`
+- Delete: `internal/rag/rag.go`
+- Delete: `internal/service/seed.go`
+- Modify: `cmd/server/main.go`
+- Modify: `internal/app/state.go`
+- Modify: `internal/router/router.go`
+- Modify: `internal/service/platform_chat.go`
+- Modify: `internal/handler/conversations_datasets.go`
+- Modify: `internal/handler/platform.go`
+- Modify: `internal/handler/admin.go`
 - Modify: `internal/config/config.go`
 - Modify: `internal/db/db.go`
 - Modify: `go.mod`, `go.sum`
@@ -58,11 +67,15 @@ Run: `go test ./internal/config ./internal/persistence -run 'Test(LoadRejectsNon
 
 Expected: FAIL，因缺少 MySQL-only 配置校验与 snowflake 包。
 
-- [ ] **Step 3: 实现基础设施。**
+- [ ] **Step 3: 先移除 RAG 启动依赖。**
+
+删除 RAG engine、默认数据集 seed、数据集路由注册和启动目录创建；从 Platform service/handler 请求结构删除 `dataset_enabled` 与 `dataset_ids`，使 strict decoder 拒绝它们。保留会话、消息、用量、账务和 `context_window`，并直接将裁剪后的消息传给白牌上游。必须先让应用在没有 `datasets` 表时能够构建和启动，再加入 8 表 initial migration。
+
+- [ ] **Step 4: 实现基础设施。**
 
 实现 `SNOWFLAKE_NODE_ID` 的 `[0,1023]` 校验；生成器以 mutex 保护毫秒/序列，始终生成小于 `math.MaxInt64` 的正 `int64`。`db.Open` 仅接受 MySQL URL，删除 SQLite imports、分支和 `AutoMigrate`；migration runner 以 `embed.FS` 按版本执行 SQL、在事务中写入 `schema_migrations` 并暴露 `Up` / `Status`。
 
-- [ ] **Step 4: 编写初始 schema SQL。**
+- [ ] **Step 5: 编写初始 schema SQL。**
 
 `0001_initial_schema.up.sql` 先创建合规 `schema_migrations`，再创建业务表；每表使用如下公共列并建立 `guid` 唯一索引：
 
@@ -79,17 +92,17 @@ UNIQUE KEY uk_<table>_guid (guid)
 
 为 user-owned 表建立 `(user_id, is_deleted)` 索引；为常用时间排序建立 `(..., updated_at)` 或 `(..., created_at)` 索引。down migration 只在显式开发/测试命令中使用，不得由服务或部署脚本调用。
 
-- [ ] **Step 5: 运行迁移与基础测试。**
+- [ ] **Step 6: 运行迁移与基础测试。**
 
 Run: `go test ./internal/config ./internal/persistence ./internal/migration ./internal/db -count=1`
 
 Expected: PASS。
 
-- [ ] **Step 6: 提交。**
+- [ ] **Step 7: 提交。**
 
 ```bash
-git add internal/persistence internal/migration cmd/migrate internal/config/config.go internal/db/db.go go.mod go.sum
-git commit -m "feat: add mysql migration foundation"
+git add internal/persistence internal/migration internal/rag internal/service/seed.go cmd internal/config internal/db go.mod go.sum
+git commit -m "refactor: initialize mysql schema without rag"
 ```
 
 ### Task 2: 重建实体、整数枚举、审计与活动记录 Scope
@@ -194,9 +207,9 @@ func TestTokenAuthenticationRejectsDeletedTokenAndOwner(t *testing.T) {
 
 公开 Service 方法以 `(userID int64, guid int64)` 查询资源；内部关联仍用主键。`Preload("Messages", "is_deleted = 0")`、分析/仪表盘/账务查询均使用活动 scope。手机号仅用于登录查找；所有 ownership 判断只使用用户内部 ID。
 
-- [ ] **Step 4: 删除 RAG 业务逻辑。**
+- [ ] **Step 4: 收口无 RAG 的聊天持久化。**
 
-删除 `validateDatasets`、RAG 消息构建、数据集归因与计数；平台聊天直接转发 trimmed messages。`ChatParams` 仅保留模型、消息、会话 GUID、context window 和上游允许参数。
+确保 Task 1 前移删除 RAG 后，聊天/比较的持久化只写会话、消息与用量；`ChatParams` 仅保留模型、消息、会话 GUID、context window 和上游允许参数。不得重新引入 `Dataset`、`dataset_*` 字段或 RAG 归因。
 
 - [ ] **Step 5: 运行服务测试。**
 
@@ -214,8 +227,6 @@ git commit -m "refactor: enforce guid audit and soft deletion"
 ### Task 4: 移除 RAG 路由并切换后端 HTTP 契约到 GUID
 
 **Files:**
-- Delete: `internal/rag/rag.go`
-- Delete: `internal/service/seed.go`
 - Modify: `cmd/server/main.go`
 - Modify: `internal/app/state.go`
 - Modify: `internal/router/router.go`
@@ -250,9 +261,9 @@ func TestDatasetRoutesAndFieldsAreRemoved(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: 删除 RAG HTTP 边界。**
+- [ ] **Step 2: 验证已前移删除的 RAG HTTP 边界。**
 
-删除 `RegisterDatasets`、`RegisterAdminDatasets` 及路由注册；删除 datasets 请求/响应字段和 `CHROMA_*` / `DATASET_*` 初始化。严格 decoder 将 `dataset_enabled`、`dataset_ids` 视为未知/不支持参数。
+验证 Task 1 已删除 `RegisterDatasets`、`RegisterAdminDatasets` 及路由注册，并已删除 datasets 请求/响应字段和 `CHROMA_*` / `DATASET_*` 初始化。严格 decoder 必须将 `dataset_enabled`、`dataset_ids` 视为未知/不支持参数；本任务不重新实现或保留它们。
 
 - [ ] **Step 3: 切换所有路径和 DTO。**
 
