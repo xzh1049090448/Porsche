@@ -153,10 +153,16 @@ func platformJWT(t *testing.T, state *app.State, user *models.User) string {
 
 var platformTestSnowflake = persistence.NewSnowflake(os.Getpid()%1024, persistence.SystemClock())
 
-func platformTestUser(phone string, allowed models.JSONSlice) models.User {
+func platformTestUser(_ string, allowed models.JSONSlice) models.User {
 	now := time.Now().UTC().UnixMilli()
 	if allowed == nil {
 		allowed = models.JSONSlice{}
 	}
-	return models.User{AuditFields: models.AuditFields{Guid: platformTestSnowflake.Next(), CreatedAt: now, UpdatedAt: now, IsDeleted: 0}, Phone: phone, Status: models.UserStatusActive, PlanType: models.PlanFree, AllowedModels: allowed}
+	return models.User{AuditFields: models.AuditFields{Guid: platformTestSnowflake.Next(), CreatedAt: now, UpdatedAt: now, IsDeleted: 0}, Phone: platformTestPhone(), Status: models.UserStatusActive, PlanType: models.PlanFree, AllowedModels: allowed}
+}
+
+// platformTestPhone keeps handler fixtures isolated even when MySQL data from
+// a prior `go test` process remains in the dedicated test database.
+func platformTestPhone() string {
+	return strconv.FormatInt(13_000_000_000+platformTestSnowflake.Next()%1_000_000_000, 10)
 }

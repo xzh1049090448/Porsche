@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -22,12 +23,12 @@ func TestPayOrderConcurrentSettlement(t *testing.T) {
 		t.Fatalf("prepare isolated MySQL schema: %v", err)
 	}
 	now := time.Now().UTC().UnixMilli()
-	phone := "9" + time.Now().UTC().Format("20060102150405")
+	phone := testPhone()
 	user := models.User{AuditFields: models.AuditFields{Guid: generator.Next(), CreatedAt: now, UpdatedAt: now, IsDeleted: 0}, Phone: phone, Status: models.UserStatusActive, PlanType: models.PlanFree, AllowedModels: models.JSONSlice{}}
 	if err := db.Create(&user).Error; err != nil {
 		t.Fatal(err)
 	}
-	order := models.Order{AuditFields: models.AuditFields{Guid: generator.Next(), CreatedAt: now, CreatedBy: &user.ID, UpdatedAt: now, UpdatedBy: &user.ID, IsDeleted: 0}, OrderNo: "test-" + time.Now().UTC().Format("20060102150405.000000000"), UserID: user.ID, PlanType: models.PlanProfessional, Status: models.OrderPending}
+	order := models.Order{AuditFields: models.AuditFields{Guid: generator.Next(), CreatedAt: now, CreatedBy: &user.ID, UpdatedAt: now, UpdatedBy: &user.ID, IsDeleted: 0}, OrderNo: "test-" + time.Now().UTC().Format("20060102150405.000000000") + "-" + strconv.FormatInt(testSnowflake.Next(), 10), UserID: user.ID, PlanType: models.PlanProfessional, Status: models.OrderPending}
 	if err := db.Create(&order).Error; err != nil {
 		t.Fatal(err)
 	}

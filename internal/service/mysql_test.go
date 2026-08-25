@@ -23,14 +23,20 @@ func testAuditFields() models.AuditFields {
 	return models.AuditFields{Guid: testSnowflake.Next(), CreatedAt: now, UpdatedAt: now, IsDeleted: 0}
 }
 
-func testUser(phone string) models.User {
+func testUser(_ string) models.User {
 	return models.User{
 		AuditFields:   testAuditFields(),
-		Phone:         phone,
+		Phone:         testPhone(),
 		Status:        models.UserStatusActive,
 		PlanType:      models.PlanFree,
 		AllowedModels: models.JSONSlice{},
 	}
+}
+
+// testPhone yields an 11-digit value for each fixture write, so an isolated
+// MySQL test database can retain data across package and process test runs.
+func testPhone() string {
+	return fmt.Sprintf("13%09d", testSnowflake.Next()%1_000_000_000)
 }
 
 func TestValidateTestDatabaseURLRejectsUnsafeTargets(t *testing.T) {

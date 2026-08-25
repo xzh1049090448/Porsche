@@ -11,10 +11,8 @@ import (
 	"gorm.io/gorm"
 )
 
-var analyticsAliceGUID = testSnowflake.Next()
-
 func TestAnalyticsChartBuildsAllApprovedViewsFromFilteredUsage(t *testing.T) {
-	database := analyticsFixtureDB(t)
+	database, analyticsAliceGUID := analyticsFixtureDB(t)
 	settings := &config.Settings{AnalyticsTokenPricePer1K: 2}
 	filters := AnalyticsFilters{
 		StartAtMillis: time.Date(2026, 8, 19, 10, 0, 0, 0, time.UTC).UnixMilli(),
@@ -66,14 +64,15 @@ func TestAnalyticsChartBuildsAllApprovedViewsFromFilteredUsage(t *testing.T) {
 	}
 }
 
-func analyticsFixtureDB(t *testing.T) *gorm.DB {
+func analyticsFixtureDB(t *testing.T) (*gorm.DB, int64) {
 	t.Helper()
 	database := openTestMySQL(t)
 	alice, bob := "Alice", "Bob"
 	base := time.Date(2026, 8, 19, 10, 0, 0, 0, time.UTC)
+	aliceGUID := testSnowflake.Next()
 	users := []models.User{
-		{AuditFields: models.AuditFields{Guid: analyticsAliceGUID, CreatedAt: base.UnixMilli(), UpdatedAt: base.UnixMilli(), IsDeleted: 0}, Phone: "13800000001", Nickname: &alice, Status: models.UserStatusActive, PlanType: models.PlanFree, AllowedModels: models.JSONSlice{}},
-		{AuditFields: models.AuditFields{Guid: testSnowflake.Next(), CreatedAt: base.UnixMilli(), UpdatedAt: base.UnixMilli(), IsDeleted: 0}, Phone: "13800000002", Nickname: &bob, Status: models.UserStatusActive, PlanType: models.PlanFree, AllowedModels: models.JSONSlice{}},
+		{AuditFields: models.AuditFields{Guid: aliceGUID, CreatedAt: base.UnixMilli(), UpdatedAt: base.UnixMilli(), IsDeleted: 0}, Phone: testPhone(), Nickname: &alice, Status: models.UserStatusActive, PlanType: models.PlanFree, AllowedModels: models.JSONSlice{}},
+		{AuditFields: models.AuditFields{Guid: testSnowflake.Next(), CreatedAt: base.UnixMilli(), UpdatedAt: base.UnixMilli(), IsDeleted: 0}, Phone: testPhone(), Nickname: &bob, Status: models.UserStatusActive, PlanType: models.PlanFree, AllowedModels: models.JSONSlice{}},
 	}
 	if err := database.Create(&users).Error; err != nil {
 		t.Fatal(err)
@@ -91,7 +90,7 @@ func analyticsFixtureDB(t *testing.T) *gorm.DB {
 	if err := database.Create(&records).Error; err != nil {
 		t.Fatal(err)
 	}
-	return database
+	return database, aliceGUID
 }
 
 func usageFixture(userID int64, model *string, tokens int, created time.Time) models.UsageRecord {
@@ -114,7 +113,7 @@ func assertRatioSum(t *testing.T, ranking []map[string]interface{}) {
 }
 
 func TestAnalyticsExportCSVEscapesFormulaLikeModelNames(t *testing.T) {
-	database := analyticsFixtureDB(t)
+	database, analyticsAliceGUID := analyticsFixtureDB(t)
 	model := "=SUM(1,1)"
 	var alice models.User
 	if err := database.Where("guid = ? AND is_deleted = 0", analyticsAliceGUID).First(&alice).Error; err != nil {

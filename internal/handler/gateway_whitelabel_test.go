@@ -501,15 +501,21 @@ func testDatabaseURL(t *testing.T) string {
 
 var gatewayWhiteLabelSnowflake = persistence.NewSnowflake(os.Getpid()%1024, persistence.SystemClock())
 
-func gatewayWhiteLabelUser(phone string) *models.User {
+func gatewayWhiteLabelUser(_ string) *models.User {
 	now := time.Now().UTC().UnixMilli()
 	return &models.User{
 		AuditFields:   models.AuditFields{Guid: gatewayWhiteLabelSnowflake.Next(), CreatedAt: now, UpdatedAt: now, IsDeleted: 0},
-		Phone:         phone,
+		Phone:         gatewayWhiteLabelTestPhone(),
 		Status:        models.UserStatusActive,
 		PlanType:      models.PlanFree,
 		AllowedModels: models.JSONSlice{},
 	}
+}
+
+// gatewayWhiteLabelTestPhone makes each persisted handler fixture distinct
+// across repeated runs against the same dedicated MySQL test database.
+func gatewayWhiteLabelTestPhone() string {
+	return strconv.FormatInt(13_000_000_000+gatewayWhiteLabelSnowflake.Next()%1_000_000_000, 10)
 }
 
 func mustRead(t *testing.T, r *http.Request) []byte {

@@ -60,7 +60,7 @@ func TestGatewayTokenRejectsExpiredAndRevoked(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := svc.Revoke(user.ID, created.ID); err != nil {
+	if err := svc.Revoke(user.ID, created.Guid); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := svc.Authenticate(secret, "", "qwen-turbo", time.Now()); !IsGatewayTokenError(err, GatewayTokenRevoked) {

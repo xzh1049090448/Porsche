@@ -177,8 +177,8 @@ func TestGatewayRejectsSpoofedForwardedIPFromUntrustedPeer(t *testing.T) {
 
 func TestAnalyticsChartsRejectInvalidQueriesAfterAdminAuthorization(t *testing.T) {
 	state := newGatewayTestState(t)
-	state.Settings.AnalyticsAdminPhones = "13900139999"
-	admin := createGatewayTestUser(t, state, "13900139999")
+	admin := createGatewayTestUser(t, state, "analytics-admin")
+	state.Settings.AnalyticsAdminPhones = admin.Phone
 	engine := router.New(state)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/billing/analytics/charts/unknown?top_n=999", nil)
 	req.Header.Set("Authorization", "Bearer "+gatewayTestJWT(t, state, admin))
@@ -324,15 +324,21 @@ func createGatewayTestUser(t *testing.T, state *app.State, phone string) *models
 
 var gatewayTestSnowflake = persistence.NewSnowflake(os.Getpid()%1024, persistence.SystemClock())
 
-func gatewayTestUserFixture(phone string) models.User {
+func gatewayTestUserFixture(_ string) models.User {
 	now := time.Now().UTC().UnixMilli()
 	return models.User{
 		AuditFields:   models.AuditFields{Guid: gatewayTestSnowflake.Next(), CreatedAt: now, UpdatedAt: now, IsDeleted: 0},
-		Phone:         phone,
+		Phone:         gatewayTestPhone(),
 		Status:        models.UserStatusActive,
 		PlanType:      models.PlanFree,
 		AllowedModels: models.JSONSlice{},
 	}
+}
+
+// gatewayTestPhone derives a database-safe phone value from the package test
+// snowflake. It prevents prior test runs from colliding in a shared test DB.
+func gatewayTestPhone() string {
+	return strconv.FormatInt(13_000_000_000+gatewayTestSnowflake.Next()%1_000_000_000, 10)
 }
 
 func gatewayTestJWT(t *testing.T, state *app.State, user *models.User) string {
