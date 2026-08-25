@@ -7,19 +7,20 @@ import (
 	"time"
 
 	"github.com/porsche/ai-gateway-go/internal/config"
-	"github.com/porsche/ai-gateway-go/internal/db"
 	"github.com/porsche/ai-gateway-go/internal/models"
 	"gorm.io/gorm"
 )
+
+var analyticsAliceGUID = testSnowflake.Next()
 
 func TestAnalyticsChartBuildsAllApprovedViewsFromFilteredUsage(t *testing.T) {
 	database := analyticsFixtureDB(t)
 	settings := &config.Settings{AnalyticsTokenPricePer1K: 2}
 	filters := AnalyticsFilters{
-		StartAt:     time.Date(2026, 8, 19, 10, 0, 0, 0, time.UTC),
-		EndAt:       time.Date(2026, 8, 19, 12, 0, 0, 0, time.UTC),
-		Granularity: "1h",
-		TopN:        2,
+		StartAtMillis: time.Date(2026, 8, 19, 10, 0, 0, 0, time.UTC).UnixMilli(),
+		EndAtMillis:   time.Date(2026, 8, 19, 12, 0, 0, 0, time.UTC).UnixMilli(),
+		Granularity:   "1h",
+		TopN:          2,
 	}
 
 	for _, view := range []string{
@@ -27,9 +28,9 @@ func TestAnalyticsChartBuildsAllApprovedViewsFromFilteredUsage(t *testing.T) {
 		"user_consumption_ranking", "user_consumption_trend",
 	} {
 		if view == "user_consumption_trend" {
-			filters.UserID = 1
+			filters.UserGUID = analyticsAliceGUID
 		} else {
-			filters.UserID = 0
+			filters.UserGUID = 0
 		}
 		chart := AnalyticsChart(database, settings, view, filters)
 		labels, ok := chart["time_labels"].([]string)
@@ -67,30 +68,38 @@ func TestAnalyticsChartBuildsAllApprovedViewsFromFilteredUsage(t *testing.T) {
 
 func analyticsFixtureDB(t *testing.T) *gorm.DB {
 	t.Helper()
-	database, err := db.Open("sqlite://"+t.TempDir()+"/analytics.db", "test")
-	if err != nil {
-		t.Fatal(err)
-	}
+	database := openTestMySQL(t)
 	alice, bob := "Alice", "Bob"
-	users := []models.User{{ID: 1, Phone: "13800000001", Nickname: &alice}, {ID: 2, Phone: "13800000002", Nickname: &bob}}
+	base := time.Date(2026, 8, 19, 10, 0, 0, 0, time.UTC)
+	users := []models.User{
+		{AuditFields: models.AuditFields{Guid: analyticsAliceGUID, CreatedAt: base.UnixMilli(), UpdatedAt: base.UnixMilli(), IsDeleted: 0}, Phone: "13800000001", Nickname: &alice, Status: models.UserStatusActive, PlanType: models.PlanFree, AllowedModels: models.JSONSlice{}},
+		{AuditFields: models.AuditFields{Guid: testSnowflake.Next(), CreatedAt: base.UnixMilli(), UpdatedAt: base.UnixMilli(), IsDeleted: 0}, Phone: "13800000002", Nickname: &bob, Status: models.UserStatusActive, PlanType: models.PlanFree, AllowedModels: models.JSONSlice{}},
+	}
 	if err := database.Create(&users).Error; err != nil {
 		t.Fatal(err)
 	}
-	base := time.Date(2026, 8, 19, 10, 0, 0, 0, time.UTC)
 	a, b, c := "model-a", "model-b", "model-c"
 	records := []models.UsageRecord{
-		{UserID: 1, Model: &a, Tokens: 1000, CreatedAt: base.Add(5 * time.Minute)},
-		{UserID: 1, Model: &b, Tokens: 100, CreatedAt: base.Add(10 * time.Minute)},
-		{UserID: 2, Model: &b, Tokens: 100, CreatedAt: base.Add(15 * time.Minute)},
-		{UserID: 2, Model: &b, Tokens: 100, CreatedAt: base.Add(20 * time.Minute)},
-		{UserID: 1, Model: &c, Tokens: 1000, CreatedAt: base.Add(65 * time.Minute)},
-		{UserID: 1, Model: &a, Tokens: 1000, CreatedAt: base.Add(70 * time.Minute)},
-		{UserID: 2, Model: nil, Tokens: 9999, CreatedAt: base.Add(30 * time.Minute)},
+		usageFixture(users[0].ID, &a, 1000, base.Add(5*time.Minute)),
+		usageFixture(users[0].ID, &b, 100, base.Add(10*time.Minute)),
+		usageFixture(users[1].ID, &b, 100, base.Add(15*time.Minute)),
+		usageFixture(users[1].ID, &b, 100, base.Add(20*time.Minute)),
+		usageFixture(users[0].ID, &c, 1000, base.Add(65*time.Minute)),
+		usageFixture(users[0].ID, &a, 1000, base.Add(70*time.Minute)),
+		usageFixture(users[1].ID, nil, 9999, base.Add(30*time.Minute)),
 	}
 	if err := database.Create(&records).Error; err != nil {
 		t.Fatal(err)
 	}
 	return database
+}
+
+func usageFixture(userID int64, model *string, tokens int, created time.Time) models.UsageRecord {
+	createdAt := created.UTC().UnixMilli()
+	return models.UsageRecord{
+		AuditFields: models.AuditFields{Guid: testSnowflake.Next(), CreatedAt: createdAt, UpdatedAt: createdAt, IsDeleted: 0},
+		UserID:      userID, RecordType: models.UsageRecordChat, Model: model, Tokens: tokens,
+	}
 }
 
 func assertRatioSum(t *testing.T, ranking []map[string]interface{}) {
@@ -107,10 +116,15 @@ func assertRatioSum(t *testing.T, ranking []map[string]interface{}) {
 func TestAnalyticsExportCSVEscapesFormulaLikeModelNames(t *testing.T) {
 	database := analyticsFixtureDB(t)
 	model := "=SUM(1,1)"
-	if err := database.Create(&models.UsageRecord{UserID: 1, Model: &model, Tokens: 1, CreatedAt: time.Date(2026, 8, 19, 10, 30, 0, 0, time.UTC)}).Error; err != nil {
+	var alice models.User
+	if err := database.Where("guid = ? AND is_deleted = 0", analyticsAliceGUID).First(&alice).Error; err != nil {
 		t.Fatal(err)
 	}
-	csv := AnalyticsExportCSV(database, "call_ranking", AnalyticsFilters{StartAt: time.Date(2026, 8, 19, 10, 0, 0, 0, time.UTC), EndAt: time.Date(2026, 8, 19, 11, 0, 0, 0, time.UTC)})
+	record := usageFixture(alice.ID, &model, 1, time.Date(2026, 8, 19, 10, 30, 0, 0, time.UTC))
+	if err := database.Create(&record).Error; err != nil {
+		t.Fatal(err)
+	}
+	csv := AnalyticsExportCSV(database, "call_ranking", AnalyticsFilters{StartAtMillis: time.Date(2026, 8, 19, 10, 0, 0, 0, time.UTC).UnixMilli(), EndAtMillis: time.Date(2026, 8, 19, 11, 0, 0, 0, time.UTC).UnixMilli()})
 	if !strings.Contains(csv, "'=SUM(1,1)") {
 		t.Fatalf("formula-like model must be prefixed in csv: %q", csv)
 	}

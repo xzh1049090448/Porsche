@@ -22,3 +22,16 @@ func TestEmbeddedMigrationsContainOneWayInitialSchema(t *testing.T) {
 		t.Fatalf("down migration must not destroy data: %s", down)
 	}
 }
+
+func TestVerifyAppliedRejectsMissingAndTamperedMigrations(t *testing.T) {
+	migrations, err := All()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := VerifyApplied(migrations, nil); err == nil {
+		t.Fatal("expected missing migration verification error")
+	}
+	if err := VerifyApplied(migrations, []AppliedMigration{{Version: "0001", Checksum: "tampered"}}); err == nil {
+		t.Fatal("expected checksum verification error")
+	}
+}

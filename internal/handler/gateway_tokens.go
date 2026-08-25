@@ -172,13 +172,13 @@ func RegisterGatewayTokens(r *gin.Engine, state *app.State) {
 			return
 		}
 		uid := middleware.CurrentUserID(c)
-		_ = state.Audit.Log(state.DB, "gateway_token.create", &uid, strconv.Itoa(token.ID), nil, httpx.ClientIP(c, state.Settings.TrustProxyHeaders, state.Settings.TrustedProxyCIDRs))
+		_ = state.Audit.Log(state.DB, "gateway_token.create", &uid, strconv.FormatInt(token.Guid, 10), nil, httpx.ClientIP(c, state.Settings.TrustProxyHeaders, state.Settings.TrustedProxyCIDRs))
 		out := gatewayTokenResponse(token)
 		out["token"] = secret // The plaintext is intentionally returned only from this creation response.
 		c.JSON(http.StatusCreated, out)
 	})
-	g.GET("/:id", func(c *gin.Context) { gatewayTokenGet(c, state) })
-	g.PATCH("/:id", func(c *gin.Context) {
+	g.GET("/:guid", func(c *gin.Context) { gatewayTokenGet(c, state) })
+	g.PATCH("/:guid", func(c *gin.Context) {
 		id, ok := gatewayTokenID(c)
 		if !ok {
 			return
@@ -200,8 +200,8 @@ func RegisterGatewayTokens(r *gin.Engine, state *app.State) {
 		}
 		c.JSON(http.StatusOK, gatewayTokenResponse(token))
 	})
-	g.POST("/:id/revoke", func(c *gin.Context) { revokeGatewayToken(c, state) })
-	g.DELETE("/:id", func(c *gin.Context) { revokeGatewayToken(c, state) })
+	g.POST("/:guid/revoke", func(c *gin.Context) { revokeGatewayToken(c, state) })
+	g.DELETE("/:guid", func(c *gin.Context) { revokeGatewayToken(c, state) })
 }
 
 type gatewayPrincipal struct {
@@ -339,10 +339,10 @@ func (i gatewayTokenUpdateInput) expiry() (**time.Time, error) {
 	return &expiresAt, nil
 }
 func gatewayTokenResponse(token *models.GatewayAPIToken) gin.H {
-	return gin.H{"id": token.ID, "name": token.Name, "token_prefix": token.TokenPrefix, "status": token.Status, "allowed_models": token.AllowedModels, "ip_allowlist": token.IPAllowlist, "expires_at": token.ExpiresAt, "last_used_at": token.LastUsedAt, "created_at": token.CreatedAt}
+	return gin.H{"guid": strconv.FormatInt(token.Guid, 10), "name": token.Name, "token_prefix": token.TokenPrefix, "status": token.Status.String(), "allowed_models": token.AllowedModels, "ip_allowlist": token.IPAllowlist, "expires_at": token.ExpiresAt, "last_used_at": token.LastUsedAt, "created_at": token.CreatedAt}
 }
-func gatewayTokenID(c *gin.Context) (int, bool) {
-	id, err := strconv.Atoi(c.Param("id"))
+func gatewayTokenID(c *gin.Context) (int64, bool) {
+	id, err := strconv.ParseInt(c.Param("guid"), 10, 64)
 	if err != nil || id < 1 {
 		httpx.AbortJSON(c, http.StatusNotFound, "令牌不存在")
 		return 0, false
@@ -371,7 +371,7 @@ func revokeGatewayToken(c *gin.Context, state *app.State) {
 		return
 	}
 	uid := middleware.CurrentUserID(c)
-	_ = state.Audit.Log(state.DB, "gateway_token.revoke", &uid, strconv.Itoa(id), nil, httpx.ClientIP(c, state.Settings.TrustProxyHeaders, state.Settings.TrustedProxyCIDRs))
+	_ = state.Audit.Log(state.DB, "gateway_token.revoke", &uid, strconv.FormatInt(id, 10), nil, httpx.ClientIP(c, state.Settings.TrustProxyHeaders, state.Settings.TrustedProxyCIDRs))
 	c.Status(http.StatusNoContent)
 }
 func gatewayTokenWriteError(c *gin.Context, err error) {

@@ -2,6 +2,7 @@ package persistence
 
 import (
 	"sync"
+	"time"
 )
 
 const (
@@ -20,6 +21,18 @@ type Snowflake struct {
 	lastMS   int64
 	sequence int64
 }
+
+var defaultGenerator = NewSnowflake(0, SystemClock())
+
+// ConfigureSnowflake replaces the process-wide generator during application
+// startup. Services use this shared implementation instead of inventing IDs.
+func ConfigureSnowflake(nodeID int) { defaultGenerator = NewSnowflake(nodeID, SystemClock()) }
+
+// NextGUID returns the next business identifier from the shared generator.
+func NextGUID() int64 { return defaultGenerator.Next() }
+
+// NowMillis returns a UTC Unix millisecond value for persisted audit fields.
+func NowMillis() int64 { return time.Now().UTC().UnixMilli() }
 
 // NewSnowflake constructs a concurrency-safe generator for a validated node.
 func NewSnowflake(nodeID int, clock Clock) *Snowflake {

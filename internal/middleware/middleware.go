@@ -45,12 +45,17 @@ func RequireUserID(state *app.State) gin.HandlerFunc {
 			httpx.AbortJSON(c, http.StatusUnauthorized, "Token无效或已过期")
 			return
 		}
-		id, err := strconv.ParseUint(sub, 10, 64)
+		guid, err := strconv.ParseInt(sub, 10, 64)
 		if err != nil {
 			httpx.AbortJSON(c, http.StatusUnauthorized, "Token无效或已过期")
 			return
 		}
-		c.Set(ContextUserID, int(id))
+		var user models.User
+		if err := state.DB.Where("guid = ? AND is_deleted = 0", guid).First(&user).Error; err != nil || !user.Status.IsActive() {
+			httpx.AbortJSON(c, http.StatusUnauthorized, "用户不存在或已被禁用")
+			return
+		}
+		c.Set(ContextUserID, user.ID)
 		c.Next()
 	}
 }
@@ -71,13 +76,13 @@ func RequireUser(state *app.State) gin.HandlerFunc {
 			httpx.AbortJSON(c, http.StatusUnauthorized, "Token无效或已过期")
 			return
 		}
-		id, err := strconv.ParseUint(sub, 10, 64)
+		guid, err := strconv.ParseInt(sub, 10, 64)
 		if err != nil {
 			httpx.AbortJSON(c, http.StatusUnauthorized, "Token无效或已过期")
 			return
 		}
 		var user models.User
-		if err := state.DB.First(&user, id).Error; err != nil || !user.Status.IsActive() {
+		if err := state.DB.Where("guid = ? AND is_deleted = 0", guid).First(&user).Error; err != nil || !user.Status.IsActive() {
 			httpx.AbortJSON(c, http.StatusUnauthorized, "用户不存在或已被禁用")
 			return
 		}
@@ -124,8 +129,8 @@ func CurrentUser(c *gin.Context) *models.User {
 	return user
 }
 
-func CurrentUserID(c *gin.Context) int {
+func CurrentUserID(c *gin.Context) int64 {
 	v, _ := c.Get(ContextUserID)
-	id, _ := v.(int)
+	id, _ := v.(int64)
 	return id
 }

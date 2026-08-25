@@ -178,7 +178,10 @@ func decodePlatformRequest(c *gin.Context, dest interface{}, compare bool) *whit
 	if json.Unmarshal(raw, &fields) != nil {
 		return &whitelabel.Error{Code: whitelabel.CodeInvalidRequest, Status: http.StatusBadRequest, Type: whitelabel.TypeInvalidRequest}
 	}
-	for _, field := range []string{"conversation_id", "context_window"} {
+	if _, legacy := fields["conversation_id"]; legacy {
+		return &whitelabel.Error{Code: whitelabel.CodeInvalidRequest, Status: http.StatusBadRequest, Type: whitelabel.TypeInvalidRequest}
+	}
+	for _, field := range []string{"conversation_guid", "context_window"} {
 		delete(fields, field)
 	}
 	if compare {
@@ -242,46 +245,46 @@ func platformWhiteLabelError(c *gin.Context, err *whitelabel.Error) {
 }
 
 type platformChatBody struct {
-	Model          string                   `json:"model" binding:"required"`
-	Messages       []map[string]interface{} `json:"messages" binding:"required"`
-	ConversationID *int                     `json:"conversation_id"`
-	Temperature    *float64                 `json:"temperature"`
-	MaxTokens      *int                     `json:"max_tokens"`
-	ContextWindow  *int                     `json:"context_window"`
-	Stream         bool                     `json:"stream"`
-	WhiteLabelBody []byte                   `json:"-"`
+	Model            string                   `json:"model" binding:"required"`
+	Messages         []map[string]interface{} `json:"messages" binding:"required"`
+	ConversationGUID *string                  `json:"conversation_guid"`
+	Temperature      *float64                 `json:"temperature"`
+	MaxTokens        *int                     `json:"max_tokens"`
+	ContextWindow    *int                     `json:"context_window"`
+	Stream           bool                     `json:"stream"`
+	WhiteLabelBody   []byte                   `json:"-"`
 }
 
 func (b platformChatBody) toParams() service.ChatParams {
 	return service.ChatParams{
-		Model:          b.Model,
-		Messages:       b.Messages,
-		ConversationID: b.ConversationID,
-		Temperature:    b.Temperature,
-		MaxTokens:      b.MaxTokens,
-		ContextWindow:  b.ContextWindow,
-		WhiteLabelBody: b.WhiteLabelBody,
+		Model:            b.Model,
+		Messages:         b.Messages,
+		ConversationGUID: b.ConversationGUID,
+		Temperature:      b.Temperature,
+		MaxTokens:        b.MaxTokens,
+		ContextWindow:    b.ContextWindow,
+		WhiteLabelBody:   b.WhiteLabelBody,
 	}
 }
 
 type platformCompareBody struct {
-	Models         []string                 `json:"models" binding:"required"`
-	Messages       []map[string]interface{} `json:"messages" binding:"required"`
-	ConversationID *int                     `json:"conversation_id"`
-	Temperature    *float64                 `json:"temperature"`
-	MaxTokens      *int                     `json:"max_tokens"`
-	ContextWindow  *int                     `json:"context_window"`
-	Stream         bool                     `json:"stream"`
-	WhiteLabelBody []byte                   `json:"-"`
+	Models           []string                 `json:"models" binding:"required"`
+	Messages         []map[string]interface{} `json:"messages" binding:"required"`
+	ConversationGUID *string                  `json:"conversation_guid"`
+	Temperature      *float64                 `json:"temperature"`
+	MaxTokens        *int                     `json:"max_tokens"`
+	ContextWindow    *int                     `json:"context_window"`
+	Stream           bool                     `json:"stream"`
+	WhiteLabelBody   []byte                   `json:"-"`
 }
 
 func (b platformCompareBody) toParams() service.ChatParams {
 	return service.ChatParams{
-		Messages:       b.Messages,
-		ConversationID: b.ConversationID,
-		Temperature:    b.Temperature,
-		MaxTokens:      b.MaxTokens,
-		ContextWindow:  b.ContextWindow,
-		WhiteLabelBody: b.WhiteLabelBody,
+		Messages:         b.Messages,
+		ConversationGUID: b.ConversationGUID,
+		Temperature:      b.Temperature,
+		MaxTokens:        b.MaxTokens,
+		ContextWindow:    b.ContextWindow,
+		WhiteLabelBody:   b.WhiteLabelBody,
 	}
 }

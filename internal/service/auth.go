@@ -32,7 +32,7 @@ func (a *AuthService) Register(phone, code, password string, nickname *string) (
 		return nil, "", errBadRequest("验证码无效或已过期")
 	}
 	var existing models.User
-	if err := a.db.Where("phone = ?", phone).First(&existing).Error; err == nil {
+	if err := a.db.Where("phone = ? AND is_deleted = 0", phone).First(&existing).Error; err == nil {
 		return nil, "", errConflict("手机号已注册")
 	}
 	hash, _ := security.HashPassword(password)
@@ -46,6 +46,7 @@ func (a *AuthService) Register(phone, code, password string, nickname *string) (
 		Nickname:     &nick,
 		PlanType:     models.PlanFree,
 		Status:       models.UserStatusActive,
+		AuditFields:  auditFields(nil),
 	}
 	if err := a.db.Create(&user).Error; err != nil {
 		return nil, "", err
@@ -72,7 +73,7 @@ func (a *AuthService) LoginPassword(phone, password string) (*models.User, strin
 	}
 
 	var user models.User
-	if err := a.db.Where("phone = ?", phone).First(&user).Error; err != nil {
+	if err := a.db.Where("phone = ? AND is_deleted = 0", phone).First(&user).Error; err != nil {
 		return nil, "", errUnauthorized("手机号或密码错误")
 	}
 	if user.PasswordHash == nil || !security.VerifyPassword(password, *user.PasswordHash) {
@@ -90,14 +91,15 @@ func (a *AuthService) LoginCode(phone, code string) (*models.User, string, error
 		return nil, "", errBadRequest("验证码无效或已过期")
 	}
 	var user models.User
-	err := a.db.Where("phone = ?", phone).First(&user).Error
+	err := a.db.Where("phone = ? AND is_deleted = 0", phone).First(&user).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		nick := fmt.Sprintf("用户%s", phone[len(phone)-4:])
 		user = models.User{
-			Phone:    phone,
-			Nickname: &nick,
-			PlanType: models.PlanFree,
-			Status:   models.UserStatusActive,
+			Phone:       phone,
+			Nickname:    &nick,
+			PlanType:    models.PlanFree,
+			Status:      models.UserStatusActive,
+			AuditFields: auditFields(nil),
 		}
 		if err := a.db.Create(&user).Error; err != nil {
 			return nil, "", err
@@ -114,7 +116,7 @@ func (a *AuthService) LoginCode(phone, code string) (*models.User, string, error
 
 func (a *AuthService) getOrCreateFixedUser(phone string) (*models.User, error) {
 	var user models.User
-	err := a.db.Where("phone = ?", phone).First(&user).Error
+	err := a.db.Where("phone = ? AND is_deleted = 0", phone).First(&user).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		hash, _ := security.HashPassword(a.settings.FixedLoginPassword)
 		nick := "测试用户"
@@ -124,6 +126,7 @@ func (a *AuthService) getOrCreateFixedUser(phone string) (*models.User, error) {
 			Nickname:     &nick,
 			PlanType:     models.PlanFree,
 			Status:       models.UserStatusActive,
+			AuditFields:  auditFields(nil),
 		}
 		return &user, a.db.Create(&user).Error
 	}
@@ -133,14 +136,17 @@ func (a *AuthService) getOrCreateFixedUser(phone string) (*models.User, error) {
 	if user.PasswordHash == nil {
 		hash, _ := security.HashPassword(a.settings.FixedLoginPassword)
 		user.PasswordHash = &hash
-		_ = a.db.Save(&user).Error
+		stampSystemUpdate(&user.AuditFields)
+		if err := a.db.Save(&user).Error; err != nil {
+			return nil, err
+		}
 	}
 	return &user, nil
 }
 
 func (a *AuthService) makeToken(user *models.User) (string, error) {
-	return security.CreateAccessToken(strconv.FormatUint(uint64(user.ID), 10), a.settings.JWTSecretKey, a.settings.JWTExpireMinutes, map[string]interface{}{
-		"plan": string(user.PlanType),
+	return security.CreateAccessToken(strconv.FormatInt(user.Guid, 10), a.settings.JWTSecretKey, a.settings.JWTExpireMinutes, map[string]interface{}{
+		"plan": user.PlanType.String(),
 	})
 }
 
@@ -157,9 +163,9 @@ func ensureActive(user *models.User) error {
 }
 
 type SMSService struct {
-	settings *config.Settings
-	mu       sync.Mutex
-	codes    map[string]codeEntry
+	settings  *config.Settings
+	mu        sync.Mutex
+	codes     map[string]codeEntry
 	sendPhone map[string]windowCount
 	sendIP    map[string]windowCount
 }

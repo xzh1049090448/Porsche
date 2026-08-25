@@ -6,14 +6,17 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/porsche/ai-gateway-go/internal/app"
 	"github.com/porsche/ai-gateway-go/internal/config"
 	"github.com/porsche/ai-gateway-go/internal/db"
 	"github.com/porsche/ai-gateway-go/internal/models"
+	"github.com/porsche/ai-gateway-go/internal/persistence"
 	"github.com/porsche/ai-gateway-go/internal/router"
 	"github.com/porsche/ai-gateway-go/internal/security"
 	"github.com/porsche/ai-gateway-go/internal/service"
@@ -23,7 +26,7 @@ import (
 func TestHealthOK(t *testing.T) {
 	settings := &config.Settings{
 		AppEnv:             "development",
-		DatabaseURL:        "mysql://test:test@localhost:3306/platform",
+		DatabaseURL:        testDatabaseURL(t),
 		AllowedHosts:       "example.com",
 		JWTSecretKey:       "test-secret",
 		AdminToken:         "admin-test",
@@ -85,7 +88,7 @@ func TestHostAllowlistAcceptsDomainAndRejectsDirectIPAddress(t *testing.T) {
 
 func TestGatewayModelsAreFilteredByDatabaseToken(t *testing.T) {
 	state := newGatewayTestState(t)
-	user := models.User{Phone: "13900139000", Status: models.UserStatusActive}
+	user := gatewayTestUserFixture("13900139000")
 	if err := state.DB.Create(&user).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -119,7 +122,7 @@ func TestGatewayModelsAreFilteredByDatabaseToken(t *testing.T) {
 
 func TestGatewayRejectsTokenModelBeforeUpstream(t *testing.T) {
 	state := newGatewayTestState(t)
-	user := models.User{Phone: "13900139001", Status: models.UserStatusActive}
+	user := gatewayTestUserFixture("13900139001")
 	if err := state.DB.Create(&user).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -152,7 +155,7 @@ func TestGatewayRejectsTokenModelBeforeUpstream(t *testing.T) {
 func TestGatewayRejectsSpoofedForwardedIPFromUntrustedPeer(t *testing.T) {
 	state := newGatewayTestState(t)
 	state.Settings.TrustProxyHeaders = true
-	user := models.User{Phone: "13900139002", Status: models.UserStatusActive}
+	user := gatewayTestUserFixture("13900139002")
 	if err := state.DB.Create(&user).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -201,17 +204,17 @@ func TestGatewayTokenJWTCRUDScopesOwnerAndNeverReturnsPlaintextAgain(t *testing.
 		t.Fatalf("create status=%d body=%s", created.Code, created.Body.String())
 	}
 	var response struct {
-		ID    int    `json:"id"`
+		GUID  string `json:"guid"`
 		Token string `json:"token"`
 	}
 	if err := json.Unmarshal(created.Body.Bytes(), &response); err != nil {
 		t.Fatal(err)
 	}
-	if response.ID == 0 || response.Token == "" || response.Token[:6] != "sk-gw-" {
+	if response.GUID == "" || response.Token == "" || response.Token[:6] != "sk-gw-" || bytes.Contains(created.Body.Bytes(), []byte(`"id"`)) {
 		t.Fatalf("unexpected create response: %#v", response)
 	}
 	var stored models.GatewayAPIToken
-	if err := state.DB.First(&stored, response.ID).Error; err != nil {
+	if err := state.DB.Where("guid = ?", response.GUID).First(&stored).Error; err != nil {
 		t.Fatal(err)
 	}
 	if stored.TokenHash == "" || stored.TokenHash == response.Token || created.Body.String() == stored.TokenHash {
@@ -226,14 +229,14 @@ func TestGatewayTokenJWTCRUDScopesOwnerAndNeverReturnsPlaintextAgain(t *testing.
 		t.Fatalf("list should omit plaintext token: status=%d body=%s", listed.Code, listed.Body.String())
 	}
 
-	foreignGet := httptest.NewRequest(http.MethodGet, "/api/v1/tokens/"+strconv.Itoa(response.ID), nil)
+	foreignGet := httptest.NewRequest(http.MethodGet, "/api/v1/tokens/"+response.GUID, nil)
 	foreignGet.Header.Set("Authorization", "Bearer "+gatewayTestJWT(t, state, other))
 	foreignRec := httptest.NewRecorder()
 	engine.ServeHTTP(foreignRec, foreignGet)
 	if foreignRec.Code != http.StatusNotFound {
 		t.Fatalf("cross-user token read status=%d body=%s", foreignRec.Code, foreignRec.Body.String())
 	}
-	foreignRevoke := httptest.NewRequest(http.MethodPost, "/api/v1/tokens/"+strconv.Itoa(response.ID)+"/revoke", nil)
+	foreignRevoke := httptest.NewRequest(http.MethodPost, "/api/v1/tokens/"+response.GUID+"/revoke", nil)
 	foreignRevoke.Header.Set("Authorization", "Bearer "+gatewayTestJWT(t, state, other))
 	foreignRevokeRec := httptest.NewRecorder()
 	engine.ServeHTTP(foreignRevokeRec, foreignRevoke)
@@ -241,7 +244,7 @@ func TestGatewayTokenJWTCRUDScopesOwnerAndNeverReturnsPlaintextAgain(t *testing.
 		t.Fatalf("cross-user token revoke status=%d body=%s", foreignRevokeRec.Code, foreignRevokeRec.Body.String())
 	}
 
-	revoke := httptest.NewRequest(http.MethodPost, "/api/v1/tokens/"+strconv.Itoa(response.ID)+"/revoke", nil)
+	revoke := httptest.NewRequest(http.MethodPost, "/api/v1/tokens/"+response.GUID+"/revoke", nil)
 	revoke.Header.Set("Authorization", "Bearer "+gatewayTestJWT(t, state, owner))
 	revoked := httptest.NewRecorder()
 	engine.ServeHTTP(revoked, revoke)
@@ -312,16 +315,29 @@ func TestGatewayErrorDoesNotEchoSecretAndSanitizesRequestID(t *testing.T) {
 
 func createGatewayTestUser(t *testing.T, state *app.State, phone string) *models.User {
 	t.Helper()
-	user := &models.User{Phone: phone, Status: models.UserStatusActive}
-	if err := state.DB.Create(user).Error; err != nil {
+	user := gatewayTestUserFixture(phone)
+	if err := state.DB.Create(&user).Error; err != nil {
 		t.Fatal(err)
 	}
-	return user
+	return &user
+}
+
+var gatewayTestSnowflake = persistence.NewSnowflake(os.Getpid()%1024, persistence.SystemClock())
+
+func gatewayTestUserFixture(phone string) models.User {
+	now := time.Now().UTC().UnixMilli()
+	return models.User{
+		AuditFields:   models.AuditFields{Guid: gatewayTestSnowflake.Next(), CreatedAt: now, UpdatedAt: now, IsDeleted: 0},
+		Phone:         phone,
+		Status:        models.UserStatusActive,
+		PlanType:      models.PlanFree,
+		AllowedModels: models.JSONSlice{},
+	}
 }
 
 func gatewayTestJWT(t *testing.T, state *app.State, user *models.User) string {
 	t.Helper()
-	token, err := security.CreateAccessToken(strconv.Itoa(user.ID), state.Settings.JWTSecretKey, 10, nil)
+	token, err := security.CreateAccessToken(strconv.FormatInt(user.Guid, 10), state.Settings.JWTSecretKey, 10, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -331,7 +347,7 @@ func gatewayTestJWT(t *testing.T, state *app.State, user *models.User) string {
 func newGatewayTestState(t *testing.T) *app.State {
 	t.Helper()
 	settings := &config.Settings{
-		AppEnv: "test", DatabaseURL: "mysql://test:test@localhost:3306/platform", AllowedHosts: "example.com",
+		AppEnv: "test", DatabaseURL: testDatabaseURL(t), AllowedHosts: "example.com",
 		JWTSecretKey: "test-secret", AdminToken: "admin-test",
 	}
 	gdb, err := db.Open(settings.DatabaseURL, "test")
@@ -356,6 +372,15 @@ func newGatewayTestState(t *testing.T) *app.State {
 	}
 	state.WhiteLabel = whiteLabel
 	return state
+}
+
+func testDatabaseURL(t *testing.T) string {
+	t.Helper()
+	url := os.Getenv("TEST_DATABASE_URL")
+	if url == "" {
+		t.Skip("requires isolated TEST_DATABASE_URL MySQL fixture")
+	}
+	return url
 }
 
 type roundTripFunc func(*http.Request) (*http.Response, error)

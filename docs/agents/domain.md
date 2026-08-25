@@ -18,9 +18,8 @@
 | 概念 | 含义 | 主要位置 |
 | --- | --- | --- |
 | 用户（User） | 通过手机号认证的账户，拥有套餐、状态、模型授权和用量。 | `internal/models/models.go`、`internal/service/auth.go` |
-| 对话（Conversation） | 用户与模型的会话容器，包含标题、默认模型、数据集选择与消息历史。 | `internal/service/conversation.go` |
-| 消息（Message） | 对话中的用户或助手内容；助手消息记录模型、token 与数据集归因。 | `internal/models/models.go` |
-| 数据集（Dataset） | 用户拥有的知识库子集；启用后由 RAG 生成带上下文的模型请求。 | `internal/rag/`、`internal/service/platform_chat.go` |
+| 对话（Conversation） | 用户与模型的会话容器，包含标题、默认模型与消息历史。 | `internal/service/conversation.go` |
+| 消息（Message） | 对话中的用户或助手内容；助手消息记录模型与 token。 | `internal/models/models.go` |
 | 白牌模型目录（White-label Catalog） | JieKou 上游目录与服务 allowlist、用户或网关令牌 ACL 的交集。 | `internal/whitelabel/` |
 | 网关令牌（Gateway Token） | 调用 OpenAI 兼容网关的数据库令牌，包含模型权限、IP 白名单和失效状态。 | `internal/models/`、`internal/service/gateway_token.go` |
 | 平台对话 | 面向已登录用户的 `/api/v1/platform/*` 对话与多模型比较接口。 | `internal/service/platform_chat.go` |
@@ -37,14 +36,13 @@ internal/service/ 业务规则、持久化编排和权限检查
 internal/whitelabel/固定上游请求、目录缓存、响应投影与流式转发
 internal/models/  GORM 实体与枚举
 internal/db/      数据库连接与迁移
-internal/rag/     数据集检索与上下文构建
 ```
 
 跨层修改应保持该边界：Handler 不承载业务规则；Service 不直接依赖 HTTP 上下文；WhiteLabel 只处理上游协议、目录与安全投影。
 
 ## 数据与兼容性
 
-- 生产环境可复用既有 MySQL 的 `DATABASE_URL`，包括 `mysql+aiomysql://...` 格式。
-- 数据库中可能保留 Python 服务写入的枚举名称，例如 `ACTIVE`；读取逻辑必须兼容该历史格式。
+- 仅支持 MySQL 8 的全新 schema；`DATABASE_URL` 可使用 `mysql://...` 或 `mysql+aiomysql://...` 格式。
+- 所有业务资源的 HTTP 标识均使用字符串形式的雪花 `guid`；内部 `id` 仅用于关联。
 - 不得通过 `docker compose down -v` 或 `docker volume rm` 清理环境，以免删除 MySQL 命名卷。
 - 调整 API 时优先保持既有路径与 JSON 契约；有意的不兼容变更应在 README 或未来 ADR 中记录。

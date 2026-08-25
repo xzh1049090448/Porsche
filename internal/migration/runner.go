@@ -60,49 +60,54 @@ func Up(ctx context.Context, db *gorm.DB, nextGUID func() int64, nowMillis func(
 	if db == nil || nextGUID == nil || nowMillis == nil {
 		return fmt.Errorf("migration runner requires database, GUID generator, and clock")
 	}
-	var lockAcquired int
-	if err := db.WithContext(ctx).Raw("SELECT GET_LOCK('porsche_schema_migrations', 30)").Scan(&lockAcquired).Error; err != nil {
-		return fmt.Errorf("acquire migration lock: %w", err)
-	}
-	if lockAcquired != 1 {
-		return fmt.Errorf("acquire migration lock: lock not acquired")
-	}
-	defer db.WithContext(context.Background()).Exec("SELECT RELEASE_LOCK('porsche_schema_migrations')") //nolint:errcheck
+	// GET_LOCK is connection-scoped in MySQL. Connection pins every operation
+	// through release to one physical connection, preventing a pool checkout
+	// from silently losing the advisory lock between statements.
+	return db.WithContext(ctx).Connection(func(conn *gorm.DB) error {
+		var lockAcquired int
+		if err := conn.Raw("SELECT GET_LOCK('porsche_schema_migrations', 30)").Scan(&lockAcquired).Error; err != nil {
+			return fmt.Errorf("acquire migration lock: %w", err)
+		}
+		if lockAcquired != 1 {
+			return fmt.Errorf("acquire migration lock: lock not acquired")
+		}
+		defer conn.WithContext(context.Background()).Exec("SELECT RELEASE_LOCK('porsche_schema_migrations')") //nolint:errcheck
 
-	if err := db.WithContext(ctx).Exec(createLedgerSQL).Error; err != nil {
-		return fmt.Errorf("create migration ledger: %w", err)
-	}
-	migrations, err := All()
-	if err != nil {
-		return err
-	}
-	for _, migration := range migrations {
-		checksum := fmt.Sprintf("%x", sha256.Sum256(migration.UpSQL))
-		var applied AppliedMigration
-		err := db.WithContext(ctx).Raw("SELECT version, checksum FROM schema_migrations WHERE version = ? AND is_deleted = 0", migration.Version).Scan(&applied).Error
+		if err := conn.Exec(createLedgerSQL).Error; err != nil {
+			return fmt.Errorf("create migration ledger: %w", err)
+		}
+		migrations, err := All()
 		if err != nil {
-			return fmt.Errorf("read migration %s: %w", migration.Version, err)
+			return err
 		}
-		if applied.Version != "" {
-			if applied.Checksum != checksum {
-				return fmt.Errorf("migration %s checksum mismatch", migration.Version)
+		for _, migration := range migrations {
+			checksum := fmt.Sprintf("%x", sha256.Sum256(migration.UpSQL))
+			var applied AppliedMigration
+			err := conn.Raw("SELECT version, checksum FROM schema_migrations WHERE version = ? AND is_deleted = 0", migration.Version).Scan(&applied).Error
+			if err != nil {
+				return fmt.Errorf("read migration %s: %w", migration.Version, err)
 			}
-			continue
-		}
-		for _, statement := range splitStatements(string(migration.UpSQL)) {
-			if err := db.WithContext(ctx).Exec(statement).Error; err != nil {
-				return fmt.Errorf("apply migration %s: %w", migration.Version, err)
+			if applied.Version != "" {
+				if applied.Checksum != checksum {
+					return fmt.Errorf("migration %s checksum mismatch", migration.Version)
+				}
+				continue
+			}
+			for _, statement := range splitStatements(string(migration.UpSQL)) {
+				if err := conn.Exec(statement).Error; err != nil {
+					return fmt.Errorf("apply migration %s: %w", migration.Version, err)
+				}
+			}
+			now := nowMillis()
+			if err := conn.Exec(
+				"INSERT INTO schema_migrations (guid, version, checksum, created_at, updated_at, is_deleted) VALUES (?, ?, ?, ?, ?, 0)",
+				nextGUID(), migration.Version, checksum, now, now,
+			).Error; err != nil {
+				return fmt.Errorf("record migration %s: %w", migration.Version, err)
 			}
 		}
-		now := nowMillis()
-		if err := db.WithContext(ctx).Exec(
-			"INSERT INTO schema_migrations (guid, version, checksum, created_at, updated_at, is_deleted) VALUES (?, ?, ?, ?, ?, 0)",
-			nextGUID(), migration.Version, checksum, now, now,
-		).Error; err != nil {
-			return fmt.Errorf("record migration %s: %w", migration.Version, err)
-		}
-	}
-	return nil
+		return nil
+	})
 }
 
 // Status returns the applied migration ledger without changing database state.
@@ -115,6 +120,49 @@ func Status(ctx context.Context, db *gorm.DB) ([]AppliedMigration, error) {
 		return nil, err
 	}
 	return status, nil
+}
+
+// Verify checks that every embedded migration is present exactly once with its
+// immutable checksum. The server uses this fail-closed check before serving
+// requests; applying migrations remains an explicit deploy operation.
+func Verify(ctx context.Context, db *gorm.DB) error {
+	if db == nil {
+		return fmt.Errorf("migration runner requires database")
+	}
+	status, err := Status(ctx, db)
+	if err != nil {
+		return fmt.Errorf("read migration status: %w", err)
+	}
+	migrations, err := All()
+	if err != nil {
+		return err
+	}
+	return VerifyApplied(migrations, status)
+}
+
+// VerifyApplied is the side-effect-free portion of Verify, kept separate so
+// checksum and completeness behavior can be unit-tested without a database.
+func VerifyApplied(migrations []Migration, applied []AppliedMigration) error {
+	if len(applied) != len(migrations) {
+		return fmt.Errorf("database schema is not fully migrated")
+	}
+	byVersion := make(map[string]string, len(applied))
+	for _, entry := range applied {
+		if entry.Version == "" || entry.Checksum == "" {
+			return fmt.Errorf("database schema has invalid migration ledger")
+		}
+		if _, duplicate := byVersion[entry.Version]; duplicate {
+			return fmt.Errorf("database schema has duplicate migration version")
+		}
+		byVersion[entry.Version] = entry.Checksum
+	}
+	for _, migration := range migrations {
+		checksum := fmt.Sprintf("%x", sha256.Sum256(migration.UpSQL))
+		if byVersion[migration.Version] != checksum {
+			return fmt.Errorf("migration %s checksum mismatch or missing", migration.Version)
+		}
+	}
+	return nil
 }
 
 func splitStatements(sql string) []string {

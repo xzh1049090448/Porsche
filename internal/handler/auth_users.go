@@ -2,6 +2,7 @@ package handler
 
 import (
 	"net/http"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
 	"github.com/porsche/ai-gateway-go/internal/app"
@@ -73,8 +74,8 @@ func RegisterAuth(r *gin.Engine, state *app.State) {
 		c.JSON(http.StatusOK, gin.H{
 			"access_token": token,
 			"token_type":   "bearer",
-			"user_id":      user.ID,
-			"plan_type":    string(user.PlanType),
+			"user_guid":    strconv.FormatInt(user.Guid, 10),
+			"plan_type":    user.PlanType.String(),
 		})
 	})
 
@@ -98,8 +99,8 @@ func RegisterAuth(r *gin.Engine, state *app.State) {
 		c.JSON(http.StatusOK, gin.H{
 			"access_token": token,
 			"token_type":   "bearer",
-			"user_id":      user.ID,
-			"plan_type":    string(user.PlanType),
+			"user_guid":    strconv.FormatInt(user.Guid, 10),
+			"plan_type":    user.PlanType.String(),
 		})
 	})
 
@@ -126,8 +127,8 @@ func RegisterAuth(r *gin.Engine, state *app.State) {
 		c.JSON(http.StatusOK, gin.H{
 			"access_token": token,
 			"token_type":   "bearer",
-			"user_id":      user.ID,
-			"plan_type":    string(user.PlanType),
+			"user_guid":    strconv.FormatInt(user.Guid, 10),
+			"plan_type":    user.PlanType.String(),
 		})
 	})
 }
@@ -146,7 +147,11 @@ func RegisterUsers(r *gin.Engine, state *app.State) {
 		_ = c.ShouldBindJSON(&body)
 		if body.Nickname != nil {
 			user.Nickname = body.Nickname
-			_ = state.DB.Save(user).Error
+			service.TouchAudit(&user.AuditFields, user.ID)
+			if err := state.DB.Save(user).Error; err != nil {
+				httpx.AbortJSON(c, http.StatusInternalServerError, "更新用户失败")
+				return
+			}
 		}
 		c.JSON(http.StatusOK, dto.UserProfile(user))
 	})
@@ -166,7 +171,11 @@ func RegisterUsers(r *gin.Engine, state *app.State) {
 		}
 		hash, _ := serviceHashPassword(body.NewPassword)
 		user.PasswordHash = &hash
-		_ = state.DB.Save(user).Error
+		service.TouchAudit(&user.AuditFields, user.ID)
+		if err := state.DB.Save(user).Error; err != nil {
+			httpx.AbortJSON(c, http.StatusInternalServerError, "更新密码失败")
+			return
+		}
 		c.JSON(http.StatusOK, gin.H{"message": "密码修改成功"})
 	})
 	g.POST("/me/verify", func(c *gin.Context) {
@@ -191,7 +200,11 @@ func RegisterUsers(r *gin.Engine, state *app.State) {
 		hash := service.HashIDCard(body.IDCard)
 		user.IDCardHash = &hash
 		user.IsVerified = true
-		_ = state.DB.Save(user).Error
+		service.TouchAudit(&user.AuditFields, user.ID)
+		if err := state.DB.Save(user).Error; err != nil {
+			httpx.AbortJSON(c, http.StatusInternalServerError, "更新认证信息失败")
+			return
+		}
 		c.JSON(http.StatusOK, gin.H{"message": "实名认证成功", "is_verified": true})
 	})
 	g.GET("/me/usage", func(c *gin.Context) {

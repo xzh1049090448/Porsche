@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/porsche/ai-gateway-go/internal/config"
+	"github.com/porsche/ai-gateway-go/internal/persistence"
 	"github.com/porsche/ai-gateway-go/internal/service"
 	"github.com/porsche/ai-gateway-go/internal/whitelabel"
 	"gorm.io/gorm"
@@ -23,6 +24,7 @@ type State struct {
 }
 
 func NewState(settings *config.Settings, db *gorm.DB) (*State, error) {
+	persistence.ConfigureSnowflake(settings.SnowflakeNodeID)
 	s := &State{
 		Settings: settings,
 		DB:       db,

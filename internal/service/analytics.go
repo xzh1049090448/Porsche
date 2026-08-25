@@ -15,20 +15,20 @@ import (
 
 // AnalyticsFilters limits analytics queries to a UTC half-open interval and optional models/user.
 type AnalyticsFilters struct {
-	StartAt     time.Time
-	EndAt       time.Time
-	RangeLabel  string
-	Granularity string
-	Metric      string
-	TopN        int
-	Models      []string
-	UserID      int
+	StartAtMillis int64
+	EndAtMillis   int64
+	RangeLabel    string
+	Granularity   string
+	Metric        string
+	TopN          int
+	Models        []string
+	UserGUID      int64
 }
 type analyticsUsage struct {
-	UserID    int
+	UserID    int64
 	Model     string
 	Tokens    int64
-	CreatedAt time.Time
+	CreatedAt int64
 }
 type analyticsItem struct {
 	Key, Label    string
@@ -42,7 +42,7 @@ func AnalyticsSummary(db *gorm.DB, settings *config.Settings, f AnalyticsFilters
 	for _, r := range rows {
 		tokens += r.Tokens
 	}
-	return map[string]interface{}{"total_tokens": tokens, "total_cost": analyticsCost(settings, tokens), "total_calls": int64(len(rows)), "range_label": f.RangeLabel, "start_at": f.StartAt.UTC().Format(time.RFC3339Nano), "end_at": f.EndAt.UTC().Format(time.RFC3339Nano), "updated_at": time.Now().UTC().Format(time.RFC3339Nano)}
+	return map[string]interface{}{"total_tokens": tokens, "total_cost": analyticsCost(settings, tokens), "total_calls": int64(len(rows)), "range_label": f.RangeLabel, "start_at": formatAnalyticsMillis(f.StartAtMillis), "end_at": formatAnalyticsMillis(f.EndAtMillis), "updated_at": time.Now().UTC().Format(time.RFC3339Nano)}
 }
 
 func AnalyticsModels(db *gorm.DB, f AnalyticsFilters) map[string]interface{} {
@@ -58,7 +58,7 @@ func AnalyticsModels(db *gorm.DB, f AnalyticsFilters) map[string]interface{} {
 // AnalyticsChart returns data shaped for the six approved billing dashboard views.
 func AnalyticsChart(db *gorm.DB, settings *config.Settings, view string, f AnalyticsFilters) map[string]interface{} {
 	rows := analyticsUsageRows(db, f)
-	chart := map[string]interface{}{"view": view, "metric": f.Metric, "granularity": f.Granularity, "start_at": f.StartAt.UTC().Format(time.RFC3339Nano), "end_at": f.EndAt.UTC().Format(time.RFC3339Nano), "time_labels": analyticsTimeLabels(f), "series": []map[string]interface{}{}, "ranking": []map[string]interface{}{}}
+	chart := map[string]interface{}{"view": view, "metric": f.Metric, "granularity": f.Granularity, "start_at": formatAnalyticsMillis(f.StartAtMillis), "end_at": formatAnalyticsMillis(f.EndAtMillis), "time_labels": analyticsTimeLabels(f), "series": []map[string]interface{}{}, "ranking": []map[string]interface{}{}}
 	switch view {
 	case "consumption_distribution":
 		chart["series"] = modelBucketSeries(rows, settings, f)
@@ -76,20 +76,23 @@ func AnalyticsChart(db *gorm.DB, settings *config.Settings, view string, f Analy
 
 func analyticsUsageRows(db *gorm.DB, f AnalyticsFilters) []analyticsUsage {
 	var rows []analyticsUsage
-	q := db.Model(&models.UsageRecord{}).Select("user_id, model, tokens, created_at").Where("created_at >= ? AND created_at < ? AND model IS NOT NULL AND TRIM(model) <> ''", f.StartAt.UTC(), f.EndAt.UTC())
+	q := db.Model(&models.UsageRecord{}).
+		Select("usage_records.user_id, usage_records.model, usage_records.tokens, usage_records.created_at").
+		Joins("JOIN users ON users.id = usage_records.user_id AND users.is_deleted = 0").
+		Where("usage_records.is_deleted = 0 AND usage_records.created_at >= ? AND usage_records.created_at < ? AND usage_records.model IS NOT NULL AND TRIM(usage_records.model) <> ''", f.StartAtMillis, f.EndAtMillis)
 	if len(f.Models) > 0 {
 		q = q.Where("model IN ?", f.Models)
 	}
-	if f.UserID > 0 {
-		q = q.Where("user_id = ?", f.UserID)
+	if f.UserGUID > 0 {
+		q = q.Where("users.guid = ?", f.UserGUID)
 	}
-	q.Order("created_at asc, id asc").Scan(&rows)
+	q.Order("usage_records.created_at asc, usage_records.id asc").Scan(&rows)
 	return rows
 }
 
 func analyticsTimeLabels(f AnalyticsFilters) []string {
 	d := analyticsBucketDuration(f.Granularity)
-	start, end := f.StartAt.UTC().Truncate(d), f.EndAt.UTC()
+	start, end := time.UnixMilli(f.StartAtMillis).UTC().Truncate(d), time.UnixMilli(f.EndAtMillis).UTC()
 	labels := []string{}
 	for current := start; current.Before(end); current = current.Add(d) {
 		labels = append(labels, current.Format(time.RFC3339))
@@ -112,7 +115,7 @@ func analyticsBucketDuration(value string) time.Duration {
 func modelBucketSeries(rows []analyticsUsage, settings *config.Settings, f AnalyticsFilters) []map[string]interface{} {
 	labels, byModel := analyticsTimeLabels(f), map[string]map[string]*analyticsItem{}
 	for _, r := range rows {
-		bucket := r.CreatedAt.UTC().Truncate(analyticsBucketDuration(f.Granularity)).Format(time.RFC3339)
+		bucket := analyticsBucketLabel(r.CreatedAt, f.Granularity)
 		if byModel[r.Model] == nil {
 			byModel[r.Model] = map[string]*analyticsItem{}
 		}
@@ -145,7 +148,7 @@ func modelBucketSeries(rows []analyticsUsage, settings *config.Settings, f Analy
 func totalCallBucketSeries(rows []analyticsUsage, settings *config.Settings, f AnalyticsFilters) []map[string]interface{} {
 	labels, points := analyticsTimeLabels(f), map[string]*analyticsItem{}
 	for _, r := range rows {
-		bucket := r.CreatedAt.UTC().Truncate(analyticsBucketDuration(f.Granularity)).Format(time.RFC3339)
+		bucket := analyticsBucketLabel(r.CreatedAt, f.Granularity)
 		if points[bucket] == nil {
 			points[bucket] = &analyticsItem{}
 		}
@@ -178,9 +181,9 @@ func aggregateModelItems(rows []analyticsUsage, settings *config.Settings) []ana
 	return finalizeItems(byKey, settings)
 }
 func aggregateUserItems(db *gorm.DB, rows []analyticsUsage, settings *config.Settings) []analyticsItem {
-	byKey, seen, ids := map[string]*analyticsItem{}, map[int]bool{}, []int{}
+	byKey, seen, ids := map[string]*analyticsItem{}, map[int64]bool{}, []int64{}
 	for _, r := range rows {
-		key := strconv.Itoa(r.UserID)
+		key := strconv.FormatInt(r.UserID, 10)
 		if byKey[key] == nil {
 			byKey[key] = &analyticsItem{Key: key}
 			if !seen[r.UserID] {
@@ -192,15 +195,21 @@ func aggregateUserItems(db *gorm.DB, rows []analyticsUsage, settings *config.Set
 		byKey[key].Calls++
 	}
 	var users []struct {
-		ID       int
+		ID       int64
+		GUID     int64
 		Nickname *string
 	}
 	if len(ids) > 0 {
-		db.Model(&models.User{}).Select("id, nickname").Where("id IN ?", ids).Scan(&users)
+		db.Model(&models.User{}).Select("id, guid, nickname").Where("id IN ? AND is_deleted = 0", ids).Scan(&users)
 	}
 	for _, user := range users {
-		if item := byKey[strconv.Itoa(user.ID)]; item != nil && user.Nickname != nil && strings.TrimSpace(*user.Nickname) != "" {
-			item.Label = strings.TrimSpace(*user.Nickname)
+		if item := byKey[strconv.FormatInt(user.ID, 10)]; item != nil {
+			item.Key = strconv.FormatInt(user.GUID, 10)
+			if user.Nickname == nil || strings.TrimSpace(*user.Nickname) == "" {
+				item.Label = "用户 #" + item.Key
+			} else {
+				item.Label = strings.TrimSpace(*user.Nickname)
+			}
 		}
 	}
 	for _, item := range byKey {
@@ -209,6 +218,14 @@ func aggregateUserItems(db *gorm.DB, rows []analyticsUsage, settings *config.Set
 		}
 	}
 	return finalizeItems(byKey, settings)
+}
+
+func analyticsBucketLabel(millis int64, granularity string) string {
+	return time.UnixMilli(millis).UTC().Truncate(analyticsBucketDuration(granularity)).Format(time.RFC3339)
+}
+
+func formatAnalyticsMillis(millis int64) string {
+	return time.UnixMilli(millis).UTC().Format(time.RFC3339Nano)
 }
 func finalizeItems(byKey map[string]*analyticsItem, settings *config.Settings) []analyticsItem {
 	items := make([]analyticsItem, 0, len(byKey))

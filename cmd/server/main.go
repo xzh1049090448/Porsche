@@ -1,12 +1,14 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 
 	"github.com/porsche/ai-gateway-go/internal/app"
 	"github.com/porsche/ai-gateway-go/internal/config"
 	"github.com/porsche/ai-gateway-go/internal/db"
+	"github.com/porsche/ai-gateway-go/internal/migration"
 	"github.com/porsche/ai-gateway-go/internal/router"
 )
 
@@ -19,6 +21,9 @@ func main() {
 	gdb, err := db.Open(settings.DatabaseURL, settings.AppEnv)
 	if err != nil {
 		log.Fatalf("open db: %v", err)
+	}
+	if err := migration.Verify(context.Background(), gdb); err != nil {
+		log.Fatalf("verify database schema: %v", err)
 	}
 
 	state, err := app.NewState(settings, gdb)

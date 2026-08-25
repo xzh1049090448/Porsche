@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS users (
   updated_by BIGINT NULL,
   is_deleted INT NOT NULL DEFAULT 0,
   UNIQUE KEY uk_users_guid (guid),
-  UNIQUE KEY uk_users_phone_active (phone, is_deleted),
+  UNIQUE KEY uk_users_phone (phone),
   KEY idx_users_active_updated (is_deleted, updated_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -36,7 +36,8 @@ CREATE TABLE IF NOT EXISTS conversations (
   updated_by BIGINT NULL,
   is_deleted INT NOT NULL DEFAULT 0,
   UNIQUE KEY uk_conversations_guid (guid),
-  KEY idx_conversations_user_active_updated (user_id, is_deleted, updated_at)
+  KEY idx_conversations_user_active_updated (user_id, is_deleted, updated_at),
+  CONSTRAINT fk_conversations_user FOREIGN KEY (user_id) REFERENCES users(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS messages (
@@ -53,7 +54,8 @@ CREATE TABLE IF NOT EXISTS messages (
   updated_by BIGINT NULL,
   is_deleted INT NOT NULL DEFAULT 0,
   UNIQUE KEY uk_messages_guid (guid),
-  KEY idx_messages_conversation_active_created (conversation_id, is_deleted, created_at)
+  KEY idx_messages_conversation_active_created (conversation_id, is_deleted, created_at),
+  CONSTRAINT fk_messages_conversation FOREIGN KEY (conversation_id) REFERENCES conversations(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS usage_records (
@@ -69,7 +71,8 @@ CREATE TABLE IF NOT EXISTS usage_records (
   updated_by BIGINT NULL,
   is_deleted INT NOT NULL DEFAULT 0,
   UNIQUE KEY uk_usage_records_guid (guid),
-  KEY idx_usage_records_user_active_created (user_id, is_deleted, created_at)
+  KEY idx_usage_records_user_active_created (user_id, is_deleted, created_at),
+  CONSTRAINT fk_usage_records_user FOREIGN KEY (user_id) REFERENCES users(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS orders (
@@ -88,8 +91,9 @@ CREATE TABLE IF NOT EXISTS orders (
   updated_by BIGINT NULL,
   is_deleted INT NOT NULL DEFAULT 0,
   UNIQUE KEY uk_orders_guid (guid),
-  UNIQUE KEY uk_orders_order_no_active (order_no, is_deleted),
-  KEY idx_orders_user_active_created (user_id, is_deleted, created_at)
+  UNIQUE KEY uk_orders_order_no (order_no),
+  KEY idx_orders_user_active_created (user_id, is_deleted, created_at),
+  CONSTRAINT fk_orders_user FOREIGN KEY (user_id) REFERENCES users(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS audit_logs (
@@ -107,7 +111,8 @@ CREATE TABLE IF NOT EXISTS audit_logs (
   is_deleted INT NOT NULL DEFAULT 0,
   UNIQUE KEY uk_audit_logs_guid (guid),
   KEY idx_audit_logs_user_active_created (user_id, is_deleted, created_at),
-  KEY idx_audit_logs_action_active_created (action, is_deleted, created_at)
+  KEY idx_audit_logs_action_active_created (action, is_deleted, created_at),
+  CONSTRAINT fk_audit_logs_user FOREIGN KEY (user_id) REFERENCES users(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS model_health (
@@ -125,7 +130,7 @@ CREATE TABLE IF NOT EXISTS model_health (
   updated_by BIGINT NULL,
   is_deleted INT NOT NULL DEFAULT 0,
   UNIQUE KEY uk_model_health_guid (guid),
-  UNIQUE KEY uk_model_health_name_active (model_name, is_deleted),
+  UNIQUE KEY uk_model_health_name (model_name),
   KEY idx_model_health_active_updated (is_deleted, updated_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -151,5 +156,6 @@ CREATE TABLE IF NOT EXISTS gateway_api_tokens (
   KEY idx_gateway_api_tokens_user_active (user_id, is_deleted),
   KEY idx_gateway_api_tokens_prefix_active (token_prefix, is_deleted),
   KEY idx_gateway_api_tokens_status_active (status, is_deleted),
-  KEY idx_gateway_api_tokens_expiry_active (expires_at, is_deleted)
+  KEY idx_gateway_api_tokens_expiry_active (expires_at, is_deleted),
+  CONSTRAINT fk_gateway_api_tokens_user FOREIGN KEY (user_id) REFERENCES users(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

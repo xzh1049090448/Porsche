@@ -4,16 +4,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/porsche/ai-gateway-go/internal/db"
 	"github.com/porsche/ai-gateway-go/internal/models"
 )
 
 func TestGatewayTokenCreateAndAuthenticate(t *testing.T) {
-	gdb, err := db.Open("sqlite://"+t.TempDir()+"/gateway-token.db", "test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	user := models.User{Phone: "13800138001", Status: models.UserStatusActive}
+	gdb := openTestMySQL(t)
+	user := testUser("13800138001")
 	if err := gdb.Create(&user).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -43,11 +39,8 @@ func TestGatewayTokenCreateAndAuthenticate(t *testing.T) {
 }
 
 func TestGatewayTokenRejectsExpiredAndRevoked(t *testing.T) {
-	gdb, err := db.Open("sqlite://"+t.TempDir()+"/gateway-token.db", "test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	user := models.User{Phone: "13800138002", Status: models.UserStatusActive}
+	gdb := openTestMySQL(t)
+	user := testUser("13800138002")
 	if err := gdb.Create(&user).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -57,7 +50,7 @@ func TestGatewayTokenRejectsExpiredAndRevoked(t *testing.T) {
 		t.Fatal(err)
 	}
 	past := time.Now().Add(-time.Minute)
-	if err := gdb.Model(expired).Update("expires_at", past).Error; err != nil {
+	if err := gdb.Model(expired).Update("expires_at", past.UTC().UnixMilli()).Error; err != nil {
 		t.Fatal(err)
 	}
 	if _, err := svc.Authenticate(expiredSecret, "", "qwen-turbo", time.Now()); !IsGatewayTokenError(err, GatewayTokenExpired) {
@@ -76,11 +69,8 @@ func TestGatewayTokenRejectsExpiredAndRevoked(t *testing.T) {
 }
 
 func TestGatewayTokenRejectsDisabledOwner(t *testing.T) {
-	gdb, err := db.Open("sqlite://"+t.TempDir()+"/gateway-token.db", "test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	user := models.User{Phone: "13800138003", Status: models.UserStatusActive}
+	gdb := openTestMySQL(t)
+	user := testUser("13800138003")
 	if err := gdb.Create(&user).Error; err != nil {
 		t.Fatal(err)
 	}

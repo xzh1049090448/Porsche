@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/porsche/ai-gateway-go/internal/models"
+	"github.com/porsche/ai-gateway-go/internal/persistence"
 	"gorm.io/gorm"
 )
 
@@ -66,10 +67,15 @@ func (s *GatewayTokenService) Create(user *models.User, in GatewayTokenCreateInp
 	if err != nil {
 		return nil, "", err
 	}
+	var expiresAt *int64
+	if in.ExpiresAt != nil {
+		value := in.ExpiresAt.UTC().UnixMilli()
+		expiresAt = &value
+	}
 	token := &models.GatewayAPIToken{
 		UserID: user.ID, Name: name, TokenHash: gatewayTokenHash(secret),
 		TokenPrefix: tokenPrefix(secret), Status: models.GatewayTokenActive,
-		AllowedModels: normalizeStrings(in.AllowedModels), IPAllowlist: normalizeStrings(in.IPAllowlist), ExpiresAt: in.ExpiresAt,
+		AllowedModels: normalizeStrings(in.AllowedModels), IPAllowlist: normalizeStrings(in.IPAllowlist), ExpiresAt: expiresAt, AuditFields: auditFields(&user.ID),
 	}
 	if err := s.db.Create(token).Error; err != nil {
 		return nil, "", err
@@ -77,20 +83,20 @@ func (s *GatewayTokenService) Create(user *models.User, in GatewayTokenCreateInp
 	return token, secret, nil
 }
 
-func (s *GatewayTokenService) List(userID int) ([]models.GatewayAPIToken, error) {
+func (s *GatewayTokenService) List(userID int64) ([]models.GatewayAPIToken, error) {
 	var tokens []models.GatewayAPIToken
-	return tokens, s.db.Where("user_id = ?", userID).Order("created_at desc").Find(&tokens).Error
+	return tokens, s.db.Where("user_id = ? AND is_deleted = 0", userID).Order("created_at desc").Find(&tokens).Error
 }
 
-func (s *GatewayTokenService) Get(userID, id int) (*models.GatewayAPIToken, error) {
+func (s *GatewayTokenService) Get(userID, id int64) (*models.GatewayAPIToken, error) {
 	var token models.GatewayAPIToken
-	if err := s.db.Where("id = ? AND user_id = ?", id, userID).First(&token).Error; err != nil {
+	if err := s.db.Where("guid = ? AND user_id = ? AND is_deleted = 0", id, userID).First(&token).Error; err != nil {
 		return nil, err
 	}
 	return &token, nil
 }
 
-func (s *GatewayTokenService) Update(userID, id int, in GatewayTokenUpdateInput) (*models.GatewayAPIToken, error) {
+func (s *GatewayTokenService) Update(userID, id int64, in GatewayTokenUpdateInput) (*models.GatewayAPIToken, error) {
 	token, err := s.Get(userID, id)
 	if err != nil {
 		return nil, err
@@ -116,7 +122,11 @@ func (s *GatewayTokenService) Update(userID, id int, in GatewayTokenUpdateInput)
 		if *in.ExpiresAt != nil && !(*in.ExpiresAt).After(time.Now().UTC()) {
 			return nil, fmt.Errorf("token expiration must be in the future")
 		}
-		updates["expires_at"] = *in.ExpiresAt
+		if *in.ExpiresAt == nil {
+			updates["expires_at"] = nil
+		} else {
+			updates["expires_at"] = (*in.ExpiresAt).UTC().UnixMilli()
+		}
 	}
 	if in.Status != nil {
 		if *in.Status != models.GatewayTokenActive && *in.Status != models.GatewayTokenDisabled {
@@ -125,6 +135,8 @@ func (s *GatewayTokenService) Update(userID, id int, in GatewayTokenUpdateInput)
 		updates["status"] = *in.Status
 	}
 	if len(updates) > 0 {
+		updates["updated_at"] = persistence.NowMillis()
+		updates["updated_by"] = userID
 		if err := s.db.Model(token).Updates(updates).Error; err != nil {
 			return nil, err
 		}
@@ -132,8 +144,8 @@ func (s *GatewayTokenService) Update(userID, id int, in GatewayTokenUpdateInput)
 	return s.Get(userID, id)
 }
 
-func (s *GatewayTokenService) Revoke(userID, id int) error {
-	result := s.db.Model(&models.GatewayAPIToken{}).Where("id = ? AND user_id = ?", id, userID).Update("status", models.GatewayTokenRevoked)
+func (s *GatewayTokenService) Revoke(userID, id int64) error {
+	result := s.db.Model(&models.GatewayAPIToken{}).Where("guid = ? AND user_id = ? AND is_deleted = 0", id, userID).Updates(map[string]interface{}{"status": models.GatewayTokenRevoked, "updated_at": persistence.NowMillis(), "updated_by": userID})
 	if result.Error != nil {
 		return result.Error
 	}
@@ -148,7 +160,7 @@ func (s *GatewayTokenService) Authenticate(secret, ip, model string, now time.Ti
 		return nil, GatewayTokenInvalid
 	}
 	var token models.GatewayAPIToken
-	if err := s.db.Where("token_hash = ?", gatewayTokenHash(secret)).First(&token).Error; err != nil {
+	if err := s.db.Where("token_hash = ? AND is_deleted = 0", gatewayTokenHash(secret)).First(&token).Error; err != nil {
 		return nil, GatewayTokenInvalid
 	}
 	switch token.Status {
@@ -160,11 +172,11 @@ func (s *GatewayTokenService) Authenticate(secret, ip, model string, now time.Ti
 	default:
 		return nil, GatewayTokenInvalid
 	}
-	if token.ExpiresAt != nil && !token.ExpiresAt.After(now) {
+	if token.ExpiresAt != nil && *token.ExpiresAt <= now.UTC().UnixMilli() {
 		return nil, GatewayTokenExpired
 	}
 	var owner models.User
-	if err := s.db.Select("id", "status").First(&owner, token.UserID).Error; err != nil || !owner.Status.IsActive() {
+	if err := s.db.Select("id", "status").Where("id = ? AND is_deleted = 0", token.UserID).First(&owner).Error; err != nil || !owner.Status.IsActive() {
 		return nil, GatewayTokenDisabled
 	}
 	if !ipAllowed(token.IPAllowlist, ip) {
@@ -173,7 +185,10 @@ func (s *GatewayTokenService) Authenticate(secret, ip, model string, now time.Ti
 	if model != "" && !modelAllowed(token.AllowedModels, model) {
 		return nil, GatewayTokenModelDenied
 	}
-	_ = s.db.Model(&token).Update("last_used_at", now).Error
+	lastUsedAt := now.UTC().UnixMilli()
+	if err := s.db.Model(&token).Where("id = ? AND is_deleted = 0", token.ID).Updates(map[string]interface{}{"last_used_at": lastUsedAt, "updated_at": lastUsedAt, "updated_by": token.UserID}).Error; err != nil {
+		return nil, fmt.Errorf("record gateway token use: %w", err)
+	}
 	return &token, nil
 }
 

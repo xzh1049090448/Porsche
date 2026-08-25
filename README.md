@@ -12,7 +12,6 @@ Go 语言实现的 **国内大模型聚合平台 API**。服务路径与既有�
 | 用户认证 | `/api/v1/auth/*` | ✅ |
 | 用户资料 | `/api/v1/users/*` | ✅ |
 | 对话 CRUD | `/api/v1/conversations/*` | ✅ |
-| 数据集列表 | `/api/v1/datasets` | ✅ |
 | 套餐/订单 | `/api/v1/billing/*` | ✅ |
 | 平台对话/对比 | `/api/v1/platform/*` | ✅ |
 | 模型分析 | `/api/v1/billing/analytics/*` | ✅（图表序列简化实现） |
@@ -39,15 +38,20 @@ cp .env.example .env
 `POST /api/v1/tokens` 创建的 `sk-gw-...` API Token；完整密钥仅在创建响应中
 返回一次，数据库只保存 SHA-256 哈希。静态客户端和旧厂商 API Key 配置不再支持。
 
-如需使用既有 MySQL 数据，请在 `.env` 中设置原有的连接串。Go 同时支持
-`mysql+aiomysql://...` 与 `mysql://...`，例如：
+仅支持新的 MySQL 8 schema。请在 `.env` 中设置 MySQL 连接串，例如：
 
 ```dotenv
 DATABASE_URL=mysql+aiomysql://platform:platform@127.0.0.1:3306/platform
 ```
 
-删除旧代码目录不会删除 MySQL 数据：数据保存在外部 MySQL 服务或 Docker 命名卷中。不要执行
-`docker compose down -v` 或 `docker volume rm`，否则才会删除 Docker 卷中的数据库文件。
+先对明确的新目标数据库执行迁移；服务启动不会自动创建或修改表。不要执行
+`docker compose down -v` 或 `docker volume rm`，以免删除 Docker 卷中的数据库文件。
+
+迁移是启动服务的前置步骤：
+
+```bash
+go run ./cmd/migrate up
+```
 
 ### 3. 运行
 
@@ -65,7 +69,7 @@ go run ./cmd/server
 - 手机号：`13800138000`
 - 密码：`Porsche@2026`
 
-数据库默认使用 `./data/platform.db`（SQLite）。生产环境建议配置 MySQL；已有 MySQL 数据库可直接复用。
+仅支持 MySQL 8。配置 `DATABASE_URL` 和唯一的 `SNOWFLAKE_NODE_ID`（0–1023）后再启动服务。服务不会自动建表或执行隐式迁移。
 
 ## 测试
 
@@ -154,7 +158,6 @@ Porsche/
 │   ├── handler/            # HTTP 路由（与 Python routes 一一对应）
 │   ├── service/            # 业务逻辑
 │   ├── whitelabel/         # 固定 JieKou AI 上游、目录、投影与 SSE
-│   ├── rag/                # RAG 检索
 │   ├── models/             # GORM 实体
 │   └── router/             # 路由注册
 ```

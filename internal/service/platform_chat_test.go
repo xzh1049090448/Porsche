@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/porsche/ai-gateway-go/internal/config"
-	"github.com/porsche/ai-gateway-go/internal/db"
 	"github.com/porsche/ai-gateway-go/internal/models"
 	"github.com/porsche/ai-gateway-go/internal/whitelabel"
 )
@@ -70,18 +69,16 @@ func TestCompareWhiteLabelStreamsKeepsOtherModelsRunningAfterOneFails(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	database, err := db.Open("sqlite://"+t.TempDir()+"/platform.db", "test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	user := &models.User{Phone: "13900139100", Status: models.UserStatusActive, PlanType: models.PlanEnterprise}
-	if err := database.Create(user).Error; err != nil {
+	database := openTestMySQL(t)
+	user := testUser("13900139100")
+	user.PlanType = models.PlanEnterprise
+	if err := database.Create(&user).Error; err != nil {
 		t.Fatal(err)
 	}
 	platform := NewPlatformChatService(PlatformDeps{WhiteLabel: whiteLabel, Billing: NewBillingService(&config.Settings{})})
 	var output strings.Builder
 	var outputMu sync.Mutex
-	err = platform.CompareStream(context.Background(), database, user, []string{"model-a", "model-b", "model-c"}, ChatParams{
+	err = platform.CompareStream(context.Background(), database, &user, []string{"model-a", "model-b", "model-c"}, ChatParams{
 		Messages:       []map[string]interface{}{{"role": "user", "content": "hello"}},
 		MaxTokens:      intPtr(5),
 		WhiteLabelBody: []byte(`{"max_tokens":5}`),
@@ -126,17 +123,15 @@ func TestComparePendingModelErrorWriteFailureStopsFurtherFrames(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	database, err := db.Open("sqlite://"+t.TempDir()+"/platform.db", "test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	user := &models.User{Phone: "13900139101", Status: models.UserStatusActive, PlanType: models.PlanEnterprise}
-	if err := database.Create(user).Error; err != nil {
+	database := openTestMySQL(t)
+	user := testUser("13900139101")
+	user.PlanType = models.PlanEnterprise
+	if err := database.Create(&user).Error; err != nil {
 		t.Fatal(err)
 	}
 	platform := NewPlatformChatService(PlatformDeps{WhiteLabel: whiteLabel, Billing: NewBillingService(&config.Settings{})})
 	writes := 0
-	err = platform.CompareStream(context.Background(), database, user, []string{"model-a", "model-b"}, ChatParams{Messages: []map[string]interface{}{{"role": "user", "content": "hello"}}, MaxTokens: intPtr(5), WhiteLabelBody: []byte(`{"max_tokens":5}`)}, "req_write_failure", func(frame []byte) error {
+	err = platform.CompareStream(context.Background(), database, &user, []string{"model-a", "model-b"}, ChatParams{Messages: []map[string]interface{}{{"role": "user", "content": "hello"}}, MaxTokens: intPtr(5), WhiteLabelBody: []byte(`{"max_tokens":5}`)}, "req_write_failure", func(frame []byte) error {
 		writes++
 		if strings.Contains(string(frame), "event: model_error") {
 			return writeErr

@@ -32,6 +32,19 @@ func TestParseAnalyticsFiltersRejectsInvalidContractValues(t *testing.T) {
 	}
 }
 
+func TestParseAnalyticsFiltersUsesMillisecondStorageRangeAndGUID(t *testing.T) {
+	req := httptest.NewRequest("GET", "/?start_at=2026-08-18T00:00:00Z&end_at=2026-08-18T02:00:00Z&user_guid=9001", nil)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = req
+	f, err := parseAnalyticsFilters(c, "user_consumption_trend")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.StartAtMillis != 1787011200000 || f.EndAtMillis != 1787018400000 || f.UserGUID != 9001 {
+		t.Fatalf("analytics filters must use milliseconds and a user GUID: %#v", f)
+	}
+}
+
 func TestParseAnalyticsFiltersUsesCustomUTCIntervalAndDeduplicatedModels(t *testing.T) {
 	req := httptest.NewRequest("GET", "/?range=1h&start_at=2026-08-18T00:00:00%2B08:00&end_at=2026-08-18T02:00:00%2B08:00&models=a,%20b,a%20,,b&top_n=5&granularity=1h", nil)
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
@@ -40,7 +53,7 @@ func TestParseAnalyticsFiltersUsesCustomUTCIntervalAndDeduplicatedModels(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !f.StartAt.Equal(time.Date(2026, 8, 17, 16, 0, 0, 0, time.UTC)) || len(f.Models) != 2 || f.Models[0] != "a" || f.TopN != 5 {
+	if f.StartAtMillis != time.Date(2026, 8, 17, 16, 0, 0, 0, time.UTC).UnixMilli() || len(f.Models) != 2 || f.Models[0] != "a" || f.TopN != 5 {
 		t.Fatalf("unexpected filters: %#v", f)
 	}
 }

@@ -6,15 +6,18 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/porsche/ai-gateway-go/internal/app"
 	"github.com/porsche/ai-gateway-go/internal/config"
 	"github.com/porsche/ai-gateway-go/internal/db"
 	"github.com/porsche/ai-gateway-go/internal/models"
+	"github.com/porsche/ai-gateway-go/internal/persistence"
 	"github.com/porsche/ai-gateway-go/internal/router"
 	"github.com/porsche/ai-gateway-go/internal/service"
 	"github.com/porsche/ai-gateway-go/internal/whitelabel"
@@ -22,7 +25,7 @@ import (
 
 func TestGatewayModelsUseTokenACLAndDynamicCatalog(t *testing.T) {
 	state, upstream, calls := gatewayWhiteLabelState(t, `{"data":[{"id":"model-a","owned_by":"white"},{"id":"model-b"}]}`)
-	user := &models.User{Phone: "13900200001", Status: models.UserStatusActive}
+	user := gatewayWhiteLabelUser("13900200001")
 	if err := state.DB.Create(user).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +67,7 @@ func TestGatewayModelsUseTokenACLAndDynamicCatalog(t *testing.T) {
 
 func TestGatewayChatRejectsBeforeWhiteLabelUpstream(t *testing.T) {
 	state, _, calls := gatewayWhiteLabelState(t, `{"data":[{"id":"model-a"}]}`)
-	user := &models.User{Phone: "13900200002", Status: models.UserStatusActive}
+	user := gatewayWhiteLabelUser("13900200002")
 	if err := state.DB.Create(user).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -93,7 +96,7 @@ func TestGatewayChatRejectsBeforeWhiteLabelUpstream(t *testing.T) {
 
 func TestGatewaySSEPostFirstChunkEmitsErrorAndDone(t *testing.T) {
 	state, _, _ := gatewayWhiteLabelState(t, `{"data":[{"id":"model-a"}]}`)
-	user := &models.User{Phone: "13900200003", Status: models.UserStatusActive}
+	user := gatewayWhiteLabelUser("13900200003")
 	if err := state.DB.Create(user).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -139,7 +142,7 @@ func TestGatewaySSEPostFirstChunkEmitsErrorAndDone(t *testing.T) {
 
 func TestGatewaySSEProjectsChunksAndDropsUpstreamFields(t *testing.T) {
 	state, _, _ := gatewayWhiteLabelState(t, `{"data":[{"id":"model-a"}]}`)
-	user := &models.User{Phone: "13900200011", Status: models.UserStatusActive}
+	user := gatewayWhiteLabelUser("13900200011")
 	if err := state.DB.Create(user).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -168,7 +171,7 @@ func TestGatewaySSEProjectsChunksAndDropsUpstreamFields(t *testing.T) {
 
 func TestGatewaySSEMalformedFirstChunkReturnsJSON503(t *testing.T) {
 	state, _, _ := gatewayWhiteLabelState(t, `{"data":[{"id":"model-a"}]}`)
-	user := &models.User{Phone: "13900200012", Status: models.UserStatusActive}
+	user := gatewayWhiteLabelUser("13900200012")
 	if err := state.DB.Create(user).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -189,7 +192,7 @@ func TestGatewaySSEMalformedFirstChunkReturnsJSON503(t *testing.T) {
 
 func TestGatewaySSEBeforeFirstPayloadReturnsJSONError(t *testing.T) {
 	state, _, _ := gatewayWhiteLabelState(t, `{"data":[{"id":"model-a"}]}`)
-	user := &models.User{Phone: "13900200008", Status: models.UserStatusActive}
+	user := gatewayWhiteLabelUser("13900200008")
 	if err := state.DB.Create(user).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -210,7 +213,7 @@ func TestGatewaySSEBeforeFirstPayloadReturnsJSONError(t *testing.T) {
 
 func TestGatewayChatAuthenticatesBeforeReadingOrValidatingBody(t *testing.T) {
 	state, _, calls := gatewayWhiteLabelState(t, `{"data":[{"id":"model-a"}]}`)
-	user := &models.User{Phone: "13900200004", Status: models.UserStatusActive}
+	user := gatewayWhiteLabelUser("13900200004")
 	if err := state.DB.Create(user).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -246,7 +249,7 @@ func TestGatewayChatAuthenticatesBeforeReadingOrValidatingBody(t *testing.T) {
 
 func TestGatewayChatRequiresExactJSONMediaTypeAndStableErrors(t *testing.T) {
 	state, _, _ := gatewayWhiteLabelState(t, `{"data":[{"id":"model-a"}]}`)
-	user := &models.User{Phone: "13900200005", Status: models.UserStatusActive}
+	user := gatewayWhiteLabelUser("13900200005")
 	if err := state.DB.Create(user).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -272,7 +275,7 @@ func TestGatewayChatRequiresExactJSONMediaTypeAndStableErrors(t *testing.T) {
 
 func TestGatewayChatKeepsAuthenticatedRequestBodyLimit(t *testing.T) {
 	state, _, calls := gatewayWhiteLabelState(t, `{"data":[{"id":"model-a"}]}`)
-	user := &models.User{Phone: "13900200009", Status: models.UserStatusActive}
+	user := gatewayWhiteLabelUser("13900200009")
 	if err := state.DB.Create(user).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -296,7 +299,7 @@ func TestGatewayChatKeepsAuthenticatedRequestBodyLimit(t *testing.T) {
 
 func TestGatewayChatRequiresCurrentCatalogAndEnabledModelBeforeChat(t *testing.T) {
 	state, _, calls := gatewayWhiteLabelState(t, `{"data":[{"id":"model-a"}]}`)
-	user := &models.User{Phone: "13900200006", Status: models.UserStatusActive}
+	user := gatewayWhiteLabelUser("13900200006")
 	if err := state.DB.Create(user).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -333,7 +336,7 @@ func TestGatewayChatRequiresCurrentCatalogAndEnabledModelBeforeChat(t *testing.T
 
 func TestGatewayChatProjectsValidatedCompletionAndMasksUpstreamFields(t *testing.T) {
 	state, _, calls := gatewayWhiteLabelState(t, `{"data":[{"id":"model-a"}]}`)
-	user := &models.User{Phone: "13900200007", Status: models.UserStatusActive}
+	user := gatewayWhiteLabelUser("13900200007")
 	if err := state.DB.Create(user).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -377,7 +380,7 @@ func TestGatewayChatProjectsValidatedCompletionAndMasksUpstreamFields(t *testing
 
 func TestGatewayChatRejectsMalformedUpstreamCompletion(t *testing.T) {
 	state, _, _ := gatewayWhiteLabelState(t, `{"data":[{"id":"model-a"}]}`)
-	user := &models.User{Phone: "13900200010", Status: models.UserStatusActive}
+	user := gatewayWhiteLabelUser("13900200010")
 	if err := state.DB.Create(user).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -471,7 +474,7 @@ func gatewayWhiteLabelState(t *testing.T, catalog string) (*app.State, *httptest
 		}
 	}))
 	t.Cleanup(upstream.Close)
-	settings := &config.Settings{AppEnv: "test", DatabaseURL: "mysql://test:test@localhost:3306/platform", AllowedHosts: "example.com", JWTSecretKey: "test"}
+	settings := &config.Settings{AppEnv: "test", DatabaseURL: testDatabaseURL(t), AllowedHosts: "example.com", JWTSecretKey: "test"}
 	gdb, err := db.Open(settings.DatabaseURL, "test")
 	if err != nil {
 		t.Fatal(err)
@@ -485,6 +488,28 @@ func gatewayWhiteLabelState(t *testing.T, catalog string) (*app.State, *httptest
 		t.Fatal(err)
 	}
 	return state, upstream, &calls
+}
+
+func testDatabaseURL(t *testing.T) string {
+	t.Helper()
+	url := os.Getenv("TEST_DATABASE_URL")
+	if url == "" {
+		t.Skip("requires isolated TEST_DATABASE_URL MySQL fixture")
+	}
+	return url
+}
+
+var gatewayWhiteLabelSnowflake = persistence.NewSnowflake(os.Getpid()%1024, persistence.SystemClock())
+
+func gatewayWhiteLabelUser(phone string) *models.User {
+	now := time.Now().UTC().UnixMilli()
+	return &models.User{
+		AuditFields:   models.AuditFields{Guid: gatewayWhiteLabelSnowflake.Next(), CreatedAt: now, UpdatedAt: now, IsDeleted: 0},
+		Phone:         phone,
+		Status:        models.UserStatusActive,
+		PlanType:      models.PlanFree,
+		AllowedModels: models.JSONSlice{},
+	}
 }
 
 func mustRead(t *testing.T, r *http.Request) []byte {

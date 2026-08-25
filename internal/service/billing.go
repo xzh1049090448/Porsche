@@ -5,7 +5,9 @@ import (
 
 	"github.com/porsche/ai-gateway-go/internal/config"
 	"github.com/porsche/ai-gateway-go/internal/models"
+	"github.com/porsche/ai-gateway-go/internal/persistence"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type BillingService struct {
@@ -23,33 +25,34 @@ func (b *BillingService) GetPlans(currentPlan string) []map[string]interface{} {
 			"name":             "免费版",
 			"price":            0.0,
 			"daily_call_limit": 100,
-			"description":      "每日100次调用，基础模型与基础数据集",
-			"features":         []string{"基础模型", "基础数据集", "每日100次调用"},
+			"description":      "每日100次调用与基础模型访问",
+			"features":         []string{"基础模型", "每日100次调用"},
 		},
 		{
 			"plan_type":        "professional",
 			"name":             "专业版",
 			"price":            b.settings.PlanProfessionalPrice,
 			"daily_call_limit": nil,
-			"description":      "无限次调用，全模型与全数据集",
-			"features":         []string{"全模型", "全数据集", "无限次调用", "模型对比"},
+			"description":      "无限次调用与全模型访问",
+			"features":         []string{"全模型", "无限次调用", "模型对比"},
 		},
 		{
 			"plan_type":        "enterprise",
 			"name":             "企业版",
 			"price":            b.settings.PlanEnterprisePrice,
 			"daily_call_limit": nil,
-			"description":      "定制化需求，专属数据集部署与API授权",
-			"features":         []string{"专属数据集部署", "API授权", "定制化服务", "专属客服"},
+			"description":      "定制化模型接入与 API 授权",
+			"features":         []string{"API授权", "定制化服务", "专属客服"},
 		},
 	}
 }
 
 func ResetDailyIfNeeded(user *models.User) {
 	now := time.Now().UTC()
-	if user.DailyCallsResetAt == nil || user.DailyCallsResetAt.UTC().Format("2006-01-02") != now.Format("2006-01-02") {
+	if user.DailyCallsResetAt == nil || time.UnixMilli(*user.DailyCallsResetAt).UTC().Format("2006-01-02") != now.Format("2006-01-02") {
 		user.DailyCallsUsed = 0
-		user.DailyCallsResetAt = &now
+		nowMillis := now.UnixMilli()
+		user.DailyCallsResetAt = &nowMillis
 	}
 }
 
@@ -60,24 +63,26 @@ func (b *BillingService) CheckAndConsumeCall(db *gorm.DB, user *models.User, cou
 	ResetDailyIfNeeded(user)
 	if user.PlanType == models.PlanProfessional || user.PlanType == models.PlanEnterprise {
 		user.DailyCallsUsed += count
+		stampUpdate(&user.AuditFields, user.ID)
 		return db.Save(user).Error
 	}
 	if user.DailyCallsUsed+count > user.DailyCallLimit {
 		return errTooMany("今日调用次数已达上限，请升级套餐")
 	}
 	user.DailyCallsUsed += count
+	stampUpdate(&user.AuditFields, user.ID)
 	return db.Save(user).Error
 }
 
 func (b *BillingService) CreateOrder(db *gorm.DB, user *models.User, planType string) (*models.Order, error) {
-	if planType == string(models.PlanFree) {
+	if planType == models.PlanFree.String() {
 		return nil, errBadRequest("免费版无需购买")
 	}
 	var plan models.PlanType
 	switch planType {
-	case string(models.PlanProfessional):
+	case models.PlanProfessional.String():
 		plan = models.PlanProfessional
-	case string(models.PlanEnterprise):
+	case models.PlanEnterprise.String():
 		plan = models.PlanEnterprise
 	default:
 		return nil, errBadRequest("无效的套餐类型")
@@ -87,49 +92,68 @@ func (b *BillingService) CreateOrder(db *gorm.DB, user *models.User, planType st
 		price = b.settings.PlanEnterprisePrice
 	}
 	order := models.Order{
-		OrderNo:  newOrderNo(),
-		UserID:   user.ID,
-		PlanType: plan,
-		Amount:   price,
-		Status:   models.OrderPending,
+		OrderNo:     newOrderNo(),
+		UserID:      user.ID,
+		PlanType:    plan,
+		Amount:      price,
+		Status:      models.OrderPending,
+		AuditFields: auditFields(&user.ID),
 	}
 	return &order, db.Create(&order).Error
 }
 
-func (b *BillingService) PayOrder(db *gorm.DB, user *models.User, orderID int) (*models.Order, error) {
+func (b *BillingService) PayOrder(db *gorm.DB, user *models.User, orderID int64) (*models.Order, error) {
 	if !b.settings.BillingAllowMockPayment {
 		return nil, errForbidden("在线支付未开通，请通过支付渠道完成付款后由系统确认")
 	}
-	var order models.Order
-	if err := db.Where("id = ? AND user_id = ?", orderID, user.ID).First(&order).Error; err != nil {
-		return nil, errNotFound("订单不存在")
-	}
-	if order.Status != models.OrderPending {
-		return nil, errBadRequest("订单状态不可支付")
-	}
-	now := time.Now().UTC()
-	order.Status = models.OrderPaid
-	order.PaidAt = &now
-	user.PlanType = order.PlanType
-	user.DailyCallLimit = 999999
-	if err := db.Save(&order).Error; err != nil {
+	var paidOrder models.Order
+	var settledUser models.User
+	err := db.Transaction(func(tx *gorm.DB) error {
+		var order models.Order
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("guid = ? AND user_id = ? AND is_deleted = 0", orderID, user.ID).First(&order).Error; err != nil {
+			return errNotFound("订单不存在")
+		}
+		if order.Status != models.OrderPending {
+			return errBadRequest("订单状态不可支付")
+		}
+		var updatedUser models.User
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ? AND is_deleted = 0", user.ID).First(&updatedUser).Error; err != nil {
+			return errNotFound("用户不存在")
+		}
+		now := persistence.NowMillis()
+		order.Status = models.OrderPaid
+		order.PaidAt = &now
+		stampUpdate(&order.AuditFields, user.ID)
+		updatedUser.PlanType = order.PlanType
+		updatedUser.DailyCallLimit = 999999
+		stampUpdate(&updatedUser.AuditFields, user.ID)
+		if err := tx.Save(&order).Error; err != nil {
+			return err
+		}
+		if err := tx.Save(&updatedUser).Error; err != nil {
+			return err
+		}
+		paidOrder = order
+		settledUser = updatedUser
+		return nil
+	})
+	if err != nil {
 		return nil, err
 	}
-	if err := db.Save(user).Error; err != nil {
-		return nil, err
-	}
-	return &order, nil
+	*user = settledUser
+	return &paidOrder, nil
 }
 
-func (b *BillingService) RequestInvoice(db *gorm.DB, user *models.User, orderID int) (*models.Order, error) {
+func (b *BillingService) RequestInvoice(db *gorm.DB, user *models.User, orderID int64) (*models.Order, error) {
 	var order models.Order
-	if err := db.Where("id = ? AND user_id = ?", orderID, user.ID).First(&order).Error; err != nil {
+	if err := db.Where("guid = ? AND user_id = ? AND is_deleted = 0", orderID, user.ID).First(&order).Error; err != nil {
 		return nil, errNotFound("订单不存在")
 	}
 	if order.Status != models.OrderPaid {
 		return nil, errBadRequest("仅已支付订单可申请发票")
 	}
 	order.InvoiceRequested = true
+	stampUpdate(&order.AuditFields, user.ID)
 	return &order, db.Save(&order).Error
 }
 
@@ -147,6 +171,6 @@ func GetUsageStats(user *models.User) map[string]interface{} {
 		"daily_calls_used":      user.DailyCallsUsed,
 		"daily_call_limit":      user.DailyCallLimit,
 		"remaining_daily_calls": remaining,
-		"plan_type":             string(user.PlanType),
+		"plan_type":             user.PlanType.String(),
 	}
 }

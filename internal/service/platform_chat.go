@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -86,13 +87,13 @@ func NewPlatformChatService(deps PlatformDeps) *PlatformChatService {
 }
 
 type ChatParams struct {
-	Model          string
-	Messages       []map[string]interface{}
-	ConversationID *int
-	Temperature    *float64
-	MaxTokens      *int
-	ContextWindow  *int
-	WhiteLabelBody []byte
+	Model            string
+	Messages         []map[string]interface{}
+	ConversationGUID *string
+	Temperature      *float64
+	MaxTokens        *int
+	ContextWindow    *int
+	WhiteLabelBody   []byte
 }
 
 // validateCompareModels applies the platform's deliberately small fan-out
@@ -131,8 +132,8 @@ func (p *PlatformChatService) Chat(ctx context.Context, db *gorm.DB, user *model
 		conv *models.Conversation
 		err  error
 	)
-	if params.ConversationID != nil {
-		conv, err = GetConversation(db, user, *params.ConversationID, false)
+	if params.ConversationGUID != nil {
+		conv, err = conversationByGUID(db, user, *params.ConversationGUID)
 	} else {
 		conv, err = CreateConversation(db, user, "", params.Model)
 	}
@@ -141,7 +142,9 @@ func (p *PlatformChatService) Chat(ctx context.Context, db *gorm.DB, user *model
 	}
 
 	if last := lastUserMessage(trimmed); last != "" {
-		_, _ = AddMessage(db, conv, "user", last, "", 0)
+		if _, err := AddMessage(db, conv, "user", last, "", 0); err != nil {
+			return nil, err
+		}
 	}
 
 	body := whitelabel.ChatCompletionRequest{
@@ -156,16 +159,23 @@ func (p *PlatformChatService) Chat(ctx context.Context, db *gorm.DB, user *model
 	}
 
 	content, tokens := extractCompletion(data)
-	_, _ = AddMessage(db, conv, "assistant", content, params.Model, tokens)
-	user.TotalTokensUsed += tokens
-	_ = db.Save(user)
-	_ = db.Create(&models.UsageRecord{UserID: user.ID, RecordType: "chat", Tokens: tokens, Model: &params.Model})
+	if _, err := AddMessage(db, conv, "assistant", content, params.Model, tokens); err != nil {
+		return nil, err
+	}
+	user.TotalTokensUsed += int64(tokens)
+	stampUpdate(&user.AuditFields, user.ID)
+	if err := db.Save(user).Error; err != nil {
+		return nil, err
+	}
+	if err := db.Create(&models.UsageRecord{UserID: user.ID, RecordType: models.UsageRecordChat, Tokens: tokens, Model: &params.Model, AuditFields: auditFields(&user.ID)}).Error; err != nil {
+		return nil, err
+	}
 
 	return map[string]interface{}{
-		"conversation_id": conv.ID,
-		"model":           params.Model,
-		"content":         content,
-		"usage":           map[string]interface{}{"total_tokens": tokens},
+		"conversation_guid": fmt.Sprint(conv.Guid),
+		"model":             params.Model,
+		"content":           content,
+		"usage":             map[string]interface{}{"total_tokens": tokens},
 	}, nil
 }
 
@@ -210,8 +220,8 @@ func (p *PlatformChatService) Compare(ctx context.Context, db *gorm.DB, user *mo
 	// assistant message containing the replies for each model.
 	var conv *models.Conversation
 	trimmed := TrimMessages(params.Messages, params.ContextWindow)
-	if params.ConversationID != nil {
-		conv, err = GetConversation(db, user, *params.ConversationID, false)
+	if params.ConversationGUID != nil {
+		conv, err = conversationByGUID(db, user, *params.ConversationGUID)
 	} else if len(trimmed) > 0 {
 		primaryModel := modelsList[0]
 		conv, err = CreateConversation(db, user, "", primaryModel)
@@ -226,6 +236,7 @@ func (p *PlatformChatService) Compare(ctx context.Context, db *gorm.DB, user *mo
 			}
 			if conv.Title == "新对话" {
 				conv.Title = truncateTitle(last)
+				stampUpdate(&conv.AuditFields, conv.UserID)
 				if err := db.Save(conv).Error; err != nil {
 					return nil, err
 				}
@@ -253,22 +264,23 @@ func (p *PlatformChatService) Compare(ctx context.Context, db *gorm.DB, user *mo
 		if _, err := AddMessage(db, conv, "assistant", "__MULTI_MODEL__"+string(payload), primaryModel, totalTokens); err != nil {
 			return nil, err
 		}
-		user.TotalTokensUsed += totalTokens
+		user.TotalTokensUsed += int64(totalTokens)
+		stampUpdate(&user.AuditFields, user.ID)
 		if err := db.Save(user).Error; err != nil {
 			return nil, err
 		}
 		for _, result := range results {
 			model := fmt.Sprint(result["model"])
 			tokens, _ := result["tokens"].(int)
-			if err := db.Create(&models.UsageRecord{UserID: user.ID, RecordType: "chat", Tokens: tokens, Model: &model}).Error; err != nil {
+			if err := db.Create(&models.UsageRecord{UserID: user.ID, RecordType: models.UsageRecordChat, Tokens: tokens, Model: &model, AuditFields: auditFields(&user.ID)}).Error; err != nil {
 				return nil, err
 			}
 		}
 	}
 
 	out := map[string]interface{}{
-		"results":         results,
-		"conversation_id": conversationID(conv),
+		"results":           results,
+		"conversation_guid": conversationGUID(conv),
 	}
 	return out, nil
 }
@@ -287,8 +299,8 @@ func (p *PlatformChatService) Stream(ctx context.Context, db *gorm.DB, user *mod
 		conv *models.Conversation
 		err  error
 	)
-	if params.ConversationID != nil {
-		conv, err = GetConversation(db, user, *params.ConversationID, false)
+	if params.ConversationGUID != nil {
+		conv, err = conversationByGUID(db, user, *params.ConversationGUID)
 	} else {
 		conv, err = CreateConversation(db, user, "", params.Model)
 	}
@@ -301,6 +313,7 @@ func (p *PlatformChatService) Stream(ctx context.Context, db *gorm.DB, user *mod
 		}
 		if conv.Title == "新对话" {
 			conv.Title = truncateTitle(last)
+			stampUpdate(&conv.AuditFields, conv.UserID)
 			if err := db.Save(conv).Error; err != nil {
 				return err
 			}
@@ -308,8 +321,8 @@ func (p *PlatformChatService) Stream(ctx context.Context, db *gorm.DB, user *mod
 	}
 
 	meta := map[string]interface{}{
-		"type":            "meta",
-		"conversation_id": conv.ID,
+		"type":              "meta",
+		"conversation_guid": fmt.Sprint(conv.Guid),
 	}
 	metaBytes, _ := json.Marshal(meta)
 	metaFrame := []byte(fmt.Sprintf("data: %s\n\n", metaBytes))
@@ -358,9 +371,14 @@ func (p *PlatformChatService) finishPlatformStream(db *gorm.DB, user *models.Use
 	if tokens < 1 && content != "" {
 		tokens = 1
 	}
-	_, _ = AddMessage(db, conv, "assistant", content, params.Model, tokens)
-	user.TotalTokensUsed += tokens
-	_ = db.Save(user)
+	if _, err := AddMessage(db, conv, "assistant", content, params.Model, tokens); err != nil {
+		return err
+	}
+	user.TotalTokensUsed += int64(tokens)
+	stampUpdate(&user.AuditFields, user.ID)
+	if err := db.Save(user).Error; err != nil {
+		return err
+	}
 	done, _ := json.Marshal(map[string]interface{}{"type": "done", "tokens": tokens, "total_tokens_used": user.TotalTokensUsed})
 	return write([]byte(fmt.Sprintf("data: %s\n\n", done)))
 }
@@ -539,8 +557,8 @@ func writeCompareEvent(write func([]byte) error, name string, payload interface{
 func (p *PlatformChatService) persistCompareExchange(db *gorm.DB, user *models.User, modelsList []string, params ChatParams, trimmed []map[string]interface{}, results []map[string]interface{}) (*models.Conversation, error) {
 	var conv *models.Conversation
 	var err error
-	if params.ConversationID != nil {
-		conv, err = GetConversation(db, user, *params.ConversationID, false)
+	if params.ConversationGUID != nil {
+		conv, err = conversationByGUID(db, user, *params.ConversationGUID)
 	} else if len(trimmed) > 0 {
 		conv, err = CreateConversation(db, user, "", modelsList[0])
 	}
@@ -553,6 +571,7 @@ func (p *PlatformChatService) persistCompareExchange(db *gorm.DB, user *models.U
 		}
 		if conv.Title == "新对话" {
 			conv.Title = truncateTitle(last)
+			stampUpdate(&conv.AuditFields, conv.UserID)
 			if err := db.Save(conv).Error; err != nil {
 				return nil, err
 			}
@@ -575,14 +594,15 @@ func (p *PlatformChatService) persistCompareExchange(db *gorm.DB, user *models.U
 	if _, err := AddMessage(db, conv, "assistant", "__MULTI_MODEL__"+string(payload), modelsList[0], tokens); err != nil {
 		return nil, err
 	}
-	user.TotalTokensUsed += tokens
+	user.TotalTokensUsed += int64(tokens)
+	stampUpdate(&user.AuditFields, user.ID)
 	if err := db.Save(user).Error; err != nil {
 		return nil, err
 	}
 	for _, result := range results {
 		model := fmt.Sprint(result["model"])
 		tokens, _ := result["tokens"].(int)
-		if err := db.Create(&models.UsageRecord{UserID: user.ID, RecordType: "chat", Tokens: tokens, Model: &model}).Error; err != nil {
+		if err := db.Create(&models.UsageRecord{UserID: user.ID, RecordType: models.UsageRecordChat, Tokens: tokens, Model: &model, AuditFields: auditFields(&user.ID)}).Error; err != nil {
 			return nil, err
 		}
 	}
@@ -650,11 +670,27 @@ func truncateTitle(content string) string {
 	return string(title)
 }
 
-func conversationID(conv *models.Conversation) interface{} {
+func conversationGUID(conv *models.Conversation) interface{} {
 	if conv == nil {
 		return nil
 	}
-	return conv.ID
+	return fmt.Sprint(conv.Guid)
+}
+
+func parseConversationGUID(value string) (int64, error) {
+	guid, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || guid < 1 {
+		return 0, errBadRequest("无效对话标识")
+	}
+	return guid, nil
+}
+
+func conversationByGUID(db *gorm.DB, user *models.User, value string) (*models.Conversation, error) {
+	guid, err := parseConversationGUID(value)
+	if err != nil {
+		return nil, err
+	}
+	return GetConversation(db, user, guid, false)
 }
 
 func parseSSEDelta(chunk []byte) string {

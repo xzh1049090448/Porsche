@@ -1,143 +1,241 @@
+// Package models contains the persisted MySQL domain entities and their integer-backed enum mappings.
 package models
 
-import (
-	"strings"
-	"time"
-)
-
-type UserStatus string
+type UserStatus int
 
 const (
-	UserStatusActive   UserStatus = "active"
-	UserStatusDisabled UserStatus = "disabled"
+	UserStatusActive   UserStatus = 1
+	UserStatusDisabled UserStatus = 2
 )
 
-type GatewayTokenStatus string
-
-const (
-	GatewayTokenActive   GatewayTokenStatus = "active"
-	GatewayTokenDisabled GatewayTokenStatus = "disabled"
-	GatewayTokenRevoked  GatewayTokenStatus = "revoked"
-)
-
-// IsActive accepts legacy enum names stored by the Python service (for
-// example, "ACTIVE") as well as the canonical lower-case value.
-func (s UserStatus) IsActive() bool {
-	return strings.EqualFold(strings.TrimSpace(string(s)), string(UserStatusActive))
+func (s UserStatus) IsActive() bool { return s == UserStatusActive }
+func (s UserStatus) String() string {
+	if s == UserStatusActive {
+		return "active"
+	}
+	if s == UserStatusDisabled {
+		return "disabled"
+	}
+	return "unknown"
+}
+func ParseUserStatus(value string) (UserStatus, bool) {
+	switch value {
+	case "active":
+		return UserStatusActive, true
+	case "disabled":
+		return UserStatusDisabled, true
+	}
+	return 0, false
 }
 
-type PlanType string
+type GatewayTokenStatus int
 
 const (
-	PlanFree         PlanType = "free"
-	PlanProfessional PlanType = "professional"
-	PlanEnterprise   PlanType = "enterprise"
+	GatewayTokenActive   GatewayTokenStatus = 1
+	GatewayTokenDisabled GatewayTokenStatus = 2
+	GatewayTokenRevoked  GatewayTokenStatus = 3
 )
 
-type OrderStatus string
+func (s GatewayTokenStatus) String() string {
+	switch s {
+	case GatewayTokenActive:
+		return "active"
+	case GatewayTokenDisabled:
+		return "disabled"
+	case GatewayTokenRevoked:
+		return "revoked"
+	}
+	return "unknown"
+}
+
+type PlanType int
 
 const (
-	OrderPending   OrderStatus = "pending"
-	OrderPaid      OrderStatus = "paid"
-	OrderCancelled OrderStatus = "cancelled"
-	OrderRefunded  OrderStatus = "refunded"
+	PlanFree         PlanType = 1
+	PlanProfessional PlanType = 2
+	PlanEnterprise   PlanType = 3
 )
+
+func (p PlanType) String() string {
+	switch p {
+	case PlanFree:
+		return "free"
+	case PlanProfessional:
+		return "professional"
+	case PlanEnterprise:
+		return "enterprise"
+	}
+	return "unknown"
+}
+func ParsePlanType(value string) (PlanType, bool) {
+	switch value {
+	case "free":
+		return PlanFree, true
+	case "professional":
+		return PlanProfessional, true
+	case "enterprise":
+		return PlanEnterprise, true
+	}
+	return 0, false
+}
+
+type OrderStatus int
+
+const (
+	OrderPending   OrderStatus = 1
+	OrderPaid      OrderStatus = 2
+	OrderCancelled OrderStatus = 3
+	OrderRefunded  OrderStatus = 4
+)
+
+func (s OrderStatus) String() string {
+	switch s {
+	case OrderPending:
+		return "pending"
+	case OrderPaid:
+		return "paid"
+	case OrderCancelled:
+		return "cancelled"
+	case OrderRefunded:
+		return "refunded"
+	}
+	return "unknown"
+}
+
+type MessageRole int
+
+const (
+	MessageRoleSystem    MessageRole = 1
+	MessageRoleUser      MessageRole = 2
+	MessageRoleAssistant MessageRole = 3
+)
+
+func (r MessageRole) String() string {
+	switch r {
+	case MessageRoleSystem:
+		return "system"
+	case MessageRoleUser:
+		return "user"
+	case MessageRoleAssistant:
+		return "assistant"
+	}
+	return "unknown"
+}
+func ParseMessageRole(value string) (MessageRole, bool) {
+	switch value {
+	case "system":
+		return MessageRoleSystem, true
+	case "user":
+		return MessageRoleUser, true
+	case "assistant":
+		return MessageRoleAssistant, true
+	}
+	return 0, false
+}
+
+type UsageRecordType int
+
+const (
+	UsageRecordChat UsageRecordType = 1
+)
+
+// AuditFields is embedded in every persisted table. Timestamps are UTC Unix milliseconds; nil actor IDs denote system work.
+type AuditFields struct {
+	Guid      int64  `gorm:"type:bigint;not null;uniqueIndex" json:"guid"`
+	CreatedAt int64  `gorm:"type:bigint;not null" json:"created_at"`
+	CreatedBy *int64 `gorm:"type:bigint" json:"created_by,omitempty"`
+	UpdatedAt int64  `gorm:"type:bigint;not null" json:"updated_at"`
+	UpdatedBy *int64 `gorm:"type:bigint" json:"updated_by,omitempty"`
+	IsDeleted int    `gorm:"type:int;not null;default:0;index" json:"-"`
+}
 
 type User struct {
-	ID                int        `gorm:"primaryKey;type:int;size:32" json:"id"`
-	Phone             string     `gorm:"size:20;uniqueIndex" json:"phone"`
+	ID int64 `gorm:"primaryKey;type:bigint" json:"-"`
+	AuditFields
+	Phone             string     `gorm:"size:20;not null;uniqueIndex" json:"phone"`
 	PasswordHash      *string    `gorm:"size:255" json:"-"`
 	Nickname          *string    `gorm:"size:64" json:"nickname"`
 	RealName          *string    `gorm:"size:64" json:"real_name,omitempty"`
 	IDCardHash        *string    `gorm:"size:128" json:"-"`
-	IsVerified        bool       `gorm:"default:false" json:"is_verified"`
-	PlanType          PlanType   `gorm:"size:32;default:free" json:"plan_type"`
-	Status            UserStatus `gorm:"size:32;default:active" json:"status"`
-	AllowedModels     JSONSlice  `gorm:"type:json" json:"allowed_models,omitempty"`
-	DailyCallLimit    int        `gorm:"default:100" json:"daily_call_limit"`
-	DailyCallsUsed    int        `gorm:"default:0" json:"daily_calls_used"`
-	DailyCallsResetAt *time.Time `json:"daily_calls_reset_at,omitempty"`
-	TotalTokensUsed   int        `gorm:"default:0" json:"total_tokens_used"`
-	CreatedAt         time.Time  `json:"created_at"`
-	UpdatedAt         time.Time  `json:"updated_at"`
+	IsVerified        bool       `gorm:"not null;default:false" json:"is_verified"`
+	PlanType          PlanType   `gorm:"type:int;not null;default:1" json:"-"`
+	Status            UserStatus `gorm:"type:int;not null;default:1" json:"-"`
+	AllowedModels     JSONSlice  `gorm:"type:json;not null" json:"allowed_models,omitempty"`
+	DailyCallLimit    int        `gorm:"not null;default:100" json:"daily_call_limit"`
+	DailyCallsUsed    int        `gorm:"not null;default:0" json:"daily_calls_used"`
+	DailyCallsResetAt *int64     `gorm:"type:bigint" json:"-"`
+	TotalTokensUsed   int64      `gorm:"not null;default:0" json:"total_tokens_used"`
 }
-
 type Conversation struct {
-	ID        int       `gorm:"primaryKey;type:int;size:32" json:"id"`
-	UserID    int       `gorm:"type:int;size:32;index" json:"user_id"`
-	Title     string    `gorm:"size:256;default:新对话" json:"title"`
-	Model     *string   `gorm:"size:128" json:"model"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
-	Messages  []Message `gorm:"foreignKey:ConversationID" json:"messages,omitempty"`
+	ID int64 `gorm:"primaryKey;type:bigint" json:"-"`
+	AuditFields
+	UserID   int64     `gorm:"type:bigint;not null;index" json:"-"`
+	Title    string    `gorm:"size:256;not null;default:新对话" json:"title"`
+	Model    *string   `gorm:"size:128" json:"model"`
+	Messages []Message `gorm:"foreignKey:ConversationID" json:"messages,omitempty"`
 }
-
 type Message struct {
-	ID             int       `gorm:"primaryKey;type:int;size:32" json:"id"`
-	ConversationID int       `gorm:"type:int;size:32;index" json:"conversation_id"`
-	Role           string    `gorm:"size:32" json:"role"`
-	Content        string    `gorm:"type:text" json:"content"`
-	Model          *string   `gorm:"size:128" json:"model"`
-	Tokens         int       `gorm:"default:0" json:"tokens"`
-	CreatedAt      time.Time `json:"created_at"`
+	ID int64 `gorm:"primaryKey;type:bigint" json:"-"`
+	AuditFields
+	ConversationID int64       `gorm:"type:bigint;not null;index" json:"-"`
+	Role           MessageRole `gorm:"type:int;not null" json:"-"`
+	Content        string      `gorm:"type:text;not null" json:"content"`
+	Model          *string     `gorm:"size:128" json:"model"`
+	Tokens         int         `gorm:"not null;default:0" json:"tokens"`
 }
-
 type UsageRecord struct {
-	ID         int       `gorm:"primaryKey;type:int;size:32" json:"id"`
-	UserID     int       `gorm:"type:int;size:32;index" json:"user_id"`
-	RecordType string    `gorm:"size:32" json:"record_type"`
-	Tokens     int       `gorm:"default:0" json:"tokens"`
-	Model      *string   `gorm:"size:128" json:"model"`
-	CreatedAt  time.Time `gorm:"index" json:"created_at"`
+	ID int64 `gorm:"primaryKey;type:bigint" json:"-"`
+	AuditFields
+	UserID     int64           `gorm:"type:bigint;not null;index" json:"-"`
+	RecordType UsageRecordType `gorm:"type:int;not null" json:"-"`
+	Tokens     int             `gorm:"not null;default:0" json:"tokens"`
+	Model      *string         `gorm:"size:128" json:"model"`
 }
-
 type Order struct {
-	ID               int         `gorm:"primaryKey;type:int;size:32" json:"id"`
-	OrderNo          string      `gorm:"size:64;uniqueIndex" json:"order_no"`
-	UserID           int         `gorm:"type:int;size:32;index" json:"user_id"`
-	PlanType         PlanType    `gorm:"size:32" json:"plan_type"`
-	Amount           float64     `gorm:"default:0" json:"amount"`
-	Status           OrderStatus `gorm:"size:32;default:pending" json:"status"`
-	InvoiceRequested bool        `gorm:"default:false" json:"invoice_requested"`
-	CreatedAt        time.Time   `json:"created_at"`
-	PaidAt           *time.Time  `json:"paid_at"`
+	ID int64 `gorm:"primaryKey;type:bigint" json:"-"`
+	AuditFields
+	OrderNo          string      `gorm:"size:64;not null;uniqueIndex" json:"order_no"`
+	UserID           int64       `gorm:"type:bigint;not null;index" json:"-"`
+	PlanType         PlanType    `gorm:"type:int;not null" json:"-"`
+	Amount           float64     `gorm:"not null;default:0" json:"amount"`
+	Status           OrderStatus `gorm:"type:int;not null;default:1" json:"-"`
+	InvoiceRequested bool        `gorm:"not null;default:false" json:"invoice_requested"`
+	PaidAt           *int64      `gorm:"type:bigint" json:"-"`
 }
-
 type AuditLog struct {
-	ID        int       `gorm:"primaryKey;type:int;size:32" json:"id"`
-	UserID    *int      `gorm:"type:int;size:32;index" json:"user_id"`
-	Action    string    `gorm:"size:64;index" json:"action"`
-	Resource  *string   `gorm:"size:128" json:"resource"`
-	Detail    JSONMap   `gorm:"type:json" json:"detail"`
-	IP        *string   `gorm:"size:64" json:"ip"`
-	CreatedAt time.Time `gorm:"index" json:"created_at"`
+	ID int64 `gorm:"primaryKey;type:bigint" json:"-"`
+	AuditFields
+	UserID   *int64  `gorm:"type:bigint;index" json:"-"`
+	Action   string  `gorm:"size:64;not null;index" json:"action"`
+	Resource *string `gorm:"size:128" json:"resource"`
+	Detail   JSONMap `gorm:"type:json;not null" json:"detail"`
+	IP       *string `gorm:"size:64" json:"ip"`
 }
-
 type ModelHealth struct {
-	ID            int        `gorm:"primaryKey;type:int;size:32" json:"id"`
-	ModelName     string     `gorm:"size:128;uniqueIndex" json:"model_name"`
-	Provider      string     `gorm:"size:64" json:"provider"`
-	IsAvailable   bool       `gorm:"default:true" json:"is_available"`
-	AvgLatencyMs  float64    `gorm:"default:0" json:"avg_latency_ms"`
-	ErrorRate     float64    `gorm:"default:0" json:"error_rate"`
-	LastCheckedAt *time.Time `json:"last_checked_at"`
+	ID int64 `gorm:"primaryKey;type:bigint" json:"-"`
+	AuditFields
+	ModelName     string  `gorm:"size:128;not null;uniqueIndex" json:"model_name"`
+	Provider      string  `gorm:"size:64;not null" json:"provider"`
+	IsAvailable   bool    `gorm:"not null;default:true" json:"is_available"`
+	AvgLatencyMs  float64 `gorm:"not null;default:0" json:"avg_latency_ms"`
+	ErrorRate     float64 `gorm:"not null;default:0" json:"error_rate"`
+	LastCheckedAt *int64  `gorm:"type:bigint" json:"-"`
+}
+type GatewayAPIToken struct {
+	ID int64 `gorm:"primaryKey;type:bigint" json:"-"`
+	AuditFields
+	UserID        int64              `gorm:"type:bigint;not null;index" json:"-"`
+	Name          string             `gorm:"size:128;not null" json:"name"`
+	TokenHash     string             `gorm:"size:64;not null;uniqueIndex" json:"-"`
+	TokenPrefix   string             `gorm:"size:24;not null;index" json:"token_prefix"`
+	Status        GatewayTokenStatus `gorm:"type:int;not null;default:1;index" json:"-"`
+	AllowedModels JSONSlice          `gorm:"type:json;not null" json:"allowed_models"`
+	IPAllowlist   JSONSlice          `gorm:"type:json;not null" json:"ip_allowlist"`
+	ExpiresAt     *int64             `gorm:"type:bigint;index" json:"-"`
+	LastUsedAt    *int64             `gorm:"type:bigint" json:"-"`
 }
 
-// GatewayAPIToken is deliberately stored in its own table so legacy Python
-// tables remain untouched. TokenHash is SHA-256 of the one-time secret.
-type GatewayAPIToken struct {
-	ID            int                `gorm:"primaryKey;type:int;size:32" json:"id"`
-	UserID        int                `gorm:"type:int;size:32;index" json:"user_id"`
-	Name          string             `gorm:"size:128" json:"name"`
-	TokenHash     string             `gorm:"size:64;uniqueIndex" json:"-"`
-	TokenPrefix   string             `gorm:"size:24;index" json:"token_prefix"`
-	Status        GatewayTokenStatus `gorm:"size:16;default:active;index" json:"status"`
-	AllowedModels JSONSlice          `gorm:"type:json" json:"allowed_models"`
-	IPAllowlist   JSONSlice          `gorm:"type:json" json:"ip_allowlist"`
-	ExpiresAt     *time.Time         `gorm:"index" json:"expires_at,omitempty"`
-	LastUsedAt    *time.Time         `json:"last_used_at,omitempty"`
-	CreatedAt     time.Time          `json:"created_at"`
-	UpdatedAt     time.Time          `json:"updated_at"`
-}
+// TableName matches the singular table created by the explicit MySQL migration.
+func (ModelHealth) TableName() string { return "model_health" }
 
 func (GatewayAPIToken) TableName() string { return "gateway_api_tokens" }

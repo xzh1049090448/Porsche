@@ -72,6 +72,10 @@ func parseAnalyticsFilters(c *gin.Context, view string) (service.AnalyticsFilter
 		return service.AnalyticsFilters{}, errInvalidAnalyticsQuery
 	}
 	now := time.Now().UTC()
+	if _, present := c.GetQuery("user_id"); present {
+		// Internal user IDs are never accepted at the HTTP boundary.
+		return service.AnalyticsFilters{}, errInvalidAnalyticsQuery
+	}
 	rangeValue := c.DefaultQuery("range", "24h")
 	f := service.AnalyticsFilters{Granularity: c.DefaultQuery("granularity", "2h"), Metric: c.DefaultQuery("metric", "cost"), TopN: 10}
 	if f.Granularity != "1h" && f.Granularity != "2h" && f.Granularity != "4h" && f.Granularity != "1d" {
@@ -104,35 +108,36 @@ func parseAnalyticsFilters(c *gin.Context, view string) (service.AnalyticsFilter
 		if startErr != nil || endErr != nil || !start.Before(end) || end.Sub(start) > 90*24*time.Hour {
 			return f, errInvalidAnalyticsQuery
 		}
-		f.StartAt, f.EndAt, f.RangeLabel = start.UTC(), end.UTC(), "自定义时间"
+		f.StartAtMillis, f.EndAtMillis, f.RangeLabel = start.UTC().UnixMilli(), end.UTC().UnixMilli(), "自定义时间"
 	} else {
 		switch rangeValue {
 		case "1h":
-			f.StartAt, f.RangeLabel = now.Add(-time.Hour), "近1小时"
+			f.StartAtMillis, f.RangeLabel = now.Add(-time.Hour).UnixMilli(), "近1小时"
 		case "6h":
-			f.StartAt, f.RangeLabel = now.Add(-6*time.Hour), "近6小时"
+			f.StartAtMillis, f.RangeLabel = now.Add(-6*time.Hour).UnixMilli(), "近6小时"
 		case "24h":
-			f.StartAt, f.RangeLabel = now.Add(-24*time.Hour), "近24小时"
+			f.StartAtMillis, f.RangeLabel = now.Add(-24*time.Hour).UnixMilli(), "近24小时"
 		case "7d":
-			f.StartAt, f.RangeLabel = now.Add(-7*24*time.Hour), "近7天"
+			f.StartAtMillis, f.RangeLabel = now.Add(-7*24*time.Hour).UnixMilli(), "近7天"
 		case "yesterday":
-			f.EndAt = now.Truncate(24 * time.Hour)
-			f.StartAt, f.RangeLabel = f.EndAt.Add(-24*time.Hour), "昨日"
+			end := now.Truncate(24 * time.Hour)
+			f.EndAtMillis = end.UnixMilli()
+			f.StartAtMillis, f.RangeLabel = end.Add(-24*time.Hour).UnixMilli(), "昨日"
 		default:
 			return f, errInvalidAnalyticsQuery
 		}
-		if f.EndAt.IsZero() {
-			f.EndAt = now
+		if f.EndAtMillis == 0 {
+			f.EndAtMillis = now.UnixMilli()
 		}
 	}
-	if raw, present := c.GetQuery("user_id"); present {
-		userID, err := strconv.Atoi(raw)
-		if err != nil || userID <= 0 || view != "user_consumption_trend" {
+	if raw, present := c.GetQuery("user_guid"); present {
+		userGUID, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || userGUID <= 0 || view != "user_consumption_trend" {
 			return f, errInvalidAnalyticsQuery
 		}
-		f.UserID = userID
+		f.UserGUID = userGUID
 	}
-	if view == "user_consumption_trend" && f.UserID <= 0 {
+	if view == "user_consumption_trend" && f.UserGUID <= 0 {
 		return f, errInvalidAnalyticsQuery
 	}
 	return f, nil

@@ -19,8 +19,8 @@ func RegisterBilling(r *gin.Engine, state *app.State) {
 	g.GET("/plans", func(c *gin.Context) {
 		user := middleware.CurrentUser(c)
 		c.JSON(http.StatusOK, gin.H{
-			"plans":        state.Billing.GetPlans(string(user.PlanType)),
-			"current_plan": string(user.PlanType),
+			"plans":        state.Billing.GetPlans(user.PlanType.String()),
+			"current_plan": user.PlanType.String(),
 		})
 	})
 
@@ -42,10 +42,10 @@ func RegisterBilling(r *gin.Engine, state *app.State) {
 		c.JSON(http.StatusOK, dto.Order(order))
 	})
 
-	g.POST("/orders/:id/pay", func(c *gin.Context) {
+	g.POST("/orders/:guid/pay", func(c *gin.Context) {
 		user := middleware.CurrentUser(c)
-		id, _ := strconv.ParseUint(c.Param("id"), 10, 64)
-		order, err := state.Billing.PayOrder(state.DB, user, int(id))
+		id, _ := strconv.ParseUint(c.Param("guid"), 10, 64)
+		order, err := state.Billing.PayOrder(state.DB, user, int64(id))
 		if err != nil {
 			code, msg := service.StatusFromError(err)
 			httpx.AbortJSON(c, code, msg)
@@ -57,7 +57,10 @@ func RegisterBilling(r *gin.Engine, state *app.State) {
 	g.GET("/orders", func(c *gin.Context) {
 		user := middleware.CurrentUser(c)
 		var orders []models.Order
-		state.DB.Where("user_id = ?", user.ID).Order("created_at desc").Find(&orders)
+		if err := state.DB.Where("user_id = ? AND is_deleted = 0", user.ID).Order("created_at desc").Find(&orders).Error; err != nil {
+			httpx.AbortJSON(c, http.StatusInternalServerError, "读取订单失败")
+			return
+		}
 		items := make([]map[string]interface{}, 0, len(orders))
 		for i := range orders {
 			items = append(items, dto.Order(&orders[i]))
@@ -68,13 +71,13 @@ func RegisterBilling(r *gin.Engine, state *app.State) {
 	g.POST("/invoice", func(c *gin.Context) {
 		user := middleware.CurrentUser(c)
 		var body struct {
-			OrderID int `json:"order_id" binding:"required"`
+			OrderGUID int64 `json:"order_guid" binding:"required"`
 		}
 		if err := c.ShouldBindJSON(&body); err != nil {
 			httpx.AbortJSON(c, http.StatusUnprocessableEntity, err.Error())
 			return
 		}
-		order, err := state.Billing.RequestInvoice(state.DB, user, body.OrderID)
+		order, err := state.Billing.RequestInvoice(state.DB, user, body.OrderGUID)
 		if err != nil {
 			code, msg := service.StatusFromError(err)
 			httpx.AbortJSON(c, code, msg)

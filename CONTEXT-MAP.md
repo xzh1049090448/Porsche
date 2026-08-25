@@ -1,17 +1,11 @@
 # Context Map
 
-This monorepo contains multiple independent subprojects. Each has its own domain context.
+This repository is a single Go AI model gateway. The source is rooted here;
+there are no Python, Java, RAG, or knowledge-base subprojects.
 
-| Context | Directory | Description |
-| ------- | --------- | ----------- |
-| ai-gateway | `ai-gateway/` | Python FastAPI AI gateway — domestic LLM aggregation, RAG, billing, admin |
-| ai-gateway-go | `ai-gateway-go/` | Go AI gateway — high-concurrency proxy and routing |
-| spring-app | `spring-app/` | Java Spring Boot backend — blog API and sample services |
-
-Each subproject has (or should have) a `CONTEXT.md` describing its module layout.
-
-Read the `CONTEXT.md` in the relevant directory before working in that subproject.
+Read `AGENTS.md`, `docs/agents/domain.md`, and the relevant persistence
+conventions before changing code.
 
 ## Conventions
 
-- [模块分层规范](docs/conventions/module-structure.md) — api / common / service / repository / task / tool
+- [数据库建模与持久化约束](docs/conventions/database-standards.md)

@@ -11,8 +11,9 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/porsche/ai-gateway-go/internal/app"
+	"github.com/porsche/ai-gateway-go/internal/httpx"
 	"github.com/porsche/ai-gateway-go/internal/middleware"
-	"github.com/porsche/ai-gateway-go/internal/models"
+	"github.com/porsche/ai-gateway-go/internal/service"
 	"github.com/porsche/ai-gateway-go/internal/whitelabel"
 )
 
@@ -71,15 +72,19 @@ func RegisterAdmin(r *gin.Engine, state *app.State) {
 			platformWhiteLabelError(c, projectErr)
 			return
 		}
-		checkedAt := time.Now().UTC()
+		checkedAt := time.Now().UTC().UnixMilli()
 		latency := float64(time.Since(started).Milliseconds())
-		health := models.ModelHealth{ModelName: modelID, Provider: "whitelabel", IsAvailable: true, AvgLatencyMs: latency, LastCheckedAt: &checkedAt}
-		if err := state.DB.Where("model_name = ?", modelID).FirstOrCreate(&health).Error; err == nil {
-			health.IsAvailable, health.AvgLatencyMs, health.LastCheckedAt = true, latency, &checkedAt
-			_ = state.DB.Save(&health).Error
+		health, err := service.GetOrCreateModelHealth(state.DB, modelID, "whitelabel")
+		if err != nil {
+			httpx.AbortJSON(c, http.StatusInternalServerError, "读取模型健康状态失败")
+			return
+		}
+		if err := service.SaveModelHealthCheck(state.DB, health, true, latency, checkedAt); err != nil {
+			httpx.AbortJSON(c, http.StatusInternalServerError, "保存模型健康状态失败")
+			return
 		}
 		_ = state.Audit.Log(state.DB, "model.health_check", nil, modelID, nil, "")
-		c.JSON(http.StatusOK, gin.H{"model_id": modelID, "status": "healthy", "latency_ms": int(latency), "request_id": c.Writer.Header().Get("X-Request-ID"), "checked_at": checkedAt.Format(time.RFC3339)})
+		c.JSON(http.StatusOK, gin.H{"model_id": modelID, "status": "healthy", "latency_ms": int(latency), "request_id": c.Writer.Header().Get("X-Request-ID"), "checked_at": time.UnixMilli(checkedAt).UTC().Format(time.RFC3339)})
 	})
 }
 

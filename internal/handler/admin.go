@@ -26,31 +26,39 @@ func RegisterAdminUsers(r *gin.Engine, state *app.State) {
 		skip := parseUintQuery(c, "skip", 0)
 		limit := parseUintQuery(c, "limit", 50)
 		status := c.Query("status")
-		q := state.DB.Order("created_at desc").Offset(skip).Limit(limit)
+		q := state.DB.Where("is_deleted = 0").Order("created_at desc").Offset(skip).Limit(limit)
 		if status != "" {
-			q = q.Where("status = ?", status)
+			parsed, ok := models.ParseUserStatus(status)
+			if !ok {
+				httpx.AbortJSON(c, http.StatusUnprocessableEntity, "无效用户状态")
+				return
+			}
+			q = q.Where("status = ?", parsed)
 		}
 		var users []models.User
-		q.Find(&users)
+		if err := q.Find(&users).Error; err != nil {
+			httpx.AbortJSON(c, http.StatusInternalServerError, "读取用户失败")
+			return
+		}
 		out := make([]map[string]interface{}, 0, len(users))
 		for i := range users {
 			out = append(out, dto.AdminUser(&users[i]))
 		}
 		c.JSON(http.StatusOK, out)
 	})
-	g.GET("/:id", func(c *gin.Context) {
-		id, _ := strconv.ParseUint(c.Param("id"), 10, 64)
+	g.GET("/:guid", func(c *gin.Context) {
+		id, _ := strconv.ParseUint(c.Param("guid"), 10, 64)
 		var user models.User
-		if err := state.DB.First(&user, id).Error; err != nil {
+		if err := state.DB.Where("guid = ? AND is_deleted = 0", id).First(&user).Error; err != nil {
 			httpx.AbortJSON(c, http.StatusNotFound, "用户不存在")
 			return
 		}
 		c.JSON(http.StatusOK, dto.AdminUser(&user))
 	})
-	g.PUT("/:id", func(c *gin.Context) {
-		id, _ := strconv.ParseUint(c.Param("id"), 10, 64)
+	g.PUT("/:guid", func(c *gin.Context) {
+		id, _ := strconv.ParseUint(c.Param("guid"), 10, 64)
 		var user models.User
-		if err := state.DB.First(&user, id).Error; err != nil {
+		if err := state.DB.Where("guid = ? AND is_deleted = 0", id).First(&user).Error; err != nil {
 			httpx.AbortJSON(c, http.StatusNotFound, "用户不存在")
 			return
 		}
@@ -62,10 +70,20 @@ func RegisterAdminUsers(r *gin.Engine, state *app.State) {
 		}
 		_ = c.ShouldBindJSON(&body)
 		if body.Status != nil {
-			user.Status = models.UserStatus(*body.Status)
+			status, ok := models.ParseUserStatus(*body.Status)
+			if !ok {
+				httpx.AbortJSON(c, http.StatusUnprocessableEntity, "无效用户状态")
+				return
+			}
+			user.Status = status
 		}
 		if body.PlanType != nil {
-			user.PlanType = models.PlanType(*body.PlanType)
+			plan, ok := models.ParsePlanType(*body.PlanType)
+			if !ok {
+				httpx.AbortJSON(c, http.StatusUnprocessableEntity, "无效套餐类型")
+				return
+			}
+			user.PlanType = plan
 		}
 		if body.AllowedModels != nil {
 			user.AllowedModels = body.AllowedModels
@@ -73,17 +91,26 @@ func RegisterAdminUsers(r *gin.Engine, state *app.State) {
 		if body.DailyCallLimit != nil {
 			user.DailyCallLimit = *body.DailyCallLimit
 		}
-		_ = state.DB.Save(&user).Error
+		service.TouchAudit(&user.AuditFields, middleware.CurrentUserID(c))
+		if err := state.DB.Save(&user).Error; err != nil {
+			httpx.AbortJSON(c, http.StatusInternalServerError, "更新用户失败")
+			return
+		}
 		c.JSON(http.StatusOK, dto.AdminUser(&user))
 	})
-	g.GET("/:id/behavior", func(c *gin.Context) {
-		id, _ := strconv.ParseUint(c.Param("id"), 10, 64)
+	g.GET("/:guid/behavior", func(c *gin.Context) {
+		id, _ := strconv.ParseUint(c.Param("guid"), 10, 64)
 		var user models.User
-		if err := state.DB.First(&user, id).Error; err != nil {
+		if err := state.DB.Where("guid = ? AND is_deleted = 0", id).First(&user).Error; err != nil {
 			httpx.AbortJSON(c, http.StatusNotFound, "用户不存在")
 			return
 		}
-		c.JSON(http.StatusOK, service.UserBehavior(state.DB, int(id)))
+		behavior, err := service.UserBehavior(state.DB, user.ID)
+		if err != nil {
+			httpx.AbortJSON(c, http.StatusInternalServerError, "读取用户行为失败")
+			return
+		}
+		c.JSON(http.StatusOK, behavior)
 	})
 }
 
@@ -98,15 +125,28 @@ func RegisterAdminLogs(r *gin.Engine, state *app.State) {
 	g.GET("", func(c *gin.Context) {
 		skip := parseUintQuery(c, "skip", 0)
 		limit := parseUintQuery(c, "limit", 50)
-		q := state.DB.Order("created_at desc").Offset(skip).Limit(limit)
+		q := state.DB.Where("is_deleted = 0").Order("created_at desc").Offset(skip).Limit(limit)
 		if action := c.Query("action"); action != "" {
 			q = q.Where("action = ?", action)
 		}
-		if uid := c.Query("user_id"); uid != "" {
-			q = q.Where("user_id = ?", uid)
+		if rawGUID := c.Query("user_guid"); rawGUID != "" {
+			guid, err := strconv.ParseInt(rawGUID, 10, 64)
+			if err != nil || guid < 1 {
+				httpx.AbortJSON(c, http.StatusBadRequest, "无效用户标识")
+				return
+			}
+			var user models.User
+			if err := state.DB.Where("guid = ? AND is_deleted = 0", guid).First(&user).Error; err != nil {
+				httpx.AbortJSON(c, http.StatusNotFound, "用户不存在")
+				return
+			}
+			q = q.Where("user_id = ?", user.ID)
 		}
 		var logs []models.AuditLog
-		q.Find(&logs)
+		if err := q.Find(&logs).Error; err != nil {
+			httpx.AbortJSON(c, http.StatusInternalServerError, "读取审计日志失败")
+			return
+		}
 		out := make([]map[string]interface{}, 0, len(logs))
 		for i := range logs {
 			out = append(out, dto.AuditLog(&logs[i]))
@@ -137,7 +177,12 @@ func RegisterAdminLogs(r *gin.Engine, state *app.State) {
 func RegisterAdminDashboard(r *gin.Engine, state *app.State) {
 	g := r.Group("/admin/dashboard", middleware.RequireAdmin(state))
 	g.GET("", func(c *gin.Context) {
-		c.JSON(http.StatusOK, service.GetDashboard(state.DB))
+		dashboard, err := service.GetDashboard(state.DB)
+		if err != nil {
+			httpx.AbortJSON(c, http.StatusInternalServerError, "读取仪表盘失败")
+			return
+		}
+		c.JSON(http.StatusOK, dashboard)
 	})
 	g.GET("/models/health", func(c *gin.Context) {
 		if state.WhiteLabel == nil {
@@ -151,13 +196,12 @@ func RegisterAdminDashboard(r *gin.Engine, state *app.State) {
 		}
 		results := make([]map[string]interface{}, 0)
 		for _, model := range catalog.Data {
-			var health models.ModelHealth
-			err := state.DB.Where("model_name = ?", model.ID).First(&health).Error
+			health, err := service.GetOrCreateModelHealth(state.DB, model.ID, "whitelabel")
 			if err != nil {
-				health = models.ModelHealth{ModelName: model.ID, Provider: "whitelabel", IsAvailable: true}
-				_ = state.DB.Create(&health).Error
+				httpx.AbortJSON(c, http.StatusInternalServerError, "读取模型健康状态失败")
+				return
 			}
-			results = append(results, dto.ModelHealth(&health))
+			results = append(results, dto.ModelHealth(health))
 		}
 		c.JSON(http.StatusOK, results)
 	})
@@ -173,10 +217,10 @@ func RegisterAdminDashboard(r *gin.Engine, state *app.State) {
 		}
 		updated := make([]map[string]interface{}, 0)
 		for _, model := range catalog.Data {
-			var health models.ModelHealth
-			_ = state.DB.Where("model_name = ?", model.ID).First(&health).Error
-			if health.ID == 0 {
-				health = models.ModelHealth{ModelName: model.ID, Provider: "whitelabel"}
+			health, healthErr := service.GetOrCreateModelHealth(state.DB, model.ID, "whitelabel")
+			if healthErr != nil {
+				httpx.AbortJSON(c, http.StatusInternalServerError, "读取模型健康状态失败")
+				return
 			}
 			maxTokens := 5
 			payload, _ := json.Marshal(map[string]interface{}{"model": model.ID, "messages": []map[string]string{{"role": "user", "content": "Reply with OK."}}, "max_tokens": maxTokens, "n": 1, "stream": false})
@@ -190,13 +234,11 @@ func RegisterAdminDashboard(r *gin.Engine, state *app.State) {
 					chatErr = projectErr
 				}
 			}
-			health.IsAvailable = chatErr == nil
-			if chatErr != nil {
-				health.ErrorRate = minFloat(1, health.ErrorRate+0.1)
+			now := timeNowUTC().UnixMilli()
+			if err := service.SaveModelHealthCheck(state.DB, health, chatErr == nil, health.AvgLatencyMs, now); err != nil {
+				httpx.AbortJSON(c, http.StatusInternalServerError, "保存模型健康状态失败")
+				return
 			}
-			now := timeNowUTC()
-			health.LastCheckedAt = &now
-			_ = state.DB.Save(&health).Error
 			updated = append(updated, map[string]interface{}{"model": model.ID, "available": chatErr == nil})
 		}
 		c.JSON(http.StatusOK, gin.H{"checked": updated})
