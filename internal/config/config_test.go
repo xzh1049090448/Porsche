@@ -12,6 +12,22 @@ func TestLoadRejectsNonMySQLDatabaseURL(t *testing.T) {
 	}
 }
 
+func TestLoadMigrationSettingsDoesNotRequireUpstreamConfiguration(t *testing.T) {
+	t.Setenv("UPSTREAM_REGION", "")
+	t.Setenv("JIEKOU_API_KEY", "")
+	t.Setenv("JIEKOU_ALLOWED_MODELS", "")
+	t.Setenv("DATABASE_URL", "mysql://test:test@localhost:3306/porsche_test")
+	t.Setenv("SNOWFLAKE_NODE_ID", "7")
+
+	got, err := LoadMigrationSettings()
+	if err != nil {
+		t.Fatalf("LoadMigrationSettings() error = %v", err)
+	}
+	if got.DatabaseURL == "" || got.SnowflakeNodeID != 7 {
+		t.Fatalf("unexpected migration settings: %#v", got)
+	}
+}
+
 func TestWhiteLabelSettingsFailClosedAndUseFixedRegionURLs(t *testing.T) {
 	for _, tc := range []struct {
 		name, region, key, models, wantURL string

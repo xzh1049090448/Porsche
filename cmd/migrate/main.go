@@ -18,7 +18,7 @@ func main() {
 	if len(os.Args) != 2 || (os.Args[1] != "up" && os.Args[1] != "status") {
 		log.Fatal("usage: migrate <up|status>")
 	}
-	settings, err := config.Load()
+	settings, err := config.LoadMigrationSettings()
 	if err != nil {
 		log.Fatalf("load config: %v", err)
 	}

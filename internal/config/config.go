@@ -150,6 +150,25 @@ func Load() (*Settings, error) {
 	return s, nil
 }
 
+// LoadMigrationSettings loads only the configuration required to inspect or
+// apply schema migrations. Migrations must not require an upstream API key.
+func LoadMigrationSettings() (*Settings, error) {
+	_ = godotenv.Load()
+	s := &Settings{
+		AppEnv:      getEnv("APP_ENV", "development"),
+		DatabaseURL: strings.TrimSpace(os.Getenv("DATABASE_URL")),
+	}
+	if !isMySQLURL(s.DatabaseURL) {
+		return nil, fmt.Errorf("DATABASE_URL must use mysql://, mysql+aiomysql://, or mysql+asyncmy://")
+	}
+	var err error
+	s.SnowflakeNodeID, err = requiredSnowflakeNodeID(os.Getenv("SNOWFLAKE_NODE_ID"))
+	if err != nil {
+		return nil, err
+	}
+	return s, nil
+}
+
 func isMySQLURL(databaseURL string) bool {
 	return strings.HasPrefix(databaseURL, "mysql://") ||
 		strings.HasPrefix(databaseURL, "mysql+aiomysql://") ||
