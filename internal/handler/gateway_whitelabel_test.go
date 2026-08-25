@@ -221,7 +221,7 @@ func TestGatewayChatAuthenticatesBeforeReadingOrValidatingBody(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := state.GatewayTokens.Revoke(user.ID, revoked.ID); err != nil {
+	if err := state.GatewayTokens.Revoke(user.ID, revoked.Guid); err != nil {
 		t.Fatal(err)
 	}
 	_, deniedSecret, err := state.GatewayTokens.Create(user, service.GatewayTokenCreateInput{Name: "ip", AllowedModels: models.JSONSlice{"model-a"}, IPAllowlist: models.JSONSlice{"203.0.113.1"}})
