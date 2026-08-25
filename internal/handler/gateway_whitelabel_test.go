@@ -471,8 +471,7 @@ func gatewayWhiteLabelState(t *testing.T, catalog string) (*app.State, *httptest
 		}
 	}))
 	t.Cleanup(upstream.Close)
-	dir := t.TempDir()
-	settings := &config.Settings{AppEnv: "test", DatabaseURL: "sqlite://" + dir + "/gateway.db", AllowedHosts: "example.com", JWTSecretKey: "test", ChromaPersistDir: dir + "/chroma", DatasetUploadDir: dir + "/uploads"}
+	settings := &config.Settings{AppEnv: "test", DatabaseURL: "mysql://test:test@localhost:3306/platform", AllowedHosts: "example.com", JWTSecretKey: "test"}
 	gdb, err := db.Open(settings.DatabaseURL, "test")
 	if err != nil {
 		t.Fatal(err)

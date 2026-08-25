@@ -1,10 +1,18 @@
 package db
 
 import (
+	"strings"
 	"testing"
 
 	drivermysql "github.com/go-sql-driver/mysql"
 )
+
+func TestOpenRejectsSQLiteURLWithoutCreatingFiles(t *testing.T) {
+	_, err := Open("sqlite://./data/platform.db", "test")
+	if err == nil || !strings.Contains(err.Error(), "unsupported DATABASE_URL") {
+		t.Fatalf("Open() error = %v, want unsupported DATABASE_URL", err)
+	}
+}
 
 func TestMySQLURLToDSNAcceptsPythonAIOMySQLURL(t *testing.T) {
 	dsn, err := mysqlURLToDSN("mysql+aiomysql://platform:platform@mysql:3306/platform")

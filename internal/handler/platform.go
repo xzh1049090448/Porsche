@@ -161,7 +161,7 @@ func platformStreamPreError(c *gin.Context, err error) {
 	platformWhiteLabelError(c, whitelabel.ErrUpstreamUnavailable("platform stream failed"))
 }
 
-// decodePlatformRequest separates local conversation/RAG fields from the
+// decodePlatformRequest separates local conversation fields from the
 // OpenAI-compatible payload, then applies the same closed validation used by
 // /v1 before any catalog lookup or upstream request.
 func decodePlatformRequest(c *gin.Context, dest interface{}, compare bool) *whitelabel.Error {
@@ -178,7 +178,7 @@ func decodePlatformRequest(c *gin.Context, dest interface{}, compare bool) *whit
 	if json.Unmarshal(raw, &fields) != nil {
 		return &whitelabel.Error{Code: whitelabel.CodeInvalidRequest, Status: http.StatusBadRequest, Type: whitelabel.TypeInvalidRequest}
 	}
-	for _, field := range []string{"conversation_id", "context_window", "dataset_enabled", "dataset_ids"} {
+	for _, field := range []string{"conversation_id", "context_window"} {
 		delete(fields, field)
 	}
 	if compare {
@@ -249,8 +249,6 @@ type platformChatBody struct {
 	MaxTokens      *int                     `json:"max_tokens"`
 	ContextWindow  *int                     `json:"context_window"`
 	Stream         bool                     `json:"stream"`
-	DatasetEnabled bool                     `json:"dataset_enabled"`
-	DatasetIDs     []int                    `json:"dataset_ids"`
 	WhiteLabelBody []byte                   `json:"-"`
 }
 
@@ -262,8 +260,6 @@ func (b platformChatBody) toParams() service.ChatParams {
 		Temperature:    b.Temperature,
 		MaxTokens:      b.MaxTokens,
 		ContextWindow:  b.ContextWindow,
-		DatasetEnabled: b.DatasetEnabled,
-		DatasetIDs:     b.DatasetIDs,
 		WhiteLabelBody: b.WhiteLabelBody,
 	}
 }
@@ -276,8 +272,6 @@ type platformCompareBody struct {
 	MaxTokens      *int                     `json:"max_tokens"`
 	ContextWindow  *int                     `json:"context_window"`
 	Stream         bool                     `json:"stream"`
-	DatasetEnabled bool                     `json:"dataset_enabled"`
-	DatasetIDs     []int                    `json:"dataset_ids"`
 	WhiteLabelBody []byte                   `json:"-"`
 }
 
@@ -288,8 +282,6 @@ func (b platformCompareBody) toParams() service.ChatParams {
 		Temperature:    b.Temperature,
 		MaxTokens:      b.MaxTokens,
 		ContextWindow:  b.ContextWindow,
-		DatasetEnabled: b.DatasetEnabled,
-		DatasetIDs:     b.DatasetIDs,
 		WhiteLabelBody: b.WhiteLabelBody,
 	}
 }

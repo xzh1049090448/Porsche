@@ -104,8 +104,7 @@ func TestAdminHealthCheckRejectsConcurrentSameModel(t *testing.T) {
 
 func newPlatformWhiteLabelTestState(t *testing.T) *app.State {
 	t.Helper()
-	dir := t.TempDir()
-	settings := &config.Settings{AppEnv: "test", DatabaseURL: "sqlite://" + dir + "/platform.db", JWTSecretKey: "test-secret", ChromaPersistDir: dir + "/chroma", DatasetUploadDir: dir + "/uploads"}
+	settings := &config.Settings{AppEnv: "test", DatabaseURL: "mysql://test:test@localhost:3306/platform", JWTSecretKey: "test-secret"}
 	gdb, err := db.Open(settings.DatabaseURL, "test")
 	if err != nil {
 		t.Fatal(err)
@@ -126,7 +125,7 @@ func newPlatformWhiteLabelTestState(t *testing.T) *app.State {
 	}
 	state.WhiteLabel = whiteLabel
 	state.Platform = service.NewPlatformChatService(service.PlatformDeps{
-		Settings: settings, DB: state.DB, RAG: state.RAG, Billing: state.Billing, WhiteLabel: whiteLabel,
+		Settings: settings, DB: state.DB, Billing: state.Billing, WhiteLabel: whiteLabel,
 	})
 	return state
 }

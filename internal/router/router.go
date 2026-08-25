@@ -27,14 +27,12 @@ func New(state *app.State) *gin.Engine {
 	handler.RegisterAuth(r, state)
 	handler.RegisterUsers(r, state)
 	handler.RegisterConversations(r, state)
-	handler.RegisterDatasets(r, state)
 	handler.RegisterBilling(r, state)
 	handler.RegisterPlatform(r, state)
 	handler.RegisterAnalytics(r, state)
 
 	handler.RegisterAdmin(r, state)
 	handler.RegisterAdminUsers(r, state)
-	handler.RegisterAdminDatasets(r, state)
 	handler.RegisterAdminLogs(r, state)
 	handler.RegisterAdminDashboard(r, state)
 

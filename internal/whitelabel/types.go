@@ -68,7 +68,7 @@ type ChatMessage struct {
 }
 
 // ChatCompletionRequest holds the platform fields needed to build a
-// white-label request after validation and optional RAG enrichment.
+// white-label request after platform validation.
 type ChatCompletionRequest struct {
 	Model       string        `json:"model"`
 	Messages    []ChatMessage `json:"messages"`

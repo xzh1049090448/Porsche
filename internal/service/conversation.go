@@ -10,7 +10,7 @@ import (
 
 type ConversationService struct{}
 
-func CreateConversation(db *gorm.DB, user *models.User, title, model string, datasetEnabled bool, datasetIDs []int) (*models.Conversation, error) {
+func CreateConversation(db *gorm.DB, user *models.User, title, model string) (*models.Conversation, error) {
 	t := "新对话"
 	if title != "" {
 		t = title
@@ -20,11 +20,9 @@ func CreateConversation(db *gorm.DB, user *models.User, title, model string, dat
 		modelPtr = &model
 	}
 	conv := models.Conversation{
-		UserID:         user.ID,
-		Title:          t,
-		Model:          modelPtr,
-		DatasetEnabled: datasetEnabled,
-		DatasetIDs:     datasetIDs,
+		UserID: user.ID,
+		Title:  t,
+		Model:  modelPtr,
 	}
 	return &conv, db.Create(&conv).Error
 }
@@ -70,19 +68,17 @@ func DeleteConversation(db *gorm.DB, user *models.User, id int) error {
 	return db.Select("Messages").Delete(conv).Error
 }
 
-func AddMessage(db *gorm.DB, conv *models.Conversation, role, content, model string, datasetUsed bool, attribution *string, tokens int) (*models.Message, error) {
+func AddMessage(db *gorm.DB, conv *models.Conversation, role, content, model string, tokens int) (*models.Message, error) {
 	var modelPtr *string
 	if model != "" {
 		modelPtr = &model
 	}
 	msg := models.Message{
-		ConversationID:     conv.ID,
-		Role:               role,
-		Content:            content,
-		Model:              modelPtr,
-		DatasetUsed:        datasetUsed,
-		DatasetAttribution: attribution,
-		Tokens:             tokens,
+		ConversationID: conv.ID,
+		Role:           role,
+		Content:        content,
+		Model:          modelPtr,
+		Tokens:         tokens,
 	}
 	if err := db.Create(&msg).Error; err != nil {
 		return nil, err
@@ -112,9 +108,6 @@ func ExportMarkdown(conv *models.Conversation) string {
 			label = msg.Role
 		}
 		lines = append(lines, fmt.Sprintf("## %s", label), msg.Content)
-		if msg.DatasetAttribution != nil && *msg.DatasetAttribution != "" {
-			lines = append(lines, fmt.Sprintf("> %s", *msg.DatasetAttribution))
-		}
 		lines = append(lines, "")
 	}
 	return strings.Join(lines, "\n")

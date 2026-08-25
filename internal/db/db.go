@@ -4,14 +4,10 @@ import (
 	"fmt"
 	"net"
 	neturl "net/url"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
-	"github.com/glebarez/sqlite"
 	drivermysql "github.com/go-sql-driver/mysql"
-	"github.com/porsche/ai-gateway-go/internal/models"
 	gormmysql "gorm.io/driver/mysql"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
@@ -23,56 +19,17 @@ func Open(databaseURL string, appEnv string) (*gorm.DB, error) {
 		logLevel = logger.Info
 	}
 
-	var dialector gorm.Dialector
 	url := strings.TrimSpace(databaseURL)
-
-	switch {
-	case strings.HasPrefix(url, "sqlite://"):
-		path := strings.TrimPrefix(url, "sqlite://")
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			return nil, err
-		}
-		dialector = sqlite.Open(path)
-	case strings.HasPrefix(url, "mysql://"), strings.HasPrefix(url, "mysql+aiomysql://"), strings.HasPrefix(url, "mysql+asyncmy://"):
-		dsn, err := mysqlURLToDSN(url)
-		if err != nil {
-			return nil, err
-		}
-		dialector = gormmysql.Open(dsn)
-	default:
-		if strings.Contains(url, "aiosqlite") || strings.Contains(url, "sqlite") {
-			path := "./data/platform.db"
-			if idx := strings.LastIndex(url, "///"); idx >= 0 {
-				path = strings.TrimPrefix(url[idx+3:], "./")
-				if !strings.HasPrefix(path, "./") && !strings.HasPrefix(path, "/") {
-					path = "./" + path
-				}
-			}
-			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-				return nil, err
-			}
-			dialector = sqlite.Open(path)
-		} else {
-			return nil, fmt.Errorf("unsupported DATABASE_URL: %s", databaseURL)
-		}
+	if !strings.HasPrefix(url, "mysql://") && !strings.HasPrefix(url, "mysql+aiomysql://") && !strings.HasPrefix(url, "mysql+asyncmy://") {
+		return nil, fmt.Errorf("unsupported DATABASE_URL: %s", databaseURL)
 	}
-
-	gdb, err := gorm.Open(dialector, &gorm.Config{Logger: logger.Default.LogMode(logLevel)})
+	dsn, err := mysqlURLToDSN(url)
 	if err != nil {
 		return nil, err
 	}
 
-	// The existing MySQL schema is shared with the retired Python service.
-	// Only the gateway-owned table may be created there; mutating legacy tables
-	// would be an unsafe, implicit data migration. SQLite remains self-contained.
-	migrate := []interface{}{&models.GatewayAPIToken{}}
-	if !strings.HasPrefix(url, "mysql") {
-		migrate = append([]interface{}{
-			&models.User{}, &models.Conversation{}, &models.Message{}, &models.Dataset{}, &models.DatasetVersion{},
-			&models.UsageRecord{}, &models.Order{}, &models.AuditLog{}, &models.ModelHealth{},
-		}, migrate...)
-	}
-	if err := gdb.AutoMigrate(migrate...); err != nil {
+	gdb, err := gorm.Open(gormmysql.Open(dsn), &gorm.Config{Logger: logger.Default.LogMode(logLevel)})
+	if err != nil {
 		return nil, err
 	}
 

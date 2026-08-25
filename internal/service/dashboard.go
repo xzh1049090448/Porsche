@@ -19,9 +19,8 @@ func GetDashboard(db *gorm.DB) map[string]interface{} {
 		Distinct("user_id").
 		Count(&activeToday)
 
-	var totalTokens, datasetCalls int64
+	var totalTokens int64
 	db.Model(&models.User{}).Select("COALESCE(SUM(total_tokens_used),0)").Scan(&totalTokens)
-	db.Model(&models.User{}).Select("COALESCE(SUM(dataset_calls),0)").Scan(&datasetCalls)
 
 	modelUsage := map[string]int64{}
 	var modelRows []struct {
@@ -36,19 +35,6 @@ func GetDashboard(db *gorm.DB) map[string]interface{} {
 		}
 	}
 
-	datasetUsage := map[string]int64{}
-	var dsRows []struct {
-		DatasetID int
-		Count     int64
-	}
-	db.Model(&models.UsageRecord{}).Select("dataset_id, count(*) as count").
-		Where("dataset_id IS NOT NULL").Group("dataset_id").Scan(&dsRows)
-	for _, row := range dsRows {
-		if row.DatasetID > 0 {
-			datasetUsage[itoa(int(row.DatasetID))] = row.Count
-		}
-	}
-
 	planDistribution := map[string]int64{}
 	var planRows []struct {
 		PlanType models.PlanType
@@ -60,14 +46,12 @@ func GetDashboard(db *gorm.DB) map[string]interface{} {
 	}
 
 	return map[string]interface{}{
-		"total_users":          totalUsers,
-		"active_users_today":   activeToday,
-		"total_conversations":  totalConversations,
-		"total_tokens":         totalTokens,
-		"dataset_calls":        datasetCalls,
-		"model_usage":          modelUsage,
-		"dataset_usage":        datasetUsage,
-		"plan_distribution":    planDistribution,
+		"total_users":         totalUsers,
+		"active_users_today":  activeToday,
+		"total_conversations": totalConversations,
+		"total_tokens":        totalTokens,
+		"model_usage":         modelUsage,
+		"plan_distribution":   planDistribution,
 	}
 }
 
@@ -92,43 +76,7 @@ func UserBehavior(db *gorm.DB, userID int) map[string]interface{} {
 		})
 	}
 
-	datasetUsage := map[string]int64{}
-	var dsRows []struct {
-		DatasetID int
-		Count     int64
-	}
-	db.Model(&models.UsageRecord{}).
-		Select("dataset_id, count(*) as count").
-		Where("user_id = ? AND dataset_id IS NOT NULL", userID).
-		Group("dataset_id").Scan(&dsRows)
-	for _, row := range dsRows {
-		if row.DatasetID > 0 {
-			datasetUsage[itoa(int(row.DatasetID))] = row.Count
-		}
-	}
-
 	return map[string]interface{}{
 		"model_preferences": modelsOut,
-		"dataset_usage":     datasetUsage,
 	}
-}
-
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	neg := false
-	if n < 0 {
-		neg = true
-		n = -n
-	}
-	var digits []byte
-	for n > 0 {
-		digits = append([]byte{byte('0' + n%10)}, digits...)
-		n /= 10
-	}
-	if neg {
-		digits = append([]byte{'-'}, digits...)
-	}
-	return string(digits)
 }

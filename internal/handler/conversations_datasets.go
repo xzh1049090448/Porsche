@@ -38,10 +38,8 @@ func RegisterConversations(r *gin.Engine, state *app.State) {
 	g.POST("", func(c *gin.Context) {
 		user := middleware.CurrentUser(c)
 		var body struct {
-			Title          *string `json:"title"`
-			Model          *string `json:"model"`
-			DatasetEnabled bool    `json:"dataset_enabled"`
-			DatasetIDs     []int   `json:"dataset_ids"`
+			Title *string `json:"title"`
+			Model *string `json:"model"`
 		}
 		_ = c.ShouldBindJSON(&body)
 		title, model := "", ""
@@ -51,7 +49,7 @@ func RegisterConversations(r *gin.Engine, state *app.State) {
 		if body.Model != nil {
 			model = *body.Model
 		}
-		conv, err := service.CreateConversation(state.DB, user, title, model, body.DatasetEnabled, body.DatasetIDs)
+		conv, err := service.CreateConversation(state.DB, user, title, model)
 		if err != nil {
 			httpx.AbortJSON(c, http.StatusInternalServerError, err.Error())
 			return
@@ -114,45 +112,5 @@ func RegisterConversations(r *gin.Engine, state *app.State) {
 			return
 		}
 		c.Data(http.StatusOK, "text/plain; charset=utf-8", []byte(service.ExportMarkdown(conv)))
-	})
-}
-
-func RegisterDatasets(r *gin.Engine, state *app.State) {
-	g := r.Group("/api/v1/datasets", middleware.RequireUser(state))
-	g.GET("", func(c *gin.Context) {
-		user := middleware.CurrentUser(c)
-		var rows []models.Dataset
-		state.DB.Where("status = ?", models.DatasetActive).Order("id asc").Find(&rows)
-		items := make([]map[string]interface{}, 0)
-		plan := string(user.PlanType)
-		for i := range rows {
-			ds := &rows[i]
-			if len(user.AllowedDatasets) > 0 {
-				found := false
-				for _, id := range user.AllowedDatasets {
-					if id == int(ds.ID) {
-						found = true
-						break
-					}
-				}
-				if !found {
-					continue
-				}
-			}
-			if len(ds.AccessPlans) > 0 {
-				ok := false
-				for _, p := range ds.AccessPlans {
-					if p == plan {
-						ok = true
-						break
-					}
-				}
-				if !ok {
-					continue
-				}
-			}
-			items = append(items, dto.Dataset(ds))
-		}
-		c.JSON(http.StatusOK, gin.H{"items": items})
 	})
 }

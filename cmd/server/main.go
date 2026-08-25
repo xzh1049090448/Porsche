@@ -3,8 +3,6 @@ package main
 import (
 	"fmt"
 	"log"
-	"os"
-	"path/filepath"
 
 	"github.com/porsche/ai-gateway-go/internal/app"
 	"github.com/porsche/ai-gateway-go/internal/config"
@@ -16,16 +14,6 @@ func main() {
 	settings, err := config.Load()
 	if err != nil {
 		log.Fatalf("load config: %v", err)
-	}
-
-	for _, dir := range []string{
-		settings.ChromaPersistDir,
-		settings.DatasetUploadDir,
-		filepath.Dir("./data/platform.db"),
-	} {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			log.Fatalf("mkdir %s: %v", dir, err)
-		}
 	}
 
 	gdb, err := db.Open(settings.DatabaseURL, settings.AppEnv)

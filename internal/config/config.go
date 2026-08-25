@@ -21,6 +21,7 @@ type Settings struct {
 	CircuitFailureThreshold  int
 	CircuitOpenSeconds       int
 	DatabaseURL              string
+	SnowflakeNodeID          int
 	JWTSecretKey             string
 	JWTExpireMinutes         int
 	FixedLoginEnabled        bool
@@ -35,12 +36,6 @@ type Settings struct {
 	TrustProxyHeaders        bool
 	TrustedProxyCIDRs        string
 	RealNameAutoVerify       bool
-	DatasetUploadMaxBytes    int64
-	ChromaPersistDir         string
-	RAGTopK                  int
-	RAGChunkSize             int
-	RAGChunkOverlap          int
-	DatasetUploadDir         string
 	PlanProfessionalPrice    float64
 	PlanEnterprisePrice      float64
 	AnalyticsAdminPhones     string
@@ -113,7 +108,7 @@ func Load() (*Settings, error) {
 		UpstreamTimeoutSeconds:   getEnvFloat("UPSTREAM_TIMEOUT_SECONDS", 120),
 		CircuitFailureThreshold:  getEnvInt("CIRCUIT_FAILURE_THRESHOLD", 5),
 		CircuitOpenSeconds:       getEnvInt("CIRCUIT_OPEN_SECONDS", 60),
-		DatabaseURL:              getEnv("DATABASE_URL", "sqlite://./data/platform.db"),
+		DatabaseURL:              strings.TrimSpace(os.Getenv("DATABASE_URL")),
 		JWTSecretKey:             getEnv("JWT_SECRET_KEY", "change-me-jwt-secret-for-dev-only"),
 		JWTExpireMinutes:         getEnvInt("JWT_EXPIRE_MINUTES", 60*24*7),
 		FixedLoginEnabled:        getEnvBool("FIXED_LOGIN_ENABLED", true),
@@ -128,17 +123,19 @@ func Load() (*Settings, error) {
 		TrustProxyHeaders:        getEnvBool("TRUST_PROXY_HEADERS", false),
 		TrustedProxyCIDRs:        strings.TrimSpace(os.Getenv("TRUSTED_PROXY_CIDRS")),
 		RealNameAutoVerify:       getEnvBool("REAL_NAME_AUTO_VERIFY", true),
-		DatasetUploadMaxBytes:    int64(getEnvInt("DATASET_UPLOAD_MAX_BYTES", 50*1024*1024)),
-		ChromaPersistDir:         getEnv("CHROMA_PERSIST_DIR", "./data/chroma"),
-		RAGTopK:                  getEnvInt("RAG_TOP_K", 5),
-		RAGChunkSize:             getEnvInt("RAG_CHUNK_SIZE", 512),
-		RAGChunkOverlap:          getEnvInt("RAG_CHUNK_OVERLAP", 64),
-		DatasetUploadDir:         getEnv("DATASET_UPLOAD_DIR", "./data/uploads"),
 		PlanProfessionalPrice:    getEnvFloat("PLAN_PROFESSIONAL_PRICE", 99),
 		PlanEnterprisePrice:      getEnvFloat("PLAN_ENTERPRISE_PRICE", 999),
 		AnalyticsAdminPhones:     strings.TrimSpace(os.Getenv("ANALYTICS_ADMIN_PHONES")),
 		AnalyticsTokenPricePer1K: getEnvFloat("ANALYTICS_TOKEN_PRICE_PER_1K", 1),
 		WhiteLabel:               whiteLabel,
+	}
+	if !isMySQLURL(s.DatabaseURL) {
+		return nil, fmt.Errorf("DATABASE_URL must use mysql://, mysql+aiomysql://, or mysql+asyncmy://")
+	}
+	var nodeErr error
+	s.SnowflakeNodeID, nodeErr = requiredSnowflakeNodeID(os.Getenv("SNOWFLAKE_NODE_ID"))
+	if nodeErr != nil {
+		return nil, nodeErr
 	}
 
 	if s.AppEnv == "development" {
@@ -151,6 +148,20 @@ func Load() (*Settings, error) {
 	}
 
 	return s, nil
+}
+
+func isMySQLURL(databaseURL string) bool {
+	return strings.HasPrefix(databaseURL, "mysql://") ||
+		strings.HasPrefix(databaseURL, "mysql+aiomysql://") ||
+		strings.HasPrefix(databaseURL, "mysql+asyncmy://")
+}
+
+func requiredSnowflakeNodeID(raw string) (int, error) {
+	nodeID, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || nodeID < 0 || nodeID > 1023 {
+		return 0, fmt.Errorf("SNOWFLAKE_NODE_ID must be an integer from 0 to 1023")
+	}
+	return nodeID, nil
 }
 
 func getEnv(key, def string) string {
