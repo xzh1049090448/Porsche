@@ -65,6 +65,47 @@ func TestPlatformModelDetailHidesUnauthorizedAs404(t *testing.T) {
 	}
 }
 
+func TestModelIDFromDetailQueryPreservesLegacyDetailAndEmptyQuery(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, tc := range []struct {
+		url  string
+		want string
+	}{
+		{url: "/models/detail", want: "detail"},
+		{url: "/models/detail?id=", want: ""},
+		{url: "/models/detail?id=zai-org%2Fglm-5.1", want: "zai-org/glm-5.1"},
+	} {
+		req := httptest.NewRequest(http.MethodGet, tc.url, nil)
+		ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+		ctx.Request = req
+		if got := modelIDFromDetailQuery(ctx); got != tc.want {
+			t.Fatalf("url=%s model ID=%q, want %q", tc.url, got, tc.want)
+		}
+	}
+}
+
+func TestPlatformDetailRoutePreservesLegacyDetailModelID(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	const modelID = "detail"
+	state, detailCalls := newSlashPlatformWhiteLabelTestState(t, modelID)
+	user := platformTestUser("13900139008", models.JSONSlice{modelID})
+	if err := state.DB.Create(&user).Error; err != nil {
+		t.Fatal(err)
+	}
+	engine := gin.New()
+	RegisterPlatform(engine, state)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/platform/models/detail", nil)
+	req.Header.Set("Authorization", "Bearer "+platformJWT(t, state, &user))
+	rec := httptest.NewRecorder()
+	engine.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"id":"detail"`) {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := detailCalls.Load(); got != 1 {
+		t.Fatalf("detail upstream calls=%d, want 1", got)
+	}
+}
+
 func TestPlatformSlashModelDetailUsesQueryIDAndUserACL(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	const modelID = "zai-org/glm-5.1"
@@ -212,10 +253,10 @@ func newSlashPlatformWhiteLabelTestState(t *testing.T, modelID string) (*app.Sta
 	}
 	var detailCalls atomic.Int64
 	whiteLabel, err := whitelabel.NewWhiteLabelService(config.WhiteLabelSettings{BaseURL: "https://white-label.test/v1", APIKey: "test-key", AllowedModels: map[string]struct{}{modelID: {}}}, &http.Client{Transport: platformRoundTripper(func(req *http.Request) (*http.Response, error) {
-		body := `{"data":[{"id":"zai-org/glm-5.1","title":"GLM"}]}`
-		if strings.HasSuffix(req.URL.EscapedPath(), "/models/zai-org%2Fglm-5.1") {
+		body := `{"data":[{"id":"` + modelID + `","title":"Model"}]}`
+		if strings.HasSuffix(req.URL.EscapedPath(), "/models/"+modelID) || strings.HasSuffix(req.URL.EscapedPath(), "/models/zai-org%2Fglm-5.1") {
 			detailCalls.Add(1)
-			body = `{"id":"zai-org/glm-5.1","title":"GLM"}`
+			body = `{"id":"` + modelID + `","title":"Model"}`
 		}
 		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: req}, nil
 	})}, nil)

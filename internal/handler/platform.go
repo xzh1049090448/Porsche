@@ -32,7 +32,7 @@ func RegisterPlatform(r *gin.Engine, state *app.State) {
 	})
 
 	g.GET("/models/detail", func(c *gin.Context) {
-		platformModelDetail(c, state, c.Query("id"))
+		platformModelDetail(c, state, modelIDFromDetailQuery(c))
 	})
 
 	g.GET("/models/:id", func(c *gin.Context) {
@@ -159,6 +159,16 @@ func platformModelDetail(c *gin.Context, state *app.State, modelID string) {
 		return
 	}
 	c.JSON(http.StatusOK, model)
+}
+
+// modelIDFromDetailQuery leaves the previous /models/detail route behavior
+// intact for a legacy model literally named "detail". An explicitly supplied
+// query value, including an empty one, always uses the new query-ID contract.
+func modelIDFromDetailQuery(c *gin.Context) string {
+	if modelID, present := c.GetQuery("id"); present {
+		return modelID
+	}
+	return "detail"
 }
 
 func platformStreamPreError(c *gin.Context, err error) {

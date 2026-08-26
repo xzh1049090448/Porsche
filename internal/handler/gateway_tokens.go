@@ -40,7 +40,7 @@ func registerGatewayRoutes(r *gin.Engine, state *app.State) {
 		c.JSON(http.StatusOK, gin.H{"object": "list", "data": catalog.Data})
 	})
 	g.GET("/models/detail", func(c *gin.Context) {
-		gatewayModelDetail(c, state, c.Query("id"))
+		gatewayModelDetail(c, state, modelIDFromDetailQuery(c))
 	})
 	g.GET("/models/:id", func(c *gin.Context) {
 		gatewayModelDetail(c, state, c.Param("id"))
