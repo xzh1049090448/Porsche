@@ -74,6 +74,74 @@ func TestModelACLIntersectsConfiguredAllowlist(t *testing.T) {
 	requireServiceCode(t, err, CodeModelUnavailable)
 }
 
+func TestGetModelEscapesSlashModelIDAsOneUpstreamPathSegment(t *testing.T) {
+	const modelID = "zai-org/glm-5.1"
+	var detailEscapedPath string
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/openai/v1/models":
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": []map[string]any{{"id": modelID}}})
+		case "/openai/v1/models/zai-org/glm-5.1":
+			detailEscapedPath = r.URL.EscapedPath()
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": modelID})
+		default:
+			t.Errorf("upstream path = %q, want catalog or slash-model detail path", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(up.Close)
+
+	svc := newServiceWithAllowed(t, up.URL+"/openai/v1", &testClock{now: time.Now().UTC()}, modelID)
+	model, err := svc.GetModel(context.Background(), modelID, nil)
+	requireNoServiceError(t, err)
+	if model.ID != modelID {
+		t.Fatalf("model ID = %q, want %q", model.ID, modelID)
+	}
+	if detailEscapedPath != "/openai/v1/models/zai-org%2Fglm-5.1" {
+		t.Fatalf("escaped detail path = %q, want slash escaped exactly once", detailEscapedPath)
+	}
+}
+
+func TestCatalogWithEmptyUpstreamDataMarshalsAsArray(t *testing.T) {
+	up := newWhiteLabelServer(t, []map[string]any{})
+	svc := newService(t, up.URL(), &testClock{now: time.Now().UTC()})
+
+	catalog, err := svc.ListModels(context.Background(), nil)
+	requireNoServiceError(t, err)
+	if catalog.Data == nil || len(catalog.Data) != 0 {
+		t.Fatalf("catalog data = %#v, want non-nil empty slice", catalog.Data)
+	}
+	payload, marshalErr := json.Marshal(struct {
+		Data []Model `json:"data"`
+	}{Data: catalog.Data})
+	if marshalErr != nil {
+		t.Fatalf("marshal catalog data: %v", marshalErr)
+	}
+	if string(payload) != `{"data":[]}` {
+		t.Fatalf("JSON payload = %s, want data array", payload)
+	}
+}
+
+func TestUnsafeOrACLDeniedSlashModelIDDoesNotCallDetailUpstream(t *testing.T) {
+	const allowedSlashID = "zai-org/glm-5.1"
+	up := newWhiteLabelServer(t, []map[string]any{{"id": allowedSlashID}})
+	svc := newServiceWithAllowed(t, up.URL(), &testClock{now: time.Now().UTC()}, allowedSlashID)
+
+	for _, test := range []struct {
+		id  string
+		acl []string
+	}{
+		{id: "org/../model"},
+		{id: allowedSlashID, acl: []string{"another-org/other-model"}},
+	} {
+		_, err := svc.GetModel(context.Background(), test.id, test.acl)
+		requireServiceCode(t, err, CodeModelUnavailable)
+	}
+	if got := up.detailCalls(); got != 0 {
+		t.Fatalf("unsafe or denied slash model ID made %d detail upstream calls, want 0", got)
+	}
+}
+
 func TestDetailTransportFailureDoesNotDisableModelOrLeakStaleCatalog(t *testing.T) {
 	up := newWhiteLabelServer(t, []map[string]any{{"id": "model-a"}})
 	clock := &testClock{now: time.Now().UTC()}
