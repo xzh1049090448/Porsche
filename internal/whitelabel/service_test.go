@@ -108,6 +108,9 @@ func TestCatalogWithEmptyUpstreamDataMarshalsAsArray(t *testing.T) {
 
 	catalog, err := svc.ListModels(context.Background(), nil)
 	requireNoServiceError(t, err)
+	if got := up.totalCalls(); got != 1 {
+		t.Fatalf("catalog request count = %d, want 1", got)
+	}
 	if catalog.Data == nil || len(catalog.Data) != 0 {
 		t.Fatalf("catalog data = %#v, want non-nil empty slice", catalog.Data)
 	}
@@ -122,23 +125,27 @@ func TestCatalogWithEmptyUpstreamDataMarshalsAsArray(t *testing.T) {
 	}
 }
 
-func TestUnsafeOrACLDeniedSlashModelIDDoesNotCallDetailUpstream(t *testing.T) {
+func TestUnsafeOrACLDeniedSlashModelIDDoesNotCallUpstream(t *testing.T) {
 	const allowedSlashID = "zai-org/glm-5.1"
-	up := newWhiteLabelServer(t, []map[string]any{{"id": allowedSlashID}})
-	svc := newServiceWithAllowed(t, up.URL(), &testClock{now: time.Now().UTC()}, allowedSlashID)
-
 	for _, test := range []struct {
-		id  string
-		acl []string
+		name string
+		id   string
+		acl  []string
 	}{
-		{id: "org/../model"},
-		{id: allowedSlashID, acl: []string{"another-org/other-model"}},
+		{name: "unsafe", id: "org/../model"},
+		{name: "ACL denied", id: allowedSlashID, acl: []string{"another-org/other-model"}},
 	} {
-		_, err := svc.GetModel(context.Background(), test.id, test.acl)
-		requireServiceCode(t, err, CodeModelUnavailable)
-	}
-	if got := up.detailCalls(); got != 0 {
-		t.Fatalf("unsafe or denied slash model ID made %d detail upstream calls, want 0", got)
+		t.Run(test.name, func(t *testing.T) {
+			// A fresh server and service make any catalog request observable; no
+			// warmed cache or prior detail request can mask a validation regression.
+			up := newWhiteLabelServer(t, []map[string]any{{"id": allowedSlashID}})
+			svc := newServiceWithAllowed(t, up.URL(), &testClock{now: time.Now().UTC()}, allowedSlashID)
+			_, err := svc.GetModel(context.Background(), test.id, test.acl)
+			requireServiceCode(t, err, CodeModelUnavailable)
+			if got := up.totalCalls(); got != 0 {
+				t.Fatalf("unsafe or denied slash model ID made %d upstream calls, want 0", got)
+			}
+		})
 	}
 }
 
@@ -468,6 +475,7 @@ type whiteLabelServer struct {
 	detailStatus  map[string]int
 	detailEscaped string
 	detailCount   int
+	totalCount    int
 }
 
 func newWhiteLabelServer(t *testing.T, catalog []map[string]any) *whiteLabelServer {
@@ -499,6 +507,11 @@ func (s *whiteLabelServer) detailCalls() int {
 	defer s.mu.Unlock()
 	return s.detailCount
 }
+func (s *whiteLabelServer) totalCalls() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.totalCount
+}
 
 func (s *whiteLabelServer) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Header.Get("Authorization") != "Bearer test-key" {
@@ -508,6 +521,7 @@ func (s *whiteLabelServer) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.totalCount++
 	if r.URL.Path == "/models" {
 		w.WriteHeader(s.catalogStatus)
 		if s.catalogStatus == http.StatusOK {
