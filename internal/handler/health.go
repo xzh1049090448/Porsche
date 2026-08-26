@@ -35,7 +35,7 @@ func RegisterAdmin(r *gin.Engine, state *app.State) {
 		c.JSON(http.StatusOK, gin.H{"upstream": "whitelabel", "configured_models": len(state.Settings.WhiteLabel.AllowedModels)})
 	})
 	g.POST("/models/health-check", func(c *gin.Context) {
-		adminModelHealthCheck(c, state, c.Query("id"))
+		adminModelHealthCheck(c, state, requiredModelIDFromQuery(c))
 	})
 	g.POST("/models/:id/health-check", func(c *gin.Context) {
 		adminModelHealthCheck(c, state, c.Param("id"))

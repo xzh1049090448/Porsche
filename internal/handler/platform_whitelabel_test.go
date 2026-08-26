@@ -74,6 +74,7 @@ func TestModelIDFromDetailQueryPreservesLegacyDetailAndEmptyQuery(t *testing.T) 
 		{url: "/models/detail", want: "detail"},
 		{url: "/models/detail?id=", want: ""},
 		{url: "/models/detail?id=zai-org%2Fglm-5.1", want: "zai-org/glm-5.1"},
+		{url: "/models/detail?id=one&id=two", want: ""},
 	} {
 		req := httptest.NewRequest(http.MethodGet, tc.url, nil)
 		ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
@@ -81,6 +82,17 @@ func TestModelIDFromDetailQueryPreservesLegacyDetailAndEmptyQuery(t *testing.T) 
 		if got := modelIDFromDetailQuery(ctx); got != tc.want {
 			t.Fatalf("url=%s model ID=%q, want %q", tc.url, got, tc.want)
 		}
+	}
+}
+
+func TestModelIDFromDetailQueryRejectsMalformedEscapesWithoutLegacyFallback(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	req := httptest.NewRequest(http.MethodGet, "/models/detail", nil)
+	req.URL.RawQuery = "id=%zz"
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx.Request = req
+	if got := modelIDFromDetailQuery(ctx); got != "" {
+		t.Fatalf("malformed query model ID=%q, want rejected empty ID", got)
 	}
 }
 
@@ -150,6 +162,31 @@ func TestPlatformSlashModelDetailDoesNotCallUpstreamWhenUserDenied(t *testing.T)
 	}
 }
 
+func TestPlatformMalformedOrDuplicateDetailQueryDoesNotCallUpstream(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	const modelID = "zai-org/glm-5.1"
+	state, detailCalls := newSlashPlatformWhiteLabelTestState(t, modelID)
+	user := platformTestUser("13900139009", models.JSONSlice{modelID})
+	if err := state.DB.Create(&user).Error; err != nil {
+		t.Fatal(err)
+	}
+	engine := gin.New()
+	RegisterPlatform(engine, state)
+	for _, rawQuery := range []string{"id=%zz", "id=zai-org%2Fglm-5.1&id=zai-org%2Fglm-5.1"} {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/platform/models/detail", nil)
+		req.URL.RawQuery = rawQuery
+		req.Header.Set("Authorization", "Bearer "+platformJWT(t, state, &user))
+		rec := httptest.NewRecorder()
+		engine.ServeHTTP(rec, req)
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("query=%q status=%d body=%s", rawQuery, rec.Code, rec.Body.String())
+		}
+	}
+	if got := detailCalls.Load(); got != 0 {
+		t.Fatalf("detail upstream calls=%d, want 0", got)
+	}
+}
+
 // A failure before the platform emits an SSE frame must remain a normal JSON
 // API error, so clients can distinguish it from a truncated live stream.
 func TestPlatformStreamFailureBeforeFirstFrameReturnsJSON(t *testing.T) {
@@ -209,6 +246,25 @@ func TestAdminSlashHealthCheckUsesQueryIDForExactLock(t *testing.T) {
 	engine.ServeHTTP(rec, req)
 	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "health_check_in_progress") {
 		t.Fatalf("expected 409 concurrent health check, status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestAdminHealthCheckRejectsMalformedQueryID(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	whiteLabel, err := whitelabel.NewWhiteLabelService(config.WhiteLabelSettings{BaseURL: "https://white-label.test/v1", APIKey: "test-key", AllowedModels: map[string]struct{}{"model-a": {}}}, http.DefaultClient, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := &app.State{Settings: &config.Settings{AdminToken: "admin-test"}, WhiteLabel: whiteLabel}
+	engine := gin.New()
+	RegisterAdmin(engine, state)
+	req := httptest.NewRequest(http.MethodPost, "/admin/models/health-check", nil)
+	req.URL.RawQuery = "id=%zz"
+	req.Header.Set("Authorization", "Bearer admin-test")
+	rec := httptest.NewRecorder()
+	engine.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
 }
 

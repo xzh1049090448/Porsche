@@ -110,6 +110,32 @@ func TestGatewaySlashModelDetailDoesNotCallUpstreamWhenTokenDenied(t *testing.T)
 	}
 }
 
+func TestGatewayMalformedOrDuplicateDetailQueryDoesNotCallUpstream(t *testing.T) {
+	const modelID = "zai-org/glm-5.1"
+	state, _, calls := gatewayWhiteLabelState(t, `{"data":[{"id":"zai-org/glm-5.1"}]}`)
+	user := gatewayWhiteLabelUser("13900200016")
+	if err := state.DB.Create(user).Error; err != nil {
+		t.Fatal(err)
+	}
+	_, secret, err := state.GatewayTokens.Create(user, service.GatewayTokenCreateInput{Name: "malformed-detail", AllowedModels: models.JSONSlice{modelID}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, rawQuery := range []string{"id=%zz", "id=zai-org%2Fglm-5.1&id=zai-org%2Fglm-5.1"} {
+		req := httptest.NewRequest(http.MethodGet, "/v1/models/detail", nil)
+		req.URL.RawQuery = rawQuery
+		req.Header.Set("Authorization", "Bearer "+secret)
+		rec := httptest.NewRecorder()
+		router.New(state).ServeHTTP(rec, req)
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("query=%q status=%d body=%s", rawQuery, rec.Code, rec.Body.String())
+		}
+	}
+	if got := calls.Load(); got != 0 {
+		t.Fatalf("upstream calls=%d, want 0", got)
+	}
+}
+
 func TestGatewayDetailRoutePreservesLegacyDetailModelID(t *testing.T) {
 	state, _, calls := gatewayWhiteLabelState(t, `{"data":[{"id":"detail"}]}`)
 	user := gatewayWhiteLabelUser("13900200015")

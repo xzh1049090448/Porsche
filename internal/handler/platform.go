@@ -5,6 +5,7 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"net/url"
 
 	"github.com/gin-gonic/gin"
 	"github.com/porsche/ai-gateway-go/internal/app"
@@ -165,10 +166,34 @@ func platformModelDetail(c *gin.Context, state *app.State, modelID string) {
 // intact for a legacy model literally named "detail". An explicitly supplied
 // query value, including an empty one, always uses the new query-ID contract.
 func modelIDFromDetailQuery(c *gin.Context) string {
-	if modelID, present := c.GetQuery("id"); present {
+	if modelID, present := modelIDFromQuery(c); present {
 		return modelID
 	}
 	return "detail"
+}
+
+// modelIDFromQuery deliberately parses RawQuery rather than using Gin's query
+// helper. Gin treats malformed escapes as a missing key, which would make a
+// malformed `id` silently take the legacy detail fallback. An invalid or
+// ambiguous id is returned as an explicit empty value for service validation.
+func modelIDFromQuery(c *gin.Context) (string, bool) {
+	values, err := url.ParseQuery(c.Request.URL.RawQuery)
+	if err != nil {
+		return "", true
+	}
+	ids, present := values["id"]
+	if !present {
+		return "", false
+	}
+	if len(ids) != 1 {
+		return "", true
+	}
+	return ids[0], true
+}
+
+func requiredModelIDFromQuery(c *gin.Context) string {
+	modelID, _ := modelIDFromQuery(c)
+	return modelID
 }
 
 func platformStreamPreError(c *gin.Context, err error) {
