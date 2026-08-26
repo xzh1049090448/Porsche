@@ -154,7 +154,7 @@ func TestCatalogAbsentModelDoesNotCallDetailUpstream(t *testing.T) {
 }
 
 func TestNewWhiteLabelServiceRejectsUnsafeConfiguredIDs(t *testing.T) {
-	_, err := NewWhiteLabelService(config.WhiteLabelSettings{BaseURL: "https://example.test/v1", APIKey: "key", AllowedModels: map[string]struct{}{"a/b": {}}}, &http.Client{}, time.Now)
+	_, err := NewWhiteLabelService(config.WhiteLabelSettings{BaseURL: "https://example.test/v1", APIKey: "key", AllowedModels: map[string]struct{}{"a/../b": {}}}, &http.Client{}, time.Now)
 	if err == nil {
 		t.Fatal("unsafe configured model ID was accepted")
 	}
