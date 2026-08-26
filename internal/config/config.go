@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -46,15 +47,24 @@ type Settings struct {
 // WhiteLabelSettings contains the only supported upstream configuration. BaseURL
 // is selected from a fixed region mapping and must never be supplied by callers.
 type WhiteLabelSettings struct {
-	Region        string
-	BaseURL       string
-	APIKey        string
-	AllowedModels map[string]struct{}
+	Region               string
+	BaseURL              string
+	APIKey               string
+	AllowedModels        map[string]struct{}
+	AllowedModelPatterns []*regexp.Regexp
 }
 
 func (s WhiteLabelSettings) Allows(model string) bool {
-	_, ok := s.AllowedModels[strings.TrimSpace(model)]
-	return ok
+	model = strings.TrimSpace(model)
+	if _, ok := s.AllowedModels[model]; ok {
+		return true
+	}
+	for _, pattern := range s.AllowedModelPatterns {
+		if pattern.MatchString(model) {
+			return true
+		}
+	}
+	return false
 }
 
 func ParseWhiteLabelSettings(region, apiKey, allowedModels string) (WhiteLabelSettings, error) {
@@ -74,16 +84,31 @@ func ParseWhiteLabelSettings(region, apiKey, allowedModels string) (WhiteLabelSe
 	}
 
 	models := make(map[string]struct{})
+	patterns := make([]*regexp.Regexp, 0)
 	for _, model := range strings.Split(allowedModels, ",") {
-		if model = strings.TrimSpace(model); model != "" {
-			models[model] = struct{}{}
+		model = strings.TrimSpace(model)
+		if model == "" {
+			continue
 		}
+		if strings.HasPrefix(model, "re:") {
+			expression := strings.TrimPrefix(model, "re:")
+			if expression == "" {
+				return WhiteLabelSettings{}, fmt.Errorf("JIEKOU_ALLOWED_MODELS contains an invalid regular expression")
+			}
+			pattern, err := regexp.Compile(expression)
+			if err != nil {
+				return WhiteLabelSettings{}, fmt.Errorf("JIEKOU_ALLOWED_MODELS contains an invalid regular expression")
+			}
+			patterns = append(patterns, pattern)
+			continue
+		}
+		models[model] = struct{}{}
 	}
-	if len(models) == 0 {
+	if len(models)+len(patterns) == 0 {
 		return WhiteLabelSettings{}, fmt.Errorf("JIEKOU_ALLOWED_MODELS must contain at least one model")
 	}
 
-	return WhiteLabelSettings{Region: region, BaseURL: baseURL, APIKey: apiKey, AllowedModels: models}, nil
+	return WhiteLabelSettings{Region: region, BaseURL: baseURL, APIKey: apiKey, AllowedModels: models, AllowedModelPatterns: patterns}, nil
 }
 
 func Load() (*Settings, error) {

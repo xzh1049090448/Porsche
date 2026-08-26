@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestLoadRejectsNonMySQLDatabaseURL(t *testing.T) {
 	setLoadTestEnvironment(t)
@@ -57,6 +60,52 @@ func TestWhiteLabelSettingsFailClosedAndUseFixedRegionURLs(t *testing.T) {
 				t.Fatalf("unexpected settings: %#v", got)
 			}
 		})
+	}
+}
+
+func TestParseWhiteLabelSettingsSupportsExactAndRegexModels(t *testing.T) {
+	settings, err := ParseWhiteLabelSettings("cn", "test-key", "model-a,re:^zai-org/.+$,re:^.+$")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, model := range []string{"model-a", "zai-org/glm-5.1", "other/model"} {
+		if !settings.Allows(model) {
+			t.Fatalf("Allows(%q) = false, want true", model)
+		}
+	}
+}
+
+func TestParseWhiteLabelSettingsRejectsInvalidRegex(t *testing.T) {
+	_, err := ParseWhiteLabelSettings("cn", "test-key", "re:[")
+	if err == nil || strings.Contains(err.Error(), "test-key") {
+		t.Fatalf("want sanitized config error, got %v", err)
+	}
+}
+
+func TestParseWhiteLabelSettingsRejectsEmptyRegex(t *testing.T) {
+	_, err := ParseWhiteLabelSettings("cn", "test-key", "re:")
+	if err == nil {
+		t.Fatal("want error")
+	}
+}
+
+func TestParseWhiteLabelSettingsAcceptsRegexOnlyAllowlist(t *testing.T) {
+	settings, err := ParseWhiteLabelSettings("cn", "test-key", " re:^zai-org/.+$ ")
+	if err != nil {
+		t.Fatalf("ParseWhiteLabelSettings() error = %v", err)
+	}
+	if !settings.Allows("zai-org/glm-5.1") {
+		t.Fatal("regex-only allowlist did not match")
+	}
+}
+
+func TestParseWhiteLabelSettingsTreatsNonRegexPrefixAsExact(t *testing.T) {
+	settings, err := ParseWhiteLabelSettings("cn", "test-key", "regex:^.+$")
+	if err != nil {
+		t.Fatalf("ParseWhiteLabelSettings() error = %v", err)
+	}
+	if !settings.Allows("regex:^.+$") || settings.Allows("other/model") {
+		t.Fatal("non-re: model entry was not treated as an exact ID")
 	}
 }
 
