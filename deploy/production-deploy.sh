@@ -41,6 +41,49 @@ if [[ ! -f "$ENV_FILE" ]]; then
     echo 'deployment requires the repository .env' >&2
     exit 1
 fi
+allowed_hosts_value=''
+allowed_hosts_found=false
+allowed_hosts_invalid=false
+while IFS= read -r env_line || [[ -n "$env_line" ]]; do
+    if [[ "$env_line" =~ ^[[:space:]]*(export[[:space:]]+)?ALLOWED_HOSTS[[:space:]]*=[[:space:]]*(.*)$ ]]; then
+        allowed_hosts_found=true
+        allowed_hosts_value="${BASH_REMATCH[2]}"
+        break
+    fi
+done <"$ENV_FILE"
+if [[ "$allowed_hosts_found" != true ]]; then
+    echo 'deployment requires a non-empty ALLOWED_HOSTS entry in .env' >&2
+    exit 1
+fi
+if [[ "$allowed_hosts_value" == *$'\r'* || "$allowed_hosts_value" == *$'\n'* ]]; then
+    allowed_hosts_invalid=true
+fi
+allowed_hosts_value="${allowed_hosts_value#"${allowed_hosts_value%%[!$' \t']*}"}"
+allowed_hosts_value="${allowed_hosts_value%"${allowed_hosts_value##*[!$' \t']}"}"
+if [[ "$allowed_hosts_value" == \"* ]]; then
+    if [[ "$allowed_hosts_value" =~ ^\"([^\"]*)\"$ ]]; then
+        allowed_hosts_value="${BASH_REMATCH[1]}"
+    else
+        allowed_hosts_invalid=true
+    fi
+elif [[ "$allowed_hosts_value" == \'* ]]; then
+    if [[ "$allowed_hosts_value" =~ ^\'([^\']*)\'$ ]]; then
+        allowed_hosts_value="${BASH_REMATCH[1]}"
+    else
+        allowed_hosts_invalid=true
+    fi
+elif [[ "$allowed_hosts_value" == *\"* || "$allowed_hosts_value" == *\'* ]]; then
+    allowed_hosts_invalid=true
+fi
+health_check_host="${allowed_hosts_value%%,*}"
+if [[ -z "$health_check_host" ]]; then
+    echo 'deployment requires a non-empty ALLOWED_HOSTS entry in .env' >&2
+    exit 1
+fi
+if [[ "$allowed_hosts_invalid" == true || ! "$health_check_host" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]]; then
+    echo 'deployment requires a valid non-empty ALLOWED_HOSTS entry in .env' >&2
+    exit 1
+fi
 if [[ "$(git rev-parse --is-inside-work-tree)" != true ]]; then
     echo 'deployment must run from a Git worktree' >&2
     exit 1
@@ -121,7 +164,7 @@ fi
 
 healthy=false
 for _ in {1..30}; do
-    if curl -fsS --connect-timeout 2 --max-time 3 "http://127.0.0.1:${HOST_PORT}/health" >/dev/null; then
+    if curl -fsS -H "Host: ${health_check_host}" --connect-timeout 2 --max-time 3 "http://127.0.0.1:${HOST_PORT}/health" >/dev/null; then
         healthy=true
         break
     fi

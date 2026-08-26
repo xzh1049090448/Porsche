@@ -16,7 +16,7 @@ repo_dir="$(cd -- "$repo_dir" && pwd)"
 lock_dir="$repo_dir/.deploy-locks"
 mkdir -p "$lock_dir"
 ln -s "$source_script" "$repo_dir/deploy/production-deploy.sh"
-printf 'DATABASE_URL=mysql://test:secret@db/test\n' >"$repo_dir/.env"
+printf 'DATABASE_URL=mysql://test:secret@db/test\nALLOWED_HOSTS=example.com,127.0.0.1\n' >"$repo_dir/.env"
 cleanup() { rm -rf -- "$fixture_dir"; }; trap cleanup EXIT
 
 write_mock() {
@@ -46,16 +46,16 @@ assert_successful_deploy() {
     run_deploy >"$fixture_dir/success-stdout"
     require_line lock 'flock -E 75 -n 9' >/dev/null
     require_line env "--env-file $repo_dir/.env" >/dev/null
-    require_line health 'curl -fsS --connect-timeout 2 --max-time 3 http://127.0.0.1:18000/health' >/dev/null
+    require_line health-host 'curl -fsS -H Host: example.com --connect-timeout 2 --max-time 3 http://127.0.0.1:18000/health' >/dev/null
     require_line container-id 'docker run -d --name existing-app' >/dev/null
 }
 assert_timeout_rolls_back() {
     if MOCK_HEALTH_RESULT=timeout run_deploy >"$fixture_dir/timeout-stdout" 2>"$fixture_dir/timeout-stderr"; then echo 'deployment must fail after bounded health timeouts' >&2; exit 1; fi
-    require_line health 'curl -fsS --connect-timeout 2 --max-time 3 http://127.0.0.1:18000/health' >/dev/null
+    require_line health-host 'curl -fsS -H Host: example.com --connect-timeout 2 --max-time 3 http://127.0.0.1:18000/health' >/dev/null
     require_line candidate-removal 'docker rm -f -- existing-app' >/dev/null
     require_line restore-name 'docker rename -- existing-app-rollback-' >/dev/null
     require_line restore-start 'docker start -- existing-app' >/dev/null
-    [[ "$(count_calls 'curl -fsS --connect-timeout 2 --max-time 3 http://127.0.0.1:18000/health')" == 30 ]] || { echo 'health timeout must make exactly 30 bounded attempts' >&2; exit 1; }
+    [[ "$(count_calls 'curl -fsS -H Host: example.com --connect-timeout 2 --max-time 3 http://127.0.0.1:18000/health')" == 30 ]] || { echo 'health timeout must make exactly 30 bounded attempts' >&2; exit 1; }
 }
 assert_lock_contention_is_safe() {
     local stderr_file="$fixture_dir/lock-stderr"
@@ -77,8 +77,82 @@ assert_invalid_input_has_no_docker_write() {
     if MOCK_GIT_DIRTY=1 run_deploy; then echo 'deployment accepted dirty tracked worktree' >&2; exit 1; fi
     [[ -z "$(line_for 'git fetch origin main' || true)" ]] || { echo 'deployment fetched after dirty check' >&2; exit 1; }
 }
+assert_missing_allowed_hosts_fails_safely() {
+    local stderr_file="$fixture_dir/missing-allowed-hosts-stderr"
+    printf 'DATABASE_URL=mysql://test:secret@db/test\n' >"$repo_dir/.env"
+    if run_deploy >"$fixture_dir/missing-allowed-hosts-stdout" 2>"$stderr_file"; then
+        echo 'deployment accepted a missing ALLOWED_HOSTS entry' >&2
+        exit 1
+    fi
+    grep -Fq 'deployment requires a non-empty ALLOWED_HOSTS entry in .env' "$stderr_file" || {
+        echo 'missing ALLOWED_HOSTS error is not readable' >&2
+        exit 1
+    }
+    assert_no_docker_writes
+    printf 'DATABASE_URL=mysql://test:secret@db/test\nALLOWED_HOSTS=example.com,127.0.0.1\n' >"$repo_dir/.env"
+}
+assert_empty_allowed_hosts_fails_safely() {
+    local stderr_file="$fixture_dir/empty-allowed-hosts-stderr"
+    printf 'DATABASE_URL=mysql://test:secret@db/test\nALLOWED_HOSTS=\n' >"$repo_dir/.env"
+    if run_deploy >"$fixture_dir/empty-allowed-hosts-stdout" 2>"$stderr_file"; then
+        echo 'deployment accepted an empty ALLOWED_HOSTS entry' >&2
+        exit 1
+    fi
+    grep -Fq 'deployment requires a non-empty ALLOWED_HOSTS entry in .env' "$stderr_file" || {
+        echo 'empty ALLOWED_HOSTS error is not readable' >&2
+        exit 1
+    }
+    assert_no_docker_writes
+    printf 'DATABASE_URL=mysql://test:secret@db/test\nALLOWED_HOSTS=example.com,127.0.0.1\n' >"$repo_dir/.env"
+}
+assert_unreadable_env_fails_safely() {
+    local stderr_file="$fixture_dir/unreadable-env-stderr"
+    rm "$repo_dir/.env"
+    mkdir "$repo_dir/.env"
+    if run_deploy >"$fixture_dir/unreadable-env-stdout" 2>"$stderr_file"; then
+        echo 'deployment accepted an unreadable .env path' >&2
+        exit 1
+    fi
+    grep -Fq 'deployment requires the repository .env' "$stderr_file" || {
+        echo 'unreadable .env error is not readable' >&2
+        exit 1
+    }
+    assert_no_docker_writes
+    rmdir "$repo_dir/.env"
+    printf 'DATABASE_URL=mysql://test:secret@db/test\nALLOWED_HOSTS=example.com,127.0.0.1\n' >"$repo_dir/.env"
+}
+assert_quoted_and_export_allowed_hosts_work() {
+    local env_line
+    for env_line in 'ALLOWED_HOSTS="example.com,127.0.0.1"' "ALLOWED_HOSTS='example.com,127.0.0.1'" '  export ALLOWED_HOSTS=example.com,127.0.0.1'; do
+        printf 'DATABASE_URL=mysql://test:secret@db/test\n%s\n' "$env_line" >"$repo_dir/.env"
+        run_deploy >"$fixture_dir/quoted-or-export-stdout"
+        require_line health-host 'curl -fsS -H Host: example.com --connect-timeout 2 --max-time 3 http://127.0.0.1:18000/health' >/dev/null
+    done
+    printf 'DATABASE_URL=mysql://test:secret@db/test\nALLOWED_HOSTS=example.com,127.0.0.1\n' >"$repo_dir/.env"
+}
+assert_invalid_allowed_hosts_fail_safely() {
+    local env_line stderr_file="$fixture_dir/invalid-allowed-hosts-stderr"
+    for env_line in 'ALLOWED_HOSTS=example .com,127.0.0.1' $'ALLOWED_HOSTS=example.com\r,127.0.0.1' 'ALLOWED_HOSTS="example.com,127.0.0.1'; do
+        printf 'DATABASE_URL=mysql://test:secret@db/test\n%s\n' "$env_line" >"$repo_dir/.env"
+        if run_deploy >"$fixture_dir/invalid-allowed-hosts-stdout" 2>"$stderr_file"; then
+            echo "deployment accepted an invalid ALLOWED_HOSTS entry: $env_line" >&2
+            exit 1
+        fi
+        grep -Fq 'deployment requires a valid non-empty ALLOWED_HOSTS entry in .env' "$stderr_file" || {
+            echo 'invalid ALLOWED_HOSTS error is not readable' >&2
+            exit 1
+        }
+        assert_no_docker_writes
+    done
+    printf 'DATABASE_URL=mysql://test:secret@db/test\nALLOWED_HOSTS=example.com,127.0.0.1\n' >"$repo_dir/.env"
+}
 
 assert_successful_deploy
+assert_missing_allowed_hosts_fails_safely
+assert_empty_allowed_hosts_fails_safely
+assert_unreadable_env_fails_safely
+assert_quoted_and_export_allowed_hosts_work
+assert_invalid_allowed_hosts_fail_safely
 if ENV_FILE="$fixture_dir/attempted-override.env" run_deploy >"$fixture_dir/override-stdout"; then :; else echo 'ENV_FILE must not alter the deployment environment file' >&2; exit 1; fi
 require_line env-after-override "--env-file $repo_dir/.env" >/dev/null
 [[ -z "$(line_for "$fixture_dir/attempted-override.env" || true)" ]] || { echo 'deployment honored ENV_FILE override' >&2; exit 1; }
