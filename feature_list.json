@@ -14,55 +14,8 @@
   },
   "features": [
     {
-      "id": "go-001",
-      "priority": 1,
-      "area": "runtime",
-      "title": "Go 服务基础验证",
-      "user_visible_behavior": "服务可编译、测试通过，启动后 GET /health 返回 200。",
-      "status": "blocked",
-      "verification": [
-        "go test ./...",
-        "go run ./cmd/server",
-        "curl -i http://127.0.0.1:8000/health"
-      ],
-      "evidence": [
-        "仓库布局和 git diff 检查已通过；本机缺少 go 命令，尚未运行 Go 测试。"
-      ],
-      "notes": "在部署服务器安装或确认 Go 1.22+ 后优先验证。"
-    },
-    {
-      "id": "go-002",
-      "priority": 2,
-      "area": "database",
-      "title": "既有 MySQL 数据兼容",
-      "user_visible_behavior": "Go 服务使用原有 DATABASE_URL 后可读取已有用户、对话与计费数据。",
-      "status": "not_started",
-      "verification": [
-        "设置既有 MySQL DATABASE_URL",
-        "启动服务并登录现有账号",
-        "读取已有对话和用户资料"
-      ],
-      "evidence": [],
-      "notes": "禁止删除 Docker 数据卷。"
-    },
-    {
-      "id": "go-003",
-      "priority": 3,
-      "area": "platform-chat",
-      "title": "平台模型对话与 SSE",
-      "user_visible_behavior": "POST /api/v1/platform/chat/completions 能返回非流式结果或持续输出 SSE 数据。",
-      "status": "not_started",
-      "verification": [
-        "使用有效 Bearer Token 调用非流式请求",
-        "以 stream=true 调用并确认收到 meta、chunk 和 done SSE 事件",
-        "确认上游异常会返回明确错误而非无限等待"
-      ],
-      "evidence": [],
-      "notes": "需使用可用模型密钥和反向代理的 SSE 配置完成验证。"
-    },
-    {
       "id": "go-004",
-      "priority": 4,
+      "priority": 1,
       "area": "white-label-upstream",
       "title": "PRD-260820 JieKou AI 白牌上游接入",
       "user_visible_behavior": "Go 网关与平台 API 使用唯一 JieKou AI OpenAI-compatible 白牌上游，向客户端提供动态模型目录、ACL、Chat 与 SSE 契约。",
@@ -70,6 +23,7 @@
       "verification": [
         "GOCACHE=/private/tmp/porsche-go-build-cache go test -count=1 ./...",
         "在前端 llm-platform 工作树中运行 npm ping、npm install --package-lock=false、npm test 与 npm run build",
+        "Issue #2：带斜杠模型 ID 的目录、详情、ACL、Chat 与 SSE 回归验证",
         "使用部署环境的 JieKou AI 配置完成白牌目录与 Chat/SSE 冒烟验证"
       ],
       "evidence": [
@@ -83,7 +37,7 @@
         "2026-08-24：生产部署预发布加固：fixture mock 测试仅创建 fixture/.env 并执行真实脚本 symlink；ENV_FILE 不会覆盖生产环境，健康检查每次使用 2s/3s curl 超时、至多 30 次并在 timeout 回滚；flock 并发竞争无 Docker 写操作；.dockerignore 排除 .env 与本地状态，成功输出容器 ID 和 Git revision。",
         "尚未执行真实 JieKou AI 上游冒烟。"
       ],
-      "notes": "这是当前唯一 in_progress 功能。前后端本地实现与旧上游清理已完成；真实上游目录、Chat 与 SSE 联调仍需部署环境的白牌配置，不能标记为已通过。"
+      "notes": "这是当前唯一 in_progress 功能。Issue #2 已提升为最高优先级：需完整支持组织/模型斜杠 ID，并保证空目录返回数组；完成代码与安全验证后进行真实上游目录、详情、Chat 与 SSE 联调。"
     },
     {
       "id": "go-005",
