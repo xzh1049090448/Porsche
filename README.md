@@ -109,6 +109,11 @@ same application container. The script replaces only the application container
 and neither manages nor changes MySQL. On success it prints the new container
 ID and deployed Git revision.
 
+The full-stack restart command publishes frontend assets with `rsync`. It
+builds and stages those assets before replacing the live site, but `rsync` is
+not a cross-file atomic release mechanism; clients may briefly observe mixed
+asset versions during the static-file synchronization.
+
 If the `.env` database host is a Docker service name, attach the application to
 the Docker network that resolves it (replace the example network name):
 
