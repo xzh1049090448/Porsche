@@ -1,6 +1,6 @@
 {
   "project": "Porsche Go AI Gateway",
-  "last_updated": "2026-08-24",
+  "last_updated": "2026-08-26",
   "rules": {
     "single_active_feature": true,
     "passing_requires_evidence": true,
@@ -84,6 +84,29 @@
         "尚未执行真实 JieKou AI 上游冒烟。"
       ],
       "notes": "这是当前唯一 in_progress 功能。前后端本地实现与旧上游清理已完成；真实上游目录、Chat 与 SSE 联调仍需部署环境的白牌配置，不能标记为已通过。"
+    },
+    {
+      "id": "go-005",
+      "priority": 5,
+      "area": "production-deployment",
+      "title": "前后端一键更新重启",
+      "user_visible_behavior": "生产主机以 sudo /opt/Porsche/deploy/restart-all.sh 更新两个 main 分支、部署可回滚后端、发布前端 SPA 并重载通过校验的 Nginx。",
+      "status": "passing",
+      "verification": [
+        "bash -n deploy/production-deploy.sh deploy/test-production-deploy.sh deploy/restart-all.sh deploy/test-restart-all.sh",
+        "bash deploy/test-production-deploy.sh",
+        "bash deploy/test-restart-all.sh",
+        "bash deploy/nginx/test-aiportcloud-conf.sh",
+        "GOCACHE=/private/tmp/porsche-go-build-cache go test ./... -count=1",
+        "GOCACHE=/private/tmp/porsche-go-build-cache go vet ./...",
+        "git diff --check"
+      ],
+      "evidence": [
+        "2026-08-26：全部 shell 语法、后端部署 mock、全栈重启 mock 与 Nginx 静态回归检查通过。",
+        "2026-08-26：Go 全量测试在允许 loopback listener 的执行环境中全部包通过；go vet ./... 与 git diff --check 通过。",
+        "脚本固定使用 /opt/Porsche、/opt/Porsche-Web、/var/www/porsche-web 和 porsche-app；不管理 MySQL、数据库卷、Docker 网络或 new-api。"
+      ],
+      "notes": "前端发布使用 rsync --archive --delete --delay-updates，不是跨文件原子切换；部署 Nginx 前仍须安装仓库提供的 SPA/static + API proxy 配置。"
     }
   ]
 }

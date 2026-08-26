@@ -114,6 +114,51 @@ builds and stages those assets before replacing the live site, but `rsync` is
 not a cross-file atomic release mechanism; clients may briefly observe mixed
 asset versions during the static-file synchronization.
 
+### One-command frontend and backend release
+
+On the production host, use the following command to update both repositories,
+rebuild the frontend, replace the Go application container, publish frontend
+assets, and reload Nginx:
+
+```bash
+sudo /opt/Porsche/deploy/restart-all.sh
+```
+
+This command has deliberately fixed production locations and does not accept
+arguments:
+
+| Purpose | Required value |
+| --- | --- |
+| Backend checkout | `/opt/Porsche` |
+| Frontend checkout | `/opt/Porsche-Web` |
+| Frontend static root | `/var/www/porsche-web` |
+| Application Docker network | `porsche-app` |
+| Nginx service | `nginx` |
+
+It fetches and hard-resets both checkouts to `origin/main`; commit or stash
+tracked changes before running it. The backend checkout must contain its
+production `.env`, and the `porsche-app` network must already allow the
+application container to reach the existing MySQL 8 service. The command does
+not create, migrate, stop, remove, or otherwise manage MySQL, its Docker
+container, or any database volume.
+
+The frontend repository intentionally has no committed lockfile. The script
+therefore installs build dependencies with `npm install --package-lock=false`,
+then runs `npm run build` before it changes the backend or live static files.
+After a successful backend deployment it stages `dist/` and synchronizes it to
+`/var/www/porsche-web` with `rsync --archive --delete --delay-updates`.
+`rsync` avoids stale assets but is not a cross-file atomic release mechanism:
+brief mixed old/new asset responses remain possible while the copy is running.
+
+Install `deploy/nginx/aiportcloud.conf` as the production site before using the
+command. Nginx must serve the SPA from `/var/www/porsche-web` (including the
+`try_files ... /index.html` fallback) and proxy `/api/`, `/v1/`, `/admin/`, and
+`/health` to the loopback application. The script runs `nginx -t` before it
+publishes frontend files or reloads Nginx; an invalid Nginx configuration
+prevents the reload. A backend deployment failure prevents frontend publishing;
+the backend deploy script retains responsibility for application-container
+rollback.
+
 If the `.env` database host is a Docker service name, attach the application to
 the Docker network that resolves it (replace the example network name):
 

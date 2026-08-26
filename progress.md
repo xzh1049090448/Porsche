@@ -62,6 +62,30 @@
 - 新增严格 `.dockerignore`，排除 `.env`、Git/worktree/agent 本地目录、data 与测试/IDE
   输出，同时保留 Go 源码、Dockerfile 和 `.env.example`。成功部署输出容器 ID 与 Git revision。
 
+## 前后端一键更新重启（2026-08-26）
+
+- 新增生产入口 `sudo /opt/Porsche/deploy/restart-all.sh`，固定使用后端
+  `/opt/Porsche`、前端 `/opt/Porsche-Web`、静态目录 `/var/www/porsche-web` 与
+  Docker 网络 `porsche-app`。脚本先拉取并构建前端，再复用后端可回滚发布脚本；
+  后端成功后才同步静态资源，并在 Nginx 配置校验通过后重载服务。
+- 前端依赖明确使用 `npm install --package-lock=false`，因为仓库未提交 lockfile。
+  静态资源以 `rsync --archive --delete --delay-updates` 发布；该方式清理过期文件，
+  但不是跨文件原子切换，短时间内可能出现新旧资源混合响应。
+- 脚本不创建、迁移、停止或删除 MySQL、数据库卷、Docker 网络或无关容器。Nginx
+  从 `/var/www/porsche-web` 提供 SPA，并将 `/api/`、`/v1/`、`/admin/` 和
+  `/health` 反代至 loopback 应用；不带尾斜杠的 `/api`、`/v1` 与 `/admin`
+  也保留为后端路由，避免被 SPA fallback 吞掉。
+- 验证证据：`bash -n deploy/production-deploy.sh deploy/test-production-deploy.sh
+  deploy/restart-all.sh deploy/test-restart-all.sh`、`bash deploy/test-production-deploy.sh`、
+  `bash deploy/test-restart-all.sh`、`bash deploy/nginx/test-aiportcloud-conf.sh`、
+  `GOCACHE=/private/tmp/porsche-go-build-cache go test ./... -count=1`、
+  `GOCACHE=/private/tmp/porsche-go-build-cache go vet ./...` 与 `git diff --check`
+  于 2026-08-26 通过。Go 全量测试在受限沙箱中因禁止绑定 `[::1]` 临时端口失败，
+  在允许 loopback listener 的执行环境中复跑后全部包通过。
+
+`go-004` 的真实 JieKou 目录、Chat 与 SSE 冒烟仍需部署环境的白牌配置；上述
+部署编排验证不替代该上游验收，故其状态保持 `in_progress`。
+
 ## 下一步（部署冒烟）
 
 在具备部署环境的白牌配置后，完成真实上游目录、Chat 与 SSE 冒烟。
