@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -146,6 +147,57 @@ func TestUnsafeOrACLDeniedSlashModelIDDoesNotCallUpstream(t *testing.T) {
 				t.Fatalf("unsafe or denied slash model ID made %d upstream calls, want 0", got)
 			}
 		})
+	}
+}
+
+func TestPatternAllowlistFiltersCatalogButKeepsCallerACLExact(t *testing.T) {
+	up := newWhiteLabelServer(t, []map[string]any{{"id": "zai-org/glm-5.1"}, {"id": "other/model"}})
+	svc := newServiceWithPatterns(t, up.URL(), &testClock{now: time.Now().UTC()}, regexp.MustCompile(`^zai-org/.+$`))
+
+	catalog, err := svc.ListModels(context.Background(), nil)
+	requireNoServiceError(t, err)
+	requireModelIDs(t, catalog.Data, "zai-org/glm-5.1")
+
+	catalog, err = svc.ListModels(context.Background(), []string{"other/model"})
+	requireNoServiceError(t, err)
+	requireModelIDs(t, catalog.Data)
+
+	catalog, err = svc.ListModels(context.Background(), []string{"zai-org/glm-5.1"})
+	requireNoServiceError(t, err)
+	requireModelIDs(t, catalog.Data, "zai-org/glm-5.1")
+}
+
+func TestPatternAllowedSlashModelUsesEscapedDetailPath(t *testing.T) {
+	up := newWhiteLabelServer(t, []map[string]any{{"id": "zai-org/glm-5.1"}})
+	svc := newServiceWithPatterns(t, up.URL(), &testClock{now: time.Now().UTC()}, regexp.MustCompile(`^zai-org/.+$`))
+
+	if _, err := svc.GetModel(context.Background(), "zai-org/glm-5.1", []string{"zai-org/glm-5.1"}); err != nil {
+		t.Fatalf("GetModel() error = %v", err)
+	}
+	if got := up.lastDetailEscapedPath(); got != "/models/zai-org%2Fglm-5.1" {
+		t.Fatalf("detail path = %q, want escaped slash path", got)
+	}
+}
+
+func TestCallerACLRegexTextIsNotAnAuthorizationPattern(t *testing.T) {
+	up := newWhiteLabelServer(t, []map[string]any{{"id": "zai-org/glm-5.1"}})
+	svc := newServiceWithPatterns(t, up.URL(), &testClock{now: time.Now().UTC()}, regexp.MustCompile(`^zai-org/.+$`))
+
+	_, err := svc.GetModel(context.Background(), "zai-org/glm-5.1", []string{"re:^.+$"})
+	requireServiceCode(t, err, CodeModelUnavailable)
+	if got := up.totalCalls(); got != 0 {
+		t.Fatalf("denied ACL made %d total upstream calls, want 0", got)
+	}
+}
+
+func TestNewWhiteLabelServiceRejectsNilGlobalPattern(t *testing.T) {
+	_, err := NewWhiteLabelService(config.WhiteLabelSettings{
+		BaseURL:              "https://example.test/v1",
+		APIKey:               "key",
+		AllowedModelPatterns: []*regexp.Regexp{nil},
+	}, &http.Client{}, time.Now)
+	if err == nil {
+		t.Fatal("nil global pattern was accepted")
 	}
 }
 
@@ -451,6 +503,19 @@ func newServiceWithAllowed(t *testing.T, baseURL string, clock *testClock, allow
 		BaseURL:       baseURL,
 		APIKey:        "test-key",
 		AllowedModels: allowed,
+	}, &http.Client{}, clock.Now)
+	if err != nil {
+		t.Fatalf("NewWhiteLabelService() error = %v", err)
+	}
+	return svc
+}
+
+func newServiceWithPatterns(t *testing.T, baseURL string, clock *testClock, patterns ...*regexp.Regexp) *WhiteLabelService {
+	t.Helper()
+	svc, err := NewWhiteLabelService(config.WhiteLabelSettings{
+		BaseURL:              baseURL,
+		APIKey:               "test-key",
+		AllowedModelPatterns: patterns,
 	}, &http.Client{}, clock.Now)
 	if err != nil {
 		t.Fatalf("NewWhiteLabelService() error = %v", err)

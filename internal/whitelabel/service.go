@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -19,11 +20,12 @@ import (
 // metadata. It owns an HTTP client configured by the application, never a
 // caller-provided URL or credential.
 type WhiteLabelService struct {
-	baseURL string
-	apiKey  string
-	allowed map[string]struct{}
-	client  *http.Client
-	now     func() time.Time
+	baseURL         string
+	apiKey          string
+	allowedExact    map[string]struct{}
+	allowedPatterns []*regexp.Regexp
+	client          *http.Client
+	now             func() time.Time
 
 	mu                sync.Mutex
 	catalog           cachedCatalog
@@ -53,14 +55,21 @@ func NewWhiteLabelService(settings config.WhiteLabelSettings, client *http.Clien
 	if _, err := url.ParseRequestURI(settings.BaseURL); err != nil {
 		return nil, fmt.Errorf("white-label base URL: %w", err)
 	}
-	allowed := make(map[string]struct{}, len(settings.AllowedModels))
+	allowedExact := make(map[string]struct{}, len(settings.AllowedModels))
 	for id := range settings.AllowedModels {
 		if !validModelID(id) {
 			return nil, fmt.Errorf("invalid configured model ID")
 		}
-		allowed[id] = struct{}{}
+		allowedExact[id] = struct{}{}
 	}
-	if len(allowed) == 0 {
+	allowedPatterns := make([]*regexp.Regexp, len(settings.AllowedModelPatterns))
+	for i, pattern := range settings.AllowedModelPatterns {
+		if pattern == nil {
+			return nil, fmt.Errorf("invalid configured model pattern")
+		}
+		allowedPatterns[i] = pattern
+	}
+	if len(allowedExact)+len(allowedPatterns) == 0 {
 		return nil, fmt.Errorf("white-label allowlist must not be empty")
 	}
 	if client == nil {
@@ -69,7 +78,7 @@ func NewWhiteLabelService(settings config.WhiteLabelSettings, client *http.Clien
 	if now == nil {
 		now = time.Now
 	}
-	return &WhiteLabelService{baseURL: strings.TrimRight(settings.BaseURL, "/"), apiKey: settings.APIKey, allowed: allowed, client: client, now: now, details: make(map[string]cachedDetail), detailGenerations: make(map[string]uint64), disabled: make(map[string]bool)}, nil
+	return &WhiteLabelService{baseURL: strings.TrimRight(settings.BaseURL, "/"), apiKey: settings.APIKey, allowedExact: allowedExact, allowedPatterns: allowedPatterns, client: client, now: now, details: make(map[string]cachedDetail), detailGenerations: make(map[string]uint64), disabled: make(map[string]bool)}, nil
 }
 
 // ListModels intersects the fixed service allowlist with the supplied user or
@@ -207,7 +216,7 @@ func (s *WhiteLabelService) Chat(ctx context.Context, body []byte) (*http.Respon
 }
 
 func (s *WhiteLabelService) permitted(id string, acl []string) bool {
-	if _, ok := s.allowed[id]; !ok {
+	if !s.globallyAllows(id) {
 		return false
 	}
 	if len(acl) == 0 {
@@ -215,6 +224,18 @@ func (s *WhiteLabelService) permitted(id string, acl []string) bool {
 	}
 	for _, candidate := range acl {
 		if candidate == id {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *WhiteLabelService) globallyAllows(id string) bool {
+	if _, ok := s.allowedExact[id]; ok {
+		return true
+	}
+	for _, pattern := range s.allowedPatterns {
+		if pattern.MatchString(id) {
 			return true
 		}
 	}
