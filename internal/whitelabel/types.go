@@ -5,6 +5,7 @@ import (
 	"math"
 	"sort"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -276,15 +277,21 @@ func safeNonNegative(value float64) float64 {
 	return value
 }
 
-// validModelID accepts opaque identifiers while excluding syntax that can
-// change an HTTP path or be confused with whitespace/control data.
+// validModelID accepts opaque identifiers, including slash-separated provider
+// namespaces, while excluding syntax that can change an HTTP path or be
+// confused with whitespace/control data.
 func validModelID(id string) bool {
-	if id == "" || id != strings.TrimSpace(id) || !utf8.ValidString(id) {
+	if id == "" || len(id) > 256 || id != strings.TrimSpace(id) || !utf8.ValidString(id) {
 		return false
 	}
-	return strings.IndexFunc(id, func(r rune) bool {
-		return r < 0x20 || r == 0x7f || strings.ContainsRune("/\\?#%", r)
-	}) < 0
+	for _, segment := range strings.Split(id, "/") {
+		if segment == "" || segment == "." || segment == ".." || strings.IndexFunc(segment, func(r rune) bool {
+			return unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || unicode.IsSpace(r) || strings.ContainsRune("\\?#%", r)
+		}) >= 0 {
+			return false
+		}
+	}
+	return true
 }
 
-func cloneModels(in []Model) []Model { return append([]Model(nil), in...) }
+func cloneModels(in []Model) []Model { return append([]Model{}, in...) }

@@ -48,3 +48,50 @@ func TestProjectChatCompletionRejectsMalformedNestedKnownFields(t *testing.T) {
 		}
 	}
 }
+
+func TestValidModelIDAcceptsSafeSlashSeparatedIDs(t *testing.T) {
+	for _, id := range []string{
+		"model-a",
+		"zai-org/glm-5.1",
+		"deepseek/deepseek-v4-pro",
+		"team/subteam/model-v2",
+	} {
+		if !validModelID(id) {
+			t.Fatalf("validModelID(%q) = false, want true", id)
+		}
+	}
+}
+
+func TestValidModelIDRejectsUnsafeOrMalformedSlashIDs(t *testing.T) {
+	for _, id := range []string{
+		"/model",
+		"org/",
+		"org//model",
+		"./model",
+		"org/../model",
+		"org\\model",
+		"org/model?query=value",
+		"org/model#fragment",
+		"org%2Fmodel",
+		" org/model",
+		"org/model ",
+		"org/\tmodel",
+		"org/\x00model",
+		"org/\u200bmodel",
+		"org/\u202emodel",
+	} {
+		if validModelID(id) {
+			t.Fatalf("validModelID(%q) = true, want false", id)
+		}
+	}
+}
+
+func TestCloneModelsNilReturnsNonNilEmptySlice(t *testing.T) {
+	cloned := cloneModels(nil)
+	if cloned == nil {
+		t.Fatal("cloneModels(nil) = nil, want non-nil empty slice")
+	}
+	if len(cloned) != 0 {
+		t.Fatalf("len(cloneModels(nil)) = %d, want 0", len(cloned))
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"net/url"
 
 	"github.com/gin-gonic/gin"
 	"github.com/porsche/ai-gateway-go/internal/app"
@@ -31,17 +32,12 @@ func RegisterPlatform(r *gin.Engine, state *app.State) {
 		c.JSON(http.StatusOK, gin.H{"data": catalog.Data, "catalog_stale": catalog.CatalogStale})
 	})
 
+	g.GET("/models/detail", func(c *gin.Context) {
+		platformModelDetail(c, state, modelIDFromDetailQuery(c))
+	})
+
 	g.GET("/models/:id", func(c *gin.Context) {
-		if state.WhiteLabel == nil {
-			platformWhiteLabelError(c, whitelabel.ErrUpstreamUnavailable("white-label service unavailable"))
-			return
-		}
-		model, err := state.WhiteLabel.GetModel(c.Request.Context(), c.Param("id"), middleware.CurrentUser(c).AllowedModels)
-		if err != nil {
-			platformWhiteLabelError(c, err)
-			return
-		}
-		c.JSON(http.StatusOK, model)
+		platformModelDetail(c, state, c.Param("id"))
 	})
 
 	g.POST("/chat/completions", func(c *gin.Context) {
@@ -151,6 +147,53 @@ func RegisterPlatform(r *gin.Engine, state *app.State) {
 		}
 		c.JSON(http.StatusOK, result)
 	})
+}
+
+func platformModelDetail(c *gin.Context, state *app.State, modelID string) {
+	if state.WhiteLabel == nil {
+		platformWhiteLabelError(c, whitelabel.ErrUpstreamUnavailable("white-label service unavailable"))
+		return
+	}
+	model, err := state.WhiteLabel.GetModel(c.Request.Context(), modelID, middleware.CurrentUser(c).AllowedModels)
+	if err != nil {
+		platformWhiteLabelError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, model)
+}
+
+// modelIDFromDetailQuery leaves the previous /models/detail route behavior
+// intact for a legacy model literally named "detail". An explicitly supplied
+// query value, including an empty one, always uses the new query-ID contract.
+func modelIDFromDetailQuery(c *gin.Context) string {
+	if modelID, present := modelIDFromQuery(c); present {
+		return modelID
+	}
+	return "detail"
+}
+
+// modelIDFromQuery deliberately parses RawQuery rather than using Gin's query
+// helper. Gin treats malformed escapes as a missing key, which would make a
+// malformed `id` silently take the legacy detail fallback. An invalid or
+// ambiguous id is returned as an explicit empty value for service validation.
+func modelIDFromQuery(c *gin.Context) (string, bool) {
+	values, err := url.ParseQuery(c.Request.URL.RawQuery)
+	if err != nil {
+		return "", true
+	}
+	ids, present := values["id"]
+	if !present {
+		return "", false
+	}
+	if len(ids) != 1 {
+		return "", true
+	}
+	return ids[0], true
+}
+
+func requiredModelIDFromQuery(c *gin.Context) string {
+	modelID, _ := modelIDFromQuery(c)
+	return modelID
 }
 
 func platformStreamPreError(c *gin.Context, err error) {
