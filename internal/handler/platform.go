@@ -31,17 +31,12 @@ func RegisterPlatform(r *gin.Engine, state *app.State) {
 		c.JSON(http.StatusOK, gin.H{"data": catalog.Data, "catalog_stale": catalog.CatalogStale})
 	})
 
+	g.GET("/models/detail", func(c *gin.Context) {
+		platformModelDetail(c, state, c.Query("id"))
+	})
+
 	g.GET("/models/:id", func(c *gin.Context) {
-		if state.WhiteLabel == nil {
-			platformWhiteLabelError(c, whitelabel.ErrUpstreamUnavailable("white-label service unavailable"))
-			return
-		}
-		model, err := state.WhiteLabel.GetModel(c.Request.Context(), c.Param("id"), middleware.CurrentUser(c).AllowedModels)
-		if err != nil {
-			platformWhiteLabelError(c, err)
-			return
-		}
-		c.JSON(http.StatusOK, model)
+		platformModelDetail(c, state, c.Param("id"))
 	})
 
 	g.POST("/chat/completions", func(c *gin.Context) {
@@ -151,6 +146,19 @@ func RegisterPlatform(r *gin.Engine, state *app.State) {
 		}
 		c.JSON(http.StatusOK, result)
 	})
+}
+
+func platformModelDetail(c *gin.Context, state *app.State, modelID string) {
+	if state.WhiteLabel == nil {
+		platformWhiteLabelError(c, whitelabel.ErrUpstreamUnavailable("white-label service unavailable"))
+		return
+	}
+	model, err := state.WhiteLabel.GetModel(c.Request.Context(), modelID, middleware.CurrentUser(c).AllowedModels)
+	if err != nil {
+		platformWhiteLabelError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, model)
 }
 
 func platformStreamPreError(c *gin.Context, err error) {

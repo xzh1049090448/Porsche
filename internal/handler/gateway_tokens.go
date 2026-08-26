@@ -39,21 +39,11 @@ func registerGatewayRoutes(r *gin.Engine, state *app.State) {
 		}
 		c.JSON(http.StatusOK, gin.H{"object": "list", "data": catalog.Data})
 	})
+	g.GET("/models/detail", func(c *gin.Context) {
+		gatewayModelDetail(c, state, c.Query("id"))
+	})
 	g.GET("/models/:id", func(c *gin.Context) {
-		token, ok := authenticateGatewayToken(c, state, "")
-		if !ok {
-			return
-		}
-		if state.WhiteLabel == nil {
-			gatewayWhiteLabelError(c, whitelabel.ErrUpstreamUnavailable("white-label service unavailable"))
-			return
-		}
-		model, err := state.WhiteLabel.GetModel(c.Request.Context(), c.Param("id"), token.AllowedModels)
-		if err != nil {
-			gatewayWhiteLabelError(c, err)
-			return
-		}
-		c.JSON(http.StatusOK, model)
+		gatewayModelDetail(c, state, c.Param("id"))
 	})
 	g.POST("/chat/completions", func(c *gin.Context) {
 		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, whitelabel.MaxRequestBodyBytes)
@@ -139,6 +129,23 @@ func registerGatewayRoutes(r *gin.Engine, state *app.State) {
 		gatewaySSEError(c)
 		return
 	})
+}
+
+func gatewayModelDetail(c *gin.Context, state *app.State, modelID string) {
+	token, ok := authenticateGatewayToken(c, state, "")
+	if !ok {
+		return
+	}
+	if state.WhiteLabel == nil {
+		gatewayWhiteLabelError(c, whitelabel.ErrUpstreamUnavailable("white-label service unavailable"))
+		return
+	}
+	model, err := state.WhiteLabel.GetModel(c.Request.Context(), modelID, token.AllowedModels)
+	if err != nil {
+		gatewayWhiteLabelError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, model)
 }
 
 func RegisterGatewayTokens(r *gin.Engine, state *app.State) {

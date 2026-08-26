@@ -7,6 +7,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -64,6 +65,50 @@ func TestPlatformModelDetailHidesUnauthorizedAs404(t *testing.T) {
 	}
 }
 
+func TestPlatformSlashModelDetailUsesQueryIDAndUserACL(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	const modelID = "zai-org/glm-5.1"
+	state, detailCalls := newSlashPlatformWhiteLabelTestState(t, modelID)
+	user := platformTestUser("13900139006", models.JSONSlice{modelID})
+	if err := state.DB.Create(&user).Error; err != nil {
+		t.Fatal(err)
+	}
+	engine := gin.New()
+	RegisterPlatform(engine, state)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/platform/models/detail?id=zai-org%2Fglm-5.1", nil)
+	req.Header.Set("Authorization", "Bearer "+platformJWT(t, state, &user))
+	rec := httptest.NewRecorder()
+	engine.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"id":"zai-org/glm-5.1"`) {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := detailCalls.Load(); got != 1 {
+		t.Fatalf("detail upstream calls=%d, want 1", got)
+	}
+}
+
+func TestPlatformSlashModelDetailDoesNotCallUpstreamWhenUserDenied(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	const modelID = "zai-org/glm-5.1"
+	state, detailCalls := newSlashPlatformWhiteLabelTestState(t, modelID)
+	user := platformTestUser("13900139007", models.JSONSlice{"model-a"})
+	if err := state.DB.Create(&user).Error; err != nil {
+		t.Fatal(err)
+	}
+	engine := gin.New()
+	RegisterPlatform(engine, state)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/platform/models/detail?id=zai-org%2Fglm-5.1", nil)
+	req.Header.Set("Authorization", "Bearer "+platformJWT(t, state, &user))
+	rec := httptest.NewRecorder()
+	engine.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := detailCalls.Load(); got != 0 {
+		t.Fatalf("detail upstream calls=%d, want 0", got)
+	}
+}
+
 // A failure before the platform emits an SSE frame must remain a normal JSON
 // API error, so clients can distinguish it from a truncated live stream.
 func TestPlatformStreamFailureBeforeFirstFrameReturnsJSON(t *testing.T) {
@@ -105,6 +150,27 @@ func TestAdminHealthCheckRejectsConcurrentSameModel(t *testing.T) {
 	}
 }
 
+func TestAdminSlashHealthCheckUsesQueryIDForExactLock(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	const modelID = "zai-org/glm-5.1"
+	whiteLabel, err := whitelabel.NewWhiteLabelService(config.WhiteLabelSettings{BaseURL: "https://white-label.test/v1", APIKey: "test-key", AllowedModels: map[string]struct{}{modelID: {}}}, http.DefaultClient, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := &app.State{Settings: &config.Settings{AdminToken: "admin-test"}, WhiteLabel: whiteLabel}
+	modelHealthChecks.Store(modelID, struct{}{})
+	t.Cleanup(func() { modelHealthChecks.Delete(modelID) })
+	engine := gin.New()
+	RegisterAdmin(engine, state)
+	req := httptest.NewRequest(http.MethodPost, "/admin/models/health-check?id=zai-org%2Fglm-5.1", nil)
+	req.Header.Set("Authorization", "Bearer admin-test")
+	rec := httptest.NewRecorder()
+	engine.ServeHTTP(rec, req)
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "health_check_in_progress") {
+		t.Fatalf("expected 409 concurrent health check, status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func newPlatformWhiteLabelTestState(t *testing.T) *app.State {
 	t.Helper()
 	settings := &config.Settings{AppEnv: "test", DatabaseURL: testDatabaseURL(t), JWTSecretKey: "test-secret"}
@@ -131,6 +197,33 @@ func newPlatformWhiteLabelTestState(t *testing.T) *app.State {
 		Settings: settings, DB: state.DB, Billing: state.Billing, WhiteLabel: whiteLabel,
 	})
 	return state
+}
+
+func newSlashPlatformWhiteLabelTestState(t *testing.T, modelID string) (*app.State, *atomic.Int64) {
+	t.Helper()
+	settings := &config.Settings{AppEnv: "test", DatabaseURL: testDatabaseURL(t), JWTSecretKey: "test-secret"}
+	gdb, err := db.Open(settings.DatabaseURL, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := app.NewState(settings, gdb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var detailCalls atomic.Int64
+	whiteLabel, err := whitelabel.NewWhiteLabelService(config.WhiteLabelSettings{BaseURL: "https://white-label.test/v1", APIKey: "test-key", AllowedModels: map[string]struct{}{modelID: {}}}, &http.Client{Transport: platformRoundTripper(func(req *http.Request) (*http.Response, error) {
+		body := `{"data":[{"id":"zai-org/glm-5.1","title":"GLM"}]}`
+		if strings.HasSuffix(req.URL.EscapedPath(), "/models/zai-org%2Fglm-5.1") {
+			detailCalls.Add(1)
+			body = `{"id":"zai-org/glm-5.1","title":"GLM"}`
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: req}, nil
+	})}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.WhiteLabel = whiteLabel
+	return state, &detailCalls
 }
 
 func testDatabaseURL(t *testing.T) string {

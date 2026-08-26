@@ -65,6 +65,51 @@ func TestGatewayModelsUseTokenACLAndDynamicCatalog(t *testing.T) {
 	_ = upstream
 }
 
+func TestGatewaySlashModelDetailUsesQueryIDAndTokenACL(t *testing.T) {
+	const modelID = "zai-org/glm-5.1"
+	state, _, calls := gatewayWhiteLabelState(t, `{"data":[{"id":"zai-org/glm-5.1"}]}`)
+	user := gatewayWhiteLabelUser("13900200013")
+	if err := state.DB.Create(user).Error; err != nil {
+		t.Fatal(err)
+	}
+	_, secret, err := state.GatewayTokens.Create(user, service.GatewayTokenCreateInput{Name: "slash-detail", AllowedModels: models.JSONSlice{modelID}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/v1/models/detail?id=zai-org%2Fglm-5.1", nil)
+	req.Header.Set("Authorization", "Bearer "+secret)
+	rec := httptest.NewRecorder()
+	router.New(state).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"id":"zai-org/glm-5.1"`) {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("upstream calls=%d, want catalog plus detail", got)
+	}
+}
+
+func TestGatewaySlashModelDetailDoesNotCallUpstreamWhenTokenDenied(t *testing.T) {
+	state, _, calls := gatewayWhiteLabelState(t, `{"data":[{"id":"zai-org/glm-5.1"}]}`)
+	user := gatewayWhiteLabelUser("13900200014")
+	if err := state.DB.Create(user).Error; err != nil {
+		t.Fatal(err)
+	}
+	_, secret, err := state.GatewayTokens.Create(user, service.GatewayTokenCreateInput{Name: "slash-denied", AllowedModels: models.JSONSlice{"model-a"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/v1/models/detail?id=zai-org%2Fglm-5.1", nil)
+	req.Header.Set("Authorization", "Bearer "+secret)
+	rec := httptest.NewRecorder()
+	router.New(state).ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := calls.Load(); got != 0 {
+		t.Fatalf("upstream calls=%d, want 0", got)
+	}
+}
+
 func TestGatewayChatRejectsBeforeWhiteLabelUpstream(t *testing.T) {
 	state, _, calls := gatewayWhiteLabelState(t, `{"data":[{"id":"model-a"}]}`)
 	user := gatewayWhiteLabelUser("13900200002")
@@ -432,6 +477,9 @@ func gatewayWhiteLabelState(t *testing.T, catalog string) (*app.State, *httptest
 		case "/models":
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(catalog))
+		case "/models/zai-org/glm-5.1":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"zai-org/glm-5.1"}`))
 		case "/chat/completions":
 			if r.URL.Query().Get("fail_before") != "" {
 				http.Error(w, "secret upstream failure", http.StatusBadGateway)
@@ -483,7 +531,7 @@ func gatewayWhiteLabelState(t *testing.T, catalog string) (*app.State, *httptest
 	if err != nil {
 		t.Fatal(err)
 	}
-	state.WhiteLabel, err = whitelabel.NewWhiteLabelService(config.WhiteLabelSettings{BaseURL: upstream.URL, APIKey: "test-key", AllowedModels: map[string]struct{}{"model-a": {}, "model-b": {}}}, upstream.Client(), nil)
+	state.WhiteLabel, err = whitelabel.NewWhiteLabelService(config.WhiteLabelSettings{BaseURL: upstream.URL, APIKey: "test-key", AllowedModels: map[string]struct{}{"model-a": {}, "model-b": {}, "zai-org/glm-5.1": {}}}, upstream.Client(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
