@@ -77,6 +77,8 @@ func TestValidModelIDRejectsUnsafeOrMalformedSlashIDs(t *testing.T) {
 		"org/model ",
 		"org/\tmodel",
 		"org/\x00model",
+		"org/\u200bmodel",
+		"org/\u202emodel",
 	} {
 		if validModelID(id) {
 			t.Fatalf("validModelID(%q) = true, want false", id)

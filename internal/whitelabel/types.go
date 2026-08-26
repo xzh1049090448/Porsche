@@ -286,7 +286,7 @@ func validModelID(id string) bool {
 	}
 	for _, segment := range strings.Split(id, "/") {
 		if segment == "" || segment == "." || segment == ".." || strings.IndexFunc(segment, func(r rune) bool {
-			return unicode.IsControl(r) || unicode.IsSpace(r) || strings.ContainsRune("\\?#%", r)
+			return unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || unicode.IsSpace(r) || strings.ContainsRune("\\?#%", r)
 		}) >= 0 {
 			return false
 		}
