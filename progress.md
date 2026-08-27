@@ -1,8 +1,16 @@
-# PRD-260820 白牌上游接入进度
+# Porsche 开发进度
 
 ## 当前唯一活动功能
 
-`go-004`：JieKou AI 白牌上游接入（`in_progress`）。本轮已完成隔离环境、前后端实现、自动化验证，以及旧上游路由/配置清理；真实上游冒烟仍待部署环境执行。
+`go-006`：用户注册管理一期（`in_progress`）。Task 1 已完成生产认证配置与追踪；尚未执行迁移、数据库写入或认证端点实现。
+
+## 用户注册管理一期 Task 1（2026-08-28）
+
+- 生产环境认证配置 fail-closed：缺少 Redis、固定登录或示例凭据、默认或复用的 JWT/HMAC/Admin/Metrics 密钥、非 HTTPS 或空可信 Origin、非正认证数值，以及不完整或不合法的一次性 Root 引导均会拒绝启动。
+- `LoadMigrationSettings` 保持只加载迁移所需配置，不要求上游或认证配置；本 Task 未新增或执行数据库迁移，也未连接数据库。
+- 已验证 `GOCACHE=/private/tmp/porsche-go-build-cache go test ./internal/config -count=1`、`git diff --check` 与 `GOCACHE=/private/tmp/porsche-go-build-cache go test ./... -count=1`。受限环境首次因禁止 `httptest` 绑定 `[::1]` 失败，在允许回环监听的验证环境复跑后全量通过。
+
+`go-004`：JieKou AI 白牌上游接入（`blocked`）。真实部署环境 JieKou 冒烟待办；该外部验证完成前不得标记为通过。
 
 ## 已验证基线（2026-08-21）
 
@@ -27,7 +35,7 @@
   `re:` RE2 模式；用户与 Gateway Token 的 `allowed_models` 仍只按精确 ID 匹配。
 - 已验证 `go test ./internal/config -count=1`、`go test ./internal/whitelabel -count=1`、
   `go test ./... -count=1` 与 `go vet ./...`；无效或空的正则会在启动配置解析时失败。
-  未执行真实 JieKou 上游目录、Chat 或 SSE 冒烟，`go-004` 保持 `in_progress`。
+  未执行真实 JieKou 上游目录、Chat 或 SSE 冒烟，`go-004` 保持 `blocked`。
 
 ## Task 6 旧上游清理（2026-08-24）
 
@@ -92,7 +100,7 @@
   在允许 loopback listener 的执行环境中复跑后全部包通过。
 
 `go-004` 的真实 JieKou 目录、Chat 与 SSE 冒烟仍需部署环境的白牌配置；上述
-部署编排验证不替代该上游验收，故其状态保持 `in_progress`。
+部署编排验证不替代该上游验收，故其状态保持 `blocked`。
 
 ## 下一步（部署冒烟）
 

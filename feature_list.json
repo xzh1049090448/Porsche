@@ -19,7 +19,7 @@
       "area": "white-label-upstream",
       "title": "PRD-260820 JieKou AI 白牌上游接入",
       "user_visible_behavior": "Go 网关与平台 API 使用唯一 JieKou AI OpenAI-compatible 白牌上游，向客户端提供动态模型目录、ACL、Chat 与 SSE 契约。",
-      "status": "in_progress",
+      "status": "blocked",
       "verification": [
         "GOCACHE=/private/tmp/porsche-go-build-cache go test -count=1 ./...",
         "在前端 llm-platform 工作树中运行 npm ping、npm install --package-lock=false、npm test 与 npm run build",
@@ -38,7 +38,24 @@
         "2026-08-27：全局 JIEKOU_ALLOWED_MODELS 支持精确 ID 和 re: RE2 模式；go test ./internal/config -count=1、go test ./internal/whitelabel -count=1、go test ./... -count=1 和 go vet ./... 已验证。用户及 Gateway Token allowed_models 仍按精确 ID 匹配；尚未执行真实 JieKou AI 上游冒烟。",
         "尚未执行真实 JieKou AI 上游冒烟。"
       ],
-      "notes": "这是当前唯一 in_progress 功能。Issue #2 已提升为最高优先级：需完整支持组织/模型斜杠 ID，并保证空目录返回数组；完成代码与安全验证后进行真实上游目录、详情、Chat 与 SSE 联调。"
+      "notes": "阻塞原因：真实部署环境 JieKou 冒烟待办。Issue #2 已提升为最高优先级：需完整支持组织/模型斜杠 ID，并保证空目录返回数组；完成代码与安全验证后进行真实上游目录、详情、Chat 与 SSE 联调。"
+    },
+    {
+      "id": "go-006",
+      "priority": 1,
+      "area": "user-registration-management",
+      "title": "PRD-260828 用户注册管理一期",
+      "user_visible_behavior": "以用户名密码、短期 Access JWT 与服务端可撤销会话替代当前手机号/长期 JWT 认证，并提供基础角色门禁。",
+      "status": "in_progress",
+      "verification": [
+        "go test ./internal/config -count=1",
+        "后续阶段执行真实隔离 MySQL 8 与 Redis 集成测试、go test ./...、go vet ./... 及前端测试/构建"
+      ],
+      "evidence": [
+        "2026-08-28：Task 1 已完成生产认证配置、文档与追踪；GOCACHE=/private/tmp/porsche-go-build-cache go test ./internal/config -count=1、git diff --check 与允许回环监听的 go test ./... -count=1 均通过。",
+        "尚未执行迁移、数据库写入、Redis 集成、认证端点或浏览器端验证。"
+      ],
+      "notes": "必须保持唯一 in_progress。用户、会话与认证审计的数据库变更仅能在后续 Task 2 通过显式、可审查的 MySQL 迁移实施。"
     },
     {
       "id": "go-005",

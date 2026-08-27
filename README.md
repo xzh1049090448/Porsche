@@ -23,7 +23,7 @@ Go 语言实现的 **国内大模型聚合平台 API**。服务路径与既有�
 ### 1. 环境要求
 
 - Go 1.22+
-- （可选）Redis：验证码/限流多实例部署时使用
+- Redis：生产认证的会话撤销与限流必需依赖
 
 ### 2. 配置
 
@@ -37,6 +37,22 @@ cp .env.example .env
 `JIEKOU_ALLOWED_MODELS` 缺失或无效时服务会拒绝启动。网关调用使用用户在
 `POST /api/v1/tokens` 创建的 `sk-gw-...` API Token；完整密钥仅在创建响应中
 返回一次，数据库只保存 SHA-256 哈希。静态客户端和旧厂商 API Key 配置不再支持。
+
+### 一期认证安全配置
+
+用户名密码认证与可撤销会话使用 `REGISTER_ENABLED`、
+`PASSWORD_REGISTER_ENABLED`、`PASSWORD_LOGIN_ENABLED` 和会话时长/上限配置。
+生产环境会拒绝启动，除非同时配置非空 `REDIS_URL`、非默认
+`JWT_SECRET_KEY` 与 `AUTH_HMAC_KEY`，并且 `AUTH_TRUSTED_ORIGINS` 仅包含明确的
+HTTPS Origin（逗号分隔）。默认 Access JWT 时长为 15 分钟、会话为 30 天、每用户
+最多 50 个活跃会话、24 小时最多签发 100 次会话，Refresh 重放窗口为 30 秒。
+生产还必须关闭 `FIXED_LOGIN_ENABLED`、移除示例固定账号密码，并为
+`JWT_SECRET_KEY`、`AUTH_HMAC_KEY`、`ADMIN_TOKEN` 和 `METRICS_TOKEN` 分别设置
+非默认且互不复用的密钥；认证数值配置必须为正整数。
+
+首次部署可同时设置 `ROOT_BOOTSTRAP_USERNAME` 与
+`ROOT_BOOTSTRAP_PASSWORD` 创建一次性 Root；两项必须同时配置。Root 创建成功后必须
+立即从生产环境删除这两个变量并重启服务，不能把引导凭据保留为长期登录方式。
 
 `JIEKOU_ALLOWED_MODELS` 使用逗号分隔的精确模型 ID，例如
 `zai-org/glm-5.1,deepseek/deepseek-v4-pro`。全局 `.env` allowlist 也可包含显式

@@ -16,6 +16,102 @@ func TestLoadRejectsNonMySQLDatabaseURL(t *testing.T) {
 	}
 }
 
+func TestLoadRejectsUnsafeAuthProductionConfiguration(t *testing.T) {
+	setLoadTestEnvironment(t)
+	t.Setenv("APP_ENV", "production")
+	t.Setenv("REGISTER_ENABLED", "true")
+	t.Setenv("REDIS_URL", "")
+
+	_, err := Load()
+	if err == nil || !strings.Contains(err.Error(), "REDIS_URL") {
+		t.Fatalf("Load() error = %v, want REDIS_URL validation error", err)
+	}
+}
+
+func TestLoadRejectsProductionAuthSecretsAndOrigins(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		set  func(*testing.T)
+		want string
+	}{
+		{
+			name: "default JWT secret",
+			set: func(t *testing.T) {
+				t.Setenv("JWT_SECRET_KEY", "change-me-jwt-secret-for-dev-only")
+			},
+			want: "JWT_SECRET_KEY",
+		},
+		{
+			name: "default HMAC secret",
+			set: func(t *testing.T) {
+				t.Setenv("AUTH_HMAC_KEY", "change-me-auth-hmac-key-for-dev-only")
+			},
+			want: "AUTH_HMAC_KEY",
+		},
+		{
+			name: "non HTTPS trusted origin",
+			set: func(t *testing.T) {
+				t.Setenv("AUTH_TRUSTED_ORIGINS", "http://app.example.com")
+			},
+			want: "AUTH_TRUSTED_ORIGINS",
+		},
+		{
+			name: "incomplete root bootstrap",
+			set: func(t *testing.T) {
+				t.Setenv("ROOT_BOOTSTRAP_USERNAME", "root")
+				t.Setenv("ROOT_BOOTSTRAP_PASSWORD", "")
+			},
+			want: "ROOT_BOOTSTRAP",
+		},
+		{
+			name: "fixed login enabled",
+			set: func(t *testing.T) {
+				t.Setenv("FIXED_LOGIN_ENABLED", "true")
+			},
+			want: "FIXED_LOGIN_ENABLED",
+		},
+		{
+			name: "default admin token",
+			set: func(t *testing.T) {
+				t.Setenv("ADMIN_TOKEN", "change-me-to-a-long-random-secret")
+			},
+			want: "ADMIN_TOKEN",
+		},
+		{
+			name: "reused metrics token",
+			set: func(t *testing.T) {
+				t.Setenv("METRICS_TOKEN", "production-jwt-secret")
+			},
+			want: "METRICS_TOKEN",
+		},
+		{
+			name: "weak root bootstrap password",
+			set: func(t *testing.T) {
+				t.Setenv("ROOT_BOOTSTRAP_USERNAME", "root")
+				t.Setenv("ROOT_BOOTSTRAP_PASSWORD", "password")
+			},
+			want: "ROOT_BOOTSTRAP",
+		},
+		{
+			name: "invalid session access minutes",
+			set: func(t *testing.T) {
+				t.Setenv("SESSION_ACCESS_MINUTES", "invalid")
+			},
+			want: "SESSION_ACCESS_MINUTES",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			setSafeProductionAuthEnvironment(t)
+			tc.set(t)
+
+			_, err := Load()
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Load() error = %v, want %s validation error", err, tc.want)
+			}
+		})
+	}
+}
+
 func TestLoadMigrationSettingsDoesNotRequireUpstreamConfiguration(t *testing.T) {
 	t.Setenv("UPSTREAM_REGION", "")
 	t.Setenv("JIEKOU_API_KEY", "")
@@ -163,4 +259,21 @@ func setLoadTestEnvironment(t *testing.T) {
 	t.Setenv("JIEKOU_ALLOWED_MODELS", "model-a")
 	t.Setenv("DATABASE_URL", "mysql://test:test@localhost:3306/platform")
 	t.Setenv("SNOWFLAKE_NODE_ID", "0")
+}
+
+func setSafeProductionAuthEnvironment(t *testing.T) {
+	t.Helper()
+	setLoadTestEnvironment(t)
+	t.Setenv("APP_ENV", "production")
+	t.Setenv("REDIS_URL", "redis://localhost:6379/0")
+	t.Setenv("JWT_SECRET_KEY", "production-jwt-secret")
+	t.Setenv("AUTH_HMAC_KEY", "production-auth-hmac-key")
+	t.Setenv("ADMIN_TOKEN", "production-admin-token")
+	t.Setenv("METRICS_TOKEN", "production-metrics-token")
+	t.Setenv("AUTH_TRUSTED_ORIGINS", "https://app.example.com")
+	t.Setenv("ROOT_BOOTSTRAP_USERNAME", "")
+	t.Setenv("ROOT_BOOTSTRAP_PASSWORD", "")
+	t.Setenv("FIXED_LOGIN_ENABLED", "false")
+	t.Setenv("FIXED_LOGIN_PHONE", "disabled")
+	t.Setenv("FIXED_LOGIN_PASSWORD", "disabled")
 }
