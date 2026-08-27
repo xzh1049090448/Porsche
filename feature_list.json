@@ -1,6 +1,6 @@
 {
   "project": "Porsche Go AI Gateway",
-  "last_updated": "2026-08-27",
+  "last_updated": "2026-08-28",
   "rules": {
     "single_active_feature": true,
     "passing_requires_evidence": true,
@@ -53,6 +53,7 @@
       ],
       "evidence": [
         "2026-08-28：Task 1 已完成生产认证配置、文档与追踪；GOCACHE=/private/tmp/porsche-go-build-cache go test ./internal/config -count=1、git diff --check 与允许回环监听的 go test ./... -count=1 均通过。",
+        "2026-08-28：Task 1 最终安全复审补齐非 development fail-closed、APP_ENV 规范化、Redis URL、严格认证开关/Access 时长，以及 32 字节非默认、非重复且互不复用的 JWT/HMAC/Admin/Metrics 密钥验证；配置与全量 Go 测试通过。",
         "尚未执行迁移、数据库写入、Redis 集成、认证端点或浏览器端验证。"
       ],
       "notes": "必须保持唯一 in_progress。用户、会话与认证审计的数据库变更仅能在后续 Task 2 通过显式、可审查的 MySQL 迁移实施。"

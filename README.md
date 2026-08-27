@@ -42,13 +42,16 @@ cp .env.example .env
 
 用户名密码认证与可撤销会话使用 `REGISTER_ENABLED`、
 `PASSWORD_REGISTER_ENABLED`、`PASSWORD_LOGIN_ENABLED` 和会话时长/上限配置。
-生产环境会拒绝启动，除非同时配置非空 `REDIS_URL`、非默认
+除 `development` 外的环境会拒绝启动，除非同时配置有效 `redis://` 或 `rediss://`
+`REDIS_URL`、非默认
 `JWT_SECRET_KEY` 与 `AUTH_HMAC_KEY`，并且 `AUTH_TRUSTED_ORIGINS` 仅包含明确的
 HTTPS Origin（逗号分隔）。默认 Access JWT 时长为 15 分钟、会话为 30 天、每用户
-最多 50 个活跃会话、24 小时最多签发 100 次会话，Refresh 重放窗口为 30 秒。
-生产还必须关闭 `FIXED_LOGIN_ENABLED`、移除示例固定账号密码，并为
+最多 50 个活跃会话、24 小时最多签发 100 次会话，Refresh 重放窗口为 30 秒；
+`SESSION_ACCESS_MINUTES` 固定为 15，认证开关和数值配置不能使用无效值。
+非开发环境还必须关闭 `FIXED_LOGIN_ENABLED`，并为
 `JWT_SECRET_KEY`、`AUTH_HMAC_KEY`、`ADMIN_TOKEN` 和 `METRICS_TOKEN` 分别设置
-非默认且互不复用的密钥；认证数值配置必须为正整数。
+至少 32 字节、非默认、非重复且互不复用的密钥。`APP_ENV` 仅允许
+`development`、`test`、`staging` 或 `production`（大小写和首尾空白会规范化）。
 
 首次部署可同时设置 `ROOT_BOOTSTRAP_USERNAME` 与
 `ROOT_BOOTSTRAP_PASSWORD` 创建一次性 Root；两项必须同时配置。Root 创建成功后必须

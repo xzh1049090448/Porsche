@@ -112,6 +112,100 @@ func TestLoadRejectsProductionAuthSecretsAndOrigins(t *testing.T) {
 	}
 }
 
+func TestLoadRejectsUnsafeNonDevelopmentAuthConfiguration(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		set  func(*testing.T)
+		want string
+	}{
+		{
+			name: "missing admin token",
+			set:  func(t *testing.T) { t.Setenv("ADMIN_TOKEN", "") },
+			want: "ADMIN_TOKEN",
+		},
+		{
+			name: "known admin placeholder",
+			set:  func(t *testing.T) { t.Setenv("ADMIN_TOKEN", "change-me-for-dev-only") },
+			want: "ADMIN_TOKEN",
+		},
+		{
+			name: "short JWT secret",
+			set:  func(t *testing.T) { t.Setenv("JWT_SECRET_KEY", "too-short") },
+			want: "JWT_SECRET_KEY",
+		},
+		{
+			name: "repeated HMAC secret",
+			set:  func(t *testing.T) { t.Setenv("AUTH_HMAC_KEY", strings.Repeat("a", 32)) },
+			want: "AUTH_HMAC_KEY",
+		},
+		{
+			name: "reused admin token",
+			set:  func(t *testing.T) { t.Setenv("ADMIN_TOKEN", "jwt-secret-material-0123456789-ABCDE") },
+			want: "ADMIN_TOKEN",
+		},
+		{
+			name: "invalid register switch",
+			set:  func(t *testing.T) { t.Setenv("REGISTER_ENABLED", "enabled") },
+			want: "REGISTER_ENABLED",
+		},
+		{
+			name: "access lifetime above fixed value",
+			set:  func(t *testing.T) { t.Setenv("SESSION_ACCESS_MINUTES", "16") },
+			want: "SESSION_ACCESS_MINUTES",
+		},
+		{
+			name: "invalid Redis URL",
+			set:  func(t *testing.T) { t.Setenv("REDIS_URL", "not-a-url") },
+			want: "REDIS_URL",
+		},
+		{
+			name: "trusted origin with path",
+			set:  func(t *testing.T) { t.Setenv("AUTH_TRUSTED_ORIGINS", "https://app.example.com/login") },
+			want: "AUTH_TRUSTED_ORIGINS",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			setSafeProductionAuthEnvironment(t)
+			tc.set(t)
+
+			_, err := Load()
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Load() error = %v, want %s validation error", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestLoadNormalizesAndRestrictsApplicationEnvironment(t *testing.T) {
+	setSafeProductionAuthEnvironment(t)
+	t.Setenv("APP_ENV", " Production ")
+	settings, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if settings.AppEnv != "production" {
+		t.Fatalf("AppEnv = %q, want production", settings.AppEnv)
+	}
+
+	for _, appEnv := range []string{"staging", "test"} {
+		t.Run(appEnv, func(t *testing.T) {
+			setSafeProductionAuthEnvironment(t)
+			t.Setenv("APP_ENV", appEnv)
+			t.Setenv("REDIS_URL", "")
+			_, err := Load()
+			if err == nil || !strings.Contains(err.Error(), "REDIS_URL") {
+				t.Fatalf("Load() error = %v, want REDIS_URL validation error", err)
+			}
+		})
+	}
+
+	setSafeProductionAuthEnvironment(t)
+	t.Setenv("APP_ENV", "preview")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "APP_ENV") {
+		t.Fatalf("Load() error = %v, want APP_ENV validation error", err)
+	}
+}
+
 func TestLoadMigrationSettingsDoesNotRequireUpstreamConfiguration(t *testing.T) {
 	t.Setenv("UPSTREAM_REGION", "")
 	t.Setenv("JIEKOU_API_KEY", "")
@@ -266,10 +360,10 @@ func setSafeProductionAuthEnvironment(t *testing.T) {
 	setLoadTestEnvironment(t)
 	t.Setenv("APP_ENV", "production")
 	t.Setenv("REDIS_URL", "redis://localhost:6379/0")
-	t.Setenv("JWT_SECRET_KEY", "production-jwt-secret")
-	t.Setenv("AUTH_HMAC_KEY", "production-auth-hmac-key")
-	t.Setenv("ADMIN_TOKEN", "production-admin-token")
-	t.Setenv("METRICS_TOKEN", "production-metrics-token")
+	t.Setenv("JWT_SECRET_KEY", "jwt-secret-material-0123456789-ABCDE")
+	t.Setenv("AUTH_HMAC_KEY", "hmac-secret-material-0123456789-ABCD")
+	t.Setenv("ADMIN_TOKEN", "admin-secret-material-0123456789-ABC")
+	t.Setenv("METRICS_TOKEN", "metrics-secret-material-0123456789-AB")
 	t.Setenv("AUTH_TRUSTED_ORIGINS", "https://app.example.com")
 	t.Setenv("ROOT_BOOTSTRAP_USERNAME", "")
 	t.Setenv("ROOT_BOOTSTRAP_PASSWORD", "")

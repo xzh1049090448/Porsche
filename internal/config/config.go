@@ -129,6 +129,10 @@ func ParseWhiteLabelSettings(region, apiKey, allowedModels string) (WhiteLabelSe
 
 func Load() (*Settings, error) {
 	_ = godotenv.Load()
+	appEnv, err := loadAppEnv(os.Getenv("APP_ENV"))
+	if err != nil {
+		return nil, err
+	}
 	whiteLabel, err := ParseWhiteLabelSettings(
 		os.Getenv("UPSTREAM_REGION"),
 		os.Getenv("JIEKOU_API_KEY"),
@@ -137,7 +141,19 @@ func Load() (*Settings, error) {
 	if err != nil {
 		return nil, err
 	}
-	sessionAccessMinutes, err := loadAuthPositiveInt("SESSION_ACCESS_MINUTES", 15)
+	registerEnabled, err := loadAuthBool("REGISTER_ENABLED", true)
+	if err != nil {
+		return nil, err
+	}
+	passwordRegisterEnabled, err := loadAuthBool("PASSWORD_REGISTER_ENABLED", true)
+	if err != nil {
+		return nil, err
+	}
+	passwordLoginEnabled, err := loadAuthBool("PASSWORD_LOGIN_ENABLED", true)
+	if err != nil {
+		return nil, err
+	}
+	sessionAccessMinutes, err := loadFixedAuthInt("SESSION_ACCESS_MINUTES", 15)
 	if err != nil {
 		return nil, err
 	}
@@ -159,7 +175,7 @@ func Load() (*Settings, error) {
 	}
 
 	s := &Settings{
-		AppEnv:                   getEnv("APP_ENV", "development"),
+		AppEnv:                   appEnv,
 		Host:                     getEnv("HOST", "0.0.0.0"),
 		Port:                     getEnvInt("PORT", 8000),
 		AllowedHosts:             getEnv("ALLOWED_HOSTS", "aiportcloud.com"),
@@ -172,9 +188,9 @@ func Load() (*Settings, error) {
 		DatabaseURL:              strings.TrimSpace(os.Getenv("DATABASE_URL")),
 		JWTSecretKey:             getEnv("JWT_SECRET_KEY", "change-me-jwt-secret-for-dev-only"),
 		JWTExpireMinutes:         getEnvInt("JWT_EXPIRE_MINUTES", 60*24*7),
-		RegisterEnabled:          getEnvBool("REGISTER_ENABLED", true),
-		PasswordRegisterEnabled:  getEnvBool("PASSWORD_REGISTER_ENABLED", true),
-		PasswordLoginEnabled:     getEnvBool("PASSWORD_LOGIN_ENABLED", true),
+		RegisterEnabled:          registerEnabled,
+		PasswordRegisterEnabled:  passwordRegisterEnabled,
+		PasswordLoginEnabled:     passwordLoginEnabled,
 		SessionAccessMinutes:     sessionAccessMinutes,
 		SessionDays:              sessionDays,
 		SessionMaxActive:         sessionMaxActive,
@@ -230,6 +246,51 @@ func Load() (*Settings, error) {
 	return s, nil
 }
 
+// loadAppEnv normalizes the deployment environment before configuration
+// validation so case and whitespace cannot bypass non-development safeguards.
+func loadAppEnv(raw string) (string, error) {
+	environment := strings.ToLower(strings.TrimSpace(raw))
+	if environment == "" {
+		environment = "development"
+	}
+	switch environment {
+	case "development", "test", "staging", "production":
+		return environment, nil
+	default:
+		return "", fmt.Errorf("APP_ENV must be development, test, staging, or production")
+	}
+}
+
+// loadAuthBool rejects malformed feature switches so a typo cannot silently
+// enable or disable username/password authentication.
+func loadAuthBool(key string, defaultValue bool) (bool, error) {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return defaultValue, nil
+	}
+	switch strings.ToLower(raw) {
+	case "1", "true", "yes", "on":
+		return true, nil
+	case "0", "false", "no", "off":
+		return false, nil
+	default:
+		return false, fmt.Errorf("%s must be a boolean", key)
+	}
+}
+
+// loadFixedAuthInt keeps the short-lived Access JWT lifetime fixed at the
+// reviewed value instead of accepting an environment override.
+func loadFixedAuthInt(key string, requiredValue int) (int, error) {
+	value, err := loadAuthPositiveInt(key, requiredValue)
+	if err != nil {
+		return 0, err
+	}
+	if value != requiredValue {
+		return 0, fmt.Errorf("%s must be %d", key, requiredValue)
+	}
+	return value, nil
+}
+
 // loadAuthPositiveInt accepts an omitted auth limit as its documented default
 // but rejects malformed or non-positive overrides instead of silently making
 // production authentication less restrictive.
@@ -268,11 +329,11 @@ func parseTrustedOrigins(raw string) ([]string, error) {
 // issue credentials without Redis, safe secrets, trusted HTTPS origins, or a
 // complete one-time Root bootstrap configuration.
 func validateProductionAuthSettings(s *Settings) error {
-	if s.AppEnv != "production" {
+	if s.AppEnv == "development" {
 		return nil
 	}
-	if s.RedisURL == "" {
-		return fmt.Errorf("REDIS_URL must be configured in production")
+	if err := validateRedisURL(s.RedisURL); err != nil {
+		return err
 	}
 	if s.FixedLoginEnabled {
 		return fmt.Errorf("FIXED_LOGIN_ENABLED must be false in production")
@@ -304,6 +365,16 @@ func validateProductionAuthSettings(s *Settings) error {
 	return nil
 }
 
+// validateRedisURL ensures non-development authentication has a concrete
+// Redis endpoint before it relies on Redis for revocation and rate limiting.
+func validateRedisURL(raw string) error {
+	parsed, err := url.ParseRequestURI(strings.TrimSpace(raw))
+	if err != nil || parsed.Host == "" || (parsed.Scheme != "redis" && parsed.Scheme != "rediss") {
+		return fmt.Errorf("REDIS_URL must be a redis:// or rediss:// URL outside development")
+	}
+	return nil
+}
+
 // validateProductionAuthSecrets prevents production credentials from using
 // shipped placeholders, empty values, or a secret reused by another auth or
 // privileged-management boundary.
@@ -318,8 +389,14 @@ func validateProductionAuthSecrets(s *Settings) error {
 	}
 	seen := make(map[string]struct{}, len(secrets))
 	for _, secret := range secrets {
-		if isDefaultAuthSecret(secret.value, secret.developmentDefault) {
-			return fmt.Errorf("%s must not use an empty or development default value in production", secret.name)
+		if isKnownAuthPlaceholder(secret.value, secret.developmentDefault) {
+			return fmt.Errorf("%s must not use an empty or development placeholder value outside development", secret.name)
+		}
+		if len([]byte(secret.value)) < 32 {
+			return fmt.Errorf("%s must contain at least 32 bytes outside development", secret.name)
+		}
+		if hasRepeatedSecretMaterial(secret.value) {
+			return fmt.Errorf("%s must not use repeated secret material outside development", secret.name)
 		}
 		if _, exists := seen[secret.value]; exists {
 			return fmt.Errorf("%s must not reuse another authentication or management secret in production", secret.name)
@@ -327,6 +404,41 @@ func validateProductionAuthSecrets(s *Settings) error {
 		seen[secret.value] = struct{}{}
 	}
 	return nil
+}
+
+// isKnownAuthPlaceholder identifies shipped or legacy development placeholders
+// without including their values in validation errors.
+func isKnownAuthPlaceholder(value, developmentDefault string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" || value == developmentDefault {
+		return true
+	}
+	for _, placeholder := range []string{
+		"change-me-for-dev-only",
+		"change-me-to-a-long-random-secret",
+		"change-me-to-a-distinct-random-secret",
+		"change-me-jwt-secret-for-dev-only",
+		"change-me-auth-hmac-key-for-dev-only",
+	} {
+		if value == placeholder {
+			return true
+		}
+	}
+	return false
+}
+
+// hasRepeatedSecretMaterial rejects trivial repeated-character and repeated-
+// block values that satisfy a length check but are weak credential material.
+func hasRepeatedSecretMaterial(value string) bool {
+	for prefixLength := 1; prefixLength <= len(value)/2; prefixLength++ {
+		if len(value)%prefixLength != 0 {
+			continue
+		}
+		if strings.Repeat(value[:prefixLength], len(value)/prefixLength) == value {
+			return true
+		}
+	}
+	return false
 }
 
 // validRootBootstrapUsername keeps the one-time Root identity within the
@@ -375,14 +487,17 @@ func isDefaultAuthSecret(value, developmentDefault string) bool {
 // apply schema migrations. Migrations must not require an upstream API key.
 func LoadMigrationSettings() (*Settings, error) {
 	_ = godotenv.Load()
+	appEnv, err := loadAppEnv(os.Getenv("APP_ENV"))
+	if err != nil {
+		return nil, err
+	}
 	s := &Settings{
-		AppEnv:      getEnv("APP_ENV", "development"),
+		AppEnv:      appEnv,
 		DatabaseURL: strings.TrimSpace(os.Getenv("DATABASE_URL")),
 	}
 	if !isMySQLURL(s.DatabaseURL) {
 		return nil, fmt.Errorf("DATABASE_URL must use mysql://, mysql+aiomysql://, or mysql+asyncmy://")
 	}
-	var err error
 	s.SnowflakeNodeID, err = requiredSnowflakeNodeID(os.Getenv("SNOWFLAKE_NODE_ID"))
 	if err != nil {
 		return nil, err
