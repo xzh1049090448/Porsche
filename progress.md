@@ -21,6 +21,14 @@
 
 - 未进行任何真实 JieKou AI 上游目录、Chat 或 SSE 冒烟；该验证仍需要部署环境的白牌配置。
 
+## 全局模型 allowlist 正则（2026-08-27）
+
+- `JIEKOU_ALLOWED_MODELS` 支持逗号分隔的精确模型 ID，以及仅限全局配置的显式
+  `re:` RE2 模式；用户与 Gateway Token 的 `allowed_models` 仍只按精确 ID 匹配。
+- 已验证 `go test ./internal/config -count=1`、`go test ./internal/whitelabel -count=1`、
+  `go test ./... -count=1` 与 `go vet ./...`；无效或空的正则会在启动配置解析时失败。
+  未执行真实 JieKou 上游目录、Chat 或 SSE 冒烟，`go-004` 保持 `in_progress`。
+
 ## Task 6 旧上游清理（2026-08-24）
 
 - 删除静态 `config/models.yaml`、`config/clients.yaml`、旧厂商密钥加载、旧 Gateway/Registry 运行时代码与静态客户端回退。

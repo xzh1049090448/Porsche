@@ -38,6 +38,20 @@ cp .env.example .env
 `POST /api/v1/tokens` 创建的 `sk-gw-...` API Token；完整密钥仅在创建响应中
 返回一次，数据库只保存 SHA-256 哈希。静态客户端和旧厂商 API Key 配置不再支持。
 
+`JIEKOU_ALLOWED_MODELS` 使用逗号分隔的精确模型 ID，例如
+`zai-org/glm-5.1,deepseek/deepseek-v4-pro`。全局 `.env` allowlist 也可包含显式
+`re:` RE2 模式；例如下面的注释配置会允许每个通过安全模型 ID 校验的当前及未来
+上游目录模型：
+
+```dotenv
+# JIEKOU_ALLOWED_MODELS=re:^.+$
+```
+
+无效或空的 `re:` 模式会导致服务在启动时失败。模式只适用于全局 `.env` allowlist；
+用户和 Gateway Token 的 `allowed_models` 始终按精确 ID 匹配，不会将 `re:` 文本
+解释为模式。因此，`re:^.+$` 只会向没有限制性用户或 Token ACL 的主体自动公开安全
+模型，不能绕过已有 ACL。
+
 仅支持新的 MySQL 8 schema。请在 `.env` 中设置 MySQL 连接串，例如：
 
 ```dotenv
