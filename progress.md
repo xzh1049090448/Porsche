@@ -6,7 +6,7 @@
 
 ## 用户注册管理一期 Task 1（2026-08-28）
 
-- 除 development 外的认证配置 fail-closed：缺少或无效 Redis URL、固定登录或示例凭据、短于 32 字节/默认/重复或复用的 JWT/HMAC/Admin/Metrics 密钥、非 HTTPS 或空可信 Origin、无效开关/认证数值，以及不完整或不合法的一次性 Root 引导均会拒绝启动。`APP_ENV` 会 trim/lowercase 并限制为 `development`、`test`、`staging` 或 `production`。
+- 除 development 外的认证配置 fail-closed：缺少或无效 Redis URL、固定登录、SMS 开发模式或示例凭据、短于 32 字节/默认/重复或复用的 JWT/HMAC/Admin/Metrics 密钥、非 HTTPS 或空可信 Origin、无效开关/认证数值，以及不完整或不合法的一次性 Root 引导均会拒绝启动。`APP_ENV` 会 trim/lowercase 并限制为 `development`、`test`、`staging` 或 `production`。
 - `LoadMigrationSettings` 保持只加载迁移所需配置，不要求上游或认证配置；本 Task 未新增或执行数据库迁移，也未连接数据库。
 - 已验证 `GOCACHE=/private/tmp/porsche-go-build-cache go test ./internal/config -count=1`、`git diff --check` 与 `GOCACHE=/private/tmp/porsche-go-build-cache go test ./... -count=1`。受限环境首次因禁止 `httptest` 绑定 `[::1]` 失败，在允许回环监听的验证环境复跑后全量通过。
 

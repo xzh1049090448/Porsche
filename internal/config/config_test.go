@@ -159,6 +159,11 @@ func TestLoadRejectsUnsafeNonDevelopmentAuthConfiguration(t *testing.T) {
 			want: "REDIS_URL",
 		},
 		{
+			name: "SMS development mode enabled",
+			set:  func(t *testing.T) { t.Setenv("SMS_DEV_MODE", "true") },
+			want: "SMS_DEV_MODE",
+		},
+		{
 			name: "trusted origin with path",
 			set:  func(t *testing.T) { t.Setenv("AUTH_TRUSTED_ORIGINS", "https://app.example.com/login") },
 			want: "AUTH_TRUSTED_ORIGINS",
@@ -370,4 +375,5 @@ func setSafeProductionAuthEnvironment(t *testing.T) {
 	t.Setenv("FIXED_LOGIN_ENABLED", "false")
 	t.Setenv("FIXED_LOGIN_PHONE", "disabled")
 	t.Setenv("FIXED_LOGIN_PASSWORD", "disabled")
+	t.Setenv("SMS_DEV_MODE", "false")
 }

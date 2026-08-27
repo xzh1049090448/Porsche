@@ -336,7 +336,10 @@ func validateProductionAuthSettings(s *Settings) error {
 		return err
 	}
 	if s.FixedLoginEnabled {
-		return fmt.Errorf("FIXED_LOGIN_ENABLED must be false in production")
+		return fmt.Errorf("FIXED_LOGIN_ENABLED must be false outside development")
+	}
+	if s.SMSDevMode {
+		return fmt.Errorf("SMS_DEV_MODE must be false outside development")
 	}
 	if s.FixedLoginPhone == "13800138000" || s.FixedLoginPassword == "Porsche@2026" {
 		return fmt.Errorf("FIXED_LOGIN_PHONE and FIXED_LOGIN_PASSWORD must not use development credentials in production")
