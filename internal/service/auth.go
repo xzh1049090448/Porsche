@@ -41,7 +41,7 @@ func (a *AuthService) Register(phone, code, password string, nickname *string) (
 		nick = *nickname
 	}
 	user := models.User{
-		Phone:        phone,
+		Phone:        &phone,
 		PasswordHash: &hash,
 		Nickname:     &nick,
 		PlanType:     models.PlanFree,
@@ -95,7 +95,7 @@ func (a *AuthService) LoginCode(phone, code string) (*models.User, string, error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		nick := fmt.Sprintf("用户%s", phone[len(phone)-4:])
 		user = models.User{
-			Phone:       phone,
+			Phone:       &phone,
 			Nickname:    &nick,
 			PlanType:    models.PlanFree,
 			Status:      models.UserStatusActive,
@@ -121,7 +121,7 @@ func (a *AuthService) getOrCreateFixedUser(phone string) (*models.User, error) {
 		hash, _ := security.HashPassword(a.settings.FixedLoginPassword)
 		nick := "测试用户"
 		user = models.User{
-			Phone:        phone,
+			Phone:        &phone,
 			PasswordHash: &hash,
 			Nickname:     &nick,
 			PlanType:     models.PlanFree,

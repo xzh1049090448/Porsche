@@ -23,7 +23,6 @@ func FormatMillis(millis int64) string { return time.UnixMilli(millis).UTC().For
 func UserProfile(user *models.User) map[string]interface{} {
 	return map[string]interface{}{
 		"guid":              strconv.FormatInt(user.Guid, 10),
-		"phone":             user.Phone,
 		"nickname":          user.Nickname,
 		"is_verified":       user.IsVerified,
 		"plan_type":         user.PlanType.String(),
@@ -83,7 +82,6 @@ func Order(o *models.Order) map[string]interface{} {
 func AdminUser(user *models.User) map[string]interface{} {
 	return map[string]interface{}{
 		"guid":              strconv.FormatInt(user.Guid, 10),
-		"phone":             user.Phone,
 		"nickname":          user.Nickname,
 		"plan_type":         user.PlanType.String(),
 		"status":            user.Status.String(),

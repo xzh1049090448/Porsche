@@ -613,8 +613,9 @@ func gatewayWhiteLabelUser(_ string) *models.User {
 
 // gatewayWhiteLabelTestPhone makes each persisted handler fixture distinct
 // across repeated runs against the same dedicated MySQL test database.
-func gatewayWhiteLabelTestPhone() string {
-	return strconv.FormatInt(13_000_000_000+gatewayWhiteLabelSnowflake.Next()%1_000_000_000, 10)
+func gatewayWhiteLabelTestPhone() *string {
+	phone := strconv.FormatInt(13_000_000_000+gatewayWhiteLabelSnowflake.Next()%1_000_000_000, 10)
+	return &phone
 }
 
 func mustRead(t *testing.T, r *http.Request) []byte {

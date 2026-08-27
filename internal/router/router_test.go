@@ -178,7 +178,10 @@ func TestGatewayRejectsSpoofedForwardedIPFromUntrustedPeer(t *testing.T) {
 func TestAnalyticsChartsRejectInvalidQueriesAfterAdminAuthorization(t *testing.T) {
 	state := newGatewayTestState(t)
 	admin := createGatewayTestUser(t, state, "analytics-admin")
-	state.Settings.AnalyticsAdminPhones = admin.Phone
+	if admin.Phone == nil {
+		t.Fatal("analytics admin fixture must have a phone")
+	}
+	state.Settings.AnalyticsAdminPhones = *admin.Phone
 	engine := router.New(state)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/billing/analytics/charts/unknown?top_n=999", nil)
 	req.Header.Set("Authorization", "Bearer "+gatewayTestJWT(t, state, admin))
@@ -337,8 +340,9 @@ func gatewayTestUserFixture(_ string) models.User {
 
 // gatewayTestPhone derives a database-safe phone value from the package test
 // snowflake. It prevents prior test runs from colliding in a shared test DB.
-func gatewayTestPhone() string {
-	return strconv.FormatInt(13_000_000_000+gatewayTestSnowflake.Next()%1_000_000_000, 10)
+func gatewayTestPhone() *string {
+	phone := strconv.FormatInt(13_000_000_000+gatewayTestSnowflake.Next()%1_000_000_000, 10)
+	return &phone
 }
 
 func gatewayTestJWT(t *testing.T, state *app.State, user *models.User) string {

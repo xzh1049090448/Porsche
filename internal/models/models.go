@@ -139,6 +139,131 @@ const (
 	UsageRecordChat UsageRecordType = 1
 )
 
+// UserRole is the stable, integer-backed minimum role used by auth middleware.
+type UserRole int
+
+const (
+	UserRoleUser  UserRole = 1
+	UserRoleAdmin UserRole = 10
+	UserRoleRoot  UserRole = 100
+)
+
+func (r UserRole) String() string {
+	switch r {
+	case UserRoleUser:
+		return "user"
+	case UserRoleAdmin:
+		return "admin"
+	case UserRoleRoot:
+		return "root"
+	default:
+		return "unknown"
+	}
+}
+
+// ParseUserRole converts the API-safe role name to its stable stored value.
+func ParseUserRole(value string) (UserRole, bool) {
+	switch value {
+	case "user":
+		return UserRoleUser, true
+	case "admin":
+		return UserRoleAdmin, true
+	case "root":
+		return UserRoleRoot, true
+	default:
+		return 0, false
+	}
+}
+
+// LoginMethod identifies the credential flow that created a server session.
+type LoginMethod int
+
+const (
+	LoginMethodPassword LoginMethod = 1
+)
+
+func (m LoginMethod) String() string {
+	switch m {
+	case LoginMethodPassword:
+		return "password"
+	default:
+		return "unknown"
+	}
+}
+
+// ParseLoginMethod converts an API-safe login method name to its stored value.
+func ParseLoginMethod(value string) (LoginMethod, bool) {
+	switch value {
+	case "password":
+		return LoginMethodPassword, true
+	default:
+		return 0, false
+	}
+}
+
+// AuthAuditEventType records an authentication security event without storing
+// any credential, token, cookie, or authorization value.
+type AuthAuditEventType int
+
+const (
+	AuthAuditEventRegistered       AuthAuditEventType = 1
+	AuthAuditEventLoginSucceeded   AuthAuditEventType = 2
+	AuthAuditEventRefreshSucceeded AuthAuditEventType = 3
+	AuthAuditEventReplayRevoked    AuthAuditEventType = 4
+	AuthAuditEventLoggedOut        AuthAuditEventType = 5
+	AuthAuditEventSessionRevoked   AuthAuditEventType = 6
+	AuthAuditEventUserDisabled     AuthAuditEventType = 7
+	AuthAuditEventUserDeleted      AuthAuditEventType = 8
+)
+
+func (e AuthAuditEventType) String() string {
+	switch e {
+	case AuthAuditEventRegistered:
+		return "registered"
+	case AuthAuditEventLoginSucceeded:
+		return "login_succeeded"
+	case AuthAuditEventRefreshSucceeded:
+		return "refresh_succeeded"
+	case AuthAuditEventReplayRevoked:
+		return "refresh_replay_revoked"
+	case AuthAuditEventLoggedOut:
+		return "logged_out"
+	case AuthAuditEventSessionRevoked:
+		return "session_revoked"
+	case AuthAuditEventUserDisabled:
+		return "user_disabled"
+	case AuthAuditEventUserDeleted:
+		return "user_deleted"
+	default:
+		return "unknown"
+	}
+}
+
+// ParseAuthAuditEventType converts a security event name to its stable stored
+// integer without accepting arbitrary user-provided database values.
+func ParseAuthAuditEventType(value string) (AuthAuditEventType, bool) {
+	switch value {
+	case "registered":
+		return AuthAuditEventRegistered, true
+	case "login_succeeded":
+		return AuthAuditEventLoginSucceeded, true
+	case "refresh_succeeded":
+		return AuthAuditEventRefreshSucceeded, true
+	case "refresh_replay_revoked":
+		return AuthAuditEventReplayRevoked, true
+	case "logged_out":
+		return AuthAuditEventLoggedOut, true
+	case "session_revoked":
+		return AuthAuditEventSessionRevoked, true
+	case "user_disabled":
+		return AuthAuditEventUserDisabled, true
+	case "user_deleted":
+		return AuthAuditEventUserDeleted, true
+	default:
+		return 0, false
+	}
+}
+
 // AuditFields is embedded in every persisted table. Timestamps are UTC Unix milliseconds; nil actor IDs denote system work.
 type AuditFields struct {
 	Guid      int64  `gorm:"type:bigint;not null;uniqueIndex" json:"guid"`
@@ -152,7 +277,8 @@ type AuditFields struct {
 type User struct {
 	ID int64 `gorm:"primaryKey;type:bigint" json:"-"`
 	AuditFields
-	Phone             string     `gorm:"size:20;not null;uniqueIndex" json:"phone"`
+	Phone             *string    `gorm:"size:20;uniqueIndex" json:"-"`
+	Username          *string    `gorm:"size:20;uniqueIndex" json:"username,omitempty"`
 	PasswordHash      *string    `gorm:"size:255" json:"-"`
 	Nickname          *string    `gorm:"size:64" json:"nickname"`
 	RealName          *string    `gorm:"size:64" json:"real_name,omitempty"`
@@ -160,11 +286,49 @@ type User struct {
 	IsVerified        bool       `gorm:"not null;default:false" json:"is_verified"`
 	PlanType          PlanType   `gorm:"type:int;not null;default:1" json:"-"`
 	Status            UserStatus `gorm:"type:int;not null;default:1" json:"-"`
+	Role              UserRole   `gorm:"type:int;not null;default:1" json:"-"`
+	AuthVersion       int        `gorm:"type:int;not null;default:1" json:"-"`
+	LastLoginAt       *int64     `gorm:"type:bigint" json:"-"`
 	AllowedModels     JSONSlice  `gorm:"type:json;not null" json:"allowed_models,omitempty"`
 	DailyCallLimit    int        `gorm:"not null;default:100" json:"daily_call_limit"`
 	DailyCallsUsed    int        `gorm:"not null;default:0" json:"daily_calls_used"`
 	DailyCallsResetAt *int64     `gorm:"type:bigint" json:"-"`
 	TotalTokensUsed   int64      `gorm:"not null;default:0" json:"total_tokens_used"`
+}
+
+// Session is a server-side, revocable authentication session. SID is a secret
+// selector only; Guid remains the public business identifier.
+type Session struct {
+	ID int64 `gorm:"primaryKey;type:bigint" json:"-"`
+	AuditFields
+	SID                      string      `gorm:"size:36;not null;uniqueIndex" json:"-"`
+	UserID                   int64       `gorm:"type:bigint;not null;index" json:"-"`
+	LoginMethod              LoginMethod `gorm:"type:int;not null" json:"-"`
+	IP                       *string     `gorm:"size:64" json:"-"`
+	UserAgent                *string     `gorm:"size:512" json:"-"`
+	SessionVersion           int         `gorm:"type:int;not null;default:1" json:"-"`
+	RefreshHMAC              string      `gorm:"size:64;not null" json:"-"`
+	PreviousRefreshHMAC      *string     `gorm:"size:64" json:"-"`
+	PreviousRefreshExpiresAt *int64      `gorm:"type:bigint" json:"-"`
+	LastActiveAt             int64       `gorm:"type:bigint;not null" json:"-"`
+	ExpiresAt                int64       `gorm:"type:bigint;not null;index" json:"-"`
+	RevokedAt                *int64      `gorm:"type:bigint" json:"-"`
+}
+
+// TableName matches the explicit MySQL migration rather than GORM's default.
+func (Session) TableName() string { return "user_sessions" }
+
+// AuthAuditEvent records security-relevant authentication state changes. Its
+// fields intentionally exclude password hashes, refresh material, and tokens.
+type AuthAuditEvent struct {
+	ID int64 `gorm:"primaryKey;type:bigint" json:"-"`
+	AuditFields
+	UserID      *int64             `gorm:"type:bigint;index" json:"-"`
+	SessionGuid *int64             `gorm:"type:bigint;index" json:"-"`
+	EventType   AuthAuditEventType `gorm:"type:int;not null;index" json:"-"`
+	LoginMethod *LoginMethod       `gorm:"type:int" json:"-"`
+	IP          *string            `gorm:"size:64" json:"-"`
+	UserAgent   *string            `gorm:"size:512" json:"-"`
 }
 type Conversation struct {
 	ID int64 `gorm:"primaryKey;type:bigint" json:"-"`

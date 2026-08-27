@@ -18,6 +18,12 @@ var initialSchemaUp []byte
 //go:embed sql/0001_initial_schema.down.sql
 var initialSchemaDown []byte
 
+//go:embed sql/0002_auth_core.up.sql
+var authCoreUp []byte
+
+//go:embed sql/0002_auth_core.down.sql
+var authCoreDown []byte
+
 // Migration is an immutable, embedded schema version.
 type Migration struct {
 	Version string
@@ -33,7 +39,10 @@ type AppliedMigration struct {
 
 // All returns schema versions in application order.
 func All() ([]Migration, error) {
-	migrations := []Migration{{Version: "0001", UpSQL: initialSchemaUp, DownSQL: initialSchemaDown}}
+	migrations := []Migration{
+		{Version: "0001", UpSQL: initialSchemaUp, DownSQL: initialSchemaDown},
+		{Version: "0002", UpSQL: authCoreUp, DownSQL: authCoreDown},
+	}
 	sort.Slice(migrations, func(i, j int) bool { return migrations[i].Version < migrations[j].Version })
 	return migrations, nil
 }

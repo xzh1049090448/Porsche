@@ -73,8 +73,8 @@ func analyticsFixtureDB(t *testing.T) (*gorm.DB, int64, []string) {
 	base := time.Date(2026, 8, 19, 10, 0, 0, 0, time.UTC)
 	aliceGUID := testSnowflake.Next()
 	users := []models.User{
-		{AuditFields: models.AuditFields{Guid: aliceGUID, CreatedAt: base.UnixMilli(), UpdatedAt: base.UnixMilli(), IsDeleted: 0}, Phone: testPhone(), Nickname: &alice, Status: models.UserStatusActive, PlanType: models.PlanFree, AllowedModels: models.JSONSlice{}},
-		{AuditFields: models.AuditFields{Guid: testSnowflake.Next(), CreatedAt: base.UnixMilli(), UpdatedAt: base.UnixMilli(), IsDeleted: 0}, Phone: testPhone(), Nickname: &bob, Status: models.UserStatusActive, PlanType: models.PlanFree, AllowedModels: models.JSONSlice{}},
+		{AuditFields: models.AuditFields{Guid: aliceGUID, CreatedAt: base.UnixMilli(), UpdatedAt: base.UnixMilli(), IsDeleted: 0}, Phone: testPhonePointer(), Nickname: &alice, Status: models.UserStatusActive, PlanType: models.PlanFree, AllowedModels: models.JSONSlice{}},
+		{AuditFields: models.AuditFields{Guid: testSnowflake.Next(), CreatedAt: base.UnixMilli(), UpdatedAt: base.UnixMilli(), IsDeleted: 0}, Phone: testPhonePointer(), Nickname: &bob, Status: models.UserStatusActive, PlanType: models.PlanFree, AllowedModels: models.JSONSlice{}},
 	}
 	if err := database.Create(&users).Error; err != nil {
 		t.Fatal(err)

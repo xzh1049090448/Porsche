@@ -1,0 +1,3 @@
+-- Porsche migrations are forward-only. Do not remove auth columns or tables:
+-- they may contain live credentials, sessions, and security audit evidence.
+-- Any rollback must be an approved, additive migration.

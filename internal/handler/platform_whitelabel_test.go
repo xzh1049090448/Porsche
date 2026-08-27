@@ -353,6 +353,7 @@ func platformTestUser(_ string, allowed models.JSONSlice) models.User {
 
 // platformTestPhone keeps handler fixtures isolated even when MySQL data from
 // a prior `go test` process remains in the dedicated test database.
-func platformTestPhone() string {
-	return strconv.FormatInt(13_000_000_000+platformTestSnowflake.Next()%1_000_000_000, 10)
+func platformTestPhone() *string {
+	phone := strconv.FormatInt(13_000_000_000+platformTestSnowflake.Next()%1_000_000_000, 10)
+	return &phone
 }

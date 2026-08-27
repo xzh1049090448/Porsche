@@ -26,7 +26,7 @@ func testAuditFields() models.AuditFields {
 func testUser(_ string) models.User {
 	return models.User{
 		AuditFields:   testAuditFields(),
-		Phone:         testPhone(),
+		Phone:         testPhonePointer(),
 		Status:        models.UserStatusActive,
 		PlanType:      models.PlanFree,
 		AllowedModels: models.JSONSlice{},
@@ -37,6 +37,11 @@ func testUser(_ string) models.User {
 // MySQL test database can retain data across package and process test runs.
 func testPhone() string {
 	return fmt.Sprintf("13%09d", testSnowflake.Next()%1_000_000_000)
+}
+
+func testPhonePointer() *string {
+	phone := testPhone()
+	return &phone
 }
 
 func TestValidateTestDatabaseURLRejectsUnsafeTargets(t *testing.T) {

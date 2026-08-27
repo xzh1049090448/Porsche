@@ -115,7 +115,7 @@ func RequireAnalyticsAdmin(state *app.State) gin.HandlerFunc {
 			return
 		}
 		user := userVal.(*models.User)
-		if !state.Settings.IsAnalyticsAdmin(user.Phone) {
+		if user.Phone == nil || !state.Settings.IsAnalyticsAdmin(*user.Phone) {
 			httpx.AbortJSON(c, http.StatusForbidden, "无分析权限")
 			return
 		}

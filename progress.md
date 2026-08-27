@@ -10,6 +10,14 @@
 - `LoadMigrationSettings` 保持只加载迁移所需配置，不要求上游或认证配置；本 Task 未新增或执行数据库迁移，也未连接数据库。
 - 已验证 `GOCACHE=/private/tmp/porsche-go-build-cache go test ./internal/config -count=1`、`git diff --check` 与 `GOCACHE=/private/tmp/porsche-go-build-cache go test ./... -count=1`。受限环境首次因禁止 `httptest` 绑定 `[::1]` 失败，在允许回环监听的验证环境复跑后全量通过。
 
+## 用户注册管理一期 Task 2（2026-08-28）
+
+- 新增嵌入式、前向 `0002_auth_core` MySQL 迁移：不修改 `0001`；将既有 `users.phone` 改为可空但保留 `uk_users_phone`，新增可空、全局唯一且软删后永久占用的 `username`，以及 `role`、`auth_version`、`last_login_at`。这使后续用户名注册可以不伪造手机号；现有 Python 数据不会被删除或重写。
+- `user_sessions` 与 `auth_audit_events` 均使用有符号 `BIGINT guid`、毫秒 `BIGINT` 审计字段、`INT is_deleted` 与默认活跃查询索引；用户关联只使用 `user_id -> users.id`。会话仅存当前/前一 Refresh HMAC，认证审计不保存密码、令牌、Cookie 或原始 Authorization/Header。
+- Go `User.Phone` 为不序列化的 `*string`；旧手机号认证仅作兼容写入，未生成假手机号。新增稳定 `UserRole`、`LoginMethod` 与 `AuthAuditEventType` 整数映射，以及 `Session` / `AuthAuditEvent` 持久化实体。尚未实现会话服务、用户名注册或任何 Task 3+ 业务路径。
+- 已验证迁移/实体契约与全量 Go 回归：`GOCACHE=/private/tmp/porsche-go-build-cache go test -v ./internal/migration ./internal/models -run Auth -count=1`、允许回环监听环境中的 `GOCACHE=/private/tmp/porsche-go-build-cache go test ./... -count=1`、`go vet ./...` 与 `git diff --check`。
+- 环境阻塞：未设置 `TEST_DATABASE_URL`。受控 MySQL 测试只读取该变量并拒绝非 `*_test` 库，当前按设计跳过；未连接 `DATABASE_URL`、`.env` 或任何生产库，因此真实 MySQL 8 的 `0002` 迁移验证仍待提供隔离测试库后执行。
+
 `go-004`：JieKou AI 白牌上游接入（`blocked`）。真实部署环境 JieKou 冒烟待办；该外部验证完成前不得标记为通过。
 
 ## 已验证基线（2026-08-21）

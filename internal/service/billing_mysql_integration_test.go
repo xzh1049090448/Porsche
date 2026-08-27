@@ -24,7 +24,7 @@ func TestPayOrderConcurrentSettlement(t *testing.T) {
 	}
 	now := time.Now().UTC().UnixMilli()
 	phone := testPhone()
-	user := models.User{AuditFields: models.AuditFields{Guid: generator.Next(), CreatedAt: now, UpdatedAt: now, IsDeleted: 0}, Phone: phone, Status: models.UserStatusActive, PlanType: models.PlanFree, AllowedModels: models.JSONSlice{}}
+	user := models.User{AuditFields: models.AuditFields{Guid: generator.Next(), CreatedAt: now, UpdatedAt: now, IsDeleted: 0}, Phone: &phone, Status: models.UserStatusActive, PlanType: models.PlanFree, AllowedModels: models.JSONSlice{}}
 	if err := db.Create(&user).Error; err != nil {
 		t.Fatal(err)
 	}

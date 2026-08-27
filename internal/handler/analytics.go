@@ -20,7 +20,9 @@ var analyticsViews = map[string]bool{
 func RegisterAnalytics(r *gin.Engine, state *app.State) {
 	g := r.Group("/api/v1/billing/analytics", middleware.RequireUser(state))
 	g.GET("/access", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{"allowed": state.Settings.IsAnalyticsAdmin(middleware.CurrentUser(c).Phone)})
+		user := middleware.CurrentUser(c)
+		allowed := user != nil && user.Phone != nil && state.Settings.IsAnalyticsAdmin(*user.Phone)
+		c.JSON(http.StatusOK, gin.H{"allowed": allowed})
 	})
 	admin := g.Group("", middleware.RequireAnalyticsAdmin(state))
 	admin.GET("/summary", func(c *gin.Context) {
