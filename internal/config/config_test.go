@@ -1,6 +1,7 @@
 package config
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -96,6 +97,16 @@ func TestParseWhiteLabelSettingsAcceptsRegexOnlyAllowlist(t *testing.T) {
 	}
 	if !settings.Allows("zai-org/glm-5.1") {
 		t.Fatal("regex-only allowlist did not match")
+	}
+}
+
+func TestWhiteLabelSettingsAllowsSkipsNilPattern(t *testing.T) {
+	settings := WhiteLabelSettings{AllowedModelPatterns: []*regexp.Regexp{nil, regexp.MustCompile(`^zai-org/.+$`)}}
+	if settings.Allows("other/model") {
+		t.Fatal("nil pattern unexpectedly allowed a model")
+	}
+	if !settings.Allows("zai-org/glm-5.1") {
+		t.Fatal("valid pattern after nil entry was not evaluated")
 	}
 }
 

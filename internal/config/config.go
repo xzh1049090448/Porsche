@@ -60,6 +60,9 @@ func (s WhiteLabelSettings) Allows(model string) bool {
 		return true
 	}
 	for _, pattern := range s.AllowedModelPatterns {
+		if pattern == nil {
+			continue
+		}
 		if pattern.MatchString(model) {
 			return true
 		}
