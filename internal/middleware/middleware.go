@@ -83,13 +83,24 @@ func RequireAnalyticsAdmin(state *app.State) gin.HandlerFunc {
 			return
 		}
 		user := userVal.(*models.User)
-		if !hasMinimumRole(user.Role, models.UserRoleAdmin) {
+		if !hasAnalyticsAccess(user) {
 			httpx.AbortJSON(c, http.StatusForbidden, "无分析权限")
 			return
 		}
 		c.Next()
 	}
 }
+
+// hasAnalyticsAccess is the shared persistent-role authorization predicate
+// for analytics UI access and analytics API enforcement. Phone configuration
+// is deliberately not an authorization input.
+func hasAnalyticsAccess(user *models.User) bool {
+	return user != nil && hasMinimumRole(user.Role, models.UserRoleAdmin)
+}
+
+// HasAnalyticsAccess exposes the same role-only predicate to the HTTP access
+// capability endpoint without duplicating authorization policy in handlers.
+func HasAnalyticsAccess(user *models.User) bool { return hasAnalyticsAccess(user) }
 
 func authenticateUser(c *gin.Context, state *app.State) bool {
 	if state == nil || state.Settings == nil || state.DB == nil || state.Sessions == nil {

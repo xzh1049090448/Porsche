@@ -62,6 +62,10 @@ func RegisterAdminUsers(r *gin.Engine, state *app.State) {
 			httpx.AbortJSON(c, http.StatusNotFound, "用户不存在")
 			return
 		}
+		if err := service.CanManageUser(middleware.CurrentUser(c), &user); err != nil {
+			httpx.AbortJSON(c, http.StatusForbidden, "无权限管理该用户")
+			return
+		}
 		var body struct {
 			Status         *string  `json:"status"`
 			PlanType       *string  `json:"plan_type"`
@@ -75,7 +79,19 @@ func RegisterAdminUsers(r *gin.Engine, state *app.State) {
 				httpx.AbortJSON(c, http.StatusUnprocessableEntity, "无效用户状态")
 				return
 			}
-			user.Status = status
+			if status == models.UserStatusDisabled {
+				if err := state.Auth.DisableUser(c.Request.Context(), middleware.CurrentUserID(c), user.ID); err != nil {
+					code, message := service.StatusFromError(err)
+					httpx.AbortJSON(c, code, message)
+					return
+				}
+				if err := state.DB.Where("id = ? AND is_deleted = 0", user.ID).First(&user).Error; err != nil {
+					httpx.AbortJSON(c, http.StatusInternalServerError, "读取用户失败")
+					return
+				}
+			} else {
+				user.Status = status
+			}
 		}
 		if body.PlanType != nil {
 			plan, ok := models.ParsePlanType(*body.PlanType)

@@ -92,6 +92,18 @@ func (r *AuthRedis) Close() error {
 	return r.client.Close()
 }
 
+// CheckAvailable verifies that the mandatory Redis authentication dependency
+// is reachable before a credential-changing path mutates MySQL.
+func (r *AuthRedis) CheckAvailable(ctx context.Context) error {
+	if err := r.requireClient(); err != nil {
+		return err
+	}
+	if err := r.client.Ping(ctx).Err(); err != nil {
+		return fmt.Errorf("verify Redis authentication store: %w", err)
+	}
+	return nil
+}
+
 // CheckLoginAllowed fails closed when either the account or source-IP lock is
 // present or Redis cannot be read.
 func (r *AuthRedis) CheckLoginAllowed(ctx context.Context, username, ip string) error {

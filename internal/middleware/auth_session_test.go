@@ -37,3 +37,13 @@ func TestMinimumRoleRejectsEscalationAndAllowsRoot(t *testing.T) {
 		t.Fatal("root did not satisfy minimum role gate")
 	}
 }
+
+func TestAnalyticsAccessUsesPersistentRoleNotPhone(t *testing.T) {
+	phone := "13800138000"
+	if hasAnalyticsAccess(&models.User{Phone: &phone, Role: models.UserRoleUser}) {
+		t.Fatal("phone value must not grant analytics access")
+	}
+	if !hasAnalyticsAccess(&models.User{Role: models.UserRoleAdmin}) {
+		t.Fatal("admin role must grant analytics access without phone")
+	}
+}

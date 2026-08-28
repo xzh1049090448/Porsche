@@ -2,7 +2,6 @@ package handler
 
 import (
 	"net/http"
-	"strconv"
 
 	"github.com/gin-gonic/gin"
 	"github.com/porsche/ai-gateway-go/internal/app"
@@ -14,123 +13,14 @@ import (
 
 func RegisterAuth(r *gin.Engine, state *app.State) {
 	g := r.Group("/api/v1/auth")
-	passwordOnlyMsg := "当前仅支持固定账号密码登录"
-
-	rejectPasswordOnly := func(c *gin.Context) bool {
-		if state.Settings.FixedLoginEnabled {
-			httpx.AbortJSON(c, http.StatusForbidden, passwordOnlyMsg)
-			return false
-		}
-		return true
+	// The phone/SMS and fixed-account authentication surface was retired. Keep
+	// explicit 410 responses for deployed clients instead of silently routing a
+	// legacy credential into the username/session authentication flow.
+	for _, path := range []string{"/send-code", "/login/password", "/login/code"} {
+		g.POST(path, func(c *gin.Context) {
+			httpx.AbortJSON(c, http.StatusGone, "该认证方式已停用")
+		})
 	}
-
-	g.POST("/send-code", func(c *gin.Context) {
-		if !rejectPasswordOnly(c) {
-			return
-		}
-		var body struct {
-			Phone string `json:"phone" binding:"required"`
-		}
-		if err := c.ShouldBindJSON(&body); err != nil {
-			httpx.AbortJSON(c, http.StatusUnprocessableEntity, err.Error())
-			return
-		}
-		ip := httpx.ClientIP(c, state.Settings.TrustProxyHeaders, state.Settings.TrustedProxyCIDRs)
-		if err := state.SMS.CheckSendAllowed(body.Phone, ip); err != nil {
-			code, msg := service.StatusFromError(err)
-			httpx.AbortJSON(c, code, msg)
-			return
-		}
-		code := state.SMS.SendCode(body.Phone)
-		resp := gin.H{"message": "验证码已发送"}
-		if state.Settings.SMSDevMode {
-			resp["dev_code"] = code
-		}
-		c.JSON(http.StatusOK, resp)
-	})
-
-	g.POST("/register", func(c *gin.Context) {
-		if !rejectPasswordOnly(c) {
-			return
-		}
-		var body struct {
-			Phone    string  `json:"phone" binding:"required"`
-			Code     string  `json:"code" binding:"required"`
-			Password string  `json:"password" binding:"required"`
-			Nickname *string `json:"nickname"`
-		}
-		if err := c.ShouldBindJSON(&body); err != nil {
-			httpx.AbortJSON(c, http.StatusUnprocessableEntity, err.Error())
-			return
-		}
-		user, token, err := state.Auth.Register(body.Phone, body.Code, body.Password, body.Nickname)
-		if err != nil {
-			code, msg := service.StatusFromError(err)
-			httpx.AbortJSON(c, code, msg)
-			return
-		}
-		uid := user.ID
-		_ = state.Audit.Log(state.DB, "user.register", &uid, "", nil, httpx.ClientIP(c, state.Settings.TrustProxyHeaders, state.Settings.TrustedProxyCIDRs))
-		c.JSON(http.StatusOK, gin.H{
-			"access_token": token,
-			"token_type":   "bearer",
-			"user_guid":    strconv.FormatInt(user.Guid, 10),
-			"plan_type":    user.PlanType.String(),
-		})
-	})
-
-	g.POST("/login/password", func(c *gin.Context) {
-		var body struct {
-			Phone    string `json:"phone" binding:"required"`
-			Password string `json:"password" binding:"required"`
-		}
-		if err := c.ShouldBindJSON(&body); err != nil {
-			httpx.AbortJSON(c, http.StatusUnprocessableEntity, err.Error())
-			return
-		}
-		user, token, err := state.Auth.LoginPassword(body.Phone, body.Password)
-		if err != nil {
-			code, msg := service.StatusFromError(err)
-			httpx.AbortJSON(c, code, msg)
-			return
-		}
-		uid := user.ID
-		_ = state.Audit.Log(state.DB, "user.login", &uid, "", map[string]interface{}{"method": "password"}, httpx.ClientIP(c, state.Settings.TrustProxyHeaders, state.Settings.TrustedProxyCIDRs))
-		c.JSON(http.StatusOK, gin.H{
-			"access_token": token,
-			"token_type":   "bearer",
-			"user_guid":    strconv.FormatInt(user.Guid, 10),
-			"plan_type":    user.PlanType.String(),
-		})
-	})
-
-	g.POST("/login/code", func(c *gin.Context) {
-		if !rejectPasswordOnly(c) {
-			return
-		}
-		var body struct {
-			Phone string `json:"phone" binding:"required"`
-			Code  string `json:"code" binding:"required"`
-		}
-		if err := c.ShouldBindJSON(&body); err != nil {
-			httpx.AbortJSON(c, http.StatusUnprocessableEntity, err.Error())
-			return
-		}
-		user, token, err := state.Auth.LoginCode(body.Phone, body.Code)
-		if err != nil {
-			code, msg := service.StatusFromError(err)
-			httpx.AbortJSON(c, code, msg)
-			return
-		}
-		uid := user.ID
-		_ = state.Audit.Log(state.DB, "user.login", &uid, "", map[string]interface{}{"method": "code"}, httpx.ClientIP(c, state.Settings.TrustProxyHeaders, state.Settings.TrustedProxyCIDRs))
-		c.JSON(http.StatusOK, gin.H{
-			"access_token": token,
-			"token_type":   "bearer",
-			"user_guid":    strconv.FormatInt(user.Guid, 10),
-			"plan_type":    user.PlanType.String(),
-		})
-	})
 }
 
 func RegisterUsers(r *gin.Engine, state *app.State) {
@@ -165,15 +55,9 @@ func RegisterUsers(r *gin.Engine, state *app.State) {
 			httpx.AbortJSON(c, http.StatusUnprocessableEntity, err.Error())
 			return
 		}
-		if user.PasswordHash == nil || !serviceVerifyPassword(body.OldPassword, *user.PasswordHash) {
-			httpx.AbortJSON(c, http.StatusBadRequest, "原密码错误")
-			return
-		}
-		hash, _ := serviceHashPassword(body.NewPassword)
-		user.PasswordHash = &hash
-		service.TouchAudit(&user.AuditFields, user.ID)
-		if err := state.DB.Save(user).Error; err != nil {
-			httpx.AbortJSON(c, http.StatusInternalServerError, "更新密码失败")
+		if err := state.Auth.ChangePassword(c.Request.Context(), user.ID, body.OldPassword, body.NewPassword); err != nil {
+			code, message := service.StatusFromError(err)
+			httpx.AbortJSON(c, code, message)
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"message": "密码修改成功"})

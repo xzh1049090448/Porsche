@@ -70,6 +70,9 @@ func (a *AuthService) RegisterUsername(ctx context.Context, rawUsername, passwor
 	if a == nil || a.db == nil || a.settings == nil || !a.settings.RegisterEnabled || !a.settings.PasswordRegisterEnabled {
 		return nil, errForbidden("当前不允许注册")
 	}
+	if err := a.requireAuthRedis(ctx); err != nil {
+		return nil, err
+	}
 	username, err := NormalizeUsername(rawUsername)
 	if err != nil {
 		return nil, err
@@ -124,8 +127,21 @@ func (a *AuthService) LoginUsername(ctx context.Context, rawUsername, password s
 	if err != nil {
 		return nil, nil, "", errUnauthorized("用户名或密码错误")
 	}
+	redisStore, err := a.authRedis()
+	if err != nil {
+		return nil, nil, "", errUnauthorized("用户名或密码错误")
+	}
+	if err := redisStore.CheckLoginAllowed(ctx, username, input.IP); err != nil {
+		return nil, nil, "", errUnauthorized("用户名或密码错误")
+	}
 	var user models.User
 	if err := a.db.WithContext(ctx).Where("username = ? AND is_deleted = 0", username).First(&user).Error; err != nil || user.PasswordHash == nil || !security.VerifyPassword(password, *user.PasswordHash) || !user.Status.IsActive() {
+		if recordErr := redisStore.RecordLoginFailure(ctx, username, input.IP); recordErr != nil {
+			return nil, nil, "", errUnauthorized("用户名或密码错误")
+		}
+		return nil, nil, "", errUnauthorized("用户名或密码错误")
+	}
+	if err := redisStore.ClearLoginFailures(ctx, username, input.IP); err != nil {
 		return nil, nil, "", errUnauthorized("用户名或密码错误")
 	}
 	issued, err := a.sessions.Create(ctx, &user, input)
@@ -137,6 +153,21 @@ func (a *AuthService) LoginUsername(ctx context.Context, rawUsername, password s
 		return nil, nil, "", err
 	}
 	return &user, issued, token, nil
+}
+
+func (a *AuthService) authRedis() (*AuthRedis, error) {
+	if a == nil || a.sessions == nil || a.sessions.redis == nil {
+		return nil, errors.New("Redis authentication store is unavailable")
+	}
+	return a.sessions.redis, nil
+}
+
+func (a *AuthService) requireAuthRedis(ctx context.Context) error {
+	store, err := a.authRedis()
+	if err != nil {
+		return err
+	}
+	return store.CheckAvailable(ctx)
 }
 
 // BootstrapRoot creates the deployment-configured Root only when no active or
@@ -174,7 +205,9 @@ func (a *AuthService) BootstrapRoot(ctx context.Context) (*models.User, error) {
 		defer func() { _ = conn.Exec("SELECT RELEASE_LOCK(?)", "porsche_auth_root_bootstrap").Error }()
 		return conn.Transaction(func(tx *gorm.DB) error {
 			var count int64
-			if err := tx.Model(&models.User{}).Where("role = ? AND is_deleted = 0", models.UserRoleRoot).Count(&count).Error; err != nil {
+			// A Root tombstone is permanent bootstrap history. Looking across
+			// deleted rows prevents a deleted Root from being silently replaced.
+			if err := tx.Model(&models.User{}).Where("role = ?", models.UserRoleRoot).Count(&count).Error; err != nil {
 				return err
 			}
 			if count > 0 {
@@ -197,124 +230,20 @@ func (a *AuthService) BootstrapRoot(ctx context.Context) (*models.User, error) {
 	return root, nil
 }
 
+// CanManageUser enforces the role hierarchy for state-changing administrator
+// operations. Management is strictly downward and Root accounts are never
+// mutable through normal administrator workflows.
+func CanManageUser(actor, target *models.User) error {
+	if actor == nil || target == nil || actor.IsDeleted != 0 || target.IsDeleted != 0 {
+		return errForbidden("无权限管理该用户")
+	}
+	if target.Role == models.UserRoleRoot || actor.Role <= target.Role {
+		return errForbidden("无权限管理该用户")
+	}
+	return nil
+}
+
 func loginMethodPointer(method models.LoginMethod) *models.LoginMethod { return &method }
-
-func (a *AuthService) Register(phone, code, password string, nickname *string) (*models.User, string, error) {
-	if !a.sms.VerifyCode(phone, code) {
-		return nil, "", errBadRequest("验证码无效或已过期")
-	}
-	var existing models.User
-	if err := a.db.Where("phone = ? AND is_deleted = 0", phone).First(&existing).Error; err == nil {
-		return nil, "", errConflict("手机号已注册")
-	}
-	hash, _ := security.HashPassword(password)
-	nick := fmt.Sprintf("用户%s", phone[len(phone)-4:])
-	if nickname != nil && *nickname != "" {
-		nick = *nickname
-	}
-	user := models.User{
-		Phone:        &phone,
-		PasswordHash: &hash,
-		Nickname:     &nick,
-		PlanType:     models.PlanFree,
-		Status:       models.UserStatusActive,
-		AuditFields:  auditFields(nil),
-	}
-	if err := a.db.Create(&user).Error; err != nil {
-		return nil, "", err
-	}
-	token, err := a.makeLegacyToken(&user)
-	return &user, token, err
-}
-
-func (a *AuthService) LoginPassword(phone, password string) (*models.User, string, error) {
-	phone = strings.TrimSpace(phone)
-	if a.settings.FixedLoginEnabled {
-		if phone != strings.TrimSpace(a.settings.FixedLoginPhone) || password != a.settings.FixedLoginPassword {
-			return nil, "", errUnauthorized("手机号或密码错误")
-		}
-		user, err := a.getOrCreateFixedUser(phone)
-		if err != nil {
-			return nil, "", err
-		}
-		if err := ensureActive(user); err != nil {
-			return nil, "", err
-		}
-		token, err := a.makeLegacyToken(user)
-		return user, token, err
-	}
-
-	var user models.User
-	if err := a.db.Where("phone = ? AND is_deleted = 0", phone).First(&user).Error; err != nil {
-		return nil, "", errUnauthorized("手机号或密码错误")
-	}
-	if user.PasswordHash == nil || !security.VerifyPassword(password, *user.PasswordHash) {
-		return nil, "", errUnauthorized("手机号或密码错误")
-	}
-	if err := ensureActive(&user); err != nil {
-		return nil, "", err
-	}
-	token, err := a.makeLegacyToken(&user)
-	return &user, token, err
-}
-
-func (a *AuthService) LoginCode(phone, code string) (*models.User, string, error) {
-	if !a.sms.VerifyCode(phone, code) {
-		return nil, "", errBadRequest("验证码无效或已过期")
-	}
-	var user models.User
-	err := a.db.Where("phone = ? AND is_deleted = 0", phone).First(&user).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		nick := fmt.Sprintf("用户%s", phone[len(phone)-4:])
-		user = models.User{
-			Phone:       &phone,
-			Nickname:    &nick,
-			PlanType:    models.PlanFree,
-			Status:      models.UserStatusActive,
-			AuditFields: auditFields(nil),
-		}
-		if err := a.db.Create(&user).Error; err != nil {
-			return nil, "", err
-		}
-	} else if err != nil {
-		return nil, "", err
-	}
-	if err := ensureActive(&user); err != nil {
-		return nil, "", err
-	}
-	token, err := a.makeLegacyToken(&user)
-	return &user, token, err
-}
-
-func (a *AuthService) getOrCreateFixedUser(phone string) (*models.User, error) {
-	var user models.User
-	err := a.db.Where("phone = ? AND is_deleted = 0", phone).First(&user).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		hash, _ := security.HashPassword(a.settings.FixedLoginPassword)
-		nick := "测试用户"
-		user = models.User{
-			Phone:        &phone,
-			PasswordHash: &hash,
-			Nickname:     &nick,
-			PlanType:     models.PlanFree,
-			Status:       models.UserStatusActive,
-			AuditFields:  auditFields(nil),
-		}
-		return &user, a.db.Create(&user).Error
-	}
-	if err != nil {
-		return nil, err
-	}
-	if user.PasswordHash == nil {
-		hash, _ := security.HashPassword(a.settings.FixedLoginPassword)
-		user.PasswordHash = &hash
-		stampSystemUpdate(&user.AuditFields)
-		if err := a.db.Save(&user).Error; err != nil {
-			return nil, err
-		}
-	}
-	return &user, nil
-}
 
 func (a *AuthService) makeToken(user *models.User, session *models.Session) (string, error) {
 	if user == nil || session == nil || user.Guid <= 0 || session.SID == "" || session.SessionVersion <= 0 || user.AuthVersion <= 0 || user.Role < models.UserRoleUser {
@@ -332,23 +261,9 @@ func (a *AuthService) makeToken(user *models.User, session *models.Session) (str
 	})
 }
 
-// makeLegacyToken preserves only the pre-Task-5 compatibility handlers. It
-// is intentionally not accepted by RequireUser because it has no session
-// claims; Task 5 removes those legacy phone endpoints.
-func (a *AuthService) makeLegacyToken(user *models.User) (string, error) {
-	return security.CreateAccessToken(strconv.FormatInt(user.Guid, 10), a.settings.JWTSecretKey, a.settings.JWTExpireMinutes, map[string]interface{}{"plan": user.PlanType.String()})
-}
-
 func HashIDCard(idCard string) string {
 	sum := sha256.Sum256([]byte(idCard))
 	return hex.EncodeToString(sum[:])
-}
-
-func ensureActive(user *models.User) error {
-	if !user.Status.IsActive() {
-		return errForbidden("账号已被禁用")
-	}
-	return nil
 }
 
 type SMSService struct {

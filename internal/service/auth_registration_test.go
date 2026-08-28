@@ -73,6 +73,43 @@ func TestRootBootstrapCreatesOnlyTheFirstRoot(t *testing.T) {
 	}
 }
 
+func TestRootBootstrapDoesNotReplaceTombstonedRoot(t *testing.T) {
+	db := openTestMySQL(t)
+	prepareAuthRegistrationSchema(t, db)
+	username := "retired_root"
+	now := persistence.NowMillis()
+	retired := &models.User{AuditFields: models.AuditFields{Guid: testSnowflake.Next(), CreatedAt: now, UpdatedAt: now, IsDeleted: 1}, Username: &username, Nickname: &username, PlanType: models.PlanFree, Status: models.UserStatusDisabled, Role: models.UserRoleRoot, AuthVersion: 2, AllowedModels: models.JSONSlice{}}
+	if err := db.Create(retired).Error; err != nil {
+		t.Fatal(err)
+	}
+	auth := NewAuthService(&config.Settings{RootBootstrapUsername: "replacement_root", RootBootstrapPassword: "Str0ng!Root1"}, nil, db)
+	created, err := auth.BootstrapRoot(context.Background())
+	if err != nil || created != nil {
+		t.Fatalf("tombstoned Root must permanently consume bootstrap: %#v, %v", created, err)
+	}
+}
+
+func TestCanManageUserRequiresStrictlyHigherRoleAndProtectsRoot(t *testing.T) {
+	admin := &models.User{Role: models.UserRoleAdmin}
+	user := &models.User{Role: models.UserRoleUser}
+	peer := &models.User{Role: models.UserRoleAdmin}
+	root := &models.User{Role: models.UserRoleRoot}
+	if err := CanManageUser(admin, user); err != nil {
+		t.Fatalf("admin should manage ordinary user: %v", err)
+	}
+	for _, target := range []*models.User{peer, root} {
+		if err := CanManageUser(admin, target); err == nil {
+			t.Fatalf("admin unexpectedly managed role %v", target.Role)
+		}
+	}
+	if err := CanManageUser(root, admin); err != nil {
+		t.Fatalf("Root should manage lower role: %v", err)
+	}
+	if err := CanManageUser(root, root); err == nil {
+		t.Fatal("Root must not manage Root accounts")
+	}
+}
+
 func TestLoginUsernameRejectsDisabledAndSoftDeletedUser(t *testing.T) {
 	db := openTestMySQL(t)
 	prepareAuthRegistrationSchema(t, db)

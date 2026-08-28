@@ -21,7 +21,7 @@ func RegisterAnalytics(r *gin.Engine, state *app.State) {
 	g := r.Group("/api/v1/billing/analytics", middleware.RequireUser(state))
 	g.GET("/access", func(c *gin.Context) {
 		user := middleware.CurrentUser(c)
-		allowed := user != nil && user.Phone != nil && state.Settings.IsAnalyticsAdmin(*user.Phone)
+		allowed := middleware.HasAnalyticsAccess(user)
 		c.JSON(http.StatusOK, gin.H{"allowed": allowed})
 	})
 	admin := g.Group("", middleware.RequireAnalyticsAdmin(state))
