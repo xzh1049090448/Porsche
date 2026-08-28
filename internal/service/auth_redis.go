@@ -176,52 +176,6 @@ func (r *AuthRedis) ReserveSessionIssue(ctx context.Context, userID int64, limit
 	return nil
 }
 
-// StoreRotationResult stores a short-lived AEAD-wrapped refresh token so
-// concurrent refreshes can receive the exact same rotated credential.
-func (r *AuthRedis) StoreRotationResult(ctx context.Context, sid, refreshToken string, ttl time.Duration) error {
-	if err := r.requireClient(); err != nil {
-		return err
-	}
-	if ttl <= 0 {
-		return errors.New("rotation result TTL must be positive")
-	}
-	ciphertext, err := r.encrypt(sid, []byte(refreshToken))
-	if err != nil {
-		return err
-	}
-	value, err := json.Marshal(rotationRecord{Ciphertext: ciphertext})
-	if err != nil {
-		return fmt.Errorf("encode Redis rotation result: %w", err)
-	}
-	if err := r.client.Set(ctx, r.rotationKey(sid), value, ttl).Err(); err != nil {
-		return fmt.Errorf("store Redis rotation result: %w", err)
-	}
-	return nil
-}
-
-// LoadRotationResult decrypts a still-live concurrent-refresh result.
-func (r *AuthRedis) LoadRotationResult(ctx context.Context, sid string) (string, bool, error) {
-	if err := r.requireClient(); err != nil {
-		return "", false, err
-	}
-	value, err := r.client.Get(ctx, r.rotationKey(sid)).Result()
-	if errors.Is(err, redis.Nil) {
-		return "", false, nil
-	}
-	if err != nil {
-		return "", false, fmt.Errorf("read Redis rotation result: %w", err)
-	}
-	record, err := decodeRotationRecord(value)
-	if err != nil {
-		return "", false, err
-	}
-	plain, err := r.decrypt(sid, record.Ciphertext)
-	if err != nil {
-		return "", false, err
-	}
-	return string(plain), true, nil
-}
-
 // StorePendingRotation writes the encrypted new refresh token before the
 // caller commits MySQL. It is never returned to another caller until MySQL
 // confirms the matching new HMAC, at which point RecoverRotationResult can

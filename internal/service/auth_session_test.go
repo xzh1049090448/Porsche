@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/porsche/ai-gateway-go/internal/migration"
 	"github.com/porsche/ai-gateway-go/internal/models"
 	"github.com/porsche/ai-gateway-go/internal/persistence"
+	"github.com/porsche/ai-gateway-go/internal/security"
 	"gorm.io/gorm"
 )
 
@@ -129,6 +131,66 @@ func TestRefreshRotationReplayOutsideWindowRevokesSession(t *testing.T) {
 	}
 	if stored.RevokedAt == nil {
 		t.Fatal("refresh replay did not revoke session")
+	}
+}
+
+// TestRefreshRotationConcurrentOldBReturnsC protects the generation state
+// machine under real isolated MySQL and Redis: A→B→C may leave B's public
+// result within TTL, but concurrent old-B requests must all receive C.
+func TestRefreshRotationConcurrentOldBReturnsC(t *testing.T) {
+	redisStore := openTestAuthRedis(t)
+	db := openTestMySQL(t)
+	prepareAuthSessionSchema(t, db)
+	user := createAuthSessionTestUser(t, db)
+	sessions := NewSessionService(db, redisStore, testSessionSettings())
+	ctx := context.Background()
+	a, err := sessions.Create(ctx, user, SessionCreateInput{LoginMethod: models.LoginMethodPassword, IP: "198.51.100.31"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := sessions.Refresh(ctx, a.RefreshToken)
+	if err != nil {
+		t.Fatalf("A to B: %v", err)
+	}
+	c, err := sessions.Refresh(ctx, b.RefreshToken)
+	if err != nil {
+		t.Fatalf("B to C: %v", err)
+	}
+	start := make(chan struct{})
+	results := make(chan string, 8)
+	errs := make(chan error, 8)
+	var wait sync.WaitGroup
+	for range 8 {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			<-start
+			issued, err := sessions.Refresh(ctx, b.RefreshToken)
+			if err != nil {
+				errs <- err
+				return
+			}
+			results <- issued.RefreshToken
+		}()
+	}
+	close(start)
+	wait.Wait()
+	close(results)
+	close(errs)
+	for err := range errs {
+		t.Fatalf("old B concurrent refresh: %v", err)
+	}
+	for result := range results {
+		if result != c.RefreshToken || result == b.RefreshToken {
+			t.Fatalf("old B received stale or unexpected result")
+		}
+	}
+	var stored models.Session
+	if err := db.Where("guid = ? AND is_deleted = 0", a.Session.Guid).First(&stored).Error; err != nil {
+		t.Fatal(err)
+	}
+	if stored.RefreshHMAC != security.RefreshHMAC(strings.Split(c.RefreshToken, ".")[1], testSessionSettings().AuthHMACKey) || stored.PreviousRefreshHMAC == nil || *stored.PreviousRefreshHMAC != security.RefreshHMAC(strings.Split(b.RefreshToken, ".")[1], testSessionSettings().AuthHMACKey) {
+		t.Fatal("stored refresh HMAC generation does not equal C/current and B/previous")
 	}
 }
 

@@ -26,6 +26,7 @@
 - 环境阻塞：`TEST_REDIS_URL` 与 `TEST_DATABASE_URL` 均未提供。测试从不读取 `.env`、`REDIS_URL` 或 `DATABASE_URL`，因此真实 Redis/MySQL 的 5 次限流、51 会话淘汰、30 秒并发 Refresh 与窗口外重放吊销仍待隔离环境执行。
 - 安全返工：Refresh 改为 SID 行锁内先写 Redis 加密 pending 结果、MySQL 提交后可恢复发布；后提交发布失败时，持有旧 Cookie 的并发请求可在验证前一 HMAC 后恢复同一结果，不会误吊销会话。`RevokeOthers` 与创建会话共享 `users` 行锁，避免并发下漏吊销目标会话。
 - 状态机返工：Redis public/pending rotation 记录均携带目标 Refresh HMAC 指纹；Lua 脚本只返回匹配当前 MySQL HMAC 的代次，并原子替换 stale public 结果。连续 A→B→C 且 B TTL 尚存时，B Cookie 的并发请求只能恢复 C，不能返回 B。
+- 新增真实受控 MySQL/Redis 集成用例覆盖 A→B→C 后 8 个并发旧 B Refresh 全部返回 C，并断言数据库仅保存 C 当前 HMAC 与 B 前一 HMAC。无 `TEST_DATABASE_URL` 或 `TEST_REDIS_URL` 时显式跳过；本地 `go test -race ./internal/service -run 'Test(RefreshRotationConcurrentOldBReturnsC|AuthSession|RefreshRotation|LoginRateLimit|AuthRedis)' -count=1`、全量测试、vet 与 diff 检查通过。
 
 `go-004`：JieKou AI 白牌上游接入（`blocked`）。真实部署环境 JieKou 冒烟待办；该外部验证完成前不得标记为通过。
 

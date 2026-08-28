@@ -72,27 +72,6 @@ func openTestAuthRedis(t *testing.T) *AuthRedis {
 	return store
 }
 
-func TestAuthRedisRotationResultExpiresAfterReplayWindow(t *testing.T) {
-	redisStore := openTestAuthRedis(t)
-	ctx := context.Background()
-	const sid = "a7e1b4cc-d29f-466b-b9e3-e384b0a6ab0e"
-	if err := redisStore.StoreRotationResult(ctx, sid, "new-refresh-secret", 30*time.Millisecond); err != nil {
-		t.Fatalf("store rotation result: %v", err)
-	}
-	result, found, err := redisStore.LoadRotationResult(ctx, sid)
-	if err != nil || !found || result != "new-refresh-secret" {
-		t.Fatalf("load live rotation result = %q, %t, %v", result, found, err)
-	}
-	time.Sleep(50 * time.Millisecond)
-	_, found, err = redisStore.LoadRotationResult(ctx, sid)
-	if err != nil {
-		t.Fatalf("load expired rotation result: %v", err)
-	}
-	if found {
-		t.Fatal("rotation result survived replay window")
-	}
-}
-
 // TestAuthRedisPendingRotationCanBeRecoveredAfterPublishFailure pins the
 // recoverable publish protocol: a post-commit publication failure must not
 // turn a valid concurrent old cookie into a replay revocation.
