@@ -60,6 +60,80 @@ func (a *AuthService) SoftDeleteUser(ctx context.Context, actorID, targetID int6
 	return a.mutateManagedUser(ctx, actorID, targetID, true)
 }
 
+// ManagedUserUpdateInput contains the mutable administrator-managed account
+// fields. The handler converts external strings into the stable model enums
+// before calling the service, so this write path never persists raw input.
+type ManagedUserUpdateInput struct {
+	Status         *models.UserStatus
+	PlanType       *models.PlanType
+	AllowedModels  *models.JSONSlice
+	DailyCallLimit *int
+}
+
+// UpdateManagedUser locks and re-authorizes both the acting administrator and
+// target account in one transaction before changing plan, model ACL, quota, or
+// status. This closes the interval between request authentication and the
+// durable write when the actor may have been disabled or demoted.
+func (a *AuthService) UpdateManagedUser(ctx context.Context, actorID, targetGUID int64, input ManagedUserUpdateInput) (*models.User, error) {
+	if a == nil || a.db == nil {
+		return nil, errors.New("authentication service is unavailable")
+	}
+	var updated models.User
+	err := a.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var actor, target models.User
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ? AND is_deleted = 0", actorID).First(&actor).Error; err != nil {
+			return errForbidden("无权限管理该用户")
+		}
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("guid = ? AND is_deleted = 0", targetGUID).First(&target).Error; err != nil {
+			return errNotFound("用户不存在")
+		}
+		if err := CanManageUser(&actor, &target); err != nil {
+			return err
+		}
+
+		if input.Status != nil && *input.Status == models.UserStatusDisabled {
+			if err := a.requireAuthRedis(ctx); err != nil {
+				return err
+			}
+			if err := a.revokeUserSessionsLocked(ctx, tx, &target, actor.ID, models.AuthAuditEventUserDisabled); err != nil {
+				return err
+			}
+			target.AuthVersion++
+		}
+		if input.Status != nil {
+			target.Status = *input.Status
+		}
+		if input.PlanType != nil {
+			target.PlanType = *input.PlanType
+		}
+		if input.AllowedModels != nil {
+			target.AllowedModels = *input.AllowedModels
+		}
+		if input.DailyCallLimit != nil {
+			target.DailyCallLimit = *input.DailyCallLimit
+		}
+		TouchAudit(&target.AuditFields, actor.ID)
+		updates := map[string]any{
+			"status":           target.Status,
+			"plan_type":        target.PlanType,
+			"allowed_models":   target.AllowedModels,
+			"daily_call_limit": target.DailyCallLimit,
+			"auth_version":     target.AuthVersion,
+			"updated_at":       target.UpdatedAt,
+			"updated_by":       target.UpdatedBy,
+		}
+		if err := tx.Model(&models.User{}).Where("id = ? AND is_deleted = 0", target.ID).Updates(updates).Error; err != nil {
+			return err
+		}
+		updated = target
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &updated, nil
+}
+
 func (a *AuthService) mutateManagedUser(ctx context.Context, actorID, targetID int64, deleteUser bool) error {
 	if err := a.requireAuthRedis(ctx); err != nil {
 		return err

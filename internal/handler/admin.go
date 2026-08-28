@@ -56,16 +56,7 @@ func RegisterAdminUsers(r *gin.Engine, state *app.State) {
 		c.JSON(http.StatusOK, dto.AdminUser(&user))
 	})
 	g.PUT("/:guid", func(c *gin.Context) {
-		id, _ := strconv.ParseUint(c.Param("guid"), 10, 64)
-		var user models.User
-		if err := state.DB.Where("guid = ? AND is_deleted = 0", id).First(&user).Error; err != nil {
-			httpx.AbortJSON(c, http.StatusNotFound, "用户不存在")
-			return
-		}
-		if err := service.CanManageUser(middleware.CurrentUser(c), &user); err != nil {
-			httpx.AbortJSON(c, http.StatusForbidden, "无权限管理该用户")
-			return
-		}
+		guid, _ := strconv.ParseInt(c.Param("guid"), 10, 64)
 		var body struct {
 			Status         *string  `json:"status"`
 			PlanType       *string  `json:"plan_type"`
@@ -73,25 +64,14 @@ func RegisterAdminUsers(r *gin.Engine, state *app.State) {
 			DailyCallLimit *int     `json:"daily_call_limit"`
 		}
 		_ = c.ShouldBindJSON(&body)
+		input := service.ManagedUserUpdateInput{}
 		if body.Status != nil {
 			status, ok := models.ParseUserStatus(*body.Status)
 			if !ok {
 				httpx.AbortJSON(c, http.StatusUnprocessableEntity, "无效用户状态")
 				return
 			}
-			if status == models.UserStatusDisabled {
-				if err := state.Auth.DisableUser(c.Request.Context(), middleware.CurrentUserID(c), user.ID); err != nil {
-					code, message := service.StatusFromError(err)
-					httpx.AbortJSON(c, code, message)
-					return
-				}
-				if err := state.DB.Where("id = ? AND is_deleted = 0", user.ID).First(&user).Error; err != nil {
-					httpx.AbortJSON(c, http.StatusInternalServerError, "读取用户失败")
-					return
-				}
-			} else {
-				user.Status = status
-			}
+			input.Status = &status
 		}
 		if body.PlanType != nil {
 			plan, ok := models.ParsePlanType(*body.PlanType)
@@ -99,20 +79,22 @@ func RegisterAdminUsers(r *gin.Engine, state *app.State) {
 				httpx.AbortJSON(c, http.StatusUnprocessableEntity, "无效套餐类型")
 				return
 			}
-			user.PlanType = plan
+			input.PlanType = &plan
 		}
 		if body.AllowedModels != nil {
-			user.AllowedModels = body.AllowedModels
+			allowedModels := models.JSONSlice(body.AllowedModels)
+			input.AllowedModels = &allowedModels
 		}
 		if body.DailyCallLimit != nil {
-			user.DailyCallLimit = *body.DailyCallLimit
+			input.DailyCallLimit = body.DailyCallLimit
 		}
-		service.TouchAudit(&user.AuditFields, middleware.CurrentUserID(c))
-		if err := state.DB.Save(&user).Error; err != nil {
-			httpx.AbortJSON(c, http.StatusInternalServerError, "更新用户失败")
+		user, err := state.Auth.UpdateManagedUser(c.Request.Context(), middleware.CurrentUserID(c), guid, input)
+		if err != nil {
+			code, message := service.StatusFromError(err)
+			httpx.AbortJSON(c, code, message)
 			return
 		}
-		c.JSON(http.StatusOK, dto.AdminUser(&user))
+		c.JSON(http.StatusOK, dto.AdminUser(user))
 	})
 	g.GET("/:guid/behavior", func(c *gin.Context) {
 		id, _ := strconv.ParseUint(c.Param("guid"), 10, 64)

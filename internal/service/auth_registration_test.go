@@ -163,6 +163,77 @@ func TestDisableUserRejectsActorDisabledAfterAuthorization(t *testing.T) {
 	}
 }
 
+// TestUpdateManagedUserRejectsActorChangedAfterAuthentication proves that the
+// administrator update transaction re-reads and locks the persisted actor
+// instead of trusting an earlier successful administrator authentication. A
+// disabled or downgraded actor cannot change a target's status, plan, ACL, or
+// quota after that authentication boundary.
+func TestUpdateManagedUserRejectsActorChangedAfterAuthentication(t *testing.T) {
+	for _, testCase := range []struct {
+		name        string
+		actorUpdate map[string]any
+	}{
+		{name: "disabled", actorUpdate: map[string]any{"status": models.UserStatusDisabled}},
+		{name: "downgraded", actorUpdate: map[string]any{"role": models.UserRoleUser}},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			redisStore := openTestAuthRedis(t)
+			db := openTestMySQL(t)
+			prepareAuthSessionSchema(t, db)
+			actor := createAuthSessionTestUser(t, db)
+			target := createAuthSessionTestUser(t, db)
+			if err := db.Model(&models.User{}).Where("id = ?", actor.ID).Updates(map[string]any{"role": models.UserRoleAdmin}).Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := db.Where("id = ? AND is_deleted = 0", actor.ID).First(actor).Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := CanManageUser(actor, target); err != nil {
+				t.Fatalf("precondition: active administrator should pass authorization: %v", err)
+			}
+
+			if err := db.Model(&models.User{}).Where("id = ?", actor.ID).Updates(testCase.actorUpdate).Error; err != nil {
+				t.Fatal(err)
+			}
+			status := models.UserStatusDisabled
+			plan := models.PlanEnterprise
+			allowedModels := models.JSONSlice{"model-a", "model-b"}
+			quota := 777
+			auth := NewAuthService(&config.Settings{}, nil, db)
+			auth.SetSessionService(NewSessionService(db, redisStore, testSessionSettings()))
+			_, err := auth.UpdateManagedUser(context.Background(), actor.ID, target.Guid, ManagedUserUpdateInput{
+				Status:         &status,
+				PlanType:       &plan,
+				AllowedModels:  &allowedModels,
+				DailyCallLimit: &quota,
+			})
+			if statusCode, _ := StatusFromError(err); statusCode != 403 {
+				t.Fatalf("UpdateManagedUser status = %d, want 403; err=%v", statusCode, err)
+			}
+
+			var stored models.User
+			if err := db.Where("id = ? AND is_deleted = 0", target.ID).First(&stored).Error; err != nil {
+				t.Fatal(err)
+			}
+			if stored.Status != target.Status || stored.PlanType != target.PlanType || stored.DailyCallLimit != target.DailyCallLimit || !equalJSONSlice(stored.AllowedModels, target.AllowedModels) {
+				t.Fatalf("target changed after %s actor request: %#v", testCase.name, stored)
+			}
+		})
+	}
+}
+
+func equalJSONSlice(left, right models.JSONSlice) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
+}
+
 func TestLoginUsernameRejectsDisabledAndSoftDeletedUser(t *testing.T) {
 	db := openTestMySQL(t)
 	prepareAuthRegistrationSchema(t, db)
