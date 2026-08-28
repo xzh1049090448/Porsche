@@ -228,7 +228,7 @@ func TestAdminHealthCheckRejectsConcurrentSameModel(t *testing.T) {
 	}
 }
 
-func TestAdminSlashHealthCheckUsesQueryIDForExactLock(t *testing.T) {
+func TestAdminSlashHealthCheckRejectsLegacyAdminToken(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	const modelID = "zai-org/glm-5.1"
 	whiteLabel, err := whitelabel.NewWhiteLabelService(config.WhiteLabelSettings{BaseURL: "https://white-label.test/v1", APIKey: "test-key", AllowedModels: map[string]struct{}{modelID: {}}}, http.DefaultClient, nil)
@@ -244,12 +244,12 @@ func TestAdminSlashHealthCheckUsesQueryIDForExactLock(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer admin-test")
 	rec := httptest.NewRecorder()
 	engine.ServeHTTP(rec, req)
-	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "health_check_in_progress") {
-		t.Fatalf("expected 409 concurrent health check, status=%d body=%s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("legacy ADMIN_TOKEN must not bypass session authorization, status=%d body=%s", rec.Code, rec.Body.String())
 	}
 }
 
-func TestAdminHealthCheckRejectsMalformedQueryID(t *testing.T) {
+func TestAdminHealthCheckRejectsLegacyAdminTokenBeforeQueryParsing(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	whiteLabel, err := whitelabel.NewWhiteLabelService(config.WhiteLabelSettings{BaseURL: "https://white-label.test/v1", APIKey: "test-key", AllowedModels: map[string]struct{}{"model-a": {}}}, http.DefaultClient, nil)
 	if err != nil {
@@ -263,8 +263,8 @@ func TestAdminHealthCheckRejectsMalformedQueryID(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer admin-test")
 	rec := httptest.NewRecorder()
 	engine.ServeHTTP(rec, req)
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("legacy ADMIN_TOKEN must not bypass session authorization, status=%d body=%s", rec.Code, rec.Body.String())
 	}
 }
 

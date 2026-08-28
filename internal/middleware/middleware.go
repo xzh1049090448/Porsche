@@ -2,7 +2,6 @@ package middleware
 
 import (
 	"net/http"
-	"strconv"
 
 	"github.com/gin-gonic/gin"
 	"github.com/porsche/ai-gateway-go/internal/app"
@@ -31,76 +30,45 @@ func GetState(c *gin.Context) *app.State {
 
 func RequireUserID(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		token, ok := httpx.RequireBearer(c)
-		if !ok {
+		if !authenticateUser(c, state) {
 			return
 		}
-		claims, err := security.DecodeAccessToken(token, state.Settings.JWTSecretKey)
-		if err != nil || claims["sub"] == nil {
-			httpx.AbortJSON(c, http.StatusUnauthorized, "Token无效或已过期")
-			return
-		}
-		sub, ok := claimSubject(claims)
-		if !ok {
-			httpx.AbortJSON(c, http.StatusUnauthorized, "Token无效或已过期")
-			return
-		}
-		guid, err := strconv.ParseInt(sub, 10, 64)
-		if err != nil {
-			httpx.AbortJSON(c, http.StatusUnauthorized, "Token无效或已过期")
-			return
-		}
-		var user models.User
-		if err := state.DB.Where("guid = ? AND is_deleted = 0", guid).First(&user).Error; err != nil || !user.Status.IsActive() {
-			httpx.AbortJSON(c, http.StatusUnauthorized, "用户不存在或已被禁用")
-			return
-		}
-		c.Set(ContextUserID, user.ID)
 		c.Next()
 	}
 }
 
 func RequireUser(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		token, ok := httpx.RequireBearer(c)
-		if !ok {
+		if !authenticateUser(c, state) {
 			return
 		}
-		claims, err := security.DecodeAccessToken(token, state.Settings.JWTSecretKey)
-		if err != nil || claims["sub"] == nil {
-			httpx.AbortJSON(c, http.StatusUnauthorized, "Token无效或已过期")
-			return
-		}
-		sub, ok := claimSubject(claims)
-		if !ok {
-			httpx.AbortJSON(c, http.StatusUnauthorized, "Token无效或已过期")
-			return
-		}
-		guid, err := strconv.ParseInt(sub, 10, 64)
-		if err != nil {
-			httpx.AbortJSON(c, http.StatusUnauthorized, "Token无效或已过期")
-			return
-		}
-		var user models.User
-		if err := state.DB.Where("guid = ? AND is_deleted = 0", guid).First(&user).Error; err != nil || !user.Status.IsActive() {
-			httpx.AbortJSON(c, http.StatusUnauthorized, "用户不存在或已被禁用")
-			return
-		}
-		c.Set(ContextUserID, user.ID)
-		c.Set(ContextUser, &user)
 		c.Next()
 	}
 }
 
+// RequireAdmin accepts only an authenticated server session whose persisted
+// role is at least Admin; it deliberately has no ADMIN_TOKEN bypass.
 func RequireAdmin(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		token := httpx.BearerToken(c)
-		if token == "" {
-			httpx.AbortJSON(c, http.StatusUnauthorized, "Missing admin Authorization")
+		if !authenticateUser(c, state) {
 			return
 		}
-		if token != state.Settings.AdminToken {
-			httpx.AbortJSON(c, http.StatusForbidden, "Forbidden")
+		if !hasMinimumRole(CurrentUser(c).Role, models.UserRoleAdmin) {
+			httpx.AbortJSON(c, http.StatusForbidden, "无管理员权限")
+			return
+		}
+		c.Next()
+	}
+}
+
+// RequireRoot accepts only an authenticated Root session.
+func RequireRoot(state *app.State) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if !authenticateUser(c, state) {
+			return
+		}
+		if !hasMinimumRole(CurrentUser(c).Role, models.UserRoleRoot) {
+			httpx.AbortJSON(c, http.StatusForbidden, "无Root权限")
 			return
 		}
 		c.Next()
@@ -115,12 +83,41 @@ func RequireAnalyticsAdmin(state *app.State) gin.HandlerFunc {
 			return
 		}
 		user := userVal.(*models.User)
-		if user.Phone == nil || !state.Settings.IsAnalyticsAdmin(*user.Phone) {
+		if !hasMinimumRole(user.Role, models.UserRoleAdmin) {
 			httpx.AbortJSON(c, http.StatusForbidden, "无分析权限")
 			return
 		}
 		c.Next()
 	}
+}
+
+func authenticateUser(c *gin.Context, state *app.State) bool {
+	if state == nil || state.Settings == nil || state.DB == nil || state.Sessions == nil {
+		httpx.AbortJSON(c, http.StatusUnauthorized, "Token无效或已过期")
+		return false
+	}
+	token, ok := httpx.RequireBearer(c)
+	if !ok {
+		return false
+	}
+	claims, err := security.DecodeAccessToken(token, state.Settings.JWTSecretKey)
+	sessionClaims, ok := parseSessionClaims(claims)
+	if err != nil || !ok {
+		httpx.AbortJSON(c, http.StatusUnauthorized, "Token无效或已过期")
+		return false
+	}
+	var user models.User
+	if err := state.DB.Where("guid = ? AND is_deleted = 0", sessionClaims.UserGUID).First(&user).Error; err != nil || !user.Status.IsActive() || user.AuthVersion != sessionClaims.AuthVersion || user.Role != sessionClaims.Role {
+		httpx.AbortJSON(c, http.StatusUnauthorized, "Token无效或已过期")
+		return false
+	}
+	if _, err := state.Sessions.Validate(c.Request.Context(), sessionClaims.SID, user.ID, sessionClaims.SessionVersion, sessionClaims.AuthVersion); err != nil {
+		httpx.AbortJSON(c, http.StatusUnauthorized, "Token无效或已过期")
+		return false
+	}
+	c.Set(ContextUserID, user.ID)
+	c.Set(ContextUser, &user)
+	return true
 }
 
 func CurrentUser(c *gin.Context) *models.User {

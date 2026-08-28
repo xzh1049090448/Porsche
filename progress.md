@@ -28,6 +28,15 @@
 - 状态机返工：Redis public/pending rotation 记录均携带目标 Refresh HMAC 指纹；Lua 脚本只返回匹配当前 MySQL HMAC 的代次，并原子替换 stale public 结果。连续 A→B→C 且 B TTL 尚存时，B Cookie 的并发请求只能恢复 C，不能返回 B。
 - 新增真实受控 MySQL/Redis 集成用例覆盖 A→B→C 后 8 个并发旧 B Refresh 全部返回 C，并断言数据库仅保存 C 当前 HMAC 与 B 前一 HMAC。无 `TEST_DATABASE_URL` 或 `TEST_REDIS_URL` 时显式跳过；本地 `go test -race ./internal/service -run 'Test(RefreshRotationConcurrentOldBReturnsC|AuthSession|RefreshRotation|LoginRateLimit|AuthRedis)' -count=1`、全量测试、vet 与 diff 检查通过。
 
+## 用户注册管理一期 Task 4（2026-08-28）
+
+- 新增用户名认证领域收口：用户名 trim 后限制为 3–20 个 ASCII 字母/数字/`_`/`-`；注册在事务中跨墓碑检查永久唯一性，并由既有 MySQL `uk_users_username` 强制兜底。用户名注册不创建或伪造手机号，密码以带参数的 Argon2id 编码存储；弱密码和非 8–20 字符密码会被拒绝。
+- Root 仅由部署配置引导：启动时无 Root 才创建，使用同一 MySQL 连接的命名锁串行多副本引导，成功后清空进程内 bootstrap 值；Root 创建与认证审计在同一事务中写入。Root 检查以 `is_deleted = 0` 限定常规用户读取，后续管理端点必须禁止 Root 软删。
+- 新 Access JWT 仅包含 `sub=<用户guid>`、`sid`、`sv`、`av`、`role`；不含内部用户 `id`、密码哈希或 Refresh。`RequireUser`/`RequireUserID` 均严格校验签名、完整 claims、用户 `guid + is_deleted=0`、状态、`auth_version`、持久化角色与 `SessionService.Validate` 的会话版本/否决状态。
+- `RequireAdmin` / `RequireRoot` 改为认证会话上的最低持久化角色检查，Analytics 管理权限不再以手机号判断；`ADMIN_TOKEN` 不能绕过管理员门禁，也不再回退为 Metrics 凭据。
+- 验证：RED 阶段因缺少用户名函数与会话 claims parser 发生预期编译失败；GREEN 后 `GOCACHE=/private/tmp/porsche-go-build-cache go test -v ./internal/service ./internal/middleware -run 'Test(Username|RootBootstrap|LoginUsername|PasswordUsesArgon2id|AccessTokenSubjectUsesUserGUID|SessionClaims|MinimumRole)' -count=1`、管理员旧 `ADMIN_TOKEN` 拒绝测试、`go vet ./...` 与 `git diff --check` 通过。`go test ./... -count=1` 的剩余失败均为既有测试在受限沙箱无法监听 `[::1]`，未出现 Task 4 业务断言失败。
+- 环境阻塞：`TEST_DATABASE_URL` 与 `TEST_REDIS_URL` 未提供，永久用户名、Root 首次引导、禁用/软删登录拒绝与实际 `SessionService.Validate` 的集成用例按安全规则显式跳过；未读取 `.env`、`DATABASE_URL` 或生产凭据。
+
 `go-004`：JieKou AI 白牌上游接入（`blocked`）。真实部署环境 JieKou 冒烟待办；该外部验证完成前不得标记为通过。
 
 ## 已验证基线（2026-08-21）

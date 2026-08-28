@@ -560,10 +560,7 @@ func getEnvBool(key string, def bool) bool {
 }
 
 func (s *Settings) MetricsAuthToken() string {
-	if s.MetricsToken != "" {
-		return s.MetricsToken
-	}
-	return s.AdminToken
+	return s.MetricsToken
 }
 
 func (s *Settings) IsAnalyticsAdmin(phone string) bool {
