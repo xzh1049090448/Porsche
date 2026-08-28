@@ -10,10 +10,12 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"golang.org/x/crypto/hkdf"
 )
 
 const (
@@ -58,8 +60,14 @@ func NewAuthRedis(client redis.UniversalClient, hmacKey string) (*AuthRedis, err
 	if strings.TrimSpace(hmacKey) == "" {
 		return nil, errors.New("authentication HMAC key is required")
 	}
-	key := sha256.Sum256([]byte(hmacKey))
-	block, err := aes.NewCipher(key[:])
+	// The AEAD key is purpose-separated from the Refresh HMAC key. Rotating or
+	// compromising one primitive therefore does not reuse raw key material in
+	// the other protocol.
+	key := make([]byte, 32)
+	if _, err := io.ReadFull(hkdf.New(sha256.New, []byte(hmacKey), nil, []byte("porsche/auth/redis-rotation-aead/v1")), key); err != nil {
+		return nil, fmt.Errorf("derive authentication AEAD key: %w", err)
+	}
+	block, err := aes.NewCipher(key)
 	if err != nil {
 		return nil, fmt.Errorf("create authentication cipher: %w", err)
 	}
@@ -171,7 +179,7 @@ func (r *AuthRedis) StoreRotationResult(ctx context.Context, sid, refreshToken s
 	if ttl <= 0 {
 		return errors.New("rotation result TTL must be positive")
 	}
-	ciphertext, err := r.encrypt([]byte(refreshToken))
+	ciphertext, err := r.encrypt(sid, []byte(refreshToken))
 	if err != nil {
 		return err
 	}
@@ -193,7 +201,60 @@ func (r *AuthRedis) LoadRotationResult(ctx context.Context, sid string) (string,
 	if err != nil {
 		return "", false, fmt.Errorf("read Redis rotation result: %w", err)
 	}
-	plain, err := r.decrypt(value)
+	plain, err := r.decrypt(sid, value)
+	if err != nil {
+		return "", false, err
+	}
+	return string(plain), true, nil
+}
+
+// StorePendingRotation writes the encrypted new refresh token before the
+// caller commits MySQL. It is never returned to another caller until MySQL
+// confirms the matching new HMAC, at which point RecoverRotationResult can
+// safely publish it after a transient Redis publication failure.
+func (r *AuthRedis) StorePendingRotation(ctx context.Context, sid, refreshToken string, ttl time.Duration) error {
+	if err := r.requireClient(); err != nil {
+		return err
+	}
+	if ttl <= 0 {
+		return errors.New("pending rotation TTL must be positive")
+	}
+	ciphertext, err := r.encrypt(sid, []byte(refreshToken))
+	if err != nil {
+		return err
+	}
+	if err := r.client.Set(ctx, r.pendingRotationKey(sid), ciphertext, ttl).Err(); err != nil {
+		return fmt.Errorf("store Redis pending rotation result: %w", err)
+	}
+	return nil
+}
+
+// RecoverRotationResult atomically promotes an encrypted pending result to the
+// public concurrent-refresh slot. The value remains AEAD-bound to this SID.
+func (r *AuthRedis) RecoverRotationResult(ctx context.Context, sid string, ttl time.Duration) (string, bool, error) {
+	if err := r.requireClient(); err != nil {
+		return "", false, err
+	}
+	if result, found, err := r.LoadRotationResult(ctx, sid); err != nil || found {
+		return result, found, err
+	}
+	pending, err := r.client.Get(ctx, r.pendingRotationKey(sid)).Result()
+	if errors.Is(err, redis.Nil) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("read Redis pending rotation result: %w", err)
+	}
+	if ttl <= 0 {
+		return "", false, errors.New("rotation result TTL must be positive")
+	}
+	if err := r.client.Set(ctx, r.rotationKey(sid), pending, ttl).Err(); err != nil {
+		return "", false, fmt.Errorf("publish Redis rotation result: %w", err)
+	}
+	if err := r.client.Del(ctx, r.pendingRotationKey(sid)).Err(); err != nil {
+		return "", false, fmt.Errorf("clear Redis pending rotation result: %w", err)
+	}
+	plain, err := r.decrypt(sid, pending)
 	if err != nil {
 		return "", false, err
 	}
@@ -245,6 +306,9 @@ func (r *AuthRedis) loginKey(kind, value string) string {
 func (r *AuthRedis) rotationKey(sid string) string {
 	return authRedisPrefix + "rotation:" + hashedRedisKey(sid)
 }
+func (r *AuthRedis) pendingRotationKey(sid string) string {
+	return authRedisPrefix + "rotation:pending:" + hashedRedisKey(sid)
+}
 func (r *AuthRedis) revokedKey(sid string) string {
 	return authRedisPrefix + "session:revoked:" + hashedRedisKey(sid)
 }
@@ -254,23 +318,27 @@ func hashedRedisKey(value string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func (r *AuthRedis) encrypt(plain []byte) (string, error) {
+func (r *AuthRedis) encrypt(sid string, plain []byte) (string, error) {
 	nonce := make([]byte, r.aead.NonceSize())
 	if _, err := rand.Read(nonce); err != nil {
 		return "", fmt.Errorf("generate rotation encryption nonce: %w", err)
 	}
-	sealed := r.aead.Seal(nil, nonce, plain, nil)
+	sealed := r.aead.Seal(nil, nonce, plain, rotationAAD(sid))
 	return base64.RawURLEncoding.EncodeToString(append(nonce, sealed...)), nil
 }
 
-func (r *AuthRedis) decrypt(value string) ([]byte, error) {
+func (r *AuthRedis) decrypt(sid, value string) ([]byte, error) {
 	encoded, err := base64.RawURLEncoding.DecodeString(value)
 	if err != nil || len(encoded) < r.aead.NonceSize() {
 		return nil, errors.New("invalid encrypted Redis rotation result")
 	}
-	plain, err := r.aead.Open(nil, encoded[:r.aead.NonceSize()], encoded[r.aead.NonceSize():], nil)
+	plain, err := r.aead.Open(nil, encoded[:r.aead.NonceSize()], encoded[r.aead.NonceSize():], rotationAAD(sid))
 	if err != nil {
 		return nil, errors.New("decrypt Redis rotation result")
 	}
 	return plain, nil
+}
+
+func rotationAAD(sid string) []byte {
+	return []byte("porsche/auth/v1/refresh-rotation/" + strings.TrimSpace(sid))
 }

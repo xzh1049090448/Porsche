@@ -55,7 +55,7 @@
         "2026-08-28：Task 1 已完成生产认证配置、文档与追踪；GOCACHE=/private/tmp/porsche-go-build-cache go test ./internal/config -count=1、git diff --check 与允许回环监听的 go test ./... -count=1 均通过。",
         "2026-08-28：Task 1 最终安全复审补齐非 development fail-closed、APP_ENV 规范化、Redis URL、严格认证开关/Access 时长，以及 32 字节非默认、非重复且互不复用的 JWT/HMAC/Admin/Metrics 密钥验证；配置与全量 Go 测试通过。",
         "2026-08-28：Task 2 新增显式前向 0002 认证核心迁移与持久化实体；不改 0001。users.phone 仅在 0002 改为可空并保留唯一索引，username 为全局唯一，sessions/audit 使用 BIGINT 审计、INT 枚举和 is_deleted 默认过滤索引；静态契约、全量 Go 测试、go vet 与 diff 检查通过。TEST_DATABASE_URL 未设置，真实隔离 MySQL 8 迁移验证按安全规则跳过，未连接 DATABASE_URL/.env/生产库。",
-        "2026-08-28：Task 3 增加 go-redis/v9 的 fail-closed 认证存储与 MySQL 事务会话服务：账户/IP 限流、24 小时签发上限、50 活跃会话淘汰、AEAD 包装的 30 秒并发 Refresh 结果、重放否决与逻辑撤销。RED 时目标服务 API 不存在；GREEN 后 Go 全量回归、go vet 和 diff 检查通过。未设置 TEST_REDIS_URL/TEST_DATABASE_URL，四项真实 Redis/MySQL 用例按设计跳过，未读取 .env/生产 Redis/MySQL。",
+        "2026-08-28：Task 3 增加 go-redis/v9 的 fail-closed 认证存储与 MySQL 事务会话服务：账户/IP 限流、24 小时签发上限、50 活跃会话淘汰、用途 KDF 隔离且 SID-AAD 绑定的 AEAD 30 秒并发 Refresh 结果、可恢复发布、重放否决与逻辑撤销；RevokeOthers 与 Create 以用户行锁串行。RED 时目标服务 API 不存在；GREEN 后 Go 全量回归、go vet 和 diff 检查通过。未设置 TEST_REDIS_URL/TEST_DATABASE_URL，四项真实 Redis/MySQL 用例按设计跳过，未读取 .env/生产 Redis/MySQL。",
         "尚未在真实隔离 MySQL 8/Redis 执行认证集成测试；认证端点与浏览器端验证也尚未开始。"
       ],
       "notes": "必须保持唯一 in_progress。用户、会话与认证审计的数据库变更仅能在后续 Task 2 通过显式、可审查的 MySQL 迁移实施。"

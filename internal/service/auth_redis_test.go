@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/redis/go-redis/v9"
 )
 
 // TestLoginRateLimitRejectsFifthLoginFailure proves that login failures are
@@ -31,6 +33,23 @@ func TestLoginRateLimitRejectsFifthLoginFailure(t *testing.T) {
 	}
 	if err := redisStore.CheckLoginAllowed(ctx, username, ip); err == nil {
 		t.Fatal("fifth failed login must be blocked for 30 seconds")
+	}
+}
+
+// TestAuthRedisRotationCiphertextIsBoundToSID proves AEAD associated data
+// prevents a ciphertext copied between session keys from being decrypted.
+func TestAuthRedisRotationCiphertextIsBoundToSID(t *testing.T) {
+	store, err := NewAuthRedis(redis.NewClient(&redis.Options{Addr: "127.0.0.1:1"}), "test-auth-hmac-key-0123456789-ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ciphertext, err := store.encrypt("sid-a", []byte("refresh-secret"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.decrypt("sid-b", ciphertext); err == nil {
+		t.Fatal("rotation ciphertext decrypted under another SID")
 	}
 }
 
@@ -71,5 +90,21 @@ func TestAuthRedisRotationResultExpiresAfterReplayWindow(t *testing.T) {
 	}
 	if found {
 		t.Fatal("rotation result survived replay window")
+	}
+}
+
+// TestAuthRedisPendingRotationCanBeRecoveredAfterPublishFailure pins the
+// recoverable publish protocol: a post-commit publication failure must not
+// turn a valid concurrent old cookie into a replay revocation.
+func TestAuthRedisPendingRotationCanBeRecoveredAfterPublishFailure(t *testing.T) {
+	redisStore := openTestAuthRedis(t)
+	ctx := context.Background()
+	const sid = "4fa4c35d-851d-4ef7-864c-9eb6e1cb91d4"
+	if err := redisStore.StorePendingRotation(ctx, sid, sid+".new-refresh-secret", time.Second); err != nil {
+		t.Fatal(err)
+	}
+	result, found, err := redisStore.RecoverRotationResult(ctx, sid, time.Second)
+	if err != nil || !found || result != sid+".new-refresh-secret" {
+		t.Fatalf("recover pending rotation = %q, %t, %v", result, found, err)
 	}
 }

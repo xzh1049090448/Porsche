@@ -153,6 +153,13 @@ func (s *SessionService) Refresh(ctx context.Context, refreshToken string) (*Iss
 			}
 			deadline := now + int64(s.settings.RefreshReplaySeconds)*int64(time.Second/time.Millisecond)
 			previous := session.RefreshHMAC
+			refreshToken := sid + "." + newSecret
+			// Store an AEAD-wrapped pending result before the MySQL CAS. If the
+			// post-commit publish fails, a concurrent request holding the old
+			// cookie can recover this exact result after it verifies the DB HMAC.
+			if err := s.redis.StorePendingRotation(ctx, sid, refreshToken, time.Duration(s.settings.RefreshReplaySeconds)*time.Second); err != nil {
+				return err
+			}
 			session.PreviousRefreshHMAC = &previous
 			session.PreviousRefreshExpiresAt = &deadline
 			session.RefreshHMAC = security.RefreshHMAC(newSecret, s.settings.AuthHMACKey)
@@ -167,11 +174,11 @@ func (s *SessionService) Refresh(ctx context.Context, refreshToken string) (*Iss
 			if err := s.writeAuthAudit(tx, &session.UserID, &session.Guid, models.AuthAuditEventRefreshSucceeded, session.LoginMethod, SessionCreateInput{IP: dereferenceString(session.IP), UserAgent: dereferenceString(session.UserAgent)}); err != nil {
 				return err
 			}
-			rotated = &IssuedSession{Session: &session, RefreshToken: sid + "." + newSecret}
+			rotated = &IssuedSession{Session: &session, RefreshToken: refreshToken}
 			return nil
 		}
 		if session.PreviousRefreshHMAC != nil && session.PreviousRefreshExpiresAt != nil && *session.PreviousRefreshExpiresAt >= now && subtle.ConstantTimeCompare([]byte(*session.PreviousRefreshHMAC), []byte(digest)) == 1 {
-			shared, found, err := s.redis.LoadRotationResult(ctx, sid)
+			shared, found, err := s.redis.RecoverRotationResult(ctx, sid, time.Duration(s.settings.RefreshReplaySeconds)*time.Second)
 			if err != nil {
 				return err
 			}
@@ -192,8 +199,11 @@ func (s *SessionService) Refresh(ctx context.Context, refreshToken string) (*Iss
 	if err != nil {
 		return nil, err
 	}
-	if err := s.redis.StoreRotationResult(ctx, sid, rotated.RefreshToken, time.Duration(s.settings.RefreshReplaySeconds)*time.Second); err != nil {
-		return nil, err
+	if _, found, err := s.redis.RecoverRotationResult(ctx, sid, time.Duration(s.settings.RefreshReplaySeconds)*time.Second); err != nil || !found {
+		if err != nil {
+			return nil, err
+		}
+		return nil, errors.New("rotation result publication unavailable")
 	}
 	return rotated, nil
 }
@@ -226,16 +236,22 @@ func (s *SessionService) RevokeOthers(ctx context.Context, userID int64, keepSID
 	if err := s.ready(); err != nil {
 		return err
 	}
-	var sessions []models.Session
-	if err := s.db.WithContext(ctx).Where("user_id = ? AND sid <> ? AND is_deleted = 0 AND revoked_at IS NULL", userID, keepSID).Find(&sessions).Error; err != nil {
-		return err
-	}
-	for _, session := range sessions {
-		if err := s.redis.MarkSessionRevoked(ctx, session.SID, sessionTTL(session, s.now())); err != nil {
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// Serialize with Create on the same user row so a session selected for
+		// revocation cannot escape through a concurrent create/revoke race.
+		var user models.User
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ? AND is_deleted = 0", userID).First(&user).Error; err != nil {
 			return err
 		}
-	}
-	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var sessions []models.Session
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("user_id = ? AND sid <> ? AND is_deleted = 0 AND revoked_at IS NULL", userID, keepSID).Find(&sessions).Error; err != nil {
+			return err
+		}
+		for _, session := range sessions {
+			if err := s.redis.MarkSessionRevoked(ctx, session.SID, sessionTTL(session, s.now())); err != nil {
+				return err
+			}
+		}
 		for _, candidate := range sessions {
 			var session models.Session
 			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ? AND user_id = ? AND is_deleted = 0", candidate.ID, userID).First(&session).Error; err != nil {

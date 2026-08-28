@@ -20,10 +20,11 @@
 
 ## 用户注册管理一期 Task 3（2026-08-28）
 
-- 新增 fail-closed `go-redis/v9` 认证存储：账户/IP 双维登录失败锁、24 小时会话签发上限、会话否决栅栏，以及仅以 AEAD 加密保存 30 秒并发 Refresh 结果。刷新明文不写 MySQL、审计事件或日志；MySQL 只保存 HMAC-SHA256 摘要。
+- 新增 fail-closed `go-redis/v9` 认证存储：账户/IP 双维登录失败锁、24 小时会话签发上限、会话否决栅栏，以及仅以 SID-AAD 绑定、用途 KDF 隔离的 AEAD 加密保存 30 秒并发 Refresh 结果。刷新明文不写 MySQL、审计事件或日志；MySQL 只保存 HMAC-SHA256 摘要。
 - `SessionService` 在 MySQL 事务内创建、轮换和撤销会话，并复用共享雪花 `guid` 与毫秒审计 helper；常规读取固定 `is_deleted = 0`，第 51 个活跃会话会逻辑吊销最旧会话，窗口外旧 Refresh 重放会先写 Redis 否决栅栏再吊销 MySQL 会话并写审计事件。
 - 已按 RED→GREEN 验证：新增 API 不存在时 `go test ./internal/service -run 'Test(AuthSession|RefreshRotation|LoginRateLimit)' -count=1` 编译失败；实现后定向测试通过但在未设置 `TEST_REDIS_URL` 时四项真实 Redis/MySQL 用例显式跳过。允许回环监听的环境中 `GOCACHE=/private/tmp/porsche-go-build-cache go test ./... -count=1`、`go vet ./...` 和 `git diff --check` 通过。
 - 环境阻塞：`TEST_REDIS_URL` 与 `TEST_DATABASE_URL` 均未提供。测试从不读取 `.env`、`REDIS_URL` 或 `DATABASE_URL`，因此真实 Redis/MySQL 的 5 次限流、51 会话淘汰、30 秒并发 Refresh 与窗口外重放吊销仍待隔离环境执行。
+- 安全返工：Refresh 改为 SID 行锁内先写 Redis 加密 pending 结果、MySQL 提交后可恢复发布；后提交发布失败时，持有旧 Cookie 的并发请求可在验证前一 HMAC 后恢复同一结果，不会误吊销会话。`RevokeOthers` 与创建会话共享 `users` 行锁，避免并发下漏吊销目标会话。
 
 `go-004`：JieKou AI 白牌上游接入（`blocked`）。真实部署环境 JieKou 冒烟待办；该外部验证完成前不得标记为通过。
 
