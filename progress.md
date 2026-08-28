@@ -2,7 +2,7 @@
 
 ## 当前唯一活动功能
 
-`go-006`：用户注册管理一期（`in_progress`）。Task 1 已完成生产认证配置与追踪；尚未执行迁移、数据库写入或认证端点实现。
+`go-006`：用户注册管理一期（`in_progress`）。Task 1–3 已完成配置、显式认证 schema 与可撤销会话基础；认证 HTTP 端点尚未实现。
 
 ## 用户注册管理一期 Task 1（2026-08-28）
 
@@ -17,6 +17,13 @@
 - Go `User.Phone` 为不序列化的 `*string`；旧手机号认证仅作兼容写入，未生成假手机号。新增稳定 `UserRole`、`LoginMethod` 与 `AuthAuditEventType` 整数映射，以及 `Session` / `AuthAuditEvent` 持久化实体。尚未实现会话服务、用户名注册或任何 Task 3+ 业务路径。
 - 已验证迁移/实体契约与全量 Go 回归：`GOCACHE=/private/tmp/porsche-go-build-cache go test -v ./internal/migration ./internal/models -run Auth -count=1`、允许回环监听环境中的 `GOCACHE=/private/tmp/porsche-go-build-cache go test ./... -count=1`、`go vet ./...` 与 `git diff --check`。
 - 环境阻塞：未设置 `TEST_DATABASE_URL`。受控 MySQL 测试只读取该变量并拒绝非 `*_test` 库，当前按设计跳过；未连接 `DATABASE_URL`、`.env` 或任何生产库，因此真实 MySQL 8 的 `0002` 迁移验证仍待提供隔离测试库后执行。
+
+## 用户注册管理一期 Task 3（2026-08-28）
+
+- 新增 fail-closed `go-redis/v9` 认证存储：账户/IP 双维登录失败锁、24 小时会话签发上限、会话否决栅栏，以及仅以 AEAD 加密保存 30 秒并发 Refresh 结果。刷新明文不写 MySQL、审计事件或日志；MySQL 只保存 HMAC-SHA256 摘要。
+- `SessionService` 在 MySQL 事务内创建、轮换和撤销会话，并复用共享雪花 `guid` 与毫秒审计 helper；常规读取固定 `is_deleted = 0`，第 51 个活跃会话会逻辑吊销最旧会话，窗口外旧 Refresh 重放会先写 Redis 否决栅栏再吊销 MySQL 会话并写审计事件。
+- 已按 RED→GREEN 验证：新增 API 不存在时 `go test ./internal/service -run 'Test(AuthSession|RefreshRotation|LoginRateLimit)' -count=1` 编译失败；实现后定向测试通过但在未设置 `TEST_REDIS_URL` 时四项真实 Redis/MySQL 用例显式跳过。允许回环监听的环境中 `GOCACHE=/private/tmp/porsche-go-build-cache go test ./... -count=1`、`go vet ./...` 和 `git diff --check` 通过。
+- 环境阻塞：`TEST_REDIS_URL` 与 `TEST_DATABASE_URL` 均未提供。测试从不读取 `.env`、`REDIS_URL` 或 `DATABASE_URL`，因此真实 Redis/MySQL 的 5 次限流、51 会话淘汰、30 秒并发 Refresh 与窗口外重放吊销仍待隔离环境执行。
 
 `go-004`：JieKou AI 白牌上游接入（`blocked`）。真实部署环境 JieKou 冒烟待办；该外部验证完成前不得标记为通过。
 

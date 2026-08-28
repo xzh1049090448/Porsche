@@ -1,7 +1,9 @@
 package app
 
 import (
+	"context"
 	"net/http"
+	"strings"
 
 	"github.com/porsche/ai-gateway-go/internal/config"
 	"github.com/porsche/ai-gateway-go/internal/persistence"
@@ -20,6 +22,8 @@ type State struct {
 	GatewayTokens *service.GatewayTokenService
 	WhiteLabel    *whitelabel.WhiteLabelService
 	Audit         *service.AuditService
+	AuthRedis     *service.AuthRedis
+	Sessions      *service.SessionService
 	HTTP          *http.Client
 }
 
@@ -44,6 +48,17 @@ func NewState(settings *config.Settings, db *gorm.DB) (*State, error) {
 	}
 	s.GatewayTokens = service.NewGatewayTokenService(db)
 	s.Auth = service.NewAuthService(settings, s.SMS, db)
+	// Authentication endpoints are added in Task 4. Initializing the Redis
+	// dependency here ensures a configured Redis failure prevents future auth
+	// operations from silently falling back to non-revocable JWT behavior.
+	if strings.TrimSpace(settings.RedisURL) != "" {
+		authRedis, err := service.NewAuthRedisFromURL(context.Background(), settings.RedisURL, settings.AuthHMACKey)
+		if err != nil {
+			return nil, err
+		}
+		s.AuthRedis = authRedis
+	}
+	s.Sessions = service.NewSessionService(db, s.AuthRedis, settings)
 	s.Platform = service.NewPlatformChatService(service.PlatformDeps{
 		Settings:   settings,
 		DB:         db,
