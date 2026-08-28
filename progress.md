@@ -31,9 +31,10 @@
 ## 用户注册管理一期 Task 4（2026-08-28）
 
 - 新增用户名认证领域收口：用户名 trim 后限制为 3–20 个 ASCII 字母/数字/`_`/`-`；注册在事务中跨墓碑检查永久唯一性，并由既有 MySQL `uk_users_username` 强制兜底。用户名注册不创建或伪造手机号，密码以带参数的 Argon2id 编码存储；弱密码和非 8–20 字符密码会被拒绝。
-- Root 仅由部署配置引导：启动时无 Root 才创建，使用同一 MySQL 连接的命名锁串行多副本引导，成功后清空进程内 bootstrap 值；Root 创建与认证审计在同一事务中写入。Root 检查以 `is_deleted = 0` 限定常规用户读取，后续管理端点必须禁止 Root 软删。
+- Root 仅由部署配置引导：启动时仅在不存在任何 Root（包括软删墓碑）时创建，使用同一 MySQL 连接的命名锁串行多副本引导，成功后清空进程内 bootstrap 值；Root 创建与认证审计在同一事务中写入。常规用户读取仍以 `is_deleted = 0` 限定，后续管理端点必须禁止 Root 软删。
 - 新 Access JWT 仅包含 `sub=<用户guid>`、`sid`、`sv`、`av`、`role`；不含内部用户 `id`、密码哈希或 Refresh。`RequireUser`/`RequireUserID` 均严格校验签名、完整 claims、用户 `guid + is_deleted=0`、状态、`auth_version`、持久化角色与 `SessionService.Validate` 的会话版本/否决状态。
 - `RequireAdmin` / `RequireRoot` 改为认证会话上的最低持久化角色检查，Analytics 管理权限不再以手机号判断；`ADMIN_TOKEN` 不能绕过管理员门禁，也不再回退为 Metrics 凭据。
+- P1 管理权限竞态修复：`mutateManagedUser` 在事务中锁定操作者后通过 `CanManageUser` 重新要求其为 active；即使请求先前已通过 `RequireAdmin`，随后被禁用的管理员也会收到 403，目标用户状态与 `auth_version` 保持不变。真实 MySQL/Redis 回归仅使用显式 `TEST_DATABASE_URL` 与 `TEST_REDIS_URL`；本地未设置时按安全规则跳过。
 - 验证：RED 阶段因缺少用户名函数与会话 claims parser 发生预期编译失败；GREEN 后 `GOCACHE=/private/tmp/porsche-go-build-cache go test -v ./internal/service ./internal/middleware -run 'Test(Username|RootBootstrap|LoginUsername|PasswordUsesArgon2id|AccessTokenSubjectUsesUserGUID|SessionClaims|MinimumRole)' -count=1`、管理员旧 `ADMIN_TOKEN` 拒绝测试、`go vet ./...` 与 `git diff --check` 通过。`go test ./... -count=1` 的剩余失败均为既有测试在受限沙箱无法监听 `[::1]`，未出现 Task 4 业务断言失败。
 - 环境阻塞：`TEST_DATABASE_URL` 与 `TEST_REDIS_URL` 未提供，永久用户名、Root 首次引导、禁用/软删登录拒绝与实际 `SessionService.Validate` 的集成用例按安全规则显式跳过；未读取 `.env`、`DATABASE_URL` 或生产凭据。
 

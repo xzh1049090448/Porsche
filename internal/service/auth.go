@@ -234,7 +234,7 @@ func (a *AuthService) BootstrapRoot(ctx context.Context) (*models.User, error) {
 // operations. Management is strictly downward and Root accounts are never
 // mutable through normal administrator workflows.
 func CanManageUser(actor, target *models.User) error {
-	if actor == nil || target == nil || actor.IsDeleted != 0 || target.IsDeleted != 0 {
+	if actor == nil || target == nil || actor.IsDeleted != 0 || target.IsDeleted != 0 || !actor.Status.IsActive() {
 		return errForbidden("无权限管理该用户")
 	}
 	if target.Role == models.UserRoleRoot || actor.Role <= target.Role {

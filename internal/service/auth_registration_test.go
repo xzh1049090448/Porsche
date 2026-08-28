@@ -90,10 +90,10 @@ func TestRootBootstrapDoesNotReplaceTombstonedRoot(t *testing.T) {
 }
 
 func TestCanManageUserRequiresStrictlyHigherRoleAndProtectsRoot(t *testing.T) {
-	admin := &models.User{Role: models.UserRoleAdmin}
-	user := &models.User{Role: models.UserRoleUser}
-	peer := &models.User{Role: models.UserRoleAdmin}
-	root := &models.User{Role: models.UserRoleRoot}
+	admin := &models.User{Status: models.UserStatusActive, Role: models.UserRoleAdmin}
+	user := &models.User{Status: models.UserStatusActive, Role: models.UserRoleUser}
+	peer := &models.User{Status: models.UserStatusActive, Role: models.UserRoleAdmin}
+	root := &models.User{Status: models.UserStatusActive, Role: models.UserRoleRoot}
 	if err := CanManageUser(admin, user); err != nil {
 		t.Fatalf("admin should manage ordinary user: %v", err)
 	}
@@ -107,6 +107,59 @@ func TestCanManageUserRequiresStrictlyHigherRoleAndProtectsRoot(t *testing.T) {
 	}
 	if err := CanManageUser(root, root); err == nil {
 		t.Fatal("Root must not manage Root accounts")
+	}
+}
+
+// TestCanManageUserRejectsDisabledActor closes the interval between an
+// administrator request passing middleware and the later management
+// transaction acquiring its actor row lock. A newly disabled actor must not
+// retain authority merely because its role is still Admin.
+func TestCanManageUserRejectsDisabledActor(t *testing.T) {
+	actor := &models.User{Status: models.UserStatusDisabled, Role: models.UserRoleAdmin}
+	target := &models.User{Status: models.UserStatusActive, Role: models.UserRoleUser}
+
+	if err := CanManageUser(actor, target); err == nil {
+		t.Fatal("disabled administrator unexpectedly retained management authority")
+	}
+}
+
+// TestDisableUserRejectsActorDisabledAfterAuthorization verifies the service
+// rechecks the locked actor instead of trusting an earlier RequireAdmin
+// decision. The target must remain unchanged when the actor is disabled in
+// the interval before the management transaction starts.
+func TestDisableUserRejectsActorDisabledAfterAuthorization(t *testing.T) {
+	redisStore := openTestAuthRedis(t)
+	db := openTestMySQL(t)
+	prepareAuthSessionSchema(t, db)
+	actor := createAuthSessionTestUser(t, db)
+	target := createAuthSessionTestUser(t, db)
+	if err := db.Model(&models.User{}).Where("id = ?", actor.ID).Updates(map[string]any{"role": models.UserRoleAdmin}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Where("id = ? AND is_deleted = 0", actor.ID).First(actor).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := CanManageUser(actor, target); err != nil {
+		t.Fatalf("precondition: active administrator should pass authorization: %v", err)
+	}
+	if err := db.Model(&models.User{}).Where("id = ?", actor.ID).Updates(map[string]any{"status": models.UserStatusDisabled}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	auth := NewAuthService(&config.Settings{}, nil, db)
+	auth.SetSessionService(NewSessionService(db, redisStore, testSessionSettings()))
+	if err := auth.DisableUser(context.Background(), actor.ID, target.ID); err == nil {
+		t.Fatal("disabled actor unexpectedly disabled target")
+	} else if status, _ := StatusFromError(err); status != 403 {
+		t.Fatalf("DisableUser status = %d, want 403; err=%v", status, err)
+	}
+
+	var stored models.User
+	if err := db.Where("id = ? AND is_deleted = 0", target.ID).First(&stored).Error; err != nil {
+		t.Fatal(err)
+	}
+	if stored.Status != models.UserStatusActive || stored.AuthVersion != target.AuthVersion {
+		t.Fatalf("target changed after disabled actor request: %#v", stored)
 	}
 }
 
