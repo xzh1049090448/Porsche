@@ -100,11 +100,33 @@ func TestAuthRedisPendingRotationCanBeRecoveredAfterPublishFailure(t *testing.T)
 	redisStore := openTestAuthRedis(t)
 	ctx := context.Background()
 	const sid = "4fa4c35d-851d-4ef7-864c-9eb6e1cb91d4"
-	if err := redisStore.StorePendingRotation(ctx, sid, sid+".new-refresh-secret", time.Second); err != nil {
+	if err := redisStore.StorePendingRotation(ctx, sid, "target-hmac", sid+".new-refresh-secret", time.Second); err != nil {
 		t.Fatal(err)
 	}
-	result, found, err := redisStore.RecoverRotationResult(ctx, sid, time.Second)
+	result, found, err := redisStore.RecoverRotationResult(ctx, sid, "target-hmac", time.Second)
 	if err != nil || !found || result != sid+".new-refresh-secret" {
 		t.Fatalf("recover pending rotation = %q, %t, %v", result, found, err)
+	}
+}
+
+// TestAuthRedisGenerationNeverReturnsStaleRotationResult covers A→B→C while
+// B remains within TTL: an old B public entry must be atomically replaced with
+// C and a B-cookie concurrent refresh must receive C, never stale B.
+func TestAuthRedisGenerationNeverReturnsStaleRotationResult(t *testing.T) {
+	redisStore := openTestAuthRedis(t)
+	ctx := context.Background()
+	const sid = "1f66b061-93f7-4a12-94f2-dfc8df24e07b"
+	if err := redisStore.StorePendingRotation(ctx, sid, "hmac-b", sid+".B", time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if _, found, err := redisStore.RecoverRotationResult(ctx, sid, "hmac-b", time.Second); err != nil || !found {
+		t.Fatalf("publish B: found=%t err=%v", found, err)
+	}
+	if err := redisStore.StorePendingRotation(ctx, sid, "hmac-c", sid+".C", time.Second); err != nil {
+		t.Fatal(err)
+	}
+	result, found, err := redisStore.RecoverRotationResult(ctx, sid, "hmac-c", time.Second)
+	if err != nil || !found || result != sid+".C" {
+		t.Fatalf("recover C = %q, %t, %v", result, found, err)
 	}
 }

@@ -154,15 +154,16 @@ func (s *SessionService) Refresh(ctx context.Context, refreshToken string) (*Iss
 			deadline := now + int64(s.settings.RefreshReplaySeconds)*int64(time.Second/time.Millisecond)
 			previous := session.RefreshHMAC
 			refreshToken := sid + "." + newSecret
+			nextHMAC := security.RefreshHMAC(newSecret, s.settings.AuthHMACKey)
 			// Store an AEAD-wrapped pending result before the MySQL CAS. If the
 			// post-commit publish fails, a concurrent request holding the old
 			// cookie can recover this exact result after it verifies the DB HMAC.
-			if err := s.redis.StorePendingRotation(ctx, sid, refreshToken, time.Duration(s.settings.RefreshReplaySeconds)*time.Second); err != nil {
+			if err := s.redis.StorePendingRotation(ctx, sid, nextHMAC, refreshToken, time.Duration(s.settings.RefreshReplaySeconds)*time.Second); err != nil {
 				return err
 			}
 			session.PreviousRefreshHMAC = &previous
 			session.PreviousRefreshExpiresAt = &deadline
-			session.RefreshHMAC = security.RefreshHMAC(newSecret, s.settings.AuthHMACKey)
+			session.RefreshHMAC = nextHMAC
 			session.LastActiveAt = now
 			TouchAudit(&session.AuditFields, session.UserID)
 			if err := tx.Model(&models.Session{}).Where("id = ? AND is_deleted = 0 AND refresh_hmac = ?", session.ID, previous).Updates(map[string]any{
@@ -178,7 +179,7 @@ func (s *SessionService) Refresh(ctx context.Context, refreshToken string) (*Iss
 			return nil
 		}
 		if session.PreviousRefreshHMAC != nil && session.PreviousRefreshExpiresAt != nil && *session.PreviousRefreshExpiresAt >= now && subtle.ConstantTimeCompare([]byte(*session.PreviousRefreshHMAC), []byte(digest)) == 1 {
-			shared, found, err := s.redis.RecoverRotationResult(ctx, sid, time.Duration(s.settings.RefreshReplaySeconds)*time.Second)
+			shared, found, err := s.redis.RecoverRotationResult(ctx, sid, session.RefreshHMAC, time.Duration(s.settings.RefreshReplaySeconds)*time.Second)
 			if err != nil {
 				return err
 			}
@@ -199,7 +200,7 @@ func (s *SessionService) Refresh(ctx context.Context, refreshToken string) (*Iss
 	if err != nil {
 		return nil, err
 	}
-	if _, found, err := s.redis.RecoverRotationResult(ctx, sid, time.Duration(s.settings.RefreshReplaySeconds)*time.Second); err != nil || !found {
+	if _, found, err := s.redis.RecoverRotationResult(ctx, sid, rotated.Session.RefreshHMAC, time.Duration(s.settings.RefreshReplaySeconds)*time.Second); err != nil || !found {
 		if err != nil {
 			return nil, err
 		}

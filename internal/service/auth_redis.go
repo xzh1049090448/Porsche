@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -29,6 +30,11 @@ const (
 type AuthRedis struct {
 	client redis.UniversalClient
 	aead   cipher.AEAD
+}
+
+type rotationRecord struct {
+	TargetHMAC string `json:"target_hmac"`
+	Ciphertext string `json:"ciphertext"`
 }
 
 // NewAuthRedisFromURL creates and verifies an AuthRedis client. It is never
@@ -183,7 +189,11 @@ func (r *AuthRedis) StoreRotationResult(ctx context.Context, sid, refreshToken s
 	if err != nil {
 		return err
 	}
-	if err := r.client.Set(ctx, r.rotationKey(sid), ciphertext, ttl).Err(); err != nil {
+	value, err := json.Marshal(rotationRecord{Ciphertext: ciphertext})
+	if err != nil {
+		return fmt.Errorf("encode Redis rotation result: %w", err)
+	}
+	if err := r.client.Set(ctx, r.rotationKey(sid), value, ttl).Err(); err != nil {
 		return fmt.Errorf("store Redis rotation result: %w", err)
 	}
 	return nil
@@ -201,7 +211,11 @@ func (r *AuthRedis) LoadRotationResult(ctx context.Context, sid string) (string,
 	if err != nil {
 		return "", false, fmt.Errorf("read Redis rotation result: %w", err)
 	}
-	plain, err := r.decrypt(sid, value)
+	record, err := decodeRotationRecord(value)
+	if err != nil {
+		return "", false, err
+	}
+	plain, err := r.decrypt(sid, record.Ciphertext)
 	if err != nil {
 		return "", false, err
 	}
@@ -212,7 +226,7 @@ func (r *AuthRedis) LoadRotationResult(ctx context.Context, sid string) (string,
 // caller commits MySQL. It is never returned to another caller until MySQL
 // confirms the matching new HMAC, at which point RecoverRotationResult can
 // safely publish it after a transient Redis publication failure.
-func (r *AuthRedis) StorePendingRotation(ctx context.Context, sid, refreshToken string, ttl time.Duration) error {
+func (r *AuthRedis) StorePendingRotation(ctx context.Context, sid, targetHMAC, refreshToken string, ttl time.Duration) error {
 	if err := r.requireClient(); err != nil {
 		return err
 	}
@@ -223,7 +237,11 @@ func (r *AuthRedis) StorePendingRotation(ctx context.Context, sid, refreshToken 
 	if err != nil {
 		return err
 	}
-	if err := r.client.Set(ctx, r.pendingRotationKey(sid), ciphertext, ttl).Err(); err != nil {
+	value, err := json.Marshal(rotationRecord{TargetHMAC: targetHMAC, Ciphertext: ciphertext})
+	if err != nil {
+		return fmt.Errorf("encode Redis pending rotation result: %w", err)
+	}
+	if err := r.client.Set(ctx, r.pendingRotationKey(sid), value, ttl).Err(); err != nil {
 		return fmt.Errorf("store Redis pending rotation result: %w", err)
 	}
 	return nil
@@ -231,34 +249,52 @@ func (r *AuthRedis) StorePendingRotation(ctx context.Context, sid, refreshToken 
 
 // RecoverRotationResult atomically promotes an encrypted pending result to the
 // public concurrent-refresh slot. The value remains AEAD-bound to this SID.
-func (r *AuthRedis) RecoverRotationResult(ctx context.Context, sid string, ttl time.Duration) (string, bool, error) {
+func (r *AuthRedis) RecoverRotationResult(ctx context.Context, sid, targetHMAC string, ttl time.Duration) (string, bool, error) {
 	if err := r.requireClient(); err != nil {
 		return "", false, err
-	}
-	if result, found, err := r.LoadRotationResult(ctx, sid); err != nil || found {
-		return result, found, err
-	}
-	pending, err := r.client.Get(ctx, r.pendingRotationKey(sid)).Result()
-	if errors.Is(err, redis.Nil) {
-		return "", false, nil
-	}
-	if err != nil {
-		return "", false, fmt.Errorf("read Redis pending rotation result: %w", err)
 	}
 	if ttl <= 0 {
 		return "", false, errors.New("rotation result TTL must be positive")
 	}
-	if err := r.client.Set(ctx, r.rotationKey(sid), pending, ttl).Err(); err != nil {
-		return "", false, fmt.Errorf("publish Redis rotation result: %w", err)
+	// A single Lua transition prevents a stale public result (for B) from
+	// surviving a later B→C rotation and prevents GET→SET→DEL interleavings.
+	value, err := r.client.Eval(ctx, `
+local public = redis.call('GET', KEYS[1])
+if public then
+  local p = cjson.decode(public)
+  if p.target_hmac == ARGV[1] then return public end
+end
+local pending = redis.call('GET', KEYS[2])
+if not pending then return '' end
+local q = cjson.decode(pending)
+if q.target_hmac ~= ARGV[1] then return '' end
+redis.call('SET', KEYS[1], pending, 'PX', ARGV[2])
+redis.call('DEL', KEYS[2])
+return pending
+`, []string{r.rotationKey(sid), r.pendingRotationKey(sid)}, targetHMAC, ttl.Milliseconds()).Text()
+	if err != nil {
+		return "", false, fmt.Errorf("atomically recover Redis rotation result: %w", err)
 	}
-	if err := r.client.Del(ctx, r.pendingRotationKey(sid)).Err(); err != nil {
-		return "", false, fmt.Errorf("clear Redis pending rotation result: %w", err)
+	if value == "" {
+		return "", false, nil
 	}
-	plain, err := r.decrypt(sid, pending)
+	record, err := decodeRotationRecord(value)
+	if err != nil || record.TargetHMAC != targetHMAC {
+		return "", false, errors.New("invalid Redis rotation generation")
+	}
+	plain, err := r.decrypt(sid, record.Ciphertext)
 	if err != nil {
 		return "", false, err
 	}
 	return string(plain), true, nil
+}
+
+func decodeRotationRecord(value string) (rotationRecord, error) {
+	var record rotationRecord
+	if err := json.Unmarshal([]byte(value), &record); err != nil || record.Ciphertext == "" {
+		return rotationRecord{}, errors.New("invalid encrypted Redis rotation result")
+	}
+	return record, nil
 }
 
 // MarkSessionRevoked writes the Redis denial barrier before callers mutate

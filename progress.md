@@ -25,6 +25,7 @@
 - 已按 RED→GREEN 验证：新增 API 不存在时 `go test ./internal/service -run 'Test(AuthSession|RefreshRotation|LoginRateLimit)' -count=1` 编译失败；实现后定向测试通过但在未设置 `TEST_REDIS_URL` 时四项真实 Redis/MySQL 用例显式跳过。允许回环监听的环境中 `GOCACHE=/private/tmp/porsche-go-build-cache go test ./... -count=1`、`go vet ./...` 和 `git diff --check` 通过。
 - 环境阻塞：`TEST_REDIS_URL` 与 `TEST_DATABASE_URL` 均未提供。测试从不读取 `.env`、`REDIS_URL` 或 `DATABASE_URL`，因此真实 Redis/MySQL 的 5 次限流、51 会话淘汰、30 秒并发 Refresh 与窗口外重放吊销仍待隔离环境执行。
 - 安全返工：Refresh 改为 SID 行锁内先写 Redis 加密 pending 结果、MySQL 提交后可恢复发布；后提交发布失败时，持有旧 Cookie 的并发请求可在验证前一 HMAC 后恢复同一结果，不会误吊销会话。`RevokeOthers` 与创建会话共享 `users` 行锁，避免并发下漏吊销目标会话。
+- 状态机返工：Redis public/pending rotation 记录均携带目标 Refresh HMAC 指纹；Lua 脚本只返回匹配当前 MySQL HMAC 的代次，并原子替换 stale public 结果。连续 A→B→C 且 B TTL 尚存时，B Cookie 的并发请求只能恢复 C，不能返回 B。
 
 `go-004`：JieKou AI 白牌上游接入（`blocked`）。真实部署环境 JieKou 冒烟待办；该外部验证完成前不得标记为通过。
 
