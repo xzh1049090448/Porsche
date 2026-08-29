@@ -2,6 +2,7 @@ package router_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 	"github.com/porsche/ai-gateway-go/internal/app"
 	"github.com/porsche/ai-gateway-go/internal/config"
 	"github.com/porsche/ai-gateway-go/internal/db"
+	"github.com/porsche/ai-gateway-go/internal/migration"
 	"github.com/porsche/ai-gateway-go/internal/models"
 	"github.com/porsche/ai-gateway-go/internal/persistence"
 	"github.com/porsche/ai-gateway-go/internal/router"
@@ -178,6 +180,10 @@ func TestGatewayRejectsSpoofedForwardedIPFromUntrustedPeer(t *testing.T) {
 func TestAnalyticsChartsRejectInvalidQueriesAfterAdminAuthorization(t *testing.T) {
 	state := newGatewayTestState(t)
 	admin := createGatewayTestUser(t, state, "analytics-admin")
+	admin.Role = models.UserRoleAdmin
+	if err := state.DB.Model(&models.User{}).Where("id = ? AND is_deleted = 0", admin.ID).Update("role", admin.Role).Error; err != nil {
+		t.Fatal(err)
+	}
 	if admin.Phone == nil {
 		t.Fatal("analytics admin fixture must have a phone")
 	}
@@ -189,6 +195,25 @@ func TestAnalyticsChartsRejectInvalidQueriesAfterAdminAuthorization(t *testing.T
 	engine.ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest || !bytes.Contains(rec.Body.Bytes(), []byte(`"invalid_analytics_query"`)) || bytes.Contains(rec.Body.Bytes(), []byte("999")) {
 		t.Fatalf("invalid analytics contract must be a generic 400: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestGatewayTokenManagementRejectsLegacyJWTWithoutSessionClaims ensures the
+// test fixture cannot accidentally revive pre-session JWT authorization.
+func TestGatewayTokenManagementRejectsLegacyJWTWithoutSessionClaims(t *testing.T) {
+	state := newGatewayTestState(t)
+	user := createGatewayTestUser(t, state, "legacy-token-owner")
+	legacy, err := security.CreateAccessToken(strconv.FormatInt(user.Guid, 10), state.Settings.JWTSecretKey, 10, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := router.New(state)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/tokens", nil)
+	req.Header.Set("Authorization", "Bearer "+legacy)
+	rec := httptest.NewRecorder()
+	engine.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("legacy JWT status=%d body=%s, want 401", rec.Code, rec.Body.String())
 	}
 }
 
@@ -333,6 +358,8 @@ func gatewayTestUserFixture(_ string) models.User {
 		AuditFields:   models.AuditFields{Guid: gatewayTestSnowflake.Next(), CreatedAt: now, UpdatedAt: now, IsDeleted: 0},
 		Phone:         gatewayTestPhone(),
 		Status:        models.UserStatusActive,
+		Role:          models.UserRoleUser,
+		AuthVersion:   1,
 		PlanType:      models.PlanFree,
 		AllowedModels: models.JSONSlice{},
 	}
@@ -347,7 +374,16 @@ func gatewayTestPhone() *string {
 
 func gatewayTestJWT(t *testing.T, state *app.State, user *models.User) string {
 	t.Helper()
-	token, err := security.CreateAccessToken(strconv.FormatInt(user.Guid, 10), state.Settings.JWTSecretKey, 10, nil)
+	if state.Sessions == nil {
+		t.Fatal("gateway test state must provide a real session service")
+	}
+	issued, err := state.Sessions.Create(context.Background(), user, service.SessionCreateInput{LoginMethod: models.LoginMethodPassword, IP: "198.51.100.100", UserAgent: "router-test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := security.CreateAccessToken(strconv.FormatInt(user.Guid, 10), state.Settings.JWTSecretKey, state.Settings.SessionAccessMinutes, map[string]interface{}{
+		"sid": issued.Session.SID, "sv": issued.Session.SessionVersion, "av": user.AuthVersion, "role": int(user.Role),
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -358,10 +394,16 @@ func newGatewayTestState(t *testing.T) *app.State {
 	t.Helper()
 	settings := &config.Settings{
 		AppEnv: "test", DatabaseURL: testDatabaseURL(t), AllowedHosts: "example.com",
-		JWTSecretKey: "test-secret", AdminToken: "admin-test",
+		JWTSecretKey: "test-secret", AdminToken: "admin-test", RedisURL: testRedisURL(t),
+		AuthHMACKey:          "test-auth-hmac-key-0123456789-ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+		SessionAccessMinutes: 15, SessionDays: 30, SessionMaxActive: 50, SessionIssueLimit24h: 100, RefreshReplaySeconds: 30,
 	}
 	gdb, err := db.Open(settings.DatabaseURL, "test")
 	if err != nil {
+		t.Fatal(err)
+	}
+	generator := persistence.NewSnowflake(1, persistence.SystemClock())
+	if err := migration.Up(context.Background(), gdb, generator.Next, func() int64 { return time.Now().UTC().UnixMilli() }); err != nil {
 		t.Fatal(err)
 	}
 	state, err := app.NewState(settings, gdb)
@@ -389,6 +431,15 @@ func testDatabaseURL(t *testing.T) string {
 	url := os.Getenv("TEST_DATABASE_URL")
 	if url == "" {
 		t.Skip("requires isolated TEST_DATABASE_URL MySQL fixture")
+	}
+	return url
+}
+
+func testRedisURL(t *testing.T) string {
+	t.Helper()
+	url := os.Getenv("TEST_REDIS_URL")
+	if url == "" {
+		t.Skip("requires explicitly configured TEST_REDIS_URL Redis fixture")
 	}
 	return url
 }
