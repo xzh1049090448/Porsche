@@ -36,9 +36,14 @@ func RegisterUsers(r *gin.Engine, state *app.State) {
 		}
 		_ = c.ShouldBindJSON(&body)
 		if body.Nickname != nil {
-			user.Nickname = body.Nickname
-			service.TouchAudit(&user.AuditFields, user.ID)
-			if err := state.DB.Save(user).Error; err != nil {
+			updated, err := state.Auth.UpdateOwnProfile(c.Request.Context(), user.ID, body.Nickname)
+			if err != nil {
+				code, message := service.StatusFromError(err)
+				httpx.AbortJSON(c, code, message)
+				return
+			}
+			user = updated
+			if user == nil {
 				httpx.AbortJSON(c, http.StatusInternalServerError, "更新用户失败")
 				return
 			}
@@ -80,13 +85,9 @@ func RegisterUsers(r *gin.Engine, state *app.State) {
 			httpx.AbortJSON(c, http.StatusNotImplemented, "实名认证需对接第三方核验服务，暂未开通")
 			return
 		}
-		user.RealName = &body.RealName
-		hash := service.HashIDCard(body.IDCard)
-		user.IDCardHash = &hash
-		user.IsVerified = true
-		service.TouchAudit(&user.AuditFields, user.ID)
-		if err := state.DB.Save(user).Error; err != nil {
-			httpx.AbortJSON(c, http.StatusInternalServerError, "更新认证信息失败")
+		if err := state.Auth.VerifyOwnIdentity(c.Request.Context(), user.ID, body.RealName, body.IDCard); err != nil {
+			code, message := service.StatusFromError(err)
+			httpx.AbortJSON(c, code, message)
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"message": "实名认证成功", "is_verified": true})

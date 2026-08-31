@@ -32,9 +32,11 @@ func TestNormalizeUsernameTrimsAndEnforcesLength(t *testing.T) {
 }
 
 func TestUsernameRegistrationPermanentlyReservesTrimmedUsername(t *testing.T) {
+	redisStore := openTestAuthRedis(t)
 	db := openTestMySQL(t)
 	prepareAuthRegistrationSchema(t, db)
 	auth := NewAuthService(&config.Settings{RegisterEnabled: true, PasswordRegisterEnabled: true}, nil, db)
+	auth.SetSessionService(NewSessionService(db, redisStore, testSessionSettings()))
 	created, err := auth.RegisterUsername(context.Background(), "  permanent_user  ", "Str0ng!pw", nil)
 	if err != nil {
 		t.Fatalf("register username: %v", err)
@@ -48,6 +50,94 @@ func TestUsernameRegistrationPermanentlyReservesTrimmedUsername(t *testing.T) {
 	if _, err := auth.RegisterUsername(context.Background(), "permanent_user", "Str0ng!pw", nil); err == nil {
 		t.Fatal("tombstoned username was reused")
 	}
+}
+
+// TestCurrentUserWritesRejectAccountsChangedAfterAuthentication protects the
+// interval after middleware has loaded a user and before a self-service write
+// acquires its transaction lock. Neither a disabled nor a soft-deleted user
+// may be revived by stale profile, identity-verification, or password data.
+func TestCurrentUserWritesRejectAccountsChangedAfterAuthentication(t *testing.T) {
+	for _, operation := range []struct {
+		name string
+		run  func(context.Context, *AuthService, *models.User) error
+	}{
+		{
+			name: "profile",
+			run: func(ctx context.Context, auth *AuthService, user *models.User) error {
+				nickname := "stale-profile"
+				_, err := auth.UpdateOwnProfile(ctx, user.ID, &nickname)
+				return err
+			},
+		},
+		{
+			name: "identity verification",
+			run: func(ctx context.Context, auth *AuthService, user *models.User) error {
+				return auth.VerifyOwnIdentity(ctx, user.ID, "Stale User", "11010519491231002X")
+			},
+		},
+		{
+			name: "password",
+			run: func(ctx context.Context, auth *AuthService, user *models.User) error {
+				return auth.ChangePassword(ctx, user.ID, changePasswordOld, changePasswordNew)
+			},
+		},
+	} {
+		for _, accountChange := range []struct {
+			name  string
+			apply func(*gorm.DB, *models.User) models.User
+		}{
+			{
+				name: "disabled",
+				apply: func(db *gorm.DB, user *models.User) models.User {
+					if err := db.Model(&models.User{}).Where("id = ?", user.ID).Update("status", models.UserStatusDisabled).Error; err != nil {
+						t.Fatal(err)
+					}
+					return loadAuthUserIncludingDeleted(t, db, user.ID)
+				},
+			},
+			{
+				name: "soft deleted",
+				apply: func(db *gorm.DB, user *models.User) models.User {
+					if err := db.Model(&models.User{}).Where("id = ?", user.ID).Updates(map[string]any{
+						"status": models.UserStatusDisabled, "is_deleted": 1, "phone": nil, "password_hash": nil,
+					}).Error; err != nil {
+						t.Fatal(err)
+					}
+					return loadAuthUserIncludingDeleted(t, db, user.ID)
+				},
+			},
+		} {
+			t.Run(operation.name+"/"+accountChange.name, func(t *testing.T) {
+				ctx, db, _, auth, user, _ := changePasswordFixture(t)
+				before := accountChange.apply(db, user)
+
+				if err := operation.run(ctx, auth, user); !isUnauthorized(err) {
+					t.Fatalf("%s after %s = %v, want unauthorized", operation.name, accountChange.name, err)
+				}
+
+				after := loadAuthUserIncludingDeleted(t, db, user.ID)
+				if after.Status != before.Status || after.AuthVersion != before.AuthVersion || after.IsDeleted != before.IsDeleted || !equalStringPointer(after.Phone, before.Phone) || !equalStringPointer(after.PasswordHash, before.PasswordHash) {
+					t.Fatalf("%s after %s changed protected columns: before=%#v after=%#v", operation.name, accountChange.name, before, after)
+				}
+			})
+		}
+	}
+}
+
+func loadAuthUserIncludingDeleted(t *testing.T, db *gorm.DB, userID int64) models.User {
+	t.Helper()
+	var user models.User
+	if err := db.Where("id = ?", userID).First(&user).Error; err != nil {
+		t.Fatal(err)
+	}
+	return user
+}
+
+func equalStringPointer(left, right *string) bool {
+	if left == nil || right == nil {
+		return left == right
+	}
+	return *left == *right
 }
 
 func TestRootBootstrapCreatesOnlyTheFirstRoot(t *testing.T) {

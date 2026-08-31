@@ -26,14 +26,14 @@ func (a *AuthService) ChangePassword(ctx context.Context, userID int64, oldPassw
 		return err
 	}
 	return a.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var user models.User
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ? AND is_deleted = 0", userID).First(&user).Error; err != nil {
-			return errUnauthorized("原密码错误")
+		user, err := a.lockActiveCurrentUser(tx, userID)
+		if err != nil {
+			return err
 		}
 		if user.PasswordHash == nil || !security.VerifyPassword(oldPassword, *user.PasswordHash) {
 			return errUnauthorized("原密码错误")
 		}
-		if err := a.revokeUserSessionsLocked(ctx, tx, &user, userID, models.AuthAuditEventSessionRevoked); err != nil {
+		if err := a.revokeUserSessionsLocked(ctx, tx, user, userID, models.AuthAuditEventSessionRevoked); err != nil {
 			return err
 		}
 		nextVersion := user.AuthVersion + 1
@@ -45,6 +45,71 @@ func (a *AuthService) ChangePassword(ctx context.Context, userID int64, oldPassw
 		}
 		return tx.Create(&models.AuthAuditEvent{AuditFields: auditFields(&userID), UserID: &userID, EventType: models.AuthAuditEventPasswordChanged}).Error
 	})
+}
+
+// UpdateOwnProfile changes only the authenticated user's mutable display
+// fields. The transaction re-loads the active, non-deleted account so a stale
+// middleware snapshot cannot restore security or credential columns.
+func (a *AuthService) UpdateOwnProfile(ctx context.Context, userID int64, nickname *string) (*models.User, error) {
+	if a == nil || a.db == nil {
+		return nil, errors.New("authentication service is unavailable")
+	}
+	var updated models.User
+	err := a.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		user, err := a.lockActiveCurrentUser(tx, userID)
+		if err != nil {
+			return err
+		}
+		if nickname != nil {
+			user.Nickname = nickname
+			TouchAudit(&user.AuditFields, userID)
+			if err := tx.Model(&models.User{}).Where("id = ? AND is_deleted = 0", user.ID).Updates(map[string]any{
+				"nickname": user.Nickname, "updated_at": user.UpdatedAt, "updated_by": user.UpdatedBy,
+			}).Error; err != nil {
+				return err
+			}
+		}
+		updated = *user
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &updated, nil
+}
+
+// VerifyOwnIdentity stores only identity-verification columns after locking
+// the current active account. It deliberately never writes a cached user row.
+func (a *AuthService) VerifyOwnIdentity(ctx context.Context, userID int64, realName, idCard string) error {
+	if a == nil || a.db == nil {
+		return errors.New("authentication service is unavailable")
+	}
+	return a.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		user, err := a.lockActiveCurrentUser(tx, userID)
+		if err != nil {
+			return err
+		}
+		hash := HashIDCard(idCard)
+		user.RealName = &realName
+		user.IDCardHash = &hash
+		user.IsVerified = true
+		TouchAudit(&user.AuditFields, userID)
+		return tx.Model(&models.User{}).Where("id = ? AND is_deleted = 0", user.ID).Updates(map[string]any{
+			"real_name": user.RealName, "id_card_hash": user.IDCardHash, "is_verified": user.IsVerified,
+			"updated_at": user.UpdatedAt, "updated_by": user.UpdatedBy,
+		}).Error
+	})
+}
+
+// lockActiveCurrentUser obtains the durable source of truth for a
+// self-service write. Authentication middleware is intentionally not a write
+// authority because user status or deletion may change after it runs.
+func (a *AuthService) lockActiveCurrentUser(tx *gorm.DB, userID int64) (*models.User, error) {
+	var user models.User
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ? AND is_deleted = 0", userID).First(&user).Error; err != nil || !user.Status.IsActive() {
+		return nil, errUnauthorized("账户不可用")
+	}
+	return &user, nil
 }
 
 // DisableUser disables a strictly lower-role account and revokes all of its
