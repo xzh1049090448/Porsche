@@ -43,7 +43,8 @@
 - 新增 `/api/v1/auth` 的用户名注册、登录、刷新、登出、本人资料、会话列表/本人撤销/撤销其他设备以及密码和实名入口；旧短信与固定账号端点继续明确返回 410。Access JWT 与 Refresh 均不在 DTO 或日志中回显，Refresh 仅通过 `porsche_refresh` 的 `HttpOnly; Secure; SameSite=Lax` Cookie 传输。
 - Refresh 与 logout 强制可信 HTTPS Origin，且请求携带 `X-Auth-Session` 时必须与 Cookie 的 SID 一致；会话 SID、内部 `id`/`user_id`、密码哈希和 Refresh HMAC 不会序列化。管理员列表/详情限定严格低角色，删除复用现有事务化软删除服务，Root/同级无法管理。
 - RED：新增认证路由/DTO 测试后，因 `dto.AuthUser` 和 `dto.AuthSession` 尚不存在而发生预期编译失败。GREEN：定向 handler/dto/middleware 测试、`go vet ./...` 和 `git diff --check` 通过。
-- 环境阻塞：未设置显式 `TEST_DATABASE_URL` 与 `TEST_REDIS_URL`，因此真实浏览器 Cookie/Origin、注册/登录/刷新/撤销和管理员角色 HTTP 集成流未验收；未读取 `.env`、`DATABASE_URL` 或生产凭据。全包 handler/service 测试在本受限沙箱因既有 `httptest` 无法监听 `[::1]` 而中止，不是 Task 5 断言失败。
+- 测试验收补充：`internal/handler/auth_sessions_integration_test.go` 的真实 HTTP 流仅使用显式 `TEST_DATABASE_URL` 与 `TEST_REDIS_URL`，并在迁移前强制数据库名为 `*_test` 或 `porsche_test`。它覆盖注册、登录、`/self`、会话列表、撤销其他设备、`X-Auth-Session` 与 Cookie SID 不一致拒绝、刷新后的 Access/Cookie SID 一致、登出清 Cookie 及旧 Access 拒绝；另覆盖管理员列表/详情的同级与 Root 拒绝、Root 对低角色放行和响应脱敏。
+- 环境阻塞：当前未设置显式 `TEST_DATABASE_URL` 与 `TEST_REDIS_URL`，所以新增真实 HTTP 用例显示 `SKIP`，尚未验收；未读取 `.env`、`DATABASE_URL` 或生产凭据。`GOCACHE=/private/tmp/porsche-go-build-cache go test ./internal/handler ./internal/dto ./internal/middleware -run 'Test(AuthSessionHTTPFlow|AdminUsersHTTPHierarchy|AuthSession|AdminUser|LegacyPhone|UserDTO|SessionClaims|MinimumRole)' -count=1`、相同包的 `go vet` 与 `git diff --check` 通过。未加筛选的 handler 包测试仍因既有 `httptest` 无法监听 `[::1]` 而中止，不是 Task 5 断言失败。
 
 `go-004`：JieKou AI 白牌上游接入（`blocked`）。真实部署环境 JieKou 冒烟待办；该外部验证完成前不得标记为通过。
 
