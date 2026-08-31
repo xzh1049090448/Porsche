@@ -60,11 +60,14 @@ frontend_root="$fixture_dir/www/porsche-web"
 manifest_dir="$fixture_dir/manifests"
 mock_dir="$fixture_dir/bin"
 command_log="$fixture_dir/commands.nul"
+run_count=0
 mkdir -p "$backend_dir/deploy" "$frontend_dir/.git" "$frontend_dir/dist" "$frontend_root" "$manifest_dir" "$mock_dir"
 printf 'APP_ENV=production\nREDIS_URL=redis://:fixture-only-password@porsche-redis:6379/0\nALLOWED_HOSTS=aiportcloud.com\nAUTH_TRUSTED_ORIGINS=https://aiportcloud.com\n' >"$backend_dir/.env"
 printf '<!doctype html><title>fixture</title>\n' >"$frontend_dir/dist/index.html"
 printf 'fixture-static\n' >"$frontend_root/index.html"
-printf 'fixture-only-password-that-is-longer-than-thirty-two-bytes\n' >"$fixture_dir/redis-password"
+printf '' >"$fixture_dir/redis-password-empty"
+printf 'too-short\n' >"$fixture_dir/redis-password-short"
+printf 'fixture-only-password-that-is-longer-than-thirty-two-bytes\n' >"$fixture_dir/redis-password-valid"
 touch "$backend_dir/.git"
 
 if ! docker image inspect bash:5.2 >/dev/null 2>&1; then
@@ -102,7 +105,7 @@ assert_fixture_entrypoint() {
     [[ -x "$fixture_script" ]] || fail "missing fixture entrypoint: $fixture_script"
 }
 
-mocked_commands=(docker git npm rsync nginx systemctl flock id mktemp stat rm mkdir chmod chown install cp mv sleep grep sed awk dirname basename readlink curl date find sort wc cut head tail tr)
+mocked_commands=(docker git npm rsync nginx systemctl flock id curl sleep)
 
 # NUL command log protocol: BEGIN/call-id, ARG/value pairs, END/call-id.
 # Both spaces and the literal __END__ are ordinary argument values.
@@ -117,7 +120,7 @@ write_mock() {
         'case "$command_name" in' \
         '  id) [[ "${1:-}" == "-u" ]] && printf "0\\n" ;;' \
         '  git) case "${1:-}" in branch) printf "%s\\n" "${MOCK_BRANCH:-feature/user-registration-management}" ;; rev-parse) printf "%s\\n" "${MOCK_GIT_SHA:-fixture-sha}" ;; diff|status) [[ "${MOCK_GIT_DIRTY:-0}" == 0 ]] ;; esac ;;' \
-        '  docker) case "${1:-}" in network|container) [[ "${MOCK_DOCKER_INSPECT_RESULT:-success}" == success ]] ;; run) [[ "${MOCK_DOCKER_RUN_RESULT:-success}" == success ]] || exit 71; printf "fixture-container\\n" ;; esac ;;' \
+        '  docker) case "${1:-}" in network) [[ "${MOCK_DOCKER_INSPECT_RESULT:-success}" == success ]] ;; container) if [[ "${2:-}" == inspect && "${3:-}" == porsche-redis ]]; then [[ "${MOCK_REDIS_EXISTS:-0}" == 1 ]]; else [[ "${MOCK_DOCKER_INSPECT_RESULT:-success}" == success ]]; fi ;; run) [[ "${MOCK_DOCKER_RUN_RESULT:-success}" == success ]] || exit 71; printf "fixture-container\\n" ;; esac ;;' \
         '  curl) [[ "${MOCK_HEALTH_RESULT:-success}" == success ]] || exit 72 ;;' \
         '  npm) [[ "${MOCK_NPM_RESULT:-success}" == success ]] || exit 73 ;;' \
         '  rsync) [[ "${MOCK_RSYNC_RESULT:-success}" == success ]] || exit 74 ;;' \
@@ -210,6 +213,7 @@ assert_no_dangerous_calls() {
     for ((call_index = 0; call_index < ${#call_starts[@]}; call_index += 1)); do
         call_is_dangerous "$call_index" && fail "dangerous mocked invocation at call $call_index"
     done
+    return 0
 }
 
 docker_call_writes() {
@@ -232,6 +236,7 @@ assert_no_docker_or_rsync_writes() {
         command="$(call_command_basename "$call_index")"
         [[ "$command" != rsync ]] || fail "unexpected rsync write after rejection at call $call_index"
     done
+    return 0
 }
 
 require_call() {
@@ -319,12 +324,14 @@ run_entrypoint() {
     local entrypoint="$1"
     shift
     assert_fixture_entrypoint "$entrypoint"
+    ((run_count += 1))
+    command_log="$fixture_dir/commands-$run_count.nul"
     : >"$command_log"
     docker run --rm --network none --read-only --cap-drop ALL \
         --security-opt no-new-privileges --tmpfs /tmp:rw,noexec,nosuid,nodev \
         --mount "type=bind,src=$fixture_dir,dst=/fixture" \
         --env PATH=/fixture/bin:/usr/local/bin:/usr/bin:/bin \
-        --env COMMAND_LOG=/fixture/commands.nul \
+        --env "COMMAND_LOG=/fixture/commands-$run_count.nul" \
         --env PORSCHE_AUTH_ACCEPTANCE_TEST_MODE=1 \
         --env PORSCHE_AUTH_ACCEPTANCE_BACKEND_DIR=/fixture/Porsche \
         --env PORSCHE_AUTH_ACCEPTANCE_FRONTEND_DIR=/fixture/Porsche-Web \
@@ -332,11 +339,12 @@ run_entrypoint() {
         --env PORSCHE_AUTH_ACCEPTANCE_MANIFEST_DIR=/fixture/manifests \
         --env PORSCHE_AUTH_ACCEPTANCE_REDIS_CONFIG_DIR=/fixture/redis-config \
         --env PORSCHE_AUTH_ACCEPTANCE_LOCK_FILE=/fixture/auth-acceptance.lock \
-        --env PORSCHE_AUTH_ACCEPTANCE_TEST_PASSWORD_FILE=/fixture/redis-password \
+        --env "PORSCHE_AUTH_ACCEPTANCE_TEST_PASSWORD_FILE=/fixture/${MOCK_PASSWORD_FILE_NAME:-redis-password-valid}" \
         --env "MOCK_BRANCH=${MOCK_BRANCH:-feature/user-registration-management}" \
         --env "MOCK_GIT_SHA=${MOCK_GIT_SHA:-fixture-sha}" \
         --env "MOCK_GIT_DIRTY=${MOCK_GIT_DIRTY:-0}" \
         --env "MOCK_DOCKER_INSPECT_RESULT=${MOCK_DOCKER_INSPECT_RESULT:-success}" \
+        --env "MOCK_REDIS_EXISTS=${MOCK_REDIS_EXISTS:-0}" \
         --env "MOCK_DOCKER_RUN_RESULT=${MOCK_DOCKER_RUN_RESULT:-success}" \
         --env "MOCK_HEALTH_RESULT=${MOCK_HEALTH_RESULT:-success}" \
         --env "MOCK_NPM_RESULT=${MOCK_NPM_RESULT:-success}" \
@@ -365,6 +373,15 @@ assert_bootstrap_creates_internal_redis() {
     assert_no_dangerous_calls
 }
 
+assert_bootstrap_rejects_invalid_passwords_and_existing_container() {
+    if MOCK_PASSWORD_FILE_NAME=redis-password-empty run_bootstrap; then fail 'bootstrap accepted an empty Redis password'; fi
+    assert_no_docker_or_rsync_writes
+    if MOCK_PASSWORD_FILE_NAME=redis-password-short run_bootstrap; then fail 'bootstrap accepted a short Redis password'; fi
+    assert_no_docker_or_rsync_writes
+    if MOCK_REDIS_EXISTS=1 run_bootstrap; then fail 'bootstrap accepted an existing Redis container'; fi
+    assert_no_docker_or_rsync_writes
+}
+
 assert_deploy_refuses_main_or_dirty_checkout_without_writes() {
     if MOCK_BRANCH=main run_deploy; then fail 'deployment accepted main'; fi
     assert_no_docker_or_rsync_writes
@@ -385,7 +402,7 @@ assert_candidate_failure_restores_old_application() {
 # Unreachable until target scripts exist; later tasks turn these contracts green.
 for selected_check in "${selected_checks[@]}"; do
     case "$selected_check" in
-        bootstrap) assert_bootstrap_creates_internal_redis ;;
+        bootstrap) assert_bootstrap_rejects_invalid_passwords_and_existing_container; assert_bootstrap_creates_internal_redis ;;
         migration) run_migration ;;
         deploy) assert_deploy_refuses_main_or_dirty_checkout_without_writes; assert_candidate_failure_restores_old_application ;;
         rollback) run_rollback ;;
