@@ -87,16 +87,78 @@ for check in bootstrap migration deploy rollback; do
 done
 
 entrypoint_has_no_absolute_command_bypass() {
-    local entrypoint="$1" line line_number=0
+    local entrypoint="$1" line line_number=0 length index character next_character quote='' token='' command_expected=1 substitution
     while IFS= read -r line || [[ -n "$line" ]]; do
         ((line_number += 1))
         [[ "$line" =~ ^[[:space:]]*$ || "$line" =~ ^[[:space:]]*# ]] && continue
-        case "$line" in
-            *'/usr/bin/docker'*|*'/usr/local/bin/docker'*|*'/usr/bin/rsync'*|*'/usr/local/bin/rsync'*|*'/usr/bin/mysql'*|*'/usr/local/bin/mysql'*|*'/usr/bin/mariadb'*|*'/usr/local/bin/mariadb'*|*'/usr/bin/docker-compose'*|*'/usr/local/bin/docker-compose'*)
-                echo "absolute command bypass in $entrypoint:$line_number" >&2
-                return 1
-                ;;
-        esac
+        length="${#line}"; quote=''; token=''; command_expected=1; index=0
+        while (( index < length )); do
+            character="${line:index:1}"
+            if [[ -n "$quote" ]]; then
+                if [[ "$character" == '\\' && "$quote" == '"' && $((index + 1)) -lt $length ]]; then
+                    ((index += 1)); token+="${line:index:1}"
+                elif [[ "$character" == "$quote" ]]; then
+                    quote=''
+                else
+                    token+="$character"
+                fi
+                ((index += 1)); continue
+            fi
+            case "$character" in
+                "'"|'"') quote="$character" ;;
+                '\\')
+                    if (( index + 1 < length )); then ((index += 1)); token+="${line:index:1}"; fi
+                    ;;
+                '#') [[ -z "$token" ]] && break; token+="$character" ;;
+                '$')
+                    next_character="${line:index+1:1}"
+                    if [[ "$next_character" == '(' ]]; then
+                        substitution="${line:index+2}"
+                        while [[ "$substitution" == [[:space:]]* ]]; do substitution="${substitution:1}"; done
+                        case "$substitution" in
+                            /*|source[[:space:]]*|.[[:space:]]*)
+                                echo "command-substitution bypass in $entrypoint:$line_number" >&2
+                                return 1
+                                ;;
+                        esac
+                    fi
+                    token+="$character"
+                    ;;
+                ';'|'|'|'&')
+                    if [[ -n "$token" ]]; then
+                        if (( command_expected )); then
+                            case "$token" in
+                                if|then|elif|else|do|done|'!') ;;
+                                /*|source|.) echo "command bypass in $entrypoint:$line_number" >&2; return 1 ;;
+                                *) command_expected=0 ;;
+                            esac
+                        fi
+                        token=''
+                    fi
+                    command_expected=1
+                    ;;
+                [[:space:]])
+                    if [[ -n "$token" ]]; then
+                        if (( command_expected )); then
+                            case "$token" in
+                                if|then|elif|else|do|done|'!') ;;
+                                /*|source|.) echo "command bypass in $entrypoint:$line_number" >&2; return 1 ;;
+                                *) command_expected=0 ;;
+                            esac
+                        fi
+                        token=''
+                    fi
+                    ;;
+                *) token+="$character" ;;
+            esac
+            ((index += 1))
+        done
+        if [[ -n "$token" && $command_expected -eq 1 ]]; then
+            case "$token" in
+                if|then|elif|else|do|done|'!') ;;
+                /*|source|.) echo "command bypass in $entrypoint:$line_number" >&2; return 1 ;;
+            esac
+        fi
     done <"$entrypoint"
 }
 
@@ -110,14 +172,18 @@ assert_fixture_entrypoint() {
 }
 
 assert_static_bypass_guard() {
-    local bypass_script="$backend_dir/deploy/fixture-absolute-bypass.sh"
+    local bypass_script="$backend_dir/deploy/fixture-absolute-bypass.sh" bypass_line
     : >"$command_log"
-    printf '%s\n' '#!/usr/bin/env bash' '# comment: /usr/bin/docker is ignored' '/usr/bin/docker run fixture' >"$bypass_script"
-    chmod +x "$bypass_script"
-    if entrypoint_has_no_absolute_command_bypass "$bypass_script" >"$fixture_dir/bypass.stdout" 2>"$fixture_dir/bypass.stderr"; then
-        fail 'absolute Docker path bypass was accepted'
-    fi
-    [[ ! -s "$command_log" ]] || fail 'static bypass scan executed a command'
+    for bypass_line in '/opt/homebrew/bin/docker run fixture' '$(/custom/bin/rsync --archive source destination)' '. ./helper.sh'; do
+        printf '%s\n' '#!/usr/bin/env bash' '# comment: /opt/homebrew/bin/docker is ignored' "$bypass_line" >"$bypass_script"
+        chmod +x "$bypass_script"
+        if entrypoint_has_no_absolute_command_bypass "$bypass_script" >"$fixture_dir/bypass.stdout" 2>"$fixture_dir/bypass.stderr"; then
+            fail "fixture command bypass was accepted: $bypass_line"
+        fi
+        [[ ! -s "$command_log" ]] || fail 'static bypass scan executed a command'
+    done
+    printf '%s\n' '#!/usr/bin/env bash' 'docker --env-file /opt/Porsche/.env inspect fixture' >"$bypass_script"
+    entrypoint_has_no_absolute_command_bypass "$bypass_script" || fail 'guard rejected an absolute command argument'
     rm -f -- "$bypass_script"
 }
 
