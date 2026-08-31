@@ -1,39 +1,36 @@
 #!/usr/bin/env bash
-# Behavioural RED contract for the isolated auth acceptance deployment tools.
+# Behavioural RED contract for isolated auth acceptance deployment tools.
 set -Eeuo pipefail
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 source_repo="$(cd -- "$script_dir/.." && pwd)"
-source_env_fixture=''
-if [[ "${PORSCHE_AUTH_ACCEPTANCE_TEST_SOURCE_ENV_REGRESSION:-0}" == 1 ]]; then
-    source_env_fixture="$(mktemp -d "${TMPDIR:-/tmp}/auth-acceptance-source-env.XXXXXX")"
-    source_repo="$source_env_fixture"
-    printf 'fixture-only-source-env\n' >"$source_repo/.env"
-fi
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
-source_env_state() {
-    local source_env="$source_repo/.env"
-    if [[ ! -e "$source_env" ]]; then
+env_state_for() {
+    local env_path="$1"
+    if [[ ! -e "$env_path" ]]; then
         printf '%s\n' absent
-    elif stat -f '%i:%m:%z' "$source_env" >/dev/null 2>&1; then
-        printf 'present:%s\n' "$(stat -f '%i:%m:%z' "$source_env")"
+    elif stat -f '%i:%m:%z' "$env_path" >/dev/null 2>&1; then
+        printf 'present:%s\n' "$(stat -f '%i:%m:%z' "$env_path")"
     else
-        printf 'present:%s\n' "$(stat -c '%i:%Y:%s' "$source_env")"
+        printf 'present:%s\n' "$(stat -c '%i:%Y:%s' "$env_path")"
     fi
 }
 
-source_env_before="$(source_env_state)"
+# The source checkout is audit-only: it is never an entrypoint root or an env
+# source. The fixture records only source .env metadata, never its contents.
+source_env_before="$(env_state_for "$source_repo/.env")"
 fixture_dir=''
+source_env_probe=''
 cleanup() {
     local exit_status=$? source_env_after
-    source_env_after="$(source_env_state)"
+    source_env_after="$(env_state_for "$source_repo/.env")"
     if [[ "$source_env_after" != "$source_env_before" ]]; then
         echo 'FAIL: fixture changed source-repository .env metadata' >&2
         exit_status=1
     fi
     [[ -z "$fixture_dir" ]] || rm -rf -- "$fixture_dir"
-    [[ -z "$source_env_fixture" ]] || rm -rf -- "$source_env_fixture"
+    [[ -z "$source_env_probe" ]] || rm -rf -- "$source_env_probe"
     trap - EXIT
     exit "$exit_status"
 }
@@ -44,10 +41,7 @@ if (( ${#selected_checks[@]} == 0 )); then
     selected_checks=(bootstrap migration deploy rollback)
 fi
 for selected_check in "${selected_checks[@]}"; do
-    case "$selected_check" in
-        bootstrap|migration|deploy|rollback) ;;
-        *) fail "unknown check: $selected_check" ;;
-    esac
+    case "$selected_check" in bootstrap|migration|deploy|rollback) ;; *) fail "unknown check: $selected_check" ;; esac
 done
 
 script_for_check() {
@@ -58,21 +52,6 @@ script_for_check() {
         rollback) printf '%s\n' auth-acceptance-rollback.sh ;;
     esac
 }
-
-# Keep the first RED failure legible while none of the production entry points
-# exists. Task 2 onward must make these contracts executable rather than change
-# the fixture to manufacture a pass.
-for selected_check in "${selected_checks[@]}"; do
-    required_script="$(script_for_check "$selected_check")"
-    [[ -x "$script_dir/$required_script" ]] || fail "missing required script: deploy/$required_script"
-done
-
-for selected_check in "${selected_checks[@]}"; do
-    required_script="$(script_for_check "$selected_check")"
-    ! grep -Eqi 'compose[[:space:]]+down|docker[[:space:]].*prune|volume[[:space:]]+rm|network[[:space:]]+rm|mysql[[:space:]].*DROP' "$script_dir/$required_script" || {
-        fail "forbidden destructive operation in deploy/$required_script"
-    }
-done
 
 fixture_dir="$(mktemp -d "${TMPDIR:-/tmp}/auth-acceptance-deploy-test.XXXXXX")"
 backend_dir="$fixture_dir/Porsche"
@@ -88,82 +67,199 @@ printf 'fixture-static\n' >"$frontend_root/index.html"
 printf 'fixture-only-password-that-is-longer-than-thirty-two-bytes\n' >"$fixture_dir/redis-password"
 touch "$backend_dir/.git"
 
-# Every mock appends command name, argv, and an end marker as NUL fields. The
-# fixture never invokes a real Docker/Git mutation, nor reads any real secret.
+# This is a metadata-only regression probe, not an entrypoint root. It proves
+# that an existing source-like .env is not rejected or read by this fixture.
+if [[ "${PORSCHE_AUTH_ACCEPTANCE_TEST_SOURCE_ENV_REGRESSION:-0}" == 1 ]]; then
+    source_env_probe="$(mktemp -d "${TMPDIR:-/tmp}/auth-acceptance-source-env.XXXXXX")"
+    printf 'fixture-only-source-env\n' >"$source_env_probe/.env"
+    probe_before="$(env_state_for "$source_env_probe/.env")"
+    [[ "$probe_before" == present:* ]] || fail 'source-env metadata probe did not observe .env'
+    [[ "$(env_state_for "$source_env_probe/.env")" == "$probe_before" ]] || fail 'source-env metadata probe changed .env'
+fi
+
+# Existing target scripts are linked into the fake checkout. Future calls use
+# these paths exclusively, so BASH_SOURCE-based root lookup sees $backend_dir.
+for check in bootstrap migration deploy rollback; do
+    script_name="$(script_for_check "$check")"
+    source_script="$script_dir/$script_name"
+    fixture_script="$backend_dir/deploy/$script_name"
+    [[ ! -x "$source_script" ]] || ln -s "$source_script" "$fixture_script"
+done
+
+assert_fixture_entrypoint() {
+    local script_name="$1" fixture_script="$backend_dir/deploy/$1"
+    [[ "$fixture_script" == "$backend_dir/deploy/"* ]] || fail "fixture entrypoint escapes fake backend: $fixture_script"
+    [[ "$fixture_script" != "$source_repo/"* ]] || fail "fixture entrypoint uses source repository: $fixture_script"
+    [[ "$backend_dir/.env" != "$source_repo/.env" ]] || fail 'fixture .env aliases source-repository .env'
+    [[ -x "$fixture_script" ]] || fail "missing fixture entrypoint: $fixture_script"
+}
+
+# NUL command log protocol: BEGIN/call-id, ARG/value pairs, END/call-id.
+# Both spaces and the literal __END__ are ordinary argument values.
 write_mock() {
     local command_name="$1"
     printf '%s\n' '#!/usr/bin/env bash' 'set -Eeuo pipefail' \
-        'command_name="$(basename -- "$0")"' \
-        'printf "%s\\0" "$command_name" "$@" "__END__" >>"$COMMAND_LOG"' \
+        'command_name="${0##*/}"' \
+        'call_id="${BASHPID:-$$}-${RANDOM}"' \
+        'printf "BEGIN\\0%s\\0ARG\\0%s\\0" "$call_id" "$command_name" >>"$COMMAND_LOG"' \
+        'for arg in "$@"; do printf "ARG\\0%s\\0" "$arg" >>"$COMMAND_LOG"; done' \
+        'printf "END\\0%s\\0" "$call_id" >>"$COMMAND_LOG"' \
         'case "$command_name" in' \
         '  id) [[ "${1:-}" == "-u" ]] && printf "0\\n" ;;' \
-        '  git)' \
-        '    case "${1:-}" in' \
-        '      branch) printf "%s\\n" "${MOCK_BRANCH:-feature/user-registration-management}" ;;' \
-        '      rev-parse) printf "%s\\n" "${MOCK_GIT_SHA:-fixture-sha}" ;;' \
-        '      diff|status) [[ "${MOCK_GIT_DIRTY:-0}" == 0 ]] ;;' \
-        '    esac ;;' \
-        '  docker)' \
-        '    case "${1:-}" in' \
-        '      network|container) [[ "${MOCK_DOCKER_INSPECT_RESULT:-success}" == success ]] ;;' \
-        '      run) [[ "${MOCK_DOCKER_RUN_RESULT:-success}" == success ]] || exit 71; printf "fixture-container\\n" ;;' \
-        '    esac ;;' \
-        '  curl) [[ "${MOCK_HEALTH_RESULT:-success}" == success ]] || exit 28 ;;' \
-        '  npm) [[ "${MOCK_NPM_RESULT:-success}" == success ]] || exit 72 ;;' \
-        '  rsync) [[ "${MOCK_RSYNC_RESULT:-success}" == success ]] || exit 73 ;;' \
-        '  nginx) [[ "${MOCK_NGINX_RESULT:-success}" == success ]] || exit 74 ;;' \
-        '  systemctl) [[ "${MOCK_SYSTEMCTL_RESULT:-success}" == success ]] || exit 75 ;;' \
-        '  flock) [[ "${MOCK_FLOCK_RESULT:-success}" == success ]] || exit 76 ;;' \
+        '  git) case "${1:-}" in branch) printf "%s\\n" "${MOCK_BRANCH:-feature/user-registration-management}" ;; rev-parse) printf "%s\\n" "${MOCK_GIT_SHA:-fixture-sha}" ;; diff|status) [[ "${MOCK_GIT_DIRTY:-0}" == 0 ]] ;; esac ;;' \
+        '  docker) case "${1:-}" in network|container) [[ "${MOCK_DOCKER_INSPECT_RESULT:-success}" == success ]] ;; run) [[ "${MOCK_DOCKER_RUN_RESULT:-success}" == success ]] || exit 71; printf "fixture-container\\n" ;; esac ;;' \
+        '  curl) [[ "${MOCK_HEALTH_RESULT:-success}" == success ]] || exit 72 ;;' \
+        '  npm) [[ "${MOCK_NPM_RESULT:-success}" == success ]] || exit 73 ;;' \
+        '  rsync) [[ "${MOCK_RSYNC_RESULT:-success}" == success ]] || exit 74 ;;' \
+        '  nginx) [[ "${MOCK_NGINX_RESULT:-success}" == success ]] || exit 75 ;;' \
+        '  systemctl) [[ "${MOCK_SYSTEMCTL_RESULT:-success}" == success ]] || exit 76 ;;' \
+        '  flock) [[ "${MOCK_FLOCK_RESULT:-success}" == success ]] || exit 77 ;;' \
         'esac' >"$mock_dir/$command_name"
     chmod +x "$mock_dir/$command_name"
 }
-for command_name in git docker npm rsync nginx systemctl flock id curl sleep; do
-    write_mock "$command_name"
-done
+for command_name in git docker docker-compose mysql mariadb npm rsync nginx systemctl flock id curl sleep; do write_mock "$command_name"; done
 
-read_calls() {
-    calls=()
-    local field current=''
-    while IFS= read -r -d '' field; do
-        if [[ "$field" == '__END__' ]]; then
-            calls+=("$current")
-            current=''
-        else
-            current+="${current:+ }$field"
-        fi
+parse_calls() {
+    call_starts=() call_lengths=() call_ids=() call_argv=()
+    local marker value call_id='' call_start=0 call_length=0 in_call=0
+    while IFS= read -r -d '' marker; do
+        case "$marker" in
+            BEGIN)
+                (( in_call == 0 )) || fail 'nested BEGIN in mock command log'
+                IFS= read -r -d '' call_id || fail 'truncated BEGIN call id'
+                call_start="${#call_argv[@]}"; call_length=0; in_call=1
+                ;;
+            ARG)
+                (( in_call == 1 )) || fail 'ARG outside mock call'
+                IFS= read -r -d '' value || fail 'truncated ARG value'
+                call_argv+=("$value"); ((call_length += 1))
+                ;;
+            END)
+                (( in_call == 1 )) || fail 'END outside mock call'
+                IFS= read -r -d '' value || fail 'truncated END call id'
+                [[ "$value" == "$call_id" ]] || fail 'mismatched END call id'
+                call_ids+=("$call_id"); call_starts+=("$call_start"); call_lengths+=("$call_length"); in_call=0
+                ;;
+            *) fail "unknown mock log marker: $marker" ;;
+        esac
     done <"$command_log"
+    (( in_call == 0 )) || fail 'unterminated mock call'
 }
 
-require_call() {
-    local expected="$1" call
-    read_calls
-    for call in "${calls[@]-}"; do
-        [[ "$call" == *"$expected"* ]] && return 0
+call_has_prefix() {
+    local call_index="$1" start length offset expected
+    shift
+    start="${call_starts[$call_index]}"; length="${call_lengths[$call_index]}"
+    (( $# <= length )) || return 1
+    offset=0
+    for expected in "$@"; do
+        [[ "${call_argv[$((start + offset))]}" == "$expected" ]] || return 1
+        ((offset += 1))
     done
-    fail "missing expected mock invocation: $expected"
 }
 
-forbid_call() {
-    local forbidden="$1" call
-    read_calls
-    for call in "${calls[@]-}"; do
-        [[ "$call" == *"$forbidden"* ]] && fail "forbidden mock invocation: $call"
+call_has_token() {
+    local call_index="$1" expected="$2" start length offset
+    start="${call_starts[$call_index]}"; length="${call_lengths[$call_index]}"
+    for ((offset = 0; offset < length; offset += 1)); do
+        [[ "${call_argv[$((start + offset))]}" == "$expected" ]] && return 0
     done
+    return 1
+}
+
+call_is_dangerous() {
+    local call_index="$1" start length command offset token
+    start="${call_starts[$call_index]}"; length="${call_lengths[$call_index]}"
+    command="${call_argv[$start]}"
+    [[ "$command" == /* && "${command##*/}" == docker ]] && return 0
+    call_has_prefix "$call_index" docker compose down && return 0
+    call_has_prefix "$call_index" docker-compose down && return 0
+    call_has_prefix "$call_index" docker volume rm && return 0
+    call_has_prefix "$call_index" docker network rm && return 0
+    if [[ "$command" == docker ]]; then
+        for ((offset = 1; offset < length; offset += 1)); do
+            [[ "${call_argv[$((start + offset))]}" == prune ]] && return 0
+        done
+    fi
+    if [[ "$command" == mysql || "$command" == mariadb ]]; then
+        for ((offset = 1; offset < length; offset += 1)); do
+            token="${call_argv[$((start + offset))]}"
+            case "$token" in [Dd][Rr][Oo][Pp]) return 0 ;; esac
+        done
+    fi
+    return 1
+}
+
+assert_no_dangerous_calls() {
+    local call_index
+    parse_calls
+    for ((call_index = 0; call_index < ${#call_starts[@]}; call_index += 1)); do
+        call_is_dangerous "$call_index" && fail "dangerous mocked invocation at call $call_index"
+    done
+}
+
+docker_call_writes() {
+    local call_index="$1" start command verb subverb
+    start="${call_starts[$call_index]}"; command="${call_argv[$start]}"
+    [[ "$command" == docker || "$command" == docker-compose || ( "$command" == /* && "${command##*/}" == docker ) ]] || return 1
+    verb="${call_argv[$((start + 1))]:-}"
+    case "$verb" in
+        build|run|create|start|stop|restart|kill|pause|unpause|rename|rm) return 0 ;;
+        container|compose|volume|network|image)
+            subverb="${call_argv[$((start + 2))]:-}"
+            case "$subverb" in create|up|down|start|stop|restart|kill|rm|prune) return 0 ;; esac
+            ;;
+    esac
+    return 1
 }
 
 assert_no_docker_or_rsync_writes() {
-    local call
-    read_calls
-    for call in "${calls[@]-}"; do
-        [[ "$call" == docker\ build* || "$call" == docker\ run* || "$call" == docker\ stop* || "$call" == docker\ rename* || "$call" == docker\ rm* || "$call" == rsync\ * ]] && {
-            fail "unexpected write after rejected deployment: $call"
-        }
+    local call_index start command
+    parse_calls
+    for ((call_index = 0; call_index < ${#call_starts[@]}; call_index += 1)); do
+        docker_call_writes "$call_index" && fail "unexpected Docker write after rejection at call $call_index"
+        start="${call_starts[$call_index]}"; command="${call_argv[$start]}"
+        [[ "$command" != rsync ]] || fail "unexpected rsync write after rejection at call $call_index"
     done
 }
+
+require_call() {
+    local call_index
+    parse_calls
+    for ((call_index = 0; call_index < ${#call_starts[@]}; call_index += 1)); do
+        call_has_prefix "$call_index" "$@" && return 0
+    done
+    fail "missing expected mock invocation: $*"
+}
+
+assert_log_protocol_preserves_argv() {
+    : >"$command_log"
+    COMMAND_LOG="$command_log" "$mock_dir/docker" run --label 'a b' '__END__' >/dev/null
+    parse_calls
+    [[ "${#call_starts[@]}" == 1 ]] || fail 'mock protocol did not produce one call'
+    call_has_prefix 0 docker run --label 'a b' '__END__' || fail 'mock protocol flattened or terminated an argv value'
+    [[ "${call_lengths[0]}" == 5 ]] || fail 'mock protocol lost argv boundaries'
+}
+
+assert_parser_detects_absolute_docker() {
+    : >"$command_log"
+    printf 'BEGIN\0synthetic\0ARG\0/usr/bin/docker\0ARG\0volume\0ARG\0rm\0ARG\0fixture\0END\0synthetic\0' >"$command_log"
+    parse_calls
+    call_is_dangerous 0 || fail 'parser did not flag absolute docker command'
+}
+
+assert_log_protocol_preserves_argv
+assert_parser_detects_absolute_docker
+
+# A missing production script must now be reported at the fake checkout path.
+for selected_check in "${selected_checks[@]}"; do
+    assert_fixture_entrypoint "$(script_for_check "$selected_check")"
+done
 
 run_entrypoint() {
     local entrypoint="$1"
     shift
+    assert_fixture_entrypoint "$entrypoint"
     : >"$command_log"
     PATH="$mock_dir:$PATH" COMMAND_LOG="$command_log" \
         PORSCHE_AUTH_ACCEPTANCE_TEST_MODE=1 \
@@ -174,47 +270,50 @@ run_entrypoint() {
         PORSCHE_AUTH_ACCEPTANCE_REDIS_CONFIG_DIR="$fixture_dir/redis-config" \
         PORSCHE_AUTH_ACCEPTANCE_LOCK_FILE="$fixture_dir/auth-acceptance.lock" \
         PORSCHE_AUTH_ACCEPTANCE_TEST_PASSWORD_FILE="$fixture_dir/redis-password" \
-        "$script_dir/$entrypoint" "$@"
+        "$backend_dir/deploy/$entrypoint" "$@"
 }
 
 run_bootstrap() { run_entrypoint bootstrap-auth-redis.sh; }
-run_migration() { run_entrypoint auth-acceptance-migrate.sh --confirm-auth-schema-migration; }
+run_migration() {
+    run_entrypoint auth-acceptance-migrate.sh --confirm-auth-schema-migration
+    assert_no_dangerous_calls
+}
 run_deploy() { run_entrypoint auth-acceptance-deploy.sh; }
-run_rollback() { run_entrypoint auth-acceptance-rollback.sh --confirm-auth-acceptance-rollback; }
+run_rollback() {
+    run_entrypoint auth-acceptance-rollback.sh --confirm-auth-acceptance-rollback
+    assert_no_dangerous_calls
+}
 
 assert_bootstrap_creates_internal_redis() {
     run_bootstrap
-    require_call 'docker volume create porsche-redis-data'
-    require_call 'docker run -d --name porsche-redis --restart unless-stopped --network porsche-app'
-    forbid_call 'docker run -p'
-    forbid_call 'docker run --publish'
+    require_call docker volume create porsche-redis-data
+    require_call docker run -d --name porsche-redis --restart unless-stopped --network porsche-app
+    assert_no_dangerous_calls
 }
 
 assert_deploy_refuses_main_or_dirty_checkout_without_writes() {
     if MOCK_BRANCH=main run_deploy; then fail 'deployment accepted main'; fi
     assert_no_docker_or_rsync_writes
+    assert_no_dangerous_calls
     if MOCK_GIT_DIRTY=1 run_deploy; then fail 'deployment accepted dirty checkout'; fi
     assert_no_docker_or_rsync_writes
+    assert_no_dangerous_calls
 }
 
 assert_candidate_failure_restores_old_application() {
     if MOCK_HEALTH_RESULT=failure run_deploy; then fail 'candidate unexpectedly healthy'; fi
-    require_call 'docker rm -f -- ai-gateway-go'
-    require_call 'docker rename -- ai-gateway-go-acceptance-rollback-'
-    require_call 'docker start -- ai-gateway-go'
-    forbid_call 'rsync --archive --delete --delay-updates'
+    require_call docker rm -f -- ai-gateway-go
+    require_call docker rename -- ai-gateway-go-acceptance-rollback-
+    require_call docker start -- ai-gateway-go
+    assert_no_dangerous_calls
 }
 
-# These are intentionally unreachable until the target production entry point
-# exists. They are the behavioral requirements that later tasks must turn green.
+# Unreachable until target scripts exist; later tasks turn these contracts green.
 for selected_check in "${selected_checks[@]}"; do
     case "$selected_check" in
         bootstrap) assert_bootstrap_creates_internal_redis ;;
         migration) run_migration ;;
-        deploy)
-            assert_deploy_refuses_main_or_dirty_checkout_without_writes
-            assert_candidate_failure_restores_old_application
-            ;;
+        deploy) assert_deploy_refuses_main_or_dirty_checkout_without_writes; assert_candidate_failure_restores_old_application ;;
         rollback) run_rollback ;;
     esac
 done
