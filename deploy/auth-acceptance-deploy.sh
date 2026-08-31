@@ -1,0 +1,121 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+(( $# == 0 )) || { echo 'auth-acceptance-deploy.sh accepts no arguments' >&2; exit 64; }
+[[ "$(id -u)" == 0 ]] || { echo 'auth-acceptance-deploy.sh must run as root' >&2; exit 1; }
+
+BACKEND_DIR=/opt/Porsche
+FRONTEND_DIR=/opt/Porsche-Web
+FRONTEND_ROOT=/var/www/porsche-web
+NETWORK=porsche-app
+APP_NAME=ai-gateway-go
+IMAGE_NAME=ai-gateway-go:auth-acceptance
+BACKEND_BRANCH=feature/user-registration-management
+FRONTEND_BRANCH=feature/session-auth-frontend
+LOCK_FILE=/var/lock/porsche-auth-acceptance.deploy.lock
+MANIFEST_DIR=/var/lib/porsche-auth-acceptance
+if [[ "${PORSCHE_AUTH_ACCEPTANCE_TEST_MODE:-0}" == 1 ]]; then
+    BACKEND_DIR="${PORSCHE_AUTH_ACCEPTANCE_BACKEND_DIR:?}"
+    FRONTEND_DIR="${PORSCHE_AUTH_ACCEPTANCE_FRONTEND_DIR:?}"
+    FRONTEND_ROOT="${PORSCHE_AUTH_ACCEPTANCE_FRONTEND_ROOT:?}"
+    LOCK_FILE="${PORSCHE_AUTH_ACCEPTANCE_LOCK_FILE:?}"
+    MANIFEST_DIR="${PORSCHE_AUTH_ACCEPTANCE_MANIFEST_DIR:?}"
+fi
+
+exec 9>"$LOCK_FILE"
+flock -n 9 || { echo 'another auth acceptance deployment is running' >&2; exit 1; }
+
+check_checkout() {
+    local dir="$1" branch="$2" current local_sha remote_sha status_output
+    cd "$dir"
+    current="$(git branch --show-current)"
+    [[ "$current" == "$branch" ]] || { echo "unexpected branch in $dir: $current" >&2; return 1; }
+    status_output="$(git status --porcelain --untracked-files=no)" || { echo "cannot inspect tracked changes in $dir" >&2; return 1; }
+    [[ -z "$status_output" ]] || { echo "tracked changes in $dir" >&2; return 1; }
+    git fetch origin "$branch"
+    local_sha="$(git rev-parse HEAD)"
+    remote_sha="$(git rev-parse "origin/$branch")"
+    [[ "$local_sha" == "$remote_sha" ]] || { echo "remote SHA mismatch in $dir" >&2; return 1; }
+}
+
+read_env_value() {
+    local key="$1"
+    sed -n "s/^${key}=//p" "$BACKEND_DIR/.env" | tail -n 1
+}
+
+[[ -f "$BACKEND_DIR/.env" ]] || { echo "missing $BACKEND_DIR/.env" >&2; exit 1; }
+check_checkout "$BACKEND_DIR" "$BACKEND_BRANCH"
+backend_sha="$(cd "$BACKEND_DIR" && git rev-parse HEAD)"
+check_checkout "$FRONTEND_DIR" "$FRONTEND_BRANCH"
+frontend_sha="$(cd "$FRONTEND_DIR" && git rev-parse HEAD)"
+[[ "$(read_env_value APP_ENV)" == production ]] || { echo 'APP_ENV must be production' >&2; exit 1; }
+[[ "$(read_env_value ALLOWED_HOSTS)" =~ (^|,)aiportcloud\.com(,|$) ]] || { echo 'ALLOWED_HOSTS must contain aiportcloud.com' >&2; exit 1; }
+[[ "$(read_env_value AUTH_TRUSTED_ORIGINS)" =~ (^|,)https://aiportcloud\.com(,|$) ]] || { echo 'AUTH_TRUSTED_ORIGINS must contain https://aiportcloud.com' >&2; exit 1; }
+[[ -n "$(read_env_value REDIS_URL)" ]] || { echo 'REDIS_URL is required' >&2; exit 1; }
+docker network inspect "$NETWORK" >/dev/null
+docker container inspect porsche-redis >/dev/null
+nginx -t
+
+cd "$FRONTEND_DIR"
+npm install --package-lock=false
+npm run build
+stage_dir="$(mktemp -d "${TMPDIR:-/tmp}/porsche-auth-stage.XXXXXX")"
+chmod 700 "$stage_dir"
+cp -a "$FRONTEND_DIR/dist/." "$stage_dir/"
+docker build --tag "$IMAGE_NAME" "$BACKEND_DIR"
+
+mkdir -p "$MANIFEST_DIR"
+chmod 700 "$MANIFEST_DIR"
+rollback_name="${APP_NAME}-acceptance-rollback-$(date +%s)"
+rollback_static=''
+manifest="$MANIFEST_DIR/rollback.env"
+old_renamed=0
+candidate_started=0
+static_changed=0
+cleanup() {
+    local status=$?
+    if (( status != 0 )); then
+        (( candidate_started == 0 )) || docker rm -f -- "$APP_NAME" >/dev/null 2>&1 || true
+        if (( old_renamed )); then
+            docker rename -- "$rollback_name" "$APP_NAME" >/dev/null 2>&1 || true
+            docker start -- "$APP_NAME" >/dev/null 2>&1 || true
+        fi
+        if (( static_changed )) && [[ -n "$rollback_static" ]]; then
+            rsync --archive --delete --delay-updates "$rollback_static/" "$FRONTEND_ROOT/" || true
+            systemctl reload nginx || true
+        fi
+        rm -f -- "$manifest"
+    fi
+    rm -rf -- "$stage_dir"
+    exit "$status"
+}
+trap cleanup EXIT
+
+if docker container inspect "$APP_NAME" >/dev/null 2>&1; then
+    docker stop -- "$APP_NAME"
+    docker rename -- "$APP_NAME" "$rollback_name"
+    old_renamed=1
+fi
+candidate_started=1
+docker run -d --name "$APP_NAME" --restart unless-stopped --network "$NETWORK" \
+    --env-file "$BACKEND_DIR/.env" -p 127.0.0.1:8000:8000 "$IMAGE_NAME" >/dev/null
+healthy=0
+for _ in $(seq 1 30); do
+    if curl --fail --silent --show-error --connect-timeout 2 --max-time 3 \
+        -H 'Host: aiportcloud.com' http://127.0.0.1:8000/health >/dev/null; then healthy=1; break; fi
+    sleep 1
+done
+(( healthy == 1 )) || { echo 'candidate health check failed' >&2; exit 1; }
+
+rollback_static="$(mktemp -d "$MANIFEST_DIR/static.XXXXXX")"
+cp -a "$FRONTEND_ROOT/." "$rollback_static/"
+umask 077
+printf 'ROLLBACK_CONTAINER=%s\nROLLBACK_STATIC=%s\nBACKEND_SHA=%s\nFRONTEND_SHA=%s\n' \
+    "$rollback_name" "$rollback_static" "$backend_sha" "$frontend_sha" >"$manifest"
+chmod 600 "$manifest"
+static_changed=1
+rsync --archive --delete --delay-updates "$stage_dir/" "$FRONTEND_ROOT/"
+systemctl reload nginx
+trap - EXIT
+rm -rf -- "$stage_dir"
+echo 'auth acceptance candidate deployed; database migration is not automatically rolled back'

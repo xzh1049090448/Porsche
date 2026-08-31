@@ -119,7 +119,7 @@ write_mock() {
         'printf "END\\0%s\\0" "$call_id" >>"$COMMAND_LOG"' \
         'case "$command_name" in' \
         '  id) [[ "${1:-}" == "-u" ]] && printf "0\\n" ;;' \
-        '  git) case "${1:-}" in branch) printf "%s\\n" "${MOCK_BRANCH:-feature/user-registration-management}" ;; rev-parse) printf "%s\\n" "${MOCK_GIT_SHA:-fixture-sha}" ;; diff|status) [[ "${MOCK_GIT_DIRTY:-0}" == 0 ]] ;; esac ;;' \
+        '  git) case "${1:-}" in branch) if [[ "$PWD" == */Porsche-Web ]]; then printf "%s\\n" "${MOCK_FRONTEND_BRANCH:-feature/session-auth-frontend}"; else printf "%s\\n" "${MOCK_BRANCH:-feature/user-registration-management}"; fi ;; rev-parse) if [[ "${2:-}" == origin/* && "${MOCK_REMOTE_MISMATCH:-0}" == 1 ]]; then printf "remote-sha\\n"; else printf "%s\\n" "${MOCK_GIT_SHA:-fixture-sha}"; fi ;; diff|status) [[ "${MOCK_GIT_DIRTY:-0}" == 0 ]] ;; esac ;;' \
         '  docker) case "${1:-}" in network) [[ "${MOCK_DOCKER_INSPECT_RESULT:-success}" == success ]] ;; container) if [[ "${2:-}" == inspect && "${3:-}" == porsche-redis ]]; then [[ "${MOCK_REDIS_EXISTS:-0}" == 1 ]]; else [[ "${MOCK_DOCKER_INSPECT_RESULT:-success}" == success ]]; fi ;; run) [[ "${MOCK_DOCKER_RUN_RESULT:-success}" == success ]] || exit 71; printf "fixture-container\\n" ;; esac ;;' \
         '  curl) [[ "${MOCK_HEALTH_RESULT:-success}" == success ]] || exit 72 ;;' \
         '  npm) [[ "${MOCK_NPM_RESULT:-success}" == success ]] || exit 73 ;;' \
@@ -248,6 +248,41 @@ require_call() {
     fail "missing expected mock invocation: $*"
 }
 
+require_candidate_rollback_renames() {
+    local call_index start target saw_save=0 saw_restore=0
+    parse_calls
+    for ((call_index = 0; call_index < ${#call_starts[@]}; call_index += 1)); do
+        start="${call_starts[$call_index]}"
+        if call_has_prefix "$call_index" docker rename -- ai-gateway-go; then
+            target="${call_argv[$((start + 4))]:-}"
+            [[ "$target" =~ ^ai-gateway-go-acceptance-rollback-[0-9]+$ ]] && saw_save=1
+        elif [[ "${call_lengths[$call_index]}" -ge 5 && "${call_argv[$start]}" == docker && "${call_argv[$((start + 1))]}" == rename && "${call_argv[$((start + 2))]}" == -- && "${call_argv[$((start + 3))]}" =~ ^ai-gateway-go-acceptance-rollback-[0-9]+$ && "${call_argv[$((start + 4))]}" == ai-gateway-go ]]; then
+            saw_restore=1
+        fi
+    done
+    (( saw_save == 1 && saw_restore == 1 )) || fail 'candidate failure did not save and restore the old application container'
+}
+
+call_index_with_prefix() {
+    local call_index
+    parse_calls
+    for ((call_index = 0; call_index < ${#call_starts[@]}; call_index += 1)); do
+        call_has_prefix "$call_index" "$@" && { printf '%s\n' "$call_index"; return 0; }
+    done
+    return 1
+}
+
+assert_before() {
+    local first second split=0 args=() first_args=() second_args=()
+    for arg in "$@"; do
+        if [[ "$arg" == ::: ]]; then split=1; continue; fi
+        (( split )) && second_args+=("$arg") || first_args+=("$arg")
+    done
+    first="$(call_index_with_prefix "${first_args[@]}")" || fail "missing ordered call: ${first_args[*]}"
+    second="$(call_index_with_prefix "${second_args[@]}")" || fail "missing ordered call: ${second_args[*]}"
+    (( first < second )) || fail "wrong call order: ${first_args[*]} must precede ${second_args[*]}"
+}
+
 assert_log_protocol_preserves_argv() {
     : >"$command_log"
     COMMAND_LOG="$command_log" "$mock_dir/docker" run --label 'a b' '__END__' >/dev/null
@@ -341,6 +376,8 @@ run_entrypoint() {
         --env PORSCHE_AUTH_ACCEPTANCE_LOCK_FILE=/fixture/auth-acceptance.lock \
         --env "PORSCHE_AUTH_ACCEPTANCE_TEST_PASSWORD_FILE=/fixture/${MOCK_PASSWORD_FILE_NAME:-redis-password-valid}" \
         --env "MOCK_BRANCH=${MOCK_BRANCH:-feature/user-registration-management}" \
+        --env "MOCK_FRONTEND_BRANCH=${MOCK_FRONTEND_BRANCH:-feature/session-auth-frontend}" \
+        --env "MOCK_REMOTE_MISMATCH=${MOCK_REMOTE_MISMATCH:-0}" \
         --env "MOCK_GIT_SHA=${MOCK_GIT_SHA:-fixture-sha}" \
         --env "MOCK_GIT_DIRTY=${MOCK_GIT_DIRTY:-0}" \
         --env "MOCK_DOCKER_INSPECT_RESULT=${MOCK_DOCKER_INSPECT_RESULT:-success}" \
@@ -366,8 +403,11 @@ assert_migration_requires_confirmation_without_writes() {
     if run_entrypoint auth-acceptance-migrate.sh --wrong-confirmation; then fail 'migration accepted wrong confirmation'; fi
     assert_no_docker_or_rsync_writes
 }
-run_deploy() { run_entrypoint auth-acceptance-deploy.sh; }
+run_deploy() { MOCK_REDIS_EXISTS=1 run_entrypoint auth-acceptance-deploy.sh; }
 run_rollback() {
+    if [[ ! -f "$manifest_dir/rollback.env" ]]; then
+        run_deploy
+    fi
     run_entrypoint auth-acceptance-rollback.sh --confirm-auth-acceptance-rollback
     assert_no_dangerous_calls
 }
@@ -400,9 +440,37 @@ assert_deploy_refuses_main_or_dirty_checkout_without_writes() {
 assert_candidate_failure_restores_old_application() {
     if MOCK_HEALTH_RESULT=failure run_deploy; then fail 'candidate unexpectedly healthy'; fi
     require_call docker rm -f -- ai-gateway-go
-    require_call docker rename -- ai-gateway-go-acceptance-rollback-
+    require_candidate_rollback_renames
     require_call docker start -- ai-gateway-go
     assert_no_dangerous_calls
+}
+
+assert_successful_deploy_order_and_manifest() {
+    run_deploy
+    assert_before npm run build ::: docker build --tag ai-gateway-go:auth-acceptance
+    assert_before nginx -t ::: docker stop -- ai-gateway-go
+    assert_before docker run -d --name ai-gateway-go ::: rsync --archive --delete --delay-updates
+    assert_before rsync --archive --delete --delay-updates ::: systemctl reload nginx
+    [[ -f "$manifest_dir/rollback.env" ]] || fail 'successful deployment did not create rollback manifest'
+    ! grep -Eq 'fixture-only-password|REDIS_URL|DATABASE_URL|JWT|SECRET' "$manifest_dir/rollback.env" || fail 'rollback manifest contains a secret value or key'
+}
+
+assert_deploy_preflight_failures_do_not_write() {
+    if MOCK_REMOTE_MISMATCH=1 run_deploy; then fail 'deployment accepted remote SHA mismatch'; fi
+    assert_no_docker_or_rsync_writes
+    if MOCK_REDIS_EXISTS=0 run_entrypoint auth-acceptance-deploy.sh; then fail 'deployment accepted missing Redis'; fi
+    assert_no_docker_or_rsync_writes
+    if MOCK_NGINX_RESULT=failure run_deploy; then fail 'deployment accepted invalid Nginx configuration'; fi
+    assert_no_docker_or_rsync_writes
+}
+
+assert_publish_failures_restore_application() {
+    if MOCK_RSYNC_RESULT=failure run_deploy; then fail 'deployment accepted static publish failure'; fi
+    require_call docker rm -f -- ai-gateway-go
+    require_candidate_rollback_renames
+    if MOCK_SYSTEMCTL_RESULT=failure run_deploy; then fail 'deployment accepted Nginx reload failure'; fi
+    require_call docker rm -f -- ai-gateway-go
+    require_candidate_rollback_renames
 }
 
 # Unreachable until target scripts exist; later tasks turn these contracts green.
@@ -410,7 +478,7 @@ for selected_check in "${selected_checks[@]}"; do
     case "$selected_check" in
         bootstrap) assert_bootstrap_rejects_invalid_passwords_and_existing_container; assert_bootstrap_creates_internal_redis ;;
         migration) assert_migration_requires_confirmation_without_writes; run_migration ;;
-        deploy) assert_deploy_refuses_main_or_dirty_checkout_without_writes; assert_candidate_failure_restores_old_application ;;
+        deploy) assert_deploy_refuses_main_or_dirty_checkout_without_writes; assert_deploy_preflight_failures_do_not_write; assert_candidate_failure_restores_old_application; assert_publish_failures_restore_application; assert_successful_deploy_order_and_manifest ;;
         rollback) run_rollback ;;
     esac
 done
