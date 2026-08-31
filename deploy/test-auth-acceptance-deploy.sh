@@ -124,7 +124,7 @@ entrypoint_has_no_absolute_command_bypass() {
                     fi
                     token+="$character"
                     ;;
-                ';'|'|'|'&')
+                ';'|'|'|'&'|'('|')')
                     if [[ -n "$token" ]]; then
                         if (( command_expected )); then
                             case "$token" in
@@ -136,6 +136,15 @@ entrypoint_has_no_absolute_command_bypass() {
                         token=''
                     fi
                     command_expected=1
+                    ;;
+                '{'|'}')
+                    # ${var} is an argument word, while a standalone brace is
+                    # a shell command-group boundary.
+                    if [[ -n "$token" ]]; then
+                        token+="$character"
+                    else
+                        command_expected=1
+                    fi
                     ;;
                 [[:space:]])
                     if [[ -n "$token" ]]; then
@@ -174,7 +183,7 @@ assert_fixture_entrypoint() {
 assert_static_bypass_guard() {
     local bypass_script="$backend_dir/deploy/fixture-absolute-bypass.sh" bypass_line
     : >"$command_log"
-    for bypass_line in '/opt/homebrew/bin/docker run fixture' '$(/custom/bin/rsync --archive source destination)' '. ./helper.sh'; do
+    for bypass_line in '/opt/homebrew/bin/docker run fixture' '$(/custom/bin/rsync --archive source destination)' '. ./helper.sh' '( /usr/bin/docker run fixture )' '{ /custom/bin/rsync --archive source destination; }' 'pattern) /srv/bin/docker run fixture ;;'; do
         printf '%s\n' '#!/usr/bin/env bash' '# comment: /opt/homebrew/bin/docker is ignored' "$bypass_line" >"$bypass_script"
         chmod +x "$bypass_script"
         if entrypoint_has_no_absolute_command_bypass "$bypass_script" >"$fixture_dir/bypass.stdout" 2>"$fixture_dir/bypass.stderr"; then
