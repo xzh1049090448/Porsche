@@ -360,6 +360,12 @@ run_migration() {
     run_entrypoint auth-acceptance-migrate.sh --confirm-auth-schema-migration
     assert_no_dangerous_calls
 }
+assert_migration_requires_confirmation_without_writes() {
+    if run_entrypoint auth-acceptance-migrate.sh; then fail 'migration accepted no confirmation'; fi
+    assert_no_docker_or_rsync_writes
+    if run_entrypoint auth-acceptance-migrate.sh --wrong-confirmation; then fail 'migration accepted wrong confirmation'; fi
+    assert_no_docker_or_rsync_writes
+}
 run_deploy() { run_entrypoint auth-acceptance-deploy.sh; }
 run_rollback() {
     run_entrypoint auth-acceptance-rollback.sh --confirm-auth-acceptance-rollback
@@ -403,7 +409,7 @@ assert_candidate_failure_restores_old_application() {
 for selected_check in "${selected_checks[@]}"; do
     case "$selected_check" in
         bootstrap) assert_bootstrap_rejects_invalid_passwords_and_existing_container; assert_bootstrap_creates_internal_redis ;;
-        migration) run_migration ;;
+        migration) assert_migration_requires_confirmation_without_writes; run_migration ;;
         deploy) assert_deploy_refuses_main_or_dirty_checkout_without_writes; assert_candidate_failure_restores_old_application ;;
         rollback) run_rollback ;;
     esac
