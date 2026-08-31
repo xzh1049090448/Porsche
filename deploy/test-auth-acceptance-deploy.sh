@@ -4,7 +4,40 @@ set -Eeuo pipefail
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 source_repo="$(cd -- "$script_dir/.." && pwd)"
+source_env_fixture=''
+if [[ "${PORSCHE_AUTH_ACCEPTANCE_TEST_SOURCE_ENV_REGRESSION:-0}" == 1 ]]; then
+    source_env_fixture="$(mktemp -d "${TMPDIR:-/tmp}/auth-acceptance-source-env.XXXXXX")"
+    source_repo="$source_env_fixture"
+    printf 'fixture-only-source-env\n' >"$source_repo/.env"
+fi
 fail() { echo "FAIL: $*" >&2; exit 1; }
+
+source_env_state() {
+    local source_env="$source_repo/.env"
+    if [[ ! -e "$source_env" ]]; then
+        printf '%s\n' absent
+    elif stat -f '%i:%m:%z' "$source_env" >/dev/null 2>&1; then
+        printf 'present:%s\n' "$(stat -f '%i:%m:%z' "$source_env")"
+    else
+        printf 'present:%s\n' "$(stat -c '%i:%Y:%s' "$source_env")"
+    fi
+}
+
+source_env_before="$(source_env_state)"
+fixture_dir=''
+cleanup() {
+    local exit_status=$? source_env_after
+    source_env_after="$(source_env_state)"
+    if [[ "$source_env_after" != "$source_env_before" ]]; then
+        echo 'FAIL: fixture changed source-repository .env metadata' >&2
+        exit_status=1
+    fi
+    [[ -z "$fixture_dir" ]] || rm -rf -- "$fixture_dir"
+    [[ -z "$source_env_fixture" ]] || rm -rf -- "$source_env_fixture"
+    trap - EXIT
+    exit "$exit_status"
+}
+trap cleanup EXIT
 
 selected_checks=("$@")
 if (( ${#selected_checks[@]} == 0 )); then
@@ -41,8 +74,6 @@ for selected_check in "${selected_checks[@]}"; do
     }
 done
 
-[[ ! -e "$source_repo/.env" ]] || fail 'fixture must not create a source-repository .env'
-
 fixture_dir="$(mktemp -d "${TMPDIR:-/tmp}/auth-acceptance-deploy-test.XXXXXX")"
 backend_dir="$fixture_dir/Porsche"
 frontend_dir="$fixture_dir/Porsche-Web"
@@ -56,8 +87,6 @@ printf '<!doctype html><title>fixture</title>\n' >"$frontend_dir/dist/index.html
 printf 'fixture-static\n' >"$frontend_root/index.html"
 printf 'fixture-only-password-that-is-longer-than-thirty-two-bytes\n' >"$fixture_dir/redis-password"
 touch "$backend_dir/.git"
-cleanup() { rm -rf -- "$fixture_dir"; }
-trap cleanup EXIT
 
 # Every mock appends command name, argv, and an end marker as NUL fields. The
 # fixture never invokes a real Docker/Git mutation, nor reads any real secret.
