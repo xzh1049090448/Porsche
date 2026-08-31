@@ -23,10 +23,11 @@ func RegisterOpenAIChat(r *gin.Engine, state *app.State) {
 func RegisterAdminUsers(r *gin.Engine, state *app.State) {
 	g := r.Group("/admin/users", middleware.RequireAdmin(state))
 	g.GET("", func(c *gin.Context) {
+		actor := middleware.CurrentUser(c)
 		skip := parseUintQuery(c, "skip", 0)
 		limit := parseUintQuery(c, "limit", 50)
 		status := c.Query("status")
-		q := state.DB.Where("is_deleted = 0").Order("created_at desc").Offset(skip).Limit(limit)
+		q := state.DB.Where("is_deleted = 0 AND role < ?", actor.Role).Order("created_at desc").Offset(skip).Limit(limit)
 		if status != "" {
 			parsed, ok := models.ParseUserStatus(status)
 			if !ok {
@@ -53,7 +54,32 @@ func RegisterAdminUsers(r *gin.Engine, state *app.State) {
 			httpx.AbortJSON(c, http.StatusNotFound, "用户不存在")
 			return
 		}
+		if err := service.CanManageUser(middleware.CurrentUser(c), &user); err != nil {
+			code, message := service.StatusFromError(err)
+			httpx.AbortJSON(c, code, message)
+			return
+		}
 		c.JSON(http.StatusOK, dto.AdminUser(&user))
+	})
+	// DELETE creates a tombstone through AuthService; the handler never issues
+	// a database write and Root/equal-role protection remains service-owned.
+	g.DELETE("/:guid", func(c *gin.Context) {
+		guid, err := strconv.ParseInt(c.Param("guid"), 10, 64)
+		if err != nil || guid <= 0 {
+			httpx.AbortJSON(c, http.StatusBadRequest, "无效用户标识")
+			return
+		}
+		var target models.User
+		if err := state.DB.Where("guid = ? AND is_deleted = 0", guid).First(&target).Error; err != nil {
+			httpx.AbortJSON(c, http.StatusNotFound, "用户不存在")
+			return
+		}
+		if err := state.Auth.SoftDeleteUser(c.Request.Context(), middleware.CurrentUserID(c), target.ID); err != nil {
+			code, message := service.StatusFromError(err)
+			httpx.AbortJSON(c, code, message)
+			return
+		}
+		c.Status(http.StatusNoContent)
 	})
 	g.PUT("/:guid", func(c *gin.Context) {
 		guid, _ := strconv.ParseInt(c.Param("guid"), 10, 64)

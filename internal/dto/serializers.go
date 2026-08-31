@@ -33,6 +33,39 @@ func UserProfile(user *models.User) map[string]interface{} {
 	}
 }
 
+// AuthUser serializes the minimal account identity safe for authentication
+// responses. It intentionally omits all internal identifiers and credentials.
+func AuthUser(user *models.User) map[string]interface{} {
+	if user == nil {
+		return map[string]interface{}{}
+	}
+	return map[string]interface{}{
+		"guid":     strconv.FormatInt(user.Guid, 10),
+		"username": user.Username,
+		"nickname": user.Nickname,
+		"role":     user.Role.String(),
+		"status":   user.Status.String(),
+	}
+}
+
+// AuthSession serializes a user-owned session without exposing the SID or any
+// refresh material. The caller supplies whether this is the current session.
+func AuthSession(session *models.Session, current bool) map[string]interface{} {
+	if session == nil {
+		return map[string]interface{}{}
+	}
+	return map[string]interface{}{
+		"guid":           strconv.FormatInt(session.Guid, 10),
+		"login_method":   session.LoginMethod.String(),
+		"ip":             session.IP,
+		"user_agent":     session.UserAgent,
+		"created_at":     FormatMillis(session.CreatedAt),
+		"last_active_at": FormatMillis(session.LastActiveAt),
+		"expires_at":     FormatMillis(session.ExpiresAt),
+		"current":        current,
+	}
+}
+
 func Message(msg models.Message) map[string]interface{} {
 	return map[string]interface{}{
 		"guid":       strconv.FormatInt(msg.Guid, 10),

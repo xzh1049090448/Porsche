@@ -261,6 +261,12 @@ func (a *AuthService) makeToken(user *models.User, session *models.Session) (str
 	})
 }
 
+// IssueAccessToken creates an Access JWT from the authoritative user and
+// session records after a successful refresh. It exposes no refresh material.
+func (a *AuthService) IssueAccessToken(user *models.User, session *models.Session) (string, error) {
+	return a.makeToken(user, session)
+}
+
 func HashIDCard(idCard string) string {
 	sum := sha256.Sum256([]byte(idCard))
 	return hex.EncodeToString(sum[:])

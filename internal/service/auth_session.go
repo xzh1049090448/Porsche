@@ -266,6 +266,25 @@ func (s *SessionService) RevokeOthers(ctx context.Context, userID int64, keepSID
 	})
 }
 
+// List returns only the caller's current, non-deleted, non-revoked sessions
+// for the supplied auth version. It never returns refresh credentials.
+func (s *SessionService) List(ctx context.Context, userID int64, authVersion int) ([]models.Session, error) {
+	if err := s.ready(); err != nil {
+		return nil, err
+	}
+	var sessions []models.Session
+	err := s.db.WithContext(ctx).Where("user_id = ? AND is_deleted = 0 AND revoked_at IS NULL AND expires_at > ?", userID, s.now()).Order("last_active_at DESC, id DESC").Limit(100).Find(&sessions).Error
+	if err != nil {
+		return nil, err
+	}
+	// Session rows do not persist auth_version; Validate enforces it per token.
+	// A non-positive version is never a valid authenticated caller.
+	if authVersion <= 0 {
+		return nil, errUnauthorized("认证会话无效")
+	}
+	return sessions, nil
+}
+
 // Validate confirms a session is not Redis-revoked, expired, soft-deleted, or
 // version-mismatched with the authenticated user's current auth version.
 func (s *SessionService) Validate(ctx context.Context, sid string, userID int64, sessionVersion, authVersion int) (*models.Session, error) {

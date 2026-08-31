@@ -11,8 +11,9 @@ import (
 )
 
 const (
-	ContextUserID = "user_id"
-	ContextUser   = "user"
+	ContextUserID     = "user_id"
+	ContextUser       = "user"
+	ContextSessionSID = "session_sid"
 )
 
 func InjectState(state *app.State) gin.HandlerFunc {
@@ -128,7 +129,16 @@ func authenticateUser(c *gin.Context, state *app.State) bool {
 	}
 	c.Set(ContextUserID, user.ID)
 	c.Set(ContextUser, &user)
+	c.Set(ContextSessionSID, sessionClaims.SID)
 	return true
+}
+
+// CurrentSessionSID returns the authenticated server session selector only for
+// request-local authorization checks; handlers must never serialize it.
+func CurrentSessionSID(c *gin.Context) string {
+	v, _ := c.Get(ContextSessionSID)
+	sid, _ := v.(string)
+	return sid
 }
 
 func CurrentUser(c *gin.Context) *models.User {

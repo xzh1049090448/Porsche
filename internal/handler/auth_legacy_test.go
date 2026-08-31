@@ -20,12 +20,4 @@ func TestLegacyPhoneAuthEndpointsAreGone(t *testing.T) {
 			t.Fatalf("%s status=%d, want %d", path, rec.Code, http.StatusGone)
 		}
 	}
-	for _, path := range []string{"/api/v1/auth/register", "/api/v1/auth/login"} {
-		req := httptest.NewRequest(http.MethodPost, path, nil)
-		rec := httptest.NewRecorder()
-		r.ServeHTTP(rec, req)
-		if rec.Code != http.StatusNotFound {
-			t.Fatalf("removed legacy path %s status=%d, want %d", path, rec.Code, http.StatusNotFound)
-		}
-	}
 }

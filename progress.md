@@ -2,7 +2,7 @@
 
 ## 当前唯一活动功能
 
-`go-006`：用户注册管理一期（`in_progress`）。Task 1–3 已完成配置、显式认证 schema 与可撤销会话基础；认证 HTTP 端点尚未实现。
+`go-006`：用户注册管理一期（`in_progress`）。Task 1–5 已完成配置、认证 schema、可撤销会话、用户名/RBAC 与 HTTP 端点；真实隔离 MySQL/Redis HTTP 验收及前端尚未完成。
 
 ## 用户注册管理一期 Task 1（2026-08-28）
 
@@ -37,6 +37,13 @@
 - P1 管理权限竞态修复：`mutateManagedUser` 在事务中锁定操作者后通过 `CanManageUser` 重新要求其为 active；即使请求先前已通过 `RequireAdmin`，随后被禁用的管理员也会收到 403，目标用户状态与 `auth_version` 保持不变。真实 MySQL/Redis 回归仅使用显式 `TEST_DATABASE_URL` 与 `TEST_REDIS_URL`；本地未设置时按安全规则跳过。
 - 验证：RED 阶段因缺少用户名函数与会话 claims parser 发生预期编译失败；GREEN 后 `GOCACHE=/private/tmp/porsche-go-build-cache go test -v ./internal/service ./internal/middleware -run 'Test(Username|RootBootstrap|LoginUsername|PasswordUsesArgon2id|AccessTokenSubjectUsesUserGUID|SessionClaims|MinimumRole)' -count=1`、管理员旧 `ADMIN_TOKEN` 拒绝测试、`go vet ./...` 与 `git diff --check` 通过。`go test ./... -count=1` 的剩余失败均为既有测试在受限沙箱无法监听 `[::1]`，未出现 Task 4 业务断言失败。
 - 环境阻塞：`TEST_DATABASE_URL` 与 `TEST_REDIS_URL` 未提供，永久用户名、Root 首次引导、禁用/软删登录拒绝与实际 `SessionService.Validate` 的集成用例按安全规则显式跳过；未读取 `.env`、`DATABASE_URL` 或生产凭据。
+
+## 用户注册管理一期 Task 5（2026-08-31）
+
+- 新增 `/api/v1/auth` 的用户名注册、登录、刷新、登出、本人资料、会话列表/本人撤销/撤销其他设备以及密码和实名入口；旧短信与固定账号端点继续明确返回 410。Access JWT 与 Refresh 均不在 DTO 或日志中回显，Refresh 仅通过 `porsche_refresh` 的 `HttpOnly; Secure; SameSite=Lax` Cookie 传输。
+- Refresh 与 logout 强制可信 HTTPS Origin，且请求携带 `X-Auth-Session` 时必须与 Cookie 的 SID 一致；会话 SID、内部 `id`/`user_id`、密码哈希和 Refresh HMAC 不会序列化。管理员列表/详情限定严格低角色，删除复用现有事务化软删除服务，Root/同级无法管理。
+- RED：新增认证路由/DTO 测试后，因 `dto.AuthUser` 和 `dto.AuthSession` 尚不存在而发生预期编译失败。GREEN：定向 handler/dto/middleware 测试、`go vet ./...` 和 `git diff --check` 通过。
+- 环境阻塞：未设置显式 `TEST_DATABASE_URL` 与 `TEST_REDIS_URL`，因此真实浏览器 Cookie/Origin、注册/登录/刷新/撤销和管理员角色 HTTP 集成流未验收；未读取 `.env`、`DATABASE_URL` 或生产凭据。全包 handler/service 测试在本受限沙箱因既有 `httptest` 无法监听 `[::1]` 而中止，不是 Task 5 断言失败。
 
 `go-004`：JieKou AI 白牌上游接入（`blocked`）。真实部署环境 JieKou 冒烟待办；该外部验证完成前不得标记为通过。
 
