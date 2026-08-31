@@ -129,6 +129,11 @@ func RegisterAdminUsers(r *gin.Engine, state *app.State) {
 			httpx.AbortJSON(c, http.StatusNotFound, "用户不存在")
 			return
 		}
+		if err := service.CanManageUser(middleware.CurrentUser(c), &user); err != nil {
+			code, message := service.StatusFromError(err)
+			httpx.AbortJSON(c, code, message)
+			return
+		}
 		behavior, err := service.UserBehavior(state.DB, user.ID)
 		if err != nil {
 			httpx.AbortJSON(c, http.StatusInternalServerError, "读取用户行为失败")
