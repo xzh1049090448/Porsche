@@ -67,6 +67,10 @@ printf 'fixture-static\n' >"$frontend_root/index.html"
 printf 'fixture-only-password-that-is-longer-than-thirty-two-bytes\n' >"$fixture_dir/redis-password"
 touch "$backend_dir/.git"
 
+if ! docker image inspect bash:5.2 >/dev/null 2>&1; then
+    fail 'Docker and the bash:5.2 test image are required; refusing to run deployment entrypoints on the host'
+fi
+
 # This is a metadata-only regression probe, not an entrypoint root. It proves
 # that an existing source-like .env is not rejected or read by this fixture.
 if [[ "${PORSCHE_AUTH_ACCEPTANCE_TEST_SOURCE_ENV_REGRESSION:-0}" == 1 ]]; then
@@ -77,120 +81,18 @@ if [[ "${PORSCHE_AUTH_ACCEPTANCE_TEST_SOURCE_ENV_REGRESSION:-0}" == 1 ]]; then
     [[ "$(env_state_for "$source_env_probe/.env")" == "$probe_before" ]] || fail 'source-env metadata probe changed .env'
 fi
 
-# Existing target scripts are linked into the fake checkout. Future calls use
-# these paths exclusively, so BASH_SOURCE-based root lookup sees $backend_dir.
+# Existing target scripts are copied into the fake checkout. The fixture is the
+# only host path mounted into the disposable container, so source-repository
+# paths and files are unreachable while an entrypoint runs.
 for check in bootstrap migration deploy rollback; do
     script_name="$(script_for_check "$check")"
     source_script="$script_dir/$script_name"
     fixture_script="$backend_dir/deploy/$script_name"
-    [[ ! -x "$source_script" ]] || ln -s "$source_script" "$fixture_script"
+    if [[ -x "$source_script" ]]; then
+        cp "$source_script" "$fixture_script"
+        chmod +x "$fixture_script"
+    fi
 done
-
-token_is_assignment() {
-    [[ "$1" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]
-}
-
-token_is_forbidden_command() {
-    local token="$1"
-    case "$token" in
-        source|.|command|env|exec|time|nice|nohup|xargs|sudo|bash|sh|zsh|dash|fish|eval|builtin|/*|*/*|*'$'*|*'`'*) return 0 ;;
-    esac
-    return 1
-}
-
-entrypoint_has_no_absolute_command_bypass() {
-    local entrypoint="$1" line line_number=0 length index character next_character quote='' token='' command_expected=1 substitution
-    while IFS= read -r line || [[ -n "$line" ]]; do
-        ((line_number += 1))
-        [[ "$line" =~ ^[[:space:]]*$ || "$line" =~ ^[[:space:]]*# ]] && continue
-        length="${#line}"; quote=''; token=''; command_expected=1; index=0
-        while (( index < length )); do
-            character="${line:index:1}"
-            if [[ -n "$quote" ]]; then
-                if [[ "$character" == '\\' && "$quote" == '"' && $((index + 1)) -lt $length ]]; then
-                    ((index += 1)); token+="${line:index:1}"
-                elif [[ "$character" == "$quote" ]]; then
-                    quote=''
-                else
-                    token+="$character"
-                fi
-                ((index += 1)); continue
-            fi
-            case "$character" in
-                "'"|'"') quote="$character" ;;
-                '\\')
-                    if (( index + 1 < length )); then ((index += 1)); token+="${line:index:1}"; fi
-                    ;;
-                '#') [[ -z "$token" ]] && break; token+="$character" ;;
-                '$')
-                    next_character="${line:index+1:1}"
-                    if [[ "$next_character" == '(' ]]; then
-                        substitution="${line:index+2}"
-                        while [[ "$substitution" == [[:space:]]* ]]; do substitution="${substitution:1}"; done
-                        case "$substitution" in
-                            /*|source[[:space:]]*|.[[:space:]]*)
-                                echo "command-substitution bypass in $entrypoint:$line_number" >&2
-                                return 1
-                                ;;
-                        esac
-                    fi
-                    token+="$character"
-                    ;;
-                ';'|'|'|'&'|'('|')')
-                    if [[ -n "$token" ]]; then
-                        [[ "$token" != PATH=* ]] || { echo "PATH override in $entrypoint:$line_number" >&2; return 1; }
-                        if (( command_expected )); then
-                            case "$token" in
-                                if|then|elif|else|do|done|'!') ;;
-                                *)
-                                    token_is_forbidden_command "$token" && { echo "command bypass in $entrypoint:$line_number" >&2; return 1; }
-                                    token_is_assignment "$token" || command_expected=0
-                                    ;;
-                            esac
-                        fi
-                        token=''
-                    fi
-                    command_expected=1
-                    ;;
-                '{'|'}')
-                    # ${var} is an argument word, while a standalone brace is
-                    # a shell command-group boundary.
-                    if [[ -n "$token" ]]; then
-                        token+="$character"
-                    else
-                        command_expected=1
-                    fi
-                    ;;
-                [[:space:]])
-                    if [[ -n "$token" ]]; then
-                        [[ "$token" != PATH=* ]] || { echo "PATH override in $entrypoint:$line_number" >&2; return 1; }
-                        if (( command_expected )); then
-                            case "$token" in
-                                if|then|elif|else|do|done|'!') ;;
-                                *)
-                                    token_is_forbidden_command "$token" && { echo "command bypass in $entrypoint:$line_number" >&2; return 1; }
-                                    token_is_assignment "$token" || command_expected=0
-                                    ;;
-                            esac
-                        fi
-                        token=''
-                    fi
-                    ;;
-                *) token+="$character" ;;
-            esac
-            ((index += 1))
-        done
-        if [[ -n "$token" ]]; then
-            [[ "$token" != PATH=* ]] || { echo "PATH override in $entrypoint:$line_number" >&2; return 1; }
-            if (( command_expected )); then
-                case "$token" in
-                    if|then|elif|else|do|done|'!') ;;
-                    *) token_is_forbidden_command "$token" && { echo "command bypass in $entrypoint:$line_number" >&2; return 1; } ;;
-                esac
-            fi
-        fi
-    done <"$entrypoint"
-}
 
 assert_fixture_entrypoint() {
     local script_name="$1" fixture_script="$backend_dir/deploy/$1"
@@ -198,24 +100,9 @@ assert_fixture_entrypoint() {
     [[ "$fixture_script" != "$source_repo/"* ]] || fail "fixture entrypoint uses source repository: $fixture_script"
     [[ "$backend_dir/.env" != "$source_repo/.env" ]] || fail 'fixture .env aliases source-repository .env'
     [[ -x "$fixture_script" ]] || fail "missing fixture entrypoint: $fixture_script"
-    entrypoint_has_no_absolute_command_bypass "$fixture_script" || fail "fixture entrypoint bypasses command mocks: $fixture_script"
 }
 
-assert_static_bypass_guard() {
-    local bypass_script="$backend_dir/deploy/fixture-absolute-bypass.sh" bypass_line
-    : >"$command_log"
-    for bypass_line in '/opt/homebrew/bin/docker run fixture' '$(/custom/bin/rsync --archive source destination)' '. ./helper.sh' '( /usr/bin/docker run fixture )' '{ /custom/bin/rsync --archive source destination; }' 'pattern) /srv/bin/docker run fixture ;;' 'command /custom/bin/docker run fixture' 'env X=1 /custom/bin/rsync --archive source destination' 'PATH=/usr/bin command docker inspect fixture' 'bash helper.sh' 'BIN=/custom/bin/docker; "$BIN" run fixture'; do
-        printf '%s\n' '#!/usr/bin/env bash' '# comment: /opt/homebrew/bin/docker is ignored' "$bypass_line" >"$bypass_script"
-        chmod +x "$bypass_script"
-        if entrypoint_has_no_absolute_command_bypass "$bypass_script" >"$fixture_dir/bypass.stdout" 2>"$fixture_dir/bypass.stderr"; then
-            fail "fixture command bypass was accepted: $bypass_line"
-        fi
-        [[ ! -s "$command_log" ]] || fail 'static bypass scan executed a command'
-    done
-    printf '%s\n' '#!/usr/bin/env bash' 'BIN=fixture docker --env-file /opt/Porsche/.env inspect "$BIN"' >"$bypass_script"
-    entrypoint_has_no_absolute_command_bypass "$bypass_script" || fail 'guard rejected an absolute command argument'
-    rm -f -- "$bypass_script"
-}
+mocked_commands=(docker git npm rsync nginx systemctl flock id mktemp stat rm mkdir chmod chown install cp mv sleep grep sed awk dirname basename readlink curl date find sort wc cut head tail tr)
 
 # NUL command log protocol: BEGIN/call-id, ARG/value pairs, END/call-id.
 # Both spaces and the literal __END__ are ordinary argument values.
@@ -240,7 +127,7 @@ write_mock() {
         'esac' >"$mock_dir/$command_name"
     chmod +x "$mock_dir/$command_name"
 }
-for command_name in git docker docker-compose mysql mariadb npm rsync nginx systemctl flock id curl sleep; do write_mock "$command_name"; done
+for command_name in "${mocked_commands[@]}"; do write_mock "$command_name"; done
 
 parse_calls() {
     call_starts=() call_lengths=() call_ids=() call_argv=()
@@ -401,7 +288,27 @@ assert_log_protocol_preserves_argv
 assert_parser_detects_absolute_docker
 assert_parser_detects_optioned_dangerous_calls
 assert_parser_detects_optioned_write_calls
-assert_static_bypass_guard
+
+assert_container_blocks_host_command_bypasses() {
+    local host_probe="$source_repo/.auth-acceptance-host-probe"
+    [[ ! -e "$host_probe" ]] || fail "host isolation probe already exists: $host_probe"
+    : >"$command_log"
+    printf '%s\n' '#!/usr/bin/env bash' "touch '$host_probe'" >"$fixture_dir/helper.sh"
+    printf '%s\n' '#!/usr/bin/env bash' 'set +e' \
+        '/opt/homebrew/bin/docker run fixture' \
+        'command /custom/bin/rsync --archive /fixture /host' \
+        'bash /fixture/helper.sh' \
+        'exit 0' >"$fixture_dir/bypass-target.sh"
+    chmod +x "$fixture_dir/helper.sh" "$fixture_dir/bypass-target.sh"
+    docker run --rm --network none --read-only --cap-drop ALL \
+        --security-opt no-new-privileges --tmpfs /tmp:rw,noexec,nosuid,nodev \
+        --mount "type=bind,src=$fixture_dir,dst=/fixture" \
+        bash:5.2 /fixture/bypass-target.sh >"$fixture_dir/bypass.stdout" 2>"$fixture_dir/bypass.stderr"
+    [[ ! -e "$host_probe" ]] || fail 'containerized bypass target changed a host path outside the fixture'
+    [[ ! -s "$command_log" ]] || fail 'containerized bypass target reached a fixture command mock unexpectedly'
+}
+
+assert_container_blocks_host_command_bypasses
 
 # A missing production script must now be reported at the fake checkout path.
 for selected_check in "${selected_checks[@]}"; do
@@ -413,16 +320,31 @@ run_entrypoint() {
     shift
     assert_fixture_entrypoint "$entrypoint"
     : >"$command_log"
-    PATH="$mock_dir:$PATH" COMMAND_LOG="$command_log" \
-        PORSCHE_AUTH_ACCEPTANCE_TEST_MODE=1 \
-        PORSCHE_AUTH_ACCEPTANCE_BACKEND_DIR="$backend_dir" \
-        PORSCHE_AUTH_ACCEPTANCE_FRONTEND_DIR="$frontend_dir" \
-        PORSCHE_AUTH_ACCEPTANCE_FRONTEND_ROOT="$frontend_root" \
-        PORSCHE_AUTH_ACCEPTANCE_MANIFEST_DIR="$manifest_dir" \
-        PORSCHE_AUTH_ACCEPTANCE_REDIS_CONFIG_DIR="$fixture_dir/redis-config" \
-        PORSCHE_AUTH_ACCEPTANCE_LOCK_FILE="$fixture_dir/auth-acceptance.lock" \
-        PORSCHE_AUTH_ACCEPTANCE_TEST_PASSWORD_FILE="$fixture_dir/redis-password" \
-        "$backend_dir/deploy/$entrypoint" "$@"
+    docker run --rm --network none --read-only --cap-drop ALL \
+        --security-opt no-new-privileges --tmpfs /tmp:rw,noexec,nosuid,nodev \
+        --mount "type=bind,src=$fixture_dir,dst=/fixture" \
+        --env PATH=/fixture/bin:/usr/local/bin:/usr/bin:/bin \
+        --env COMMAND_LOG=/fixture/commands.nul \
+        --env PORSCHE_AUTH_ACCEPTANCE_TEST_MODE=1 \
+        --env PORSCHE_AUTH_ACCEPTANCE_BACKEND_DIR=/fixture/Porsche \
+        --env PORSCHE_AUTH_ACCEPTANCE_FRONTEND_DIR=/fixture/Porsche-Web \
+        --env PORSCHE_AUTH_ACCEPTANCE_FRONTEND_ROOT=/fixture/www/porsche-web \
+        --env PORSCHE_AUTH_ACCEPTANCE_MANIFEST_DIR=/fixture/manifests \
+        --env PORSCHE_AUTH_ACCEPTANCE_REDIS_CONFIG_DIR=/fixture/redis-config \
+        --env PORSCHE_AUTH_ACCEPTANCE_LOCK_FILE=/fixture/auth-acceptance.lock \
+        --env PORSCHE_AUTH_ACCEPTANCE_TEST_PASSWORD_FILE=/fixture/redis-password \
+        --env "MOCK_BRANCH=${MOCK_BRANCH:-feature/user-registration-management}" \
+        --env "MOCK_GIT_SHA=${MOCK_GIT_SHA:-fixture-sha}" \
+        --env "MOCK_GIT_DIRTY=${MOCK_GIT_DIRTY:-0}" \
+        --env "MOCK_DOCKER_INSPECT_RESULT=${MOCK_DOCKER_INSPECT_RESULT:-success}" \
+        --env "MOCK_DOCKER_RUN_RESULT=${MOCK_DOCKER_RUN_RESULT:-success}" \
+        --env "MOCK_HEALTH_RESULT=${MOCK_HEALTH_RESULT:-success}" \
+        --env "MOCK_NPM_RESULT=${MOCK_NPM_RESULT:-success}" \
+        --env "MOCK_RSYNC_RESULT=${MOCK_RSYNC_RESULT:-success}" \
+        --env "MOCK_NGINX_RESULT=${MOCK_NGINX_RESULT:-success}" \
+        --env "MOCK_SYSTEMCTL_RESULT=${MOCK_SYSTEMCTL_RESULT:-success}" \
+        --env "MOCK_FLOCK_RESULT=${MOCK_FLOCK_RESULT:-success}" \
+        bash:5.2 "/fixture/Porsche/deploy/$entrypoint" "$@"
 }
 
 run_bootstrap() { run_entrypoint bootstrap-auth-redis.sh; }

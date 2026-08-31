@@ -4,7 +4,7 @@
 
 **Goal:** Safely deploy the user-registration backend and session-auth frontend branches to `aiportcloud.com` for a reversible browser acceptance test without invoking the normal `main` release workflow.
 
-**Architecture:** Add three root-only shell entry points: a one-time internal Redis bootstrap, an explicitly confirmed MySQL migration runner, and an acceptance deployment/rollback pair. The deployment entry point never switches or resets Git: it requires both server checkouts already be at their exact remote feature branch revisions, starts a candidate application only after frontend build and Nginx validation, and records a root-owned rollback manifest before publishing static assets.
+**Architecture:** Add three root-only shell entry points: a one-time internal Redis bootstrap, an explicitly confirmed MySQL migration runner, and an acceptance deployment/rollback pair. The deployment entry point never switches or resets Git: it requires both server checkouts already be at their exact remote feature branch revisions, starts a candidate application only after frontend build and Nginx validation, and records a root-owned rollback manifest before publishing static assets. Shell behavior tests run each target in a disposable Docker sandbox with no Docker socket or host service mounts, making runtime isolation—not a hand-written shell lexer—the safety boundary.
 
 **Tech Stack:** Bash with `set -Eeuo pipefail`, Docker/Redis 7, MySQL 8 migration command, npm/Vite, rsync, Nginx, shell mock regression tests.
 
@@ -46,6 +46,15 @@ Expected: failure naming the first missing script.
 
 Create a `mktemp -d` fixture containing backend/frontend Git directories, a root-owned-looking `.env` with fake values, a static root, a manifest directory, and mock `git`, `docker`, `npm`, `rsync`, `nginx`, `systemctl`, `flock`, and `id` executables. Each mock writes NUL-delimited argv records to `$COMMAND_LOG` and returns only controlled `MOCK_*` results. The fixture must set only documented `PORSCHE_AUTH_ACCEPTANCE_TEST_MODE=1` path overrides; production scripts must reject those overrides.
 
+Run every target entry point through a disposable `bash:5.2` Docker container
+with `--network none`, no `/var/run/docker.sock`, no database/Redis mount, and
+only the `mktemp` fixture mounted beneath `/fixture`. Pass the mock directory
+as `PATH` and keep all command logs below `/fixture`. The outer regression
+runner may create this disposable test container, but it must never invoke a
+target against the host shell. If Docker or the test image is unavailable,
+fail with a clear prerequisite message rather than silently executing the
+target on the host.
+
 - [ ] **Step 4: Add behavior assertions before implementing commands**
 
 Add these named checks, each expected to fail until its target behavior exists:
@@ -71,6 +80,11 @@ assert_candidate_failure_restores_old_application() {
   forbid_call 'rsync --archive --delete --delay-updates'
 }
 ```
+
+Also create a fake target that runs `/opt/homebrew/bin/docker`, `command
+/custom/bin/rsync`, and `bash helper.sh`; run it inside the sandbox and assert
+that no host Docker service is reachable and no file outside the fixture can
+be altered. Do not maintain a custom shell lexer as a security boundary.
 
 - [ ] **Step 5: Run fixture to verify RED behaviors**
 

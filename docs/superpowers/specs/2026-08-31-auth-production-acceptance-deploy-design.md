@@ -103,10 +103,18 @@ not deleted or reversed by either rollback path.
 
 ## Verification
 
-- Shell regression tests use mocked Docker, Git, Nginx, Redis preflight, and
-  rsync commands. They prove no `main` reset/switch, no MySQL/volume/network
-  deletion, no static publish before Nginx validation, and candidate rollback
-  on failures.
+- Shell regression tests execute future deployment entry points inside a
+  disposable Docker test container with no Docker socket, no network, and no
+  production checkout, `.env`, database, Redis, or host service mount. The
+  fixture provides mocked Docker, Git, Nginx, Redis preflight, and rsync
+  commands only inside that container. Therefore an absolute command path or
+  shell wrapper cannot mutate the host even if a future script accidentally
+  bypasses `PATH`.
+- The fixture still uses exact, structured argv assertions to prove no `main`
+  reset/switch, no MySQL/volume/network deletion, no static publish before
+  Nginx validation, and candidate rollback on failures. Static checks remain
+  limited to clear policy violations; they are not relied on as the execution
+  sandbox.
 - `bash -n`, shell regression tests, Nginx static checks, Go tests and vet run
   before the script is offered for deployment.
 - Browser acceptance at `https://aiportcloud.com` verifies username register,
