@@ -86,12 +86,39 @@ for check in bootstrap migration deploy rollback; do
     [[ ! -x "$source_script" ]] || ln -s "$source_script" "$fixture_script"
 done
 
+entrypoint_has_no_absolute_command_bypass() {
+    local entrypoint="$1" line line_number=0
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        ((line_number += 1))
+        [[ "$line" =~ ^[[:space:]]*$ || "$line" =~ ^[[:space:]]*# ]] && continue
+        case "$line" in
+            *'/usr/bin/docker'*|*'/usr/local/bin/docker'*|*'/usr/bin/rsync'*|*'/usr/local/bin/rsync'*|*'/usr/bin/mysql'*|*'/usr/local/bin/mysql'*|*'/usr/bin/mariadb'*|*'/usr/local/bin/mariadb'*|*'/usr/bin/docker-compose'*|*'/usr/local/bin/docker-compose'*)
+                echo "absolute command bypass in $entrypoint:$line_number" >&2
+                return 1
+                ;;
+        esac
+    done <"$entrypoint"
+}
+
 assert_fixture_entrypoint() {
     local script_name="$1" fixture_script="$backend_dir/deploy/$1"
     [[ "$fixture_script" == "$backend_dir/deploy/"* ]] || fail "fixture entrypoint escapes fake backend: $fixture_script"
     [[ "$fixture_script" != "$source_repo/"* ]] || fail "fixture entrypoint uses source repository: $fixture_script"
     [[ "$backend_dir/.env" != "$source_repo/.env" ]] || fail 'fixture .env aliases source-repository .env'
     [[ -x "$fixture_script" ]] || fail "missing fixture entrypoint: $fixture_script"
+    entrypoint_has_no_absolute_command_bypass "$fixture_script" || fail "fixture entrypoint bypasses command mocks: $fixture_script"
+}
+
+assert_static_bypass_guard() {
+    local bypass_script="$backend_dir/deploy/fixture-absolute-bypass.sh"
+    : >"$command_log"
+    printf '%s\n' '#!/usr/bin/env bash' '# comment: /usr/bin/docker is ignored' '/usr/bin/docker run fixture' >"$bypass_script"
+    chmod +x "$bypass_script"
+    if entrypoint_has_no_absolute_command_bypass "$bypass_script" >"$fixture_dir/bypass.stdout" 2>"$fixture_dir/bypass.stderr"; then
+        fail 'absolute Docker path bypass was accepted'
+    fi
+    [[ ! -s "$command_log" ]] || fail 'static bypass scan executed a command'
+    rm -f -- "$bypass_script"
 }
 
 # NUL command log protocol: BEGIN/call-id, ARG/value pairs, END/call-id.
@@ -167,26 +194,30 @@ call_has_token() {
     return 1
 }
 
-call_is_dangerous() {
-    local call_index="$1" start length command offset token
+call_has_sequence() {
+    local call_index="$1" first="$2" second="$3" start length offset
     start="${call_starts[$call_index]}"; length="${call_lengths[$call_index]}"
-    command="${call_argv[$start]}"
-    [[ "$command" == /* && "${command##*/}" == docker ]] && return 0
-    call_has_prefix "$call_index" docker compose down && return 0
-    call_has_prefix "$call_index" docker-compose down && return 0
-    call_has_prefix "$call_index" docker volume rm && return 0
-    call_has_prefix "$call_index" docker network rm && return 0
-    if [[ "$command" == docker ]]; then
-        for ((offset = 1; offset < length; offset += 1)); do
-            [[ "${call_argv[$((start + offset))]}" == prune ]] && return 0
-        done
-    fi
-    if [[ "$command" == mysql || "$command" == mariadb ]]; then
-        for ((offset = 1; offset < length; offset += 1)); do
-            token="${call_argv[$((start + offset))]}"
-            case "$token" in [Dd][Rr][Oo][Pp]) return 0 ;; esac
-        done
-    fi
+    for ((offset = 0; offset + 1 < length; offset += 1)); do
+        [[ "${call_argv[$((start + offset))]}" == "$first" && "${call_argv[$((start + offset + 1))]}" == "$second" ]] && return 0
+    done
+    return 1
+}
+
+call_command_basename() {
+    local call_index="$1" start
+    start="${call_starts[$call_index]}"
+    printf '%s\n' "${call_argv[$start]##*/}"
+}
+
+call_is_dangerous() {
+    local call_index="$1" command
+    command="$(call_command_basename "$call_index")"
+    [[ "$command" == mysql || "$command" == mariadb ]] && return 0
+    [[ "$command" == docker || "$command" == docker-compose ]] || return 1
+    call_has_token "$call_index" down && return 0
+    call_has_sequence "$call_index" volume rm && return 0
+    call_has_sequence "$call_index" network rm && return 0
+    call_has_token "$call_index" prune && return 0
     return 1
 }
 
@@ -199,17 +230,14 @@ assert_no_dangerous_calls() {
 }
 
 docker_call_writes() {
-    local call_index="$1" start command verb subverb
-    start="${call_starts[$call_index]}"; command="${call_argv[$start]}"
-    [[ "$command" == docker || "$command" == docker-compose || ( "$command" == /* && "${command##*/}" == docker ) ]] || return 1
-    verb="${call_argv[$((start + 1))]:-}"
-    case "$verb" in
-        build|run|create|start|stop|restart|kill|pause|unpause|rename|rm) return 0 ;;
-        container|compose|volume|network|image)
-            subverb="${call_argv[$((start + 2))]:-}"
-            case "$subverb" in create|up|down|start|stop|restart|kill|rm|prune) return 0 ;; esac
-            ;;
-    esac
+    local call_index="$1" command start length offset token
+    command="$(call_command_basename "$call_index")"
+    [[ "$command" == docker || "$command" == docker-compose ]] || return 1
+    start="${call_starts[$call_index]}"; length="${call_lengths[$call_index]}"
+    for ((offset = 1; offset < length; offset += 1)); do
+        token="${call_argv[$((start + offset))]}"
+        case "$token" in build|run|create|up|down|start|stop|restart|kill|pause|unpause|rename|rm|prune) return 0 ;; esac
+    done
     return 1
 }
 
@@ -218,7 +246,7 @@ assert_no_docker_or_rsync_writes() {
     parse_calls
     for ((call_index = 0; call_index < ${#call_starts[@]}; call_index += 1)); do
         docker_call_writes "$call_index" && fail "unexpected Docker write after rejection at call $call_index"
-        start="${call_starts[$call_index]}"; command="${call_argv[$start]}"
+        command="$(call_command_basename "$call_index")"
         [[ "$command" != rsync ]] || fail "unexpected rsync write after rejection at call $call_index"
     done
 }
@@ -248,8 +276,36 @@ assert_parser_detects_absolute_docker() {
     call_is_dangerous 0 || fail 'parser did not flag absolute docker command'
 }
 
+assert_parser_detects_optioned_dangerous_calls() {
+    : >"$command_log"
+    printf 'BEGIN\0one\0ARG\0docker\0ARG\0--context\0ARG\0fixture\0ARG\0compose\0ARG\0down\0END\0one\0' >>"$command_log"
+    printf 'BEGIN\0two\0ARG\0docker-compose\0ARG\0-p\0ARG\0fixture\0ARG\0down\0END\0two\0' >>"$command_log"
+    printf 'BEGIN\0three\0ARG\0docker\0ARG\0--context\0ARG\0fixture\0ARG\0volume\0ARG\0rm\0END\0three\0' >>"$command_log"
+    printf 'BEGIN\0four\0ARG\0docker\0ARG\0--context\0ARG\0fixture\0ARG\0prune\0END\0four\0' >>"$command_log"
+    printf 'BEGIN\0five\0ARG\0mysql\0ARG\0-e\0ARG\0SELECT 1\0END\0five\0' >>"$command_log"
+    parse_calls
+    local call_index
+    for ((call_index = 0; call_index < ${#call_starts[@]}; call_index += 1)); do
+        call_is_dangerous "$call_index" || fail "parser missed optioned dangerous call $call_index"
+    done
+}
+
+assert_parser_detects_optioned_write_calls() {
+    : >"$command_log"
+    printf 'BEGIN\0one\0ARG\0docker\0ARG\0--context\0ARG\0fixture\0ARG\0compose\0ARG\0up\0END\0one\0' >>"$command_log"
+    printf 'BEGIN\0two\0ARG\0docker-compose\0ARG\0-p\0ARG\0fixture\0ARG\0down\0END\0two\0' >>"$command_log"
+    printf 'BEGIN\0three\0ARG\0/usr/local/bin/rsync\0ARG\0--archive\0END\0three\0' >>"$command_log"
+    parse_calls
+    docker_call_writes 0 || fail 'write detector missed optioned docker compose'
+    docker_call_writes 1 || fail 'write detector missed optioned docker-compose'
+    [[ "$(call_command_basename 2)" == rsync ]] || fail 'write detector missed absolute rsync basename'
+}
+
 assert_log_protocol_preserves_argv
 assert_parser_detects_absolute_docker
+assert_parser_detects_optioned_dangerous_calls
+assert_parser_detects_optioned_write_calls
+assert_static_bypass_guard
 
 # A missing production script must now be reported at the fake checkout path.
 for selected_check in "${selected_checks[@]}"; do
