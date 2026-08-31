@@ -86,6 +86,18 @@ for check in bootstrap migration deploy rollback; do
     [[ ! -x "$source_script" ]] || ln -s "$source_script" "$fixture_script"
 done
 
+token_is_assignment() {
+    [[ "$1" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]
+}
+
+token_is_forbidden_command() {
+    local token="$1"
+    case "$token" in
+        source|.|command|env|exec|time|nice|nohup|xargs|sudo|bash|sh|zsh|dash|fish|eval|builtin|/*|*/*|*'$'*|*'`'*) return 0 ;;
+    esac
+    return 1
+}
+
 entrypoint_has_no_absolute_command_bypass() {
     local entrypoint="$1" line line_number=0 length index character next_character quote='' token='' command_expected=1 substitution
     while IFS= read -r line || [[ -n "$line" ]]; do
@@ -126,11 +138,14 @@ entrypoint_has_no_absolute_command_bypass() {
                     ;;
                 ';'|'|'|'&'|'('|')')
                     if [[ -n "$token" ]]; then
+                        [[ "$token" != PATH=* ]] || { echo "PATH override in $entrypoint:$line_number" >&2; return 1; }
                         if (( command_expected )); then
                             case "$token" in
                                 if|then|elif|else|do|done|'!') ;;
-                                /*|source|.) echo "command bypass in $entrypoint:$line_number" >&2; return 1 ;;
-                                *) command_expected=0 ;;
+                                *)
+                                    token_is_forbidden_command "$token" && { echo "command bypass in $entrypoint:$line_number" >&2; return 1; }
+                                    token_is_assignment "$token" || command_expected=0
+                                    ;;
                             esac
                         fi
                         token=''
@@ -148,11 +163,14 @@ entrypoint_has_no_absolute_command_bypass() {
                     ;;
                 [[:space:]])
                     if [[ -n "$token" ]]; then
+                        [[ "$token" != PATH=* ]] || { echo "PATH override in $entrypoint:$line_number" >&2; return 1; }
                         if (( command_expected )); then
                             case "$token" in
                                 if|then|elif|else|do|done|'!') ;;
-                                /*|source|.) echo "command bypass in $entrypoint:$line_number" >&2; return 1 ;;
-                                *) command_expected=0 ;;
+                                *)
+                                    token_is_forbidden_command "$token" && { echo "command bypass in $entrypoint:$line_number" >&2; return 1; }
+                                    token_is_assignment "$token" || command_expected=0
+                                    ;;
                             esac
                         fi
                         token=''
@@ -162,11 +180,14 @@ entrypoint_has_no_absolute_command_bypass() {
             esac
             ((index += 1))
         done
-        if [[ -n "$token" && $command_expected -eq 1 ]]; then
-            case "$token" in
-                if|then|elif|else|do|done|'!') ;;
-                /*|source|.) echo "command bypass in $entrypoint:$line_number" >&2; return 1 ;;
-            esac
+        if [[ -n "$token" ]]; then
+            [[ "$token" != PATH=* ]] || { echo "PATH override in $entrypoint:$line_number" >&2; return 1; }
+            if (( command_expected )); then
+                case "$token" in
+                    if|then|elif|else|do|done|'!') ;;
+                    *) token_is_forbidden_command "$token" && { echo "command bypass in $entrypoint:$line_number" >&2; return 1; } ;;
+                esac
+            fi
         fi
     done <"$entrypoint"
 }
@@ -183,7 +204,7 @@ assert_fixture_entrypoint() {
 assert_static_bypass_guard() {
     local bypass_script="$backend_dir/deploy/fixture-absolute-bypass.sh" bypass_line
     : >"$command_log"
-    for bypass_line in '/opt/homebrew/bin/docker run fixture' '$(/custom/bin/rsync --archive source destination)' '. ./helper.sh' '( /usr/bin/docker run fixture )' '{ /custom/bin/rsync --archive source destination; }' 'pattern) /srv/bin/docker run fixture ;;'; do
+    for bypass_line in '/opt/homebrew/bin/docker run fixture' '$(/custom/bin/rsync --archive source destination)' '. ./helper.sh' '( /usr/bin/docker run fixture )' '{ /custom/bin/rsync --archive source destination; }' 'pattern) /srv/bin/docker run fixture ;;' 'command /custom/bin/docker run fixture' 'env X=1 /custom/bin/rsync --archive source destination' 'PATH=/usr/bin command docker inspect fixture' 'bash helper.sh' 'BIN=/custom/bin/docker; "$BIN" run fixture'; do
         printf '%s\n' '#!/usr/bin/env bash' '# comment: /opt/homebrew/bin/docker is ignored' "$bypass_line" >"$bypass_script"
         chmod +x "$bypass_script"
         if entrypoint_has_no_absolute_command_bypass "$bypass_script" >"$fixture_dir/bypass.stdout" 2>"$fixture_dir/bypass.stderr"; then
@@ -191,7 +212,7 @@ assert_static_bypass_guard() {
         fi
         [[ ! -s "$command_log" ]] || fail 'static bypass scan executed a command'
     done
-    printf '%s\n' '#!/usr/bin/env bash' 'docker --env-file /opt/Porsche/.env inspect fixture' >"$bypass_script"
+    printf '%s\n' '#!/usr/bin/env bash' 'BIN=fixture docker --env-file /opt/Porsche/.env inspect "$BIN"' >"$bypass_script"
     entrypoint_has_no_absolute_command_bypass "$bypass_script" || fail 'guard rejected an absolute command argument'
     rm -f -- "$bypass_script"
 }
