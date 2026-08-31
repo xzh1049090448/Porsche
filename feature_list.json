@@ -1,6 +1,6 @@
 {
   "project": "Porsche Go AI Gateway",
-  "last_updated": "2026-08-28",
+  "last_updated": "2026-09-01",
   "rules": {
     "single_active_feature": true,
     "passing_requires_evidence": true,
@@ -59,7 +59,8 @@
         "2026-08-28：Task 4 以 RED→GREEN 增加用户名 trim/长度/永久唯一、Argon2id 与弱密码拦截、命名锁保护的首次 Root 引导、禁用/软删拒绝，以及 `sub=guid,sid,sv,av,role` Access JWT。RequireUser 校验持久化用户/角色和服务端可撤销会话；RequireAdmin/RequireRoot 和 Analytics 权限不再接受 ADMIN_TOKEN 或手机号授权。定向 Go 测试、go vet 和 diff 检查通过；真实 TEST_DATABASE_URL/TEST_REDIS_URL 未提供，认证集成用例显式跳过。",
         "2026-08-31：Task 5 交付用户名注册/登录、Refresh/登出、本人安全资料和会话管理 HTTP 端点；Refresh Cookie 固定 HttpOnly/Secure/SameSite=Lax，Refresh/登出拒绝缺失或非可信 Origin，X-Auth-Session 仅在携带时与 Cookie SID 一致。DTO 不含内部 ID、SID、HMAC、Refresh 或密码哈希；管理员列表/详情仅可见严格低角色，删除复用软删除服务。新增端点/DTO RED 先因缺少序列化器编译失败，GREEN 后定向 handler 测试、go vet ./... 与 diff 检查通过。",
         "2026-08-31：测试验收新增受控 MySQL/Redis HTTP 集成回归，拒绝非 *_test/porsche_test 数据库。覆盖注册、登录、Refresh Cookie/Origin/SID 绑定、会话撤销、登出和管理员严格角色层级及 DTO 脱敏；当前 TEST_DATABASE_URL/TEST_REDIS_URL 未提供，用例按安全规则显式跳过，未读取 .env、DATABASE_URL 或生产凭据。定向 handler/dto/middleware 测试、go vet 与 diff 检查通过。",
-        "尚未在真实隔离 MySQL 8/Redis 执行认证 HTTP 集成测试；浏览器与前端验证仍未开始；本沙箱未加筛选的 handler/service 测试受既有 httptest IPv6 listener 限制影响。"
+        "2026-09-01：新增生产域认证验收工具：内部持久化 Redis bootstrap、显式确认 schema 迁移、feature 分支候选部署与 manifest 回滚。Shell 行为测试仅在无网络、无 Docker socket、只挂载临时 fixture 的 bash:5.2 容器中执行，不再以手写 Shell 词法扫描器作为安全边界；新旧 Shell 回归、Nginx 静态检查、go test ./... -count=1、go vet ./... 与 git diff --check 通过。",
+        "尚未在真实隔离 MySQL 8/Redis 执行认证 HTTP 集成测试；浏览器与前端生产域验证仍未开始；本沙箱未加筛选的 handler/service 测试受既有 httptest IPv6 listener 限制影响。"
       ],
       "notes": "必须保持唯一 in_progress。用户、会话与认证审计的数据库变更仅能在后续 Task 2 通过显式、可审查的 MySQL 迁移实施。"
     },

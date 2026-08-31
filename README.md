@@ -203,6 +203,49 @@ Run the real JieKou upstream directory, Chat, and SSE smoke checks separately
 after deployment with the production white-label configuration; a successful
 local health check does not prove the real upstream path.
 
+### Authentication acceptance deployment
+
+This temporary flow deploys only the exact remote feature branches
+`feature/user-registration-management` and `feature/session-auth-frontend` for
+browser acceptance on `https://aiportcloud.com`. Both checkouts must be clean
+and already match their remote SHA. The backend `.env` must set
+`APP_ENV=production`, `ALLOWED_HOSTS=aiportcloud.com`, include
+`https://aiportcloud.com` in `AUTH_TRUSTED_ORIGINS`, and contain a non-empty
+`REDIS_URL`. Never commit the Redis password or `.env`.
+
+Create a random password of at least 32 bytes, run the one-time internal Redis
+bootstrap, then put its password-protected `REDIS_URL` in `/opt/Porsche/.env`:
+
+```bash
+sudo bash deploy/bootstrap-auth-redis.sh
+```
+
+Redis is attached only to `porsche-app`, uses the persistent
+`porsche-redis-data` volume, and publishes no host port. Apply the forward-only
+authentication schema migration with the explicit confirmation, then deploy:
+
+```bash
+sudo bash deploy/auth-acceptance-migrate.sh --confirm-auth-schema-migration
+sudo bash deploy/auth-acceptance-deploy.sh
+```
+
+The deployment validates both branches, configuration, Redis, Docker network,
+and Nginx before replacing the application. It health-checks the candidate,
+publishes staged frontend assets, and retains the old container plus static
+snapshot in a root-owned rollback manifest. Test registration, login, refresh,
+logout, session revocation, admin role boundaries, and page reloads through the
+production HTTPS domain.
+
+To restore the previous application container and frontend assets:
+
+```bash
+sudo bash deploy/auth-acceptance-rollback.sh --confirm-auth-acceptance-rollback
+```
+
+Application rollback does not automatically roll back the database migration;
+the forward authentication schema remains applied and must not be removed by
+an ad-hoc destructive command.
+
 ## Production domain access
 
 Production traffic must enter through `https://aiportcloud.com`; direct IP

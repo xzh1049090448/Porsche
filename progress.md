@@ -138,6 +138,19 @@
 `go-004` 的真实 JieKou 目录、Chat 与 SSE 冒烟仍需部署环境的白牌配置；上述
 部署编排验证不替代该上游验收，故其状态保持 `blocked`。
 
+## 认证生产域验收部署工具（2026-09-01）
+
+- 新增内部 Redis bootstrap、显式确认的认证 schema 迁移、候选部署和 manifest
+  回滚入口。部署只接受两个指定 feature 分支的干净远端一致 checkout，不切换或
+  reset Git；失败会恢复旧应用容器和已变更的静态文件，数据库迁移不会自动回滚。
+- Shell 行为测试改为在无网络、无 Docker socket、只挂载临时 fixture 的
+  `bash:5.2` 容器内运行目标脚本；结构化 argv 日志仅用于行为断言，不再依赖手写
+  Shell 词法扫描器作为安全边界。
+- 已验证新旧 Shell 回归、Nginx 静态检查、`go test ./... -count=1`、
+  `go vet ./...` 与 `git diff --check`；空/短 Redis 密码、错误确认、错误分支、脏
+  checkout、远端 SHA 不一致、候选健康失败、rsync/reload 失败均被隔离夹具拒绝或回滚。
+- 浏览器生产域验收尚未执行，`go-006` 继续保持唯一 `in_progress`。
+
 ## 下一步（部署冒烟）
 
 在具备部署环境的白牌配置后，完成真实上游目录、Chat 与 SSE 冒烟。

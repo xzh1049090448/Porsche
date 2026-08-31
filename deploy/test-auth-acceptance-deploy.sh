@@ -38,10 +38,10 @@ trap cleanup EXIT
 
 selected_checks=("$@")
 if (( ${#selected_checks[@]} == 0 )); then
-    selected_checks=(bootstrap migration deploy rollback)
+    selected_checks=(bootstrap migration deploy rollback docs)
 fi
 for selected_check in "${selected_checks[@]}"; do
-    case "$selected_check" in bootstrap|migration|deploy|rollback) ;; *) fail "unknown check: $selected_check" ;; esac
+    case "$selected_check" in bootstrap|migration|deploy|rollback|docs) ;; *) fail "unknown check: $selected_check" ;; esac
 done
 
 script_for_check() {
@@ -352,6 +352,7 @@ assert_container_blocks_host_command_bypasses
 
 # A missing production script must now be reported at the fake checkout path.
 for selected_check in "${selected_checks[@]}"; do
+    [[ "$selected_check" == docs ]] && continue
     assert_fixture_entrypoint "$(script_for_check "$selected_check")"
 done
 
@@ -473,6 +474,18 @@ assert_publish_failures_restore_application() {
     require_candidate_rollback_renames
 }
 
+assert_operator_documentation() {
+    local command
+    for command in \
+        'sudo bash deploy/bootstrap-auth-redis.sh' \
+        'sudo bash deploy/auth-acceptance-migrate.sh --confirm-auth-schema-migration' \
+        'sudo bash deploy/auth-acceptance-deploy.sh' \
+        'sudo bash deploy/auth-acceptance-rollback.sh --confirm-auth-acceptance-rollback'; do
+        grep -Fq "$command" "$source_repo/README.md" || fail "README missing operator command: $command"
+    done
+    grep -Fq 'Application rollback does not automatically roll back the database migration' "$source_repo/README.md" || fail 'README does not state that application rollback leaves the migration applied'
+}
+
 # Unreachable until target scripts exist; later tasks turn these contracts green.
 for selected_check in "${selected_checks[@]}"; do
     case "$selected_check" in
@@ -480,6 +493,7 @@ for selected_check in "${selected_checks[@]}"; do
         migration) assert_migration_requires_confirmation_without_writes; run_migration ;;
         deploy) assert_deploy_refuses_main_or_dirty_checkout_without_writes; assert_deploy_preflight_failures_do_not_write; assert_candidate_failure_restores_old_application; assert_publish_failures_restore_application; assert_successful_deploy_order_and_manifest ;;
         rollback) run_rollback ;;
+        docs) assert_operator_documentation ;;
     esac
 done
 echo "PASS: auth acceptance deployment regression checks (${selected_checks[*]})"
