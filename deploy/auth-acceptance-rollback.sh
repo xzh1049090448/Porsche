@@ -88,7 +88,7 @@ resolve_container_id() {
         echo "cannot resolve immutable container ID for $container_name" >&2
         return 1
     }
-    [[ "$container_id" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+    [[ "$container_id" =~ ^[0-9a-f]{64}$ ]] || {
         echo "invalid immutable container ID for $container_name" >&2
         return 1
     }

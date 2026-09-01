@@ -100,7 +100,7 @@ resolve_container_id() {
         echo "cannot resolve immutable container ID for $container_name" >&2
         return 1
     }
-    [[ "$container_id" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+    [[ "$container_id" =~ ^[0-9a-f]{64}$ ]] || {
         echo "invalid immutable container ID for $container_name" >&2
         return 1
     }
@@ -230,7 +230,7 @@ if [[ -n "$old_container_id" ]]; then
 fi
 candidate_container_id="$(docker run -d --name "$APP_NAME" --restart unless-stopped --network "$NETWORK" \
     --env-file "$ENV_FILE" -p 127.0.0.1:8000:8000 "$IMAGE_NAME")"
-[[ "$candidate_container_id" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo 'Docker run did not return an immutable candidate container ID' >&2; exit 1; }
+[[ "$candidate_container_id" =~ ^[0-9a-f]{64}$ ]] || { echo 'Docker run did not return an immutable candidate container ID' >&2; exit 1; }
 candidate_started=1
 healthy=0
 for _ in $(seq 1 30); do

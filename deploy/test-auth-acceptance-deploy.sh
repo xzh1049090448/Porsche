@@ -62,9 +62,9 @@ manifest_dir="$fixture_dir/manifests"
 mock_dir="$fixture_dir/bin"
 command_log="$fixture_dir/commands.nul"
 fixture_image_id="sha256:$(printf '%064d' 0)"
-fixture_current_id="sha256:$(printf '%064d' 1)"
-fixture_rollback_id="sha256:$(printf '%064d' 2)"
-fixture_candidate_id="sha256:$(printf '%064d' 3)"
+fixture_current_id="$(printf '%064d' 1)"
+fixture_rollback_id="$(printf '%064d' 2)"
+fixture_candidate_id="$(printf '%064d' 3)"
 fixture_lock_file="$fixture_dir/auth-acceptance.lock"
 fixture_tmp_dir="$fixture_dir/tmp"
 fixture_untrusted_tmp_dir="$fixture_dir/untrusted"
@@ -669,6 +669,8 @@ run_entrypoint() {
         --env "MOCK_CURRENT_CONTAINER_ENV_STATE=${MOCK_CURRENT_CONTAINER_ENV_STATE:-clean}" \
         --env "MOCK_ROLLBACK_CONTAINER_ENV_STATE=${MOCK_ROLLBACK_CONTAINER_ENV_STATE:-clean}" \
         --env "MOCK_HELPER_CONTAINER_ENV_STATE=${MOCK_HELPER_CONTAINER_ENV_STATE:-clean}" \
+        --env "MOCK_CURRENT_CONTAINER_ID=${MOCK_CURRENT_CONTAINER_ID:-$fixture_current_id}" \
+        --env "MOCK_ROLLBACK_CONTAINER_ID=${MOCK_ROLLBACK_CONTAINER_ID:-$fixture_rollback_id}" \
         --env "MOCK_CANDIDATE_CONTAINER_ID=${MOCK_CANDIDATE_CONTAINER_ID:-$fixture_candidate_id}" \
         --env "MOCK_ROOT_ENV_AFTER_BUILD=${MOCK_ROOT_ENV_AFTER_BUILD:-0}" \
         --env "MOCK_DOCKER_BUILD_IMAGE_ID=${MOCK_DOCKER_BUILD_IMAGE_ID:-$fixture_image_id}" \
@@ -837,6 +839,18 @@ assert_deploy_final_scan_rejects_post_build_root_env() {
     assert_no_container_root_secret_leak "$fixture_dir/deploy-root-env.stdout" "$fixture_dir/deploy-root-env.stderr"
     rm -f -- "$fixture_dir/container-root-after-build"
     wait_for_fixture_path_state missing /fixture/container-root-after-build
+}
+
+assert_deploy_rejects_prefixed_candidate_id_without_publish() {
+    local call_index command
+    if MOCK_CANDIDATE_CONTAINER_ID="sha256:$fixture_candidate_id" run_deploy_with_captured_output; then
+        fail 'deployment accepted a sha256-prefixed candidate container ID'
+    fi
+    parse_calls
+    for ((call_index = 0; call_index < ${#call_starts[@]}; call_index += 1)); do
+        command="$(call_command_basename "$call_index")"
+        [[ "$command" != rsync && "$command" != systemctl && "$command" != curl ]] || fail 'invalid candidate ID continued deployment after Docker run'
+    done
 }
 
 assert_rollback_scans_relevant_container_envs_before_writes() {
@@ -1589,7 +1603,7 @@ for selected_check in "${selected_checks[@]}"; do
     case "$selected_check" in
         bootstrap) assert_bootstrap_rejects_invalid_passwords_and_existing_container; assert_bootstrap_creates_internal_redis ;;
         migration) assert_migration_requires_confirmation_without_writes; run_migration ;;
-        deploy) assert_deploy_refuses_main_or_dirty_checkout_without_writes; assert_deploy_preflight_failures_do_not_write; assert_deploy_rejects_root_bootstrap_env_without_writes; assert_deploy_rejects_root_bootstrap_snapshot_race_without_writes; assert_deploy_uses_snapshot_after_source_env_mutates; assert_deploy_scans_relevant_container_envs_before_writes; assert_candidate_failure_restores_old_application; assert_publish_failures_restore_application; assert_successful_deploy_order_and_manifest; assert_deploy_final_scan_rejects_post_build_root_env ;;
+        deploy) assert_deploy_refuses_main_or_dirty_checkout_without_writes; assert_deploy_preflight_failures_do_not_write; assert_deploy_rejects_root_bootstrap_env_without_writes; assert_deploy_rejects_root_bootstrap_snapshot_race_without_writes; assert_deploy_uses_snapshot_after_source_env_mutates; assert_deploy_scans_relevant_container_envs_before_writes; assert_candidate_failure_restores_old_application; assert_publish_failures_restore_application; assert_successful_deploy_order_and_manifest; assert_deploy_final_scan_rejects_post_build_root_env; assert_deploy_rejects_prefixed_candidate_id_without_publish ;;
         rollback) assert_rollback_scans_relevant_container_envs_before_writes; run_rollback ;;
         root-bootstrap) assert_root_bootstrap_requires_confirmation_without_writes; assert_root_bootstrap_requires_root_without_writes; assert_root_bootstrap_rejects_invalid_checkout_without_writes; assert_root_bootstrap_rejects_unsafe_source_metadata_without_writes; assert_root_bootstrap_rejects_invalid_credentials_without_writes; assert_root_bootstrap_rejects_unsafe_snapshot_metadata_without_writes; assert_root_bootstrap_rejects_env_credentials_without_writes; assert_root_bootstrap_rejects_missing_docker_dependencies_without_writes; assert_root_bootstrap_rejects_invalid_image_id_without_run; assert_root_bootstrap_uses_readonly_secret_mounts ;;
         docs) assert_operator_documentation ;;
