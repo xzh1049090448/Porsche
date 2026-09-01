@@ -1123,6 +1123,19 @@ assert_operator_documentation() {
     done
     grep -Fq 'ROOT_BOOTSTRAP_USERNAME and ROOT_BOOTSTRAP_PASSWORD must be empty before deployment' "$source_repo/README.md" || fail 'README does not require empty Root bootstrap keys before deployment'
     grep -Fq 'docker inspect of the long-running application must not contain ROOT_BOOTSTRAP_' "$source_repo/README.md" || fail 'README does not require inspection for Root bootstrap keys in the long-running application'
+    grep -Fq 'username=<Root-username>' "$source_repo/README.md" || fail 'README missing Root credential schema username field'
+    grep -Fq 'password=<Root-password>' "$source_repo/README.md" || fail 'README missing Root credential schema password field'
+    grep -Fq 'exactly two lines' "$source_repo/README.md" || fail 'README missing Root credential line-count requirement'
+    grep -Fq 'no blank, unknown, or duplicate lines' "$source_repo/README.md" || fail 'README missing Root credential structural restrictions'
+    grep -Fq '12–20 characters' "$source_repo/README.md" || fail 'README missing Root password length requirement'
+    grep -Fq 'tracked tree has no modifications' "$source_repo/README.md" || fail 'README missing tracked checkout requirement'
+    grep -Fq 'untracked and ignored files do not enter the image' "$source_repo/README.md" || fail 'README missing verified archive build-input boundary'
+    grep -Fq '/opt/Porsche` must be root-owned and not writable by group or other' "$source_repo/README.md" || fail 'README missing backend directory permission requirement'
+    grep -Fq 'docker container inspect ai-gateway-go --format' "$source_repo/README.md" || fail 'README missing safe long-running application inspect command'
+    grep -Fq "'{{range .Config.Env}}{{println .}}{{end}}'" "$source_repo/README.md" || fail 'README missing inspect format template'
+    grep -Fq "grep -Eq '^ROOT_BOOTSTRAP_(USERNAME|PASSWORD)='" "$source_repo/README.md" || fail 'README missing Root bootstrap environment check pattern'
+    grep -Fq 'PIPESTATUS' "$source_repo/README.md" || fail 'README does not capture pipeline statuses for Root bootstrap environment check'
+    grep -Fq 'PASS: long-running application has no ROOT_BOOTSTRAP_ environment keys' "$source_repo/README.md" || fail 'README missing pass condition for Root bootstrap environment check'
     grep -Fq 'Application rollback does not automatically roll back the database migration' "$source_repo/README.md" || fail 'README does not state that application rollback leaves the migration applied'
 }
 

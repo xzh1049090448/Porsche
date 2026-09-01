@@ -240,6 +240,27 @@ owned by `root:root` and mode `0600`; do not put either value in Git, shell
 history, `/opt/Porsche/.env`, a Docker argument, or a command that prints the
 credential file.
 
+The credential file has exactly two lines in either order: `username` and
+`password` each occur exactly once, with no blank, unknown, or duplicate lines.
+Both values must be non-empty and have no surrounding whitespace. The username
+is 3–20 ASCII letters, digits, `_`, or `-`; the password is 12–20 characters,
+contains upper- and lower-case letters, a digit, and a symbol, and is not the
+development default. This is a schema, not a copyable secret or a command to
+print the file:
+
+```text
+# schema — placeholders only; provision actual values through the root-controlled workflow
+username=<Root-username>
+password=<Root-password>
+```
+
+Before the wrapper runs, its source paths must meet these metadata conditions:
+`/opt/Porsche` must be root-owned and not writable by group or other; its
+`.env` must be a regular, non-symlink `root:root` file with mode `0600`; the
+credential parent directory must be root-owned and not writable by group or
+other; and the credential file must be a regular, non-symlink `root:root` file
+with mode `0600`.
+
 Remove the two Root bootstrap keys from `/opt/Porsche/.env`, or leave only
 their empty declarations. `ROOT_BOOTSTRAP_USERNAME and ROOT_BOOTSTRAP_PASSWORD must be empty before deployment`.
 Then run the explicit one-shot wrapper:
@@ -248,13 +269,15 @@ Then run the explicit one-shot wrapper:
 sudo bash deploy/auth-acceptance-bootstrap-root.sh --confirm-auth-root-bootstrap
 ```
 
-The wrapper verifies the clean, remote-matching feature checkout, builds from
-that verified Git archive, makes root-controlled private snapshots of the
-environment and credential files, and mounts only those snapshots read-only in
-a disposable `--rm` container. It invokes the bootstrap using the immutable
-Docker image ID returned by that build, rather than a mutable image tag. After
-it returns, verify by an approved administrative database query that the Root
-count is exactly one, and verify that the temporary container has disappeared.
+The wrapper requires that the tracked tree has no modifications and that its
+branch and remote SHA match. It builds from the verified SHA's Git archive, so
+untracked and ignored files do not enter the image. It makes root-controlled
+private snapshots of the environment and credential files, and mounts only
+those snapshots read-only in a disposable `--rm` container. It invokes the
+bootstrap using the immutable Docker image ID returned by that build, rather
+than a mutable image tag. After it returns, verify by an approved
+administrative database query that the Root count is exactly one, and verify
+that the temporary container has disappeared.
 
 Only after that check, use a candidate deployment whose private environment
 snapshot has no Root values:
@@ -267,6 +290,25 @@ The deployment validates both branches, configuration, Redis, Docker network,
 and Nginx before replacing the application. It health-checks the candidate,
 publishes staged frontend assets, and retains the old container plus static
 snapshot in a root-owned rollback manifest. Confirm that `docker inspect of the long-running application must not contain ROOT_BOOTSTRAP_`.
+Use the following check exactly as a safety check: it passes environment entries
+directly from Docker to `grep -q`, never writes them to the terminal or a file,
+and never captures them in a command substitution.
+
+```bash
+if docker container inspect ai-gateway-go --format '{{range .Config.Env}}{{println .}}{{end}}' |
+    grep -Eq '^ROOT_BOOTSTRAP_(USERNAME|PASSWORD)='; then
+    pipeline_status=("${PIPESTATUS[@]}")
+else
+    pipeline_status=("${PIPESTATUS[@]}")
+fi
+
+case "${pipeline_status[0]}:${pipeline_status[1]}" in
+    0:1) echo 'PASS: long-running application has no ROOT_BOOTSTRAP_ environment keys' ;;
+    0:0) echo 'FAIL: ROOT_BOOTSTRAP_ is present in the long-running application' >&2; exit 1 ;;
+    *) echo 'FAIL: could not inspect/check long-running application environment' >&2; exit 1 ;;
+esac
+```
+
 Run browser acceptance through the production HTTPS domain using the
 root-only credential file, not copied credentials: test registration, login,
 refresh, logout, session revocation, admin role boundaries, and page reloads.
