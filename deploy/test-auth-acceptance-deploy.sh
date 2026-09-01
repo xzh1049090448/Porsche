@@ -739,6 +739,11 @@ assert_deploy_rejects_root_bootstrap_env_without_writes() {
             wait_for_fixture_file "$backend_dir/.env" /fixture/Porsche/.env
             fail 'Root bootstrap secret appeared in deployment output'
         }
+        ! grep -Fq 'root_admin' "$stdout_file" "$stderr_file" || {
+            cp "$backend_dir/.env.clean" "$backend_dir/.env"
+            wait_for_fixture_file "$backend_dir/.env" /fixture/Porsche/.env
+            fail 'Root bootstrap username appeared in deployment output'
+        }
         assert_no_deploy_preparation_calls
         assert_no_docker_or_rsync_writes
         assert_no_dangerous_calls
