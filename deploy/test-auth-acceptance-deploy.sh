@@ -1207,7 +1207,7 @@ assert_operator_documentation() {
     grep -Fq 'password=<Root-password>' "$source_repo/README.md" || fail 'README missing Root credential schema password field'
     grep -Fq 'exactly two lines' "$source_repo/README.md" || fail 'README missing Root credential line-count requirement'
     grep -Fq 'no blank, unknown, or duplicate lines' "$source_repo/README.md" || fail 'README missing Root credential structural restrictions'
-    grep -Fq '12–20 characters' "$source_repo/README.md" || fail 'README missing Root password length requirement'
+    grep -Fq '12–20 bytes' "$source_repo/README.md" || fail 'README missing Root password byte-length requirement'
     grep -Fq 'tracked tree has no modifications' "$source_repo/README.md" || fail 'README missing tracked checkout requirement'
     grep -Fq 'untracked and ignored files do not enter the image' "$source_repo/README.md" || fail 'README missing verified archive build-input boundary'
     grep -Fq '/opt/Porsche` must be root-owned and not writable by group or other' "$source_repo/README.md" || fail 'README missing backend directory permission requirement'
