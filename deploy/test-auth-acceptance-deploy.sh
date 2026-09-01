@@ -38,10 +38,10 @@ trap cleanup EXIT
 
 selected_checks=("$@")
 if (( ${#selected_checks[@]} == 0 )); then
-    selected_checks=(bootstrap migration deploy rollback docs)
+    selected_checks=(bootstrap migration deploy rollback root-bootstrap docs)
 fi
 for selected_check in "${selected_checks[@]}"; do
-    case "$selected_check" in bootstrap|migration|deploy|rollback|docs) ;; *) fail "unknown check: $selected_check" ;; esac
+    case "$selected_check" in bootstrap|migration|deploy|rollback|root-bootstrap|docs) ;; *) fail "unknown check: $selected_check" ;; esac
 done
 
 script_for_check() {
@@ -50,6 +50,7 @@ script_for_check() {
         migration) printf '%s\n' auth-acceptance-migrate.sh ;;
         deploy) printf '%s\n' auth-acceptance-deploy.sh ;;
         rollback) printf '%s\n' auth-acceptance-rollback.sh ;;
+        root-bootstrap) printf '%s\n' auth-acceptance-bootstrap-root.sh ;;
     esac
 }
 
@@ -63,11 +64,29 @@ command_log="$fixture_dir/commands.nul"
 run_count=0
 mkdir -p "$backend_dir/deploy" "$frontend_dir/.git" "$frontend_dir/dist" "$frontend_root" "$manifest_dir" "$mock_dir"
 printf 'APP_ENV=production\nREDIS_URL=redis://:fixture-only-password@porsche-redis:6379/0\nALLOWED_HOSTS=aiportcloud.com\nAUTH_TRUSTED_ORIGINS=https://aiportcloud.com\n' >"$backend_dir/.env"
+printf 'APP_ENV=production\nREDIS_URL=redis://:fixture-only-password@porsche-redis:6379/0\nALLOWED_HOSTS=aiportcloud.com\nAUTH_TRUSTED_ORIGINS=https://aiportcloud.com\nROOT_BOOTSTRAP_USERNAME=env-root\n' >"$backend_dir/.env.root-username"
+printf 'APP_ENV=production\nREDIS_URL=redis://:fixture-only-password@porsche-redis:6379/0\nALLOWED_HOSTS=aiportcloud.com\nAUTH_TRUSTED_ORIGINS=https://aiportcloud.com\nROOT_BOOTSTRAP_PASSWORD=env-password\n' >"$backend_dir/.env.root-password"
+cp "$backend_dir/.env" "$backend_dir/.env.clean"
 printf '<!doctype html><title>fixture</title>\n' >"$frontend_dir/dist/index.html"
 printf 'fixture-static\n' >"$frontend_root/index.html"
 printf '' >"$fixture_dir/redis-password-empty"
 printf 'too-short\n' >"$fixture_dir/redis-password-short"
 printf 'fixture-only-password-that-is-longer-than-thirty-two-bytes\n' >"$fixture_dir/redis-password-valid"
+printf 'username=root_admin\npassword=Aa1@fixture-secret\n' >"$fixture_dir/root-acceptance-credentials"
+printf 'username root_admin\npassword=Aa1@fixture-secret\n' >"$fixture_dir/root-credentials-malformed"
+printf 'username=root_admin\nusername=second\npassword=Aa1@fixture-secret\n' >"$fixture_dir/root-credentials-duplicate"
+printf 'username=root_admin\npassword=Aa1@fixture-secret\nrole=root\n' >"$fixture_dir/root-credentials-unknown"
+printf 'username=root_admin\n' >"$fixture_dir/root-credentials-missing-password"
+printf 'password=Aa1@fixture-secret\n' >"$fixture_dir/root-credentials-missing-username"
+printf 'username=\npassword=Aa1@fixture-secret\n' >"$fixture_dir/root-credentials-empty-username"
+printf 'username=root_admin\npassword=\n' >"$fixture_dir/root-credentials-empty-password"
+printf 'username= root_admin\npassword=Aa1@fixture-secret\n' >"$fixture_dir/root-credentials-leading-space"
+printf 'username=root_admin\npassword=Aa1@fixture-secret \n' >"$fixture_dir/root-credentials-trailing-space"
+printf 'username=root_admin\n\npassword=Aa1@fixture-secret\n' >"$fixture_dir/root-credentials-blank-line"
+printf 'username=root_admin\npassword=Aa1@fixture-secret\n' >"$fixture_dir/root-credentials-valid-restore"
+for credential_fixture in "$fixture_dir"/root-acceptance-credentials "$fixture_dir"/root-credentials-*; do
+    chmod 600 "$credential_fixture"
+done
 touch "$backend_dir/.git"
 
 if ! docker image inspect bash:5.2 >/dev/null 2>&1; then
@@ -87,7 +106,7 @@ fi
 # Existing target scripts are copied into the fake checkout. The fixture is the
 # only host path mounted into the disposable container, so source-repository
 # paths and files are unreachable while an entrypoint runs.
-for check in bootstrap migration deploy rollback; do
+for check in bootstrap migration deploy rollback root-bootstrap; do
     script_name="$(script_for_check "$check")"
     source_script="$script_dir/$script_name"
     fixture_script="$backend_dir/deploy/$script_name"
@@ -105,7 +124,7 @@ assert_fixture_entrypoint() {
     [[ -x "$fixture_script" ]] || fail "missing fixture entrypoint: $fixture_script"
 }
 
-mocked_commands=(docker git npm rsync nginx systemctl flock id curl sleep chown)
+mocked_commands=(docker git npm rsync nginx systemctl flock id curl sleep chown stat)
 
 # NUL command log protocol: BEGIN/call-id, ARG/value pairs, END/call-id.
 # Both spaces and the literal __END__ are ordinary argument values.
@@ -119,6 +138,7 @@ write_mock() {
         'printf "END\\0%s\\0" "$call_id" >>"$COMMAND_LOG"' \
         'case "$command_name" in' \
         '  id) [[ "${1:-}" == "-u" ]] && printf "0\\n" ;;' \
+        '  stat) case "${1:-}:${2:-}" in "-c:%u") printf "%s\\n" "${MOCK_CREDENTIAL_UID:-0}" ;; "-c:%a") printf "%s\\n" "${MOCK_CREDENTIAL_MODE:-600}" ;; *) exit 78 ;; esac ;;' \
         '  git) case "${1:-}" in branch) if [[ "$PWD" == */Porsche-Web ]]; then printf "%s\\n" "${MOCK_FRONTEND_BRANCH:-feature/session-auth-frontend}"; else printf "%s\\n" "${MOCK_BRANCH:-feature/user-registration-management}"; fi ;; rev-parse) if [[ "${2:-}" == origin/* && "${MOCK_REMOTE_MISMATCH:-0}" == 1 ]]; then printf "remote-sha\\n"; else printf "%s\\n" "${MOCK_GIT_SHA:-fixture-sha}"; fi ;; diff|status) [[ "${MOCK_GIT_DIRTY:-0}" == 0 ]] ;; esac ;;' \
         '  docker) case "${1:-}" in network) [[ "${MOCK_DOCKER_INSPECT_RESULT:-success}" == success ]] ;; container) if [[ "${2:-}" == inspect && "${3:-}" == porsche-redis ]]; then [[ "${MOCK_REDIS_EXISTS:-0}" == 1 ]]; else [[ "${MOCK_DOCKER_INSPECT_RESULT:-success}" == success ]]; fi ;; run) [[ "${MOCK_DOCKER_RUN_RESULT:-success}" == success ]] || exit 71; if [[ "${2:-}" == --rm && "${3:-}" == --entrypoint && "${4:-}" == id && "${5:-}" == redis:7-alpine && "${6:-}" == -u && "${7:-}" == redis ]]; then printf "999\\n"; elif [[ "${2:-}" == --rm && "${3:-}" == --entrypoint && "${4:-}" == id && "${5:-}" == redis:7-alpine && "${6:-}" == -g && "${7:-}" == redis ]]; then printf "1000\\n"; else printf "fixture-container\\n"; fi ;; esac ;;' \
         '  curl) [[ "${MOCK_HEALTH_RESULT:-success}" == success ]] || exit 72 ;;' \
@@ -248,6 +268,25 @@ require_call() {
     fail "missing expected mock invocation: $*"
 }
 
+require_exact_call() {
+    local call_index
+    parse_calls
+    for ((call_index = 0; call_index < ${#call_starts[@]}; call_index += 1)); do
+        [[ "${call_lengths[$call_index]}" == "$#" ]] || continue
+        call_has_prefix "$call_index" "$@" && return 0
+    done
+    fail "missing expected exact mock invocation"
+}
+
+assert_no_call_token() {
+    local forbidden="$1" call_index
+    parse_calls
+    for ((call_index = 0; call_index < ${#call_starts[@]}; call_index += 1)); do
+        call_has_token "$call_index" "$forbidden" && fail "forbidden mocked invocation option: $forbidden"
+    done
+    return 0
+}
+
 require_candidate_rollback_renames() {
     local call_index start target saw_save=0 saw_restore=0
     parse_calls
@@ -370,6 +409,7 @@ run_entrypoint() {
         --env "COMMAND_LOG=/fixture/commands-$run_count.nul" \
         --env PORSCHE_AUTH_ACCEPTANCE_TEST_MODE=1 \
         --env PORSCHE_AUTH_ACCEPTANCE_BACKEND_DIR=/fixture/Porsche \
+        --env PORSCHE_AUTH_ACCEPTANCE_ROOT_CREDENTIALS_FILE=/fixture/root-acceptance-credentials \
         --env PORSCHE_AUTH_ACCEPTANCE_FRONTEND_DIR=/fixture/Porsche-Web \
         --env PORSCHE_AUTH_ACCEPTANCE_FRONTEND_ROOT=/fixture/www/porsche-web \
         --env PORSCHE_AUTH_ACCEPTANCE_MANIFEST_DIR=/fixture/manifests \
@@ -381,6 +421,8 @@ run_entrypoint() {
         --env "MOCK_REMOTE_MISMATCH=${MOCK_REMOTE_MISMATCH:-0}" \
         --env "MOCK_GIT_SHA=${MOCK_GIT_SHA:-fixture-sha}" \
         --env "MOCK_GIT_DIRTY=${MOCK_GIT_DIRTY:-0}" \
+        --env "MOCK_CREDENTIAL_UID=${MOCK_CREDENTIAL_UID:-0}" \
+        --env "MOCK_CREDENTIAL_MODE=${MOCK_CREDENTIAL_MODE:-600}" \
         --env "MOCK_DOCKER_INSPECT_RESULT=${MOCK_DOCKER_INSPECT_RESULT:-success}" \
         --env "MOCK_REDIS_EXISTS=${MOCK_REDIS_EXISTS:-0}" \
         --env "MOCK_DOCKER_RUN_RESULT=${MOCK_DOCKER_RUN_RESULT:-success}" \
@@ -391,6 +433,21 @@ run_entrypoint() {
         --env "MOCK_SYSTEMCTL_RESULT=${MOCK_SYSTEMCTL_RESULT:-success}" \
         --env "MOCK_FLOCK_RESULT=${MOCK_FLOCK_RESULT:-success}" \
         bash:5.2 "/fixture/Porsche/deploy/$entrypoint" "$@"
+}
+
+wait_for_fixture_file() {
+    local host_path="$1" container_path="$2" expected attempt
+    expected="$(cksum <"$host_path")"
+    for attempt in $(seq 1 10); do
+        if docker run --rm --network none --read-only --cap-drop ALL \
+            --security-opt no-new-privileges --tmpfs /tmp:rw,noexec,nosuid,nodev \
+            --mount "type=bind,src=$fixture_dir,dst=/fixture" \
+            bash:5.2 sh -c 'actual="$(cksum <"$1")"; [ "$actual" = "$2" ]' sh "$container_path" "$expected" >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 0.2
+    done
+    fail 'isolated fixture did not observe an updated test input'
 }
 
 run_bootstrap() { run_entrypoint bootstrap-auth-redis.sh; }
@@ -405,6 +462,18 @@ assert_migration_requires_confirmation_without_writes() {
     assert_no_docker_or_rsync_writes
 }
 run_deploy() { MOCK_REDIS_EXISTS=1 run_entrypoint auth-acceptance-deploy.sh; }
+run_root_bootstrap() {
+    local stdout_file="$fixture_dir/root-bootstrap.stdout" stderr_file="$fixture_dir/root-bootstrap.stderr" status
+    : >"$stdout_file"
+    : >"$stderr_file"
+    if run_entrypoint auth-acceptance-bootstrap-root.sh --confirm-auth-root-bootstrap >"$stdout_file" 2>"$stderr_file"; then
+        status=0
+    else
+        status=$?
+    fi
+    assert_root_secret_absent
+    return "$status"
+}
 run_rollback() {
     if [[ ! -f "$manifest_dir/rollback.env" ]]; then
         run_deploy
@@ -477,6 +546,116 @@ assert_publish_failures_restore_application() {
     require_candidate_rollback_renames
 }
 
+assert_root_secret_absent() {
+    local secret='Aa1@fixture-secret' credential_contents
+    credential_contents="$(printf 'username=root_admin\npassword=Aa1@fixture-secret')"
+    ! grep -aFq "$secret" "$command_log" "$fixture_dir/root-bootstrap.stdout" "$fixture_dir/root-bootstrap.stderr" || fail 'root credential secret appeared in argv or output'
+    ! grep -aFq 'username=root_admin' "$command_log" "$fixture_dir/root-bootstrap.stdout" "$fixture_dir/root-bootstrap.stderr" || fail 'root credential username appeared in argv or output'
+    ! grep -aFq "$credential_contents" "$command_log" "$fixture_dir/root-bootstrap.stdout" "$fixture_dir/root-bootstrap.stderr" || fail 'root credential file contents appeared in argv or output'
+}
+
+assert_root_bootstrap_requires_confirmation_without_writes() {
+    local stdout_file="$fixture_dir/root-bootstrap.stdout" stderr_file="$fixture_dir/root-bootstrap.stderr"
+    : >"$stdout_file"; : >"$stderr_file"
+    if run_entrypoint auth-acceptance-bootstrap-root.sh >"$stdout_file" 2>"$stderr_file"; then fail 'root bootstrap accepted no confirmation'; fi
+    assert_root_secret_absent
+    assert_no_docker_or_rsync_writes
+    assert_no_dangerous_calls
+    : >"$stdout_file"; : >"$stderr_file"
+    if run_entrypoint auth-acceptance-bootstrap-root.sh --wrong-confirmation >"$stdout_file" 2>"$stderr_file"; then fail 'root bootstrap accepted wrong confirmation'; fi
+    assert_root_secret_absent
+    assert_no_docker_or_rsync_writes
+    assert_no_dangerous_calls
+}
+
+assert_root_bootstrap_rejects_invalid_checkout_without_writes() {
+    if MOCK_BRANCH=main run_root_bootstrap; then fail 'root bootstrap accepted wrong branch'; fi
+    assert_no_docker_or_rsync_writes
+    assert_no_dangerous_calls
+    if MOCK_GIT_DIRTY=1 run_root_bootstrap; then fail 'root bootstrap accepted dirty checkout'; fi
+    assert_no_docker_or_rsync_writes
+    assert_no_dangerous_calls
+    if MOCK_REMOTE_MISMATCH=1 run_root_bootstrap; then fail 'root bootstrap accepted remote SHA mismatch'; fi
+    assert_no_docker_or_rsync_writes
+    assert_no_dangerous_calls
+}
+
+assert_root_bootstrap_rejects_invalid_credentials_without_writes() {
+    local credential_file="$fixture_dir/root-acceptance-credentials"
+    mv "$credential_file" "$credential_file.real"
+    ln -s root-acceptance-credentials.real "$credential_file"
+    if run_root_bootstrap; then fail 'root bootstrap accepted credential symlink'; fi
+    assert_no_docker_or_rsync_writes
+    assert_no_dangerous_calls
+    rm "$credential_file"
+    mv "$credential_file.real" "$credential_file"
+    wait_for_fixture_file "$credential_file" /fixture/root-acceptance-credentials
+
+    if MOCK_CREDENTIAL_MODE=640 run_root_bootstrap; then fail 'root bootstrap accepted non-600 credential mode'; fi
+    assert_no_docker_or_rsync_writes
+    assert_no_dangerous_calls
+    if MOCK_CREDENTIAL_UID=1000 run_root_bootstrap; then fail 'root bootstrap accepted non-root credential owner'; fi
+    assert_no_docker_or_rsync_writes
+    assert_no_dangerous_calls
+
+    local invalid_credentials=(
+        root-credentials-malformed
+        root-credentials-duplicate
+        root-credentials-unknown
+        root-credentials-missing-password
+        root-credentials-missing-username
+        root-credentials-empty-username
+        root-credentials-empty-password
+        root-credentials-leading-space
+        root-credentials-trailing-space
+        root-credentials-blank-line
+    )
+    local invalid
+    for invalid in "${invalid_credentials[@]}"; do
+        mv "$fixture_dir/$invalid" "$credential_file"
+        wait_for_fixture_file "$credential_file" /fixture/root-acceptance-credentials
+        if run_root_bootstrap; then fail 'root bootstrap accepted malformed credentials'; fi
+        assert_no_docker_or_rsync_writes
+        assert_no_dangerous_calls
+    done
+    mv "$fixture_dir/root-credentials-valid-restore" "$credential_file"
+    wait_for_fixture_file "$credential_file" /fixture/root-acceptance-credentials
+}
+
+assert_root_bootstrap_rejects_env_credentials_without_writes() {
+    mv "$backend_dir/.env.root-username" "$backend_dir/.env"
+    grep -Fqx 'ROOT_BOOTSTRAP_USERNAME=env-root' "$backend_dir/.env" || fail 'fixture did not write ROOT_BOOTSTRAP_USERNAME test input'
+    wait_for_fixture_file "$backend_dir/.env" /fixture/Porsche/.env
+    if run_root_bootstrap; then fail 'root bootstrap accepted ROOT_BOOTSTRAP_USERNAME from .env'; fi
+    assert_no_docker_or_rsync_writes
+    assert_no_dangerous_calls
+    mv "$backend_dir/.env.root-password" "$backend_dir/.env"
+    grep -Fqx 'ROOT_BOOTSTRAP_PASSWORD=env-password' "$backend_dir/.env" || fail 'fixture did not write ROOT_BOOTSTRAP_PASSWORD test input'
+    wait_for_fixture_file "$backend_dir/.env" /fixture/Porsche/.env
+    if run_root_bootstrap; then fail 'root bootstrap accepted ROOT_BOOTSTRAP_PASSWORD from .env'; fi
+    assert_no_docker_or_rsync_writes
+    assert_no_dangerous_calls
+    mv "$backend_dir/.env.clean" "$backend_dir/.env"
+    wait_for_fixture_file "$backend_dir/.env" /fixture/Porsche/.env
+}
+
+assert_root_bootstrap_uses_readonly_secret_mounts() {
+    if ! run_root_bootstrap; then
+        fail "root bootstrap happy path failed: $(<"$fixture_dir/root-bootstrap.stderr")"
+    fi
+    require_call docker network inspect porsche-app
+    require_call docker container inspect porsche-mysql
+    require_exact_call docker build --tag ai-gateway-go:auth-acceptance /fixture/Porsche
+    require_exact_call docker run --rm --network porsche-app \
+        --mount type=bind,src=/fixture/Porsche/.env,dst=/app/.env,readonly \
+        --mount type=bind,src=/fixture/root-acceptance-credentials,dst=/run/secrets/root-bootstrap,readonly \
+        ai-gateway-go:auth-acceptance /app/bootstrap-root --credentials-file /run/secrets/root-bootstrap
+    assert_no_call_token --env
+    assert_no_call_token --env-file
+    assert_root_secret_absent
+    assert_no_dangerous_calls
+}
+
 assert_operator_documentation() {
     local command
     for command in \
@@ -496,6 +675,7 @@ for selected_check in "${selected_checks[@]}"; do
         migration) assert_migration_requires_confirmation_without_writes; run_migration ;;
         deploy) assert_deploy_refuses_main_or_dirty_checkout_without_writes; assert_deploy_preflight_failures_do_not_write; assert_candidate_failure_restores_old_application; assert_publish_failures_restore_application; assert_successful_deploy_order_and_manifest ;;
         rollback) run_rollback ;;
+        root-bootstrap) assert_root_bootstrap_requires_confirmation_without_writes; assert_root_bootstrap_rejects_invalid_checkout_without_writes; assert_root_bootstrap_rejects_invalid_credentials_without_writes; assert_root_bootstrap_rejects_env_credentials_without_writes; assert_root_bootstrap_uses_readonly_secret_mounts ;;
         docs) assert_operator_documentation ;;
     esac
 done
