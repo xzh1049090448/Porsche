@@ -1,6 +1,32 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+reject_untrusted_test_mode() {
+    echo 'test mode is restricted to isolated fixture container' >&2
+    exit 1
+}
+
+validate_test_mode_binding() {
+    local resolved_entrypoint override_name override_value
+    resolved_entrypoint="$(readlink -f -- "${BASH_SOURCE[0]}" 2>/dev/null || true)"
+    [[ "${PORSCHE_AUTH_ACCEPTANCE_TEST_CONTAINER:-}" == 1 &&
+        "$resolved_entrypoint" == /fixture/Porsche/deploy/auth-acceptance-deploy.sh &&
+        -f /.dockerenv && ! -S /var/run/docker.sock ]] || reject_untrusted_test_mode
+    for override_name in "$@"; do
+        override_value="${!override_name:-}"
+        [[ "$override_value" == /fixture/* ]] || reject_untrusted_test_mode
+    done
+}
+
+if [[ "${PORSCHE_AUTH_ACCEPTANCE_TEST_MODE:-0}" == 1 ]]; then
+    validate_test_mode_binding \
+        PORSCHE_AUTH_ACCEPTANCE_BACKEND_DIR \
+        PORSCHE_AUTH_ACCEPTANCE_FRONTEND_DIR \
+        PORSCHE_AUTH_ACCEPTANCE_FRONTEND_ROOT \
+        PORSCHE_AUTH_ACCEPTANCE_LOCK_FILE \
+        PORSCHE_AUTH_ACCEPTANCE_MANIFEST_DIR
+fi
+
 (( $# == 0 )) || { echo 'auth-acceptance-deploy.sh accepts no arguments' >&2; exit 64; }
 [[ "$(id -u)" == 0 ]] || { echo 'auth-acceptance-deploy.sh must run as root' >&2; exit 1; }
 
@@ -24,11 +50,10 @@ fi
 
 reject_root_bootstrap_env_keys() {
     local env_file="$1" key
-    # This is deliberately a literal deny guard, not an .env parser. Only an
-    # exact, empty declaration is permitted; every other line mentioning a
-    # Root bootstrap key is rejected without exposing its contents.
+    # This is deliberately a literal deny guard, not an .env parser. Every
+    # line mentioning a Root bootstrap key is rejected without exposing it.
     for key in ROOT_BOOTSTRAP_USERNAME ROOT_BOOTSTRAP_PASSWORD; do
-        if ! awk -v key="$key" '$0 != key "=" && index($0, key) { exit 1 }' "$env_file" >/dev/null 2>&1; then
+        if ! awk -v key="$key" 'index($0, key) { exit 1 }' "$env_file" >/dev/null 2>&1; then
             echo "$key is not allowed in the application .env" >&2
             return 1
         fi

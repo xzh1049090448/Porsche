@@ -1,6 +1,29 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+reject_untrusted_test_mode() {
+    echo 'test mode is restricted to isolated fixture container' >&2
+    exit 1
+}
+
+validate_test_mode_binding() {
+    local resolved_entrypoint override_name override_value
+    resolved_entrypoint="$(readlink -f -- "${BASH_SOURCE[0]}" 2>/dev/null || true)"
+    [[ "${PORSCHE_AUTH_ACCEPTANCE_TEST_CONTAINER:-}" == 1 &&
+        "$resolved_entrypoint" == /fixture/Porsche/deploy/auth-acceptance-rollback.sh &&
+        -f /.dockerenv && ! -S /var/run/docker.sock ]] || reject_untrusted_test_mode
+    for override_name in "$@"; do
+        override_value="${!override_name:-}"
+        [[ "$override_value" == /fixture/* ]] || reject_untrusted_test_mode
+    done
+}
+
+if [[ "${PORSCHE_AUTH_ACCEPTANCE_TEST_MODE:-0}" == 1 ]]; then
+    validate_test_mode_binding \
+        PORSCHE_AUTH_ACCEPTANCE_FRONTEND_ROOT \
+        PORSCHE_AUTH_ACCEPTANCE_MANIFEST_DIR
+fi
+
 [[ $# == 1 && "$1" == --confirm-auth-acceptance-rollback ]] || {
     echo 'usage: auth-acceptance-rollback.sh --confirm-auth-acceptance-rollback' >&2; exit 64;
 }

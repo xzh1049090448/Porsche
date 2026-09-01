@@ -1,6 +1,29 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+reject_untrusted_test_mode() {
+    echo 'test mode is restricted to isolated fixture container' >&2
+    exit 1
+}
+
+validate_test_mode_binding() {
+    local resolved_entrypoint override_name override_value
+    resolved_entrypoint="$(readlink -f -- "${BASH_SOURCE[0]}" 2>/dev/null || true)"
+    [[ "${PORSCHE_AUTH_ACCEPTANCE_TEST_CONTAINER:-}" == 1 &&
+        "$resolved_entrypoint" == /fixture/Porsche/deploy/auth-acceptance-bootstrap-root.sh &&
+        -f /.dockerenv && ! -S /var/run/docker.sock ]] || reject_untrusted_test_mode
+    for override_name in "$@"; do
+        override_value="${!override_name:-}"
+        [[ "$override_value" == /fixture/* ]] || reject_untrusted_test_mode
+    done
+}
+
+if [[ "${PORSCHE_AUTH_ACCEPTANCE_TEST_MODE:-0}" == 1 ]]; then
+    validate_test_mode_binding \
+        PORSCHE_AUTH_ACCEPTANCE_BACKEND_DIR \
+        PORSCHE_AUTH_ACCEPTANCE_ROOT_CREDENTIALS_FILE
+fi
+
 [[ $# == 1 && "$1" == --confirm-auth-root-bootstrap ]] || {
     echo 'usage: auth-acceptance-bootstrap-root.sh --confirm-auth-root-bootstrap' >&2
     exit 64
@@ -18,11 +41,13 @@ if [[ "${PORSCHE_AUTH_ACCEPTANCE_TEST_MODE:-0}" == 1 ]]; then
     CREDENTIALS_FILE="${PORSCHE_AUTH_ACCEPTANCE_ROOT_CREDENTIALS_FILE:?test credentials file is required}"
 fi
 
-snapshot_dir="$(mktemp -d "${TMPDIR:-/tmp}/porsche-auth-root-bootstrap.XXXXXX")"
+snapshot_dir="$(mktemp -d /tmp/porsche-root-bootstrap.XXXXXX)"
 cleanup() {
     local status=$?
     trap - EXIT
-    rm -rf -- "$snapshot_dir"
+    if [[ "$snapshot_dir" =~ ^/tmp/porsche-root-bootstrap\.[A-Za-z0-9]+$ && -d "$snapshot_dir" && ! -L "$snapshot_dir" ]]; then
+        rm -rf -- "$snapshot_dir"
+    fi
     exit "$status"
 }
 trap cleanup EXIT
@@ -121,16 +146,12 @@ validate_snapshot_env() {
     while IFS= read -r line || [[ -n "$line" ]]; do
         case "$line" in
             *ROOT_BOOTSTRAP_USERNAME*)
-                [[ "$line" == ROOT_BOOTSTRAP_USERNAME= ]] || {
-                    echo 'backend .env contains a forbidden ROOT_BOOTSTRAP_USERNAME declaration' >&2
-                    return 1
-                }
+                echo 'backend .env contains a forbidden ROOT_BOOTSTRAP_USERNAME declaration' >&2
+                return 1
                 ;;
             *ROOT_BOOTSTRAP_PASSWORD*)
-                [[ "$line" == ROOT_BOOTSTRAP_PASSWORD= ]] || {
-                    echo 'backend .env contains a forbidden ROOT_BOOTSTRAP_PASSWORD declaration' >&2
-                    return 1
-                }
+                echo 'backend .env contains a forbidden ROOT_BOOTSTRAP_PASSWORD declaration' >&2
+                return 1
                 ;;
         esac
     done <"$snapshot_env"

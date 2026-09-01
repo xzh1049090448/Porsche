@@ -1,6 +1,29 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+reject_untrusted_test_mode() {
+    echo 'test mode is restricted to isolated fixture container' >&2
+    exit 1
+}
+
+validate_test_mode_binding() {
+    local resolved_entrypoint override_name override_value
+    resolved_entrypoint="$(readlink -f -- "${BASH_SOURCE[0]}" 2>/dev/null || true)"
+    [[ "${PORSCHE_AUTH_ACCEPTANCE_TEST_CONTAINER:-}" == 1 &&
+        "$resolved_entrypoint" == /fixture/Porsche/deploy/bootstrap-auth-redis.sh &&
+        -f /.dockerenv && ! -S /var/run/docker.sock ]] || reject_untrusted_test_mode
+    for override_name in "$@"; do
+        override_value="${!override_name:-}"
+        [[ "$override_value" == /fixture/* ]] || reject_untrusted_test_mode
+    done
+}
+
+if [[ "${PORSCHE_AUTH_ACCEPTANCE_TEST_MODE:-0}" == 1 ]]; then
+    validate_test_mode_binding \
+        PORSCHE_AUTH_ACCEPTANCE_REDIS_CONFIG_DIR \
+        PORSCHE_AUTH_ACCEPTANCE_TEST_PASSWORD_FILE
+fi
+
 (( $# == 0 )) || { echo 'bootstrap-auth-redis.sh accepts no arguments' >&2; exit 64; }
 [[ "$(id -u)" == 0 ]] || { echo 'bootstrap-auth-redis.sh must run as root' >&2; exit 1; }
 

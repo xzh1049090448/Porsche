@@ -70,10 +70,16 @@ mkdir -p "$backend_dir/deploy" "$backend_dir/cmd/bootstrap-root" "$backend_dir/v
 printf 'APP_ENV=production\nREDIS_URL=redis://:fixture-only-password@porsche-redis:6379/0\nALLOWED_HOSTS=aiportcloud.com\nAUTH_TRUSTED_ORIGINS=https://aiportcloud.com\n' >"$backend_dir/.env"
 printf 'APP_ENV=production\nREDIS_URL=redis://:fixture-only-password@porsche-redis:6379/0\nALLOWED_HOSTS=aiportcloud.com\nAUTH_TRUSTED_ORIGINS=https://aiportcloud.com\nROOT_BOOTSTRAP_USERNAME=env-root\n' >"$backend_dir/.env.root-username"
 printf 'APP_ENV=production\nREDIS_URL=redis://:fixture-only-password@porsche-redis:6379/0\nALLOWED_HOSTS=aiportcloud.com\nAUTH_TRUSTED_ORIGINS=https://aiportcloud.com\nROOT_BOOTSTRAP_PASSWORD=env-password\n' >"$backend_dir/.env.root-password"
+printf 'APP_ENV=production\nREDIS_URL=redis://:fixture-only-password@porsche-redis:6379/0\nALLOWED_HOSTS=aiportcloud.com\nAUTH_TRUSTED_ORIGINS=https://aiportcloud.com\nROOT_BOOTSTRAP_USERNAME=\n' >"$backend_dir/.env.root-empty-username"
+printf 'APP_ENV=production\nREDIS_URL=redis://:fixture-only-password@porsche-redis:6379/0\nALLOWED_HOSTS=aiportcloud.com\nAUTH_TRUSTED_ORIGINS=https://aiportcloud.com\nROOT_BOOTSTRAP_PASSWORD=\n' >"$backend_dir/.env.root-empty-password"
 cp "$backend_dir/.env" "$backend_dir/.env.clean"
-printf 'ROOT_BOOTSTRAP_USERNAME=\nROOT_BOOTSTRAP_PASSWORD=\n' >>"$backend_dir/.env.clean"
+if grep -Fq ROOT_BOOTSTRAP_ "$backend_dir/.env.clean"; then
+    fail 'clean fixture environment must not contain any Root bootstrap declaration'
+fi
 printf 'APP_ENV=production\nREDIS_URL=redis://:fixture-only-password@porsche-redis:6379/0\nALLOWED_HOSTS=aiportcloud.com\nAUTH_TRUSTED_ORIGINS=https://aiportcloud.com\nROOT_BOOTSTRAP_USERNAME=root_admin\n' >"$backend_dir/.env.deploy-root-username"
 printf 'APP_ENV=production\nREDIS_URL=redis://:fixture-only-password@porsche-redis:6379/0\nALLOWED_HOSTS=aiportcloud.com\nAUTH_TRUSTED_ORIGINS=https://aiportcloud.com\nROOT_BOOTSTRAP_PASSWORD=Aa1@fixture-secret\n' >"$backend_dir/.env.deploy-root-password"
+printf 'APP_ENV=production\nREDIS_URL=redis://:fixture-only-password@porsche-redis:6379/0\nALLOWED_HOSTS=aiportcloud.com\nAUTH_TRUSTED_ORIGINS=https://aiportcloud.com\nROOT_BOOTSTRAP_USERNAME=\n' >"$backend_dir/.env.deploy-root-empty-username"
+printf 'APP_ENV=production\nREDIS_URL=redis://:fixture-only-password@porsche-redis:6379/0\nALLOWED_HOSTS=aiportcloud.com\nAUTH_TRUSTED_ORIGINS=https://aiportcloud.com\nROOT_BOOTSTRAP_PASSWORD=\n' >"$backend_dir/.env.deploy-root-empty-password"
 printf 'APP_ENV=production\n ROOT_BOOTSTRAP_USERNAME=root_admin\n' >"$backend_dir/.env.deploy-root-leading-whitespace"
 printf 'APP_ENV=production\nexport ROOT_BOOTSTRAP_PASSWORD=Aa1@fixture-secret\n' >"$backend_dir/.env.deploy-root-export"
 printf 'APP_ENV=production\nROOT_BOOTSTRAP_USERNAME = root_admin\n' >"$backend_dir/.env.deploy-root-spaced"
@@ -170,7 +176,7 @@ write_mock() {
         'rmdir "$lock_dir"' \
         'case "$command_name" in' \
         '  id) [[ "${1:-}" == "-u" ]] && printf "%s\\n" "${MOCK_ID_UID:-0}" ;;' \
-        '  stat) if [[ "${MOCK_ENTRYPOINT:-}" != auth-acceptance-bootstrap-root.sh ]]; then exec /bin/stat "$@"; fi; path="${4:-}"; case "$path" in /fixture/root-acceptance-credentials) stat_uid="${MOCK_CREDENTIAL_UID:-0}"; stat_mode="${MOCK_CREDENTIAL_MODE:-600}" ;; /fixture) stat_uid="${MOCK_CREDENTIAL_PARENT_UID:-0}"; stat_mode="${MOCK_CREDENTIAL_PARENT_MODE:-700}" ;; /fixture/Porsche/.env) stat_uid="${MOCK_ENV_UID:-0}"; stat_mode="${MOCK_ENV_MODE:-600}" ;; /fixture/Porsche) stat_uid="${MOCK_BACKEND_UID:-0}"; stat_mode="${MOCK_BACKEND_MODE:-755}" ;; /tmp/porsche-auth-root-bootstrap.*\/root-bootstrap) stat_uid="${MOCK_SNAPSHOT_CREDENTIAL_UID:-0}"; stat_mode="${MOCK_SNAPSHOT_CREDENTIAL_MODE:-600}" ;; /tmp/porsche-auth-root-bootstrap.*\/.env) stat_uid="${MOCK_SNAPSHOT_ENV_UID:-0}"; stat_mode="${MOCK_SNAPSHOT_ENV_MODE:-600}" ;; *) exit 78 ;; esac; case "${1:-}:${2:-}" in "-c:%u") printf "%s\\n" "$stat_uid" ;; "-c:%a") printf "%s\\n" "$stat_mode" ;; *) exit 78 ;; esac ;;' \
+        '  stat) if [[ "${MOCK_ENTRYPOINT:-}" != auth-acceptance-bootstrap-root.sh ]]; then exec /bin/stat "$@"; fi; path="${4:-}"; case "$path" in /fixture/root-acceptance-credentials) stat_uid="${MOCK_CREDENTIAL_UID:-0}"; stat_mode="${MOCK_CREDENTIAL_MODE:-600}" ;; /fixture) stat_uid="${MOCK_CREDENTIAL_PARENT_UID:-0}"; stat_mode="${MOCK_CREDENTIAL_PARENT_MODE:-700}" ;; /fixture/Porsche/.env) stat_uid="${MOCK_ENV_UID:-0}"; stat_mode="${MOCK_ENV_MODE:-600}" ;; /fixture/Porsche) stat_uid="${MOCK_BACKEND_UID:-0}"; stat_mode="${MOCK_BACKEND_MODE:-755}" ;; /tmp/porsche-root-bootstrap.*\/root-bootstrap) stat_uid="${MOCK_SNAPSHOT_CREDENTIAL_UID:-0}"; stat_mode="${MOCK_SNAPSHOT_CREDENTIAL_MODE:-600}" ;; /tmp/porsche-root-bootstrap.*\/.env) stat_uid="${MOCK_SNAPSHOT_ENV_UID:-0}"; stat_mode="${MOCK_SNAPSHOT_ENV_MODE:-600}" ;; *) exit 78 ;; esac; case "${1:-}:${2:-}" in "-c:%u") printf "%s\\n" "$stat_uid" ;; "-c:%a") printf "%s\\n" "$stat_mode" ;; *) exit 78 ;; esac ;;' \
         '  cp) if [[ "${MOCK_ENTRYPOINT:-}" == auth-acceptance-bootstrap-root.sh ]]; then [[ $# == 5 && "$1" == --preserve=mode,ownership && "$2" == --no-dereference && "$3" == -- ]] || exit 80; exec /bin/cp -pP -- "$4" "$5"; else exec /bin/cp "$@"; fi ;;' \
         '  git) case "${1:-}" in fetch) if [[ "${MOCK_ENV_MUTATE_ON_GIT_FETCH:-0}" == 1 ]]; then printf "APP_ENV=production\\nREDIS_URL=redis://:fixture-only-password@porsche-redis:6379/0\\nALLOWED_HOSTS=aiportcloud.com\\nAUTH_TRUSTED_ORIGINS=https://aiportcloud.com\\nROOT_BOOTSTRAP_PASSWORD=Aa1@fixture-secret\\n" >/fixture/Porsche/.env; fi ;; branch) if [[ "$PWD" == */Porsche-Web ]]; then printf "%s\\n" "${MOCK_FRONTEND_BRANCH:-feature/session-auth-frontend}"; else printf "%s\\n" "${MOCK_BRANCH:-feature/user-registration-management}"; fi ;; rev-parse) if [[ "${2:-}" == origin/* && "${MOCK_REMOTE_MISMATCH:-0}" == 1 ]]; then printf "remote-sha\\n"; else printf "%s\\n" "${MOCK_GIT_SHA:-fixture-sha}"; fi ;; status) [[ "${MOCK_GIT_STATUS_FAILURE:-0}" == 0 ]] || exit 79; [[ "${MOCK_GIT_DIRTY:-0}" == 0 ]] || printf " M tracked-fixture\\n" ;; diff) [[ "${MOCK_GIT_DIRTY:-0}" == 0 ]] ;; archive) : ;; esac ;;' \
         '  docker) case "${1:-}" in network) if [[ "${2:-}" == inspect && "${3:-}" == porsche-app ]]; then [[ "${MOCK_NETWORK_INSPECT_RESULT:-success}" == success ]]; else [[ "${MOCK_DOCKER_INSPECT_RESULT:-success}" == success ]]; fi ;; container) if [[ "${2:-}" == inspect && "${3:-}" == ai-gateway-go && -n "${MOCK_DOC_INSPECT_STATE:-}" ]]; then case "$MOCK_DOC_INSPECT_STATE" in clean) printf "APP_ENV=production\\n" ;; present) printf "ROOT_BOOTSTRAP_PASSWORD=fixture-doc-root-secret\\n" ;; other) printf "ROOT_BOOTSTRAP_OTHER=fixture-doc-other-secret\\n" ;; error) exit 79 ;; *) exit 78 ;; esac; elif [[ "${2:-}" == inspect && "${3:-}" == porsche-redis ]]; then [[ "${MOCK_REDIS_EXISTS:-0}" == 1 ]]; elif [[ "${2:-}" == inspect && "${3:-}" == porsche-mysql ]]; then [[ "${MOCK_MYSQL_EXISTS:-1}" == 1 && "${MOCK_MYSQL_INSPECT_RESULT:-success}" == success ]]; else [[ "${MOCK_DOCKER_INSPECT_RESULT:-success}" == success ]]; fi ;; build) [[ "${2:-}" != --quiet ]] || printf "%s\\n" "${MOCK_DOCKER_BUILD_IMAGE_ID:-}" ;; run) [[ "${MOCK_DOCKER_RUN_RESULT:-success}" == success ]] || exit 71; if [[ "${2:-}" == --rm && "${3:-}" == --entrypoint && "${4:-}" == id && "${5:-}" == redis:7-alpine && "${6:-}" == -u && "${7:-}" == redis ]]; then printf "999\\n"; elif [[ "${2:-}" == --rm && "${3:-}" == --entrypoint && "${4:-}" == id && "${5:-}" == redis:7-alpine && "${6:-}" == -g && "${7:-}" == redis ]]; then printf "1000\\n"; else printf "fixture-container\\n"; fi ;; esac ;;' \
@@ -394,9 +400,9 @@ require_root_bootstrap_snapshot_run() {
         [[ "${call_argv[$((start + 5))]}" == --mount && "${call_argv[$((start + 7))]}" == --mount ]] || continue
         env_mount="${call_argv[$((start + 6))]}"
         credential_mount="${call_argv[$((start + 8))]}"
-        [[ "$env_mount" =~ ^type=bind,src=(/tmp/porsche-auth-root-bootstrap\.[^,]+)/\.env,dst=/app/\.env,readonly$ ]] || continue
+        [[ "$env_mount" =~ ^type=bind,src=(/tmp/porsche-root-bootstrap\.[^,]+)/\.env,dst=/app/\.env,readonly$ ]] || continue
         env_snapshot_dir="${BASH_REMATCH[1]}"
-        [[ "$credential_mount" =~ ^type=bind,src=(/tmp/porsche-auth-root-bootstrap\.[^,]+)/root-bootstrap,dst=/run/secrets/root-bootstrap,readonly$ ]] || continue
+        [[ "$credential_mount" =~ ^type=bind,src=(/tmp/porsche-root-bootstrap\.[^,]+)/root-bootstrap,dst=/run/secrets/root-bootstrap,readonly$ ]] || continue
         credential_snapshot_dir="${BASH_REMATCH[1]}"
         [[ "$env_snapshot_dir" == "$credential_snapshot_dir" ]] || continue
         [[ "$env_mount" != *'/fixture/Porsche/.env'* && "$credential_mount" != *'/fixture/root-acceptance-credentials'* ]] || continue
@@ -420,11 +426,11 @@ require_root_bootstrap_snapshot_copies() {
         destination="${call_argv[$((start + 5))]}"
         case "$source" in
             /fixture/Porsche/.env)
-                [[ "$destination" =~ ^(/tmp/porsche-auth-root-bootstrap\.[^/]+)/\.env$ ]] || continue
+                [[ "$destination" =~ ^(/tmp/porsche-root-bootstrap\.[^/]+)/\.env$ ]] || continue
                 env_snapshot_dir="${BASH_REMATCH[1]}"
                 ;;
             /fixture/root-acceptance-credentials)
-                [[ "$destination" =~ ^(/tmp/porsche-auth-root-bootstrap\.[^/]+)/root-bootstrap$ ]] || continue
+                [[ "$destination" =~ ^(/tmp/porsche-root-bootstrap\.[^/]+)/root-bootstrap$ ]] || continue
                 credential_snapshot_dir="${BASH_REMATCH[1]}"
                 ;;
         esac
@@ -566,9 +572,14 @@ done
 
 run_entrypoint() {
     local entrypoint="$1" tmpdir_value=/tmp tmp_mount_option=--tmpfs tmp_mount_value=/tmp:rw,noexec,nosuid,nodev
+    local test_container_value="${MOCK_TEST_CONTAINER:-1}"
+    local -a test_container_env=()
     shift
     assert_fixture_entrypoint "$entrypoint"
-    if [[ "$entrypoint" == auth-acceptance-deploy.sh ]]; then
+    if [[ "$test_container_value" != absent ]]; then
+        test_container_env=(--env "PORSCHE_AUTH_ACCEPTANCE_TEST_CONTAINER=$test_container_value")
+    fi
+    if [[ "$entrypoint" == auth-acceptance-deploy.sh || "$entrypoint" == auth-acceptance-bootstrap-root.sh ]]; then
         tmpdir_value=/fixture/untrusted
         tmp_mount_option=--mount
         tmp_mount_value="type=bind,src=$fixture_tmp_dir,dst=/tmp"
@@ -583,6 +594,7 @@ run_entrypoint() {
         --env "COMMAND_LOG=/fixture/commands-$run_count.nul" \
         --env "MOCK_ENTRYPOINT=$entrypoint" \
         --env PORSCHE_AUTH_ACCEPTANCE_TEST_MODE=1 \
+        "${test_container_env[@]}" \
         --env "MOCK_ID_UID=${MOCK_ID_UID:-0}" \
         --env PORSCHE_AUTH_ACCEPTANCE_BACKEND_DIR=/fixture/Porsche \
         --env PORSCHE_AUTH_ACCEPTANCE_ROOT_CREDENTIALS_FILE=/fixture/root-acceptance-credentials \
@@ -701,6 +713,68 @@ run_rollback() {
     assert_no_dangerous_calls
 }
 
+assert_no_test_mode_side_effect_calls() {
+    local call_index command
+    parse_calls
+    for ((call_index = 0; call_index < ${#call_starts[@]}; call_index += 1)); do
+        command="$(call_command_basename "$call_index")"
+        case "$command" in
+            git|docker|rsync|npm) fail "test-mode rejection invoked $command at call $call_index" ;;
+        esac
+    done
+}
+
+assert_test_mode_requires_isolated_fixture_container() {
+    local entrypoint sentinel stdout_file stderr_file source_stdout source_stderr entrypoint_argument
+    for entrypoint in \
+        bootstrap-auth-redis.sh \
+        auth-acceptance-migrate.sh \
+        auth-acceptance-bootstrap-root.sh \
+        auth-acceptance-deploy.sh \
+        auth-acceptance-rollback.sh; do
+        case "$entrypoint" in
+            auth-acceptance-migrate.sh) entrypoint_argument=--confirm-auth-schema-migration ;;
+            auth-acceptance-bootstrap-root.sh) entrypoint_argument=--confirm-auth-root-bootstrap ;;
+            auth-acceptance-rollback.sh) entrypoint_argument=--confirm-auth-acceptance-rollback ;;
+            *) entrypoint_argument='' ;;
+        esac
+        for sentinel in absent 0; do
+            rm -f -- "$fixture_lock_file"
+            rm -rf -- "$fixture_dir/redis-config"
+            find "$fixture_tmp_dir" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+            stdout_file="$fixture_dir/test-mode-$entrypoint-$sentinel.stdout"
+            stderr_file="$fixture_dir/test-mode-$entrypoint-$sentinel.stderr"
+            if [[ -n "$entrypoint_argument" ]]; then
+                if MOCK_TEST_CONTAINER="$sentinel" run_entrypoint "$entrypoint" "$entrypoint_argument" >"$stdout_file" 2>"$stderr_file"; then
+                    fail "$entrypoint accepted test mode without the isolated-container sentinel ($sentinel)"
+                fi
+            elif MOCK_TEST_CONTAINER="$sentinel" run_entrypoint "$entrypoint" >"$stdout_file" 2>"$stderr_file"; then
+                fail "$entrypoint accepted test mode without the isolated-container sentinel ($sentinel)"
+            fi
+            [[ ! -s "$stdout_file" ]] || fail "$entrypoint emitted unexpected test-mode stdout"
+            grep -Fxq 'test mode is restricted to isolated fixture container' "$stderr_file" || fail "$entrypoint did not emit the generic test-mode rejection"
+            [[ ! -e "$fixture_lock_file" && ! -L "$fixture_lock_file" ]] || fail "$entrypoint created the deployment lock before test-mode rejection"
+            [[ ! -e "$fixture_dir/redis-config" && ! -L "$fixture_dir/redis-config" ]] || fail "$entrypoint wrote Redis configuration before test-mode rejection"
+            [[ -z "$(find "$fixture_tmp_dir" -mindepth 1 -maxdepth 1 -print -quit)" ]] || fail "$entrypoint wrote a temporary snapshot before test-mode rejection"
+            assert_no_test_mode_side_effect_calls
+        done
+
+        source_stdout="$fixture_dir/test-mode-source-$entrypoint.stdout"
+        source_stderr="$fixture_dir/test-mode-source-$entrypoint.stderr"
+        if [[ -n "$entrypoint_argument" ]]; then
+            if PORSCHE_AUTH_ACCEPTANCE_TEST_MODE=1 PORSCHE_AUTH_ACCEPTANCE_TEST_CONTAINER=1 \
+                bash "$script_dir/$entrypoint" "$entrypoint_argument" >"$source_stdout" 2>"$source_stderr"; then
+                fail "$entrypoint accepted test mode from a non-fixture source path"
+            fi
+        elif PORSCHE_AUTH_ACCEPTANCE_TEST_MODE=1 PORSCHE_AUTH_ACCEPTANCE_TEST_CONTAINER=1 \
+            bash "$script_dir/$entrypoint" >"$source_stdout" 2>"$source_stderr"; then
+            fail "$entrypoint accepted test mode from a non-fixture source path"
+        fi
+        [[ ! -s "$source_stdout" ]] || fail "$entrypoint emitted unexpected source-path test-mode stdout"
+        grep -Fxq 'test mode is restricted to isolated fixture container' "$source_stderr" || fail "$entrypoint exposed a non-fixture source-path test-mode rejection"
+    done
+}
+
 assert_bootstrap_creates_internal_redis() {
     run_bootstrap
     require_call docker run --rm --entrypoint id redis:7-alpine -u redis
@@ -816,6 +890,8 @@ assert_deploy_rejects_root_bootstrap_env_without_writes() {
     local root_env_fixtures=(
         '.env.deploy-root-username:ROOT_BOOTSTRAP_USERNAME'
         '.env.deploy-root-password:ROOT_BOOTSTRAP_PASSWORD'
+        '.env.deploy-root-empty-username:ROOT_BOOTSTRAP_USERNAME'
+        '.env.deploy-root-empty-password:ROOT_BOOTSTRAP_PASSWORD'
         '.env.deploy-root-leading-whitespace:ROOT_BOOTSTRAP_USERNAME'
         '.env.deploy-root-export:ROOT_BOOTSTRAP_PASSWORD'
         '.env.deploy-root-spaced:ROOT_BOOTSTRAP_USERNAME'
@@ -1051,6 +1127,19 @@ assert_root_bootstrap_rejects_env_credentials_without_writes() {
     assert_no_docker_or_rsync_writes
     assert_no_dangerous_calls
 
+    local empty_root_envs=(
+        .env.root-empty-username
+        .env.root-empty-password
+    )
+    local empty_root_env
+    for empty_root_env in "${empty_root_envs[@]}"; do
+        mv "$backend_dir/$empty_root_env" "$backend_dir/.env"
+        wait_for_fixture_file "$backend_dir/.env" /fixture/Porsche/.env
+        if run_root_bootstrap; then fail 'root bootstrap accepted an empty ROOT_BOOTSTRAP_ declaration from .env'; fi
+        assert_no_docker_or_rsync_writes
+        assert_no_dangerous_calls
+    done
+
     local alternate_envs=(
         .env.root-leading-whitespace
         .env.root-export
@@ -1105,6 +1194,7 @@ assert_root_bootstrap_uses_readonly_secret_mounts() {
     require_exact_call docker build --quiet --tag ai-gateway-go:auth-acceptance -
     require_root_bootstrap_snapshot_copies
     require_root_bootstrap_snapshot_run
+    [[ -z "$(find "$fixture_tmp_dir" -mindepth 1 -maxdepth 1 -name 'porsche-root-bootstrap.*' -print -quit)" ]] || fail 'root bootstrap did not clean up its private snapshot directory'
     assert_no_call_token --env
     assert_no_call_token --env-file
     assert_root_secret_absent
@@ -1227,6 +1317,12 @@ assert_operator_documentation() {
     grep -Fq 'Application rollback does not automatically roll back the database migration' "$source_repo/README.md" || fail 'README does not state that application rollback leaves the migration applied'
     assert_documented_root_inspect_check
 }
+
+# Test mode is a fixture convenience, never a substitute for the outer
+# read-only/no-network/no-socket container boundary above.
+if (( needs_container_fixture )); then
+    assert_test_mode_requires_isolated_fixture_container
+fi
 
 # Unreachable until target scripts exist; later tasks turn these contracts green.
 for selected_check in "${selected_checks[@]}"; do
