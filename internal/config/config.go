@@ -482,7 +482,7 @@ func strongRootBootstrapPassword(password string) bool {
 func ValidateRootBootstrapCredentials(username, password string) error {
 	username = strings.TrimSpace(username)
 	password = strings.TrimSpace(password)
-	if password == "change-me-root-bootstrap-password-for-dev-only" {
+	if isDefaultAuthSecret(password, "change-me-root-bootstrap-password-for-dev-only") && password != "" {
 		return fmt.Errorf("ROOT_BOOTSTRAP_PASSWORD must not use the development default in production")
 	}
 	if !validRootBootstrapUsername(username) || !strongRootBootstrapPassword(password) {
