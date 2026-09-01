@@ -57,7 +57,7 @@ if [[ "${PORSCHE_AUTH_ACCEPTANCE_TEST_MODE:-0}" == 1 ]]; then
     CREDENTIALS_FILE="${PORSCHE_AUTH_ACCEPTANCE_ROOT_CREDENTIALS_FILE:?test credentials file is required}"
 fi
 
-snapshot_dir="$(mktemp -d /tmp/porsche-root-bootstrap.XXXXXX)"
+snapshot_dir=''
 cleanup() {
     local status=$?
     trap - EXIT
@@ -67,9 +67,8 @@ cleanup() {
     exit "$status"
 }
 trap cleanup EXIT
-chmod 700 "$snapshot_dir"
-snapshot_env="$snapshot_dir/.env"
-snapshot_credentials="$snapshot_dir/root-bootstrap"
+snapshot_env=''
+snapshot_credentials=''
 
 check_checkout() {
     local current local_sha remote_sha status_output
@@ -158,27 +157,34 @@ validate_credentials_content() {
 }
 
 validate_snapshot_env() {
-    local line
-    while IFS= read -r line || [[ -n "$line" ]]; do
-        case "$line" in
-            *ROOT_BOOTSTRAP_USERNAME*)
-                echo 'backend .env contains a forbidden ROOT_BOOTSTRAP_USERNAME declaration' >&2
-                return 1
-                ;;
-            *ROOT_BOOTSTRAP_PASSWORD*)
-                echo 'backend .env contains a forbidden ROOT_BOOTSTRAP_PASSWORD declaration' >&2
-                return 1
-                ;;
-        esac
-    done <"$snapshot_env"
+    reject_root_bootstrap_env_keys "$snapshot_env"
+}
+
+reject_root_bootstrap_env_keys() {
+    local env_file="$1"
+    # Literal text rejection deliberately covers empty declarations and future
+    # ROOT_BOOTSTRAP_* names without parsing or echoing values.
+    if ! awk 'index($0, "ROOT_BOOTSTRAP_") { exit 1 }' "$env_file" >/dev/null 2>&1; then
+        echo 'backend .env contains forbidden ROOT_BOOTSTRAP_ declarations' >&2
+        return 1
+    fi
 }
 
 validate_root_controlled_directory "$BACKEND_DIR" 'backend directory'
 validate_root_file_metadata "$BACKEND_DIR/.env" 'backend .env'
+reject_root_bootstrap_env_keys "$BACKEND_DIR/.env"
 check_checkout
 credentials_parent="$(dirname -- "$CREDENTIALS_FILE")"
 validate_root_controlled_directory "$credentials_parent" 'root bootstrap credentials parent'
 validate_root_file_metadata "$CREDENTIALS_FILE" 'root bootstrap credentials'
+snapshot_dir="$(mktemp -d /tmp/porsche-root-bootstrap.XXXXXX)"
+[[ "$snapshot_dir" =~ ^/tmp/porsche-root-bootstrap\.[A-Za-z0-9]+$ && -d "$snapshot_dir" && ! -L "$snapshot_dir" ]] || {
+    echo 'root bootstrap snapshot directory is invalid' >&2
+    exit 1
+}
+chmod 700 "$snapshot_dir"
+snapshot_env="$snapshot_dir/.env"
+snapshot_credentials="$snapshot_dir/root-bootstrap"
 umask 077
 cp --preserve=mode,ownership --no-dereference -- "$BACKEND_DIR/.env" "$snapshot_env"
 cp --preserve=mode,ownership --no-dereference -- "$CREDENTIALS_FILE" "$snapshot_credentials"

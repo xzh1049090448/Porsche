@@ -780,6 +780,17 @@ run_root_bootstrap() {
     assert_root_secret_absent
     return "$status"
 }
+run_root_bootstrap_with_captured_output() {
+    local stdout_file="$fixture_dir/root-bootstrap-env.stdout" stderr_file="$fixture_dir/root-bootstrap-env.stderr" status
+    : >"$stdout_file"
+    : >"$stderr_file"
+    if run_entrypoint auth-acceptance-bootstrap-root.sh --confirm-auth-root-bootstrap >"$stdout_file" 2>"$stderr_file"; then
+        status=0
+    else
+        status=$?
+    fi
+    return "$status"
+}
 run_rollback() {
     if [[ ! -f "$manifest_dir/rollback.env" ]]; then
         run_deploy
@@ -1470,6 +1481,20 @@ assert_root_bootstrap_rejects_invalid_credentials_without_writes() {
     wait_for_fixture_file "$credential_file" /fixture/root-acceptance-credentials
 }
 
+assert_root_bootstrap_root_env_preflight_has_no_work() {
+    local call_index command
+    assert_no_docker_or_rsync_writes
+    parse_calls
+    for ((call_index = 0; call_index < ${#call_starts[@]}; call_index += 1)); do
+        command="$(call_command_basename "$call_index")"
+        [[ "$command" != cp ]] || fail 'Root environment preflight created a snapshot copy'
+        call_has_prefix "$call_index" git archive && fail 'Root environment preflight reached git archive'
+        call_has_prefix "$call_index" docker build && fail 'Root environment preflight reached Docker build'
+        call_has_prefix "$call_index" docker run && fail 'Root environment preflight reached Docker run'
+    done
+    return 0
+}
+
 assert_root_bootstrap_rejects_env_credentials_without_writes() {
     mv "$backend_dir/.env" "$backend_dir/.env.real"
     wait_for_fixture_path_state missing /fixture/Porsche/.env
@@ -1492,15 +1517,15 @@ assert_root_bootstrap_rejects_env_credentials_without_writes() {
     mv "$backend_dir/.env.root-username" "$backend_dir/.env"
     grep -Fqx 'ROOT_BOOTSTRAP_USERNAME=env-root' "$backend_dir/.env" || fail 'fixture did not write ROOT_BOOTSTRAP_USERNAME test input'
     wait_for_fixture_file "$backend_dir/.env" /fixture/Porsche/.env
-    if run_root_bootstrap; then fail 'root bootstrap accepted ROOT_BOOTSTRAP_USERNAME from .env'; fi
-    assert_no_docker_or_rsync_writes
-    assert_no_dangerous_calls
+    if run_root_bootstrap_with_captured_output; then fail 'root bootstrap accepted ROOT_BOOTSTRAP_USERNAME from .env'; fi
+    assert_root_bootstrap_root_env_preflight_has_no_work
+    ! grep -Fq env-root "$fixture_dir/root-bootstrap-env.stdout" "$fixture_dir/root-bootstrap-env.stderr" || fail 'Root environment preflight leaked username value'
     mv "$backend_dir/.env.root-password" "$backend_dir/.env"
     grep -Fqx 'ROOT_BOOTSTRAP_PASSWORD=env-password' "$backend_dir/.env" || fail 'fixture did not write ROOT_BOOTSTRAP_PASSWORD test input'
     wait_for_fixture_file "$backend_dir/.env" /fixture/Porsche/.env
-    if run_root_bootstrap; then fail 'root bootstrap accepted ROOT_BOOTSTRAP_PASSWORD from .env'; fi
-    assert_no_docker_or_rsync_writes
-    assert_no_dangerous_calls
+    if run_root_bootstrap_with_captured_output; then fail 'root bootstrap accepted ROOT_BOOTSTRAP_PASSWORD from .env'; fi
+    assert_root_bootstrap_root_env_preflight_has_no_work
+    ! grep -Fq env-password "$fixture_dir/root-bootstrap-env.stdout" "$fixture_dir/root-bootstrap-env.stderr" || fail 'Root environment preflight leaked password value'
 
     local empty_root_envs=(
         .env.root-empty-username
@@ -1510,10 +1535,15 @@ assert_root_bootstrap_rejects_env_credentials_without_writes() {
     for empty_root_env in "${empty_root_envs[@]}"; do
         mv "$backend_dir/$empty_root_env" "$backend_dir/.env"
         wait_for_fixture_file "$backend_dir/.env" /fixture/Porsche/.env
-        if run_root_bootstrap; then fail 'root bootstrap accepted an empty ROOT_BOOTSTRAP_ declaration from .env'; fi
-        assert_no_docker_or_rsync_writes
-        assert_no_dangerous_calls
+        if run_root_bootstrap_with_captured_output; then fail 'root bootstrap accepted an empty ROOT_BOOTSTRAP_ declaration from .env'; fi
+        assert_root_bootstrap_root_env_preflight_has_no_work
     done
+
+    mv "$backend_dir/.env.root-unknown" "$backend_dir/.env"
+    wait_for_fixture_file "$backend_dir/.env" /fixture/Porsche/.env
+    if run_root_bootstrap_with_captured_output; then fail 'root bootstrap accepted an unknown ROOT_BOOTSTRAP_ declaration from .env'; fi
+    assert_root_bootstrap_root_env_preflight_has_no_work
+    ! grep -Fq 'fixture-migration-root-secret' "$fixture_dir/root-bootstrap-env.stdout" "$fixture_dir/root-bootstrap-env.stderr" || fail 'Root environment preflight leaked unknown-key value'
 
     local alternate_envs=(
         .env.root-leading-whitespace
