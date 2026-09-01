@@ -84,6 +84,7 @@ printf 'username= root_admin\npassword=Aa1@fixture-secret\n' >"$fixture_dir/root
 printf 'username=root_admin\npassword=Aa1@fixture-secret \n' >"$fixture_dir/root-credentials-trailing-space"
 printf 'username=root_admin\n\npassword=Aa1@fixture-secret\n' >"$fixture_dir/root-credentials-blank-line"
 printf 'username=root_admin\npassword=Aa1@fixture-secret\n' >"$fixture_dir/root-credentials-valid-restore"
+mkdir "$fixture_dir/root-credentials-directory"
 for credential_fixture in "$fixture_dir"/root-acceptance-credentials "$fixture_dir"/root-credentials-*; do
     chmod 600 "$credential_fixture"
 done
@@ -140,7 +141,7 @@ write_mock() {
         '  id) [[ "${1:-}" == "-u" ]] && printf "0\\n" ;;' \
         '  stat) case "${1:-}:${2:-}" in "-c:%u") printf "%s\\n" "${MOCK_CREDENTIAL_UID:-0}" ;; "-c:%a") printf "%s\\n" "${MOCK_CREDENTIAL_MODE:-600}" ;; *) exit 78 ;; esac ;;' \
         '  git) case "${1:-}" in branch) if [[ "$PWD" == */Porsche-Web ]]; then printf "%s\\n" "${MOCK_FRONTEND_BRANCH:-feature/session-auth-frontend}"; else printf "%s\\n" "${MOCK_BRANCH:-feature/user-registration-management}"; fi ;; rev-parse) if [[ "${2:-}" == origin/* && "${MOCK_REMOTE_MISMATCH:-0}" == 1 ]]; then printf "remote-sha\\n"; else printf "%s\\n" "${MOCK_GIT_SHA:-fixture-sha}"; fi ;; diff|status) [[ "${MOCK_GIT_DIRTY:-0}" == 0 ]] ;; esac ;;' \
-        '  docker) case "${1:-}" in network) [[ "${MOCK_DOCKER_INSPECT_RESULT:-success}" == success ]] ;; container) if [[ "${2:-}" == inspect && "${3:-}" == porsche-redis ]]; then [[ "${MOCK_REDIS_EXISTS:-0}" == 1 ]]; else [[ "${MOCK_DOCKER_INSPECT_RESULT:-success}" == success ]]; fi ;; run) [[ "${MOCK_DOCKER_RUN_RESULT:-success}" == success ]] || exit 71; if [[ "${2:-}" == --rm && "${3:-}" == --entrypoint && "${4:-}" == id && "${5:-}" == redis:7-alpine && "${6:-}" == -u && "${7:-}" == redis ]]; then printf "999\\n"; elif [[ "${2:-}" == --rm && "${3:-}" == --entrypoint && "${4:-}" == id && "${5:-}" == redis:7-alpine && "${6:-}" == -g && "${7:-}" == redis ]]; then printf "1000\\n"; else printf "fixture-container\\n"; fi ;; esac ;;' \
+        '  docker) case "${1:-}" in network) if [[ "${2:-}" == inspect && "${3:-}" == porsche-app ]]; then [[ "${MOCK_NETWORK_INSPECT_RESULT:-success}" == success ]]; else [[ "${MOCK_DOCKER_INSPECT_RESULT:-success}" == success ]]; fi ;; container) if [[ "${2:-}" == inspect && "${3:-}" == porsche-redis ]]; then [[ "${MOCK_REDIS_EXISTS:-0}" == 1 ]]; elif [[ "${2:-}" == inspect && "${3:-}" == porsche-mysql ]]; then [[ "${MOCK_MYSQL_EXISTS:-1}" == 1 && "${MOCK_MYSQL_INSPECT_RESULT:-success}" == success ]]; else [[ "${MOCK_DOCKER_INSPECT_RESULT:-success}" == success ]]; fi ;; run) [[ "${MOCK_DOCKER_RUN_RESULT:-success}" == success ]] || exit 71; if [[ "${2:-}" == --rm && "${3:-}" == --entrypoint && "${4:-}" == id && "${5:-}" == redis:7-alpine && "${6:-}" == -u && "${7:-}" == redis ]]; then printf "999\\n"; elif [[ "${2:-}" == --rm && "${3:-}" == --entrypoint && "${4:-}" == id && "${5:-}" == redis:7-alpine && "${6:-}" == -g && "${7:-}" == redis ]]; then printf "1000\\n"; else printf "fixture-container\\n"; fi ;; esac ;;' \
         '  curl) [[ "${MOCK_HEALTH_RESULT:-success}" == success ]] || exit 72 ;;' \
         '  npm) [[ "${MOCK_NPM_RESULT:-success}" == success ]] || exit 73 ;;' \
         '  rsync) [[ "${MOCK_RSYNC_RESULT:-success}" == success ]] || exit 74 ;;' \
@@ -287,6 +288,18 @@ assert_no_call_token() {
     return 0
 }
 
+assert_no_sensitive_argv_fields() {
+    local field sought field_index
+    parse_calls
+    for ((field_index = 0; field_index < ${#call_argv[@]}; field_index += 1)); do
+        field="${call_argv[$field_index]}"
+        for sought in "$@"; do
+            [[ "$field" != *"$sought"* ]] || return 1
+        done
+    done
+    return 0
+}
+
 require_candidate_rollback_renames() {
     local call_index start target saw_save=0 saw_restore=0
     parse_calls
@@ -363,10 +376,22 @@ assert_parser_detects_optioned_write_calls() {
     [[ "$(call_command_basename 2)" == rsync ]] || fail 'write detector missed absolute rsync basename'
 }
 
+assert_structured_sensitive_argv_scan_contract() {
+    : >"$command_log"
+    printf 'BEGIN\0safe\0ARG\0docker\0ARG\0run\0ARG\0ordinary-value\0END\0safe\0' >"$command_log"
+    assert_no_sensitive_argv_fields sensitive-probe
+    : >"$command_log"
+    printf 'BEGIN\0unsafe\0ARG\0docker\0ARG\0run\0ARG\0prefix-sensitive-probe-suffix\0END\0unsafe\0' >"$command_log"
+    if assert_no_sensitive_argv_fields sensitive-probe; then
+        fail 'structured argv scanner accepted a sensitive field'
+    fi
+}
+
 assert_log_protocol_preserves_argv
 assert_parser_detects_absolute_docker
 assert_parser_detects_optioned_dangerous_calls
 assert_parser_detects_optioned_write_calls
+assert_structured_sensitive_argv_scan_contract
 
 assert_container_blocks_host_command_bypasses() {
     local host_probe="$source_repo/.auth-acceptance-host-probe"
@@ -423,6 +448,9 @@ run_entrypoint() {
         --env "MOCK_GIT_DIRTY=${MOCK_GIT_DIRTY:-0}" \
         --env "MOCK_CREDENTIAL_UID=${MOCK_CREDENTIAL_UID:-0}" \
         --env "MOCK_CREDENTIAL_MODE=${MOCK_CREDENTIAL_MODE:-600}" \
+        --env "MOCK_NETWORK_INSPECT_RESULT=${MOCK_NETWORK_INSPECT_RESULT:-success}" \
+        --env "MOCK_MYSQL_EXISTS=${MOCK_MYSQL_EXISTS:-1}" \
+        --env "MOCK_MYSQL_INSPECT_RESULT=${MOCK_MYSQL_INSPECT_RESULT:-success}" \
         --env "MOCK_DOCKER_INSPECT_RESULT=${MOCK_DOCKER_INSPECT_RESULT:-success}" \
         --env "MOCK_REDIS_EXISTS=${MOCK_REDIS_EXISTS:-0}" \
         --env "MOCK_DOCKER_RUN_RESULT=${MOCK_DOCKER_RUN_RESULT:-success}" \
@@ -448,6 +476,20 @@ wait_for_fixture_file() {
         sleep 0.2
     done
     fail 'isolated fixture did not observe an updated test input'
+}
+
+wait_for_fixture_path_state() {
+    local state="$1" container_path="$2" attempt
+    for attempt in $(seq 1 10); do
+        if docker run --rm --network none --read-only --cap-drop ALL \
+            --security-opt no-new-privileges --tmpfs /tmp:rw,noexec,nosuid,nodev \
+            --mount "type=bind,src=$fixture_dir,dst=/fixture" \
+            bash:5.2 sh -c 'case "$1" in missing) [ ! -e "$2" ] && [ ! -L "$2" ] ;; directory) [ -d "$2" ] ;; symlink) [ -L "$2" ] ;; *) exit 2 ;; esac' sh "$state" "$container_path" >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 0.2
+    done
+    fail 'isolated fixture did not observe an updated path state'
 }
 
 run_bootstrap() { run_entrypoint bootstrap-auth-redis.sh; }
@@ -549,9 +591,10 @@ assert_publish_failures_restore_application() {
 assert_root_secret_absent() {
     local secret='Aa1@fixture-secret' credential_contents
     credential_contents="$(printf 'username=root_admin\npassword=Aa1@fixture-secret')"
-    ! grep -aFq "$secret" "$command_log" "$fixture_dir/root-bootstrap.stdout" "$fixture_dir/root-bootstrap.stderr" || fail 'root credential secret appeared in argv or output'
-    ! grep -aFq 'username=root_admin' "$command_log" "$fixture_dir/root-bootstrap.stdout" "$fixture_dir/root-bootstrap.stderr" || fail 'root credential username appeared in argv or output'
-    ! grep -aFq "$credential_contents" "$command_log" "$fixture_dir/root-bootstrap.stdout" "$fixture_dir/root-bootstrap.stderr" || fail 'root credential file contents appeared in argv or output'
+    assert_no_sensitive_argv_fields "$secret" 'username=root_admin' "$credential_contents" || fail 'sensitive data appeared in a structured argv field'
+    ! grep -Fq "$secret" "$fixture_dir/root-bootstrap.stdout" "$fixture_dir/root-bootstrap.stderr" || fail 'root credential secret appeared in output'
+    ! grep -Fq 'username=root_admin' "$fixture_dir/root-bootstrap.stdout" "$fixture_dir/root-bootstrap.stderr" || fail 'root credential username appeared in output'
+    ! grep -Fq "$credential_contents" "$fixture_dir/root-bootstrap.stdout" "$fixture_dir/root-bootstrap.stderr" || fail 'root credential file contents appeared in output'
 }
 
 assert_root_bootstrap_requires_confirmation_without_writes() {
@@ -563,6 +606,11 @@ assert_root_bootstrap_requires_confirmation_without_writes() {
     assert_no_dangerous_calls
     : >"$stdout_file"; : >"$stderr_file"
     if run_entrypoint auth-acceptance-bootstrap-root.sh --wrong-confirmation >"$stdout_file" 2>"$stderr_file"; then fail 'root bootstrap accepted wrong confirmation'; fi
+    assert_root_secret_absent
+    assert_no_docker_or_rsync_writes
+    assert_no_dangerous_calls
+    : >"$stdout_file"; : >"$stderr_file"
+    if run_entrypoint auth-acceptance-bootstrap-root.sh --confirm-auth-root-bootstrap extra >"$stdout_file" 2>"$stderr_file"; then fail 'root bootstrap accepted extra arguments'; fi
     assert_root_secret_absent
     assert_no_docker_or_rsync_writes
     assert_no_dangerous_calls
@@ -583,7 +631,26 @@ assert_root_bootstrap_rejects_invalid_checkout_without_writes() {
 assert_root_bootstrap_rejects_invalid_credentials_without_writes() {
     local credential_file="$fixture_dir/root-acceptance-credentials"
     mv "$credential_file" "$credential_file.real"
+    wait_for_fixture_path_state missing /fixture/root-acceptance-credentials
+    if run_root_bootstrap; then fail 'root bootstrap accepted missing credentials'; fi
+    assert_no_docker_or_rsync_writes
+    assert_no_dangerous_calls
+    mv "$credential_file.real" "$credential_file"
+    wait_for_fixture_file "$credential_file" /fixture/root-acceptance-credentials
+
+    mv "$credential_file" "$credential_file.real"
+    mv "$fixture_dir/root-credentials-directory" "$credential_file"
+    wait_for_fixture_path_state directory /fixture/root-acceptance-credentials
+    if run_root_bootstrap; then fail 'root bootstrap accepted credential directory'; fi
+    assert_no_docker_or_rsync_writes
+    assert_no_dangerous_calls
+    rmdir "$credential_file"
+    mv "$credential_file.real" "$credential_file"
+    wait_for_fixture_file "$credential_file" /fixture/root-acceptance-credentials
+
+    mv "$credential_file" "$credential_file.real"
     ln -s root-acceptance-credentials.real "$credential_file"
+    wait_for_fixture_path_state symlink /fixture/root-acceptance-credentials
     if run_root_bootstrap; then fail 'root bootstrap accepted credential symlink'; fi
     assert_no_docker_or_rsync_writes
     assert_no_dangerous_calls
@@ -623,6 +690,24 @@ assert_root_bootstrap_rejects_invalid_credentials_without_writes() {
 }
 
 assert_root_bootstrap_rejects_env_credentials_without_writes() {
+    mv "$backend_dir/.env" "$backend_dir/.env.real"
+    wait_for_fixture_path_state missing /fixture/Porsche/.env
+    if run_root_bootstrap; then fail 'root bootstrap accepted missing backend .env'; fi
+    assert_no_docker_or_rsync_writes
+    assert_no_dangerous_calls
+    mv "$backend_dir/.env.real" "$backend_dir/.env"
+    wait_for_fixture_file "$backend_dir/.env" /fixture/Porsche/.env
+
+    mv "$backend_dir/.env" "$backend_dir/.env.real"
+    ln -s .env.real "$backend_dir/.env"
+    wait_for_fixture_path_state symlink /fixture/Porsche/.env
+    if run_root_bootstrap; then fail 'root bootstrap accepted backend .env symlink'; fi
+    assert_no_docker_or_rsync_writes
+    assert_no_dangerous_calls
+    rm "$backend_dir/.env"
+    mv "$backend_dir/.env.real" "$backend_dir/.env"
+    wait_for_fixture_file "$backend_dir/.env" /fixture/Porsche/.env
+
     mv "$backend_dir/.env.root-username" "$backend_dir/.env"
     grep -Fqx 'ROOT_BOOTSTRAP_USERNAME=env-root' "$backend_dir/.env" || fail 'fixture did not write ROOT_BOOTSTRAP_USERNAME test input'
     wait_for_fixture_file "$backend_dir/.env" /fixture/Porsche/.env
@@ -637,6 +722,23 @@ assert_root_bootstrap_rejects_env_credentials_without_writes() {
     assert_no_dangerous_calls
     mv "$backend_dir/.env.clean" "$backend_dir/.env"
     wait_for_fixture_file "$backend_dir/.env" /fixture/Porsche/.env
+}
+
+assert_root_bootstrap_rejects_missing_docker_dependencies_without_writes() {
+    if MOCK_NETWORK_INSPECT_RESULT=failure run_root_bootstrap; then fail 'root bootstrap accepted missing Docker network'; fi
+    require_call docker network inspect porsche-app
+    assert_no_docker_or_rsync_writes
+    assert_no_dangerous_calls
+    if MOCK_MYSQL_INSPECT_RESULT=failure run_root_bootstrap; then fail 'root bootstrap accepted missing MySQL container'; fi
+    require_call docker network inspect porsche-app
+    require_call docker container inspect porsche-mysql
+    assert_no_docker_or_rsync_writes
+    assert_no_dangerous_calls
+    if MOCK_MYSQL_EXISTS=0 run_root_bootstrap; then fail 'root bootstrap accepted absent MySQL container'; fi
+    require_call docker network inspect porsche-app
+    require_call docker container inspect porsche-mysql
+    assert_no_docker_or_rsync_writes
+    assert_no_dangerous_calls
 }
 
 assert_root_bootstrap_uses_readonly_secret_mounts() {
@@ -675,7 +777,7 @@ for selected_check in "${selected_checks[@]}"; do
         migration) assert_migration_requires_confirmation_without_writes; run_migration ;;
         deploy) assert_deploy_refuses_main_or_dirty_checkout_without_writes; assert_deploy_preflight_failures_do_not_write; assert_candidate_failure_restores_old_application; assert_publish_failures_restore_application; assert_successful_deploy_order_and_manifest ;;
         rollback) run_rollback ;;
-        root-bootstrap) assert_root_bootstrap_requires_confirmation_without_writes; assert_root_bootstrap_rejects_invalid_checkout_without_writes; assert_root_bootstrap_rejects_invalid_credentials_without_writes; assert_root_bootstrap_rejects_env_credentials_without_writes; assert_root_bootstrap_uses_readonly_secret_mounts ;;
+        root-bootstrap) assert_root_bootstrap_requires_confirmation_without_writes; assert_root_bootstrap_rejects_invalid_checkout_without_writes; assert_root_bootstrap_rejects_invalid_credentials_without_writes; assert_root_bootstrap_rejects_env_credentials_without_writes; assert_root_bootstrap_rejects_missing_docker_dependencies_without_writes; assert_root_bootstrap_uses_readonly_secret_mounts ;;
         docs) assert_operator_documentation ;;
     esac
 done
