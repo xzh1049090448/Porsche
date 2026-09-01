@@ -3,7 +3,28 @@ package main
 import (
 	"strings"
 	"testing"
+
+	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
+
+func TestQuietBootstrapDBUsesDiscardLogger(t *testing.T) {
+	gdb, err := gorm.Open(nil, &gorm.Config{Logger: logger.Default.LogMode(logger.Info)})
+	if err != nil {
+		t.Fatalf("gorm.Open() error = %v", err)
+	}
+
+	quiet := quietBootstrapDB(gdb)
+	if quiet == gdb {
+		t.Fatal("quietBootstrapDB() returned the source database instead of an isolated session")
+	}
+	if quiet.Config.Logger != logger.Discard {
+		t.Fatalf("quietBootstrapDB() logger = %T, want logger.Discard", quiet.Config.Logger)
+	}
+	if gdb.Config.Logger == logger.Discard {
+		t.Fatal("quietBootstrapDB() changed the source database logger")
+	}
+}
 
 func TestParseCredentials(t *testing.T) {
 	const validPassword = "Aa1@0123456789ab"

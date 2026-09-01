@@ -15,6 +15,8 @@ import (
 	"github.com/porsche/ai-gateway-go/internal/db"
 	"github.com/porsche/ai-gateway-go/internal/models"
 	"github.com/porsche/ai-gateway-go/internal/service"
+	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
 
 const invalidCredentialsFile = "invalid Root credentials file"
@@ -66,16 +68,21 @@ func run(args []string) error {
 		return errors.New("database handle unavailable")
 	}
 	defer sqlDB.Close()
+	bootstrapDB := quietBootstrapDB(gdb)
 
 	settings.RootBootstrapUsername = parsed.Username
 	settings.RootBootstrapPassword = parsed.Password
-	created, err := service.NewAuthService(settings, nil, gdb).BootstrapRoot(context.Background())
+	defer func() {
+		settings.RootBootstrapUsername = ""
+		settings.RootBootstrapPassword = ""
+	}()
+	created, err := service.NewAuthService(settings, nil, bootstrapDB).BootstrapRoot(context.Background())
 	if err != nil {
 		return errors.New("Root bootstrap failed")
 	}
 
 	var count int64
-	if err := gdb.Model(&models.User{}).Where("role = ?", models.UserRoleRoot).Count(&count).Error; err != nil {
+	if err := bootstrapDB.Model(&models.User{}).Where("role = ?", models.UserRoleRoot).Count(&count).Error; err != nil {
 		return errors.New("count Root users")
 	}
 	if count != 1 {
@@ -88,6 +95,10 @@ func run(args []string) error {
 	}
 	fmt.Println("Root bootstrap already consumed")
 	return nil
+}
+
+func quietBootstrapDB(gdb *gorm.DB) *gorm.DB {
+	return gdb.Session(&gorm.Session{Logger: logger.Discard})
 }
 
 func parseArgs(args []string) (string, error) {
