@@ -70,12 +70,19 @@ cleanup() {
         [[ -z "$manifest" ]] || rm -f -- "$manifest"
     fi
     [[ -z "$stage_dir" ]] || rm -rf -- "$stage_dir"
-    [[ -z "$env_snapshot_dir" ]] || rm -rf -- "$env_snapshot_dir"
+    if [[ "$env_snapshot_dir" =~ ^/tmp/porsche-auth-env\.[A-Za-z0-9]+$ && -d "$env_snapshot_dir" && ! -L "$env_snapshot_dir" ]]; then
+        rm -rf -- "$env_snapshot_dir"
+    fi
     exit "$status"
 }
 trap cleanup EXIT
 
-env_snapshot_dir="$(mktemp -d "${TMPDIR:-/tmp}/porsche-auth-env.XXXXXX")"
+snapshot_candidate="$(mktemp -d /tmp/porsche-auth-env.XXXXXX)"
+[[ "$snapshot_candidate" =~ ^/tmp/porsche-auth-env\.[A-Za-z0-9]+$ && -d "$snapshot_candidate" && ! -L "$snapshot_candidate" ]] || {
+    echo 'environment snapshot directory is invalid' >&2
+    exit 1
+}
+env_snapshot_dir="$snapshot_candidate"
 chmod 700 "$env_snapshot_dir"
 ENV_FILE="$env_snapshot_dir/.env"
 cp --no-dereference -- "$BACKEND_DIR/.env" "$ENV_FILE"
@@ -146,5 +153,8 @@ static_changed=1
 rsync --archive --delete --delay-updates "$stage_dir/" "$FRONTEND_ROOT/"
 systemctl reload nginx
 trap - EXIT
-rm -rf -- "$stage_dir" "$env_snapshot_dir"
+rm -rf -- "$stage_dir"
+if [[ "$env_snapshot_dir" =~ ^/tmp/porsche-auth-env\.[A-Za-z0-9]+$ && -d "$env_snapshot_dir" && ! -L "$env_snapshot_dir" ]]; then
+    rm -rf -- "$env_snapshot_dir"
+fi
 echo 'auth acceptance candidate deployed; database migration is not automatically rolled back'

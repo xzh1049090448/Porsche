@@ -64,8 +64,9 @@ command_log="$fixture_dir/commands.nul"
 fixture_image_id="sha256:$(printf '%064d' 0)"
 fixture_lock_file="$fixture_dir/auth-acceptance.lock"
 fixture_tmp_dir="$fixture_dir/tmp"
+fixture_untrusted_tmp_dir="$fixture_dir/untrusted"
 run_count=0
-mkdir -p "$backend_dir/deploy" "$backend_dir/cmd/bootstrap-root" "$backend_dir/vendor/fixture-malicious" "$frontend_dir/.git" "$frontend_dir/dist" "$frontend_root" "$manifest_dir" "$mock_dir" "$fixture_tmp_dir"
+mkdir -p "$backend_dir/deploy" "$backend_dir/cmd/bootstrap-root" "$backend_dir/vendor/fixture-malicious" "$frontend_dir/.git" "$frontend_dir/dist" "$frontend_root" "$manifest_dir" "$mock_dir" "$fixture_tmp_dir" "$fixture_untrusted_tmp_dir"
 printf 'APP_ENV=production\nREDIS_URL=redis://:fixture-only-password@porsche-redis:6379/0\nALLOWED_HOSTS=aiportcloud.com\nAUTH_TRUSTED_ORIGINS=https://aiportcloud.com\n' >"$backend_dir/.env"
 printf 'APP_ENV=production\nREDIS_URL=redis://:fixture-only-password@porsche-redis:6379/0\nALLOWED_HOSTS=aiportcloud.com\nAUTH_TRUSTED_ORIGINS=https://aiportcloud.com\nROOT_BOOTSTRAP_USERNAME=env-root\n' >"$backend_dir/.env.root-username"
 printf 'APP_ENV=production\nREDIS_URL=redis://:fixture-only-password@porsche-redis:6379/0\nALLOWED_HOSTS=aiportcloud.com\nAUTH_TRUSTED_ORIGINS=https://aiportcloud.com\nROOT_BOOTSTRAP_PASSWORD=env-password\n' >"$backend_dir/.env.root-password"
@@ -312,7 +313,8 @@ require_deploy_snapshot_env_file() {
         for ((offset = 0; offset + 1 < length; offset += 1)); do
             [[ "${call_argv[$((start + offset))]}" == --env-file ]] || continue
             env_file="${call_argv[$((start + offset + 1))]}"
-            [[ "$env_file" =~ ^/fixture/tmp/porsche-auth-env\.[A-Za-z0-9]+/\.env$ ]] || continue
+            [[ "$env_file" != /fixture/untrusted/porsche-auth-env.* ]] || fail 'application environment snapshot used caller-controlled TMPDIR'
+            [[ "$env_file" =~ ^/tmp/porsche-auth-env\.[A-Za-z0-9]+/\.env$ ]] || continue
             [[ "$env_file" != /fixture/Porsche/.env ]] || continue
             return 0
         done
@@ -554,15 +556,19 @@ for selected_check in "${selected_checks[@]}"; do
 done
 
 run_entrypoint() {
-    local entrypoint="$1" tmpdir_value=/tmp
+    local entrypoint="$1" tmpdir_value=/tmp tmp_mount_option=--tmpfs tmp_mount_value=/tmp:rw,noexec,nosuid,nodev
     shift
     assert_fixture_entrypoint "$entrypoint"
-    [[ "$entrypoint" != auth-acceptance-deploy.sh ]] || tmpdir_value=/fixture/tmp
+    if [[ "$entrypoint" == auth-acceptance-deploy.sh ]]; then
+        tmpdir_value=/fixture/untrusted
+        tmp_mount_option=--mount
+        tmp_mount_value="type=bind,src=$fixture_tmp_dir,dst=/tmp"
+    fi
     ((run_count += 1))
     command_log="$fixture_dir/commands-$run_count.nul"
     : >"$command_log"
     docker run --rm --network none --read-only --cap-drop ALL \
-        --security-opt no-new-privileges --tmpfs /tmp:rw,noexec,nosuid,nodev \
+        --security-opt no-new-privileges "$tmp_mount_option" "$tmp_mount_value" \
         --mount "type=bind,src=$fixture_dir,dst=/fixture" \
         --env PATH=/fixture/bin:/usr/local/bin:/usr/bin:/bin \
         --env "COMMAND_LOG=/fixture/commands-$run_count.nul" \
