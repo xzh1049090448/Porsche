@@ -23,23 +23,64 @@ if [[ "${PORSCHE_AUTH_ACCEPTANCE_TEST_MODE:-0}" == 1 ]]; then
 fi
 
 reject_root_bootstrap_env_keys() {
-    local key
+    local env_file="$1" key
     # This is deliberately a literal deny guard, not an .env parser. Only an
     # exact, empty declaration is permitted; every other line mentioning a
     # Root bootstrap key is rejected without exposing its contents.
     for key in ROOT_BOOTSTRAP_USERNAME ROOT_BOOTSTRAP_PASSWORD; do
-        if ! awk -v key="$key" '$0 != key "=" && index($0, key) { exit 1 }' "$BACKEND_DIR/.env" >/dev/null 2>&1; then
+        if ! awk -v key="$key" '$0 != key "=" && index($0, key) { exit 1 }' "$env_file" >/dev/null 2>&1; then
             echo "$key is not allowed in the application .env" >&2
             return 1
         fi
     done
 }
 
-[[ -f "$BACKEND_DIR/.env" ]] || { echo "missing $BACKEND_DIR/.env" >&2; exit 1; }
-reject_root_bootstrap_env_keys
+read_env_value() {
+    local key="$1"
+    sed -n "s/^${key}=//p" "$ENV_FILE" | tail -n 1
+}
+
+[[ -f "$BACKEND_DIR/.env" && ! -L "$BACKEND_DIR/.env" ]] || { echo "backend .env must be a regular non-symlink file" >&2; exit 1; }
+reject_root_bootstrap_env_keys "$BACKEND_DIR/.env"
 
 exec 9>"$LOCK_FILE"
 flock -n 9 || { echo 'another auth acceptance deployment is running' >&2; exit 1; }
+
+ENV_FILE=''
+env_snapshot_dir=''
+stage_dir=''
+rollback_name=''
+rollback_static=''
+manifest=''
+old_renamed=0
+candidate_started=0
+static_changed=0
+cleanup() {
+    local status=$?
+    if (( status != 0 )); then
+        (( candidate_started == 0 )) || docker rm -f -- "$APP_NAME" >/dev/null 2>&1 || true
+        if (( old_renamed )); then
+            docker rename -- "$rollback_name" "$APP_NAME" >/dev/null 2>&1 || true
+            docker start -- "$APP_NAME" >/dev/null 2>&1 || true
+        fi
+        if (( static_changed )) && [[ -n "$rollback_static" ]]; then
+            rsync --archive --delete --delay-updates "$rollback_static/" "$FRONTEND_ROOT/" || true
+            systemctl reload nginx || true
+        fi
+        [[ -z "$manifest" ]] || rm -f -- "$manifest"
+    fi
+    [[ -z "$stage_dir" ]] || rm -rf -- "$stage_dir"
+    [[ -z "$env_snapshot_dir" ]] || rm -rf -- "$env_snapshot_dir"
+    exit "$status"
+}
+trap cleanup EXIT
+
+env_snapshot_dir="$(mktemp -d "${TMPDIR:-/tmp}/porsche-auth-env.XXXXXX")"
+chmod 700 "$env_snapshot_dir"
+ENV_FILE="$env_snapshot_dir/.env"
+cp --no-dereference -- "$BACKEND_DIR/.env" "$ENV_FILE"
+[[ -f "$ENV_FILE" && ! -L "$ENV_FILE" ]] || { echo 'environment snapshot must be a regular non-symlink file' >&2; exit 1; }
+reject_root_bootstrap_env_keys "$ENV_FILE"
 
 check_checkout() {
     local dir="$1" branch="$2" current local_sha remote_sha status_output
@@ -52,11 +93,6 @@ check_checkout() {
     local_sha="$(git rev-parse HEAD)"
     remote_sha="$(git rev-parse "origin/$branch")"
     [[ "$local_sha" == "$remote_sha" ]] || { echo "remote SHA mismatch in $dir" >&2; return 1; }
-}
-
-read_env_value() {
-    local key="$1"
-    sed -n "s/^${key}=//p" "$BACKEND_DIR/.env" | tail -n 1
 }
 
 check_checkout "$BACKEND_DIR" "$BACKEND_BRANCH"
@@ -82,29 +118,7 @@ docker build --tag "$IMAGE_NAME" "$BACKEND_DIR"
 mkdir -p "$MANIFEST_DIR"
 chmod 700 "$MANIFEST_DIR"
 rollback_name="${APP_NAME}-acceptance-rollback-$(date +%s)"
-rollback_static=''
 manifest="$MANIFEST_DIR/rollback.env"
-old_renamed=0
-candidate_started=0
-static_changed=0
-cleanup() {
-    local status=$?
-    if (( status != 0 )); then
-        (( candidate_started == 0 )) || docker rm -f -- "$APP_NAME" >/dev/null 2>&1 || true
-        if (( old_renamed )); then
-            docker rename -- "$rollback_name" "$APP_NAME" >/dev/null 2>&1 || true
-            docker start -- "$APP_NAME" >/dev/null 2>&1 || true
-        fi
-        if (( static_changed )) && [[ -n "$rollback_static" ]]; then
-            rsync --archive --delete --delay-updates "$rollback_static/" "$FRONTEND_ROOT/" || true
-            systemctl reload nginx || true
-        fi
-        rm -f -- "$manifest"
-    fi
-    rm -rf -- "$stage_dir"
-    exit "$status"
-}
-trap cleanup EXIT
 
 if docker container inspect "$APP_NAME" >/dev/null 2>&1; then
     docker stop -- "$APP_NAME"
@@ -113,7 +127,7 @@ if docker container inspect "$APP_NAME" >/dev/null 2>&1; then
 fi
 candidate_started=1
 docker run -d --name "$APP_NAME" --restart unless-stopped --network "$NETWORK" \
-    --env-file "$BACKEND_DIR/.env" -p 127.0.0.1:8000:8000 "$IMAGE_NAME" >/dev/null
+    --env-file "$ENV_FILE" -p 127.0.0.1:8000:8000 "$IMAGE_NAME" >/dev/null
 healthy=0
 for _ in $(seq 1 30); do
     if curl --fail --silent --show-error --connect-timeout 2 --max-time 3 \
@@ -132,5 +146,5 @@ static_changed=1
 rsync --archive --delete --delay-updates "$stage_dir/" "$FRONTEND_ROOT/"
 systemctl reload nginx
 trap - EXIT
-rm -rf -- "$stage_dir"
+rm -rf -- "$stage_dir" "$env_snapshot_dir"
 echo 'auth acceptance candidate deployed; database migration is not automatically rolled back'
