@@ -359,11 +359,8 @@ func validateProductionAuthSettings(s *Settings) error {
 	if (s.RootBootstrapUsername == "") != (s.RootBootstrapPassword == "") {
 		return fmt.Errorf("ROOT_BOOTSTRAP_USERNAME and ROOT_BOOTSTRAP_PASSWORD must be configured together")
 	}
-	if s.RootBootstrapUsername != "" && (!validRootBootstrapUsername(s.RootBootstrapUsername) || !strongRootBootstrapPassword(s.RootBootstrapPassword)) {
-		return fmt.Errorf("ROOT_BOOTSTRAP credentials are invalid")
-	}
-	if s.RootBootstrapPassword != "" && isDefaultAuthSecret(s.RootBootstrapPassword, "change-me-root-bootstrap-password-for-dev-only") {
-		return fmt.Errorf("ROOT_BOOTSTRAP_PASSWORD must not use the development default in production")
+	if s.RootBootstrapUsername != "" {
+		return ValidateRootBootstrapCredentials(s.RootBootstrapUsername, s.RootBootstrapPassword)
 	}
 	return nil
 }
@@ -478,6 +475,20 @@ func strongRootBootstrapPassword(password string) bool {
 		}
 	}
 	return hasUpper && hasLower && hasDigit && hasSymbol
+}
+
+// ValidateRootBootstrapCredentials validates the one-time privileged Root
+// bootstrap credentials before they can be persisted.
+func ValidateRootBootstrapCredentials(username, password string) error {
+	username = strings.TrimSpace(username)
+	password = strings.TrimSpace(password)
+	if password == "change-me-root-bootstrap-password-for-dev-only" {
+		return fmt.Errorf("ROOT_BOOTSTRAP_PASSWORD must not use the development default in production")
+	}
+	if !validRootBootstrapUsername(username) || !strongRootBootstrapPassword(password) {
+		return fmt.Errorf("ROOT_BOOTSTRAP credentials are invalid")
+	}
+	return nil
 }
 
 // isDefaultAuthSecret identifies empty and known development placeholders so

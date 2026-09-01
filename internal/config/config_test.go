@@ -6,6 +6,34 @@ import (
 	"testing"
 )
 
+func TestValidateRootBootstrapCredentials(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		username string
+		password string
+		wantErr  string
+	}{
+		{name: "valid", username: "root_admin", password: "Aa1@0123456789ab"},
+		{name: "username contains spaces", username: "root admin", password: "Aa1@0123456789ab", wantErr: "ROOT_BOOTSTRAP credentials are invalid"},
+		{name: "password too short", username: "root_admin", password: "Aa1@short", wantErr: "ROOT_BOOTSTRAP credentials are invalid"},
+		{name: "password missing uppercase", username: "root_admin", password: "aa1@0123456789ab", wantErr: "ROOT_BOOTSTRAP credentials are invalid"},
+		{name: "development default password", username: "root_admin", password: "change-me-root-bootstrap-password-for-dev-only", wantErr: "ROOT_BOOTSTRAP_PASSWORD must not use the development default in production"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateRootBootstrapCredentials(tc.username, tc.password)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("ValidateRootBootstrapCredentials() error = %v", err)
+				}
+				return
+			}
+			if err == nil || err.Error() != tc.wantErr {
+				t.Fatalf("ValidateRootBootstrapCredentials() error = %v, want %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
 func TestLoadRejectsNonMySQLDatabaseURL(t *testing.T) {
 	setLoadTestEnvironment(t)
 	t.Setenv("DATABASE_URL", "sqlite://./data/platform.db")
