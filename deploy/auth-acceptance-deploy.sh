@@ -6,15 +6,31 @@ reject_untrusted_test_mode() {
     exit 1
 }
 
+canonicalize_fixture_override() {
+    local override_name="$1" original parent leaf canonical_parent canonical
+    original="${!override_name:-}"
+    [[ -n "$original" && "$original" == /* ]] || reject_untrusted_test_mode
+    if [[ -e "$original" || -L "$original" ]]; then
+        canonical="$(readlink -f -- "$original" 2>/dev/null)" || reject_untrusted_test_mode
+    else
+        parent="$(dirname -- "$original" 2>/dev/null)" || reject_untrusted_test_mode
+        leaf="$(basename -- "$original" 2>/dev/null)" || reject_untrusted_test_mode
+        [[ -n "$leaf" && "$leaf" != . && "$leaf" != .. ]] || reject_untrusted_test_mode
+        canonical_parent="$(readlink -f -- "$parent" 2>/dev/null)" || reject_untrusted_test_mode
+        canonical="$canonical_parent/$leaf"
+    fi
+    [[ "$canonical" == /fixture || "$canonical" == /fixture/* ]] || reject_untrusted_test_mode
+    printf -v "$override_name" '%s' "$canonical"
+}
+
 validate_test_mode_binding() {
-    local resolved_entrypoint override_name override_value
+    local resolved_entrypoint override_name
     resolved_entrypoint="$(readlink -f -- "${BASH_SOURCE[0]}" 2>/dev/null || true)"
     [[ "${PORSCHE_AUTH_ACCEPTANCE_TEST_CONTAINER:-}" == 1 &&
         "$resolved_entrypoint" == /fixture/Porsche/deploy/auth-acceptance-deploy.sh &&
-        -f /.dockerenv && ! -S /var/run/docker.sock ]] || reject_untrusted_test_mode
+        -f /.dockerenv && ! -e /var/run/docker.sock && ! -L /var/run/docker.sock ]] || reject_untrusted_test_mode
     for override_name in "$@"; do
-        override_value="${!override_name:-}"
-        [[ "$override_value" == /fixture/* ]] || reject_untrusted_test_mode
+        canonicalize_fixture_override "$override_name"
     done
 }
 

@@ -573,11 +573,33 @@ done
 run_entrypoint() {
     local entrypoint="$1" tmpdir_value=/tmp tmp_mount_option=--tmpfs tmp_mount_value=/tmp:rw,noexec,nosuid,nodev
     local test_container_value="${MOCK_TEST_CONTAINER:-1}"
-    local -a test_container_env=()
+    local target_path="${MOCK_ENTRYPOINT_TARGET:-/fixture/Porsche/deploy/$entrypoint}"
+    local backend_dir_value=/fixture/Porsche credentials_file_value=/fixture/root-acceptance-credentials
+    local frontend_dir_value=/fixture/Porsche-Web frontend_root_value=/fixture/www/porsche-web
+    local manifest_dir_value=/fixture/manifests redis_config_dir_value=/fixture/redis-config
+    local lock_file_value=/fixture/auth-acceptance.lock password_file_value="/fixture/${MOCK_PASSWORD_FILE_NAME:-redis-password-valid}"
+    local -a test_container_env=() socket_mount=()
     shift
-    assert_fixture_entrypoint "$entrypoint"
+    if [[ -z "${MOCK_ENTRYPOINT_TARGET:-}" ]]; then
+        assert_fixture_entrypoint "$entrypoint"
+    fi
     if [[ "$test_container_value" != absent ]]; then
         test_container_env=(--env "PORSCHE_AUTH_ACCEPTANCE_TEST_CONTAINER=$test_container_value")
+    fi
+    case "${MOCK_EXTRA_TEST_ENV_NAME:-}" in
+        '') ;;
+        PORSCHE_AUTH_ACCEPTANCE_BACKEND_DIR) backend_dir_value="${MOCK_EXTRA_TEST_ENV_VALUE:-}" ;;
+        PORSCHE_AUTH_ACCEPTANCE_ROOT_CREDENTIALS_FILE) credentials_file_value="${MOCK_EXTRA_TEST_ENV_VALUE:-}" ;;
+        PORSCHE_AUTH_ACCEPTANCE_FRONTEND_DIR) frontend_dir_value="${MOCK_EXTRA_TEST_ENV_VALUE:-}" ;;
+        PORSCHE_AUTH_ACCEPTANCE_FRONTEND_ROOT) frontend_root_value="${MOCK_EXTRA_TEST_ENV_VALUE:-}" ;;
+        PORSCHE_AUTH_ACCEPTANCE_MANIFEST_DIR) manifest_dir_value="${MOCK_EXTRA_TEST_ENV_VALUE:-}" ;;
+        PORSCHE_AUTH_ACCEPTANCE_REDIS_CONFIG_DIR) redis_config_dir_value="${MOCK_EXTRA_TEST_ENV_VALUE:-}" ;;
+        PORSCHE_AUTH_ACCEPTANCE_LOCK_FILE) lock_file_value="${MOCK_EXTRA_TEST_ENV_VALUE:-}" ;;
+        PORSCHE_AUTH_ACCEPTANCE_TEST_PASSWORD_FILE) password_file_value="${MOCK_EXTRA_TEST_ENV_VALUE:-}" ;;
+        *) fail "unknown test override: ${MOCK_EXTRA_TEST_ENV_NAME}" ;;
+    esac
+    if [[ -n "${MOCK_SOCKET_BIND_SOURCE:-}" ]]; then
+        socket_mount=(--mount "type=bind,src=${MOCK_SOCKET_BIND_SOURCE},dst=/var/run/docker.sock,readonly")
     fi
     if [[ "$entrypoint" == auth-acceptance-deploy.sh || "$entrypoint" == auth-acceptance-bootstrap-root.sh ]]; then
         tmpdir_value=/fixture/untrusted
@@ -590,21 +612,22 @@ run_entrypoint() {
     docker run --rm --network none --read-only --cap-drop ALL \
         --security-opt no-new-privileges "$tmp_mount_option" "$tmp_mount_value" \
         --mount "type=bind,src=$fixture_dir,dst=/fixture" \
+        "${socket_mount[@]+${socket_mount[@]}}" \
         --env PATH=/fixture/bin:/usr/local/bin:/usr/bin:/bin \
         --env "COMMAND_LOG=/fixture/commands-$run_count.nul" \
         --env "MOCK_ENTRYPOINT=$entrypoint" \
         --env PORSCHE_AUTH_ACCEPTANCE_TEST_MODE=1 \
         "${test_container_env[@]}" \
         --env "MOCK_ID_UID=${MOCK_ID_UID:-0}" \
-        --env PORSCHE_AUTH_ACCEPTANCE_BACKEND_DIR=/fixture/Porsche \
-        --env PORSCHE_AUTH_ACCEPTANCE_ROOT_CREDENTIALS_FILE=/fixture/root-acceptance-credentials \
-        --env PORSCHE_AUTH_ACCEPTANCE_FRONTEND_DIR=/fixture/Porsche-Web \
-        --env PORSCHE_AUTH_ACCEPTANCE_FRONTEND_ROOT=/fixture/www/porsche-web \
-        --env PORSCHE_AUTH_ACCEPTANCE_MANIFEST_DIR=/fixture/manifests \
+        --env "PORSCHE_AUTH_ACCEPTANCE_BACKEND_DIR=$backend_dir_value" \
+        --env "PORSCHE_AUTH_ACCEPTANCE_ROOT_CREDENTIALS_FILE=$credentials_file_value" \
+        --env "PORSCHE_AUTH_ACCEPTANCE_FRONTEND_DIR=$frontend_dir_value" \
+        --env "PORSCHE_AUTH_ACCEPTANCE_FRONTEND_ROOT=$frontend_root_value" \
+        --env "PORSCHE_AUTH_ACCEPTANCE_MANIFEST_DIR=$manifest_dir_value" \
         --env "TMPDIR=$tmpdir_value" \
-        --env PORSCHE_AUTH_ACCEPTANCE_REDIS_CONFIG_DIR=/fixture/redis-config \
-        --env PORSCHE_AUTH_ACCEPTANCE_LOCK_FILE=/fixture/auth-acceptance.lock \
-        --env "PORSCHE_AUTH_ACCEPTANCE_TEST_PASSWORD_FILE=/fixture/${MOCK_PASSWORD_FILE_NAME:-redis-password-valid}" \
+        --env "PORSCHE_AUTH_ACCEPTANCE_REDIS_CONFIG_DIR=$redis_config_dir_value" \
+        --env "PORSCHE_AUTH_ACCEPTANCE_LOCK_FILE=$lock_file_value" \
+        --env "PORSCHE_AUTH_ACCEPTANCE_TEST_PASSWORD_FILE=$password_file_value" \
         --env "MOCK_BRANCH=${MOCK_BRANCH:-feature/user-registration-management}" \
         --env "MOCK_FRONTEND_BRANCH=${MOCK_FRONTEND_BRANCH:-feature/session-auth-frontend}" \
         --env "MOCK_REMOTE_MISMATCH=${MOCK_REMOTE_MISMATCH:-0}" \
@@ -638,7 +661,7 @@ run_entrypoint() {
         --env "MOCK_NGINX_RESULT=${MOCK_NGINX_RESULT:-success}" \
         --env "MOCK_SYSTEMCTL_RESULT=${MOCK_SYSTEMCTL_RESULT:-success}" \
         --env "MOCK_FLOCK_RESULT=${MOCK_FLOCK_RESULT:-success}" \
-        bash:5.2 "/fixture/Porsche/deploy/$entrypoint" "$@"
+        bash:5.2 "$target_path" "$@"
 }
 
 wait_for_fixture_file() {
@@ -725,7 +748,7 @@ assert_no_test_mode_side_effect_calls() {
 }
 
 assert_test_mode_requires_isolated_fixture_container() {
-    local entrypoint sentinel stdout_file stderr_file source_stdout source_stderr entrypoint_argument
+    local entrypoint sentinel stdout_file stderr_file entrypoint_argument
     for entrypoint in \
         bootstrap-auth-redis.sh \
         auth-acceptance-migrate.sh \
@@ -758,21 +781,107 @@ assert_test_mode_requires_isolated_fixture_container() {
             [[ -z "$(find "$fixture_tmp_dir" -mindepth 1 -maxdepth 1 -print -quit)" ]] || fail "$entrypoint wrote a temporary snapshot before test-mode rejection"
             assert_no_test_mode_side_effect_calls
         done
-
-        source_stdout="$fixture_dir/test-mode-source-$entrypoint.stdout"
-        source_stderr="$fixture_dir/test-mode-source-$entrypoint.stderr"
-        if [[ -n "$entrypoint_argument" ]]; then
-            if PORSCHE_AUTH_ACCEPTANCE_TEST_MODE=1 PORSCHE_AUTH_ACCEPTANCE_TEST_CONTAINER=1 \
-                bash "$script_dir/$entrypoint" "$entrypoint_argument" >"$source_stdout" 2>"$source_stderr"; then
-                fail "$entrypoint accepted test mode from a non-fixture source path"
-            fi
-        elif PORSCHE_AUTH_ACCEPTANCE_TEST_MODE=1 PORSCHE_AUTH_ACCEPTANCE_TEST_CONTAINER=1 \
-            bash "$script_dir/$entrypoint" >"$source_stdout" 2>"$source_stderr"; then
-            fail "$entrypoint accepted test mode from a non-fixture source path"
-        fi
-        [[ ! -s "$source_stdout" ]] || fail "$entrypoint emitted unexpected source-path test-mode stdout"
-        grep -Fxq 'test mode is restricted to isolated fixture container' "$source_stderr" || fail "$entrypoint exposed a non-fixture source-path test-mode rejection"
     done
+}
+
+prepare_test_mode_rejection_probe() {
+    rm -f -- "$fixture_lock_file"
+    rm -rf -- "$fixture_dir/redis-config"
+    find "$fixture_tmp_dir" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+}
+
+assert_isolated_test_mode_rejection() {
+    local label="$1" stdout_file="$fixture_dir/test-mode-$label.stdout" stderr_file="$fixture_dir/test-mode-$label.stderr"
+    [[ ! -s "$stdout_file" ]] || fail "$label emitted unexpected test-mode stdout"
+    grep -Fxq 'test mode is restricted to isolated fixture container' "$stderr_file" || fail "$label did not emit the generic test-mode rejection"
+    [[ ! -e "$fixture_lock_file" && ! -L "$fixture_lock_file" ]] || fail "$label created the deployment lock before test-mode rejection"
+    [[ ! -e "$fixture_dir/redis-config" && ! -L "$fixture_dir/redis-config" ]] || fail "$label wrote Redis configuration before test-mode rejection"
+    [[ -z "$(find "$fixture_tmp_dir" -mindepth 1 -maxdepth 1 -print -quit)" ]] || fail "$label wrote a temporary snapshot before test-mode rejection"
+    assert_no_test_mode_side_effect_calls
+}
+
+assert_test_mode_rejects_canonicalization_escapes() {
+    local entrypoint entrypoint_argument override_name label stdout_file stderr_file
+    for entrypoint in \
+        bootstrap-auth-redis.sh \
+        auth-acceptance-migrate.sh \
+        auth-acceptance-bootstrap-root.sh \
+        auth-acceptance-deploy.sh \
+        auth-acceptance-rollback.sh; do
+        case "$entrypoint" in
+            bootstrap-auth-redis.sh)
+                entrypoint_argument=''
+                override_name=PORSCHE_AUTH_ACCEPTANCE_REDIS_CONFIG_DIR
+                ;;
+            auth-acceptance-migrate.sh)
+                entrypoint_argument=--confirm-auth-schema-migration
+                override_name=PORSCHE_AUTH_ACCEPTANCE_BACKEND_DIR
+                ;;
+            auth-acceptance-bootstrap-root.sh)
+                entrypoint_argument=--confirm-auth-root-bootstrap
+                override_name=PORSCHE_AUTH_ACCEPTANCE_ROOT_CREDENTIALS_FILE
+                ;;
+            auth-acceptance-deploy.sh)
+                entrypoint_argument=''
+                override_name=PORSCHE_AUTH_ACCEPTANCE_LOCK_FILE
+                ;;
+            auth-acceptance-rollback.sh)
+                entrypoint_argument=--confirm-auth-acceptance-rollback
+                override_name=PORSCHE_AUTH_ACCEPTANCE_MANIFEST_DIR
+                ;;
+        esac
+        label="traversal-$entrypoint"
+        stdout_file="$fixture_dir/test-mode-$label.stdout"
+        stderr_file="$fixture_dir/test-mode-$label.stderr"
+        prepare_test_mode_rejection_probe
+        if [[ -n "$entrypoint_argument" ]]; then
+            if MOCK_EXTRA_TEST_ENV_NAME="$override_name" MOCK_EXTRA_TEST_ENV_VALUE=/fixture/../tmp/escaped \
+                run_entrypoint "$entrypoint" "$entrypoint_argument" >"$stdout_file" 2>"$stderr_file"; then
+                fail "$entrypoint accepted a traversal override"
+            fi
+        elif MOCK_EXTRA_TEST_ENV_NAME="$override_name" MOCK_EXTRA_TEST_ENV_VALUE=/fixture/../tmp/escaped \
+            run_entrypoint "$entrypoint" >"$stdout_file" 2>"$stderr_file"; then
+            fail "$entrypoint accepted a traversal override"
+        fi
+        assert_isolated_test_mode_rejection "$label"
+    done
+
+    ln -s /tmp "$fixture_dir/path-escape"
+    label=symlink-escape-bootstrap
+    stdout_file="$fixture_dir/test-mode-$label.stdout"
+    stderr_file="$fixture_dir/test-mode-$label.stderr"
+    prepare_test_mode_rejection_probe
+    if MOCK_EXTRA_TEST_ENV_NAME=PORSCHE_AUTH_ACCEPTANCE_REDIS_CONFIG_DIR \
+        MOCK_EXTRA_TEST_ENV_VALUE=/fixture/path-escape/redis-config \
+        run_entrypoint bootstrap-auth-redis.sh >"$stdout_file" 2>"$stderr_file"; then
+        fail 'bootstrap accepted a symlink-escape override'
+    fi
+    assert_isolated_test_mode_rejection "$label"
+    rm -- "$fixture_dir/path-escape"
+
+    mkdir -p "$fixture_dir/not-Porsche/deploy"
+    cp "$backend_dir/deploy/auth-acceptance-migrate.sh" "$fixture_dir/not-Porsche/deploy/auth-acceptance-migrate.sh"
+    chmod +x "$fixture_dir/not-Porsche/deploy/auth-acceptance-migrate.sh"
+    label=non-fixture-entrypoint
+    stdout_file="$fixture_dir/test-mode-$label.stdout"
+    stderr_file="$fixture_dir/test-mode-$label.stderr"
+    prepare_test_mode_rejection_probe
+    if MOCK_ENTRYPOINT_TARGET=/fixture/not-Porsche/deploy/auth-acceptance-migrate.sh \
+        run_entrypoint auth-acceptance-migrate.sh --confirm-auth-schema-migration >"$stdout_file" 2>"$stderr_file"; then
+        fail 'migration accepted a non-fixture entrypoint path'
+    fi
+    assert_isolated_test_mode_rejection "$label"
+
+    : >"$fixture_dir/socket-probe"
+    label=socket-present-migration
+    stdout_file="$fixture_dir/test-mode-$label.stdout"
+    stderr_file="$fixture_dir/test-mode-$label.stderr"
+    prepare_test_mode_rejection_probe
+    if MOCK_SOCKET_BIND_SOURCE="$fixture_dir/socket-probe" \
+        run_entrypoint auth-acceptance-migrate.sh --confirm-auth-schema-migration >"$stdout_file" 2>"$stderr_file"; then
+        fail 'migration accepted a present Docker socket path'
+    fi
+    assert_isolated_test_mode_rejection "$label"
 }
 
 assert_bootstrap_creates_internal_redis() {
@@ -1322,6 +1431,7 @@ assert_operator_documentation() {
 # read-only/no-network/no-socket container boundary above.
 if (( needs_container_fixture )); then
     assert_test_mode_requires_isolated_fixture_container
+    assert_test_mode_rejects_canonicalization_escapes
 fi
 
 # Unreachable until target scripts exist; later tasks turn these contracts green.
