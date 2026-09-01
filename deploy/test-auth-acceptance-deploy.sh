@@ -1152,7 +1152,7 @@ run_documented_root_inspect_check() {
     if docker run --rm --network none --read-only --cap-drop ALL \
         --security-opt no-new-privileges --tmpfs /tmp:rw,noexec,nosuid,nodev \
         --mount "type=bind,src=$fixture_dir,dst=/fixture" \
-        --env PATH=/fixture/bin:/usr/bin:/bin \
+        --env PATH=/fixture/bin:/usr/local/bin:/usr/bin:/bin \
         --env "COMMAND_LOG=/fixture/documented-root-inspect-$run_count.nul" \
         --env "MOCK_DOC_INSPECT_STATE=$state" \
         bash:5.2 /fixture/documented-root-inspect-check.sh >"$documented_check_stdout" 2>"$documented_check_stderr"; then
