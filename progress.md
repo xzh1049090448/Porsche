@@ -158,6 +158,12 @@
 - 候选 deploy 与 manifest rollback 在任何 npm/build、Nginx、container stop/remove/rename、rsync 或 static write 前，均 fail-closed 扫描 `docker ps -a` 中 exact `ai-gateway-go` 与 `ai-gateway-go-acceptance-rollback-<digits>` 的运行/停止容器；rollback manifest target 未出现在列表时也会显式 inspect。`ROOT_BOOTSTRAP_` 命中和 inspect/list 失败均不回显值并拒绝继续；fixture contract 覆盖 current/stopped rollback、inspect/list error、unrelated helper 与 stdout/stderr/argv 脱敏。
 - 已以 disposable no-network fixture containers 验证 `docs deploy rollback`：当前/停止 rollback 容器的 Root key、inspect/list failure、manifest target 的显式 inspect、helper 排除和敏感值不进入 stdout/stderr/argv 均通过；`bash -n`、`jq` 的唯一 `in_progress` 检查与 `git diff --check` 也通过。真实 test machine 的 one-shot/bootstrap、candidate deploy 及 browser acceptance 仍待受控生产域/隔离依赖环境执行，不能据此把生产验收标为 passing。`go-006` 保持唯一 `in_progress`。
 
+## 认证验收部署最终加固（2026-09-02）
+
+- 候选镜像与一次性 Root 引导镜像均只从已验证远端 SHA 的 `git archive` 私有构建上下文生成；活工作树中的未跟踪、忽略文件和 `.env` 不会进入镜像。生产配置、迁移、Root wrapper 与候选部署在任何构建或容器写操作前统一拒绝任意 `ROOT_BOOTSTRAP_` 环境声明，包括空值和未知后缀。
+- deploy/rollback 使用同一部署锁，在破坏性切换前复扫运行及停止容器，并将 stop/remove/rename/start 与失败恢复绑定到校验后的裸 64 位 Docker container ID。候选返回畸形 ID、环境 inspect 失败、健康检查失败，以及 rollback 的 rename/start/rsync/Nginx reload 失败均由隔离 fixture 注入验证；失败路径恢复原应用与静态快照，不按可变名称误操作容器。
+- 最终验证通过：完整 `bash:5.2` 无网络、无 Docker socket fixture，既有 production/restart/Nginx 回归，`bash -n`、`jq empty feature_list.json`、`git diff --check`、`GOCACHE=/private/tmp/porsche-go-build-cache go test ./... -count=1` 与 `go vet ./...`。真实测试机的候选部署及浏览器生产域验收仍是下一步，`go-006` 保持唯一 `in_progress`。
+
 ## 下一步（部署冒烟）
 
 在具备部署环境的白牌配置后，完成真实上游目录、Chat 与 SSE 冒烟。
