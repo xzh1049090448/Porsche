@@ -8,12 +8,13 @@ RUN apk add --no-cache git ca-certificates
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -o /out/server ./cmd/server
+RUN CGO_ENABLED=0 GOOS=linux go build -o /out/server ./cmd/server \
+    && CGO_ENABLED=0 GOOS=linux go build -o /out/bootstrap-root ./cmd/bootstrap-root
 
 FROM alpine:3.20
 RUN apk add --no-cache ca-certificates
 WORKDIR /app
-COPY --from=builder /out/server .
+COPY --from=builder /out/server /out/bootstrap-root ./
 ENV APP_ENV=production
 EXPOSE 8000
 CMD ["./server"]
