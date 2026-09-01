@@ -1,6 +1,7 @@
 package config
 
 import (
+	"os"
 	"regexp"
 	"strings"
 	"testing"
@@ -39,25 +40,41 @@ func TestLoadRejectsRootBootstrapEnvironmentOutsideDevelopment(t *testing.T) {
 	const wantErr = "ROOT_BOOTSTRAP environment variables are not allowed; use the one-shot bootstrap-root command"
 
 	for _, tc := range []struct {
-		name     string
-		username string
-		password string
+		name   string
+		appEnv string
+		set    func(*testing.T)
 	}{
-		{name: "username only", username: "root_admin"},
-		{name: "whitespace username", username: " "},
-		{name: "password only", password: "Aa1@0123456789ab"},
-		{name: "valid credential pair", username: "root_admin", password: "Aa1@0123456789ab"},
+		{name: "empty username", appEnv: "production", set: func(t *testing.T) { t.Setenv("ROOT_BOOTSTRAP_USERNAME", "") }},
+		{name: "empty password", appEnv: "staging", set: func(t *testing.T) { t.Setenv("ROOT_BOOTSTRAP_PASSWORD", "") }},
+		{name: "whitespace username", appEnv: "test", set: func(t *testing.T) { t.Setenv("ROOT_BOOTSTRAP_USERNAME", " \t ") }},
+		{name: "unknown prefixed key", appEnv: "production", set: func(t *testing.T) { t.Setenv("ROOT_BOOTSTRAP_ROTATION_TOKEN", "sensitive-root-token") }},
+		{name: "valid credential pair", appEnv: "production", set: func(t *testing.T) {
+			t.Setenv("ROOT_BOOTSTRAP_USERNAME", "root_admin")
+			t.Setenv("ROOT_BOOTSTRAP_PASSWORD", "Aa1@0123456789ab")
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			setSafeProductionAuthEnvironment(t)
-			t.Setenv("ROOT_BOOTSTRAP_USERNAME", tc.username)
-			t.Setenv("ROOT_BOOTSTRAP_PASSWORD", tc.password)
+			t.Setenv("APP_ENV", tc.appEnv)
+			tc.set(t)
 
 			_, err := Load()
 			if err == nil || err.Error() != wantErr {
 				t.Fatalf("Load() error = %v, want %q", err, wantErr)
 			}
+			if strings.Contains(err.Error(), "sensitive-root-token") || strings.Contains(err.Error(), "Aa1@0123456789ab") {
+				t.Fatalf("Load() error exposed a Root bootstrap value: %v", err)
+			}
 		})
+	}
+}
+
+func TestLoadAllowsUnrelatedRootBootstrapNearMatchOutsideDevelopment(t *testing.T) {
+	setSafeProductionAuthEnvironment(t)
+	t.Setenv("ROOT_BOOTSTRAPX_TOKEN", "unrelated-value")
+
+	if _, err := Load(); err != nil {
+		t.Fatalf("Load() error = %v, want unrelated near-match to be accepted", err)
 	}
 }
 
@@ -418,6 +435,7 @@ func setLoadTestEnvironment(t *testing.T) {
 func setSafeProductionAuthEnvironment(t *testing.T) {
 	t.Helper()
 	setLoadTestEnvironment(t)
+	clearRootBootstrapEnvironment(t)
 	t.Setenv("APP_ENV", "production")
 	t.Setenv("REDIS_URL", "redis://localhost:6379/0")
 	t.Setenv("JWT_SECRET_KEY", "jwt-secret-material-0123456789-ABCDE")
@@ -425,10 +443,29 @@ func setSafeProductionAuthEnvironment(t *testing.T) {
 	t.Setenv("ADMIN_TOKEN", "admin-secret-material-0123456789-ABC")
 	t.Setenv("METRICS_TOKEN", "metrics-secret-material-0123456789-AB")
 	t.Setenv("AUTH_TRUSTED_ORIGINS", "https://app.example.com")
-	t.Setenv("ROOT_BOOTSTRAP_USERNAME", "")
-	t.Setenv("ROOT_BOOTSTRAP_PASSWORD", "")
 	t.Setenv("FIXED_LOGIN_ENABLED", "false")
 	t.Setenv("FIXED_LOGIN_PHONE", "disabled")
 	t.Setenv("FIXED_LOGIN_PASSWORD", "disabled")
 	t.Setenv("SMS_DEV_MODE", "false")
+}
+
+func clearRootBootstrapEnvironment(t *testing.T) {
+	t.Helper()
+	previous := make(map[string]string)
+	for _, entry := range os.Environ() {
+		key, value, _ := strings.Cut(entry, "=")
+		if strings.HasPrefix(key, "ROOT_BOOTSTRAP_") {
+			previous[key] = value
+			if err := os.Unsetenv(key); err != nil {
+				t.Fatalf("os.Unsetenv(%q) error = %v", key, err)
+			}
+		}
+	}
+	t.Cleanup(func() {
+		for key, value := range previous {
+			if err := os.Setenv(key, value); err != nil {
+				t.Errorf("os.Setenv(%q) error = %v", key, err)
+			}
+		}
+	})
 }

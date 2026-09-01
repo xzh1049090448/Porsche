@@ -368,8 +368,11 @@ func rejectRootBootstrapEnvironment(appEnv string) error {
 	if appEnv == "development" {
 		return nil
 	}
-	if os.Getenv("ROOT_BOOTSTRAP_USERNAME") != "" || os.Getenv("ROOT_BOOTSTRAP_PASSWORD") != "" {
-		return fmt.Errorf("ROOT_BOOTSTRAP environment variables are not allowed; use the one-shot bootstrap-root command")
+	for _, entry := range os.Environ() {
+		key, _, _ := strings.Cut(entry, "=")
+		if strings.HasPrefix(key, "ROOT_BOOTSTRAP_") {
+			return fmt.Errorf("ROOT_BOOTSTRAP environment variables are not allowed; use the one-shot bootstrap-root command")
+		}
 	}
 	return nil
 }
