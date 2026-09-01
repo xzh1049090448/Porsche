@@ -243,10 +243,11 @@ credential file.
 The credential file has exactly two lines in either order: `username` and
 `password` each occur exactly once, with no blank, unknown, or duplicate lines.
 Both values must be non-empty and have no surrounding whitespace. The username
-is 3–20 ASCII letters, digits, `_`, or `-`; the password is 12–20 characters,
+is 3–20 ASCII letters, digits, `_`, or `-`; the password is 12–20 bytes,
 contains upper- and lower-case letters, a digit, and a symbol, and is not the
-development default. This is a schema, not a copyable secret or a command to
-print the file:
+development default. Generate acceptance values with ASCII characters to avoid
+multi-byte length ambiguity. This is a schema, not a copyable secret or a
+command to print the file:
 
 ```text
 # schema — placeholders only; provision actual values through the root-controlled workflow
@@ -295,18 +296,22 @@ directly from Docker to `grep -q`, never writes them to the terminal or a file,
 and never captures them in a command substitution.
 
 ```bash
-if docker container inspect ai-gateway-go --format '{{range .Config.Env}}{{println .}}{{end}}' |
-    grep -Eq '^ROOT_BOOTSTRAP_(USERNAME|PASSWORD)='; then
-    pipeline_status=("${PIPESTATUS[@]}")
-else
-    pipeline_status=("${PIPESTATUS[@]}")
-fi
+# BEGIN ROOT_BOOTSTRAP_INSPECT_CHECK
+(
+    if docker container inspect ai-gateway-go --format '{{range .Config.Env}}{{println .}}{{end}}' |
+        grep -Eq '^ROOT_BOOTSTRAP_(USERNAME|PASSWORD)='; then
+        pipeline_status=("${PIPESTATUS[@]}")
+    else
+        pipeline_status=("${PIPESTATUS[@]}")
+    fi
 
-case "${pipeline_status[0]}:${pipeline_status[1]}" in
-    0:1) echo 'PASS: long-running application has no ROOT_BOOTSTRAP_ environment keys' ;;
-    0:0) echo 'FAIL: ROOT_BOOTSTRAP_ is present in the long-running application' >&2; exit 1 ;;
-    *) echo 'FAIL: could not inspect/check long-running application environment' >&2; exit 1 ;;
-esac
+    case "${pipeline_status[0]}:${pipeline_status[1]}" in
+        0:1) echo 'PASS: long-running application has no ROOT_BOOTSTRAP_ environment keys' ;;
+        0:0) echo 'FAIL: ROOT_PRESENT' >&2; exit 1 ;;
+        *) echo 'FAIL: INSPECT_FAILED' >&2; exit 1 ;;
+    esac
+)
+# END ROOT_BOOTSTRAP_INSPECT_CHECK
 ```
 
 Run browser acceptance through the production HTTPS domain using the

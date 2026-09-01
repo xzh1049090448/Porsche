@@ -173,7 +173,7 @@ write_mock() {
         '  stat) if [[ "${MOCK_ENTRYPOINT:-}" != auth-acceptance-bootstrap-root.sh ]]; then exec /bin/stat "$@"; fi; path="${4:-}"; case "$path" in /fixture/root-acceptance-credentials) stat_uid="${MOCK_CREDENTIAL_UID:-0}"; stat_mode="${MOCK_CREDENTIAL_MODE:-600}" ;; /fixture) stat_uid="${MOCK_CREDENTIAL_PARENT_UID:-0}"; stat_mode="${MOCK_CREDENTIAL_PARENT_MODE:-700}" ;; /fixture/Porsche/.env) stat_uid="${MOCK_ENV_UID:-0}"; stat_mode="${MOCK_ENV_MODE:-600}" ;; /fixture/Porsche) stat_uid="${MOCK_BACKEND_UID:-0}"; stat_mode="${MOCK_BACKEND_MODE:-755}" ;; /tmp/porsche-auth-root-bootstrap.*\/root-bootstrap) stat_uid="${MOCK_SNAPSHOT_CREDENTIAL_UID:-0}"; stat_mode="${MOCK_SNAPSHOT_CREDENTIAL_MODE:-600}" ;; /tmp/porsche-auth-root-bootstrap.*\/.env) stat_uid="${MOCK_SNAPSHOT_ENV_UID:-0}"; stat_mode="${MOCK_SNAPSHOT_ENV_MODE:-600}" ;; *) exit 78 ;; esac; case "${1:-}:${2:-}" in "-c:%u") printf "%s\\n" "$stat_uid" ;; "-c:%a") printf "%s\\n" "$stat_mode" ;; *) exit 78 ;; esac ;;' \
         '  cp) if [[ "${MOCK_ENTRYPOINT:-}" == auth-acceptance-bootstrap-root.sh ]]; then [[ $# == 5 && "$1" == --preserve=mode,ownership && "$2" == --no-dereference && "$3" == -- ]] || exit 80; exec /bin/cp -pP -- "$4" "$5"; else exec /bin/cp "$@"; fi ;;' \
         '  git) case "${1:-}" in fetch) if [[ "${MOCK_ENV_MUTATE_ON_GIT_FETCH:-0}" == 1 ]]; then printf "APP_ENV=production\\nREDIS_URL=redis://:fixture-only-password@porsche-redis:6379/0\\nALLOWED_HOSTS=aiportcloud.com\\nAUTH_TRUSTED_ORIGINS=https://aiportcloud.com\\nROOT_BOOTSTRAP_PASSWORD=Aa1@fixture-secret\\n" >/fixture/Porsche/.env; fi ;; branch) if [[ "$PWD" == */Porsche-Web ]]; then printf "%s\\n" "${MOCK_FRONTEND_BRANCH:-feature/session-auth-frontend}"; else printf "%s\\n" "${MOCK_BRANCH:-feature/user-registration-management}"; fi ;; rev-parse) if [[ "${2:-}" == origin/* && "${MOCK_REMOTE_MISMATCH:-0}" == 1 ]]; then printf "remote-sha\\n"; else printf "%s\\n" "${MOCK_GIT_SHA:-fixture-sha}"; fi ;; status) [[ "${MOCK_GIT_STATUS_FAILURE:-0}" == 0 ]] || exit 79; [[ "${MOCK_GIT_DIRTY:-0}" == 0 ]] || printf " M tracked-fixture\\n" ;; diff) [[ "${MOCK_GIT_DIRTY:-0}" == 0 ]] ;; archive) : ;; esac ;;' \
-        '  docker) case "${1:-}" in network) if [[ "${2:-}" == inspect && "${3:-}" == porsche-app ]]; then [[ "${MOCK_NETWORK_INSPECT_RESULT:-success}" == success ]]; else [[ "${MOCK_DOCKER_INSPECT_RESULT:-success}" == success ]]; fi ;; container) if [[ "${2:-}" == inspect && "${3:-}" == porsche-redis ]]; then [[ "${MOCK_REDIS_EXISTS:-0}" == 1 ]]; elif [[ "${2:-}" == inspect && "${3:-}" == porsche-mysql ]]; then [[ "${MOCK_MYSQL_EXISTS:-1}" == 1 && "${MOCK_MYSQL_INSPECT_RESULT:-success}" == success ]]; else [[ "${MOCK_DOCKER_INSPECT_RESULT:-success}" == success ]]; fi ;; build) [[ "${2:-}" != --quiet ]] || printf "%s\\n" "${MOCK_DOCKER_BUILD_IMAGE_ID:-}" ;; run) [[ "${MOCK_DOCKER_RUN_RESULT:-success}" == success ]] || exit 71; if [[ "${2:-}" == --rm && "${3:-}" == --entrypoint && "${4:-}" == id && "${5:-}" == redis:7-alpine && "${6:-}" == -u && "${7:-}" == redis ]]; then printf "999\\n"; elif [[ "${2:-}" == --rm && "${3:-}" == --entrypoint && "${4:-}" == id && "${5:-}" == redis:7-alpine && "${6:-}" == -g && "${7:-}" == redis ]]; then printf "1000\\n"; else printf "fixture-container\\n"; fi ;; esac ;;' \
+        '  docker) case "${1:-}" in network) if [[ "${2:-}" == inspect && "${3:-}" == porsche-app ]]; then [[ "${MOCK_NETWORK_INSPECT_RESULT:-success}" == success ]]; else [[ "${MOCK_DOCKER_INSPECT_RESULT:-success}" == success ]]; fi ;; container) if [[ "${2:-}" == inspect && "${3:-}" == ai-gateway-go && -n "${MOCK_DOC_INSPECT_STATE:-}" ]]; then case "$MOCK_DOC_INSPECT_STATE" in clean) printf "APP_ENV=production\\n" ;; present) printf "ROOT_BOOTSTRAP_PASSWORD=fixture-doc-root-secret\\n" ;; error) exit 79 ;; *) exit 78 ;; esac; elif [[ "${2:-}" == inspect && "${3:-}" == porsche-redis ]]; then [[ "${MOCK_REDIS_EXISTS:-0}" == 1 ]]; elif [[ "${2:-}" == inspect && "${3:-}" == porsche-mysql ]]; then [[ "${MOCK_MYSQL_EXISTS:-1}" == 1 && "${MOCK_MYSQL_INSPECT_RESULT:-success}" == success ]]; else [[ "${MOCK_DOCKER_INSPECT_RESULT:-success}" == success ]]; fi ;; build) [[ "${2:-}" != --quiet ]] || printf "%s\\n" "${MOCK_DOCKER_BUILD_IMAGE_ID:-}" ;; run) [[ "${MOCK_DOCKER_RUN_RESULT:-success}" == success ]] || exit 71; if [[ "${2:-}" == --rm && "${3:-}" == --entrypoint && "${4:-}" == id && "${5:-}" == redis:7-alpine && "${6:-}" == -u && "${7:-}" == redis ]]; then printf "999\\n"; elif [[ "${2:-}" == --rm && "${3:-}" == --entrypoint && "${4:-}" == id && "${5:-}" == redis:7-alpine && "${6:-}" == -g && "${7:-}" == redis ]]; then printf "1000\\n"; else printf "fixture-container\\n"; fi ;; esac ;;' \
         '  curl) [[ "${MOCK_HEALTH_RESULT:-success}" == success ]] || exit 72 ;;' \
         '  npm) [[ "${MOCK_NPM_RESULT:-success}" == success ]] || exit 73 ;;' \
         '  rsync) [[ "${MOCK_RSYNC_RESULT:-success}" == success ]] || exit 74 ;;' \
@@ -1111,6 +1111,84 @@ assert_root_bootstrap_uses_readonly_secret_mounts() {
     assert_no_dangerous_calls
 }
 
+extract_documented_root_inspect_check() {
+    local source_path="$1" destination="$2" metadata begin_count begin_line end_count end_line
+    metadata="$(awk '
+        $0 == "# BEGIN ROOT_BOOTSTRAP_INSPECT_CHECK" { begin_count += 1; if (begin_line == 0) begin_line = NR }
+        $0 == "# END ROOT_BOOTSTRAP_INSPECT_CHECK" { end_count += 1; if (end_line == 0) end_line = NR }
+        END { printf "%d %d %d %d\n", begin_count, begin_line, end_count, end_line }
+    ' "$source_path")"
+    read -r begin_count begin_line end_count end_line <<<"$metadata"
+    [[ "$begin_count" == 1 && "$end_count" == 1 && "$begin_line" -lt "$end_line" ]] || return 1
+    sed -n '/^# BEGIN ROOT_BOOTSTRAP_INSPECT_CHECK$/,/^# END ROOT_BOOTSTRAP_INSPECT_CHECK$/ {
+        /^# BEGIN ROOT_BOOTSTRAP_INSPECT_CHECK$/d
+        /^# END ROOT_BOOTSTRAP_INSPECT_CHECK$/d
+        p
+    }' "$source_path" >"$destination"
+    [[ -s "$destination" ]] && bash -n "$destination"
+}
+
+assert_documented_root_inspect_extraction_rejects_malformed_markers() {
+    local malformed="$fixture_dir/documented-root-inspect-malformed.md" extracted="$fixture_dir/documented-root-inspect-malformed.sh"
+    printf '%s\n' '# BEGIN ROOT_BOOTSTRAP_INSPECT_CHECK' '# END ROOT_BOOTSTRAP_INSPECT_CHECK' >"$malformed"
+    if extract_documented_root_inspect_check "$malformed" "$extracted"; then
+        fail 'documented Root inspect extraction accepted an empty snippet'
+    fi
+    printf '%s\n' '# END ROOT_BOOTSTRAP_INSPECT_CHECK' '(' '  :' ')' '# BEGIN ROOT_BOOTSTRAP_INSPECT_CHECK' >"$malformed"
+    if extract_documented_root_inspect_check "$malformed" "$extracted"; then
+        fail 'documented Root inspect extraction accepted reversed markers'
+    fi
+}
+
+documented_check_stdout=''
+documented_check_stderr=''
+run_documented_root_inspect_check() {
+    local state="$1" status
+    ((run_count += 1))
+    command_log="$fixture_dir/documented-root-inspect-$run_count.nul"
+    documented_check_stdout="$fixture_dir/documented-root-inspect-$run_count.stdout"
+    documented_check_stderr="$fixture_dir/documented-root-inspect-$run_count.stderr"
+    : >"$command_log"
+    if docker run --rm --network none --read-only --cap-drop ALL \
+        --security-opt no-new-privileges --tmpfs /tmp:rw,noexec,nosuid,nodev \
+        --mount "type=bind,src=$fixture_dir,dst=/fixture" \
+        --env PATH=/fixture/bin:/usr/bin:/bin \
+        --env "COMMAND_LOG=/fixture/documented-root-inspect-$run_count.nul" \
+        --env "MOCK_DOC_INSPECT_STATE=$state" \
+        bash:5.2 /fixture/documented-root-inspect-check.sh >"$documented_check_stdout" 2>"$documented_check_stderr"; then
+        status=0
+    else
+        status=$?
+    fi
+    return "$status"
+}
+
+assert_documented_root_inspect_check() {
+    local extracted="$fixture_dir/documented-root-inspect-check.sh" secret='fixture-doc-root-secret'
+    extract_documented_root_inspect_check "$source_repo/README.md" "$extracted" || fail 'README Root inspect check markers or snippet are malformed'
+    assert_documented_root_inspect_extraction_rejects_malformed_markers
+
+    if ! run_documented_root_inspect_check clean; then
+        fail "documented Root inspect check rejected clean application: $(<"$documented_check_stderr")"
+    fi
+    grep -Fxq 'PASS: long-running application has no ROOT_BOOTSTRAP_ environment keys' "$documented_check_stdout" || fail 'documented Root inspect check did not report PASS for clean application'
+    ! grep -Fq "$secret" "$documented_check_stdout" "$documented_check_stderr" || fail 'documented Root inspect check exposed clean-path secret data'
+    assert_no_sensitive_argv_fields "$secret" || fail 'documented Root inspect check placed secret data in argv'
+
+    if run_documented_root_inspect_check present; then
+        fail 'documented Root inspect check accepted a Root bootstrap environment key'
+    fi
+    grep -Fq 'ROOT_PRESENT' "$documented_check_stdout" "$documented_check_stderr" || fail 'documented Root inspect check did not report generic Root-present failure'
+    ! grep -Fq "$secret" "$documented_check_stdout" "$documented_check_stderr" || fail 'documented Root inspect check exposed Root bootstrap secret data'
+    assert_no_sensitive_argv_fields "$secret" || fail 'documented Root inspect check placed Root bootstrap secret data in argv'
+
+    if run_documented_root_inspect_check error; then
+        fail 'documented Root inspect check accepted an inspect error'
+    fi
+    grep -Fq 'INSPECT_FAILED' "$documented_check_stdout" "$documented_check_stderr" || fail 'documented Root inspect check did not report inspect failure'
+    ! grep -Fq 'PASS:' "$documented_check_stdout" "$documented_check_stderr" || fail 'documented Root inspect check reported PASS after inspect failure'
+}
+
 assert_operator_documentation() {
     local command
     for command in \
@@ -1121,6 +1199,8 @@ assert_operator_documentation() {
         'sudo bash deploy/auth-acceptance-rollback.sh --confirm-auth-acceptance-rollback'; do
         grep -Fq "$command" "$source_repo/README.md" || fail "README missing operator command: $command"
     done
+    grep -Fxq '# BEGIN ROOT_BOOTSTRAP_INSPECT_CHECK' "$source_repo/README.md" || fail 'README missing Root inspect check start marker'
+    grep -Fxq '# END ROOT_BOOTSTRAP_INSPECT_CHECK' "$source_repo/README.md" || fail 'README missing Root inspect check end marker'
     grep -Fq 'ROOT_BOOTSTRAP_USERNAME and ROOT_BOOTSTRAP_PASSWORD must be empty before deployment' "$source_repo/README.md" || fail 'README does not require empty Root bootstrap keys before deployment'
     grep -Fq 'docker inspect of the long-running application must not contain ROOT_BOOTSTRAP_' "$source_repo/README.md" || fail 'README does not require inspection for Root bootstrap keys in the long-running application'
     grep -Fq 'username=<Root-username>' "$source_repo/README.md" || fail 'README missing Root credential schema username field'
@@ -1137,6 +1217,7 @@ assert_operator_documentation() {
     grep -Fq 'PIPESTATUS' "$source_repo/README.md" || fail 'README does not capture pipeline statuses for Root bootstrap environment check'
     grep -Fq 'PASS: long-running application has no ROOT_BOOTSTRAP_ environment keys' "$source_repo/README.md" || fail 'README missing pass condition for Root bootstrap environment check'
     grep -Fq 'Application rollback does not automatically roll back the database migration' "$source_repo/README.md" || fail 'README does not state that application rollback leaves the migration applied'
+    assert_documented_root_inspect_check
 }
 
 # Unreachable until target scripts exist; later tasks turn these contracts green.
