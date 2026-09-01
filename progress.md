@@ -154,8 +154,9 @@
 ## 认证 Root 引导安全返工（2026-09-01）
 
 - GORM SQL logger 已加泄露防护，Root bootstrap 凭据、环境值和其派生的敏感参数不应写入 SQL 日志。一次性 Root wrapper 只从已验证、远端一致的 feature SHA 创建 Git archive，并以构建返回的不可变 Docker image ID 执行，不依赖可变标签或工作树中的未跟踪输入。
-- Root credential 与 `/opt/Porsche/.env` 的 snapshot 源路径 metadata 校验只属于 one-shot wrapper：凭据文件及其父目录、backend 目录和 `.env` 必须通过属主、权限、非 symlink 校验；复制到私有 `0700` snapshot 后才以只读 mount 传入 disposable `--rm` bootstrap 容器。候选部署只要求 `.env` 为 regular non-symlink source，在任何 Git/network 操作前创建 private env snapshot 并重新拒绝非空或伪装语法的 `ROOT_BOOTSTRAP_` 声明；它不声称校验 wrapper 的 root:0600 或 backend directory metadata。
-- 证据范围仅限本地 isolated fixture 与 Go 验证；真实 one-shot Root bootstrap、candidate deploy 和 browser acceptance 仍待具备受控生产域/隔离依赖的环境后执行，不能据此把生产验收标为 passing。
+- Root runtime environment startup path 已退役：生产服务拒绝任何 `ROOT_BOOTSTRAP_` 声明并且绝不自动引导；唯一流程是 root-controlled one-shot wrapper。Root credential 与 `/opt/Porsche/.env` 的 snapshot 源路径 metadata 校验只属于该 wrapper：凭据文件及其父目录、backend 目录和 `.env` 必须通过属主、权限、non-symlink 校验；复制到私有 `0700` snapshot 后才以只读 mount 传入 disposable `--rm` bootstrap 容器。
+- 候选 deploy 与 manifest rollback 在任何 npm/build、Nginx、container stop/remove/rename、rsync 或 static write 前，均 fail-closed 扫描 `docker ps -a` 中 exact `ai-gateway-go` 与 `ai-gateway-go-acceptance-rollback-<digits>` 的运行/停止容器；rollback manifest target 未出现在列表时也会显式 inspect。`ROOT_BOOTSTRAP_` 命中和 inspect/list 失败均不回显值并拒绝继续；fixture contract 覆盖 current/stopped rollback、inspect/list error、unrelated helper 与 stdout/stderr/argv 脱敏。
+- 已以 disposable no-network fixture containers 验证 `docs deploy rollback`：当前/停止 rollback 容器的 Root key、inspect/list failure、manifest target 的显式 inspect、helper 排除和敏感值不进入 stdout/stderr/argv 均通过；`bash -n`、`jq` 的唯一 `in_progress` 检查与 `git diff --check` 也通过。真实 test machine 的 one-shot/bootstrap、candidate deploy 及 browser acceptance 仍待受控生产域/隔离依赖环境执行，不能据此把生产验收标为 passing。`go-006` 保持唯一 `in_progress`。
 
 ## 下一步（部署冒烟）
 

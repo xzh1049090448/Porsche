@@ -53,9 +53,10 @@ HTTPS Origin（逗号分隔）。默认 Access JWT 时长为 15 分钟、会话�
 至少 32 字节、非默认、非重复且互不复用的密钥。`APP_ENV` 仅允许
 `development`、`test`、`staging` 或 `production`（大小写和首尾空白会规范化）。
 
-首次部署可同时设置 `ROOT_BOOTSTRAP_USERNAME` 与
-`ROOT_BOOTSTRAP_PASSWORD` 创建一次性 Root；两项必须同时配置。Root 创建成功后必须
-立即从生产环境删除这两个变量并重启服务，不能把引导凭据保留为长期登录方式。
+生产服务拒绝任何 Root bootstrap environment key and never bootstraps Root automatically。
+不要通过 `ROOT_BOOTSTRAP_USERNAME` 或 `ROOT_BOOTSTRAP_PASSWORD` 启动服务，也不要以
+删除后重启作为引导流程；唯一允许的 Root 初始化流程见下方 **Isolated one-shot Root
+bootstrap**。
 
 `JIEKOU_ALLOWED_MODELS` 使用逗号分隔的精确模型 ID，例如
 `zai-org/glm-5.1,deepseek/deepseek-v4-pro`。全局 `.env` allowlist 也可包含显式
@@ -243,10 +244,9 @@ credential file.
 The credential file has exactly two lines in either order: `username` and
 `password` each occur exactly once, with no blank, unknown, or duplicate lines.
 Both values must be non-empty and have no surrounding whitespace. The username
-is 3–20 ASCII letters, digits, `_`, or `-`; the password is 12–20 bytes,
+is 3–20 ASCII letters, digits, `_`, or `-`; the password is 12–20 bytes, ASCII password is required,
 contains upper- and lower-case letters, a digit, and a symbol, and is not the
-development default. Generate acceptance values with ASCII characters to avoid
-multi-byte length ambiguity. This is a schema, not a copyable secret or a
+development default. This is a schema, not a copyable secret or a
 command to print the file:
 
 ```text
@@ -262,9 +262,9 @@ credential parent directory must be root-owned and not writable by group or
 other; and the credential file must be a regular, non-symlink `root:root` file
 with mode `0600`.
 
-Remove the two Root bootstrap keys from `/opt/Porsche/.env`, or leave only
-their empty declarations. `ROOT_BOOTSTRAP_USERNAME and ROOT_BOOTSTRAP_PASSWORD must be empty before deployment`.
-Then run the explicit one-shot wrapper:
+Remove/delete both `ROOT_BOOTSTRAP_USERNAME` and `ROOT_BOOTSTRAP_PASSWORD`; empty declarations are not allowed.
+The production service rejects any Root bootstrap environment key and never bootstraps Root automatically;
+this explicit wrapper is the only Root initialization flow. Then run it:
 
 ```bash
 sudo bash deploy/auth-acceptance-bootstrap-root.sh --confirm-auth-root-bootstrap
@@ -288,9 +288,12 @@ sudo bash deploy/auth-acceptance-deploy.sh
 ```
 
 The deployment validates both branches, configuration, Redis, Docker network,
-and Nginx before replacing the application. It health-checks the candidate,
-publishes staged frontend assets, and retains the old container plus static
-snapshot in a root-owned rollback manifest. Confirm that `docker inspect of the long-running application must not contain ROOT_BOOTSTRAP_`.
+and Nginx before replacing the application. Before any build, stop, remove,
+rename, static publish, or Nginx action, deploy and rollback automatically scan
+running and stopped application rollback containers and reject any
+`ROOT_BOOTSTRAP_` environment key or failed inspect. It health-checks the
+candidate, publishes staged frontend assets, and retains the old container plus
+static snapshot in a root-owned rollback manifest. Confirm that `docker inspect of the long-running application must not contain ROOT_BOOTSTRAP_`.
 Use the following check exactly as a safety check: it passes environment entries
 directly from Docker to `grep -q`, never writes them to the terminal or a file,
 and never captures them in a command substitution.
