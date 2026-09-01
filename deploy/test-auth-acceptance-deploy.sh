@@ -105,7 +105,7 @@ assert_fixture_entrypoint() {
     [[ -x "$fixture_script" ]] || fail "missing fixture entrypoint: $fixture_script"
 }
 
-mocked_commands=(docker git npm rsync nginx systemctl flock id curl sleep)
+mocked_commands=(docker git npm rsync nginx systemctl flock id curl sleep chown)
 
 # NUL command log protocol: BEGIN/call-id, ARG/value pairs, END/call-id.
 # Both spaces and the literal __END__ are ordinary argument values.
@@ -120,7 +120,7 @@ write_mock() {
         'case "$command_name" in' \
         '  id) [[ "${1:-}" == "-u" ]] && printf "0\\n" ;;' \
         '  git) case "${1:-}" in branch) if [[ "$PWD" == */Porsche-Web ]]; then printf "%s\\n" "${MOCK_FRONTEND_BRANCH:-feature/session-auth-frontend}"; else printf "%s\\n" "${MOCK_BRANCH:-feature/user-registration-management}"; fi ;; rev-parse) if [[ "${2:-}" == origin/* && "${MOCK_REMOTE_MISMATCH:-0}" == 1 ]]; then printf "remote-sha\\n"; else printf "%s\\n" "${MOCK_GIT_SHA:-fixture-sha}"; fi ;; diff|status) [[ "${MOCK_GIT_DIRTY:-0}" == 0 ]] ;; esac ;;' \
-        '  docker) case "${1:-}" in network) [[ "${MOCK_DOCKER_INSPECT_RESULT:-success}" == success ]] ;; container) if [[ "${2:-}" == inspect && "${3:-}" == porsche-redis ]]; then [[ "${MOCK_REDIS_EXISTS:-0}" == 1 ]]; else [[ "${MOCK_DOCKER_INSPECT_RESULT:-success}" == success ]]; fi ;; run) [[ "${MOCK_DOCKER_RUN_RESULT:-success}" == success ]] || exit 71; printf "fixture-container\\n" ;; esac ;;' \
+        '  docker) case "${1:-}" in network) [[ "${MOCK_DOCKER_INSPECT_RESULT:-success}" == success ]] ;; container) if [[ "${2:-}" == inspect && "${3:-}" == porsche-redis ]]; then [[ "${MOCK_REDIS_EXISTS:-0}" == 1 ]]; else [[ "${MOCK_DOCKER_INSPECT_RESULT:-success}" == success ]]; fi ;; run) [[ "${MOCK_DOCKER_RUN_RESULT:-success}" == success ]] || exit 71; if [[ "${2:-}" == --rm && "${3:-}" == --entrypoint && "${4:-}" == id && "${5:-}" == redis:7-alpine && "${6:-}" == -u && "${7:-}" == redis ]]; then printf "999\\n"; elif [[ "${2:-}" == --rm && "${3:-}" == --entrypoint && "${4:-}" == id && "${5:-}" == redis:7-alpine && "${6:-}" == -g && "${7:-}" == redis ]]; then printf "1000\\n"; else printf "fixture-container\\n"; fi ;; esac ;;' \
         '  curl) [[ "${MOCK_HEALTH_RESULT:-success}" == success ]] || exit 72 ;;' \
         '  npm) [[ "${MOCK_NPM_RESULT:-success}" == success ]] || exit 73 ;;' \
         '  rsync) [[ "${MOCK_RSYNC_RESULT:-success}" == success ]] || exit 74 ;;' \
@@ -415,6 +415,9 @@ run_rollback() {
 
 assert_bootstrap_creates_internal_redis() {
     run_bootstrap
+    require_call docker run --rm --entrypoint id redis:7-alpine -u redis
+    require_call docker run --rm --entrypoint id redis:7-alpine -g redis
+    require_call chown 999:1000 /fixture/redis-config/redis.conf
     require_call docker volume create porsche-redis-data
     require_call docker run -d --name porsche-redis --restart unless-stopped --network porsche-app
     assert_no_dangerous_calls

@@ -35,6 +35,14 @@ printf 'appendonly yes\nsave 60 1\nrequirepass %s\n' "$redis_password" >"$config
 chmod 600 "$config_file"
 unset redis_password
 
+redis_uid="$(docker run --rm --entrypoint id redis:7-alpine -u redis)"
+redis_gid="$(docker run --rm --entrypoint id redis:7-alpine -g redis)"
+[[ "$redis_uid" =~ ^[0-9]+$ && "$redis_gid" =~ ^[0-9]+$ ]] || {
+    echo 'could not resolve the redis:7-alpine runtime user' >&2
+    exit 1
+}
+chown "$redis_uid:$redis_gid" "$config_file"
+
 docker volume create porsche-redis-data >/dev/null
 if ! docker run -d --name porsche-redis --restart unless-stopped --network porsche-app \
     --mount type=volume,src=porsche-redis-data,dst=/data \
