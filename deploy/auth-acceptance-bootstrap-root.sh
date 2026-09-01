@@ -18,6 +18,18 @@ if [[ "${PORSCHE_AUTH_ACCEPTANCE_TEST_MODE:-0}" == 1 ]]; then
     CREDENTIALS_FILE="${PORSCHE_AUTH_ACCEPTANCE_ROOT_CREDENTIALS_FILE:?test credentials file is required}"
 fi
 
+snapshot_dir="$(mktemp -d "${TMPDIR:-/tmp}/porsche-auth-root-bootstrap.XXXXXX")"
+cleanup() {
+    local status=$?
+    trap - EXIT
+    rm -rf -- "$snapshot_dir"
+    exit "$status"
+}
+trap cleanup EXIT
+chmod 700 "$snapshot_dir"
+snapshot_env="$snapshot_dir/.env"
+snapshot_credentials="$snapshot_dir/root-bootstrap"
+
 check_checkout() {
     local current local_sha remote_sha status_output
     cd "$BACKEND_DIR"
@@ -29,16 +41,17 @@ check_checkout() {
     local_sha="$(git rev-parse HEAD)"
     remote_sha="$(git rev-parse "origin/$BACKEND_BRANCH")"
     [[ "$local_sha" == "$remote_sha" ]] || { echo 'backend checkout does not match its remote feature branch' >&2; return 1; }
+    backend_sha="$local_sha"
 }
 
-validate_credentials_file() {
-    local owner mode line value line_count=0 username_count=0 password_count=0
-    [[ -f "$CREDENTIALS_FILE" && ! -L "$CREDENTIALS_FILE" ]] || {
+validate_credentials_metadata() {
+    local path="$1" owner mode
+    [[ -f "$path" && ! -L "$path" ]] || {
         echo 'root bootstrap credentials must be a regular non-symlink file' >&2
         return 1
     }
-    owner="$(stat -c '%u' -- "$CREDENTIALS_FILE")"
-    mode="$(stat -c '%a' -- "$CREDENTIALS_FILE")"
+    owner="$(stat -c '%u' -- "$path")"
+    mode="$(stat -c '%a' -- "$path")"
     [[ "$owner" =~ ^[0-9]+$ && "$owner" == 0 ]] || {
         echo 'root bootstrap credentials must be owned by numeric uid 0' >&2
         return 1
@@ -47,7 +60,10 @@ validate_credentials_file() {
         echo 'root bootstrap credentials must have mode 600' >&2
         return 1
     }
+}
 
+validate_credentials_content() {
+    local path="$1" line value line_count=0 username_count=0 password_count=0
     while IFS= read -r line || [[ -n "$line" ]]; do
         ((line_count += 1))
         [[ -n "$line" ]] || { echo 'invalid root bootstrap credentials format' >&2; return 1; }
@@ -69,21 +85,31 @@ validate_credentials_file() {
             echo 'invalid root bootstrap credentials value' >&2
             return 1
         }
-    done <"$CREDENTIALS_FILE"
+    done <"$path"
     (( line_count == 2 && username_count == 1 && password_count == 1 )) || {
         echo 'root bootstrap credentials must contain username and password exactly once' >&2
         return 1
     }
 }
 
-env_has_nonempty_value() {
-    local key="$1" line
+validate_snapshot_env() {
+    local line
     while IFS= read -r line || [[ -n "$line" ]]; do
         case "$line" in
-            "${key}="*) [[ -z "${line#*=}" ]] || return 0 ;;
+            *ROOT_BOOTSTRAP_USERNAME*)
+                [[ "$line" == ROOT_BOOTSTRAP_USERNAME= ]] || {
+                    echo 'backend .env contains a forbidden ROOT_BOOTSTRAP_USERNAME declaration' >&2
+                    return 1
+                }
+                ;;
+            *ROOT_BOOTSTRAP_PASSWORD*)
+                [[ "$line" == ROOT_BOOTSTRAP_PASSWORD= ]] || {
+                    echo 'backend .env contains a forbidden ROOT_BOOTSTRAP_PASSWORD declaration' >&2
+                    return 1
+                }
+                ;;
         esac
-    done <"$BACKEND_DIR/.env"
-    return 1
+    done <"$snapshot_env"
 }
 
 [[ -f "$BACKEND_DIR/.env" && ! -L "$BACKEND_DIR/.env" ]] || {
@@ -91,20 +117,22 @@ env_has_nonempty_value() {
     exit 1
 }
 check_checkout
-validate_credentials_file
-if env_has_nonempty_value ROOT_BOOTSTRAP_USERNAME; then
-    echo 'ROOT_BOOTSTRAP_USERNAME must be empty or missing in backend .env' >&2
-    exit 1
-fi
-if env_has_nonempty_value ROOT_BOOTSTRAP_PASSWORD; then
-    echo 'ROOT_BOOTSTRAP_PASSWORD must be empty or missing in backend .env' >&2
-    exit 1
-fi
+validate_credentials_metadata "$CREDENTIALS_FILE"
+umask 077
+cp --no-dereference -- "$BACKEND_DIR/.env" "$snapshot_env"
+cp --no-dereference -- "$CREDENTIALS_FILE" "$snapshot_credentials"
+[[ -f "$snapshot_env" && ! -L "$snapshot_env" ]] || { echo 'snapshot .env is not a regular file' >&2; exit 1; }
+[[ -f "$snapshot_credentials" && ! -L "$snapshot_credentials" ]] || { echo 'snapshot credentials are not a regular file' >&2; exit 1; }
+chmod 600 "$snapshot_credentials"
+validate_credentials_metadata "$snapshot_credentials"
+validate_credentials_content "$snapshot_credentials"
+validate_snapshot_env
 docker network inspect "$NETWORK" >/dev/null
 docker container inspect "$MYSQL_CONTAINER" >/dev/null
 
-docker build --tag "$IMAGE_NAME" "$BACKEND_DIR"
+image_id="$(git archive --format=tar "$backend_sha" | docker build --quiet --tag "$IMAGE_NAME" -)"
+[[ "$image_id" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo 'Docker build did not return an immutable image id' >&2; exit 1; }
 docker run --rm --network "$NETWORK" \
-    --mount "type=bind,src=$BACKEND_DIR/.env,dst=/app/.env,readonly" \
-    --mount "type=bind,src=$CREDENTIALS_FILE,dst=/run/secrets/root-bootstrap,readonly" \
-    "$IMAGE_NAME" /app/bootstrap-root --credentials-file /run/secrets/root-bootstrap
+    --mount "type=bind,src=$snapshot_env,dst=/app/.env,readonly" \
+    --mount "type=bind,src=$snapshot_credentials,dst=/run/secrets/root-bootstrap,readonly" \
+    "$image_id" /app/bootstrap-root --credentials-file /run/secrets/root-bootstrap

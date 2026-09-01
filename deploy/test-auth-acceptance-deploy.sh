@@ -61,12 +61,21 @@ frontend_root="$fixture_dir/www/porsche-web"
 manifest_dir="$fixture_dir/manifests"
 mock_dir="$fixture_dir/bin"
 command_log="$fixture_dir/commands.nul"
+fixture_image_id="sha256:$(printf '%064d' 0)"
 run_count=0
-mkdir -p "$backend_dir/deploy" "$frontend_dir/.git" "$frontend_dir/dist" "$frontend_root" "$manifest_dir" "$mock_dir"
+mkdir -p "$backend_dir/deploy" "$backend_dir/cmd/bootstrap-root" "$backend_dir/vendor/fixture-malicious" "$frontend_dir/.git" "$frontend_dir/dist" "$frontend_root" "$manifest_dir" "$mock_dir"
 printf 'APP_ENV=production\nREDIS_URL=redis://:fixture-only-password@porsche-redis:6379/0\nALLOWED_HOSTS=aiportcloud.com\nAUTH_TRUSTED_ORIGINS=https://aiportcloud.com\n' >"$backend_dir/.env"
 printf 'APP_ENV=production\nREDIS_URL=redis://:fixture-only-password@porsche-redis:6379/0\nALLOWED_HOSTS=aiportcloud.com\nAUTH_TRUSTED_ORIGINS=https://aiportcloud.com\nROOT_BOOTSTRAP_USERNAME=env-root\n' >"$backend_dir/.env.root-username"
 printf 'APP_ENV=production\nREDIS_URL=redis://:fixture-only-password@porsche-redis:6379/0\nALLOWED_HOSTS=aiportcloud.com\nAUTH_TRUSTED_ORIGINS=https://aiportcloud.com\nROOT_BOOTSTRAP_PASSWORD=env-password\n' >"$backend_dir/.env.root-password"
 cp "$backend_dir/.env" "$backend_dir/.env.clean"
+printf 'ROOT_BOOTSTRAP_USERNAME=\nROOT_BOOTSTRAP_PASSWORD=\n' >>"$backend_dir/.env.clean"
+printf 'APP_ENV=production\n ROOT_BOOTSTRAP_USERNAME=env-root\n' >"$backend_dir/.env.root-leading-whitespace"
+printf 'APP_ENV=production\nexport ROOT_BOOTSTRAP_PASSWORD=env-password\n' >"$backend_dir/.env.root-export"
+printf 'APP_ENV=production\nROOT_BOOTSTRAP_USERNAME = env-root\n' >"$backend_dir/.env.root-spaced"
+printf 'APP_ENV=production\nROOT_BOOTSTRAP_PASSWORD: env-password\n' >"$backend_dir/.env.root-colon"
+printf 'APP_ENV=production\nROOT_BOOTSTRAP_USERNAME=\nexport ROOT_BOOTSTRAP_USERNAME=env-root\n' >"$backend_dir/.env.root-mixed-duplicate"
+printf 'package main\n\nfunc fixtureOverride() {}\n' >"$backend_dir/cmd/bootstrap-root/override.go"
+printf 'malicious untracked build input\n' >"$backend_dir/vendor/fixture-malicious/payload"
 printf '<!doctype html><title>fixture</title>\n' >"$frontend_dir/dist/index.html"
 printf 'fixture-static\n' >"$frontend_root/index.html"
 printf '' >"$fixture_dir/redis-password-empty"
@@ -134,14 +143,17 @@ write_mock() {
     printf '%s\n' '#!/usr/bin/env bash' 'set -Eeuo pipefail' \
         'command_name="${0##*/}"' \
         'call_id="${BASHPID:-$$}-${RANDOM}"' \
+        'lock_dir="${COMMAND_LOG}.lock"' \
+        'until mkdir "$lock_dir" 2>/dev/null; do :; done' \
         'printf "BEGIN\\0%s\\0ARG\\0%s\\0" "$call_id" "$command_name" >>"$COMMAND_LOG"' \
         'for arg in "$@"; do printf "ARG\\0%s\\0" "$arg" >>"$COMMAND_LOG"; done' \
         'printf "END\\0%s\\0" "$call_id" >>"$COMMAND_LOG"' \
+        'rmdir "$lock_dir"' \
         'case "$command_name" in' \
         '  id) [[ "${1:-}" == "-u" ]] && printf "%s\\n" "${MOCK_ID_UID:-0}" ;;' \
         '  stat) case "${1:-}:${2:-}" in "-c:%u") printf "%s\\n" "${MOCK_CREDENTIAL_UID:-0}" ;; "-c:%a") printf "%s\\n" "${MOCK_CREDENTIAL_MODE:-600}" ;; *) exit 78 ;; esac ;;' \
-        '  git) case "${1:-}" in branch) if [[ "$PWD" == */Porsche-Web ]]; then printf "%s\\n" "${MOCK_FRONTEND_BRANCH:-feature/session-auth-frontend}"; else printf "%s\\n" "${MOCK_BRANCH:-feature/user-registration-management}"; fi ;; rev-parse) if [[ "${2:-}" == origin/* && "${MOCK_REMOTE_MISMATCH:-0}" == 1 ]]; then printf "remote-sha\\n"; else printf "%s\\n" "${MOCK_GIT_SHA:-fixture-sha}"; fi ;; diff|status) [[ "${MOCK_GIT_DIRTY:-0}" == 0 ]] ;; esac ;;' \
-        '  docker) case "${1:-}" in network) if [[ "${2:-}" == inspect && "${3:-}" == porsche-app ]]; then [[ "${MOCK_NETWORK_INSPECT_RESULT:-success}" == success ]]; else [[ "${MOCK_DOCKER_INSPECT_RESULT:-success}" == success ]]; fi ;; container) if [[ "${2:-}" == inspect && "${3:-}" == porsche-redis ]]; then [[ "${MOCK_REDIS_EXISTS:-0}" == 1 ]]; elif [[ "${2:-}" == inspect && "${3:-}" == porsche-mysql ]]; then [[ "${MOCK_MYSQL_EXISTS:-1}" == 1 && "${MOCK_MYSQL_INSPECT_RESULT:-success}" == success ]]; else [[ "${MOCK_DOCKER_INSPECT_RESULT:-success}" == success ]]; fi ;; run) [[ "${MOCK_DOCKER_RUN_RESULT:-success}" == success ]] || exit 71; if [[ "${2:-}" == --rm && "${3:-}" == --entrypoint && "${4:-}" == id && "${5:-}" == redis:7-alpine && "${6:-}" == -u && "${7:-}" == redis ]]; then printf "999\\n"; elif [[ "${2:-}" == --rm && "${3:-}" == --entrypoint && "${4:-}" == id && "${5:-}" == redis:7-alpine && "${6:-}" == -g && "${7:-}" == redis ]]; then printf "1000\\n"; else printf "fixture-container\\n"; fi ;; esac ;;' \
+        '  git) case "${1:-}" in branch) if [[ "$PWD" == */Porsche-Web ]]; then printf "%s\\n" "${MOCK_FRONTEND_BRANCH:-feature/session-auth-frontend}"; else printf "%s\\n" "${MOCK_BRANCH:-feature/user-registration-management}"; fi ;; rev-parse) if [[ "${2:-}" == origin/* && "${MOCK_REMOTE_MISMATCH:-0}" == 1 ]]; then printf "remote-sha\\n"; else printf "%s\\n" "${MOCK_GIT_SHA:-fixture-sha}"; fi ;; status) [[ "${MOCK_GIT_STATUS_FAILURE:-0}" == 0 ]] || exit 79; [[ "${MOCK_GIT_DIRTY:-0}" == 0 ]] || printf " M tracked-fixture\\n" ;; diff) [[ "${MOCK_GIT_DIRTY:-0}" == 0 ]] ;; archive) : ;; esac ;;' \
+        '  docker) case "${1:-}" in network) if [[ "${2:-}" == inspect && "${3:-}" == porsche-app ]]; then [[ "${MOCK_NETWORK_INSPECT_RESULT:-success}" == success ]]; else [[ "${MOCK_DOCKER_INSPECT_RESULT:-success}" == success ]]; fi ;; container) if [[ "${2:-}" == inspect && "${3:-}" == porsche-redis ]]; then [[ "${MOCK_REDIS_EXISTS:-0}" == 1 ]]; elif [[ "${2:-}" == inspect && "${3:-}" == porsche-mysql ]]; then [[ "${MOCK_MYSQL_EXISTS:-1}" == 1 && "${MOCK_MYSQL_INSPECT_RESULT:-success}" == success ]]; else [[ "${MOCK_DOCKER_INSPECT_RESULT:-success}" == success ]]; fi ;; build) [[ "${2:-}" != --quiet ]] || printf "%s\\n" "${MOCK_DOCKER_BUILD_IMAGE_ID:-}" ;; run) [[ "${MOCK_DOCKER_RUN_RESULT:-success}" == success ]] || exit 71; if [[ "${2:-}" == --rm && "${3:-}" == --entrypoint && "${4:-}" == id && "${5:-}" == redis:7-alpine && "${6:-}" == -u && "${7:-}" == redis ]]; then printf "999\\n"; elif [[ "${2:-}" == --rm && "${3:-}" == --entrypoint && "${4:-}" == id && "${5:-}" == redis:7-alpine && "${6:-}" == -g && "${7:-}" == redis ]]; then printf "1000\\n"; else printf "fixture-container\\n"; fi ;; esac ;;' \
         '  curl) [[ "${MOCK_HEALTH_RESULT:-success}" == success ]] || exit 72 ;;' \
         '  npm) [[ "${MOCK_NPM_RESULT:-success}" == success ]] || exit 73 ;;' \
         '  rsync) [[ "${MOCK_RSYNC_RESULT:-success}" == success ]] || exit 74 ;;' \
@@ -300,6 +312,40 @@ assert_no_sensitive_argv_fields() {
     return 0
 }
 
+assert_no_docker_run() {
+    local call_index
+    parse_calls
+    for ((call_index = 0; call_index < ${#call_starts[@]}; call_index += 1)); do
+        call_has_prefix "$call_index" docker run && fail 'unexpected Docker run invocation'
+    done
+    return 0
+}
+
+require_root_bootstrap_snapshot_run() {
+    local call_index start env_mount credential_mount env_snapshot_dir credential_snapshot_dir
+    parse_calls
+    for ((call_index = 0; call_index < ${#call_starts[@]}; call_index += 1)); do
+        call_has_prefix "$call_index" docker run --rm --network porsche-app || continue
+        [[ "${call_lengths[$call_index]}" == 13 ]] || continue
+        start="${call_starts[$call_index]}"
+        [[ "${call_argv[$((start + 5))]}" == --mount && "${call_argv[$((start + 7))]}" == --mount ]] || continue
+        env_mount="${call_argv[$((start + 6))]}"
+        credential_mount="${call_argv[$((start + 8))]}"
+        [[ "$env_mount" =~ ^type=bind,src=(/tmp/porsche-auth-root-bootstrap\.[^,]+)/\.env,dst=/app/\.env,readonly$ ]] || continue
+        env_snapshot_dir="${BASH_REMATCH[1]}"
+        [[ "$credential_mount" =~ ^type=bind,src=(/tmp/porsche-auth-root-bootstrap\.[^,]+)/root-bootstrap,dst=/run/secrets/root-bootstrap,readonly$ ]] || continue
+        credential_snapshot_dir="${BASH_REMATCH[1]}"
+        [[ "$env_snapshot_dir" == "$credential_snapshot_dir" ]] || continue
+        [[ "$env_mount" != *'/fixture/Porsche/.env'* && "$credential_mount" != *'/fixture/root-acceptance-credentials'* ]] || continue
+        [[ "${call_argv[$((start + 9))]}" == "$fixture_image_id" ]] || continue
+        [[ "${call_argv[$((start + 10))]}" == /app/bootstrap-root ]] || continue
+        [[ "${call_argv[$((start + 11))]}" == --credentials-file ]] || continue
+        [[ "${call_argv[$((start + 12))]}" == /run/secrets/root-bootstrap ]] || continue
+        return 0
+    done
+    fail 'missing root bootstrap run with private snapshot mounts and immutable image id'
+}
+
 require_candidate_rollback_renames() {
     local call_index start target saw_save=0 saw_restore=0
     parse_calls
@@ -387,11 +433,21 @@ assert_structured_sensitive_argv_scan_contract() {
     fi
 }
 
+assert_log_protocol_handles_pipeline_concurrency() {
+    : >"$command_log"
+    COMMAND_LOG="$command_log" "$mock_dir/git" archive --format=tar fixture-sha \
+        | COMMAND_LOG="$command_log" MOCK_DOCKER_BUILD_IMAGE_ID="$fixture_image_id" "$mock_dir/docker" build --quiet --tag fixture - >/dev/null
+    parse_calls
+    require_exact_call git archive --format=tar fixture-sha
+    require_exact_call docker build --quiet --tag fixture -
+}
+
 assert_log_protocol_preserves_argv
 assert_parser_detects_absolute_docker
 assert_parser_detects_optioned_dangerous_calls
 assert_parser_detects_optioned_write_calls
 assert_structured_sensitive_argv_scan_contract
+assert_log_protocol_handles_pipeline_concurrency
 
 assert_container_blocks_host_command_bypasses() {
     local host_probe="$source_repo/.auth-acceptance-host-probe"
@@ -447,12 +503,14 @@ run_entrypoint() {
         --env "MOCK_REMOTE_MISMATCH=${MOCK_REMOTE_MISMATCH:-0}" \
         --env "MOCK_GIT_SHA=${MOCK_GIT_SHA:-fixture-sha}" \
         --env "MOCK_GIT_DIRTY=${MOCK_GIT_DIRTY:-0}" \
+        --env "MOCK_GIT_STATUS_FAILURE=${MOCK_GIT_STATUS_FAILURE:-0}" \
         --env "MOCK_CREDENTIAL_UID=${MOCK_CREDENTIAL_UID:-0}" \
         --env "MOCK_CREDENTIAL_MODE=${MOCK_CREDENTIAL_MODE:-600}" \
         --env "MOCK_NETWORK_INSPECT_RESULT=${MOCK_NETWORK_INSPECT_RESULT:-success}" \
         --env "MOCK_MYSQL_EXISTS=${MOCK_MYSQL_EXISTS:-1}" \
         --env "MOCK_MYSQL_INSPECT_RESULT=${MOCK_MYSQL_INSPECT_RESULT:-success}" \
         --env "MOCK_DOCKER_INSPECT_RESULT=${MOCK_DOCKER_INSPECT_RESULT:-success}" \
+        --env "MOCK_DOCKER_BUILD_IMAGE_ID=${MOCK_DOCKER_BUILD_IMAGE_ID:-$fixture_image_id}" \
         --env "MOCK_REDIS_EXISTS=${MOCK_REDIS_EXISTS:-0}" \
         --env "MOCK_DOCKER_RUN_RESULT=${MOCK_DOCKER_RUN_RESULT:-success}" \
         --env "MOCK_HEALTH_RESULT=${MOCK_HEALTH_RESULT:-success}" \
@@ -630,6 +688,9 @@ assert_root_bootstrap_rejects_invalid_checkout_without_writes() {
     if MOCK_GIT_DIRTY=1 run_root_bootstrap; then fail 'root bootstrap accepted dirty checkout'; fi
     assert_no_docker_or_rsync_writes
     assert_no_dangerous_calls
+    if MOCK_GIT_STATUS_FAILURE=1 run_root_bootstrap; then fail 'root bootstrap accepted failed Git status inspection'; fi
+    assert_no_docker_or_rsync_writes
+    assert_no_dangerous_calls
     if MOCK_REMOTE_MISMATCH=1 run_root_bootstrap; then fail 'root bootstrap accepted remote SHA mismatch'; fi
     assert_no_docker_or_rsync_writes
     assert_no_dangerous_calls
@@ -727,6 +788,22 @@ assert_root_bootstrap_rejects_env_credentials_without_writes() {
     if run_root_bootstrap; then fail 'root bootstrap accepted ROOT_BOOTSTRAP_PASSWORD from .env'; fi
     assert_no_docker_or_rsync_writes
     assert_no_dangerous_calls
+
+    local alternate_envs=(
+        .env.root-leading-whitespace
+        .env.root-export
+        .env.root-spaced
+        .env.root-colon
+        .env.root-mixed-duplicate
+    )
+    local alternate_env
+    for alternate_env in "${alternate_envs[@]}"; do
+        mv "$backend_dir/$alternate_env" "$backend_dir/.env"
+        wait_for_fixture_file "$backend_dir/.env" /fixture/Porsche/.env
+        if run_root_bootstrap; then fail 'root bootstrap accepted alternate Root declaration syntax'; fi
+        assert_no_docker_or_rsync_writes
+        assert_no_dangerous_calls
+    done
     mv "$backend_dir/.env.clean" "$backend_dir/.env"
     wait_for_fixture_file "$backend_dir/.env" /fixture/Porsche/.env
 }
@@ -748,17 +825,23 @@ assert_root_bootstrap_rejects_missing_docker_dependencies_without_writes() {
     assert_no_dangerous_calls
 }
 
+assert_root_bootstrap_rejects_invalid_image_id_without_run() {
+    if MOCK_DOCKER_BUILD_IMAGE_ID=not-an-image-id run_root_bootstrap; then fail 'root bootstrap accepted invalid Docker build image id'; fi
+    require_exact_call git archive --format=tar fixture-sha
+    require_exact_call docker build --quiet --tag ai-gateway-go:auth-acceptance -
+    assert_no_docker_run
+    assert_no_dangerous_calls
+}
+
 assert_root_bootstrap_uses_readonly_secret_mounts() {
     if ! run_root_bootstrap; then
         fail "root bootstrap happy path failed: $(<"$fixture_dir/root-bootstrap.stderr")"
     fi
     require_call docker network inspect porsche-app
     require_call docker container inspect porsche-mysql
-    require_exact_call docker build --tag ai-gateway-go:auth-acceptance /fixture/Porsche
-    require_exact_call docker run --rm --network porsche-app \
-        --mount type=bind,src=/fixture/Porsche/.env,dst=/app/.env,readonly \
-        --mount type=bind,src=/fixture/root-acceptance-credentials,dst=/run/secrets/root-bootstrap,readonly \
-        ai-gateway-go:auth-acceptance /app/bootstrap-root --credentials-file /run/secrets/root-bootstrap
+    require_exact_call git archive --format=tar fixture-sha
+    require_exact_call docker build --quiet --tag ai-gateway-go:auth-acceptance -
+    require_root_bootstrap_snapshot_run
     assert_no_call_token --env
     assert_no_call_token --env-file
     assert_root_secret_absent
@@ -784,7 +867,7 @@ for selected_check in "${selected_checks[@]}"; do
         migration) assert_migration_requires_confirmation_without_writes; run_migration ;;
         deploy) assert_deploy_refuses_main_or_dirty_checkout_without_writes; assert_deploy_preflight_failures_do_not_write; assert_candidate_failure_restores_old_application; assert_publish_failures_restore_application; assert_successful_deploy_order_and_manifest ;;
         rollback) run_rollback ;;
-        root-bootstrap) assert_root_bootstrap_requires_confirmation_without_writes; assert_root_bootstrap_requires_root_without_writes; assert_root_bootstrap_rejects_invalid_checkout_without_writes; assert_root_bootstrap_rejects_invalid_credentials_without_writes; assert_root_bootstrap_rejects_env_credentials_without_writes; assert_root_bootstrap_rejects_missing_docker_dependencies_without_writes; assert_root_bootstrap_uses_readonly_secret_mounts ;;
+        root-bootstrap) assert_root_bootstrap_requires_confirmation_without_writes; assert_root_bootstrap_requires_root_without_writes; assert_root_bootstrap_rejects_invalid_checkout_without_writes; assert_root_bootstrap_rejects_invalid_credentials_without_writes; assert_root_bootstrap_rejects_env_credentials_without_writes; assert_root_bootstrap_rejects_missing_docker_dependencies_without_writes; assert_root_bootstrap_rejects_invalid_image_id_without_run; assert_root_bootstrap_uses_readonly_secret_mounts ;;
         docs) assert_operator_documentation ;;
     esac
 done
