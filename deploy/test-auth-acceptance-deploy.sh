@@ -69,6 +69,14 @@ printf 'APP_ENV=production\nREDIS_URL=redis://:fixture-only-password@porsche-red
 printf 'APP_ENV=production\nREDIS_URL=redis://:fixture-only-password@porsche-redis:6379/0\nALLOWED_HOSTS=aiportcloud.com\nAUTH_TRUSTED_ORIGINS=https://aiportcloud.com\nROOT_BOOTSTRAP_PASSWORD=env-password\n' >"$backend_dir/.env.root-password"
 cp "$backend_dir/.env" "$backend_dir/.env.clean"
 printf 'ROOT_BOOTSTRAP_USERNAME=\nROOT_BOOTSTRAP_PASSWORD=\n' >>"$backend_dir/.env.clean"
+printf 'APP_ENV=production\nREDIS_URL=redis://:fixture-only-password@porsche-redis:6379/0\nALLOWED_HOSTS=aiportcloud.com\nAUTH_TRUSTED_ORIGINS=https://aiportcloud.com\nROOT_BOOTSTRAP_USERNAME=root_admin\n' >"$backend_dir/.env.deploy-root-username"
+printf 'APP_ENV=production\nREDIS_URL=redis://:fixture-only-password@porsche-redis:6379/0\nALLOWED_HOSTS=aiportcloud.com\nAUTH_TRUSTED_ORIGINS=https://aiportcloud.com\nROOT_BOOTSTRAP_PASSWORD=Aa1@fixture-secret\n' >"$backend_dir/.env.deploy-root-password"
+printf 'APP_ENV=production\n ROOT_BOOTSTRAP_USERNAME=root_admin\n' >"$backend_dir/.env.deploy-root-leading-whitespace"
+printf 'APP_ENV=production\nexport ROOT_BOOTSTRAP_PASSWORD=Aa1@fixture-secret\n' >"$backend_dir/.env.deploy-root-export"
+printf 'APP_ENV=production\nROOT_BOOTSTRAP_USERNAME = root_admin\n' >"$backend_dir/.env.deploy-root-spaced"
+printf 'APP_ENV=production\nROOT_BOOTSTRAP_PASSWORD: Aa1@fixture-secret\n' >"$backend_dir/.env.deploy-root-colon"
+printf 'APP_ENV=production\n# ROOT_BOOTSTRAP_USERNAME=root_admin\n' >"$backend_dir/.env.deploy-root-comment"
+printf 'APP_ENV=production\nROOT_BOOTSTRAP_USERNAME=\nexport ROOT_BOOTSTRAP_USERNAME=root_admin\n' >"$backend_dir/.env.deploy-root-mixed-duplicate"
 printf 'APP_ENV=production\n ROOT_BOOTSTRAP_USERNAME=env-root\n' >"$backend_dir/.env.root-leading-whitespace"
 printf 'APP_ENV=production\nexport ROOT_BOOTSTRAP_PASSWORD=env-password\n' >"$backend_dir/.env.root-export"
 printf 'APP_ENV=production\nROOT_BOOTSTRAP_USERNAME = env-root\n' >"$backend_dir/.env.root-spaced"
@@ -270,6 +278,16 @@ assert_no_docker_or_rsync_writes() {
         docker_call_writes "$call_index" && fail "unexpected Docker write after rejection at call $call_index"
         command="$(call_command_basename "$call_index")"
         [[ "$command" != rsync ]] || fail "unexpected rsync write after rejection at call $call_index"
+    done
+    return 0
+}
+
+assert_no_deploy_preparation_calls() {
+    local call_index command
+    parse_calls
+    for ((call_index = 0; call_index < ${#call_starts[@]}; call_index += 1)); do
+        command="$(call_command_basename "$call_index")"
+        [[ "$command" != npm && "$command" != nginx ]] || fail "unexpected deployment preparation invocation at call $call_index"
     done
     return 0
 }
@@ -599,6 +617,17 @@ assert_migration_requires_confirmation_without_writes() {
     assert_no_docker_or_rsync_writes
 }
 run_deploy() { MOCK_REDIS_EXISTS=1 run_entrypoint auth-acceptance-deploy.sh; }
+run_deploy_with_captured_output() {
+    local stdout_file="$fixture_dir/deploy-root-env.stdout" stderr_file="$fixture_dir/deploy-root-env.stderr" status
+    : >"$stdout_file"
+    : >"$stderr_file"
+    if MOCK_REDIS_EXISTS=1 run_entrypoint auth-acceptance-deploy.sh >"$stdout_file" 2>"$stderr_file"; then
+        status=0
+    else
+        status=$?
+    fi
+    return "$status"
+}
 run_root_bootstrap() {
     local stdout_file="$fixture_dir/root-bootstrap.stdout" stderr_file="$fixture_dir/root-bootstrap.stderr" status
     : >"$stdout_file"
@@ -672,6 +701,50 @@ assert_deploy_preflight_failures_do_not_write() {
     assert_no_docker_or_rsync_writes
     if MOCK_NGINX_RESULT=failure run_deploy; then fail 'deployment accepted invalid Nginx configuration'; fi
     assert_no_docker_or_rsync_writes
+}
+
+assert_deploy_rejects_root_bootstrap_env_without_writes() {
+    local env_fixture key stdout_file="$fixture_dir/deploy-root-env.stdout" stderr_file="$fixture_dir/deploy-root-env.stderr"
+    local root_env_fixtures=(
+        '.env.deploy-root-username:ROOT_BOOTSTRAP_USERNAME'
+        '.env.deploy-root-password:ROOT_BOOTSTRAP_PASSWORD'
+        '.env.deploy-root-leading-whitespace:ROOT_BOOTSTRAP_USERNAME'
+        '.env.deploy-root-export:ROOT_BOOTSTRAP_PASSWORD'
+        '.env.deploy-root-spaced:ROOT_BOOTSTRAP_USERNAME'
+        '.env.deploy-root-colon:ROOT_BOOTSTRAP_PASSWORD'
+        '.env.deploy-root-comment:ROOT_BOOTSTRAP_USERNAME'
+        '.env.deploy-root-mixed-duplicate:ROOT_BOOTSTRAP_USERNAME'
+    )
+    for env_fixture in "${root_env_fixtures[@]}"; do
+        cp "$backend_dir/${env_fixture%%:*}" "$backend_dir/.env"
+        wait_for_fixture_file "$backend_dir/.env" /fixture/Porsche/.env
+        key="${env_fixture#*:}"
+        if run_deploy_with_captured_output; then
+            cp "$backend_dir/.env.clean" "$backend_dir/.env"
+            wait_for_fixture_file "$backend_dir/.env" /fixture/Porsche/.env
+            fail 'deployment accepted a Root bootstrap declaration from .env'
+        fi
+        grep -Fq "$key" "$stderr_file" || {
+            cp "$backend_dir/.env.clean" "$backend_dir/.env"
+            wait_for_fixture_file "$backend_dir/.env" /fixture/Porsche/.env
+            fail 'deployment rejection did not identify the Root bootstrap key'
+        }
+        assert_no_sensitive_argv_fields 'Aa1@fixture-secret' 'root_admin' || {
+            cp "$backend_dir/.env.clean" "$backend_dir/.env"
+            wait_for_fixture_file "$backend_dir/.env" /fixture/Porsche/.env
+            fail 'Root bootstrap value appeared in a structured argv field'
+        }
+        ! grep -Fq 'Aa1@fixture-secret' "$stdout_file" "$stderr_file" || {
+            cp "$backend_dir/.env.clean" "$backend_dir/.env"
+            wait_for_fixture_file "$backend_dir/.env" /fixture/Porsche/.env
+            fail 'Root bootstrap secret appeared in deployment output'
+        }
+        assert_no_deploy_preparation_calls
+        assert_no_docker_or_rsync_writes
+        assert_no_dangerous_calls
+        cp "$backend_dir/.env.clean" "$backend_dir/.env"
+        wait_for_fixture_file "$backend_dir/.env" /fixture/Porsche/.env
+    done
 }
 
 assert_publish_failures_restore_application() {
@@ -938,7 +1011,7 @@ for selected_check in "${selected_checks[@]}"; do
     case "$selected_check" in
         bootstrap) assert_bootstrap_rejects_invalid_passwords_and_existing_container; assert_bootstrap_creates_internal_redis ;;
         migration) assert_migration_requires_confirmation_without_writes; run_migration ;;
-        deploy) assert_deploy_refuses_main_or_dirty_checkout_without_writes; assert_deploy_preflight_failures_do_not_write; assert_candidate_failure_restores_old_application; assert_publish_failures_restore_application; assert_successful_deploy_order_and_manifest ;;
+        deploy) assert_deploy_refuses_main_or_dirty_checkout_without_writes; assert_deploy_preflight_failures_do_not_write; assert_deploy_rejects_root_bootstrap_env_without_writes; assert_candidate_failure_restores_old_application; assert_publish_failures_restore_application; assert_successful_deploy_order_and_manifest ;;
         rollback) run_rollback ;;
         root-bootstrap) assert_root_bootstrap_requires_confirmation_without_writes; assert_root_bootstrap_requires_root_without_writes; assert_root_bootstrap_rejects_invalid_checkout_without_writes; assert_root_bootstrap_rejects_unsafe_source_metadata_without_writes; assert_root_bootstrap_rejects_invalid_credentials_without_writes; assert_root_bootstrap_rejects_unsafe_snapshot_metadata_without_writes; assert_root_bootstrap_rejects_env_credentials_without_writes; assert_root_bootstrap_rejects_missing_docker_dependencies_without_writes; assert_root_bootstrap_rejects_invalid_image_id_without_run; assert_root_bootstrap_uses_readonly_secret_mounts ;;
         docs) assert_operator_documentation ;;
