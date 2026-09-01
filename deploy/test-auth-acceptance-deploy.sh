@@ -64,6 +64,7 @@ command_log="$fixture_dir/commands.nul"
 fixture_image_id="sha256:$(printf '%064d' 0)"
 fixture_current_id="sha256:$(printf '%064d' 1)"
 fixture_rollback_id="sha256:$(printf '%064d' 2)"
+fixture_candidate_id="sha256:$(printf '%064d' 3)"
 fixture_lock_file="$fixture_dir/auth-acceptance.lock"
 fixture_tmp_dir="$fixture_dir/tmp"
 fixture_untrusted_tmp_dir="$fixture_dir/untrusted"
@@ -176,6 +177,7 @@ write_mock() {
         'for arg in "$@"; do printf "ARG\\0%s\\0" "$arg" >>"$COMMAND_LOG"; done' \
         'printf "END\\0%s\\0" "$call_id" >>"$COMMAND_LOG"' \
         'rmdir "$lock_dir"' \
+        'if [[ "$command_name" == docker && "${1:-}" == run && "${2:-}" == -d ]]; then printf "%s\\n" "${MOCK_CANDIDATE_CONTAINER_ID:-sha256:0000000000000000000000000000000000000000000000000000000000000003}"; exit 0; fi' \
         'if [[ "$command_name" == docker && "${1:-}" == build && "${MOCK_ROOT_ENV_AFTER_BUILD:-0}" == 1 ]]; then : >/fixture/container-root-after-build; fi' \
         'if [[ "$command_name" == docker && "${1:-}" == container && "${2:-}" == inspect && "${4:-}" == --format && "${5:-}" == "{{range .Config.Env}}{{println .}}{{end}}" && -e /fixture/container-root-after-build && ( "${3:-}" == ai-gateway-go || "${3:-}" =~ ^ai-gateway-go-acceptance-rollback-[0-9]+$ ) ]]; then printf "ROOT_BOOTSTRAP_PASSWORD=fixture-container-root-secret\\n"; exit 0; fi' \
         'if [[ "$command_name" == docker && "${1:-}" == container && "${2:-}" == inspect && "${4:-}" == --format && "${5:-}" == "{{.Id}}" ]]; then case "${3:-}" in ai-gateway-go) printf "%s\\n" "${MOCK_CURRENT_CONTAINER_ID:-sha256:0000000000000000000000000000000000000000000000000000000000000001}" ;; ai-gateway-go-acceptance-rollback-[0-9]*) printf "%s\\n" "${MOCK_ROLLBACK_CONTAINER_ID:-sha256:0000000000000000000000000000000000000000000000000000000000000002}" ;; *) exit 78 ;; esac; exit 0; fi' \
@@ -451,8 +453,10 @@ require_candidate_rollback_renames() {
         start="${call_starts[$call_index]}"
         if call_has_prefix "$call_index" docker rename -- "$fixture_current_id"; then
             target="${call_argv[$((start + 4))]:-}"
-            [[ "$target" =~ ^ai-gateway-go-acceptance-rollback-[0-9]+$ ]] && saw_save=1
-        elif [[ "${call_lengths[$call_index]}" -ge 5 && "${call_argv[$start]}" == docker && "${call_argv[$((start + 1))]}" == rename && "${call_argv[$((start + 2))]}" == -- && "${call_argv[$((start + 3))]}" =~ ^ai-gateway-go-acceptance-rollback-[0-9]+$ && "${call_argv[$((start + 4))]}" == ai-gateway-go ]]; then
+            if [[ "$target" =~ ^ai-gateway-go-acceptance-rollback-[0-9]+$ ]]; then
+                saw_save=1
+            fi
+        elif [[ "${call_lengths[$call_index]}" -ge 5 && "${call_argv[$start]}" == docker && "${call_argv[$((start + 1))]}" == rename && "${call_argv[$((start + 2))]}" == -- && "${call_argv[$((start + 3))]}" == "$fixture_current_id" && "${call_argv[$((start + 4))]}" == ai-gateway-go ]]; then
             saw_restore=1
         fi
     done
@@ -665,6 +669,7 @@ run_entrypoint() {
         --env "MOCK_CURRENT_CONTAINER_ENV_STATE=${MOCK_CURRENT_CONTAINER_ENV_STATE:-clean}" \
         --env "MOCK_ROLLBACK_CONTAINER_ENV_STATE=${MOCK_ROLLBACK_CONTAINER_ENV_STATE:-clean}" \
         --env "MOCK_HELPER_CONTAINER_ENV_STATE=${MOCK_HELPER_CONTAINER_ENV_STATE:-clean}" \
+        --env "MOCK_CANDIDATE_CONTAINER_ID=${MOCK_CANDIDATE_CONTAINER_ID:-$fixture_candidate_id}" \
         --env "MOCK_ROOT_ENV_AFTER_BUILD=${MOCK_ROOT_ENV_AFTER_BUILD:-0}" \
         --env "MOCK_DOCKER_BUILD_IMAGE_ID=${MOCK_DOCKER_BUILD_IMAGE_ID:-$fixture_image_id}" \
         --env "MOCK_REDIS_EXISTS=${MOCK_REDIS_EXISTS:-0}" \
@@ -1052,9 +1057,9 @@ assert_deploy_refuses_main_or_dirty_checkout_without_writes() {
 
 assert_candidate_failure_restores_old_application() {
     if MOCK_HEALTH_RESULT=failure run_deploy; then fail 'candidate unexpectedly healthy'; fi
-    require_call docker rm -f -- ai-gateway-go
-    require_candidate_rollback_renames
-    require_call docker start -- ai-gateway-go
+    require_call docker rm -f -- "$fixture_candidate_id"
+    require_call docker rename -- "$fixture_current_id"
+    require_call docker start -- "$fixture_current_id"
     assert_no_dangerous_calls
 }
 
@@ -1189,11 +1194,13 @@ assert_deploy_rejects_root_bootstrap_env_without_writes() {
 
 assert_publish_failures_restore_application() {
     if MOCK_RSYNC_RESULT=failure run_deploy; then fail 'deployment accepted static publish failure'; fi
-    require_call docker rm -f -- ai-gateway-go
-    require_candidate_rollback_renames
+    require_call docker rm -f -- "$fixture_candidate_id"
+    require_call docker rename -- "$fixture_current_id"
+    require_call docker start -- "$fixture_current_id"
     if MOCK_SYSTEMCTL_RESULT=failure run_deploy; then fail 'deployment accepted Nginx reload failure'; fi
-    require_call docker rm -f -- ai-gateway-go
-    require_candidate_rollback_renames
+    require_call docker rm -f -- "$fixture_candidate_id"
+    require_call docker rename -- "$fixture_current_id"
+    require_call docker start -- "$fixture_current_id"
 }
 
 assert_root_secret_absent() {

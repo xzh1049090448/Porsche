@@ -141,14 +141,15 @@ old_container_id=''
 manifest=''
 old_renamed=0
 candidate_started=0
+candidate_container_id=''
 static_changed=0
 cleanup() {
     local status=$?
     if (( status != 0 )); then
-        (( candidate_started == 0 )) || docker rm -f -- "$APP_NAME" >/dev/null 2>&1 || true
+        (( candidate_started == 0 )) || docker rm -f -- "$candidate_container_id" >/dev/null 2>&1 || true
         if (( old_renamed )); then
-            docker rename -- "$rollback_name" "$APP_NAME" >/dev/null 2>&1 || true
-            docker start -- "$APP_NAME" >/dev/null 2>&1 || true
+            docker rename -- "$old_container_id" "$APP_NAME" >/dev/null 2>&1 || true
+            docker start -- "$old_container_id" >/dev/null 2>&1 || true
         fi
         if (( static_changed )) && [[ -n "$rollback_static" ]]; then
             rsync --archive --delete --delay-updates "$rollback_static/" "$FRONTEND_ROOT/" || true
@@ -227,9 +228,10 @@ if [[ -n "$old_container_id" ]]; then
     docker rename -- "$old_container_id" "$rollback_name"
     old_renamed=1
 fi
+candidate_container_id="$(docker run -d --name "$APP_NAME" --restart unless-stopped --network "$NETWORK" \
+    --env-file "$ENV_FILE" -p 127.0.0.1:8000:8000 "$IMAGE_NAME")"
+[[ "$candidate_container_id" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo 'Docker run did not return an immutable candidate container ID' >&2; exit 1; }
 candidate_started=1
-docker run -d --name "$APP_NAME" --restart unless-stopped --network "$NETWORK" \
-    --env-file "$ENV_FILE" -p 127.0.0.1:8000:8000 "$IMAGE_NAME" >/dev/null
 healthy=0
 for _ in $(seq 1 30); do
     if curl --fail --silent --show-error --connect-timeout 2 --max-time 3 \

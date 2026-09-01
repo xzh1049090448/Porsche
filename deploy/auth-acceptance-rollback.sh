@@ -53,6 +53,8 @@ if [[ "${PORSCHE_AUTH_ACCEPTANCE_TEST_MODE:-0}" == 1 ]]; then
     MANIFEST_DIR="${PORSCHE_AUTH_ACCEPTANCE_MANIFEST_DIR:?}"
     LOCK_FILE="${PORSCHE_AUTH_ACCEPTANCE_LOCK_FILE:?}"
 fi
+exec 9>"$LOCK_FILE"
+flock -n 9 || { echo 'another auth acceptance deployment is running' >&2; exit 1; }
 manifest="$MANIFEST_DIR/rollback.env"
 [[ -f "$manifest" ]] || { echo 'rollback manifest is missing' >&2; exit 1; }
 [[ "$(stat -c %a "$manifest")" == 600 ]] || { echo 'rollback manifest mode must be 0600' >&2; exit 1; }
@@ -110,8 +112,6 @@ scan_relevant_container_root_bootstrap_envs() {
     fi
 }
 
-exec 9>"$LOCK_FILE"
-flock -n 9 || { echo 'another auth acceptance deployment is running' >&2; exit 1; }
 scan_relevant_container_root_bootstrap_envs
 current_container_id="$(resolve_container_id ai-gateway-go)"
 rollback_container_id="$(resolve_container_id "$rollback_container")"
