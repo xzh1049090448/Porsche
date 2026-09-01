@@ -94,6 +94,19 @@ scan_container_root_bootstrap_env() {
     return 1
 }
 
+resolve_container_id() {
+    local container_name="$1" container_id
+    container_id="$(docker container inspect "$container_name" --format '{{.Id}}')" || {
+        echo "cannot resolve immutable container ID for $container_name" >&2
+        return 1
+    }
+    [[ "$container_id" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+        echo "invalid immutable container ID for $container_name" >&2
+        return 1
+    }
+    printf '%s\n' "$container_id"
+}
+
 scan_relevant_container_root_bootstrap_envs() {
     local container_names container_name
     if ! container_names="$(docker ps -a --format '{{.Names}}')"; then
@@ -114,16 +127,17 @@ read_env_value() {
 
 [[ -f "$BACKEND_DIR/.env" && ! -L "$BACKEND_DIR/.env" ]] || { echo "backend .env must be a regular non-symlink file" >&2; exit 1; }
 reject_root_bootstrap_env_keys "$BACKEND_DIR/.env"
-scan_relevant_container_root_bootstrap_envs
 
 exec 9>"$LOCK_FILE"
 flock -n 9 || { echo 'another auth acceptance deployment is running' >&2; exit 1; }
+scan_relevant_container_root_bootstrap_envs
 
 ENV_FILE=''
 env_snapshot_dir=''
 stage_dir=''
 rollback_name=''
 rollback_static=''
+old_container_id=''
 manifest=''
 old_renamed=0
 candidate_started=0
@@ -195,14 +209,22 @@ chmod 700 "$stage_dir"
 cp -a "$FRONTEND_DIR/dist/." "$stage_dir/"
 docker build --tag "$IMAGE_NAME" "$BACKEND_DIR"
 
+# Re-scan immediately before the destructive swap, then bind the current
+# application to its immutable ID so a name replacement cannot redirect it.
+scan_relevant_container_root_bootstrap_envs
+if docker container inspect "$APP_NAME" >/dev/null 2>&1; then
+    old_container_id="$(resolve_container_id "$APP_NAME")"
+    scan_container_root_bootstrap_env "$old_container_id"
+fi
+
 mkdir -p "$MANIFEST_DIR"
 chmod 700 "$MANIFEST_DIR"
 rollback_name="${APP_NAME}-acceptance-rollback-$(date +%s)"
 manifest="$MANIFEST_DIR/rollback.env"
 
-if docker container inspect "$APP_NAME" >/dev/null 2>&1; then
-    docker stop -- "$APP_NAME"
-    docker rename -- "$APP_NAME" "$rollback_name"
+if [[ -n "$old_container_id" ]]; then
+    docker stop -- "$old_container_id"
+    docker rename -- "$old_container_id" "$rollback_name"
     old_renamed=1
 fi
 candidate_started=1

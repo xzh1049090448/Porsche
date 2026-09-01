@@ -37,7 +37,8 @@ validate_test_mode_binding() {
 if [[ "${PORSCHE_AUTH_ACCEPTANCE_TEST_MODE:-0}" == 1 ]]; then
     validate_test_mode_binding \
         PORSCHE_AUTH_ACCEPTANCE_FRONTEND_ROOT \
-        PORSCHE_AUTH_ACCEPTANCE_MANIFEST_DIR
+        PORSCHE_AUTH_ACCEPTANCE_MANIFEST_DIR \
+        PORSCHE_AUTH_ACCEPTANCE_LOCK_FILE
 fi
 
 [[ $# == 1 && "$1" == --confirm-auth-acceptance-rollback ]] || {
@@ -46,9 +47,11 @@ fi
 [[ "$(id -u)" == 0 ]] || { echo 'auth-acceptance-rollback.sh must run as root' >&2; exit 1; }
 FRONTEND_ROOT=/var/www/porsche-web
 MANIFEST_DIR=/var/lib/porsche-auth-acceptance
+LOCK_FILE=/var/lock/porsche-auth-acceptance.deploy.lock
 if [[ "${PORSCHE_AUTH_ACCEPTANCE_TEST_MODE:-0}" == 1 ]]; then
     FRONTEND_ROOT="${PORSCHE_AUTH_ACCEPTANCE_FRONTEND_ROOT:?}"
     MANIFEST_DIR="${PORSCHE_AUTH_ACCEPTANCE_MANIFEST_DIR:?}"
+    LOCK_FILE="${PORSCHE_AUTH_ACCEPTANCE_LOCK_FILE:?}"
 fi
 manifest="$MANIFEST_DIR/rollback.env"
 [[ -f "$manifest" ]] || { echo 'rollback manifest is missing' >&2; exit 1; }
@@ -77,6 +80,19 @@ scan_container_root_bootstrap_env() {
     return 1
 }
 
+resolve_container_id() {
+    local container_name="$1" container_id
+    container_id="$(docker container inspect "$container_name" --format '{{.Id}}')" || {
+        echo "cannot resolve immutable container ID for $container_name" >&2
+        return 1
+    }
+    [[ "$container_id" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+        echo "invalid immutable container ID for $container_name" >&2
+        return 1
+    }
+    printf '%s\n' "$container_id"
+}
+
 scan_relevant_container_root_bootstrap_envs() {
     local container_names container_name rollback_seen=0
     if ! container_names="$(docker ps -a --format '{{.Names}}')"; then
@@ -94,12 +110,18 @@ scan_relevant_container_root_bootstrap_envs() {
     fi
 }
 
+exec 9>"$LOCK_FILE"
+flock -n 9 || { echo 'another auth acceptance deployment is running' >&2; exit 1; }
 scan_relevant_container_root_bootstrap_envs
+current_container_id="$(resolve_container_id ai-gateway-go)"
+rollback_container_id="$(resolve_container_id "$rollback_container")"
+scan_container_root_bootstrap_env "$current_container_id"
+scan_container_root_bootstrap_env "$rollback_container_id"
 nginx -t
-docker stop -- ai-gateway-go
-docker rm -f -- ai-gateway-go
-docker rename -- "$rollback_container" ai-gateway-go
-docker start -- ai-gateway-go
+docker stop -- "$current_container_id"
+docker rm -f -- "$current_container_id"
+docker rename -- "$rollback_container_id" ai-gateway-go
+docker start -- "$rollback_container_id"
 rsync --archive --delete --delay-updates "$rollback_static/" "$FRONTEND_ROOT/"
 systemctl reload nginx
 rm -f -- "$manifest"

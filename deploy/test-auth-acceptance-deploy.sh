@@ -62,6 +62,8 @@ manifest_dir="$fixture_dir/manifests"
 mock_dir="$fixture_dir/bin"
 command_log="$fixture_dir/commands.nul"
 fixture_image_id="sha256:$(printf '%064d' 0)"
+fixture_current_id="sha256:$(printf '%064d' 1)"
+fixture_rollback_id="sha256:$(printf '%064d' 2)"
 fixture_lock_file="$fixture_dir/auth-acceptance.lock"
 fixture_tmp_dir="$fixture_dir/tmp"
 fixture_untrusted_tmp_dir="$fixture_dir/untrusted"
@@ -174,6 +176,10 @@ write_mock() {
         'for arg in "$@"; do printf "ARG\\0%s\\0" "$arg" >>"$COMMAND_LOG"; done' \
         'printf "END\\0%s\\0" "$call_id" >>"$COMMAND_LOG"' \
         'rmdir "$lock_dir"' \
+        'if [[ "$command_name" == docker && "${1:-}" == build && "${MOCK_ROOT_ENV_AFTER_BUILD:-0}" == 1 ]]; then : >/fixture/container-root-after-build; fi' \
+        'if [[ "$command_name" == docker && "${1:-}" == container && "${2:-}" == inspect && "${4:-}" == --format && "${5:-}" == "{{range .Config.Env}}{{println .}}{{end}}" && -e /fixture/container-root-after-build && ( "${3:-}" == ai-gateway-go || "${3:-}" =~ ^ai-gateway-go-acceptance-rollback-[0-9]+$ ) ]]; then printf "ROOT_BOOTSTRAP_PASSWORD=fixture-container-root-secret\\n"; exit 0; fi' \
+        'if [[ "$command_name" == docker && "${1:-}" == container && "${2:-}" == inspect && "${4:-}" == --format && "${5:-}" == "{{.Id}}" ]]; then case "${3:-}" in ai-gateway-go) printf "%s\\n" "${MOCK_CURRENT_CONTAINER_ID:-sha256:0000000000000000000000000000000000000000000000000000000000000001}" ;; ai-gateway-go-acceptance-rollback-[0-9]*) printf "%s\\n" "${MOCK_ROLLBACK_CONTAINER_ID:-sha256:0000000000000000000000000000000000000000000000000000000000000002}" ;; *) exit 78 ;; esac; exit 0; fi' \
+        'if [[ "$command_name" == docker && "${1:-}" == container && "${2:-}" == inspect && "${4:-}" == --format && "${5:-}" == "{{range .Config.Env}}{{println .}}{{end}}" ]]; then case "${3:-}" in "${MOCK_CURRENT_CONTAINER_ID:-sha256:0000000000000000000000000000000000000000000000000000000000000001}") container_state="${MOCK_CURRENT_CONTAINER_ENV_STATE:-clean}" ;; "${MOCK_ROLLBACK_CONTAINER_ID:-sha256:0000000000000000000000000000000000000000000000000000000000000002}") container_state="${MOCK_ROLLBACK_CONTAINER_ENV_STATE:-clean}" ;; *) container_state= ;; esac; if [[ -n "$container_state" ]]; then case "$container_state" in clean) printf "APP_ENV=production\\n" ;; present) printf "ROOT_BOOTSTRAP_PASSWORD=fixture-container-root-secret\\n" ;; error) exit 79 ;; *) exit 78 ;; esac; exit 0; fi; fi' \
         'case "$command_name" in' \
         '  id) [[ "${1:-}" == "-u" ]] && printf "%s\\n" "${MOCK_ID_UID:-0}" ;;' \
         '  stat) if [[ "${MOCK_ENTRYPOINT:-}" != auth-acceptance-bootstrap-root.sh ]]; then exec /bin/stat "$@"; fi; path="${4:-}"; case "$path" in /fixture/root-acceptance-credentials) stat_uid="${MOCK_CREDENTIAL_UID:-0}"; stat_mode="${MOCK_CREDENTIAL_MODE:-600}" ;; /fixture) stat_uid="${MOCK_CREDENTIAL_PARENT_UID:-0}"; stat_mode="${MOCK_CREDENTIAL_PARENT_MODE:-700}" ;; /fixture/Porsche/.env) stat_uid="${MOCK_ENV_UID:-0}"; stat_mode="${MOCK_ENV_MODE:-600}" ;; /fixture/Porsche) stat_uid="${MOCK_BACKEND_UID:-0}"; stat_mode="${MOCK_BACKEND_MODE:-755}" ;; /tmp/porsche-root-bootstrap.*\/root-bootstrap) stat_uid="${MOCK_SNAPSHOT_CREDENTIAL_UID:-0}"; stat_mode="${MOCK_SNAPSHOT_CREDENTIAL_MODE:-600}" ;; /tmp/porsche-root-bootstrap.*\/.env) stat_uid="${MOCK_SNAPSHOT_ENV_UID:-0}"; stat_mode="${MOCK_SNAPSHOT_ENV_MODE:-600}" ;; *) exit 78 ;; esac; case "${1:-}:${2:-}" in "-c:%u") printf "%s\\n" "$stat_uid" ;; "-c:%a") printf "%s\\n" "$stat_mode" ;; *) exit 78 ;; esac ;;' \
@@ -443,7 +449,7 @@ require_candidate_rollback_renames() {
     parse_calls
     for ((call_index = 0; call_index < ${#call_starts[@]}; call_index += 1)); do
         start="${call_starts[$call_index]}"
-        if call_has_prefix "$call_index" docker rename -- ai-gateway-go; then
+        if call_has_prefix "$call_index" docker rename -- "$fixture_current_id"; then
             target="${call_argv[$((start + 4))]:-}"
             [[ "$target" =~ ^ai-gateway-go-acceptance-rollback-[0-9]+$ ]] && saw_save=1
         elif [[ "${call_lengths[$call_index]}" -ge 5 && "${call_argv[$start]}" == docker && "${call_argv[$((start + 1))]}" == rename && "${call_argv[$((start + 2))]}" == -- && "${call_argv[$((start + 3))]}" =~ ^ai-gateway-go-acceptance-rollback-[0-9]+$ && "${call_argv[$((start + 4))]}" == ai-gateway-go ]]; then
@@ -593,6 +599,7 @@ run_entrypoint() {
         PORSCHE_AUTH_ACCEPTANCE_FRONTEND_DIR) frontend_dir_value="${MOCK_EXTRA_TEST_ENV_VALUE:-}" ;;
         PORSCHE_AUTH_ACCEPTANCE_FRONTEND_ROOT) frontend_root_value="${MOCK_EXTRA_TEST_ENV_VALUE:-}" ;;
         PORSCHE_AUTH_ACCEPTANCE_MANIFEST_DIR) manifest_dir_value="${MOCK_EXTRA_TEST_ENV_VALUE:-}" ;;
+        PORSCHE_AUTH_ACCEPTANCE_LOCK_FILE) lock_file_value="${MOCK_EXTRA_TEST_ENV_VALUE:-}" ;;
         PORSCHE_AUTH_ACCEPTANCE_REDIS_CONFIG_DIR) redis_config_dir_value="${MOCK_EXTRA_TEST_ENV_VALUE:-}" ;;
         PORSCHE_AUTH_ACCEPTANCE_LOCK_FILE) lock_file_value="${MOCK_EXTRA_TEST_ENV_VALUE:-}" ;;
         PORSCHE_AUTH_ACCEPTANCE_TEST_PASSWORD_FILE) password_file_value="${MOCK_EXTRA_TEST_ENV_VALUE:-}" ;;
@@ -658,6 +665,7 @@ run_entrypoint() {
         --env "MOCK_CURRENT_CONTAINER_ENV_STATE=${MOCK_CURRENT_CONTAINER_ENV_STATE:-clean}" \
         --env "MOCK_ROLLBACK_CONTAINER_ENV_STATE=${MOCK_ROLLBACK_CONTAINER_ENV_STATE:-clean}" \
         --env "MOCK_HELPER_CONTAINER_ENV_STATE=${MOCK_HELPER_CONTAINER_ENV_STATE:-clean}" \
+        --env "MOCK_ROOT_ENV_AFTER_BUILD=${MOCK_ROOT_ENV_AFTER_BUILD:-0}" \
         --env "MOCK_DOCKER_BUILD_IMAGE_ID=${MOCK_DOCKER_BUILD_IMAGE_ID:-$fixture_image_id}" \
         --env "MOCK_REDIS_EXISTS=${MOCK_REDIS_EXISTS:-0}" \
         --env "MOCK_DOCKER_RUN_RESULT=${MOCK_DOCKER_RUN_RESULT:-success}" \
@@ -742,6 +750,7 @@ run_rollback() {
         run_deploy
     fi
     run_entrypoint auth-acceptance-rollback.sh --confirm-auth-acceptance-rollback
+    require_call flock -n 9
     assert_no_dangerous_calls
 }
 
@@ -806,6 +815,23 @@ assert_deploy_scans_relevant_container_envs_before_writes() {
         fail 'deployment treated an unrelated helper container as an application rollback container'
     fi
     assert_no_container_root_secret_leak "$stdout_file" "$stderr_file"
+}
+
+assert_deploy_final_scan_rejects_post_build_root_env() {
+    local call_index command
+    if MOCK_ROOT_ENV_AFTER_BUILD=1 run_deploy_with_captured_output; then
+        fail 'deployment accepted a Root bootstrap environment introduced after the image build'
+    fi
+    parse_calls
+    for ((call_index = 0; call_index < ${#call_starts[@]}; call_index += 1)); do
+        command="$(call_command_basename "$call_index")"
+        [[ "$command" != rsync ]] || fail 'post-build Root rejection published static files'
+        call_has_prefix "$call_index" docker stop && fail 'post-build Root rejection stopped a container'
+        call_has_prefix "$call_index" docker run -d && fail 'post-build Root rejection started a candidate'
+    done
+    assert_no_container_root_secret_leak "$fixture_dir/deploy-root-env.stdout" "$fixture_dir/deploy-root-env.stderr"
+    rm -f -- "$fixture_dir/container-root-after-build"
+    wait_for_fixture_path_state missing /fixture/container-root-after-build
 }
 
 assert_rollback_scans_relevant_container_envs_before_writes() {
@@ -1037,7 +1063,7 @@ assert_successful_deploy_order_and_manifest() {
     require_deploy_snapshot_env_file
     assert_env_snapshots_cleaned_up
     assert_before npm run build ::: docker build --tag ai-gateway-go:auth-acceptance
-    assert_before nginx -t ::: docker stop -- ai-gateway-go
+    assert_before nginx -t ::: docker stop -- "$fixture_current_id"
     assert_before docker run -d --name ai-gateway-go ::: rsync --archive --delete --delay-updates
     assert_before rsync --archive --delete --delay-updates ::: systemctl reload nginx
     [[ -f "$manifest_dir/rollback.env" ]] || fail 'successful deployment did not create rollback manifest'
@@ -1556,7 +1582,7 @@ for selected_check in "${selected_checks[@]}"; do
     case "$selected_check" in
         bootstrap) assert_bootstrap_rejects_invalid_passwords_and_existing_container; assert_bootstrap_creates_internal_redis ;;
         migration) assert_migration_requires_confirmation_without_writes; run_migration ;;
-        deploy) assert_deploy_refuses_main_or_dirty_checkout_without_writes; assert_deploy_preflight_failures_do_not_write; assert_deploy_rejects_root_bootstrap_env_without_writes; assert_deploy_rejects_root_bootstrap_snapshot_race_without_writes; assert_deploy_uses_snapshot_after_source_env_mutates; assert_deploy_scans_relevant_container_envs_before_writes; assert_candidate_failure_restores_old_application; assert_publish_failures_restore_application; assert_successful_deploy_order_and_manifest ;;
+        deploy) assert_deploy_refuses_main_or_dirty_checkout_without_writes; assert_deploy_preflight_failures_do_not_write; assert_deploy_rejects_root_bootstrap_env_without_writes; assert_deploy_rejects_root_bootstrap_snapshot_race_without_writes; assert_deploy_uses_snapshot_after_source_env_mutates; assert_deploy_scans_relevant_container_envs_before_writes; assert_candidate_failure_restores_old_application; assert_publish_failures_restore_application; assert_successful_deploy_order_and_manifest; assert_deploy_final_scan_rejects_post_build_root_env ;;
         rollback) assert_rollback_scans_relevant_container_envs_before_writes; run_rollback ;;
         root-bootstrap) assert_root_bootstrap_requires_confirmation_without_writes; assert_root_bootstrap_requires_root_without_writes; assert_root_bootstrap_rejects_invalid_checkout_without_writes; assert_root_bootstrap_rejects_unsafe_source_metadata_without_writes; assert_root_bootstrap_rejects_invalid_credentials_without_writes; assert_root_bootstrap_rejects_unsafe_snapshot_metadata_without_writes; assert_root_bootstrap_rejects_env_credentials_without_writes; assert_root_bootstrap_rejects_missing_docker_dependencies_without_writes; assert_root_bootstrap_rejects_invalid_image_id_without_run; assert_root_bootstrap_uses_readonly_secret_mounts ;;
         docs) assert_operator_documentation ;;
