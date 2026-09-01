@@ -117,12 +117,61 @@ current_container_id="$(resolve_container_id ai-gateway-go)"
 rollback_container_id="$(resolve_container_id "$rollback_container")"
 scan_container_root_bootstrap_env "$current_container_id"
 scan_container_root_bootstrap_env "$rollback_container_id"
+
+# Keep the pre-rollback application and static tree until the replacement is
+# both running and published.  Every recovery mutation uses the ID resolved
+# above, so a concurrent name rebind cannot redirect it.
+previous_current_name="${rollback_container}-failed-$(date +%s)"
+previous_static=''
+current_stopped=0
+current_renamed=0
+rollback_renamed=0
+rollback_started=0
+static_publish_started=0
+rollback_committed=0
+recover_rollback_failure() {
+    local status=$?
+    if (( status != 0 && rollback_committed == 0 )); then
+        if (( rollback_renamed )); then
+            (( rollback_started == 0 )) || docker stop -- "$rollback_container_id" >/dev/null 2>&1 || true
+            docker rename -- "$rollback_container_id" "$rollback_container" >/dev/null 2>&1 || true
+        fi
+        if (( current_renamed )); then
+            docker rename -- "$current_container_id" ai-gateway-go >/dev/null 2>&1 || true
+            docker start -- "$current_container_id" >/dev/null 2>&1 || true
+        elif (( current_stopped )); then
+            docker start -- "$current_container_id" >/dev/null 2>&1 || true
+        fi
+        if (( static_publish_started )) && [[ -n "$previous_static" ]]; then
+            rsync --archive --delete --delay-updates "$previous_static/" "$FRONTEND_ROOT/" || true
+            systemctl reload nginx || true
+        fi
+    fi
+    [[ -z "$previous_static" ]] || rm -rf -- "$previous_static"
+    exit "$status"
+}
+trap recover_rollback_failure EXIT
+
 nginx -t
+previous_static="$(mktemp -d "$MANIFEST_DIR/rollback-current-static.XXXXXX")"
+[[ -d "$previous_static" && ! -L "$previous_static" ]] || { echo 'cannot create rollback static recovery snapshot' >&2; exit 1; }
+chmod 700 "$previous_static"
+cp -a "$FRONTEND_ROOT/." "$previous_static/"
 docker stop -- "$current_container_id"
-docker rm -f -- "$current_container_id"
+current_stopped=1
+docker rename -- "$current_container_id" "$previous_current_name"
+current_renamed=1
 docker rename -- "$rollback_container_id" ai-gateway-go
+rollback_renamed=1
 docker start -- "$rollback_container_id"
+rollback_started=1
+static_publish_started=1
 rsync --archive --delete --delay-updates "$rollback_static/" "$FRONTEND_ROOT/"
 systemctl reload nginx
-rm -f -- "$manifest"
+rollback_committed=1
+docker rm -f -- "$current_container_id" || echo 'warning: previous application container could not be removed' >&2
+rm -f -- "$manifest" || echo 'warning: rollback manifest could not be removed' >&2
+rm -rf -- "$previous_static"
+previous_static=''
+trap - EXIT
 echo 'application and frontend rolled back; database migration remains applied'

@@ -135,6 +135,7 @@ scan_relevant_container_root_bootstrap_envs
 ENV_FILE=''
 env_snapshot_dir=''
 stage_dir=''
+build_context=''
 rollback_name=''
 rollback_static=''
 old_container_id=''
@@ -158,6 +159,9 @@ cleanup() {
         [[ -z "$manifest" ]] || rm -f -- "$manifest"
     fi
     [[ -z "$stage_dir" ]] || rm -rf -- "$stage_dir"
+    if [[ "$build_context" =~ ^/tmp/porsche-auth-build\.[A-Za-z0-9]+$ && -d "$build_context" && ! -L "$build_context" ]]; then
+        rm -rf -- "$build_context"
+    fi
     if [[ "$env_snapshot_dir" =~ ^/tmp/porsche-auth-env\.[A-Za-z0-9]+$ && -d "$env_snapshot_dir" && ! -L "$env_snapshot_dir" ]]; then
         rm -rf -- "$env_snapshot_dir"
     fi
@@ -208,7 +212,27 @@ npm run build
 stage_dir="$(mktemp -d "${TMPDIR:-/tmp}/porsche-auth-stage.XXXXXX")"
 chmod 700 "$stage_dir"
 cp -a "$FRONTEND_DIR/dist/." "$stage_dir/"
-docker build --tag "$IMAGE_NAME" "$BACKEND_DIR"
+build_context="$(mktemp -d /tmp/porsche-auth-build.XXXXXX)"
+[[ "$build_context" =~ ^/tmp/porsche-auth-build\.[A-Za-z0-9]+$ && -d "$build_context" && ! -L "$build_context" ]] || {
+    echo 'build context directory is invalid' >&2
+    exit 1
+}
+chmod 700 "$build_context"
+# The context comes only from the commit verified above.  This excludes live
+# worktree additions (including ignored files and .env); .dockerignore is part
+# of that commit and therefore retains its normal Docker semantics.
+if ! (cd "$BACKEND_DIR" && git archive --format=tar "$backend_sha") | tar -xf - -C "$build_context" --no-same-owner; then
+    echo 'cannot create verified backend build context' >&2
+    exit 1
+fi
+# Runtime configuration is supplied only through the private snapshot below;
+# never permit a tracked historical .env to become a Docker build input.
+rm -f -- "$build_context/.env"
+[[ -f "$build_context/Dockerfile" && ! -L "$build_context/Dockerfile" ]] || {
+    echo 'verified backend build context is missing Dockerfile' >&2
+    exit 1
+}
+docker build --tag "$IMAGE_NAME" "$build_context"
 
 # Re-scan immediately before the destructive swap, then bind the current
 # application to its immutable ID so a name replacement cannot redirect it.
@@ -228,10 +252,24 @@ if [[ -n "$old_container_id" ]]; then
     docker rename -- "$old_container_id" "$rollback_name"
     old_renamed=1
 fi
-candidate_container_id="$(docker run -d --name "$APP_NAME" --restart unless-stopped --network "$NETWORK" \
+candidate_run_output="$(docker run -d --name "$APP_NAME" --restart unless-stopped --network "$NETWORK" \
     --env-file "$ENV_FILE" -p 127.0.0.1:8000:8000 "$IMAGE_NAME")"
-[[ "$candidate_container_id" =~ ^[0-9a-f]{64}$ ]] || { echo 'Docker run did not return an immutable candidate container ID' >&2; exit 1; }
-candidate_started=1
+if [[ "$candidate_run_output" =~ ^[0-9a-f]{64}$ ]]; then
+    candidate_container_id="$candidate_run_output"
+    candidate_started=1
+else
+    # docker run may have created the named container before returning a
+    # malformed response. Resolve the trusted name rather than ever using the
+    # untrusted output as a mutation target, then let EXIT recover by ID.
+    candidate_container_id="$(resolve_container_id "$APP_NAME")" || {
+        echo 'Docker run returned an invalid immutable candidate container ID' >&2
+        exit 1
+    }
+    scan_container_root_bootstrap_env "$candidate_container_id"
+    candidate_started=1
+    echo 'Docker run returned an invalid immutable candidate container ID' >&2
+    exit 1
+fi
 healthy=0
 for _ in $(seq 1 30); do
     if curl --fail --silent --show-error --connect-timeout 2 --max-time 3 \
@@ -251,6 +289,7 @@ rsync --archive --delete --delay-updates "$stage_dir/" "$FRONTEND_ROOT/"
 systemctl reload nginx
 trap - EXIT
 rm -rf -- "$stage_dir"
+rm -rf -- "$build_context"
 if [[ "$env_snapshot_dir" =~ ^/tmp/porsche-auth-env\.[A-Za-z0-9]+$ && -d "$env_snapshot_dir" && ! -L "$env_snapshot_dir" ]]; then
     rm -rf -- "$env_snapshot_dir"
 fi

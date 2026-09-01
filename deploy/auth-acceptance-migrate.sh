@@ -49,6 +49,16 @@ if [[ "${PORSCHE_AUTH_ACCEPTANCE_TEST_MODE:-0}" == 1 ]]; then
     backend_dir="${PORSCHE_AUTH_ACCEPTANCE_BACKEND_DIR:?test backend directory is required}"
 fi
 [[ -f "$backend_dir/.env" ]] || { echo "missing $backend_dir/.env" >&2; exit 1; }
+reject_root_bootstrap_env_keys() {
+    local env_file="$1"
+    # Treat this as text, rather than parsing assignments: empty declarations,
+    # comments, exports, and future ROOT_BOOTSTRAP_* keys are all forbidden.
+    if ! awk 'index($0, "ROOT_BOOTSTRAP_") { exit 1 }' "$env_file" >/dev/null 2>&1; then
+        echo 'ROOT_BOOTSTRAP_ keys are not allowed in the application .env' >&2
+        return 1
+    fi
+}
+reject_root_bootstrap_env_keys "$backend_dir/.env"
 docker network inspect porsche-app >/dev/null
 
 cd "$backend_dir"
