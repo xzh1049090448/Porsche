@@ -65,15 +65,14 @@ if [[ "${PORSCHE_AUTH_ACCEPTANCE_TEST_MODE:-0}" == 1 ]]; then
 fi
 
 reject_root_bootstrap_env_keys() {
-    local env_file="$1" key
+    local env_file="$1"
     # This is deliberately a literal deny guard, not an .env parser. Every
-    # line mentioning a Root bootstrap key is rejected without exposing it.
-    for key in ROOT_BOOTSTRAP_USERNAME ROOT_BOOTSTRAP_PASSWORD; do
-        if ! awk -v key="$key" 'index($0, key) { exit 1 }' "$env_file" >/dev/null 2>&1; then
-            echo "$key is not allowed in the application .env" >&2
-            return 1
-        fi
-    done
+    # declaration or key mention under the reserved prefix is rejected without
+    # exposing its value, including empty and future suffixes.
+    if ! awk 'index($0, "ROOT_BOOTSTRAP_") { exit 1 }' "$env_file" >/dev/null 2>&1; then
+        echo 'ROOT_BOOTSTRAP_ keys are not allowed in the application .env' >&2
+        return 1
+    fi
 }
 
 scan_container_root_bootstrap_env() {
@@ -265,8 +264,8 @@ else
         echo 'Docker run returned an invalid immutable candidate container ID' >&2
         exit 1
     }
-    scan_container_root_bootstrap_env "$candidate_container_id"
     candidate_started=1
+    scan_container_root_bootstrap_env "$candidate_container_id"
     echo 'Docker run returned an invalid immutable candidate container ID' >&2
     exit 1
 fi
