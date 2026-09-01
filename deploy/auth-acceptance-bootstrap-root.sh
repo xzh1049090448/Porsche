@@ -44,20 +44,44 @@ check_checkout() {
     backend_sha="$local_sha"
 }
 
-validate_credentials_metadata() {
-    local path="$1" owner mode
+validate_root_file_metadata() {
+    local path="$1" label="$2" owner mode
     [[ -f "$path" && ! -L "$path" ]] || {
-        echo 'root bootstrap credentials must be a regular non-symlink file' >&2
+        echo "$label must be a regular non-symlink file" >&2
         return 1
     }
     owner="$(stat -c '%u' -- "$path")"
     mode="$(stat -c '%a' -- "$path")"
     [[ "$owner" =~ ^[0-9]+$ && "$owner" == 0 ]] || {
-        echo 'root bootstrap credentials must be owned by numeric uid 0' >&2
+        echo "$label must be owned by numeric uid 0" >&2
         return 1
     }
     [[ "$mode" == 600 ]] || {
-        echo 'root bootstrap credentials must have mode 600' >&2
+        echo "$label must have mode 600" >&2
+        return 1
+    }
+}
+
+validate_root_controlled_directory() {
+    local path="$1" label="$2" owner mode group_digit other_digit
+    [[ -d "$path" && ! -L "$path" ]] || {
+        echo "$label must be a regular non-symlink directory" >&2
+        return 1
+    }
+    owner="$(stat -c '%u' -- "$path")"
+    mode="$(stat -c '%a' -- "$path")"
+    [[ "$owner" =~ ^[0-9]+$ && "$owner" == 0 ]] || {
+        echo "$label must be owned by numeric uid 0" >&2
+        return 1
+    }
+    [[ "$mode" =~ ^[0-7]{3,4}$ ]] || {
+        echo "$label has an invalid mode" >&2
+        return 1
+    }
+    group_digit="${mode: -2:1}"
+    other_digit="${mode: -1}"
+    (( (8#$group_digit & 2) == 0 && (8#$other_digit & 2) == 0 )) || {
+        echo "$label must not be group- or world-writable" >&2
         return 1
     }
 }
@@ -112,19 +136,17 @@ validate_snapshot_env() {
     done <"$snapshot_env"
 }
 
-[[ -f "$BACKEND_DIR/.env" && ! -L "$BACKEND_DIR/.env" ]] || {
-    echo 'backend .env must be a regular non-symlink file' >&2
-    exit 1
-}
+validate_root_controlled_directory "$BACKEND_DIR" 'backend directory'
+validate_root_file_metadata "$BACKEND_DIR/.env" 'backend .env'
 check_checkout
-validate_credentials_metadata "$CREDENTIALS_FILE"
+credentials_parent="$(dirname -- "$CREDENTIALS_FILE")"
+validate_root_controlled_directory "$credentials_parent" 'root bootstrap credentials parent'
+validate_root_file_metadata "$CREDENTIALS_FILE" 'root bootstrap credentials'
 umask 077
-cp --no-dereference -- "$BACKEND_DIR/.env" "$snapshot_env"
-cp --no-dereference -- "$CREDENTIALS_FILE" "$snapshot_credentials"
-[[ -f "$snapshot_env" && ! -L "$snapshot_env" ]] || { echo 'snapshot .env is not a regular file' >&2; exit 1; }
-[[ -f "$snapshot_credentials" && ! -L "$snapshot_credentials" ]] || { echo 'snapshot credentials are not a regular file' >&2; exit 1; }
-chmod 600 "$snapshot_credentials"
-validate_credentials_metadata "$snapshot_credentials"
+cp --preserve=mode,ownership --no-dereference -- "$BACKEND_DIR/.env" "$snapshot_env"
+cp --preserve=mode,ownership --no-dereference -- "$CREDENTIALS_FILE" "$snapshot_credentials"
+validate_root_file_metadata "$snapshot_env" 'snapshot .env'
+validate_root_file_metadata "$snapshot_credentials" 'snapshot credentials'
 validate_credentials_content "$snapshot_credentials"
 validate_snapshot_env
 docker network inspect "$NETWORK" >/dev/null

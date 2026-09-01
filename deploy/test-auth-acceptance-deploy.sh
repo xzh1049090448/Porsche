@@ -74,6 +74,7 @@ printf 'APP_ENV=production\nexport ROOT_BOOTSTRAP_PASSWORD=env-password\n' >"$ba
 printf 'APP_ENV=production\nROOT_BOOTSTRAP_USERNAME = env-root\n' >"$backend_dir/.env.root-spaced"
 printf 'APP_ENV=production\nROOT_BOOTSTRAP_PASSWORD: env-password\n' >"$backend_dir/.env.root-colon"
 printf 'APP_ENV=production\nROOT_BOOTSTRAP_USERNAME=\nexport ROOT_BOOTSTRAP_USERNAME=env-root\n' >"$backend_dir/.env.root-mixed-duplicate"
+chmod 600 "$backend_dir"/.env*
 printf 'package main\n\nfunc fixtureOverride() {}\n' >"$backend_dir/cmd/bootstrap-root/override.go"
 printf 'malicious untracked build input\n' >"$backend_dir/vendor/fixture-malicious/payload"
 printf '<!doctype html><title>fixture</title>\n' >"$frontend_dir/dist/index.html"
@@ -134,7 +135,7 @@ assert_fixture_entrypoint() {
     [[ -x "$fixture_script" ]] || fail "missing fixture entrypoint: $fixture_script"
 }
 
-mocked_commands=(docker git npm rsync nginx systemctl flock id curl sleep chown stat)
+mocked_commands=(docker git npm rsync nginx systemctl flock id curl sleep chown stat cp)
 
 # NUL command log protocol: BEGIN/call-id, ARG/value pairs, END/call-id.
 # Both spaces and the literal __END__ are ordinary argument values.
@@ -151,7 +152,8 @@ write_mock() {
         'rmdir "$lock_dir"' \
         'case "$command_name" in' \
         '  id) [[ "${1:-}" == "-u" ]] && printf "%s\\n" "${MOCK_ID_UID:-0}" ;;' \
-        '  stat) case "${1:-}:${2:-}" in "-c:%u") printf "%s\\n" "${MOCK_CREDENTIAL_UID:-0}" ;; "-c:%a") printf "%s\\n" "${MOCK_CREDENTIAL_MODE:-600}" ;; *) exit 78 ;; esac ;;' \
+        '  stat) if [[ "${MOCK_ENTRYPOINT:-}" != auth-acceptance-bootstrap-root.sh ]]; then exec /bin/stat "$@"; fi; path="${4:-}"; case "$path" in /fixture/root-acceptance-credentials) stat_uid="${MOCK_CREDENTIAL_UID:-0}"; stat_mode="${MOCK_CREDENTIAL_MODE:-600}" ;; /fixture) stat_uid="${MOCK_CREDENTIAL_PARENT_UID:-0}"; stat_mode="${MOCK_CREDENTIAL_PARENT_MODE:-700}" ;; /fixture/Porsche/.env) stat_uid="${MOCK_ENV_UID:-0}"; stat_mode="${MOCK_ENV_MODE:-600}" ;; /fixture/Porsche) stat_uid="${MOCK_BACKEND_UID:-0}"; stat_mode="${MOCK_BACKEND_MODE:-755}" ;; /tmp/porsche-auth-root-bootstrap.*\/root-bootstrap) stat_uid="${MOCK_SNAPSHOT_CREDENTIAL_UID:-0}"; stat_mode="${MOCK_SNAPSHOT_CREDENTIAL_MODE:-600}" ;; /tmp/porsche-auth-root-bootstrap.*\/.env) stat_uid="${MOCK_SNAPSHOT_ENV_UID:-0}"; stat_mode="${MOCK_SNAPSHOT_ENV_MODE:-600}" ;; *) exit 78 ;; esac; case "${1:-}:${2:-}" in "-c:%u") printf "%s\\n" "$stat_uid" ;; "-c:%a") printf "%s\\n" "$stat_mode" ;; *) exit 78 ;; esac ;;' \
+        '  cp) if [[ "${MOCK_ENTRYPOINT:-}" == auth-acceptance-bootstrap-root.sh ]]; then [[ $# == 5 && "$1" == --preserve=mode,ownership && "$2" == --no-dereference && "$3" == -- ]] || exit 80; exec /bin/cp -pP -- "$4" "$5"; else exec /bin/cp "$@"; fi ;;' \
         '  git) case "${1:-}" in branch) if [[ "$PWD" == */Porsche-Web ]]; then printf "%s\\n" "${MOCK_FRONTEND_BRANCH:-feature/session-auth-frontend}"; else printf "%s\\n" "${MOCK_BRANCH:-feature/user-registration-management}"; fi ;; rev-parse) if [[ "${2:-}" == origin/* && "${MOCK_REMOTE_MISMATCH:-0}" == 1 ]]; then printf "remote-sha\\n"; else printf "%s\\n" "${MOCK_GIT_SHA:-fixture-sha}"; fi ;; status) [[ "${MOCK_GIT_STATUS_FAILURE:-0}" == 0 ]] || exit 79; [[ "${MOCK_GIT_DIRTY:-0}" == 0 ]] || printf " M tracked-fixture\\n" ;; diff) [[ "${MOCK_GIT_DIRTY:-0}" == 0 ]] ;; archive) : ;; esac ;;' \
         '  docker) case "${1:-}" in network) if [[ "${2:-}" == inspect && "${3:-}" == porsche-app ]]; then [[ "${MOCK_NETWORK_INSPECT_RESULT:-success}" == success ]]; else [[ "${MOCK_DOCKER_INSPECT_RESULT:-success}" == success ]]; fi ;; container) if [[ "${2:-}" == inspect && "${3:-}" == porsche-redis ]]; then [[ "${MOCK_REDIS_EXISTS:-0}" == 1 ]]; elif [[ "${2:-}" == inspect && "${3:-}" == porsche-mysql ]]; then [[ "${MOCK_MYSQL_EXISTS:-1}" == 1 && "${MOCK_MYSQL_INSPECT_RESULT:-success}" == success ]]; else [[ "${MOCK_DOCKER_INSPECT_RESULT:-success}" == success ]]; fi ;; build) [[ "${2:-}" != --quiet ]] || printf "%s\\n" "${MOCK_DOCKER_BUILD_IMAGE_ID:-}" ;; run) [[ "${MOCK_DOCKER_RUN_RESULT:-success}" == success ]] || exit 71; if [[ "${2:-}" == --rm && "${3:-}" == --entrypoint && "${4:-}" == id && "${5:-}" == redis:7-alpine && "${6:-}" == -u && "${7:-}" == redis ]]; then printf "999\\n"; elif [[ "${2:-}" == --rm && "${3:-}" == --entrypoint && "${4:-}" == id && "${5:-}" == redis:7-alpine && "${6:-}" == -g && "${7:-}" == redis ]]; then printf "1000\\n"; else printf "fixture-container\\n"; fi ;; esac ;;' \
         '  curl) [[ "${MOCK_HEALTH_RESULT:-success}" == success ]] || exit 72 ;;' \
@@ -346,6 +348,29 @@ require_root_bootstrap_snapshot_run() {
     fail 'missing root bootstrap run with private snapshot mounts and immutable image id'
 }
 
+require_root_bootstrap_snapshot_copies() {
+    local call_index start source destination env_snapshot_dir='' credential_snapshot_dir=''
+    parse_calls
+    for ((call_index = 0; call_index < ${#call_starts[@]}; call_index += 1)); do
+        [[ "${call_lengths[$call_index]}" == 6 ]] || continue
+        call_has_prefix "$call_index" cp --preserve=mode,ownership --no-dereference -- || continue
+        start="${call_starts[$call_index]}"
+        source="${call_argv[$((start + 4))]}"
+        destination="${call_argv[$((start + 5))]}"
+        case "$source" in
+            /fixture/Porsche/.env)
+                [[ "$destination" =~ ^(/tmp/porsche-auth-root-bootstrap\.[^/]+)/\.env$ ]] || continue
+                env_snapshot_dir="${BASH_REMATCH[1]}"
+                ;;
+            /fixture/root-acceptance-credentials)
+                [[ "$destination" =~ ^(/tmp/porsche-auth-root-bootstrap\.[^/]+)/root-bootstrap$ ]] || continue
+                credential_snapshot_dir="${BASH_REMATCH[1]}"
+                ;;
+        esac
+    done
+    [[ -n "$env_snapshot_dir" && "$env_snapshot_dir" == "$credential_snapshot_dir" ]] || fail 'missing exact preserved copies into one private snapshot'
+}
+
 require_candidate_rollback_renames() {
     local call_index start target saw_save=0 saw_restore=0
     parse_calls
@@ -488,6 +513,7 @@ run_entrypoint() {
         --mount "type=bind,src=$fixture_dir,dst=/fixture" \
         --env PATH=/fixture/bin:/usr/local/bin:/usr/bin:/bin \
         --env "COMMAND_LOG=/fixture/commands-$run_count.nul" \
+        --env "MOCK_ENTRYPOINT=$entrypoint" \
         --env PORSCHE_AUTH_ACCEPTANCE_TEST_MODE=1 \
         --env "MOCK_ID_UID=${MOCK_ID_UID:-0}" \
         --env PORSCHE_AUTH_ACCEPTANCE_BACKEND_DIR=/fixture/Porsche \
@@ -506,6 +532,16 @@ run_entrypoint() {
         --env "MOCK_GIT_STATUS_FAILURE=${MOCK_GIT_STATUS_FAILURE:-0}" \
         --env "MOCK_CREDENTIAL_UID=${MOCK_CREDENTIAL_UID:-0}" \
         --env "MOCK_CREDENTIAL_MODE=${MOCK_CREDENTIAL_MODE:-600}" \
+        --env "MOCK_CREDENTIAL_PARENT_UID=${MOCK_CREDENTIAL_PARENT_UID:-0}" \
+        --env "MOCK_CREDENTIAL_PARENT_MODE=${MOCK_CREDENTIAL_PARENT_MODE:-700}" \
+        --env "MOCK_BACKEND_UID=${MOCK_BACKEND_UID:-0}" \
+        --env "MOCK_BACKEND_MODE=${MOCK_BACKEND_MODE:-755}" \
+        --env "MOCK_ENV_UID=${MOCK_ENV_UID:-0}" \
+        --env "MOCK_ENV_MODE=${MOCK_ENV_MODE:-600}" \
+        --env "MOCK_SNAPSHOT_CREDENTIAL_UID=${MOCK_SNAPSHOT_CREDENTIAL_UID:-0}" \
+        --env "MOCK_SNAPSHOT_CREDENTIAL_MODE=${MOCK_SNAPSHOT_CREDENTIAL_MODE:-600}" \
+        --env "MOCK_SNAPSHOT_ENV_UID=${MOCK_SNAPSHOT_ENV_UID:-0}" \
+        --env "MOCK_SNAPSHOT_ENV_MODE=${MOCK_SNAPSHOT_ENV_MODE:-600}" \
         --env "MOCK_NETWORK_INSPECT_RESULT=${MOCK_NETWORK_INSPECT_RESULT:-success}" \
         --env "MOCK_MYSQL_EXISTS=${MOCK_MYSQL_EXISTS:-1}" \
         --env "MOCK_MYSQL_INSPECT_RESULT=${MOCK_MYSQL_INSPECT_RESULT:-success}" \
@@ -696,6 +732,42 @@ assert_root_bootstrap_rejects_invalid_checkout_without_writes() {
     assert_no_dangerous_calls
 }
 
+assert_root_bootstrap_rejects_unsafe_source_metadata_without_writes() {
+    if MOCK_CREDENTIAL_PARENT_MODE=770 run_root_bootstrap; then fail 'root bootstrap accepted group-writable credential parent'; fi
+    assert_no_docker_or_rsync_writes
+    assert_no_dangerous_calls
+    if MOCK_CREDENTIAL_PARENT_MODE=707 run_root_bootstrap; then fail 'root bootstrap accepted world-writable credential parent'; fi
+    assert_no_docker_or_rsync_writes
+    assert_no_dangerous_calls
+    if MOCK_BACKEND_UID=1000 run_root_bootstrap; then fail 'root bootstrap accepted non-root backend directory owner'; fi
+    assert_no_docker_or_rsync_writes
+    assert_no_dangerous_calls
+    if MOCK_BACKEND_MODE=775 run_root_bootstrap; then fail 'root bootstrap accepted writable backend directory'; fi
+    assert_no_docker_or_rsync_writes
+    assert_no_dangerous_calls
+    if MOCK_ENV_UID=1000 run_root_bootstrap; then fail 'root bootstrap accepted non-root backend .env owner'; fi
+    assert_no_docker_or_rsync_writes
+    assert_no_dangerous_calls
+    if MOCK_ENV_MODE=640 run_root_bootstrap; then fail 'root bootstrap accepted non-600 backend .env mode'; fi
+    assert_no_docker_or_rsync_writes
+    assert_no_dangerous_calls
+}
+
+assert_root_bootstrap_rejects_unsafe_snapshot_metadata_without_writes() {
+    if MOCK_SNAPSHOT_CREDENTIAL_UID=1000 run_root_bootstrap; then fail 'root bootstrap accepted non-root credential snapshot owner'; fi
+    assert_no_docker_or_rsync_writes
+    assert_no_dangerous_calls
+    if MOCK_SNAPSHOT_CREDENTIAL_MODE=640 run_root_bootstrap; then fail 'root bootstrap accepted non-600 credential snapshot mode'; fi
+    assert_no_docker_or_rsync_writes
+    assert_no_dangerous_calls
+    if MOCK_SNAPSHOT_ENV_UID=1000 run_root_bootstrap; then fail 'root bootstrap accepted non-root .env snapshot owner'; fi
+    assert_no_docker_or_rsync_writes
+    assert_no_dangerous_calls
+    if MOCK_SNAPSHOT_ENV_MODE=640 run_root_bootstrap; then fail 'root bootstrap accepted non-600 .env snapshot mode'; fi
+    assert_no_docker_or_rsync_writes
+    assert_no_dangerous_calls
+}
+
 assert_root_bootstrap_rejects_invalid_credentials_without_writes() {
     local credential_file="$fixture_dir/root-acceptance-credentials"
     mv "$credential_file" "$credential_file.real"
@@ -841,6 +913,7 @@ assert_root_bootstrap_uses_readonly_secret_mounts() {
     require_call docker container inspect porsche-mysql
     require_exact_call git archive --format=tar fixture-sha
     require_exact_call docker build --quiet --tag ai-gateway-go:auth-acceptance -
+    require_root_bootstrap_snapshot_copies
     require_root_bootstrap_snapshot_run
     assert_no_call_token --env
     assert_no_call_token --env-file
@@ -867,7 +940,7 @@ for selected_check in "${selected_checks[@]}"; do
         migration) assert_migration_requires_confirmation_without_writes; run_migration ;;
         deploy) assert_deploy_refuses_main_or_dirty_checkout_without_writes; assert_deploy_preflight_failures_do_not_write; assert_candidate_failure_restores_old_application; assert_publish_failures_restore_application; assert_successful_deploy_order_and_manifest ;;
         rollback) run_rollback ;;
-        root-bootstrap) assert_root_bootstrap_requires_confirmation_without_writes; assert_root_bootstrap_requires_root_without_writes; assert_root_bootstrap_rejects_invalid_checkout_without_writes; assert_root_bootstrap_rejects_invalid_credentials_without_writes; assert_root_bootstrap_rejects_env_credentials_without_writes; assert_root_bootstrap_rejects_missing_docker_dependencies_without_writes; assert_root_bootstrap_rejects_invalid_image_id_without_run; assert_root_bootstrap_uses_readonly_secret_mounts ;;
+        root-bootstrap) assert_root_bootstrap_requires_confirmation_without_writes; assert_root_bootstrap_requires_root_without_writes; assert_root_bootstrap_rejects_invalid_checkout_without_writes; assert_root_bootstrap_rejects_unsafe_source_metadata_without_writes; assert_root_bootstrap_rejects_invalid_credentials_without_writes; assert_root_bootstrap_rejects_unsafe_snapshot_metadata_without_writes; assert_root_bootstrap_rejects_env_credentials_without_writes; assert_root_bootstrap_rejects_missing_docker_dependencies_without_writes; assert_root_bootstrap_rejects_invalid_image_id_without_run; assert_root_bootstrap_uses_readonly_secret_mounts ;;
         docs) assert_operator_documentation ;;
     esac
 done
