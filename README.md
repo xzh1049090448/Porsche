@@ -299,7 +299,7 @@ and never captures them in a command substitution.
 # BEGIN ROOT_BOOTSTRAP_INSPECT_CHECK
 (
     if docker container inspect ai-gateway-go --format '{{range .Config.Env}}{{println .}}{{end}}' |
-        grep -Eq '^ROOT_BOOTSTRAP_(USERNAME|PASSWORD)='; then
+        grep -Eq '^ROOT_BOOTSTRAP_'; then
         pipeline_status=("${PIPESTATUS[@]}")
     else
         pipeline_status=("${PIPESTATUS[@]}")
