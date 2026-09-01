@@ -76,6 +76,37 @@ reject_root_bootstrap_env_keys() {
     done
 }
 
+scan_container_root_bootstrap_env() {
+    local container_name="$1" pipeline_status
+    if docker container inspect "$container_name" --format '{{range .Config.Env}}{{println .}}{{end}}' | grep -Eq '^ROOT_BOOTSTRAP_'; then
+        pipeline_status=("${PIPESTATUS[@]}")
+    else
+        pipeline_status=("${PIPESTATUS[@]}")
+    fi
+    if [[ "${pipeline_status[0]:-1}" == 0 && "${pipeline_status[1]:-1}" == 1 ]]; then
+        return 0
+    fi
+    if [[ "${pipeline_status[0]:-1}" == 0 && "${pipeline_status[1]:-1}" == 0 ]]; then
+        echo "container $container_name has a forbidden ROOT_BOOTSTRAP_ environment key" >&2
+    else
+        echo "cannot inspect ROOT_BOOTSTRAP_ environment keys for container $container_name" >&2
+    fi
+    return 1
+}
+
+scan_relevant_container_root_bootstrap_envs() {
+    local container_names container_name
+    if ! container_names="$(docker ps -a --format '{{.Names}}')"; then
+        echo 'cannot list application containers for ROOT_BOOTSTRAP_ environment scan' >&2
+        return 1
+    fi
+    while IFS= read -r container_name; do
+        if [[ "$container_name" == "$APP_NAME" || "$container_name" =~ ^ai-gateway-go-acceptance-rollback-[0-9]+$ ]]; then
+            scan_container_root_bootstrap_env "$container_name" || return 1
+        fi
+    done <<<"$container_names"
+}
+
 read_env_value() {
     local key="$1"
     sed -n "s/^${key}=//p" "$ENV_FILE" | tail -n 1
@@ -83,6 +114,7 @@ read_env_value() {
 
 [[ -f "$BACKEND_DIR/.env" && ! -L "$BACKEND_DIR/.env" ]] || { echo "backend .env must be a regular non-symlink file" >&2; exit 1; }
 reject_root_bootstrap_env_keys "$BACKEND_DIR/.env"
+scan_relevant_container_root_bootstrap_envs
 
 exec 9>"$LOCK_FILE"
 flock -n 9 || { echo 'another auth acceptance deployment is running' >&2; exit 1; }

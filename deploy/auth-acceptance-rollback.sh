@@ -58,6 +58,43 @@ rollback_container="$(sed -n 's/^ROLLBACK_CONTAINER=//p' "$manifest")"
 rollback_static="$(sed -n 's/^ROLLBACK_STATIC=//p' "$manifest")"
 [[ "$rollback_container" =~ ^ai-gateway-go-acceptance-rollback-[0-9]+$ ]] || { echo 'invalid rollback container' >&2; exit 1; }
 [[ "$(dirname -- "$rollback_static")" == "$MANIFEST_DIR" && "$(basename -- "$rollback_static")" =~ ^static\.[A-Za-z0-9]+$ ]] || { echo 'invalid rollback static path' >&2; exit 1; }
+
+scan_container_root_bootstrap_env() {
+    local container_name="$1" pipeline_status
+    if docker container inspect "$container_name" --format '{{range .Config.Env}}{{println .}}{{end}}' | grep -Eq '^ROOT_BOOTSTRAP_'; then
+        pipeline_status=("${PIPESTATUS[@]}")
+    else
+        pipeline_status=("${PIPESTATUS[@]}")
+    fi
+    if [[ "${pipeline_status[0]:-1}" == 0 && "${pipeline_status[1]:-1}" == 1 ]]; then
+        return 0
+    fi
+    if [[ "${pipeline_status[0]:-1}" == 0 && "${pipeline_status[1]:-1}" == 0 ]]; then
+        echo "container $container_name has a forbidden ROOT_BOOTSTRAP_ environment key" >&2
+    else
+        echo "cannot inspect ROOT_BOOTSTRAP_ environment keys for container $container_name" >&2
+    fi
+    return 1
+}
+
+scan_relevant_container_root_bootstrap_envs() {
+    local container_names container_name rollback_seen=0
+    if ! container_names="$(docker ps -a --format '{{.Names}}')"; then
+        echo 'cannot list application containers for ROOT_BOOTSTRAP_ environment scan' >&2
+        return 1
+    fi
+    while IFS= read -r container_name; do
+        if [[ "$container_name" == ai-gateway-go || "$container_name" =~ ^ai-gateway-go-acceptance-rollback-[0-9]+$ ]]; then
+            [[ "$container_name" != "$rollback_container" ]] || rollback_seen=1
+            scan_container_root_bootstrap_env "$container_name" || return 1
+        fi
+    done <<<"$container_names"
+    if (( rollback_seen == 0 )); then
+        scan_container_root_bootstrap_env "$rollback_container" || return 1
+    fi
+}
+
+scan_relevant_container_root_bootstrap_envs
 nginx -t
 docker stop -- ai-gateway-go
 docker rm -f -- ai-gateway-go

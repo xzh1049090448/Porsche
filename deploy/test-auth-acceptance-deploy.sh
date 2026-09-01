@@ -179,7 +179,7 @@ write_mock() {
         '  stat) if [[ "${MOCK_ENTRYPOINT:-}" != auth-acceptance-bootstrap-root.sh ]]; then exec /bin/stat "$@"; fi; path="${4:-}"; case "$path" in /fixture/root-acceptance-credentials) stat_uid="${MOCK_CREDENTIAL_UID:-0}"; stat_mode="${MOCK_CREDENTIAL_MODE:-600}" ;; /fixture) stat_uid="${MOCK_CREDENTIAL_PARENT_UID:-0}"; stat_mode="${MOCK_CREDENTIAL_PARENT_MODE:-700}" ;; /fixture/Porsche/.env) stat_uid="${MOCK_ENV_UID:-0}"; stat_mode="${MOCK_ENV_MODE:-600}" ;; /fixture/Porsche) stat_uid="${MOCK_BACKEND_UID:-0}"; stat_mode="${MOCK_BACKEND_MODE:-755}" ;; /tmp/porsche-root-bootstrap.*\/root-bootstrap) stat_uid="${MOCK_SNAPSHOT_CREDENTIAL_UID:-0}"; stat_mode="${MOCK_SNAPSHOT_CREDENTIAL_MODE:-600}" ;; /tmp/porsche-root-bootstrap.*\/.env) stat_uid="${MOCK_SNAPSHOT_ENV_UID:-0}"; stat_mode="${MOCK_SNAPSHOT_ENV_MODE:-600}" ;; *) exit 78 ;; esac; case "${1:-}:${2:-}" in "-c:%u") printf "%s\\n" "$stat_uid" ;; "-c:%a") printf "%s\\n" "$stat_mode" ;; *) exit 78 ;; esac ;;' \
         '  cp) if [[ "${MOCK_ENTRYPOINT:-}" == auth-acceptance-bootstrap-root.sh ]]; then [[ $# == 5 && "$1" == --preserve=mode,ownership && "$2" == --no-dereference && "$3" == -- ]] || exit 80; exec /bin/cp -pP -- "$4" "$5"; else exec /bin/cp "$@"; fi ;;' \
         '  git) case "${1:-}" in fetch) if [[ "${MOCK_ENV_MUTATE_ON_GIT_FETCH:-0}" == 1 ]]; then printf "APP_ENV=production\\nREDIS_URL=redis://:fixture-only-password@porsche-redis:6379/0\\nALLOWED_HOSTS=aiportcloud.com\\nAUTH_TRUSTED_ORIGINS=https://aiportcloud.com\\nROOT_BOOTSTRAP_PASSWORD=Aa1@fixture-secret\\n" >/fixture/Porsche/.env; fi ;; branch) if [[ "$PWD" == */Porsche-Web ]]; then printf "%s\\n" "${MOCK_FRONTEND_BRANCH:-feature/session-auth-frontend}"; else printf "%s\\n" "${MOCK_BRANCH:-feature/user-registration-management}"; fi ;; rev-parse) if [[ "${2:-}" == origin/* && "${MOCK_REMOTE_MISMATCH:-0}" == 1 ]]; then printf "remote-sha\\n"; else printf "%s\\n" "${MOCK_GIT_SHA:-fixture-sha}"; fi ;; status) [[ "${MOCK_GIT_STATUS_FAILURE:-0}" == 0 ]] || exit 79; [[ "${MOCK_GIT_DIRTY:-0}" == 0 ]] || printf " M tracked-fixture\\n" ;; diff) [[ "${MOCK_GIT_DIRTY:-0}" == 0 ]] ;; archive) : ;; esac ;;' \
-        '  docker) case "${1:-}" in network) if [[ "${2:-}" == inspect && "${3:-}" == porsche-app ]]; then [[ "${MOCK_NETWORK_INSPECT_RESULT:-success}" == success ]]; else [[ "${MOCK_DOCKER_INSPECT_RESULT:-success}" == success ]]; fi ;; container) if [[ "${2:-}" == inspect && "${3:-}" == ai-gateway-go && -n "${MOCK_DOC_INSPECT_STATE:-}" ]]; then case "$MOCK_DOC_INSPECT_STATE" in clean) printf "APP_ENV=production\\n" ;; present) printf "ROOT_BOOTSTRAP_PASSWORD=fixture-doc-root-secret\\n" ;; other) printf "ROOT_BOOTSTRAP_OTHER=fixture-doc-other-secret\\n" ;; error) exit 79 ;; *) exit 78 ;; esac; elif [[ "${2:-}" == inspect && "${3:-}" == porsche-redis ]]; then [[ "${MOCK_REDIS_EXISTS:-0}" == 1 ]]; elif [[ "${2:-}" == inspect && "${3:-}" == porsche-mysql ]]; then [[ "${MOCK_MYSQL_EXISTS:-1}" == 1 && "${MOCK_MYSQL_INSPECT_RESULT:-success}" == success ]]; else [[ "${MOCK_DOCKER_INSPECT_RESULT:-success}" == success ]]; fi ;; build) [[ "${2:-}" != --quiet ]] || printf "%s\\n" "${MOCK_DOCKER_BUILD_IMAGE_ID:-}" ;; run) [[ "${MOCK_DOCKER_RUN_RESULT:-success}" == success ]] || exit 71; if [[ "${2:-}" == --rm && "${3:-}" == --entrypoint && "${4:-}" == id && "${5:-}" == redis:7-alpine && "${6:-}" == -u && "${7:-}" == redis ]]; then printf "999\\n"; elif [[ "${2:-}" == --rm && "${3:-}" == --entrypoint && "${4:-}" == id && "${5:-}" == redis:7-alpine && "${6:-}" == -g && "${7:-}" == redis ]]; then printf "1000\\n"; else printf "fixture-container\\n"; fi ;; esac ;;' \
+        '  docker) case "${1:-}" in ps) [[ "${MOCK_DOCKER_PS_RESULT:-success}" == success ]] || exit 79; [[ "${2:-}" == -a && "${3:-}" == --format && "${4:-}" == "{{.Names}}" ]] || exit 78; case "${MOCK_CONTAINER_LIST_STATE:-current}" in current) printf "ai-gateway-go\\n" ;; current-and-rollback) printf "ai-gateway-go\\nai-gateway-go-acceptance-rollback-123\\n" ;; helper-only) printf "ai-gateway-go-helper\\n" ;; *) exit 78 ;; esac ;; network) if [[ "${2:-}" == inspect && "${3:-}" == porsche-app ]]; then [[ "${MOCK_NETWORK_INSPECT_RESULT:-success}" == success ]]; else [[ "${MOCK_DOCKER_INSPECT_RESULT:-success}" == success ]]; fi ;; container) if [[ "${2:-}" == inspect && "${3:-}" == ai-gateway-go && -n "${MOCK_DOC_INSPECT_STATE:-}" ]]; then case "$MOCK_DOC_INSPECT_STATE" in clean) printf "APP_ENV=production\\n" ;; present) printf "ROOT_BOOTSTRAP_PASSWORD=fixture-doc-root-secret\\n" ;; other) printf "ROOT_BOOTSTRAP_OTHER=fixture-doc-other-secret\\n" ;; error) exit 79 ;; *) exit 78 ;; esac; elif [[ "${2:-}" == inspect && "${3:-}" == porsche-redis ]]; then [[ "${MOCK_REDIS_EXISTS:-0}" == 1 ]]; elif [[ "${2:-}" == inspect && "${3:-}" == porsche-mysql ]]; then [[ "${MOCK_MYSQL_EXISTS:-1}" == 1 && "${MOCK_MYSQL_INSPECT_RESULT:-success}" == success ]]; elif [[ "${2:-}" == inspect && "${5:-}" == "{{range .Config.Env}}{{println .}}{{end}}" ]]; then case "${3:-}" in ai-gateway-go) container_state="${MOCK_CURRENT_CONTAINER_ENV_STATE:-clean}" ;; ai-gateway-go-acceptance-rollback-[0-9]*) container_state="${MOCK_ROLLBACK_CONTAINER_ENV_STATE:-clean}" ;; ai-gateway-go-helper) container_state="${MOCK_HELPER_CONTAINER_ENV_STATE:-clean}" ;; *) exit 78 ;; esac; case "$container_state" in clean) printf "APP_ENV=production\\n" ;; present) printf "ROOT_BOOTSTRAP_PASSWORD=fixture-container-root-secret\\n" ;; error) exit 79 ;; *) exit 78 ;; esac; else [[ "${MOCK_DOCKER_INSPECT_RESULT:-success}" == success ]]; fi ;; build) [[ "${2:-}" != --quiet ]] || printf "%s\\n" "${MOCK_DOCKER_BUILD_IMAGE_ID:-}" ;; run) [[ "${MOCK_DOCKER_RUN_RESULT:-success}" == success ]] || exit 71; if [[ "${2:-}" == --rm && "${3:-}" == --entrypoint && "${4:-}" == id && "${5:-}" == redis:7-alpine && "${6:-}" == -u && "${7:-}" == redis ]]; then printf "999\\n"; elif [[ "${2:-}" == --rm && "${3:-}" == --entrypoint && "${4:-}" == id && "${5:-}" == redis:7-alpine && "${6:-}" == -g && "${7:-}" == redis ]]; then printf "1000\\n"; else printf "fixture-container\\n"; fi ;; esac ;;' \
         '  curl) [[ "${MOCK_HEALTH_RESULT:-success}" == success ]] || exit 72 ;;' \
         '  npm) [[ "${MOCK_NPM_RESULT:-success}" == success ]] || exit 73 ;;' \
         '  rsync) [[ "${MOCK_RSYNC_RESULT:-success}" == success ]] || exit 74 ;;' \
@@ -571,7 +571,7 @@ for selected_check in "${selected_checks[@]}"; do
 done
 
 run_entrypoint() {
-    local entrypoint="$1" tmpdir_value=/tmp tmp_mount_option=--tmpfs tmp_mount_value=/tmp:rw,noexec,nosuid,nodev
+    local entrypoint="$1" tmpdir_value=/tmp tmp_mount_option=--tmpfs tmp_mount_value=/tmp:rw,noexec,nosuid,nodev docker_status
     local test_container_value="${MOCK_TEST_CONTAINER:-1}"
     local target_path="${MOCK_ENTRYPOINT_TARGET:-/fixture/Porsche/deploy/$entrypoint}"
     local backend_dir_value=/fixture/Porsche credentials_file_value=/fixture/root-acceptance-credentials
@@ -609,6 +609,7 @@ run_entrypoint() {
     ((run_count += 1))
     command_log="$fixture_dir/commands-$run_count.nul"
     : >"$command_log"
+    set +u
     docker run --rm --network none --read-only --cap-drop ALL \
         --security-opt no-new-privileges "$tmp_mount_option" "$tmp_mount_value" \
         --mount "type=bind,src=$fixture_dir,dst=/fixture" \
@@ -652,6 +653,11 @@ run_entrypoint() {
         --env "MOCK_MYSQL_EXISTS=${MOCK_MYSQL_EXISTS:-1}" \
         --env "MOCK_MYSQL_INSPECT_RESULT=${MOCK_MYSQL_INSPECT_RESULT:-success}" \
         --env "MOCK_DOCKER_INSPECT_RESULT=${MOCK_DOCKER_INSPECT_RESULT:-success}" \
+        --env "MOCK_DOCKER_PS_RESULT=${MOCK_DOCKER_PS_RESULT:-success}" \
+        --env "MOCK_CONTAINER_LIST_STATE=${MOCK_CONTAINER_LIST_STATE:-current}" \
+        --env "MOCK_CURRENT_CONTAINER_ENV_STATE=${MOCK_CURRENT_CONTAINER_ENV_STATE:-clean}" \
+        --env "MOCK_ROLLBACK_CONTAINER_ENV_STATE=${MOCK_ROLLBACK_CONTAINER_ENV_STATE:-clean}" \
+        --env "MOCK_HELPER_CONTAINER_ENV_STATE=${MOCK_HELPER_CONTAINER_ENV_STATE:-clean}" \
         --env "MOCK_DOCKER_BUILD_IMAGE_ID=${MOCK_DOCKER_BUILD_IMAGE_ID:-$fixture_image_id}" \
         --env "MOCK_REDIS_EXISTS=${MOCK_REDIS_EXISTS:-0}" \
         --env "MOCK_DOCKER_RUN_RESULT=${MOCK_DOCKER_RUN_RESULT:-success}" \
@@ -662,6 +668,9 @@ run_entrypoint() {
         --env "MOCK_SYSTEMCTL_RESULT=${MOCK_SYSTEMCTL_RESULT:-success}" \
         --env "MOCK_FLOCK_RESULT=${MOCK_FLOCK_RESULT:-success}" \
         bash:5.2 "$target_path" "$@"
+    docker_status=$?
+    set -u
+    return "$docker_status"
 }
 
 wait_for_fixture_file() {
@@ -734,6 +743,109 @@ run_rollback() {
     fi
     run_entrypoint auth-acceptance-rollback.sh --confirm-auth-acceptance-rollback
     assert_no_dangerous_calls
+}
+
+run_rollback_with_captured_output() {
+    local stdout_file="$fixture_dir/rollback-root-env.stdout" stderr_file="$fixture_dir/rollback-root-env.stderr" status
+    if [[ ! -f "$manifest_dir/rollback.env" ]]; then
+        run_deploy
+    fi
+    : >"$stdout_file"
+    : >"$stderr_file"
+    if run_entrypoint auth-acceptance-rollback.sh --confirm-auth-acceptance-rollback >"$stdout_file" 2>"$stderr_file"; then
+        status=0
+    else
+        status=$?
+    fi
+    return "$status"
+}
+
+assert_no_container_root_secret_leak() {
+    local stdout_file="$1" stderr_file="$2" secret='fixture-container-root-secret'
+    assert_no_sensitive_argv_fields "$secret" || fail 'container Root bootstrap secret appeared in a structured argv field'
+    ! grep -Fq "$secret" "$stdout_file" "$stderr_file" || fail 'container Root bootstrap secret appeared in command output'
+}
+
+assert_container_scan_rejection_has_no_writes() {
+    assert_no_docker_or_rsync_writes
+    assert_no_deploy_preparation_calls
+    assert_no_git_fetch_calls
+    assert_no_dangerous_calls
+}
+
+assert_deploy_scans_relevant_container_envs_before_writes() {
+    local stdout_file="$fixture_dir/deploy-root-env.stdout" stderr_file="$fixture_dir/deploy-root-env.stderr"
+    restore_clean_deploy_env
+    if MOCK_CURRENT_CONTAINER_ENV_STATE=present run_deploy_with_captured_output; then
+        fail 'deployment accepted Root bootstrap environment in the current application container'
+    fi
+    grep -Fq 'ai-gateway-go' "$stderr_file" || fail 'deployment did not identify the current application container'
+    assert_no_container_root_secret_leak "$stdout_file" "$stderr_file"
+    assert_container_scan_rejection_has_no_writes
+
+    if MOCK_CONTAINER_LIST_STATE=current-and-rollback MOCK_ROLLBACK_CONTAINER_ENV_STATE=present run_deploy_with_captured_output; then
+        fail 'deployment accepted Root bootstrap environment in a stopped rollback container'
+    fi
+    grep -Fq 'ai-gateway-go-acceptance-rollback-123' "$stderr_file" || fail 'deployment did not identify the rollback application container'
+    assert_no_container_root_secret_leak "$stdout_file" "$stderr_file"
+    assert_container_scan_rejection_has_no_writes
+
+    if MOCK_CURRENT_CONTAINER_ENV_STATE=error run_deploy_with_captured_output; then
+        fail 'deployment accepted an application container environment inspect failure'
+    fi
+    assert_no_container_root_secret_leak "$stdout_file" "$stderr_file"
+    assert_container_scan_rejection_has_no_writes
+
+    if MOCK_DOCKER_PS_RESULT=failure run_deploy_with_captured_output; then
+        fail 'deployment accepted a Docker container-list failure'
+    fi
+    assert_no_container_root_secret_leak "$stdout_file" "$stderr_file"
+    assert_container_scan_rejection_has_no_writes
+
+    if ! MOCK_CONTAINER_LIST_STATE=helper-only MOCK_HELPER_CONTAINER_ENV_STATE=present run_deploy_with_captured_output; then
+        fail 'deployment treated an unrelated helper container as an application rollback container'
+    fi
+    assert_no_container_root_secret_leak "$stdout_file" "$stderr_file"
+}
+
+assert_rollback_scans_relevant_container_envs_before_writes() {
+    local stdout_file="$fixture_dir/rollback-root-env.stdout" stderr_file="$fixture_dir/rollback-root-env.stderr"
+    run_deploy
+    printf 'ROLLBACK_CONTAINER=ai-gateway-go-acceptance-rollback-123\nROLLBACK_STATIC=/fixture/manifests/static.fixture\nBACKEND_SHA=fixture-sha\nFRONTEND_SHA=fixture-sha\n' >"$manifest_dir/rollback.env"
+    chmod 600 "$manifest_dir/rollback.env"
+
+    if MOCK_CURRENT_CONTAINER_ENV_STATE=present run_rollback_with_captured_output; then
+        fail 'rollback accepted Root bootstrap environment in the current application container'
+    fi
+    grep -Fq 'ai-gateway-go' "$stderr_file" || fail 'rollback did not identify the current application container'
+    assert_no_container_root_secret_leak "$stdout_file" "$stderr_file"
+    assert_container_scan_rejection_has_no_writes
+
+    if MOCK_ROLLBACK_CONTAINER_ENV_STATE=present run_rollback_with_captured_output; then
+        fail 'rollback accepted Root bootstrap environment in its manifest rollback container absent from the list'
+    fi
+    grep -Fq 'ai-gateway-go-acceptance-rollback-123' "$stderr_file" || fail 'rollback did not explicitly inspect its manifest rollback container'
+    assert_no_container_root_secret_leak "$stdout_file" "$stderr_file"
+    assert_container_scan_rejection_has_no_writes
+
+    if MOCK_CONTAINER_LIST_STATE=current-and-rollback MOCK_ROLLBACK_CONTAINER_ENV_STATE=present run_rollback_with_captured_output; then
+        fail 'rollback accepted Root bootstrap environment in a stopped rollback container'
+    fi
+    grep -Fq 'ai-gateway-go-acceptance-rollback-123' "$stderr_file" || fail 'rollback did not identify the rollback application container'
+    assert_no_container_root_secret_leak "$stdout_file" "$stderr_file"
+    assert_container_scan_rejection_has_no_writes
+
+    if MOCK_CURRENT_CONTAINER_ENV_STATE=error run_rollback_with_captured_output; then
+        fail 'rollback accepted an application container environment inspect failure'
+    fi
+    assert_no_container_root_secret_leak "$stdout_file" "$stderr_file"
+    assert_container_scan_rejection_has_no_writes
+
+    if MOCK_DOCKER_PS_RESULT=failure run_rollback_with_captured_output; then
+        fail 'rollback accepted a Docker container-list failure'
+    fi
+    assert_no_container_root_secret_leak "$stdout_file" "$stderr_file"
+    assert_container_scan_rejection_has_no_writes
 }
 
 assert_no_test_mode_side_effect_calls() {
@@ -1408,13 +1520,17 @@ assert_operator_documentation() {
     done
     grep -Fxq '# BEGIN ROOT_BOOTSTRAP_INSPECT_CHECK' "$source_repo/README.md" || fail 'README missing Root inspect check start marker'
     grep -Fxq '# END ROOT_BOOTSTRAP_INSPECT_CHECK' "$source_repo/README.md" || fail 'README missing Root inspect check end marker'
-    grep -Fq 'ROOT_BOOTSTRAP_USERNAME and ROOT_BOOTSTRAP_PASSWORD must be empty before deployment' "$source_repo/README.md" || fail 'README does not require empty Root bootstrap keys before deployment'
+    ! grep -Fq '首次部署可同时设置 `ROOT_BOOTSTRAP_USERNAME`' "$source_repo/README.md" || fail 'README still documents startup Root bootstrap environment configuration'
+    ! grep -Fq 'or leave only their empty declarations' "$source_repo/README.md" || fail 'README still permits empty Root bootstrap declarations'
+    grep -Fq 'Remove/delete both `ROOT_BOOTSTRAP_USERNAME` and `ROOT_BOOTSTRAP_PASSWORD`; empty declarations are not allowed.' "$source_repo/README.md" || fail 'README does not require deletion of both Root bootstrap keys'
+    grep -Fq 'production service rejects any Root bootstrap environment key and never bootstraps Root automatically' "$source_repo/README.md" || fail 'README does not state the production Root environment rejection policy'
     grep -Fq 'docker inspect of the long-running application must not contain ROOT_BOOTSTRAP_' "$source_repo/README.md" || fail 'README does not require inspection for Root bootstrap keys in the long-running application'
     grep -Fq 'username=<Root-username>' "$source_repo/README.md" || fail 'README missing Root credential schema username field'
     grep -Fq 'password=<Root-password>' "$source_repo/README.md" || fail 'README missing Root credential schema password field'
     grep -Fq 'exactly two lines' "$source_repo/README.md" || fail 'README missing Root credential line-count requirement'
     grep -Fq 'no blank, unknown, or duplicate lines' "$source_repo/README.md" || fail 'README missing Root credential structural restrictions'
     grep -Fq '12–20 bytes' "$source_repo/README.md" || fail 'README missing Root password byte-length requirement'
+    grep -Fq 'ASCII password is required' "$source_repo/README.md" || fail 'README does not require an ASCII Root password'
     grep -Fq 'tracked tree has no modifications' "$source_repo/README.md" || fail 'README missing tracked checkout requirement'
     grep -Fq 'untracked and ignored files do not enter the image' "$source_repo/README.md" || fail 'README missing verified archive build-input boundary'
     grep -Fq '/opt/Porsche` must be root-owned and not writable by group or other' "$source_repo/README.md" || fail 'README missing backend directory permission requirement'
@@ -1423,6 +1539,7 @@ assert_operator_documentation() {
     grep -Fq "grep -Eq '^ROOT_BOOTSTRAP_'" "$source_repo/README.md" || fail 'README missing Root bootstrap environment check pattern'
     grep -Fq 'PIPESTATUS' "$source_repo/README.md" || fail 'README does not capture pipeline statuses for Root bootstrap environment check'
     grep -Fq 'PASS: long-running application has no ROOT_BOOTSTRAP_ environment keys' "$source_repo/README.md" || fail 'README missing pass condition for Root bootstrap environment check'
+    grep -Fq 'running and stopped application rollback containers' "$source_repo/README.md" || fail 'README does not document running/stopped container Root environment scans'
     grep -Fq 'Application rollback does not automatically roll back the database migration' "$source_repo/README.md" || fail 'README does not state that application rollback leaves the migration applied'
     assert_documented_root_inspect_check
 }
@@ -1439,8 +1556,8 @@ for selected_check in "${selected_checks[@]}"; do
     case "$selected_check" in
         bootstrap) assert_bootstrap_rejects_invalid_passwords_and_existing_container; assert_bootstrap_creates_internal_redis ;;
         migration) assert_migration_requires_confirmation_without_writes; run_migration ;;
-        deploy) assert_deploy_refuses_main_or_dirty_checkout_without_writes; assert_deploy_preflight_failures_do_not_write; assert_deploy_rejects_root_bootstrap_env_without_writes; assert_deploy_rejects_root_bootstrap_snapshot_race_without_writes; assert_deploy_uses_snapshot_after_source_env_mutates; assert_candidate_failure_restores_old_application; assert_publish_failures_restore_application; assert_successful_deploy_order_and_manifest ;;
-        rollback) run_rollback ;;
+        deploy) assert_deploy_refuses_main_or_dirty_checkout_without_writes; assert_deploy_preflight_failures_do_not_write; assert_deploy_rejects_root_bootstrap_env_without_writes; assert_deploy_rejects_root_bootstrap_snapshot_race_without_writes; assert_deploy_uses_snapshot_after_source_env_mutates; assert_deploy_scans_relevant_container_envs_before_writes; assert_candidate_failure_restores_old_application; assert_publish_failures_restore_application; assert_successful_deploy_order_and_manifest ;;
+        rollback) assert_rollback_scans_relevant_container_envs_before_writes; run_rollback ;;
         root-bootstrap) assert_root_bootstrap_requires_confirmation_without_writes; assert_root_bootstrap_requires_root_without_writes; assert_root_bootstrap_rejects_invalid_checkout_without_writes; assert_root_bootstrap_rejects_unsafe_source_metadata_without_writes; assert_root_bootstrap_rejects_invalid_credentials_without_writes; assert_root_bootstrap_rejects_unsafe_snapshot_metadata_without_writes; assert_root_bootstrap_rejects_env_credentials_without_writes; assert_root_bootstrap_rejects_missing_docker_dependencies_without_writes; assert_root_bootstrap_rejects_invalid_image_id_without_run; assert_root_bootstrap_uses_readonly_secret_mounts ;;
         docs) assert_operator_documentation ;;
     esac
