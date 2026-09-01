@@ -1155,7 +1155,7 @@ run_documented_root_inspect_check() {
         --env PATH=/fixture/bin:/usr/local/bin:/usr/bin:/bin \
         --env "COMMAND_LOG=/fixture/documented-root-inspect-$run_count.nul" \
         --env "MOCK_DOC_INSPECT_STATE=$state" \
-        bash:5.2 /fixture/documented-root-inspect-check.sh >"$documented_check_stdout" 2>"$documented_check_stderr"; then
+        bash:5.2 bash /fixture/documented-root-inspect-check.sh >"$documented_check_stdout" 2>"$documented_check_stderr"; then
         status=0
     else
         status=$?
