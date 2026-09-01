@@ -62,6 +62,7 @@ manifest_dir="$fixture_dir/manifests"
 mock_dir="$fixture_dir/bin"
 command_log="$fixture_dir/commands.nul"
 fixture_image_id="sha256:$(printf '%064d' 0)"
+fixture_lock_file="$fixture_dir/auth-acceptance.lock"
 run_count=0
 mkdir -p "$backend_dir/deploy" "$backend_dir/cmd/bootstrap-root" "$backend_dir/vendor/fixture-malicious" "$frontend_dir/.git" "$frontend_dir/dist" "$frontend_root" "$manifest_dir" "$mock_dir"
 printf 'APP_ENV=production\nREDIS_URL=redis://:fixture-only-password@porsche-redis:6379/0\nALLOWED_HOSTS=aiportcloud.com\nAUTH_TRUSTED_ORIGINS=https://aiportcloud.com\n' >"$backend_dir/.env"
@@ -288,6 +289,15 @@ assert_no_deploy_preparation_calls() {
     for ((call_index = 0; call_index < ${#call_starts[@]}; call_index += 1)); do
         command="$(call_command_basename "$call_index")"
         [[ "$command" != npm && "$command" != nginx ]] || fail "unexpected deployment preparation invocation at call $call_index"
+    done
+    return 0
+}
+
+assert_no_git_fetch_calls() {
+    local call_index
+    parse_calls
+    for ((call_index = 0; call_index < ${#call_starts[@]}; call_index += 1)); do
+        call_has_prefix "$call_index" git fetch && fail "unexpected git fetch after rejection at call $call_index"
     done
     return 0
 }
@@ -716,6 +726,8 @@ assert_deploy_rejects_root_bootstrap_env_without_writes() {
         '.env.deploy-root-mixed-duplicate:ROOT_BOOTSTRAP_USERNAME'
     )
     for env_fixture in "${root_env_fixtures[@]}"; do
+        rm -f -- "$fixture_lock_file"
+        wait_for_fixture_path_state missing /fixture/auth-acceptance.lock
         cp "$backend_dir/${env_fixture%%:*}" "$backend_dir/.env"
         wait_for_fixture_file "$backend_dir/.env" /fixture/Porsche/.env
         key="${env_fixture#*:}"
@@ -744,6 +756,8 @@ assert_deploy_rejects_root_bootstrap_env_without_writes() {
             wait_for_fixture_file "$backend_dir/.env" /fixture/Porsche/.env
             fail 'Root bootstrap username appeared in deployment output'
         }
+        [[ ! -e "$fixture_lock_file" && ! -L "$fixture_lock_file" ]] || fail 'Root bootstrap rejection created the deployment lock file'
+        assert_no_git_fetch_calls
         assert_no_deploy_preparation_calls
         assert_no_docker_or_rsync_writes
         assert_no_dangerous_calls

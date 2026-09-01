@@ -22,6 +22,22 @@ if [[ "${PORSCHE_AUTH_ACCEPTANCE_TEST_MODE:-0}" == 1 ]]; then
     MANIFEST_DIR="${PORSCHE_AUTH_ACCEPTANCE_MANIFEST_DIR:?}"
 fi
 
+reject_root_bootstrap_env_keys() {
+    local key
+    # This is deliberately a literal deny guard, not an .env parser. Only an
+    # exact, empty declaration is permitted; every other line mentioning a
+    # Root bootstrap key is rejected without exposing its contents.
+    for key in ROOT_BOOTSTRAP_USERNAME ROOT_BOOTSTRAP_PASSWORD; do
+        if ! awk -v key="$key" '$0 != key "=" && index($0, key) { exit 1 }' "$BACKEND_DIR/.env" >/dev/null 2>&1; then
+            echo "$key is not allowed in the application .env" >&2
+            return 1
+        fi
+    done
+}
+
+[[ -f "$BACKEND_DIR/.env" ]] || { echo "missing $BACKEND_DIR/.env" >&2; exit 1; }
+reject_root_bootstrap_env_keys
+
 exec 9>"$LOCK_FILE"
 flock -n 9 || { echo 'another auth acceptance deployment is running' >&2; exit 1; }
 
@@ -43,25 +59,10 @@ read_env_value() {
     sed -n "s/^${key}=//p" "$BACKEND_DIR/.env" | tail -n 1
 }
 
-reject_root_bootstrap_env_keys() {
-    local key
-    # This is deliberately a literal deny guard, not an .env parser. Only an
-    # exact, empty declaration is permitted; every other line mentioning a
-    # Root bootstrap key is rejected without exposing its contents.
-    for key in ROOT_BOOTSTRAP_USERNAME ROOT_BOOTSTRAP_PASSWORD; do
-        if ! awk -v key="$key" '$0 != key "=" && index($0, key) { exit 1 }' "$BACKEND_DIR/.env" >/dev/null 2>&1; then
-            echo "$key is not allowed in the application .env" >&2
-            return 1
-        fi
-    done
-}
-
-[[ -f "$BACKEND_DIR/.env" ]] || { echo "missing $BACKEND_DIR/.env" >&2; exit 1; }
 check_checkout "$BACKEND_DIR" "$BACKEND_BRANCH"
 backend_sha="$(cd "$BACKEND_DIR" && git rev-parse HEAD)"
 check_checkout "$FRONTEND_DIR" "$FRONTEND_BRANCH"
 frontend_sha="$(cd "$FRONTEND_DIR" && git rev-parse HEAD)"
-reject_root_bootstrap_env_keys
 [[ "$(read_env_value APP_ENV)" == production ]] || { echo 'APP_ENV must be production' >&2; exit 1; }
 [[ "$(read_env_value ALLOWED_HOSTS)" =~ (^|,)aiportcloud\.com(,|$) ]] || { echo 'ALLOWED_HOSTS must contain aiportcloud.com' >&2; exit 1; }
 [[ "$(read_env_value AUTH_TRUSTED_ORIGINS)" =~ (^|,)https://aiportcloud\.com(,|$) ]] || { echo 'AUTH_TRUSTED_ORIGINS must contain https://aiportcloud.com' >&2; exit 1; }
