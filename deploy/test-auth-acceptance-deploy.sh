@@ -138,7 +138,7 @@ write_mock() {
         'for arg in "$@"; do printf "ARG\\0%s\\0" "$arg" >>"$COMMAND_LOG"; done' \
         'printf "END\\0%s\\0" "$call_id" >>"$COMMAND_LOG"' \
         'case "$command_name" in' \
-        '  id) [[ "${1:-}" == "-u" ]] && printf "0\\n" ;;' \
+        '  id) [[ "${1:-}" == "-u" ]] && printf "%s\\n" "${MOCK_ID_UID:-0}" ;;' \
         '  stat) case "${1:-}:${2:-}" in "-c:%u") printf "%s\\n" "${MOCK_CREDENTIAL_UID:-0}" ;; "-c:%a") printf "%s\\n" "${MOCK_CREDENTIAL_MODE:-600}" ;; *) exit 78 ;; esac ;;' \
         '  git) case "${1:-}" in branch) if [[ "$PWD" == */Porsche-Web ]]; then printf "%s\\n" "${MOCK_FRONTEND_BRANCH:-feature/session-auth-frontend}"; else printf "%s\\n" "${MOCK_BRANCH:-feature/user-registration-management}"; fi ;; rev-parse) if [[ "${2:-}" == origin/* && "${MOCK_REMOTE_MISMATCH:-0}" == 1 ]]; then printf "remote-sha\\n"; else printf "%s\\n" "${MOCK_GIT_SHA:-fixture-sha}"; fi ;; diff|status) [[ "${MOCK_GIT_DIRTY:-0}" == 0 ]] ;; esac ;;' \
         '  docker) case "${1:-}" in network) if [[ "${2:-}" == inspect && "${3:-}" == porsche-app ]]; then [[ "${MOCK_NETWORK_INSPECT_RESULT:-success}" == success ]]; else [[ "${MOCK_DOCKER_INSPECT_RESULT:-success}" == success ]]; fi ;; container) if [[ "${2:-}" == inspect && "${3:-}" == porsche-redis ]]; then [[ "${MOCK_REDIS_EXISTS:-0}" == 1 ]]; elif [[ "${2:-}" == inspect && "${3:-}" == porsche-mysql ]]; then [[ "${MOCK_MYSQL_EXISTS:-1}" == 1 && "${MOCK_MYSQL_INSPECT_RESULT:-success}" == success ]]; else [[ "${MOCK_DOCKER_INSPECT_RESULT:-success}" == success ]]; fi ;; run) [[ "${MOCK_DOCKER_RUN_RESULT:-success}" == success ]] || exit 71; if [[ "${2:-}" == --rm && "${3:-}" == --entrypoint && "${4:-}" == id && "${5:-}" == redis:7-alpine && "${6:-}" == -u && "${7:-}" == redis ]]; then printf "999\\n"; elif [[ "${2:-}" == --rm && "${3:-}" == --entrypoint && "${4:-}" == id && "${5:-}" == redis:7-alpine && "${6:-}" == -g && "${7:-}" == redis ]]; then printf "1000\\n"; else printf "fixture-container\\n"; fi ;; esac ;;' \
@@ -433,6 +433,7 @@ run_entrypoint() {
         --env PATH=/fixture/bin:/usr/local/bin:/usr/bin:/bin \
         --env "COMMAND_LOG=/fixture/commands-$run_count.nul" \
         --env PORSCHE_AUTH_ACCEPTANCE_TEST_MODE=1 \
+        --env "MOCK_ID_UID=${MOCK_ID_UID:-0}" \
         --env PORSCHE_AUTH_ACCEPTANCE_BACKEND_DIR=/fixture/Porsche \
         --env PORSCHE_AUTH_ACCEPTANCE_ROOT_CREDENTIALS_FILE=/fixture/root-acceptance-credentials \
         --env PORSCHE_AUTH_ACCEPTANCE_FRONTEND_DIR=/fixture/Porsche-Web \
@@ -616,6 +617,12 @@ assert_root_bootstrap_requires_confirmation_without_writes() {
     assert_no_dangerous_calls
 }
 
+assert_root_bootstrap_requires_root_without_writes() {
+    if MOCK_ID_UID=1000 run_root_bootstrap; then fail 'root bootstrap accepted a non-root operator'; fi
+    assert_no_docker_or_rsync_writes
+    assert_no_dangerous_calls
+}
+
 assert_root_bootstrap_rejects_invalid_checkout_without_writes() {
     if MOCK_BRANCH=main run_root_bootstrap; then fail 'root bootstrap accepted wrong branch'; fi
     assert_no_docker_or_rsync_writes
@@ -777,7 +784,7 @@ for selected_check in "${selected_checks[@]}"; do
         migration) assert_migration_requires_confirmation_without_writes; run_migration ;;
         deploy) assert_deploy_refuses_main_or_dirty_checkout_without_writes; assert_deploy_preflight_failures_do_not_write; assert_candidate_failure_restores_old_application; assert_publish_failures_restore_application; assert_successful_deploy_order_and_manifest ;;
         rollback) run_rollback ;;
-        root-bootstrap) assert_root_bootstrap_requires_confirmation_without_writes; assert_root_bootstrap_rejects_invalid_checkout_without_writes; assert_root_bootstrap_rejects_invalid_credentials_without_writes; assert_root_bootstrap_rejects_env_credentials_without_writes; assert_root_bootstrap_rejects_missing_docker_dependencies_without_writes; assert_root_bootstrap_uses_readonly_secret_mounts ;;
+        root-bootstrap) assert_root_bootstrap_requires_confirmation_without_writes; assert_root_bootstrap_requires_root_without_writes; assert_root_bootstrap_rejects_invalid_checkout_without_writes; assert_root_bootstrap_rejects_invalid_credentials_without_writes; assert_root_bootstrap_rejects_env_credentials_without_writes; assert_root_bootstrap_rejects_missing_docker_dependencies_without_writes; assert_root_bootstrap_uses_readonly_secret_mounts ;;
         docs) assert_operator_documentation ;;
     esac
 done
