@@ -133,6 +133,9 @@ func Load() (*Settings, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := rejectRootBootstrapEnvironment(appEnv); err != nil {
+		return nil, err
+	}
 	whiteLabel, err := ParseWhiteLabelSettings(
 		os.Getenv("UPSTREAM_REGION"),
 		os.Getenv("JIEKOU_API_KEY"),
@@ -356,11 +359,17 @@ func validateProductionAuthSettings(s *Settings) error {
 			return fmt.Errorf("AUTH_TRUSTED_ORIGINS must contain only HTTPS origins in production")
 		}
 	}
-	if (s.RootBootstrapUsername == "") != (s.RootBootstrapPassword == "") {
-		return fmt.Errorf("ROOT_BOOTSTRAP_USERNAME and ROOT_BOOTSTRAP_PASSWORD must be configured together")
+	return nil
+}
+
+// rejectRootBootstrapEnvironment keeps privileged credentials out of the
+// long-running service configuration. Root creation is a one-shot operation.
+func rejectRootBootstrapEnvironment(appEnv string) error {
+	if appEnv == "development" {
+		return nil
 	}
-	if s.RootBootstrapUsername != "" {
-		return ValidateRootBootstrapCredentials(s.RootBootstrapUsername, s.RootBootstrapPassword)
+	if os.Getenv("ROOT_BOOTSTRAP_USERNAME") != "" || os.Getenv("ROOT_BOOTSTRAP_PASSWORD") != "" {
+		return fmt.Errorf("ROOT_BOOTSTRAP environment variables are not allowed; use the one-shot bootstrap-root command")
 	}
 	return nil
 }
@@ -463,6 +472,9 @@ func strongRootBootstrapPassword(password string) bool {
 	}
 	hasUpper, hasLower, hasDigit, hasSymbol := false, false, false, false
 	for _, character := range password {
+		if character > 0x7f {
+			return false
+		}
 		switch {
 		case character >= 'a' && character <= 'z':
 			hasLower = true

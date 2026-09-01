@@ -17,6 +17,7 @@ func TestValidateRootBootstrapCredentials(t *testing.T) {
 		{name: "username contains spaces", username: "root admin", password: "Aa1@0123456789ab", wantErr: "ROOT_BOOTSTRAP credentials are invalid"},
 		{name: "password too short", username: "root_admin", password: "Aa1@short", wantErr: "ROOT_BOOTSTRAP credentials are invalid"},
 		{name: "password missing uppercase", username: "root_admin", password: "aa1@0123456789ab", wantErr: "ROOT_BOOTSTRAP credentials are invalid"},
+		{name: "password contains non ASCII emoji", username: "root_admin", password: "Aa1@abcdefgh🙂", wantErr: "ROOT_BOOTSTRAP credentials are invalid"},
 		{name: "development default password", username: "root_admin", password: "change-me-root-bootstrap-password-for-dev-only", wantErr: "ROOT_BOOTSTRAP_PASSWORD must not use the development default in production"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -29,6 +30,32 @@ func TestValidateRootBootstrapCredentials(t *testing.T) {
 			}
 			if err == nil || err.Error() != tc.wantErr {
 				t.Fatalf("ValidateRootBootstrapCredentials() error = %v, want %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestLoadRejectsRootBootstrapEnvironmentOutsideDevelopment(t *testing.T) {
+	const wantErr = "ROOT_BOOTSTRAP environment variables are not allowed; use the one-shot bootstrap-root command"
+
+	for _, tc := range []struct {
+		name     string
+		username string
+		password string
+	}{
+		{name: "username only", username: "root_admin"},
+		{name: "whitespace username", username: " "},
+		{name: "password only", password: "Aa1@0123456789ab"},
+		{name: "valid credential pair", username: "root_admin", password: "Aa1@0123456789ab"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			setSafeProductionAuthEnvironment(t)
+			t.Setenv("ROOT_BOOTSTRAP_USERNAME", tc.username)
+			t.Setenv("ROOT_BOOTSTRAP_PASSWORD", tc.password)
+
+			_, err := Load()
+			if err == nil || err.Error() != wantErr {
+				t.Fatalf("Load() error = %v, want %q", err, wantErr)
 			}
 		})
 	}

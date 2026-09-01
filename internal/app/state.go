@@ -60,9 +60,6 @@ func NewState(settings *config.Settings, db *gorm.DB) (*State, error) {
 	}
 	s.Sessions = service.NewSessionService(db, s.AuthRedis, settings)
 	s.Auth.SetSessionService(s.Sessions)
-	if _, err := s.Auth.BootstrapRoot(context.Background()); err != nil {
-		return nil, err
-	}
 	s.Platform = service.NewPlatformChatService(service.PlatformDeps{
 		Settings:   settings,
 		DB:         db,
