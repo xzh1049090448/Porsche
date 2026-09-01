@@ -58,11 +58,11 @@ Add a root-only entry point requiring exactly
   startup and schema-dependent bootstrap operation.
 
 It builds the acceptance image from the verified checkout, then runs the
-dedicated command in a disposable container attached to `porsche-app`. Source,
-`.env`, and the credentials file are mounted read-only. The `.env` mount is
-used as a normal non-secret-bootstrap configuration source; only the
-credentials file path is supplied on the command line. The container is
-removed automatically.
+dedicated command in a disposable container attached to `porsche-app`. The
+already-built image contains the verified source; `.env` and the credentials
+file are mounted read-only. The `.env` mount is used as a normal
+non-secret-bootstrap configuration source; only the credentials file path is
+supplied on the command line. The container is removed automatically.
 
 Before exiting, the Go command performs a non-secret database count check and
 requires exactly one Root. The wrapper never prints the credentials file,
