@@ -111,7 +111,14 @@ for credential_fixture in "$fixture_dir"/root-acceptance-credentials "$fixture_d
 done
 touch "$backend_dir/.git"
 
-if ! docker image inspect bash:5.2 >/dev/null 2>&1; then
+needs_container_fixture=0
+for selected_check in "${selected_checks[@]}"; do
+    if [[ "$selected_check" != docs ]]; then
+        needs_container_fixture=1
+        break
+    fi
+done
+if (( needs_container_fixture )) && ! docker image inspect bash:5.2 >/dev/null 2>&1; then
     fail 'Docker and the bash:5.2 test image are required; refusing to run deployment entrypoints on the host'
 fi
 
@@ -547,7 +554,9 @@ assert_container_blocks_host_command_bypasses() {
     [[ ! -s "$command_log" ]] || fail 'containerized bypass target reached a fixture command mock unexpectedly'
 }
 
-assert_container_blocks_host_command_bypasses
+if (( needs_container_fixture )); then
+    assert_container_blocks_host_command_bypasses
+fi
 
 # A missing production script must now be reported at the fake checkout path.
 for selected_check in "${selected_checks[@]}"; do
@@ -1107,10 +1116,13 @@ assert_operator_documentation() {
     for command in \
         'sudo bash deploy/bootstrap-auth-redis.sh' \
         'sudo bash deploy/auth-acceptance-migrate.sh --confirm-auth-schema-migration' \
+        'sudo bash deploy/auth-acceptance-bootstrap-root.sh --confirm-auth-root-bootstrap' \
         'sudo bash deploy/auth-acceptance-deploy.sh' \
         'sudo bash deploy/auth-acceptance-rollback.sh --confirm-auth-acceptance-rollback'; do
         grep -Fq "$command" "$source_repo/README.md" || fail "README missing operator command: $command"
     done
+    grep -Fq 'ROOT_BOOTSTRAP_USERNAME and ROOT_BOOTSTRAP_PASSWORD must be empty before deployment' "$source_repo/README.md" || fail 'README does not require empty Root bootstrap keys before deployment'
+    grep -Fq 'docker inspect of the long-running application must not contain ROOT_BOOTSTRAP_' "$source_repo/README.md" || fail 'README does not require inspection for Root bootstrap keys in the long-running application'
     grep -Fq 'Application rollback does not automatically roll back the database migration' "$source_repo/README.md" || fail 'README does not state that application rollback leaves the migration applied'
 }
 

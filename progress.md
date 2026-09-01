@@ -151,6 +151,12 @@
   checkout、远端 SHA 不一致、候选健康失败、rsync/reload 失败均被隔离夹具拒绝或回滚。
 - 浏览器生产域验收尚未执行，`go-006` 继续保持唯一 `in_progress`。
 
+## 认证 Root 引导安全返工（2026-09-01）
+
+- GORM SQL logger 已加泄露防护，Root bootstrap 凭据、环境值和其派生的敏感参数不应写入 SQL 日志。一次性 Root wrapper 只从已验证、远端一致的 feature SHA 创建 Git archive，并以构建返回的不可变 Docker image ID 执行，不依赖可变标签或工作树中的未跟踪输入。
+- Root credential 与 `/opt/Porsche/.env` 的 snapshot 源路径均要求 root 控制：凭据文件及其父目录、backend 目录和 `.env` 必须通过属主、权限、非 symlink 校验；复制到私有 `0700` snapshot 后才以只读 mount 传入 disposable `--rm` bootstrap 容器。候选部署同样在任何 Git/network 操作前创建 private env snapshot，并拒绝非空或伪装语法的 `ROOT_BOOTSTRAP_` 声明。
+- 证据范围仅限本地 isolated fixture 与 Go 验证；真实 one-shot Root bootstrap、candidate deploy 和 browser acceptance 仍待具备受控生产域/隔离依赖的环境后执行，不能据此把生产验收标为 passing。
+
 ## 下一步（部署冒烟）
 
 在具备部署环境的白牌配置后，完成真实上游目录、Chat 与 SSE 冒烟。

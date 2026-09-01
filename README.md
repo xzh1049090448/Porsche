@@ -222,19 +222,58 @@ sudo bash deploy/bootstrap-auth-redis.sh
 
 Redis is attached only to `porsche-app`, uses the persistent
 `porsche-redis-data` volume, and publishes no host port. Apply the forward-only
-authentication schema migration with the explicit confirmation, then deploy:
+authentication schema migration with the explicit confirmation. This applies
+the `0002_auth_core` migration; do not proceed until the intended target
+database reports that migration as applied:
 
 ```bash
 sudo bash deploy/auth-acceptance-migrate.sh --confirm-auth-schema-migration
+```
+
+### Isolated one-shot Root bootstrap
+
+Before starting a browser acceptance candidate, provision the Root username and
+password through a root-controlled secret-management workflow in exactly one
+regular, non-symlink file:
+`/var/lib/porsche-auth-acceptance/root-acceptance-credentials`. It must be
+owned by `root:root` and mode `0600`; do not put either value in Git, shell
+history, `/opt/Porsche/.env`, a Docker argument, or a command that prints the
+credential file.
+
+Remove the two Root bootstrap keys from `/opt/Porsche/.env`, or leave only
+their empty declarations. `ROOT_BOOTSTRAP_USERNAME and ROOT_BOOTSTRAP_PASSWORD must be empty before deployment`.
+Then run the explicit one-shot wrapper:
+
+```bash
+sudo bash deploy/auth-acceptance-bootstrap-root.sh --confirm-auth-root-bootstrap
+```
+
+The wrapper verifies the clean, remote-matching feature checkout, builds from
+that verified Git archive, makes root-controlled private snapshots of the
+environment and credential files, and mounts only those snapshots read-only in
+a disposable `--rm` container. It invokes the bootstrap using the immutable
+Docker image ID returned by that build, rather than a mutable image tag. After
+it returns, verify by an approved administrative database query that the Root
+count is exactly one, and verify that the temporary container has disappeared.
+
+Only after that check, use a candidate deployment whose private environment
+snapshot has no Root values:
+
+```bash
 sudo bash deploy/auth-acceptance-deploy.sh
 ```
 
 The deployment validates both branches, configuration, Redis, Docker network,
 and Nginx before replacing the application. It health-checks the candidate,
 publishes staged frontend assets, and retains the old container plus static
-snapshot in a root-owned rollback manifest. Test registration, login, refresh,
-logout, session revocation, admin role boundaries, and page reloads through the
-production HTTPS domain.
+snapshot in a root-owned rollback manifest. Confirm that `docker inspect of the long-running application must not contain ROOT_BOOTSTRAP_`.
+Run browser acceptance through the production HTTPS domain using the
+root-only credential file, not copied credentials: test registration, login,
+refresh, logout, session revocation, admin role boundaries, and page reloads.
+After the acceptance account has been safely transferred or its credential
+rotated through the approved secret-management process, delete
+`/var/lib/porsche-auth-acceptance/root-acceptance-credentials` as root so the
+one-shot credential is no longer retained.
 
 To restore the previous application container and frontend assets:
 
