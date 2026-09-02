@@ -21,7 +21,7 @@
       "status": "blocked",
       "verification": ["隔离 MySQL 8 / Redis 7 全量 go test -p 1 ./... -count=1", "go vet ./...", "go build ./..."],
       "evidence": ["2026-09-02：元数据扫描和两类超长用户名原始回归均 RED→GREEN；新增 MaxInt64/短 ID/唯一性与 ID 完整性测试通过。四项回归 -race -count=3 通过，go build/vet 与 diff 检查通过。", "全新 MySQL 8.0.46 测试库和 Redis 逻辑库下全量执行：225 个含子测试的通过事件，0 跳过，service 包另有 3 项失败；详见 docs/superpowers/reports/2026-09-02-backend-test-baseline.md。"],
-      "notes": "原定两类测试修复完成；全套仍被测试间 Root/审计状态污染和 Refresh 重放业务空指针阻塞。后者需单独批准修改认证流程，不修改生产数据库约束或跳过测试。"
+      "notes": "原定两类测试修复完成；全套仍被测试间 Root/审计状态污染和 Refresh 重放业务空指针阻塞。用户已批准扩大修复范围，精简设计待确认：docs/superpowers/specs/2026-09-02-refresh-replay-test-isolation-design.md。未改业务实现或生产数据库约束，不能算全套通过。"
     },
     {
       "id": "go-004",
