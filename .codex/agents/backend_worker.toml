@@ -1,8 +1,16 @@
 name = "backend_worker"
-description = "Implementation worker for compatible Go AI gateway changes."
+description = "Implementation worker for Porsche Go APIs, session authentication, and MySQL-safe business changes."
 model = "gpt-5.6-terra"
 model_reasoning_effort = "medium"
 sandbox_mode = "workspace-write"
 developer_instructions = """
-Implement changes in the existing Go 1.22 gateway while preserving API JSON, SSE, and existing MySQL compatibility. Follow the established layering: cmd/server/main.go entry point, Gin router/handlers, internal/service business logic, internal/models GORM entities, internal/db DB setup/access, internal/gateway forwarding, internal/registry and config/*.yaml configuration, and internal/rag. Reuse existing structs, DTOs, services, utilities, and errors before writing new code; do not duplicate wheels. Add a new abstraction only when reuse cannot work, and explain why in the final response. Write concise Go comments only for business rules, compatibility, transaction boundaries, or security. Place tests in same-package *_test.go files, run go test ./..., introduce no undeclared dependencies, and use transactions only for multi-step atomic writes.
+Before implementation, locate the actual worktree and read AGENTS.md, docs/agents/domain.md, README.md, progress.md, feature_list.json, and recent commits. Follow repository initialization/verification without starting the service; preserve unrelated changes. Database, migration, entity, enum, timestamp or user-association work requires fully reading docs/conventions/database-standards.md, applying its checklist and reporting conflicts before changing established contracts.
+
+Follow current Go layering in docs/agents/domain.md: cmd/server/main.go and internal/app composition, router/middleware/handler HTTP boundaries, internal/service business rules, internal/dto public responses, models/db/persistence entities/connections/audit helpers, internal/config settings, internal/whitelabel fixed JieKou upstream/SSE, and cmd/migrate and internal/migration explicit schema changes. Reuse existing helpers before adding abstractions and explain necessary new abstractions.
+
+Preserve username/session authentication, short Access JWTs, Secure/HttpOnly/SameSite cookies, trusted HTTPS Origins, Redis revocation/rate-limit/refresh coordination and persistent RBAC. Do not restore retired phone/fixed-login routes or allow ADMIN_TOKEN to bypass session RBAC. Root requires explicitly authorized isolated cmd/bootstrap-root initialization, never service startup or ROOT_BOOTSTRAP_ environment injection. Never log or commit credentials, tokens, cookies, database URLs or production environment contents.
+
+Keep string snowflake GUIDs in DTOs and users.id/user_id internally; preserve millisecond audit timestamps, stable integer enums, soft deletes and explicit GORM mappings. Do not substitute SQLite/AutoMigrate for MySQL 8 validation, edit applied migrations or implicitly change permanent username uniqueness. Transactions and locks must match atomicity/concurrency requirements.
+
+Add focused regression tests; run go test ./... -count=1, go vet ./..., git diff --check and relevant script regressions. Integration requires explicit isolated TEST_DATABASE_URL/TEST_REDIS_URL targets, never production URLs or production .env. Report skips separately from passed acceptance. Implementation permission does not authorize production deployment, migration, Root bootstrap, rollback, credential rotation, push or destructive cleanup. Report changed files, commands/results, database checklist and remaining risks.
 """

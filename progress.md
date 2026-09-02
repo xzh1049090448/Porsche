@@ -201,3 +201,11 @@
 - 最终完整 Shell 隔离矩阵、production/restart/Nginx 回归、Go 全量测试、
   `go vet ./...`、`bash -n`、JSON 和 diff 检查通过。`go-006` 更新为 `passing`；
   当前没有 `in_progress` 条目。
+
+## Agent 说明同步（2026-09-02）
+
+- 对齐已发布的用户名认证、可撤销会话、RBAC 和固定白牌上游架构，更新五个 `.codex/agents/*.toml` 及 `docs/agents/domain.md`；角色名称、模型、推理强度、sandbox 模式及配置键保持不变。
+- 移除旧架构引用与 SQLite 测试假设，补充 MySQL 8/Redis 隔离、one-shot Root、GUID/显式迁移、最终 diff 安全审查、凭据保护及生产/验收部署回滚边界。缺少集成 fixture 时必须明确报告跳过，不能算验收通过。
+- 初次编辑保留了本地旧 main 的既有修改。用户随后明确要求推送远端 main，因此从 `origin/main` 的 `90abbdc49513039fa9218a6ce72d3147fbf1721e` 创建隔离提交，只收录本次六个说明文件、实施计划和本节记录；不包含遗留文档提交、旧 PRD 或其他无关文件。
+- 最新 main 基线及修改后的 `GOCACHE=/private/tmp/porsche-go-build-cache bash ./init.sh`、`go test ./... -count=1`、`go build ./...`、`go vet ./...`（均使用该 GOCACHE）和 `git diff --check` 验证通过。TOML 校验器确认 5 个文件可解析、非说明设置与 Git 原件一致、34 个代码路径存在、文档链接有效；负向探针拒绝损坏 TOML 和 sandbox 模式变化。
+- 未修改业务代码、数据库规范或业务功能状态；未执行生产操作、读取生产凭据或启动 Agent。语法/静态检查不代表当前会话已重新加载角色，也不代表模型执行行为已验证。计划见 `docs/superpowers/plans/2026-09-02-agent-guidance-refresh.md`。
