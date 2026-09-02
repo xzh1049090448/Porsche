@@ -46,10 +46,12 @@
       "area": "user-registration-management",
       "title": "PRD-260828 用户注册管理一期",
       "user_visible_behavior": "以用户名密码、短期 Access JWT 与服务端可撤销会话替代当前手机号/长期 JWT 认证，并提供基础角色门禁。",
-      "status": "in_progress",
+      "status": "passing",
       "verification": [
-        "go test ./internal/config -count=1",
-        "后续阶段执行真实隔离 MySQL 8 与 Redis 集成测试、go test ./...、go vet ./... 及前端测试/构建"
+        "bash deploy/test-auth-acceptance-deploy.sh",
+        "bash deploy/test-production-deploy.sh && bash deploy/test-restart-all.sh && bash deploy/nginx/test-aiportcloud-conf.sh",
+        "GOCACHE=/private/tmp/porsche-go-build-cache go test ./... -count=1 && GOCACHE=/private/tmp/porsche-go-build-cache go vet ./...",
+        "真实测试机 MySQL 8 migration 0002、Redis、Root one-shot bootstrap、候选部署及 https://aiportcloud.com 浏览器登录/刷新/会话 IP/登出验收"
       ],
       "evidence": [
         "2026-08-28：Task 1 已完成生产认证配置、文档与追踪；GOCACHE=/private/tmp/porsche-go-build-cache go test ./internal/config -count=1、git diff --check 与允许回环监听的 go test ./... -count=1 均通过。",
@@ -61,9 +63,10 @@
         "2026-08-31：测试验收新增受控 MySQL/Redis HTTP 集成回归，拒绝非 *_test/porsche_test 数据库。覆盖注册、登录、Refresh Cookie/Origin/SID 绑定、会话撤销、登出和管理员严格角色层级及 DTO 脱敏；当前 TEST_DATABASE_URL/TEST_REDIS_URL 未提供，用例按安全规则显式跳过，未读取 .env、DATABASE_URL 或生产凭据。定向 handler/dto/middleware 测试、go vet 与 diff 检查通过。",
         "2026-09-01：新增生产域认证验收工具：内部持久化 Redis bootstrap、显式确认 schema 迁移、feature 分支候选部署与 manifest 回滚。Shell 行为测试仅在无网络、无 Docker socket、只挂载临时 fixture 的 bash:5.2 容器中执行，不再以手写 Shell 词法扫描器作为安全边界；新旧 Shell 回归、Nginx 静态检查、go test ./... -count=1、go vet ./... 与 git diff --check 通过。",
     "2026-09-01：安全返工证据：Root runtime environment startup 已退役，生产服务拒绝任何 ROOT_BOOTSTRAP_ key 且从不自动引导；唯一引导是 Root-controlled one-shot wrapper。deploy 与 rollback 在 npm/build、Nginx、container stop/remove/rename、rsync/static write 前 fail-closed 扫描 docker ps -a 中 exact ai-gateway-go 和 ai-gateway-go-acceptance-rollback-<digits> 的运行/停止容器；manifest target 不在列表时仍显式 inspect。disposable no-network fixture 已通过 docs/deploy/rollback：覆盖 current/stopped rollback Root key、inspect/list error、helper 排除和输出/argv 脱敏。真实 test machine one-shot、candidate deploy、browser acceptance 仍 pending，生产验收不得标为 passing。",
-        "尚未在真实隔离 MySQL 8/Redis 执行认证 HTTP 集成测试；浏览器与前端生产域验证仍未开始；本沙箱未加筛选的 handler/service 测试受既有 httptest IPv6 listener 限制影响。"
+        "2026-09-02：真实测试机完成 MySQL 8 migration 0002、认证 Redis、一次性 Root 引导及候选部署。修复 Session.SID 被 GORM 错映射为 s_id 的生产故障后，Root login/self/refresh/session revoke/logout 依次返回 200/200/200/204/204，登出后受保护请求返回 401，数据库活跃 Root 会话归零。",
+        "2026-09-02：生产域浏览器验收通过：HTTP 由 Cloudflare 301 到 HTTPS，可信链限定为 Cloudflare 官方网段到 Nginx real-IP、再由应用仅信任 Docker gateway 172.19.0.1/32；刷新保持登录，当前设备展示真实客户端 IP，退出后 active_root_sessions=0。严格 umask 导致的静态 403 已恢复并在两个发布入口补充 0755/0644 回归，源站及公网 health、/、/profile、/api-keys 均返回预期状态。最终 Shell 隔离矩阵、既有部署/Nginx 回归、Go 全量测试、go vet、bash -n、JSON 与 diff 检查通过。"
       ],
-  "notes": "必须保持唯一 in_progress。用户、会话与认证审计的数据库变更仅能在后续 Task 2 通过显式、可审查的 MySQL 迁移实施。2026-09-01 的 Root 引导安全返工不替代真实生产域验收；仅在 Root 计数为 1、临时容器已消失、deploy/rollback 对所有相关运行和停止容器的 inspect 不含 ROOT_BOOTSTRAP_，且浏览器验收完成后，才可评估后续状态。Root-control path metadata 是 one-shot wrapper 的边界；candidate deploy 仅以 regular non-symlink .env source 建立并复核 private snapshot。"
+      "notes": "生产验收已通过。Root-control path metadata 仍是 one-shot wrapper 的边界；candidate deploy 仅以 regular non-symlink .env source 建立并复核 private snapshot。应用与前端回滚状态继续保留，数据库 migration 0002 不由应用回滚自动撤销。"
     },
     {
       "id": "go-005",

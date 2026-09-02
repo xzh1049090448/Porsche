@@ -187,5 +187,17 @@
 - `auth-acceptance-deploy.sh` 与常规 `restart-all.sh` 现在都在发布前规范化私有
   stage tree 的目录/文件权限，不再继承调用者或构建工具的 restrictive umask。
   两套行为测试均以 `0700` 目录和 `0600` 文件复现 RED，并验证发布后分别为
-  `0755` 与 `0644`。浏览器真实客户端 IP 展示及最终登出清理仍待确认，
-  `go-006` 保持 `in_progress`。
+  `0755` 与 `0644`。
+
+## 用户注册管理一期生产验收完成（2026-09-02）
+
+- 测试机已完成 MySQL 8 migration 0002、认证 Redis、一次性 Root 引导和候选部署；
+  Root login/self/refresh/session revoke/logout 的真实 HTTP 链路通过，刷新保持登录，
+  退出后受保护请求返回 401，活跃 Root 会话计数为 0。
+- Cloudflare 已强制 HTTP 跳转 HTTPS；Nginx 只从 Cloudflare 官方代理网段接受
+  `CF-Connecting-IP`，应用只信任实际 Docker gateway `172.19.0.1/32`，浏览器
+  当前设备展示的 IP 与真实客户端 IP 一致。源站及公网 health 均正常，SPA 首页、
+  profile 与 api-keys 路由恢复为 200。
+- 最终完整 Shell 隔离矩阵、production/restart/Nginx 回归、Go 全量测试、
+  `go vet ./...`、`bash -n`、JSON 和 diff 检查通过。`go-006` 更新为 `passing`；
+  当前没有 `in_progress` 条目。
