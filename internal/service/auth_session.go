@@ -200,6 +200,11 @@ func (s *SessionService) Refresh(ctx context.Context, refreshToken string) (*Iss
 	if err != nil {
 		return nil, err
 	}
+	// Replay commits revocation and its audit without rotating. Return 401 here;
+	// returning it inside the transaction would roll back those security writes.
+	if rotated == nil {
+		return nil, errUnauthorized("刷新凭据无效")
+	}
 	if _, found, err := s.redis.RecoverRotationResult(ctx, sid, rotated.Session.RefreshHMAC, time.Duration(s.settings.RefreshReplaySeconds)*time.Second); err != nil || !found {
 		if err != nil {
 			return nil, err

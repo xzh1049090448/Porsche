@@ -36,17 +36,18 @@ func TestUsernameRegistrationPermanentlyReservesTrimmedUsername(t *testing.T) {
 	prepareAuthRegistrationSchema(t, db)
 	auth := NewAuthService(&config.Settings{RegisterEnabled: true, PasswordRegisterEnabled: true}, nil, db)
 	auth.SetSessionService(NewSessionService(db, redisStore, testSessionSettings()))
-	created, err := auth.RegisterUsername(context.Background(), "  permanent_user  ", "Str0ng!pw", nil)
+	username := fixtureUsername(testSnowflake.Next())
+	created, err := auth.RegisterUsername(context.Background(), "  "+username+"  ", "Str0ng!pw", nil)
 	if err != nil {
 		t.Fatalf("register username: %v", err)
 	}
-	if created.Username == nil || *created.Username != "permanent_user" || created.Phone != nil || created.PasswordHash == nil || !strings.HasPrefix(*created.PasswordHash, "$argon2id$") {
+	if created.Username == nil || *created.Username != username || created.Phone != nil || created.PasswordHash == nil || !strings.HasPrefix(*created.PasswordHash, "$argon2id$") {
 		t.Fatalf("unsafe username registration result: %#v", created)
 	}
 	if err := db.Model(&models.User{}).Where("id = ?", created.ID).Updates(map[string]any{"is_deleted": 1}).Error; err != nil {
 		t.Fatal(err)
 	}
-	if _, err := auth.RegisterUsername(context.Background(), "permanent_user", "Str0ng!pw", nil); err == nil {
+	if _, err := auth.RegisterUsername(context.Background(), username, "Str0ng!pw", nil); err == nil {
 		t.Fatal("tombstoned username was reused")
 	}
 }
@@ -140,7 +141,7 @@ func equalStringPointer(left, right *string) bool {
 }
 
 func TestRootBootstrapCreatesOnlyTheFirstRoot(t *testing.T) {
-	db := openTestMySQL(t)
+	db := openRootTestMySQL(t)
 	prepareAuthRegistrationSchema(t, db)
 	settings := &config.Settings{RootBootstrapUsername: "initial_root", RootBootstrapPassword: "Str0ng!Root1"}
 	auth := NewAuthService(settings, nil, db)
@@ -163,7 +164,7 @@ func TestRootBootstrapCreatesOnlyTheFirstRoot(t *testing.T) {
 }
 
 func TestRootBootstrapDoesNotReplaceTombstonedRoot(t *testing.T) {
-	db := openTestMySQL(t)
+	db := openRootTestMySQL(t)
 	prepareAuthRegistrationSchema(t, db)
 	username := "retired_root"
 	now := persistence.NowMillis()
@@ -175,6 +176,13 @@ func TestRootBootstrapDoesNotReplaceTombstonedRoot(t *testing.T) {
 	created, err := auth.BootstrapRoot(context.Background())
 	if err != nil || created != nil {
 		t.Fatalf("tombstoned Root must permanently consume bootstrap: %#v, %v", created, err)
+	}
+	var roots []models.User
+	if err := db.Where("role = ?", models.UserRoleRoot).Find(&roots).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(roots) != 1 || roots[0].ID != retired.ID || roots[0].Guid != retired.Guid || roots[0].IsDeleted != 1 {
+		t.Fatalf("only Root must remain this test's tombstone: %#v", roots)
 	}
 }
 

@@ -113,17 +113,20 @@ func TestRefreshRotationReplayOutsideWindowRevokesSession(t *testing.T) {
 	settings := testSessionSettings()
 	settings.RefreshReplaySeconds = 1
 	sessions := NewSessionService(db, redisStore, settings)
+	now := time.Now().UTC().UnixMilli()
+	sessions.now = func() int64 { return now }
 	ctx := context.Background()
 	issued, err := sessions.Create(ctx, user, SessionCreateInput{LoginMethod: models.LoginMethodPassword, IP: "198.51.100.22"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := sessions.Refresh(ctx, issued.RefreshToken); err != nil {
+	rotated, err := sessions.Refresh(ctx, issued.RefreshToken)
+	if err != nil {
 		t.Fatalf("first refresh: %v", err)
 	}
-	time.Sleep(1100 * time.Millisecond)
-	if _, err := sessions.Refresh(ctx, issued.RefreshToken); err == nil {
-		t.Fatal("refresh replay outside the concurrent window must fail")
+	now += int64(settings.RefreshReplaySeconds)*1000 + 1
+	if result, err := sessions.Refresh(ctx, issued.RefreshToken); result != nil || !isUnauthorized(err) {
+		t.Fatalf("refresh replay = %v, %v; want nil, HTTP 401", result, err)
 	}
 	var stored models.Session
 	if err := db.Where("guid = ? AND is_deleted = 0", issued.Session.Guid).First(&stored).Error; err != nil {
@@ -131,6 +134,67 @@ func TestRefreshRotationReplayOutsideWindowRevokesSession(t *testing.T) {
 	}
 	if stored.RevokedAt == nil {
 		t.Fatal("refresh replay did not revoke session")
+	}
+	if revoked, err := redisStore.IsSessionRevoked(ctx, issued.Session.SID); err != nil || !revoked {
+		t.Fatalf("replay denial barrier = %t, %v; want true, nil", revoked, err)
+	}
+	for _, token := range []string{issued.RefreshToken, rotated.RefreshToken} {
+		if result, err := sessions.Refresh(ctx, token); result != nil || !isUnauthorized(err) {
+			t.Fatalf("revoked refresh = %v, %v; want nil, HTTP 401", result, err)
+		}
+	}
+	assertChangePasswordAuditCount(t, db, user.ID, models.AuthAuditEventReplayRevoked, 1)
+}
+
+// A real MySQL audit rejection must roll back the revocation but must not
+// remove the Redis barrier that already prevents either token being reused.
+func TestRefreshReplayAuditFailureRollsBackMySQLAndRetainsRedisBarrier(t *testing.T) {
+	redisStore := openTestAuthRedis(t)
+	db := openTestMySQL(t)
+	prepareAuthSessionSchema(t, db)
+	user := createAuthSessionTestUser(t, db)
+	settings := testSessionSettings()
+	sessions := NewSessionService(db, redisStore, settings)
+	now := time.Now().UTC().UnixMilli()
+	sessions.now = func() int64 { return now }
+	ctx := context.Background()
+	issued, err := sessions.Create(ctx, user, SessionCreateInput{LoginMethod: models.LoginMethodPassword})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rotated, err := sessions.Refresh(ctx, issued.RefreshToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	constraint := fmt.Sprintf("chk_replay_audit_%d", testSnowflake.Next())
+	if err := db.Exec(fmt.Sprintf("ALTER TABLE auth_audit_events ADD CONSTRAINT %s CHECK (user_id <> %d OR event_type <> %d)", constraint, user.ID, models.AuthAuditEventReplayRevoked)).Error; err != nil {
+		t.Fatalf("add replay audit failure constraint: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Exec("ALTER TABLE auth_audit_events DROP CHECK " + constraint).Error; err != nil {
+			t.Errorf("drop replay audit failure constraint: %v", err)
+		}
+	})
+	now += int64(settings.RefreshReplaySeconds)*1000 + 1
+	if result, err := sessions.Refresh(ctx, issued.RefreshToken); result != nil || err == nil || !strings.Contains(err.Error(), constraint) {
+		t.Fatalf("replay audit rejection = %v, %v; want propagated constraint error", result, err)
+	}
+	var stored models.Session
+	if err := db.Where("id = ? AND is_deleted = 0", issued.Session.ID).First(&stored).Error; err != nil {
+		t.Fatal(err)
+	}
+	if stored.RevokedAt != nil || stored.SessionVersion != rotated.Session.SessionVersion || stored.RefreshHMAC != rotated.Session.RefreshHMAC {
+		t.Fatal("failed replay audit partially committed session mutation")
+	}
+	assertChangePasswordAuditCount(t, db, user.ID, models.AuthAuditEventReplayRevoked, 0)
+	assertChangePasswordAuditCount(t, db, user.ID, models.AuthAuditEventRefreshSucceeded, 1)
+	if revoked, err := redisStore.IsSessionRevoked(ctx, issued.Session.SID); err != nil || !revoked {
+		t.Fatalf("failed replay audit lost denial barrier: revoked=%t err=%v", revoked, err)
+	}
+	for _, token := range []string{issued.RefreshToken, rotated.RefreshToken} {
+		if result, err := sessions.Refresh(ctx, token); result != nil || !isUnauthorized(err) {
+			t.Fatalf("denied refresh = %v, %v; want nil, HTTP 401", result, err)
+		}
 	}
 }
 

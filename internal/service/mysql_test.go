@@ -101,6 +101,15 @@ func openTestMySQL(t *testing.T) *gorm.DB {
 	if err != nil {
 		t.Fatal(err)
 	}
+	sqlDB, err := gdb.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := sqlDB.Close(); err != nil {
+			t.Errorf("close test MySQL connection: %v", err)
+		}
+	})
 	var currentDatabase string
 	if err := gdb.Raw("SELECT DATABASE()").Scan(&currentDatabase).Error; err != nil || !isSafeTestDatabaseName(currentDatabase) {
 		t.Fatal("TEST_DATABASE_URL must connect to a dedicated *_test or porsche_test database")

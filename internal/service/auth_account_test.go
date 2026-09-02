@@ -97,7 +97,7 @@ func TestChangePasswordRejectsRedisDenyFailureWithoutMutation(t *testing.T) {
 func TestChangePasswordRollsBackMySQLWhenPasswordAuditWriteFails(t *testing.T) {
 	ctx, db, redisStore, auth, user, issued := changePasswordFixture(t)
 	constraint := fmt.Sprintf("chk_change_password_audit_%d", testSnowflake.Next())
-	if err := db.Exec(fmt.Sprintf("ALTER TABLE auth_audit_events ADD CONSTRAINT %s CHECK (event_type <> %d)", constraint, models.AuthAuditEventPasswordChanged)).Error; err != nil {
+	if err := db.Exec(fmt.Sprintf("ALTER TABLE auth_audit_events ADD CONSTRAINT %s CHECK (user_id <> %d OR event_type <> %d)", constraint, user.ID, models.AuthAuditEventPasswordChanged)).Error; err != nil {
 		t.Fatalf("add isolated password audit failure constraint: %v", err)
 	}
 	t.Cleanup(func() {

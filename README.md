@@ -111,6 +111,18 @@ go run ./cmd/server
 go test ./...
 ```
 
+完整集成测试需要显式设置 `TEST_DATABASE_URL`（专用 `*_test` 库）和
+`TEST_REDIS_URL`，仅指向可丢弃的 MySQL 8 / Redis 测试实例；未设置时相关测试会
+跳过，不能视为完整验收。不要使用生产连接或生产凭据。
+
+Root 引导测试会在该测试 MySQL 上创建随机命名的 `porsche_root_*_test` 临时库，
+因此测试账号需要在测试实例上有相应的 CREATE/DROP 权限；权限不足会使测试失败，
+不会回退到共享库或跳过。清理仅删除用例成功创建的临时库，保留原测试库及其数据。
+其他用例使用唯一身份及用户级故障注入，不需要清空共享数据库或 Redis。
+
+设置上述 TEST_* 后，可用 `go test -p 1 ./... -count=1` 执行全量，随后在同一测试
+实例上运行 `go test -p 1 ./... -count=2 -shuffle=on` 检查重复与顺序依赖。
+
 ## Docker
 
 ```bash
