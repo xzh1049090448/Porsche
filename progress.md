@@ -2,7 +2,38 @@
 
 ## 当前唯一活动功能
 
-`go-006`：用户注册管理一期（`in_progress`）。Task 1–5 已完成配置、认证 schema、可撤销会话、用户名/RBAC 与 HTTP 端点；真实隔离 MySQL/Redis HTTP 验收及前端尚未完成。
+当前无实现中的功能。`go-007` 已完成本地修复和真实 MySQL/Redis 全量、重复、竞态验证，状态为 `passing`；尚未推送、合并或部署。`go-004` 仍待真实上游验收。
+
+## Refresh 与测试隔离修复完成（2026-09-03，开始于 2026-09-02）
+
+- 唯一生产代码改动为 `SessionService.Refresh` 事务后的空轮换结果检查：成功提交重放撤销和审计后返回 401，保留 Redis 否决优先及依赖错误传播。没有修改 schema、迁移、Redis 协议或 API 契约。
+- 真实 TLS HTTP 回归先 RED：窗口外重放返回 500；修复后验证注册 201、登录/轮换 200、旧/重复/新 Refresh 与对应 Access 均 401，同时确认 MySQL 撤销、精确一次审计和 Redis 栅栏。Service 回归使用受控时钟，并覆盖审计约束失败时 MySQL 回滚而 Redis 继续拒绝令牌。
+- Root 引导用例使用随机、独占创建的临时数据库，关闭连接后仅删除本次创建的库；隔离测试验证父库 sentinel 保留。其他用例使用唯一用户名/IP/SID，密码审计 CHECK 限定目标用户，未清空共享测试库或 Redis。
+- 本任务新建的 MySQL 8.0.46 / Redis 7 中：全量 `go test -json -p 1 ./... -count=1` 为 247 个通过事件（含子测试），0 失败、0 跳过；不清空数据再运行 `-count=2 -shuffle=on` 得到 494 通过；认证专项 `-race -p 1 -count=3` 得到 60 通过，均无失败/跳过。build、vet、diff、JSON 检查通过。
+- 独立设计审查与质量/安全审查均通过；质量审查另独立执行四项关键回归及 Root 子测试通过。完整命令、RED/GREEN 与清理证据见 `docs/superpowers/reports/2026-09-02-refresh-replay-test-isolation.md`。
+- 本任务两个一次性依赖容器已按精确 ID 核验并清理，临时测试数据已销毁；没有操作用户原有容器、命名卷、主工作树或生产服务。仅保留本地分支与提交。真实 JieKou 上游验收、远端推送/合并、生产发布均未执行。
+
+## Refresh 与测试隔离设计（2026-09-02）
+
+- 已核实成功撤销的事务必须先提交，再返回 401，避免将撤销和审计回滚。设计采用业务最小修复、Root 专用临时库、其他测试唯一标识与目标用户级故障约束，不更改生产 Redis 键规则。
+- 设计：`docs/superpowers/specs/2026-09-02-refresh-replay-test-isolation-design.md`。本轮尚未修改业务代码或测试；未新建依赖容器、未访问生产服务。
+- `GOCACHE=/private/tmp/porsche-go-build-cache bash ./init.sh` 通过（未注入 TEST_*，存在集成测试跳过/缓存，不能替代新设计要求的完整验证）。只做本地文档提交，不推送、合并或部署。
+
+## 测试基线修复（2026-09-02，用户批准继续）
+
+- 仅修改四个 `_test.go`：MySQL 返回 `DATA_TYPE / IS_NULLABLE` 大写列标签，原 GORM 小写映射读为空，改用 positional `Row().Scan`，保留类型/nullable 断言且无行时报错。两处 `session_user_` / `disabled_user_` 长前缀改用共用 `fixtureUsername`（`u%019d`），保留完整 Snowflake、20 字符上限及小 ID 最小长度。
+- 三项原始集成回归先在独立 MySQL 8.0.46/Redis 7 中复现失败，再修复通过；新增 ID 边界、唯一性和可逆性回归。四项测试 `-race -count=3` 通过，`go build ./...`、`go vet ./...` 与 `git diff --check` 通过。未改业务代码、迁移、生产 `.env`、前端或跳过规则。
+- 全新库 `porsche_baseline_clean_test` 下全量仍失败（225 pass 事件含子测试、0 skip）：审计故障注入的全表 CHECK 被其他测试留下的 password-changed 行阻止；Root bootstrap 测试遇到前面测试创建的 Root；Refresh 过期重放单独运行也在 `auth_session.go:203` nil dereference。后者因撤销事务成功后 `rotated` 仍为空，随后访问 `rotated.Session`。无生产复现或部署操作。
+- 当前只保存已批准的两类测试修复，新失败不通过改断言、放宽 schema 或隐藏用例来绕过。完整命令与输出见 `docs/superpowers/reports/2026-09-02-backend-test-baseline.md`；下一步需批准修复 Refresh 业务分支及测试隔离。
+
+## Open issues 核验（2026-09-02）
+
+- 基线为 `origin/main` 的 `4da0dba8b1175d2accfe91080723c64b54eceb4d`；本轮未修改业务实现、生产配置或迁移，也未关闭远端 Issue。
+- `GOCACHE=/private/tmp/porsche-go-build-cache bash ./init.sh` 通过；默认未注入测试数据库时会跳过数据库集成用例，不等于完整集成验收。
+- 新建本地、仅回环发布端口的 disposable MySQL 8.0.46（tmpfs 数据目录、`porsche_issue2_test`）与 Redis 7 fixture；仅设置显式 `TEST_DATABASE_URL` / `TEST_REDIS_URL`，未读取生产 `.env` 或访问生产服务。
+- `go test -p 1 ./internal/whitelabel ./internal/handler -run 'Slash|CatalogWithEmpty|PatternAllowlist|ModelACL' -count=1 -v`：13 个顶层专项测试通过且无跳过，覆盖 slash ID、URL 编码、空上游目录数组、精确 ACL、用户/Token 拒绝时不访问上游。`go vet ./...` 通过。
+- `go test -p 1 ./... -count=1`（同一隔离 MySQL/Redis）**失败**，不能标为全量通过：`internal/migration/runner_test.go` 的 `assertColumn` 扫描结果为空，而直接 SQL 查询 `users.username` 返回 `varchar / YES`；`internal/service` 多项测试生成 `session_user_<18位GUID>` 或 `disabled_user_<18位GUID>`，超过 schema 的 `VARCHAR(20)`，报 MySQL 1406。两类均已在未改业务代码的 main 基线上复现；另开测试基线修复任务处理，不放宽生产 schema。
+- Issue #2 仍待经授权的真实上游目录、详情、Chat/SSE 验收；本轮证据不代表这些外部验收已完成。
 
 ## 用户注册管理一期 Task 1（2026-08-28）
 

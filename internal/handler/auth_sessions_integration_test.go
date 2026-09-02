@@ -2,6 +2,7 @@ package handler
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -23,14 +24,15 @@ func TestAuthSessionHTTPFlow(t *testing.T) {
 	engine := gin.New()
 	RegisterAuth(engine, state)
 
-	register := authJSONRequest(http.MethodPost, "/api/v1/auth/register", `{"username":"http_flow_user","password":"Str0ng!Pass1","nickname":"HTTP User"}`)
+	username := fmt.Sprintf("u%019d", platformTestSnowflake.Next())
+	register := authJSONRequest(http.MethodPost, "/api/v1/auth/register", `{"username":"`+username+`","password":"Str0ng!Pass1","nickname":"HTTP User"}`)
 	registerRec := serveAuthRequest(engine, register)
 	if registerRec.Code != http.StatusCreated {
 		t.Fatalf("register status=%d body=%s", registerRec.Code, registerRec.Body.String())
 	}
 	assertAuthResponseHasNoSecrets(t, registerRec.Body.Bytes())
 
-	accessA, cookieA := authHTTPLogin(t, engine, "http_flow_user", "Str0ng!Pass1")
+	accessA, cookieA := authHTTPLogin(t, engine, username, "Str0ng!Pass1")
 	sidA := refreshSID(t, cookieA)
 	assertAccessSID(t, state, accessA, sidA)
 
@@ -42,7 +44,7 @@ func TestAuthSessionHTTPFlow(t *testing.T) {
 	}
 	assertAuthResponseHasNoSecrets(t, selfRec.Body.Bytes())
 
-	accessB, _ := authHTTPLogin(t, engine, "http_flow_user", "Str0ng!Pass1")
+	accessB, _ := authHTTPLogin(t, engine, username, "Str0ng!Pass1")
 	sessions := authJSONRequest(http.MethodGet, "/api/v1/auth/sessions", "")
 	sessions.Header.Set("Authorization", "Bearer "+accessA)
 	sessionsRec := serveAuthRequest(engine, sessions)

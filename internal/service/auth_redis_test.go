@@ -2,12 +2,15 @@ package service
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"net"
 	"os"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/porsche/ai-gateway-go/internal/security"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -17,8 +20,12 @@ import (
 func TestLoginRateLimitRejectsFifthLoginFailure(t *testing.T) {
 	redisStore := openTestAuthRedis(t)
 	ctx := context.Background()
-	username := "rate-limit-user-" + strconv.FormatInt(time.Now().UnixNano(), 10)
-	ip := "198.51.100.10"
+	var identity [16]byte
+	if _, err := rand.Read(identity[:]); err != nil {
+		t.Fatal(err)
+	}
+	username := "rate-limit-user-" + hex.EncodeToString(identity[:])
+	ip := net.IP(identity[:]).String()
 
 	for attempt := 1; attempt <= 4; attempt++ {
 		if err := redisStore.RecordLoginFailure(ctx, username, ip); err != nil {
@@ -78,7 +85,10 @@ func openTestAuthRedis(t *testing.T) *AuthRedis {
 func TestAuthRedisPendingRotationCanBeRecoveredAfterPublishFailure(t *testing.T) {
 	redisStore := openTestAuthRedis(t)
 	ctx := context.Background()
-	const sid = "4fa4c35d-851d-4ef7-864c-9eb6e1cb91d4"
+	sid, err := security.NewSessionSID()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := redisStore.StorePendingRotation(ctx, sid, "target-hmac", sid+".new-refresh-secret", time.Second); err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +104,10 @@ func TestAuthRedisPendingRotationCanBeRecoveredAfterPublishFailure(t *testing.T)
 func TestAuthRedisGenerationNeverReturnsStaleRotationResult(t *testing.T) {
 	redisStore := openTestAuthRedis(t)
 	ctx := context.Background()
-	const sid = "1f66b061-93f7-4a12-94f2-dfc8df24e07b"
+	sid, err := security.NewSessionSID()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := redisStore.StorePendingRotation(ctx, sid, "hmac-b", sid+".B", time.Second); err != nil {
 		t.Fatal(err)
 	}
