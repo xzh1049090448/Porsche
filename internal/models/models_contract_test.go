@@ -2,7 +2,10 @@ package models
 
 import (
 	"reflect"
+	"sync"
 	"testing"
+
+	"gorm.io/gorm/schema"
 )
 
 // TestPersistedModelsUseRequiredIdentityAndAuditColumns protects the MySQL
@@ -106,6 +109,21 @@ func TestAuthPersistedModelsContract(t *testing.T) {
 		if !ok || field.Tag.Get("json") != "-" {
 			t.Errorf("Session.%s must be a non-serializable HMAC field", expected)
 		}
+	}
+}
+
+func TestSessionSIDMapsToMigratedColumn(t *testing.T) {
+	parsed, err := schema.Parse(&Session{}, &sync.Map{}, schema.NamingStrategy{})
+	if err != nil {
+		t.Fatalf("parse Session schema: %v", err)
+	}
+
+	field := parsed.LookUpField("SID")
+	if field == nil {
+		t.Fatal("Session schema is missing SID")
+	}
+	if field.DBName != "sid" {
+		t.Fatalf("Session.SID database column = %q, want migrated column sid", field.DBName)
 	}
 }
 

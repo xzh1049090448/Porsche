@@ -167,3 +167,13 @@
 ## 下一步（部署冒烟）
 
 在具备部署环境的白牌配置后，完成真实上游目录、Chat 与 SSE 冒烟。
+
+## 认证会话列名修复（2026-09-02）
+
+- 测试机 Root 登录沿服务链定位到 `SessionService.Create`：MySQL 返回 1054，
+  GORM 将 `Session.SID` 推导为 `s_id`，但已应用的 0002 migration 正确创建的是
+  `user_sessions.sid`。模型现显式声明 `column:sid`，不修改生产数据库以兼容错误列名。
+- 新增 GORM schema contract 回归测试，修复前稳定得到 `s_id` 并失败，修复后定向
+  models/service 测试、全量 `go test ./... -count=1`、`go vet ./...` 和
+  `git diff --check` 通过。仍需在测试机重新部署候选并完成 Root 登录/登出浏览器验收，
+  因此 `go-006` 继续保持 `in_progress`。

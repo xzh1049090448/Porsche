@@ -306,7 +306,7 @@ type User struct {
 type Session struct {
 	ID int64 `gorm:"primaryKey;type:bigint" json:"-"`
 	AuditFields
-	SID                      string      `gorm:"size:36;not null;uniqueIndex" json:"-"`
+	SID                      string      `gorm:"column:sid;size:36;not null;uniqueIndex" json:"-"`
 	UserID                   int64       `gorm:"type:bigint;not null;index" json:"-"`
 	LoginMethod              LoginMethod `gorm:"type:int;not null" json:"-"`
 	IP                       *string     `gorm:"size:64" json:"-"`
