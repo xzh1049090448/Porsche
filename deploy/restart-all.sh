@@ -76,6 +76,9 @@ cleanup_stage() {
 trap cleanup_stage EXIT
 
 rsync --archive --delete --delay-updates "$FRONTEND_DIR/dist/" "$stage_dir/"
+# Do not publish caller/build-tool umask into the Nginx document root.
+find "$stage_dir" -type d -exec chmod 0755 {} +
+find "$stage_dir" -type f -exec chmod 0644 {} +
 rsync --archive --delete --delay-updates "$stage_dir/" "$FRONTEND_ROOT/"
 
 systemctl reload nginx

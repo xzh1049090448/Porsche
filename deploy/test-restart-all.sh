@@ -50,6 +50,11 @@ EOF
 cat >"$mock_bin/rsync" <<'EOF'
 #!/usr/bin/env bash
 printf 'rsync %s\n' "$*" >>"$COMMAND_LOG"
+if [[ "${MOCK_RSYNC_COPY:-0}" == 1 ]]; then
+  source="${@: -2:1}"
+  destination="${@: -1}"
+  /bin/cp -a "${source%/}/." "${destination%/}/"
+fi
 EOF
 cat >"$mock_bin/nginx" <<'EOF'
 #!/usr/bin/env bash
@@ -111,6 +116,29 @@ assert_happy_path_ordering() {
     assert_before 'nginx -t' 'systemctl reload nginx'
 }
 
+assert_frontend_permissions_are_normalized() {
+    local path
+    mode_for() {
+        path="$1"
+        stat -f '%Lp' "$path" 2>/dev/null || stat -c '%a' "$path"
+    }
+
+    mkdir -p "$frontend_dir/dist/assets"
+    printf 'fixture-asset\n' >"$frontend_dir/dist/assets/app.js"
+    chmod 700 "$frontend_dir/dist" "$frontend_dir/dist/assets"
+    chmod 600 "$frontend_dir/dist/index.html" "$frontend_dir/dist/assets/app.js"
+
+    MOCK_RSYNC_COPY=1 run_script
+
+    [[ "$(mode_for "$frontend_root")" == 755 ]] || fail 'restart retained a restrictive frontend root mode'
+    [[ "$(mode_for "$frontend_root/index.html")" == 644 ]] || fail 'restart retained a restrictive index.html mode'
+    [[ "$(mode_for "$frontend_root/assets")" == 755 ]] || fail 'restart retained a restrictive asset directory mode'
+    [[ "$(mode_for "$frontend_root/assets/app.js")" == 644 ]] || fail 'restart retained a restrictive asset file mode'
+
+    chmod 755 "$frontend_dir/dist" "$frontend_dir/dist/assets" "$frontend_root" "$frontend_root/assets"
+    chmod 644 "$frontend_dir/dist/index.html" "$frontend_dir/dist/assets/app.js" "$frontend_root/index.html" "$frontend_root/assets/app.js"
+}
+
 assert_frontend_failure_stops_before_backend() {
     if MOCK_NPM_RESULT=failure run_script; then fail 'npm failure unexpectedly succeeded'; fi
     forbid_line command 'backend deploy/production-deploy.sh'
@@ -137,6 +165,7 @@ assert_no_forbidden_operations() {
 }
 
 assert_happy_path_ordering
+assert_frontend_permissions_are_normalized
 assert_frontend_failure_stops_before_backend
 assert_backend_failure_stops_before_publish
 assert_nginx_failure_does_not_reload

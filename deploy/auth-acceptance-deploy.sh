@@ -211,6 +211,11 @@ npm run build
 stage_dir="$(mktemp -d "${TMPDIR:-/tmp}/porsche-auth-stage.XXXXXX")"
 chmod 700 "$stage_dir"
 cp -a "$FRONTEND_DIR/dist/." "$stage_dir/"
+# The operator may invoke this script under a restrictive umask. Static files
+# are public assets served by the unprivileged Nginx worker, so normalize the
+# staged tree instead of inheriting caller/build-tool modes into production.
+find "$stage_dir" -type d -exec chmod 0755 {} +
+find "$stage_dir" -type f -exec chmod 0644 {} +
 build_context="$(mktemp -d /tmp/porsche-auth-build.XXXXXX)"
 [[ "$build_context" =~ ^/tmp/porsche-auth-build\.[A-Za-z0-9]+$ && -d "$build_context" && ! -L "$build_context" ]] || {
     echo 'build context directory is invalid' >&2

@@ -199,7 +199,7 @@ write_mock() {
         '  docker) case "${1:-}" in ps) [[ "${MOCK_DOCKER_PS_RESULT:-success}" == success ]] || exit 79; [[ "${2:-}" == -a && "${3:-}" == --format && "${4:-}" == "{{.Names}}" ]] || exit 78; case "${MOCK_CONTAINER_LIST_STATE:-current}" in current) printf "ai-gateway-go\\n" ;; current-and-rollback) printf "ai-gateway-go\\nai-gateway-go-acceptance-rollback-123\\n" ;; helper-only) printf "ai-gateway-go-helper\\n" ;; *) exit 78 ;; esac ;; network) if [[ "${2:-}" == inspect && "${3:-}" == porsche-app ]]; then [[ "${MOCK_NETWORK_INSPECT_RESULT:-success}" == success ]]; else [[ "${MOCK_DOCKER_INSPECT_RESULT:-success}" == success ]]; fi ;; container) if [[ "${2:-}" == inspect && "${3:-}" == ai-gateway-go && -n "${MOCK_DOC_INSPECT_STATE:-}" ]]; then case "$MOCK_DOC_INSPECT_STATE" in clean) printf "APP_ENV=production\\n" ;; present) printf "ROOT_BOOTSTRAP_PASSWORD=fixture-doc-root-secret\\n" ;; other) printf "ROOT_BOOTSTRAP_OTHER=fixture-doc-other-secret\\n" ;; error) exit 79 ;; *) exit 78 ;; esac; elif [[ "${2:-}" == inspect && "${3:-}" == porsche-redis ]]; then [[ "${MOCK_REDIS_EXISTS:-0}" == 1 ]]; elif [[ "${2:-}" == inspect && "${3:-}" == porsche-mysql ]]; then [[ "${MOCK_MYSQL_EXISTS:-1}" == 1 && "${MOCK_MYSQL_INSPECT_RESULT:-success}" == success ]]; elif [[ "${2:-}" == inspect && "${5:-}" == "{{range .Config.Env}}{{println .}}{{end}}" ]]; then case "${3:-}" in ai-gateway-go) container_state="${MOCK_CURRENT_CONTAINER_ENV_STATE:-clean}" ;; ai-gateway-go-acceptance-rollback-[0-9]*) container_state="${MOCK_ROLLBACK_CONTAINER_ENV_STATE:-clean}" ;; ai-gateway-go-helper) container_state="${MOCK_HELPER_CONTAINER_ENV_STATE:-clean}" ;; *) exit 78 ;; esac; case "$container_state" in clean) printf "APP_ENV=production\\n" ;; present) printf "ROOT_BOOTSTRAP_PASSWORD=fixture-container-root-secret\\n" ;; error) exit 79 ;; *) exit 78 ;; esac; else [[ "${MOCK_DOCKER_INSPECT_RESULT:-success}" == success ]]; fi ;; build) [[ "${2:-}" != --quiet ]] || printf "%s\\n" "${MOCK_DOCKER_BUILD_IMAGE_ID:-}" ;; run) [[ "${MOCK_DOCKER_RUN_RESULT:-success}" == success ]] || exit 71; if [[ "${2:-}" == --rm && "${3:-}" == --entrypoint && "${4:-}" == id && "${5:-}" == redis:7-alpine && "${6:-}" == -u && "${7:-}" == redis ]]; then printf "999\\n"; elif [[ "${2:-}" == --rm && "${3:-}" == --entrypoint && "${4:-}" == id && "${5:-}" == redis:7-alpine && "${6:-}" == -g && "${7:-}" == redis ]]; then printf "1000\\n"; else printf "fixture-container\\n"; fi ;; esac ;;' \
         '  curl) [[ "${MOCK_HEALTH_RESULT:-success}" == success ]] || exit 72 ;;' \
         '  npm) [[ "${MOCK_NPM_RESULT:-success}" == success ]] || exit 73 ;;' \
-        '  rsync) [[ "${MOCK_RSYNC_RESULT:-success}" == success ]] || exit 74 ;;' \
+        '  rsync) [[ "${MOCK_RSYNC_RESULT:-success}" == success ]] || exit 74; if [[ "${MOCK_RSYNC_COPY:-0}" == 1 ]]; then source="${@: -2:1}"; destination="${@: -1}"; /bin/cp -a "${source%/}/." "${destination%/}/"; fi ;;' \
         '  nginx) [[ "${MOCK_NGINX_RESULT:-success}" == success ]] || exit 75 ;;' \
         '  systemctl) [[ "${MOCK_SYSTEMCTL_RESULT:-success}" == success ]] || exit 76 ;;' \
         '  flock) if [[ "${MOCK_ENV_MUTATE_ON_FLOCK:-0}" == 1 ]]; then printf "APP_ENV=production\\nREDIS_URL=redis://:fixture-only-password@porsche-redis:6379/0\\nALLOWED_HOSTS=aiportcloud.com\\nAUTH_TRUSTED_ORIGINS=https://aiportcloud.com\\nROOT_BOOTSTRAP_PASSWORD=Aa1@fixture-secret\\n" >/fixture/Porsche/.env; fi; [[ "${MOCK_FLOCK_RESULT:-success}" == success ]] || exit 77 ;;' \
@@ -691,6 +691,7 @@ run_entrypoint() {
         --env "MOCK_HEALTH_RESULT=${MOCK_HEALTH_RESULT:-success}" \
         --env "MOCK_NPM_RESULT=${MOCK_NPM_RESULT:-success}" \
         --env "MOCK_RSYNC_RESULT=${MOCK_RSYNC_RESULT:-success}" \
+        --env "MOCK_RSYNC_COPY=${MOCK_RSYNC_COPY:-0}" \
         --env "MOCK_NGINX_RESULT=${MOCK_NGINX_RESULT:-success}" \
         --env "MOCK_SYSTEMCTL_RESULT=${MOCK_SYSTEMCTL_RESULT:-success}" \
         --env "MOCK_FLOCK_RESULT=${MOCK_FLOCK_RESULT:-success}" \
@@ -1185,6 +1186,28 @@ assert_successful_deploy_order_and_manifest() {
     assert_before rsync --archive --delete --delay-updates ::: systemctl reload nginx
     [[ -f "$manifest_dir/rollback.env" ]] || fail 'successful deployment did not create rollback manifest'
     ! grep -Eq 'fixture-only-password|REDIS_URL|DATABASE_URL|JWT|SECRET' "$manifest_dir/rollback.env" || fail 'rollback manifest contains a secret value or key'
+}
+
+assert_deploy_normalizes_frontend_permissions() {
+    local path
+    mode_for() {
+        path="$1"
+        stat -f '%Lp' "$path" 2>/dev/null || stat -c '%a' "$path"
+    }
+    mkdir -p "$frontend_dir/dist/assets"
+    printf 'fixture-asset\n' >"$frontend_dir/dist/assets/app.js"
+    chmod 700 "$frontend_dir/dist" "$frontend_dir/dist/assets"
+    chmod 600 "$frontend_dir/dist/index.html" "$frontend_dir/dist/assets/app.js"
+
+    MOCK_RSYNC_COPY=1 run_deploy
+
+    [[ "$(mode_for "$frontend_root")" == 755 ]] || fail 'deployment retained a restrictive frontend root mode'
+    [[ "$(mode_for "$frontend_root/index.html")" == 644 ]] || fail 'deployment retained a restrictive index.html mode'
+    [[ "$(mode_for "$frontend_root/assets")" == 755 ]] || fail 'deployment retained a restrictive asset directory mode'
+    [[ "$(mode_for "$frontend_root/assets/app.js")" == 644 ]] || fail 'deployment retained a restrictive asset file mode'
+
+    chmod 755 "$frontend_dir/dist" "$frontend_dir/dist/assets" "$frontend_root" "$frontend_root/assets"
+    chmod 644 "$frontend_dir/dist/index.html" "$frontend_dir/dist/assets/app.js" "$frontend_root/index.html" "$frontend_root/assets/app.js"
 }
 
 assert_no_live_worktree_docker_build_context() {
@@ -1740,7 +1763,7 @@ for selected_check in "${selected_checks[@]}"; do
     case "$selected_check" in
         bootstrap) assert_bootstrap_rejects_invalid_passwords_and_existing_container; assert_bootstrap_creates_internal_redis ;;
         migration) assert_migration_requires_confirmation_without_writes; assert_migration_rejects_root_bootstrap_env_without_docker_run; run_migration ;;
-        deploy) assert_deploy_refuses_main_or_dirty_checkout_without_writes; assert_deploy_preflight_failures_do_not_write; assert_deploy_rejects_root_bootstrap_env_without_writes; assert_deploy_rejects_root_bootstrap_snapshot_race_without_writes; assert_deploy_uses_snapshot_after_source_env_mutates; assert_deploy_scans_relevant_container_envs_before_writes; assert_candidate_failure_restores_old_application; assert_publish_failures_restore_application; assert_successful_deploy_order_and_manifest; assert_deploy_final_scan_rejects_post_build_root_env; assert_deploy_rejects_prefixed_candidate_id_without_publish; assert_malformed_candidate_scan_failures_restore_old_application ;;
+        deploy) assert_deploy_refuses_main_or_dirty_checkout_without_writes; assert_deploy_preflight_failures_do_not_write; assert_deploy_rejects_root_bootstrap_env_without_writes; assert_deploy_rejects_root_bootstrap_snapshot_race_without_writes; assert_deploy_uses_snapshot_after_source_env_mutates; assert_deploy_scans_relevant_container_envs_before_writes; assert_candidate_failure_restores_old_application; assert_publish_failures_restore_application; assert_successful_deploy_order_and_manifest; assert_deploy_normalizes_frontend_permissions; assert_deploy_final_scan_rejects_post_build_root_env; assert_deploy_rejects_prefixed_candidate_id_without_publish; assert_malformed_candidate_scan_failures_restore_old_application ;;
         rollback) assert_rollback_scans_relevant_container_envs_before_writes; assert_rollback_failures_restore_previous_application; run_rollback ;;
         root-bootstrap) assert_root_bootstrap_requires_confirmation_without_writes; assert_root_bootstrap_requires_root_without_writes; assert_root_bootstrap_rejects_invalid_checkout_without_writes; assert_root_bootstrap_rejects_unsafe_source_metadata_without_writes; assert_root_bootstrap_rejects_invalid_credentials_without_writes; assert_root_bootstrap_rejects_unsafe_snapshot_metadata_without_writes; assert_root_bootstrap_rejects_env_credentials_without_writes; assert_root_bootstrap_rejects_missing_docker_dependencies_without_writes; assert_root_bootstrap_rejects_invalid_image_id_without_run; assert_root_bootstrap_uses_readonly_secret_mounts ;;
         docs) assert_operator_documentation ;;

@@ -177,3 +177,15 @@
   models/service 测试、全量 `go test ./... -count=1`、`go vet ./...` 和
   `git diff --check` 通过。仍需在测试机重新部署候选并完成 Root 登录/登出浏览器验收，
   因此 `go-006` 继续保持 `in_progress`。
+
+## 前端发布权限修复（2026-09-02）
+
+- 测试机在调用者 `umask 077` 下重新部署后，Nginx 对 `index.html` 返回
+  `open() failed (13: Permission denied)`，导致 `/`、`/profile` 与 `/api-keys`
+  等 SPA 路由统一返回 403。现场已将静态目录恢复为 `0755`、普通文件恢复为
+  `0644`，源站和公网路由重新返回 200。
+- `auth-acceptance-deploy.sh` 与常规 `restart-all.sh` 现在都在发布前规范化私有
+  stage tree 的目录/文件权限，不再继承调用者或构建工具的 restrictive umask。
+  两套行为测试均以 `0700` 目录和 `0600` 文件复现 RED，并验证发布后分别为
+  `0755` 与 `0644`。浏览器真实客户端 IP 展示及最终登出清理仍待确认，
+  `go-006` 保持 `in_progress`。
