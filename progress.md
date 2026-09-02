@@ -2,7 +2,16 @@
 
 ## 当前唯一活动功能
 
-`go-006`：用户注册管理一期（`in_progress`）。Task 1–5 已完成配置、认证 schema、可撤销会话、用户名/RBAC 与 HTTP 端点；真实隔离 MySQL/Redis HTTP 验收及前端尚未完成。
+当前无实现中的后端功能。2026-09-02 本轮核验 GitHub Issue #2 已有实现；`go-004` 仍因真实上游冒烟未完成而 `blocked`。`go-006` 的历史生产验收记录保留，但本轮发现隔离环境全量集成测试基线失败，见下文，不能声称当前全套测试通过。
+
+## Open issues 核验（2026-09-02）
+
+- 基线为 `origin/main` 的 `4da0dba8b1175d2accfe91080723c64b54eceb4d`；本轮未修改业务实现、生产配置或迁移，也未关闭远端 Issue。
+- `GOCACHE=/private/tmp/porsche-go-build-cache bash ./init.sh` 通过；默认未注入测试数据库时会跳过数据库集成用例，不等于完整集成验收。
+- 新建本地、仅回环发布端口的 disposable MySQL 8.0.46（tmpfs 数据目录、`porsche_issue2_test`）与 Redis 7 fixture；仅设置显式 `TEST_DATABASE_URL` / `TEST_REDIS_URL`，未读取生产 `.env` 或访问生产服务。
+- `go test -p 1 ./internal/whitelabel ./internal/handler -run 'Slash|CatalogWithEmpty|PatternAllowlist|ModelACL' -count=1 -v`：13 个顶层专项测试通过且无跳过，覆盖 slash ID、URL 编码、空上游目录数组、精确 ACL、用户/Token 拒绝时不访问上游。`go vet ./...` 通过。
+- `go test -p 1 ./... -count=1`（同一隔离 MySQL/Redis）**失败**，不能标为全量通过：`internal/migration/runner_test.go` 的 `assertColumn` 扫描结果为空，而直接 SQL 查询 `users.username` 返回 `varchar / YES`；`internal/service` 多项测试生成 `session_user_<18位GUID>` 或 `disabled_user_<18位GUID>`，超过 schema 的 `VARCHAR(20)`，报 MySQL 1406。两类均已在未改业务代码的 main 基线上复现；另开测试基线修复任务处理，不放宽生产 schema。
+- Issue #2 仍待经授权的真实上游目录、详情、Chat/SSE 验收；本轮证据不代表这些外部验收已完成。
 
 ## 用户注册管理一期 Task 1（2026-08-28）
 

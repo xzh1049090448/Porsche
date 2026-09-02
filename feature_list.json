@@ -1,6 +1,6 @@
 {
   "project": "Porsche Go AI Gateway",
-  "last_updated": "2026-09-01",
+  "last_updated": "2026-09-02",
   "rules": {
     "single_active_feature": true,
     "passing_requires_evidence": true,
@@ -38,7 +38,7 @@
         "2026-08-27：全局 JIEKOU_ALLOWED_MODELS 支持精确 ID 和 re: RE2 模式；go test ./internal/config -count=1、go test ./internal/whitelabel -count=1、go test ./... -count=1 和 go vet ./... 已验证。用户及 Gateway Token allowed_models 仍按精确 ID 匹配；尚未执行真实 JieKou AI 上游冒烟。",
         "尚未执行真实 JieKou AI 上游冒烟。"
       ],
-      "notes": "阻塞原因：真实部署环境 JieKou 冒烟待办。Issue #2 已提升为最高优先级：需完整支持组织/模型斜杠 ID，并保证空目录返回数组；完成代码与安全验证后进行真实上游目录、详情、Chat 与 SSE 联调。"
+      "notes": "2026-09-02：main 已有 slash ID / 空数组修复；本轮隔离 MySQL 8.0.46 / Redis 7 下 13 个目录与 ACL 顶层专项测试通过且无跳过，go vet 通过。真实上游目录、详情、Chat/SSE 尚未验收，Issue #2 不关闭。全量隔离集成测试另发现迁移列元数据扫描为空和认证测试用户名超过 VARCHAR(20) 的基线问题（见 progress.md），不得声称全套测试通过。"
     },
     {
       "id": "go-006",
