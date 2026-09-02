@@ -2,8 +2,10 @@ package service
 
 import (
 	"fmt"
+	"math"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -42,6 +44,32 @@ func testPhone() string {
 func testPhonePointer() *string {
 	phone := testPhone()
 	return &phone
+}
+
+// A one-byte prefix plus all 19 possible decimal digits fits VARCHAR(20).
+// Padding also keeps small fixture IDs within the minimum username length.
+func fixtureUsername(guid int64) string {
+	return fmt.Sprintf("u%019d", guid)
+}
+
+func TestFixtureUsernamePreservesIDWithinSchemaLimit(t *testing.T) {
+	seen := make(map[string]bool)
+	for _, guid := range []int64{1, 9, 10, 353560822848135168, math.MaxInt64 - 1, math.MaxInt64} {
+		username := fixtureUsername(guid)
+		if len(username) > 20 {
+			t.Fatalf("fixture username exceeds VARCHAR(20): %q", username)
+		}
+		if normalized, err := NormalizeUsername(username); err != nil || normalized != username {
+			t.Fatalf("fixture username violates production validation: %q (%v)", username, err)
+		}
+		if seen[username] {
+			t.Fatalf("distinct IDs produced duplicate username: %q", username)
+		}
+		if decoded, err := strconv.ParseInt(username[1:], 10, 64); err != nil || decoded != guid {
+			t.Fatalf("fixture username lost ID precision: %q", username)
+		}
+		seen[username] = true
+	}
 }
 
 func TestValidateTestDatabaseURLRejectsUnsafeTargets(t *testing.T) {

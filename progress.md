@@ -2,7 +2,14 @@
 
 ## 当前唯一活动功能
 
-当前无实现中的后端功能。2026-09-02 本轮核验 GitHub Issue #2 已有实现；`go-004` 仍因真实上游冒烟未完成而 `blocked`。`go-006` 的历史生产验收记录保留，但本轮发现隔离环境全量集成测试基线失败，见下文，不能声称当前全套测试通过。
+当前无实现中的后端功能。`go-007` 两类测试缺陷已修复，但全量回归暴露新的测试隔离问题与 Refresh 重放业务 panic，等待扩大修复范围批准，状态 `blocked`。`go-004` 仍待真实上游验收；`go-006` 的历史生产验收记录不代表当前全套测试通过。
+
+## 测试基线修复（2026-09-02，用户批准继续）
+
+- 仅修改四个 `_test.go`：MySQL 返回 `DATA_TYPE / IS_NULLABLE` 大写列标签，原 GORM 小写映射读为空，改用 positional `Row().Scan`，保留类型/nullable 断言且无行时报错。两处 `session_user_` / `disabled_user_` 长前缀改用共用 `fixtureUsername`（`u%019d`），保留完整 Snowflake、20 字符上限及小 ID 最小长度。
+- 三项原始集成回归先在独立 MySQL 8.0.46/Redis 7 中复现失败，再修复通过；新增 ID 边界、唯一性和可逆性回归。四项测试 `-race -count=3` 通过，`go build ./...`、`go vet ./...` 与 `git diff --check` 通过。未改业务代码、迁移、生产 `.env`、前端或跳过规则。
+- 全新库 `porsche_baseline_clean_test` 下全量仍失败（225 pass 事件含子测试、0 skip）：审计故障注入的全表 CHECK 被其他测试留下的 password-changed 行阻止；Root bootstrap 测试遇到前面测试创建的 Root；Refresh 过期重放单独运行也在 `auth_session.go:203` nil dereference。后者因撤销事务成功后 `rotated` 仍为空，随后访问 `rotated.Session`。无生产复现或部署操作。
+- 当前只保存已批准的两类测试修复，新失败不通过改断言、放宽 schema 或隐藏用例来绕过。完整命令与输出见 `docs/superpowers/reports/2026-09-02-backend-test-baseline.md`；下一步需批准修复 Refresh 业务分支及测试隔离。
 
 ## Open issues 核验（2026-09-02）
 

@@ -210,7 +210,7 @@ func createAuthSessionTestUser(t *testing.T, db *gorm.DB) *models.User {
 	t.Helper()
 	now := time.Now().UTC().UnixMilli()
 	phone := testPhone()
-	username := fmt.Sprintf("session_user_%d", testSnowflake.Next())
+	username := fixtureUsername(testSnowflake.Next())
 	user := &models.User{
 		AuditFields:   models.AuditFields{Guid: testSnowflake.Next(), CreatedAt: now, UpdatedAt: now, IsDeleted: 0},
 		Phone:         &phone,

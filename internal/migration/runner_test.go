@@ -120,8 +120,10 @@ func assertColumn(t *testing.T, gdb *gorm.DB, table, column, wantType string, nu
 		DataType   string `gorm:"column:data_type"`
 		IsNullable string `gorm:"column:is_nullable"`
 	}
+	// MySQL reports DATA_TYPE/IS_NULLABLE labels even for lower-case SQL.
+	// Positional scanning avoids label mapping and fails on a missing column.
 	if err := gdb.Raw(`SELECT data_type, is_nullable FROM information_schema.columns
-WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?`, table, column).Scan(&result).Error; err != nil {
+WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?`, table, column).Row().Scan(&result.DataType, &result.IsNullable); err != nil {
 		t.Fatalf("read column %s.%s metadata: %v", table, column, err)
 	}
 	if result.DataType != wantType {

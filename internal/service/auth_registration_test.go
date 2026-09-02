@@ -3,7 +3,6 @@ package service
 import (
 	"context"
 	"errors"
-	"fmt"
 	"strings"
 	"testing"
 
@@ -332,7 +331,7 @@ func TestLoginUsernameRejectsDisabledAndSoftDeletedUser(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	username := fmt.Sprintf("disabled_user_%d", testSnowflake.Next())
+	username := fixtureUsername(testSnowflake.Next())
 	now := persistence.NowMillis()
 	user := &models.User{AuditFields: models.AuditFields{Guid: testSnowflake.Next(), CreatedAt: now, UpdatedAt: now}, Username: &username, PasswordHash: &hash, Status: models.UserStatusDisabled, Role: models.UserRoleUser, AuthVersion: 1, PlanType: models.PlanFree, AllowedModels: models.JSONSlice{}}
 	if err := db.Create(user).Error; err != nil {
