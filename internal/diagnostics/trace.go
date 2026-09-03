@@ -117,6 +117,7 @@ type StageResult struct {
 	DurationMS float64 `json:"duration_ms"`
 }
 type Record struct {
+	MalformedChunkDetail     *ChunkFailure         `json:"malformed_chunk_detail,omitempty"`
 	Event                    string                `json:"event"`
 	TraceID                  string                `json:"trace_id"`
 	RequestIDSHA256          string                `json:"request_id_sha256"`
