@@ -24,8 +24,8 @@
     "specReview": "PASS (local scope)",
     "qualityReview": "PASS (local scope)"
   },
-  "imageBuilt": false,
-  "imageBuildBlocker": "Docker Hub alpine:3.20 metadata fetch timed out; local cached base is arm64",
+  "imageBuilt": true,
+  "imageBuildBlocker": null,
   "deployed": false,
   "productionSSEStatus": "FAIL 503, root cause unresolved",
   "generationBudget": {
@@ -37,5 +37,47 @@
   },
   "createdUTC": "2026-09-03T05:13:46.617210+00:00",
   "bundlePath": "/private/tmp/porsche-m3-backend-04ed728-linux-amd64.tar.gz",
-  "bundleSHA256": "257160c725d9222550b1a1d4bd6ca86f8b7733a95fef5734fc95e718262537a6"
+  "bundleSHA256": "257160c725d9222550b1a1d4bd6ca86f8b7733a95fef5734fc95e718262537a6",
+  "imageId": "sha256:a69cfdab1cc8e18056286ae3991669d37515994041664b3fed5b6290ac602316",
+  "imageArchive": "/private/tmp/porsche-m3-diagnostics-04ed728.image.tar",
+  "imageArchiveSHA256": "af8a122d1fa5018a981d4757aff03b0b204ef8048c38f2632eb47e343ad0c580",
+  "imageVerification": {
+    "imageId": "sha256:a69cfdab1cc8e18056286ae3991669d37515994041664b3fed5b6290ac602316",
+    "architecture": "amd64",
+    "os": "linux",
+    "sourceRevision": "04ed72806f5ca139d219d166452e0473ba5bf1a1",
+    "cmd": [
+      "./server"
+    ],
+    "workdir": "/app",
+    "binaryHashesMatch": true,
+    "caBundlePresent": true,
+    "isolatedStartup": "Expected fail-closed missing JIEKOU_API_KEY; no credentials/network/DB supplied",
+    "exitCode": 1,
+    "imageArchive": "/private/tmp/porsche-m3-diagnostics-04ed728.image.tar",
+    "archiveSHA256": "af8a122d1fa5018a981d4757aff03b0b204ef8048c38f2632eb47e343ad0c580",
+    "taskLabel": "m3-diagnostic-candidate",
+    "privateApplicationBinaries": true
+  },
+  "updatedUTC": "2026-09-03T05:36:19.743953+00:00",
+  "imageBuild": {
+    "method": "Public runtime base built remotely, downloaded and hash-verified; private binaries assembled locally offline with --network=none --pull=false",
+    "publicBaseTag": "porsche-m3-public-runtime:alpine3.20-amd64",
+    "publicBaseLocalImageId": "sha256:7b56a9b85cbcec1994938accac2bf3dbd0ad667f1c67b37eb25a9619e57617e3",
+    "publicBaseArchiveSHA256": "ba9da7bf6b08229b5ff72be478bef5d2e4019cf39edd2278836cbe2b1c311271",
+    "alpineIndexDigest": "sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc",
+    "log": "/private/tmp/porsche-m3-image-offline-build.log"
+  },
+  "publication": {
+    "privateArtifactsUploaded": false,
+    "authorization": "pending explicit user approval for private image upload and backend replacement",
+    "previousSourceAndBinaryUpload": "rejected before execution by automatic approval review: private payload upload to the specific remote host was not explicitly authorized and destination trust was not established",
+    "targetSSH": "overseaCloud",
+    "targetIP": "172.245.142.21",
+    "containerName": "ai-gateway-go",
+    "currentContainerId": "d2de587030c3055d4c4e913c3d0a1052297294810e6a4047b81b710edfe0b56b",
+    "rollbackImageId": "sha256:31abaeb16799f1bfad6501cf7d765ea443d5682561bbeed3f74255c8d8733b9a",
+    "runtimeHealthVerified": false,
+    "rollbackExecuted": false
+  }
 }

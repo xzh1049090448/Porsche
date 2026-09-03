@@ -1,0 +1,18 @@
+{
+  "imageId": "sha256:a69cfdab1cc8e18056286ae3991669d37515994041664b3fed5b6290ac602316",
+  "architecture": "amd64",
+  "os": "linux",
+  "sourceRevision": "04ed72806f5ca139d219d166452e0473ba5bf1a1",
+  "cmd": [
+    "./server"
+  ],
+  "workdir": "/app",
+  "binaryHashesMatch": true,
+  "caBundlePresent": true,
+  "isolatedStartup": "Expected fail-closed missing JIEKOU_API_KEY; no credentials/network/DB supplied",
+  "exitCode": 1,
+  "imageArchive": "/private/tmp/porsche-m3-diagnostics-04ed728.image.tar",
+  "archiveSHA256": "af8a122d1fa5018a981d4757aff03b0b204ef8048c38f2632eb47e343ad0c580",
+  "taskLabel": "m3-diagnostic-candidate",
+  "privateApplicationBinaries": true
+}

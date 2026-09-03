@@ -126,9 +126,10 @@
       "evidence": [
         "2026-09-03：从0bab2b7建立fix/m3-sse-diagnostics，按用户继续落实已交付方案；init.sh在允许回环监听环境通过，未注入TEST_*的集成测试跳过。",
         "2026-09-03：真实隔离MySQL8/Redis7最终全量293个pass事件、0fail/skip；诊断专项race46个pass事件、0fail/skip；vet/build/diff均通过。RED→GREEN覆盖首帧前503、数据库阶段、超时/取消、重定向response+error及脱敏，详见docs/superpowers/reports/2026-09-03-m3-sse-diagnostics.md。",
-        "2026-09-03：后端PM最终规格PASS，独立质量实际socket非法SSE/脱敏探针及最终redirect微调复验PASS；仅本地诊断范围。临时测试容器与凭据清理完成。"
+        "2026-09-03：后端PM最终规格PASS，独立质量实际socket非法SSE/脱敏探针及最终redirect微调复验PASS；仅本地诊断范围。临时测试容器与凭据清理完成。",
+        "2026-09-03：诊断镜像在本机离线构建完成并核验linux/amd64、源码标签、两二进制哈希与CA；精确镜像及归档摘要见m3-backend-diagnostic-candidate.json。私有构建包上传此前被自动审批拒绝；当前私有镜像未上传/部署，等待具体后端发布授权。"
       ],
-      "notes": "本地诊断候选已完成，未部署，不证明线上503已修复或M3通过。panic恢复日志准确性未覆盖；false保存标记不保证无部分写入；缺失vcs信息记unknown，发布仍须manifest绑定。线上剩余2次×32生成预算保留。"
+      "notes": "当前诊断候选04ed728镜像已本机构建并核验；私有镜像上传及后端替换待明确授权，尚未执行。线上前端158a00e，M3-11首试503根因未知，完整M3未通过。下一步按发布计划完成授权、切换/健康核验，再按剩余2次×max_tokens32预算带日志复测。 go-008仅本地passing；panic恢复日志、保存false可能部分写入及未知运行源码的限制继续适用。"
     }
   ]
 }

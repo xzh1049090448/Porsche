@@ -87,3 +87,13 @@ RED实际输出：received=false status=0; want true/302。仅诊断信息不准
 发布材料：/private/tmp/porsche-m3-backend-04ed728-linux-amd64.tar.gz；包SHA256 257160c725d9222550b1a1d4bd6ca86f8b7733a95fef5734fc95e718262537a6。包含源码归档、两个二进制、构建信息、运行镜像Dockerfile与manifest，不包含生产配置。server SHA256 9dd1f8e6f7623a225c4f76907e708955f8303b8f2ddd2219fd6fc0dd78eab9d8。
 
 本地镜像构建未完成：Docker Hub alpine:3.20 metadata拉取DeadlineExceeded；本地已有缓存为arm64，不能冒充amd64镜像。未生成或推送候选镜像，未上传或部署到服务器。Dockerfile仅准备运行镜像，不能据此声称镜像可运行或服务已上线。清单见validation/m3-backend-diagnostic-candidate.json；下步先在可用构建环境完成amd64镜像并核对其二进制/源码标签，具备具体镜像ID与回滚计划后再申请后端发布授权。
+
+## 2026-09-03：镜像已完成，私有上传与后端发布待授权
+
+- 代码04ed728的linux/amd64诊断镜像已在本机离线组装、导出和重新加载；精确ID sha256:a69cfdab1cc8e18056286ae3991669d37515994041664b3fed5b6290ac602316，归档SHA256 af8a122d1fa5018a981d4757aff03b0b204ef8048c38f2632eb47e343ad0c580。
+- 来源标签、两个二进制哈希、架构、入口、CA均核验；无凭据/无网络启动按预期缺JIEKOU_API_KEY拒绝，不能当作真实服务健康。
+- 原私有源码/二进制构建包上传被自动审批拒绝，未执行。远端仅构建公开基础层并下载，本机加入私有二进制；私有镜像尚未上传，生产后端未替换。
+- 具体上传、三锁、运行态配置快照、切换及失败回滚准备见后端docs/superpowers/plans/2026-09-03-m3-backend-release.md；待用户明确授权，计划尚未在生产执行或演练。此前镜像构建超时为已解除的历史阻塞。
+- 后端PM书面确认发布准备要求，不代表用户上线授权或线上M3签收。M3-11仍FAIL，剩余2次gpt-5.4-nano×max_tokens32预算保留。
+
+后端PM随后只读复核最终发布计划和两份JSON，书面确认材料足够提交用户授权申请、摘要一致且无阻塞申请的问题；不独立验证镜像内容、不授权部署、不签M3。协调者复核归档SHA、两仓清单一致及JSON/diff检查通过。
