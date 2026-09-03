@@ -1,0 +1,98 @@
+{
+  "containerId": "13ada4aa4f1e4460265d778f3447957ea854b234b542e509ffcf6668ef7b3031",
+  "startedAt": "2026-09-03T06:17:06.287476362Z",
+  "running": true,
+  "matchedRecords": [
+    {
+      "event": "platform_chat_diagnostic",
+      "trace_id": "5172e99e16deb2e78d0222be537bf175",
+      "request_id_sha256": "6061877c3230cf7b09a052ff97c4b0a05210043eb1aac6a279df4eece64f8a0f",
+      "utc": "2026-09-03T06:17:59.508521681Z",
+      "route": "/api/v1/platform/chat/completions",
+      "method": "POST",
+      "vcs_revision": "6e70784e182a4bae1e5b8399053b45429e8e4400",
+      "vcs_modified": "false",
+      "duration_ms": 2144.749552,
+      "http_status": 503,
+      "upstream_http_status": 200,
+      "upstream_request_attempted": true,
+      "upstream_response_received": true,
+      "first_frame_emitted": false,
+      "daily_call_saved": true,
+      "conversation_ready": true,
+      "user_message_saved": true,
+      "final_saved": false,
+      "stages": {
+        "authentication": {
+          "state": "success",
+          "reason": "none",
+          "duration_ms": 5.342432
+        },
+        "validation": {
+          "state": "success",
+          "reason": "none",
+          "duration_ms": 0.451341
+        },
+        "model_catalog_acl": {
+          "state": "success",
+          "reason": "none",
+          "duration_ms": 0.070112
+        },
+        "quota_persist": {
+          "state": "success",
+          "reason": "none",
+          "duration_ms": 6.653714
+        },
+        "conversation_lookup_create": {
+          "state": "success",
+          "reason": "none",
+          "duration_ms": 2.474243
+        },
+        "user_message_save": {
+          "state": "success",
+          "reason": "none",
+          "duration_ms": 15.077221
+        },
+        "title_save": {
+          "state": "success",
+          "reason": "none",
+          "duration_ms": 8.358126
+        },
+        "serialization": {
+          "state": "success",
+          "reason": "none",
+          "duration_ms": 0.193861
+        },
+        "upstream_connect": {
+          "state": "success",
+          "reason": "none",
+          "duration_ms": 2105.082763
+        },
+        "sse_stream": {
+          "state": "failed",
+          "reason": "malformed_chunk",
+          "duration_ms": 0.451381
+        },
+        "assistant_save": {
+          "state": "not_run",
+          "reason": "none",
+          "duration_ms": 0
+        },
+        "usage_save": {
+          "state": "not_run",
+          "reason": "none",
+          "duration_ms": 0
+        },
+        "final_write": {
+          "state": "not_run",
+          "reason": "none",
+          "duration_ms": 0
+        }
+      },
+      "malformed_chunk_detail": {
+        "reason": "invalid_value",
+        "field": "object"
+      }
+    }
+  ]
+}

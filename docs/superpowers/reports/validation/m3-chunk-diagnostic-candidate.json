@@ -18,8 +18,8 @@
   "caBundlePresent": true,
   "binaryHashesMatch": true,
   "isolatedStartup": "Expected exit1 missing JIEKOU_API_KEY, no credentials/DB/network; not runtime health",
-  "uploaded": false,
-  "deployed": false,
+  "uploaded": true,
+  "deployed": true,
   "localVerification": {
     "fullTestPassEvents": 345,
     "raceTestPassEvents": 113,
@@ -32,20 +32,26 @@
     "independentParityCases": 22
   },
   "generationBudget": {
-    "used": 2,
+    "used": 3,
     "maximumRequests": 3,
-    "remaining": 1,
+    "remaining": 0,
     "model": "gpt-5.4-nano",
     "maxTokensPerRequest": 32
   },
   "publication": {
-    "status": "pending new candidate authorization",
+    "status": "deployed; M3-11 FAIL",
     "targetSSH": "overseaCloud",
     "targetIP": "172.245.142.21",
     "containerName": "ai-gateway-go",
-    "currentContainerId": "9425ea244ad71944ef78474cc405208fbbbe7eb22fdffd2b81e269d328d85b0c",
-    "currentImageId": "sha256:a69cfdab1cc8e18056286ae3991669d37515994041664b3fed5b6290ac602316",
-    "currentSourceRevision": "04ed72806f5ca139d219d166452e0473ba5bf1a1",
-    "remoteStagingPlanned": "/var/tmp/porsche-m3-chunk-release-6e70784-20260903"
+    "currentContainerId": "13ada4aa4f1e4460265d778f3447957ea854b234b542e509ffcf6668ef7b3031",
+    "currentImageId": "sha256:cb42daed3581c51a5e6f5ac5a237bec4b4e0c3540afb61d36acb27592dc2947f",
+    "currentSourceRevision": "6e70784e182a4bae1e5b8399053b45429e8e4400",
+    "authorization": "User explicitly authorized exact candidate 6e70784 upload/deploy and last remaining request",
+    "previousContainerId": "9425ea244ad71944ef78474cc405208fbbbe7eb22fdffd2b81e269d328d85b0c",
+    "previousImageId": "sha256:a69cfdab1cc8e18056286ae3991669d37515994041664b3fed5b6290ac602316",
+    "previousSourceRevision": "04ed72806f5ca139d219d166452e0473ba5bf1a1",
+    "rollbackName": "ai-gateway-go-acceptance-rollback-1788416221798672629",
+    "deployedAt": "2026-09-03T06:17:07Z",
+    "remoteStaging": "/var/tmp/porsche-m3-chunk-release-6e70784-20260903"
   }
 }
