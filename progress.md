@@ -1,5 +1,9 @@
 # Porsche 开发进度
 
+## 2026-09-03：开始chunk固定校验分类
+
+用户继续已说明的细分诊断方案；go-009为唯一in_progress。保留线上04ed728与最后1次×32预算，先做本地分类、行为对照和脱敏验证。设计与计划见docs/superpowers/specs/2026-09-03-m3-chunk-validation-design.md及对应plans文件。
+
 ## 2026-09-03：后端诊断已发布，SSE第二次仍失败并定位解析阶段
 
 - 用户明确确认上传及后端替换后完成发布：源码04ed728，镜像sha256:a69cfdab1cc8e18056286ae3991669d37515994041664b3fed5b6290ac602316；新容器9425ea244ad71944ef78474cc405208fbbbe7eb22fdffd2b81e269d328d85b0c于05:50:09Z启动，源站/公网health严格200。旧d2de587容器以ai-gateway-go-acceptance-rollback-1788414605780771454保留，未执行生产回滚；前端158a00e哈希保持。

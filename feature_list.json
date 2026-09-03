@@ -132,6 +132,23 @@
         "2026-09-03：用户明确授权后04ed728诊断镜像发布成功，源站/公网200，旧容器保留、前端158a00e未改；第二次SSE1POST/0refresh仍503/0帧，关联候选日志为upstream200后malformed_chunk，预算剩1次×32，详见m3-backend-release-result与m3-sse-diagnostic-attempt2证据。"
       ],
       "notes": "诊断04ed728已上线并证明运行来源；部署健康通过。真实SSE第二次仍503，关联日志定位到上游200后的数据块投影/校验失败，具体字段未知；完整M3未通过。预算2/3已用，余1次×32。下一步先获得脱敏结构证据、核对契约，再决定兼容修复和复测，不盲目重试。 go-008仅诊断范围passing；保存false不保证无部分写入。"
+    },
+    {
+      "id": "go-009",
+      "priority": 0,
+      "area": "platform-diagnostics",
+      "title": "M3 SSE chunk固定校验原因细分",
+      "status": "in_progress",
+      "verification": [
+        "合成拒绝分支RED/GREEN与脱敏",
+        "既有投影/SSE行为对照",
+        "隔离全量与竞态、vet/build",
+        "独立规格与质量复核"
+      ],
+      "evidence": [
+        "2026-09-03：用户继续上轮固定分类方案；线上04ed728第二次SSE关联upstream200后malformed_chunk，精确字段未知。"
+      ],
+      "notes": "只增加固定内部分类，保留malformed_chunk与公开契约，未发布新候选，最后1次×32预算保留。"
     }
   ]
 }
