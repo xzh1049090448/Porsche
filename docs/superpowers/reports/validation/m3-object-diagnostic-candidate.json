@@ -1,0 +1,58 @@
+{
+  "sourceRevision": "ad3f5b4416854353ebb2b3647ae4b2a809b4a05c",
+  "imageId": "sha256:2bc6b866911f439545bd3128bf8af24e640b3922706c024651d3a7d2d15096d0",
+  "imageTag": "porsche-m3-object-diagnostics:ad3f5b4",
+  "imageArchive": "/private/tmp/porsche-m3-object-ad3f5b4.image.tar",
+  "archiveSHA256": "8154e46b93466f13018b8d310a4caf361bc40989cfd5e603e74ffe9ca94eb280",
+  "architecture": "amd64",
+  "os": "linux",
+  "binarySHA256": {
+    "server": "c0fb79a40874a2d3067d2733e6b9e17b0d5e3884c50db7ebbf0de296e7af71c1",
+    "bootstrap-root": "3fdf6868151c180cb412c10580c466fe51a14a027941ff4d4b2bdc30107ed15e"
+  },
+  "vcsModified": false,
+  "privateApplicationBinaries": true,
+  "sourceOrProductionConfigIncluded": false,
+  "buildRoot": "/private/tmp/porsche-m3-object-build-ad3f5b4-36d_43gw",
+  "buildMethod": "Standalone exact Git clone; offline cached public base; network none",
+  "caBundlePresent": true,
+  "binaryHashesMatch": true,
+  "isolatedStartup": "Expected exit1 missing JIEKOU_API_KEY, no credentials/DB/network; not runtime health",
+  "uploaded": false,
+  "deployed": false,
+  "generationBudget": {
+    "used": 3,
+    "maximumRequests": 4,
+    "remaining": 1,
+    "model": "gpt-5.4-nano",
+    "maxTokensPerRequest": 32
+  },
+  "publication": {
+    "status": "pending exact candidate deployment authorization",
+    "targetSSH": "overseaCloud",
+    "targetIP": "172.245.142.21",
+    "containerName": "ai-gateway-go",
+    "currentContainerId": "13ada4aa4f1e4460265d778f3447957ea854b234b542e509ffcf6668ef7b3031",
+    "currentImageId": "sha256:cb42daed3581c51a5e6f5ac5a237bec4b4e0c3540afb61d36acb27592dc2947f",
+    "currentSourceRevision": "6e70784e182a4bae1e5b8399053b45429e8e4400",
+    "remoteStagingPlanned": "/var/tmp/porsche-m3-object-release-ad3f5b4-20260903",
+    "preparedScriptSHA256": "f98fdd92e10fca06e600e50283e2c19eca73cfd4850d22f17dc65d41c5b0c0e1"
+  },
+  "localVerification": {
+    "changedPackagePassEvents": 175,
+    "defaultFullTestPassEvents": 304,
+    "defaultFullTestSkippedEvents": 98,
+    "raceTestPassEvents": 175,
+    "raceSkippedEvents": 0,
+    "failures": 0,
+    "vet": "PASS",
+    "build": "PASS",
+    "specReview": "PASS local diagnostic scope",
+    "qualityReview": "PASS local diagnostic scope",
+    "publicParityCases": 50,
+    "acceptedDigestCases": 17,
+    "databaseIntegration": "Not rerun; fixture absent; 98 default-suite skips explicitly retained",
+    "releaseBehaviorCases": 7,
+    "attempt4GuardCases": 3
+  }
+}

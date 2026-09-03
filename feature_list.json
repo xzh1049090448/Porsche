@@ -58,9 +58,10 @@
         "2026-09-03：线上目录/详情已测200，有效SSE两次503；第2次在04ed728运行来源已核实的候选上定位upstream200后malformed_chunk，0首帧。真实上游验收仍blocked。",
         "2026-09-03：用户明确授权后6e70784/cb42镜像发布成功，源站公网200、旧容器保留；第三次SSE仍503/0帧，关联upstream200后invalid_value/object。清理200/logout204，预算3/3耗尽。详见2026-09-03-m3-chunk-release-and-retest报告。后端PM确认限定发布通过，独立质量PARTIAL；整体M3未签收。",
         "2026-09-03：25项object合成离线假设通过，实际投影/SSE/脱敏断言无失败；确认既有日志无法区分缺失/null/空/其他字符串，不能放宽流校验。报告2026-09-03-m3-object-investigation.md；无业务改动、部署或新增生成，预算仍0。",
-        "2026-09-03 15:22：用户增加调用预算，按最小增量追加1次；总上限4、已用3、剩1，每次gpt-5.4-nano/max_tokens32。原调用记录保留，本次尚未发出第4次请求。"
+        "2026-09-03 15:22：用户增加调用预算，按最小增量追加1次；总上限4、已用3、剩1，每次gpt-5.4-nano/max_tokens32。原调用记录保留，本次尚未发出第4次请求。",
+        "2026-09-03：ad3f5b4有限object诊断候选本地相关包/race各175pass，默认全量304pass/98fixture skips，50公开响应+17正常摘要一致、独立规格/质量PASS；镜像2bc6b866/归档8154e46b已准备，未部署或新增生成。详见2026-09-03-m3-object-validation报告。"
       ],
-      "notes": "6e70784细分诊断已发布，运行来源精确核对；第三次SSE503/0帧定位object解码值不等于chat.completion.chunk，原始值及兼容决策未确认。用户追加1次预算后总上限4，已用3、剩1次gpt-5.4-nano/max_tokens32；先准备可区分object原因的采证方案，无自动重放。后端PM先核对契约/样例及离线假设；诊断能力passing不代表有效SSE或整体M3通过。"
+      "notes": "ad3f5b4有限object诊断仅本地验证和镜像准备完成，准确新候选部署待授权；线上仍6e70784且M3-11 FAIL。预算总4已用3剩1，先新候选运行核验再复测，不自动重放。默认测试98项DB/Redis fixture缺失SKIP不算完整集成验收。"
     },
     {
       "id": "go-006",
@@ -163,16 +164,17 @@
       "priority": 0,
       "area": "platform-diagnostics",
       "title": "M3 object字段有限形态诊断",
-      "status": "in_progress",
+      "status": "passing",
       "verification": [
         "实际SSE/Trace RED-GREEN",
         "固定枚举脱敏与重复键边界",
         "原协议输出对照及独立审查"
       ],
       "evidence": [
-        "用户在追加1次诊断预算后继续，落实既有有限分类方案；当前未部署或新增生成。"
+        "用户在追加1次诊断预算后继续，落实既有有限分类方案；当前未部署或新增生成。",
+        "2026-09-03：ad3f5b4有限object诊断候选本地相关包/race各175pass，默认全量304pass/98fixture skips，50公开响应+17正常摘要一致、独立规格/质量PASS；镜像2bc6b866/归档8154e46b已准备，未部署或新增生成。详见2026-09-03-m3-object-validation报告。"
       ],
-      "notes": "仅本地诊断补证据，不放宽object或更改公开SSE，剩余1次×32预算保留。"
+      "notes": "ad3f5b4有限object诊断仅本地验证和镜像准备完成，准确新候选部署待授权；线上仍6e70784且M3-11 FAIL。预算总4已用3剩1，先新候选运行核验再复测，不自动重放。默认测试98项DB/Redis fixture缺失SKIP不算完整集成验收。"
     }
   ]
 }

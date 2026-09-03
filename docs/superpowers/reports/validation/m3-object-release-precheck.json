@@ -1,0 +1,31 @@
+{
+  "utc": "2026-09-03T07:34:15.086716+00:00",
+  "containers": [
+    {
+      "id": "13ada4aa4f1e4460265d778f3447957ea854b234b542e509ffcf6668ef7b3031",
+      "name": "/ai-gateway-go",
+      "image": "sha256:cb42daed3581c51a5e6f5ac5a237bec4b4e0c3540afb61d36acb27592dc2947f",
+      "running": true
+    },
+    {
+      "id": "9425ea244ad71944ef78474cc405208fbbbe7eb22fdffd2b81e269d328d85b0c",
+      "name": "/ai-gateway-go-acceptance-rollback-1788416221798672629",
+      "image": "sha256:a69cfdab1cc8e18056286ae3991669d37515994041664b3fed5b6290ac602316",
+      "running": false
+    },
+    {
+      "id": "d2de587030c3055d4c4e913c3d0a1052297294810e6a4047b81b710edfe0b56b",
+      "name": "/ai-gateway-go-acceptance-rollback-1788414605780771454",
+      "image": "sha256:31abaeb16799f1bfad6501cf7d765ea443d5682561bbeed3f74255c8d8733b9a",
+      "running": false
+    }
+  ],
+  "rootRuntimeKeyAbsent": true,
+  "activeLabels": {
+    "codex.task": "m3-chunk-diagnostic-candidate",
+    "org.opencontainers.image.revision": "6e70784e182a4bae1e5b8399053b45429e8e4400"
+  },
+  "runtimePrivateSnapshotAbsent": true,
+  "sourceHealth": 200,
+  "publicHealth": 200
+}
