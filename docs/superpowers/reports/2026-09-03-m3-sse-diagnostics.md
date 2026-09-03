@@ -97,3 +97,17 @@ RED实际输出：received=false status=0; want true/302。仅诊断信息不准
 - 后端PM书面确认发布准备要求，不代表用户上线授权或线上M3签收。M3-11仍FAIL，剩余2次gpt-5.4-nano×max_tokens32预算保留。
 
 后端PM随后只读复核最终发布计划和两份JSON，书面确认材料足够提交用户授权申请、摘要一致且无阻塞申请的问题；不独立验证镜像内容、不授权部署、不签M3。协调者复核归档SHA、两仓清单一致及JSON/diff检查通过。
+
+## 2026-09-03：后端诊断已发布，SSE第二次仍失败并定位解析阶段
+
+- 用户明确确认上传及后端替换后完成发布：源码04ed728，镜像sha256:a69cfdab1cc8e18056286ae3991669d37515994041664b3fed5b6290ac602316；新容器9425ea244ad71944ef78474cc405208fbbbe7eb22fdffd2b81e269d328d85b0c于05:50:09Z启动，源站/公网health严格200。旧d2de587容器以ai-gateway-go-acceptance-rollback-1788414605780771454保留，未执行生产回滚；前端158a00e哈希保持。
+- 首次预检因OomKillDisable的null/false表示差异安全停止，未停旧服务。公开基础镜像两版本API探针证实创建规范化，限定兼容该默认值后重新预检；true仍拒绝。三锁、私有运行配置JSON快照、候选create后逐字段比对均执行，成功后私有快照删除。脚本已归档，仅适用本次精确对象，不是可直接复用的常规发布入口。
+- 真实SSE第2次于05:51:52Z发送：gpt-5.4-nano/max_tokens32，1POST/0refresh，HTTP503、gateway_upstream_unavailable、0帧。请求ID哈希与候选日志匹配，源码revision也匹配；上游返回200，sse_stream failed/malformed_chunk，首帧未发出，auth/catalog/前置quota及消息写入均success，assistant/usage/final_write未运行。尚不确定具体哪个字段或数据类型不兼容，不能宣称修复或归责供应商。
+- 应用日调用1→2、剩余99→98、token计数0；这不是供应商零费用证明。测试会话删除200、注销204。预算累计2/3，剩1次×32，不重置、不盲目重放。
+- M3-11仍FAIL、go-004仍blocked、web-009仍in_progress。后续先核对解析器拒绝条件与脱敏结构证据，再决定是否使用最后一次预算；不放宽白名单投影、不透传上游正文、不把health通过当M3签收。
+
+## 本轮双方与质量书面复核
+
+后端project_manager只读复核release-result、浏览器结果、候选诊断及预算，确认发布记录与第2次失败记录一致，request_id_sha256完全匹配，故障位于upstream200之后、首个公开帧之前的chunk投影校验；M3-11仍FAIL。质量角色独立只读复核同组证据，给出PARTIAL：认可部署健康及诊断链路，不认可有效SSE通过或整体M3签收。两角色均未独立执行部署/线上生成。
+
+下一步责任与准入：后端PM先对照已约定上游SSE规范和静态样例，梳理JSON/字段类型、id/object/created、usage-only、choice/delta/tool_calls各拒绝条件；需要补诊断时仅设计固定原因枚举和固定字段路径/类型类别，不记录原始帧、值、提示词、工具参数或任意字段名，不提前放宽投影白名单。执行角色先以合成fixture证明各分支分类与脱敏，质量角色复核后才能准备后续候选。待下一次能区分失败分支时，协调者再按剩余1次×32预算安排复测，不能盲目重试。此后续方案尚未实施或发布。

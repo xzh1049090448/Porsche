@@ -26,13 +26,13 @@
   },
   "imageBuilt": true,
   "imageBuildBlocker": null,
-  "deployed": false,
-  "productionSSEStatus": "FAIL 503, root cause unresolved",
+  "deployed": true,
+  "productionSSEStatus": "FAIL 503; correlated upstream HTTP200 then malformed_chunk before first frame; exact field unknown",
   "generationBudget": {
     "model": "gpt-5.4-nano",
-    "used": 1,
+    "used": 2,
     "maximumRequests": 3,
-    "remaining": 2,
+    "remaining": 1,
     "maxTokensPerRequest": 32
   },
   "createdUTC": "2026-09-03T05:13:46.617210+00:00",
@@ -59,7 +59,7 @@
     "taskLabel": "m3-diagnostic-candidate",
     "privateApplicationBinaries": true
   },
-  "updatedUTC": "2026-09-03T05:36:19.743953+00:00",
+  "updatedUTC": "2026-09-03T05:51:54.287215608Z",
   "imageBuild": {
     "method": "Public runtime base built remotely, downloaded and hash-verified; private binaries assembled locally offline with --network=none --pull=false",
     "publicBaseTag": "porsche-m3-public-runtime:alpine3.20-amd64",
@@ -69,15 +69,31 @@
     "log": "/private/tmp/porsche-m3-image-offline-build.log"
   },
   "publication": {
-    "privateArtifactsUploaded": false,
-    "authorization": "pending explicit user approval for private image upload and backend replacement",
+    "privateArtifactsUploaded": true,
+    "authorization": "User explicitly confirmed exact image upload and backend replacement on 2026-09-03; tool approval passed",
     "previousSourceAndBinaryUpload": "rejected before execution by automatic approval review: private payload upload to the specific remote host was not explicitly authorized and destination trust was not established",
     "targetSSH": "overseaCloud",
     "targetIP": "172.245.142.21",
     "containerName": "ai-gateway-go",
-    "currentContainerId": "d2de587030c3055d4c4e913c3d0a1052297294810e6a4047b81b710edfe0b56b",
+    "currentContainerId": "9425ea244ad71944ef78474cc405208fbbbe7eb22fdffd2b81e269d328d85b0c",
     "rollbackImageId": "sha256:31abaeb16799f1bfad6501cf7d765ea443d5682561bbeed3f74255c8d8733b9a",
-    "runtimeHealthVerified": false,
-    "rollbackExecuted": false
+    "runtimeHealthVerified": true,
+    "rollbackExecuted": false,
+    "previousContainerId": "d2de587030c3055d4c4e913c3d0a1052297294810e6a4047b81b710edfe0b56b",
+    "rollbackName": "ai-gateway-go-acceptance-rollback-1788414605780771454"
+  },
+  "release": {
+    "status": "deployed",
+    "sourceRevision": "04ed72806f5ca139d219d166452e0473ba5bf1a1",
+    "imageId": "sha256:a69cfdab1cc8e18056286ae3991669d37515994041664b3fed5b6290ac602316",
+    "archiveSHA256": "af8a122d1fa5018a981d4757aff03b0b204ef8048c38f2632eb47e343ad0c580",
+    "newContainerId": "9425ea244ad71944ef78474cc405208fbbbe7eb22fdffd2b81e269d328d85b0c",
+    "oldContainerId": "d2de587030c3055d4c4e913c3d0a1052297294810e6a4047b81b710edfe0b56b",
+    "rollbackName": "ai-gateway-go-acceptance-rollback-1788414605780771454",
+    "sourceHealth": 200,
+    "publicHealth": 200,
+    "frontendUnchanged": true,
+    "generationRequests": 0,
+    "utc": "2026-09-03T05:50:10Z"
   }
 }

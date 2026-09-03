@@ -1,0 +1,26 @@
+{
+  "releaseScriptSHA256": "56023fdc0f2ee1ff28acd82747c3bedf1c7aa82a1ece58728e547abd8cd2723e",
+  "behaviorTests": {
+    "cases": [
+      "success",
+      "create_failure",
+      "health_failure",
+      "cleanup_failure",
+      "identity_mismatch",
+      "lock_failure",
+      "health_interrupt"
+    ],
+    "passed": 7,
+    "scope": "Mocked Docker/network, real control flow; not a production rollback drill"
+  },
+  "normalizationTest": "OomKillDisable None->False accepted; True rejected",
+  "firstPreflight": "Stopped before old service stop at host_config_mismatch_OomKillDisable; candidate removed",
+  "independentRuntimeCheck": {
+    "newContainerId": "9425ea244ad71944ef78474cc405208fbbbe7eb22fdffd2b81e269d328d85b0c",
+    "running": true,
+    "startedAt": "2026-09-03T05:50:09.823788996Z",
+    "oldContainerRetained": true,
+    "privateSnapshotRemoved": true
+  },
+  "productionRollbackExecuted": false
+}

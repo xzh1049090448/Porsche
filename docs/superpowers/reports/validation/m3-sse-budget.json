@@ -1,0 +1,20 @@
+{
+  "maximumRequests": 3,
+  "maxTokensPerRequest": 32,
+  "attempts": [
+    {
+      "number": 1,
+      "case": "normal",
+      "model": "gpt-5.4-nano",
+      "max_tokens": 32,
+      "sentAt": "2026-09-03T04:30:49.890Z"
+    },
+    {
+      "number": 2,
+      "case": "diagnostic-attempt2",
+      "model": "gpt-5.4-nano",
+      "max_tokens": 32,
+      "sentAt": "2026-09-03T05:51:52.161Z"
+    }
+  ]
+}

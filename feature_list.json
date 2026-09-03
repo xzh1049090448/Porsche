@@ -54,9 +54,10 @@
         "2026-08-24：Task 3 生产部署脚本的 bash 静态检查、隔离 mock 部署回归检查、Nginx 配置静态检查，以及 Go 全量测试与 go vet ./... 通过；真实 JieKou AI 上游冒烟仍未执行。",
         "2026-08-24：生产部署预发布加固：fixture mock 测试仅创建 fixture/.env 并执行真实脚本 symlink；ENV_FILE 不会覆盖生产环境，健康检查每次使用 2s/3s curl 超时、至多 30 次并在 timeout 回滚；flock 并发竞争无 Docker 写操作；.dockerignore 排除 .env 与本地状态，成功输出容器 ID 和 Git revision。",
         "2026-08-27：全局 JIEKOU_ALLOWED_MODELS 支持精确 ID 和 re: RE2 模式；go test ./internal/config -count=1、go test ./internal/whitelabel -count=1、go test ./... -count=1 和 go vet ./... 已验证。用户及 Gateway Token allowed_models 仍按精确 ID 匹配；尚未执行真实 JieKou AI 上游冒烟。",
-        "尚未执行真实 JieKou AI 上游冒烟。"
+        "尚未执行真实 JieKou AI 上游冒烟。",
+        "2026-09-03：线上目录/详情已测200，有效SSE两次503；第2次在04ed728运行来源已核实的候选上定位upstream200后malformed_chunk，0首帧。真实上游验收仍blocked。"
       ],
-      "notes": "2026-09-02：main 已有 slash ID / 空数组修复；隔离 MySQL 8.0.46 / Redis 7 下 13 个目录与 ACL 顶层专项测试通过且无跳过。随后发现的测试基线和 Refresh 重放问题已由 go-007 本地修复并于 2026-09-03 完成全量真实依赖复验。真实上游目录、详情、Chat/SSE 尚未验收，Issue #2 不关闭。"
+      "notes": "线上目录/详情可用，但有效SSE两次503；04ed728诊断候选已部署，第二次证据定位upstream200后的malformed_chunk，具体字段仍未知。Issue #2和整体M3不关闭，预算余1次×max_tokens32。"
     },
     {
       "id": "go-006",
@@ -127,9 +128,10 @@
         "2026-09-03：从0bab2b7建立fix/m3-sse-diagnostics，按用户继续落实已交付方案；init.sh在允许回环监听环境通过，未注入TEST_*的集成测试跳过。",
         "2026-09-03：真实隔离MySQL8/Redis7最终全量293个pass事件、0fail/skip；诊断专项race46个pass事件、0fail/skip；vet/build/diff均通过。RED→GREEN覆盖首帧前503、数据库阶段、超时/取消、重定向response+error及脱敏，详见docs/superpowers/reports/2026-09-03-m3-sse-diagnostics.md。",
         "2026-09-03：后端PM最终规格PASS，独立质量实际socket非法SSE/脱敏探针及最终redirect微调复验PASS；仅本地诊断范围。临时测试容器与凭据清理完成。",
-        "2026-09-03：诊断镜像在本机离线构建完成并核验linux/amd64、源码标签、两二进制哈希与CA；精确镜像及归档摘要见m3-backend-diagnostic-candidate.json。私有构建包上传此前被自动审批拒绝；当前私有镜像未上传/部署，等待具体后端发布授权。"
+        "2026-09-03：诊断镜像在本机离线构建完成并核验linux/amd64、源码标签、两二进制哈希与CA；精确镜像及归档摘要见m3-backend-diagnostic-candidate.json。私有构建包上传此前被自动审批拒绝；当前私有镜像未上传/部署，等待具体后端发布授权。",
+        "2026-09-03：用户明确授权后04ed728诊断镜像发布成功，源站/公网200，旧容器保留、前端158a00e未改；第二次SSE1POST/0refresh仍503/0帧，关联候选日志为upstream200后malformed_chunk，预算剩1次×32，详见m3-backend-release-result与m3-sse-diagnostic-attempt2证据。"
       ],
-      "notes": "当前诊断候选04ed728镜像已本机构建并核验；私有镜像上传及后端替换待明确授权，尚未执行。线上前端158a00e，M3-11首试503根因未知，完整M3未通过。下一步按发布计划完成授权、切换/健康核验，再按剩余2次×max_tokens32预算带日志复测。 go-008仅本地passing；panic恢复日志、保存false可能部分写入及未知运行源码的限制继续适用。"
+      "notes": "诊断04ed728已上线并证明运行来源；部署健康通过。真实SSE第二次仍503，关联日志定位到上游200后的数据块投影/校验失败，具体字段未知；完整M3未通过。预算2/3已用，余1次×32。下一步先获得脱敏结构证据、核对契约，再决定兼容修复和复测，不盲目重试。 go-008仅诊断范围passing；保存false不保证无部分写入。"
     }
   ]
 }
