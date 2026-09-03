@@ -1,0 +1,98 @@
+{
+  "containerId": "1665e1118c949441909d8478bd1a88a7b058d5c02d8465701ee586d463ce9ef6",
+  "startedAt": "2026-09-03T07:46:42.570802389Z",
+  "running": true,
+  "matchedRecords": [
+    {
+      "event": "platform_chat_diagnostic",
+      "trace_id": "e14c1e1f03cdf2395539c6b1ac3c3098",
+      "request_id_sha256": "b9477e5517ce1f52f9a503eb9a50e592320ac0e48a187d10bdc4ee51e6b2fba6",
+      "utc": "2026-09-03T07:47:38.158937237Z",
+      "route": "/api/v1/platform/chat/completions",
+      "method": "POST",
+      "vcs_revision": "ad3f5b4416854353ebb2b3647ae4b2a809b4a05c",
+      "vcs_modified": "false",
+      "duration_ms": 2391.345782,
+      "http_status": 200,
+      "upstream_http_status": 200,
+      "upstream_request_attempted": true,
+      "upstream_response_received": true,
+      "first_frame_emitted": true,
+      "daily_call_saved": true,
+      "conversation_ready": true,
+      "user_message_saved": true,
+      "final_saved": true,
+      "stages": {
+        "authentication": {
+          "state": "success",
+          "reason": "none",
+          "duration_ms": 4.308252
+        },
+        "validation": {
+          "state": "success",
+          "reason": "none",
+          "duration_ms": 0.53138
+        },
+        "model_catalog_acl": {
+          "state": "success",
+          "reason": "none",
+          "duration_ms": 0.101233
+        },
+        "quota_persist": {
+          "state": "success",
+          "reason": "none",
+          "duration_ms": 4.939203
+        },
+        "conversation_lookup_create": {
+          "state": "success",
+          "reason": "none",
+          "duration_ms": 1.495154
+        },
+        "user_message_save": {
+          "state": "success",
+          "reason": "none",
+          "duration_ms": 9.545865
+        },
+        "title_save": {
+          "state": "success",
+          "reason": "none",
+          "duration_ms": 4.320088
+        },
+        "serialization": {
+          "state": "success",
+          "reason": "none",
+          "duration_ms": 0.174994
+        },
+        "upstream_connect": {
+          "state": "success",
+          "reason": "none",
+          "duration_ms": 2342.456697
+        },
+        "sse_stream": {
+          "state": "success",
+          "reason": "none",
+          "duration_ms": 2.925742
+        },
+        "assistant_save": {
+          "state": "success",
+          "reason": "none",
+          "duration_ms": 13.866476
+        },
+        "usage_save": {
+          "state": "success",
+          "reason": "none",
+          "duration_ms": 6.17494
+        },
+        "final_write": {
+          "state": "success",
+          "reason": "none",
+          "duration_ms": 0.201634
+        }
+      },
+      "malformed_chunk_detail": {
+        "reason": "unknown",
+        "field": "unknown"
+      }
+    }
+  ]
+}

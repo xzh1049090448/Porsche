@@ -1,5 +1,14 @@
 # Porsche 开发进度
 
+## 2026-09-03 15:48：ad3f5b4发布及正常SSE复测通过
+
+本节为最新状态，后续旧记录的“未发布/剩余1次/有效流FAIL”仅适用于当时。
+
+- ad3f5b4已授权发布；第4次正常SSE子项PASS：200、meta→4 delta→[DONE]→done，1 POST/0 refresh，唯一请求哈希与运行日志匹配、全部保存阶段成功、tokens0→1。清理200/logout204，预算4/4耗尽。object拒绝本次未复现，根因未闭环；流内错误/取消等未测，整体M3 PARTIAL。go-004保持blocked、web-009保持in_progress，诊断功能passing不代表整体签收。
+- 新容器1665e111、镜像2bc6b866，源站/公网200；旧13ada4aa及另两个更早容器停止保留，前端158a00e不变，私密快照删除。
+- 后端PM已书面确认发布及正常终态限定PASS；独立质量亦确认成功流限定PASS、整体M3 PARTIAL；详见2026-09-03-m3-object-release-and-retest.md。没有产生object_detail；提取器unknown/unknown是缺字段默认值，不是拒绝。
+
+
 ## 2026-09-03：object有限分类候选ad3f5b4已准备
 
 - 本地实现固定decoded_kind/field_shape/key_match；保持原SSE接受/拒绝，原值不进入日志。相关包及race各175pass；默认全量304pass/0fail/98个DB或Redis fixture缺失SKIP，不能算完整DB验收。50组公开响应与17正常摘要对照一致，独立规格/质量限定PASS。
