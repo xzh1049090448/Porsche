@@ -1,5 +1,5 @@
 {
-  "maximumRequests": 3,
+  "maximumRequests": 4,
   "maxTokensPerRequest": 32,
   "attempts": [
     {
@@ -22,6 +22,18 @@
       "model": "gpt-5.4-nano",
       "max_tokens": 32,
       "sentAt": "2026-09-03T06:17:57.135Z"
+    }
+  ],
+  "authorizationUpdates": [
+    {
+      "recordedAt": "2026-09-03T07:22:53Z",
+      "userInstruction": "增加调用预算",
+      "previousMaximumRequests": 3,
+      "addedRequests": 1,
+      "newMaximumRequests": 4,
+      "model": "gpt-5.4-nano",
+      "maxTokensPerRequest": 32,
+      "scope": "One additional diagnostic generation; no automatic replay. Minimum increment chosen because user did not specify quantity."
     }
   ]
 }
