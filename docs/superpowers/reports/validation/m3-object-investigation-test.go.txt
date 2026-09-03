@@ -1,0 +1,53 @@
+package whitelabel
+
+import (
+ "testing"
+ "encoding/json"
+ "strings"
+)
+
+func TestM3ObjectHypotheses(t *testing.T) {
+ const prefix=`{"id":"fixture","created":0,"choices":[{"index":0,"delta":{"content":"OK"}}]`
+ cases:=[]struct{name,tail,reason,field string}{
+  {"standard",`,"object":"chat.completion.chunk"}`,"",""},
+  {"missing",`}`,"invalid_value","object"},
+  {"null",`,"object":null}`,"invalid_value","object"},
+  {"empty",`,"object":""}`,"invalid_value","object"},
+  {"nonstream_completion",`,"object":"chat.completion"}`,"invalid_value","object"},
+  {"response_object",`,"object":"response"}`,"invalid_value","object"},
+  {"unknown_string",`,"object":"SENSITIVE-value"}`,"invalid_value","object"},
+  {"whitespace",`,"object":" chat.completion.chunk "}`,"invalid_value","object"},
+  {"number",`,"object":1}`,"json_type","object"},
+  {"boolean",`,"object":false}`,"json_type","object"},
+  {"array",`,"object":[]}`,"json_type","object"},
+  {"map",`,"object":{}}`,"json_type","object"},
+  {"case_key",`,"OBJECT":"chat.completion.chunk"}`,"",""},
+  {"duplicate_bad_last",`,"object":"chat.completion.chunk","object":"chat.completion"}`,"invalid_value","object"},
+  {"duplicate_good_last",`,"object":"chat.completion","object":"chat.completion.chunk"}`,"",""},
+  {"duplicate_null_last",`,"object":"chat.completion.chunk","object":null}`,"",""},
+  {"duplicate_empty_last",`,"object":"chat.completion.chunk","object":""}`,"invalid_value","object"},
+  {"escaped_key",`,"ob\u006aect":"chat.completion.chunk"}`,"",""},
+  {"null_then_standard",`,"object":null,"object":"chat.completion.chunk"}`,"",""},
+  {"nested_only",`,"extra":{"object":"chat.completion.chunk"}}`,"invalid_value","object"},
+  {"nested_bad_ignored",`,"object":"chat.completion.chunk","extra":{"object":"chat.completion"}}`,"",""},
+  {"object_before_negative_created",`,"object":"chat.completion","created":-1}`,"invalid_value","object"},
+  {"decode_error_before_object",`,"object":"chat.completion","created":"SENSITIVE"}`,"json_type","created"},
+  {"id_before_object",`,"id":"","object":"chat.completion"}`,"missing_required","id"},
+  {"case_collision",`,"object":"chat.completion.chunk","OBJECT":"chat.completion"}`,"invalid_value","object"},
+ }
+ for _,tc:=range cases {t.Run(tc.name,func(t *testing.T){
+  raw:=prefix+tc.tail
+  projected,failure:=projectChatCompletionChunkDetail([]byte(raw),"model-a")
+  if tc.reason!="" {
+   if failure==nil || string(failure.Reason)!=tc.reason || string(failure.Field)!=tc.field {t.Fatalf("unexpected classification: %+v",failure)}
+   assertMalformedDetail(t,raw,tc.reason,tc.field)
+  } else {
+   if failure!=nil || projected.Object!="chat.completion.chunk" {t.Fatalf("unexpected projection: %+v",failure)}
+   var frames [][]byte
+   err:=(&WhiteLabelService{}).ProjectChatCompletionSSE(strings.NewReader("data: "+raw+"\n\ndata: [DONE]\n\n"),"model-a",func(b []byte)error{frames=append(frames,append([]byte(nil),b...));return nil})
+   if err!=nil || len(frames)!=2 {t.Fatalf("stream err=%v frames=%d",err,len(frames))}
+   var c ChatCompletionChunk
+   if e:=json.Unmarshal([]byte(strings.TrimSpace(strings.TrimPrefix(string(frames[0]),"data:"))),&c);e!=nil || c.Object!="chat.completion.chunk" {t.Fatal("public normalization failed")}
+  }
+ })}
+}
