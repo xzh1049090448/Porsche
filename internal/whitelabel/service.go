@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/porsche/ai-gateway-go/internal/diagnostics"
 	"io"
 	"net/http"
 	"net/url"
@@ -197,21 +198,37 @@ func (s *WhiteLabelService) AuthorizeModel(id string, acl []string) *Error {
 // upstream. Non-2xx responses are discarded here so neither their headers nor
 // bodies can reach clients.
 func (s *WhiteLabelService) Chat(ctx context.Context, body []byte) (*http.Response, *Error) {
+	trace := diagnostics.From(ctx)
+	end := trace.Begin(diagnostics.Connect)
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, s.baseURL+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
+		end(diagnostics.Invalid)
 		return nil, ErrUpstreamUnavailable("chat request creation failed")
 	}
 	request.Header.Set("Authorization", "Bearer "+s.apiKey)
 	request.Header.Set("Accept", "application/json, text/event-stream")
 	request.Header.Set("Content-Type", "application/json")
+	trace.Mark(diagnostics.UpstreamAttempted)
 	response, err := s.client.Do(request)
+	if response != nil {
+		trace.Mark(diagnostics.UpstreamReceived)
+		trace.UpstreamStatus(response.StatusCode)
+	}
 	if err != nil {
+		reason := diagnostics.NetworkReason(err)
+		// http.Client returns both a response and an error when CheckRedirect rejects it.
+		if response != nil {
+			reason = diagnostics.RedirectRejected
+		}
+		end(reason)
 		return nil, ErrUpstreamUnavailable("chat request failed")
 	}
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		end(diagnostics.Non2xx)
 		response.Body.Close()
 		return nil, ErrUpstreamUnavailable("chat response failed")
 	}
+	end(diagnostics.OK)
 	return response, nil
 }
 

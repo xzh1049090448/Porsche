@@ -19,8 +19,16 @@
       "area": "integration-test-baseline",
       "title": "修复真实 MySQL/Redis 测试基线",
       "status": "passing",
-      "verification": ["隔离 MySQL 8 / Redis 7 全量 go test -p 1 ./... -count=1", "go vet ./...", "go build ./..."],
-      "evidence": ["2026-09-02：元数据扫描和两类超长用户名原始回归均 RED→GREEN；新增 MaxInt64/短 ID/唯一性与 ID 完整性测试通过。四项回归 -race -count=3 通过，go build/vet 与 diff 检查通过。", "全新 MySQL 8.0.46 测试库和 Redis 逻辑库下全量执行：225 个含子测试的通过事件，0 跳过，service 包另有 3 项失败；详见 docs/superpowers/reports/2026-09-02-backend-test-baseline.md。", "2026-09-03：上述阻塞已修复。全量 247 pass、同实例 shuffle 两轮 494 pass、认证 race 三轮 60 pass，全部 0 fail/skip；独立设计与安全审查通过，HTTPS 重放由 RED 500 恢复为 401 且验证持久撤销。报告 docs/superpowers/reports/2026-09-02-refresh-replay-test-isolation.md。"],
+      "verification": [
+        "隔离 MySQL 8 / Redis 7 全量 go test -p 1 ./... -count=1",
+        "go vet ./...",
+        "go build ./..."
+      ],
+      "evidence": [
+        "2026-09-02：元数据扫描和两类超长用户名原始回归均 RED→GREEN；新增 MaxInt64/短 ID/唯一性与 ID 完整性测试通过。四项回归 -race -count=3 通过，go build/vet 与 diff 检查通过。",
+        "全新 MySQL 8.0.46 测试库和 Redis 逻辑库下全量执行：225 个含子测试的通过事件，0 跳过，service 包另有 3 项失败；详见 docs/superpowers/reports/2026-09-02-backend-test-baseline.md。",
+        "2026-09-03：上述阻塞已修复。全量 247 pass、同实例 shuffle 两轮 494 pass、认证 race 三轮 60 pass，全部 0 fail/skip；独立设计与安全审查通过，HTTPS 重放由 RED 500 恢复为 401 且验证持久撤销。报告 docs/superpowers/reports/2026-09-02-refresh-replay-test-isolation.md。"
+      ],
       "notes": "2026-09-03：用户批准的 Refresh 事务后空结果修复及测试隔离已完成。全新 MySQL 8.0.46 / Redis 7 全量 247 pass，复用同一实例 shuffle 两轮 494 pass，认证 race 三轮 60 pass（均含子测试、0 fail、0 skip）；build/vet 与独立设计、质量/安全审查通过。完整命令与输出：docs/superpowers/reports/2026-09-02-refresh-replay-test-isolation.md。仅本地提交；无生产 schema/Redis 协议变更，未推送、合并或部署。"
     },
     {
@@ -72,7 +80,7 @@
         "2026-08-31：Task 5 交付用户名注册/登录、Refresh/登出、本人安全资料和会话管理 HTTP 端点；Refresh Cookie 固定 HttpOnly/Secure/SameSite=Lax，Refresh/登出拒绝缺失或非可信 Origin，X-Auth-Session 仅在携带时与 Cookie SID 一致。DTO 不含内部 ID、SID、HMAC、Refresh 或密码哈希；管理员列表/详情仅可见严格低角色，删除复用软删除服务。新增端点/DTO RED 先因缺少序列化器编译失败，GREEN 后定向 handler 测试、go vet ./... 与 diff 检查通过。",
         "2026-08-31：测试验收新增受控 MySQL/Redis HTTP 集成回归，拒绝非 *_test/porsche_test 数据库。覆盖注册、登录、Refresh Cookie/Origin/SID 绑定、会话撤销、登出和管理员严格角色层级及 DTO 脱敏；当前 TEST_DATABASE_URL/TEST_REDIS_URL 未提供，用例按安全规则显式跳过，未读取 .env、DATABASE_URL 或生产凭据。定向 handler/dto/middleware 测试、go vet 与 diff 检查通过。",
         "2026-09-01：新增生产域认证验收工具：内部持久化 Redis bootstrap、显式确认 schema 迁移、feature 分支候选部署与 manifest 回滚。Shell 行为测试仅在无网络、无 Docker socket、只挂载临时 fixture 的 bash:5.2 容器中执行，不再以手写 Shell 词法扫描器作为安全边界；新旧 Shell 回归、Nginx 静态检查、go test ./... -count=1、go vet ./... 与 git diff --check 通过。",
-    "2026-09-01：安全返工证据：Root runtime environment startup 已退役，生产服务拒绝任何 ROOT_BOOTSTRAP_ key 且从不自动引导；唯一引导是 Root-controlled one-shot wrapper。deploy 与 rollback 在 npm/build、Nginx、container stop/remove/rename、rsync/static write 前 fail-closed 扫描 docker ps -a 中 exact ai-gateway-go 和 ai-gateway-go-acceptance-rollback-<digits> 的运行/停止容器；manifest target 不在列表时仍显式 inspect。disposable no-network fixture 已通过 docs/deploy/rollback：覆盖 current/stopped rollback Root key、inspect/list error、helper 排除和输出/argv 脱敏。真实 test machine one-shot、candidate deploy、browser acceptance 仍 pending，生产验收不得标为 passing。",
+        "2026-09-01：安全返工证据：Root runtime environment startup 已退役，生产服务拒绝任何 ROOT_BOOTSTRAP_ key 且从不自动引导；唯一引导是 Root-controlled one-shot wrapper。deploy 与 rollback 在 npm/build、Nginx、container stop/remove/rename、rsync/static write 前 fail-closed 扫描 docker ps -a 中 exact ai-gateway-go 和 ai-gateway-go-acceptance-rollback-<digits> 的运行/停止容器；manifest target 不在列表时仍显式 inspect。disposable no-network fixture 已通过 docs/deploy/rollback：覆盖 current/stopped rollback Root key、inspect/list error、helper 排除和输出/argv 脱敏。真实 test machine one-shot、candidate deploy、browser acceptance 仍 pending，生产验收不得标为 passing。",
         "2026-09-02：真实测试机完成 MySQL 8 migration 0002、认证 Redis、一次性 Root 引导及候选部署。修复 Session.SID 被 GORM 错映射为 s_id 的生产故障后，Root login/self/refresh/session revoke/logout 依次返回 200/200/200/204/204，登出后受保护请求返回 401，数据库活跃 Root 会话归零。",
         "2026-09-02：生产域浏览器验收通过：HTTP 由 Cloudflare 301 到 HTTPS，可信链限定为 Cloudflare 官方网段到 Nginx real-IP、再由应用仅信任 Docker gateway 172.19.0.1/32；刷新保持登录，当前设备展示真实客户端 IP，退出后 active_root_sessions=0。严格 umask 导致的静态 403 已恢复并在两个发布入口补充 0755/0644 回归，源站及公网 health、/、/profile、/api-keys 均返回预期状态。最终 Shell 隔离矩阵、既有部署/Nginx 回归、Go 全量测试、go vet、bash -n、JSON 与 diff 检查通过。"
       ],
@@ -100,6 +108,27 @@
         "脚本固定使用 /opt/Porsche、/opt/Porsche-Web、/var/www/porsche-web 和 porsche-app；不管理 MySQL、数据库卷、Docker 网络或 new-api。"
       ],
       "notes": "前端发布使用 rsync --archive --delete --delay-updates，不是跨文件原子切换；部署 Nginx 前仍须安装仓库提供的 SPA/static + API proxy 配置。"
+    },
+    {
+      "id": "go-008",
+      "priority": 0,
+      "area": "platform-diagnostics",
+      "title": "M3单模型SSE脱敏阶段诊断",
+      "user_visible_behavior": "公开错误与流协议保持一致，维护者能通过脱敏日志定位首帧前失败阶段。",
+      "status": "passing",
+      "verification": [
+        "隔离上游及MySQL/Redis诊断矩阵",
+        "go test ./... -count=1",
+        "go vet ./...",
+        "go build ./...",
+        "独立规格与质量安全审查"
+      ],
+      "evidence": [
+        "2026-09-03：从0bab2b7建立fix/m3-sse-diagnostics，按用户继续落实已交付方案；init.sh在允许回环监听环境通过，未注入TEST_*的集成测试跳过。",
+        "2026-09-03：真实隔离MySQL8/Redis7最终全量293个pass事件、0fail/skip；诊断专项race46个pass事件、0fail/skip；vet/build/diff均通过。RED→GREEN覆盖首帧前503、数据库阶段、超时/取消、重定向response+error及脱敏，详见docs/superpowers/reports/2026-09-03-m3-sse-diagnostics.md。",
+        "2026-09-03：后端PM最终规格PASS，独立质量实际socket非法SSE/脱敏探针及最终redirect微调复验PASS；仅本地诊断范围。临时测试容器与凭据清理完成。"
+      ],
+      "notes": "本地诊断候选已完成，未部署，不证明线上503已修复或M3通过。panic恢复日志准确性未覆盖；false保存标记不保证无部分写入；缺失vcs信息记unknown，发布仍须manifest绑定。线上剩余2次×32生成预算保留。"
     }
   ]
 }

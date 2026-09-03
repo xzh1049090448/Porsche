@@ -3,23 +3,43 @@ package whitelabel
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"strings"
+
+	"github.com/porsche/ai-gateway-go/internal/diagnostics"
 )
 
 // ProjectChatCompletionSSE consumes upstream SSE frames and invokes emit with
 // client-safe OpenAI data frames only. Upstream SSE fields are never retained.
 func (s *WhiteLabelService) ProjectChatCompletionSSE(reader io.Reader, logicalModelID string, emit func([]byte) error) *Error {
+	return s.ProjectChatCompletionSSEContext(context.Background(), reader, logicalModelID, emit)
+}
+
+// ProjectChatCompletionSSEContext retains the public projection contract and records fixed diagnostics when present.
+func (s *WhiteLabelService) ProjectChatCompletionSSEContext(ctx context.Context, reader io.Reader, logicalModelID string, emit func([]byte) error) *Error {
+	end := diagnostics.From(ctx).Begin(diagnostics.Stream)
+	fail := func(reason diagnostics.Reason, detail string) *Error {
+		end(reason)
+		return ErrUpstreamUnavailable(detail)
+	}
 	if !validModelID(logicalModelID) {
-		return ErrUpstreamUnavailable("invalid logical model")
+		return fail(diagnostics.Invalid, "invalid logical model")
 	}
 	buffered := bufio.NewReader(reader)
 	var dataLines []string
 	for {
 		line, err := buffered.ReadString('\n')
 		if err != nil && err != io.EOF {
-			return ErrUpstreamUnavailable("stream read failed")
+			reason := diagnostics.NetworkReason(err)
+			if reason == diagnostics.Network {
+				reason = diagnostics.Read
+			}
+			if ctx.Err() != nil {
+				reason = diagnostics.NetworkReason(ctx.Err())
+			}
+			return fail(reason, "stream read failed")
 		}
 		if len(line) > 0 {
 			line = strings.TrimSuffix(line, "\n")
@@ -30,22 +50,31 @@ func (s *WhiteLabelService) ProjectChatCompletionSSE(reader io.Reader, logicalMo
 					dataLines = nil
 					if payload == "[DONE]" {
 						if emitErr := emit([]byte("data: [DONE]\n\n")); emitErr != nil {
-							return ErrUpstreamUnavailable("stream write failed")
+							reason := diagnostics.Write
+							if ctx.Err() != nil {
+								reason = diagnostics.NetworkReason(ctx.Err())
+							}
+							return fail(reason, "stream write failed")
 						}
+						end(diagnostics.OK)
 						return nil
 					} else {
 						projected, projectErr := projectChatCompletionChunk([]byte(payload), logicalModelID)
 						if projectErr != nil {
-							return ErrUpstreamUnavailable("malformed chat completion chunk")
+							return fail(diagnostics.Malformed, "malformed chat completion chunk")
 						}
 						encoded, marshalErr := json.Marshal(projected)
 						if marshalErr != nil {
-							return ErrUpstreamUnavailable("chunk encoding failed")
+							return fail(diagnostics.Invalid, "chunk encoding failed")
 						}
 						frame := append([]byte("data: "), encoded...)
 						frame = append(frame, '\n', '\n')
 						if emitErr := emit(frame); emitErr != nil {
-							return ErrUpstreamUnavailable("stream write failed")
+							reason := diagnostics.Write
+							if ctx.Err() != nil {
+								reason = diagnostics.NetworkReason(ctx.Err())
+							}
+							return fail(reason, "stream write failed")
 						}
 					}
 				}
@@ -55,7 +84,11 @@ func (s *WhiteLabelService) ProjectChatCompletionSSE(reader io.Reader, logicalMo
 			}
 		}
 		if err == io.EOF {
-			return ErrUpstreamUnavailable("incomplete stream")
+			reason := diagnostics.Incomplete
+			if ctx.Err() != nil {
+				reason = diagnostics.NetworkReason(ctx.Err())
+			}
+			return fail(reason, "incomplete stream")
 		}
 	}
 }

@@ -1,8 +1,14 @@
 # Porsche 开发进度
 
-## 当前唯一活动功能
+## 2026-09-03：M3诊断本地候选完成
 
-当前无实现中的功能。`go-007` 已完成本地修复和真实 MySQL/Redis 全量、重复、竞态验证，状态为 `passing`；尚未推送、合并或部署。`go-004` 仍待真实上游验收。
+- 从0bab2b7建立独立fix/m3-sse-diagnostics；单模型platform chat新增请求关联、阶段/上游状态/保存标记的白名单日志，公开响应和扣次/保存顺序不变。
+- 最终隔离MySQL8/Redis7全量293、专项race46个pass事件，0fail/skip；vet/build/diff通过，后端PM与独立质量限定PASS。完整RED/GREEN、socket探针、redirect返工及边界见docs/superpowers/reports/2026-09-03-m3-sse-diagnostics.md。
+- 本轮临时测试依赖/凭据已清理；生产未动，线上剩余2次gpt-5.4-nano×max_tokens32预算保留。go-008仅本地passing，go-004与前端M3不因日志候选而签收。下一步明确后端候选发布及回滚，再带诊断复测。
+
+## 当前活动状态
+
+当前无实现中的功能。go-008本地诊断实现及独立验证已完成，未部署；真实上游503仍待诊断发布后复测。`go-007` 已完成本地修复和真实 MySQL/Redis 全量、重复、竞态验证，状态为 `passing`；尚未推送、合并或部署。`go-004` 仍待真实上游验收。
 
 ## Refresh 与测试隔离修复完成（2026-09-03，开始于 2026-09-02）
 
