@@ -79,3 +79,11 @@ RED实际输出：received=false status=0; want true/302。仅诊断信息不准
 最终独立质量复核执行 `go test ./internal/diagnostics ./internal/whitelabel -run 'TestDiagnosticRedirect|TestNetwork|TestTrace' -count=1`，实际输出diagnostics 0.744s、whitelabel 1.282s均ok；确认最终response+error修正无公开行为/泄露/重放变化，延续限定本地质量PASS。
 
 交付结论：go-008仅本地诊断能力passing；go-004真实上游验收仍blocked，前端M3-11仍FAIL，线上根因未知。后续发布将重启后端，须独立明确授权，现有前端发布授权不覆盖此操作。保留fix/m3-sse-diagnostics分支及工作树，不自动合并或部署。
+
+## 本地候选产物与未完成镜像
+
+代码候选04ed72806f5ca139d219d166452e0473ba5bf1a1。嵌套worktree最初构建的Go元数据错误指向父仓库e0efac2且modified=true，未采纳；已在独立本地clone精确检出04ed728后重新构建server及bootstrap-root。go version -m分别断言revision=04ed72806f5ca139d219d166452e0473ba5bf1a1、modified=false、Go1.22.12/linux/amd64。
+
+发布材料：/private/tmp/porsche-m3-backend-04ed728-linux-amd64.tar.gz；包SHA256 257160c725d9222550b1a1d4bd6ca86f8b7733a95fef5734fc95e718262537a6。包含源码归档、两个二进制、构建信息、运行镜像Dockerfile与manifest，不包含生产配置。server SHA256 9dd1f8e6f7623a225c4f76907e708955f8303b8f2ddd2219fd6fc0dd78eab9d8。
+
+本地镜像构建未完成：Docker Hub alpine:3.20 metadata拉取DeadlineExceeded；本地已有缓存为arm64，不能冒充amd64镜像。未生成或推送候选镜像，未上传或部署到服务器。Dockerfile仅准备运行镜像，不能据此声称镜像可运行或服务已上线。清单见validation/m3-backend-diagnostic-candidate.json；下步先在可用构建环境完成amd64镜像并核对其二进制/源码标签，具备具体镜像ID与回滚计划后再申请后端发布授权。

@@ -1,0 +1,41 @@
+{
+  "sourceRevision": "04ed72806f5ca139d219d166452e0473ba5bf1a1",
+  "codeBase": "0bab2b7fd7515789c7a853edab7db120771b6028",
+  "branch": "fix/m3-sse-diagnostics",
+  "target": "linux/amd64",
+  "goVersion": "go1.22.12",
+  "vcsModified": false,
+  "buildSource": "standalone local clone at exact candidate revision; nested worktree metadata was rejected",
+  "sha256": {
+    "server": "9dd1f8e6f7623a225c4f76907e708955f8303b8f2ddd2219fd6fc0dd78eab9d8",
+    "bootstrap-root": "454e07df782a21bd28a0b7c443f099d89740bb8be773289fa1f66b4f6aa96986",
+    "source.tar.gz": "496b037518cb3c92e2a985f4d27b6c4b9cea7d84cddf097bd5812f17ca36ee54",
+    "Dockerfile": "896fee3a35151bced501945409e0d8198810820fec1a9b55e1b9e1684d9efdc6",
+    "server.buildinfo.txt": "5bbca4b7a98c86a48e54f41d49c804f74bc9db2679b5d2747381dceac7ceffe3",
+    "bootstrap-root.buildinfo.txt": "26fea185f1975a6017317dd2664fd76f46b366e6e1d23c3f9f97ffcc81e8d31b"
+  },
+  "localVerification": {
+    "fullTestPassEvents": 293,
+    "raceTestPassEvents": 46,
+    "failures": 0,
+    "skips": 0,
+    "vet": "PASS",
+    "build": "PASS",
+    "specReview": "PASS (local scope)",
+    "qualityReview": "PASS (local scope)"
+  },
+  "imageBuilt": false,
+  "imageBuildBlocker": "Docker Hub alpine:3.20 metadata fetch timed out; local cached base is arm64",
+  "deployed": false,
+  "productionSSEStatus": "FAIL 503, root cause unresolved",
+  "generationBudget": {
+    "model": "gpt-5.4-nano",
+    "used": 1,
+    "maximumRequests": 3,
+    "remaining": 2,
+    "maxTokensPerRequest": 32
+  },
+  "createdUTC": "2026-09-03T05:13:46.617210+00:00",
+  "bundlePath": "/private/tmp/porsche-m3-backend-04ed728-linux-amd64.tar.gz",
+  "bundleSHA256": "257160c725d9222550b1a1d4bd6ca86f8b7733a95fef5734fc95e718262537a6"
+}
