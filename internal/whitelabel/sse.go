@@ -62,7 +62,10 @@ func (s *WhiteLabelService) ProjectChatCompletionSSEContext(ctx context.Context,
 					} else {
 						projected, failure := projectChatCompletionChunkDetail([]byte(payload), logicalModelID)
 						if failure != nil {
-							diagnostics.From(ctx).MalformedChunk(failure.Reason, failure.Field)
+							if trace := diagnostics.From(ctx); trace != nil {
+								enrichObjectFailure([]byte(payload), failure)
+								trace.MalformedChunk(failure.Reason, failure.Field, failure.Object)
+							}
 							return fail(diagnostics.Malformed, "malformed chat completion chunk")
 						}
 						encoded, marshalErr := json.Marshal(projected)
@@ -153,7 +156,16 @@ func projectChatCompletionChunkDetail(data []byte, logicalModelID string) (ChatC
 		return ChatCompletionChunk{}, chunkFailure(diagnostics.ChunkMissing, diagnostics.ChunkID)
 	}
 	if upstream.Object != "chat.completion.chunk" {
-		return ChatCompletionChunk{}, chunkFailure(diagnostics.ChunkInvalidValue, diagnostics.ChunkObject)
+		kind := diagnostics.ObjectDecodedOther
+		switch upstream.Object {
+		case "":
+			kind = diagnostics.ObjectDecodedEmpty
+		case "chat.completion":
+			kind = diagnostics.ObjectDecodedKnownChatCompletion
+		}
+		failure := chunkFailure(diagnostics.ChunkInvalidValue, diagnostics.ChunkObject)
+		failure.Object = &diagnostics.ObjectDetail{DecodedKind: kind, FieldShape: diagnostics.ObjectShapeUnknown, KeyMatch: diagnostics.ObjectKeyUnknown}
+		return ChatCompletionChunk{}, failure
 	}
 	if upstream.Created < 0 {
 		return ChatCompletionChunk{}, chunkFailure(diagnostics.ChunkNegative, diagnostics.ChunkCreated)

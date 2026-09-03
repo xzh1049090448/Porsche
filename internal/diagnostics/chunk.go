@@ -42,11 +42,12 @@ const (
 )
 
 type ChunkFailure struct {
-	Reason ChunkReason `json:"reason"`
-	Field  ChunkField  `json:"field"`
+	Reason ChunkReason   `json:"reason"`
+	Field  ChunkField    `json:"field"`
+	Object *ObjectDetail `json:"object_detail,omitempty"`
 }
 
-func (t *Trace) MalformedChunk(reason ChunkReason, field ChunkField) {
+func (t *Trace) MalformedChunk(reason ChunkReason, field ChunkField, object ...*ObjectDetail) {
 	if t == nil {
 		return
 	}
@@ -60,7 +61,12 @@ func (t *Trace) MalformedChunk(reason ChunkReason, field ChunkField) {
 	default:
 		field = ChunkFieldUnknown
 	}
+	var detail *ObjectDetail
+	if reason == ChunkInvalidValue && field == ChunkObject && len(object) > 0 && object[0] != nil {
+		copy := safeObjectDetail(*object[0])
+		detail = &copy
+	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.record.MalformedChunkDetail = &ChunkFailure{Reason: reason, Field: field}
+	t.record.MalformedChunkDetail = &ChunkFailure{Reason: reason, Field: field, Object: detail}
 }
