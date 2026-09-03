@@ -1,0 +1,18 @@
+{
+  "sourceRevision": "6e70784e182a4bae1e5b8399053b45429e8e4400",
+  "fullTestPassEvents": 345,
+  "raceTestPassEvents": 113,
+  "testFailures": 0,
+  "testSkips": 0,
+  "vetExit": 0,
+  "buildExit": 0,
+  "independentProjectionParityCases": 22,
+  "independentAdversarial": "race, sensitive type-error value, rejection priority, concurrent unknown enum normalization, no-trace compatibility PASS",
+  "specReview": "PASS local scope",
+  "qualityReview": "PASS local scope",
+  "preparedReleaseBehaviorCases": 7,
+  "releaseIdentityBinding": "validated against independent manifest; old image distinct from candidate",
+  "preparedReleaseScriptSHA256": "b5082e937db68f83bac89fc7717ed7443d3c046bfe4d6305042e19ce9aaea3bb",
+  "generationRequestsThisTurn": 0,
+  "testFixturesCleaned": true
+}

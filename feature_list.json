@@ -138,7 +138,7 @@
       "priority": 0,
       "area": "platform-diagnostics",
       "title": "M3 SSE chunk固定校验原因细分",
-      "status": "in_progress",
+      "status": "passing",
       "verification": [
         "合成拒绝分支RED/GREEN与脱敏",
         "既有投影/SSE行为对照",
@@ -146,9 +146,10 @@
         "独立规格与质量复核"
       ],
       "evidence": [
-        "2026-09-03：用户继续上轮固定分类方案；线上04ed728第二次SSE关联upstream200后malformed_chunk，精确字段未知。"
+        "2026-09-03：用户继续上轮固定分类方案；线上04ed728第二次SSE关联upstream200后malformed_chunk，精确字段未知。",
+        "2026-09-03：细分诊断6e70784本地全量345/race113测试通过，独立22组输出对照及脱敏并发PASS；amd64镜像cb42daed已核验且发布材料齐备，未上传/部署，线上04ed728和最后1次×32预算保留。"
       ],
-      "notes": "只增加固定内部分类，保留malformed_chunk与公开契约，未发布新候选，最后1次×32预算保留。"
+      "notes": "6e70784固定chunk校验分类仅本地完成、镜像核验及双方材料复核通过，尚未上传部署；线上04ed728的SSE仍503，具体字段未知。最后1次×32预算保留，新候选发布及实际诊断复测后再评估M3。"
     }
   ]
 }
