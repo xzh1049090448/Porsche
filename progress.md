@@ -1,5 +1,10 @@
 # Porsche 开发进度
 
+## 2026-09-03：开始object有限分类诊断
+
+用户追加预算后继续，go-010为唯一in_progress。方案沿用既有调查的固定分类，保持object校验和公开协议；剩余1次请求暂不消耗。init.sh首次因沙箱禁止httptest回环监听失败，允许回环后原命令通过（默认无TEST_*，不能替代数据库集成验收）。设计与计划见docs/superpowers/specs/2026-09-03-m3-object-classification-design.md及同名plans文件。
+
+
 ## 2026-09-03 15:22：追加1次诊断调用预算
 
 - 用户明确“增加调用预算”；未指定数量，按最小增量增加1次，总上限3→4，已用3、剩余1。模型仍为gpt-5.4-nano，每次max_tokens=32；原三次记录完整保留。

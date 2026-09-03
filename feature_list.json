@@ -157,6 +157,22 @@
         "2026-09-03 15:22：用户增加调用预算，按最小增量追加1次；总上限4、已用3、剩1，每次gpt-5.4-nano/max_tokens32。原调用记录保留，本次尚未发出第4次请求。"
       ],
       "notes": "6e70784细分诊断已发布，运行来源精确核对；第三次SSE503/0帧定位object解码值不等于chat.completion.chunk，原始值及兼容决策未确认。用户追加1次预算后总上限4，已用3、剩1次gpt-5.4-nano/max_tokens32；先准备可区分object原因的采证方案，无自动重放。后端PM先核对契约/样例及离线假设；诊断能力passing不代表有效SSE或整体M3通过。"
+    },
+    {
+      "id": "go-010",
+      "priority": 0,
+      "area": "platform-diagnostics",
+      "title": "M3 object字段有限形态诊断",
+      "status": "in_progress",
+      "verification": [
+        "实际SSE/Trace RED-GREEN",
+        "固定枚举脱敏与重复键边界",
+        "原协议输出对照及独立审查"
+      ],
+      "evidence": [
+        "用户在追加1次诊断预算后继续，落实既有有限分类方案；当前未部署或新增生成。"
+      ],
+      "notes": "仅本地诊断补证据，不放宽object或更改公开SSE，剩余1次×32预算保留。"
     }
   ]
 }
