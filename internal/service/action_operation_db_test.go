@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/netip"
 	"os"
 	"strconv"
 	"strings"
@@ -251,7 +252,7 @@ func TestActionSecurityRedisRealWindowsTTLAndTotalFailure(t *testing.T) {
 		}
 		ip := fmt.Sprintf("2001:db8:%x:%x:%x:%x::20", nonce[0:2], nonce[2:4], nonce[4:6], nonce[6:8])
 		clear(nonce[:])
-		key := keyFor(t, actionsecurity.RateVerificationIP, []byte(ip))
+		key := keyFor(t, actionsecurity.RateVerificationIP, []byte(netip.MustParseAddr(ip).Unmap().String()))
 		var first time.Duration
 		for attempt := int64(1); attempt <= 20; attempt++ {
 			if err := fixture.limiter.ReserveVerification(ctx, base+2000+attempt, base+3000+attempt, ip); err != nil {
