@@ -115,8 +115,12 @@ func TestPermissionSchemaMigratesAuthDataAndReruns(t *testing.T) {
 		t.Fatalf("rerun verify: %v", err)
 	}
 	var n int64
-	if err := gdb.Raw("SELECT COUNT(*) FROM schema_migrations WHERE is_deleted=0").Scan(&n).Error; err != nil || n != 4 {
-		t.Fatalf("ledger = %d, %v; want 4", n, err)
+	migrations, err := All()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := gdb.Raw("SELECT COUNT(*) FROM schema_migrations WHERE is_deleted=0").Scan(&n).Error; err != nil || n != int64(len(migrations)) {
+		t.Fatalf("ledger = %d, %v; want %d", n, err, len(migrations))
 	}
 }
 
