@@ -6,6 +6,7 @@ import (
 	"crypto/subtle"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -47,20 +48,33 @@ type OperationBegin struct {
 }
 
 type OperationIdentity struct {
-	ID         int64
-	PublicRef  string
-	LeaseOwner [32]byte
+	ID         int64    `json:"-"`
+	PublicRef  string   `json:"public_ref"`
+	LeaseOwner [32]byte `json:"-"`
 	actor      ActionActor
 }
 
 // OperationIdentity is an in-memory handoff from Begin to Execute. It cannot
 // be serialized and reconstructed because Execute must retain the exact actor
 // claims presented to Begin and compare them with freshly locked state.
-func (identity OperationIdentity) String() string {
+
+func (identity *OperationIdentity) String() string {
+	if identity == nil {
+		return "OperationIdentity{PublicRef:\"\"}"
+	}
 	return fmt.Sprintf("OperationIdentity{PublicRef:%q}", identity.PublicRef)
 }
 
-func (identity OperationIdentity) GoString() string { return identity.String() }
+func (identity *OperationIdentity) GoString() string { return identity.String() }
+
+func (identity *OperationIdentity) MarshalJSON() ([]byte, error) {
+	if identity == nil {
+		return []byte("null"), nil
+	}
+	return json.Marshal(struct {
+		PublicRef string `json:"public_ref"`
+	}{PublicRef: identity.PublicRef})
+}
 
 type OperationView struct {
 	PublicRef         string

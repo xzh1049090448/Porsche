@@ -26,11 +26,14 @@ func (gormActionExecuteTransactionRunner) Run(ctx context.Context, db *gorm.DB, 
 	return db.WithContext(ctx).Transaction(callback, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 }
 
-func (s *ActionOperationService) Execute(ctx context.Context, identity OperationIdentity, consumer TransactionalActionConsumer, audit TransactionalAuditWriter, outbox TransactionalOutboxWriter) (*OperationView, error) {
+func (s *ActionOperationService) Execute(ctx context.Context, identity *OperationIdentity, consumer TransactionalActionConsumer, audit TransactionalAuditWriter, outbox TransactionalOutboxWriter) (*OperationView, error) {
 	return s.executeWithRunner(ctx, identity, consumer, audit, outbox, gormActionExecuteTransactionRunner{})
 }
 
-func (s *ActionOperationService) executeWithRunner(ctx context.Context, identity OperationIdentity, consumer TransactionalActionConsumer, audit TransactionalAuditWriter, outbox TransactionalOutboxWriter, runner actionExecuteTransactionRunner) (*OperationView, error) {
+func (s *ActionOperationService) executeWithRunner(ctx context.Context, identity *OperationIdentity, consumer TransactionalActionConsumer, audit TransactionalAuditWriter, outbox TransactionalOutboxWriter, runner actionExecuteTransactionRunner) (*OperationView, error) {
+	if identity == nil {
+		return nil, ErrActionOperationUnavailable
+	}
 	defer clear(identity.LeaseOwner[:])
 	if s == nil || ctx == nil || identity.ID <= 0 || len(identity.PublicRef) != 46 || operationInterfaceNil(consumer) ||
 		operationInterfaceNil(audit) || operationInterfaceNil(outbox) || operationInterfaceNil(runner) || !validOperationActorClaims(identity.actor) {
@@ -65,6 +68,7 @@ func (s *ActionOperationService) executeWithRunner(ctx context.Context, identity
 			return ErrActionOperationForbidden
 		}
 		leaseDigest := s.crypto.LeaseOwnerDigest(identity.LeaseOwner)
+		clear(identity.LeaseOwner[:])
 		leaseHex := hex.EncodeToString(leaseDigest[:])
 		clear(leaseDigest[:])
 		if !constantTimeOperationStringEqual(*operation.LeaseOwnerHMAC, leaseHex) {

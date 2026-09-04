@@ -55,7 +55,10 @@ func TestCommitUnknownErrorRedactsCause(t *testing.T) {
 }
 
 func TestActionExecuteIdentityKeepsClaimsPrivateAndRedacted(t *testing.T) {
-	identity := OperationIdentity{ID: 1, PublicRef: "op_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", actor: ActionActor{UserID: 2, UserGUID: 3, AuthVersion: 4, SessionSID: "11111111-2222-4333-8444-555555555555", SessionVersion: 5}}
+	identity := &OperationIdentity{ID: 1, PublicRef: "op_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", actor: ActionActor{UserID: 2, UserGUID: 3, AuthVersion: 4, SessionSID: "11111111-2222-4333-8444-555555555555", SessionVersion: 5}}
+	for i := range identity.LeaseOwner {
+		identity.LeaseOwner[i] = byte(i + 1)
+	}
 	if !validOperationActorClaims(identity.actor) {
 		t.Fatal("private actor binding lost")
 	}
@@ -67,8 +70,13 @@ func TestActionExecuteIdentityKeepsClaimsPrivateAndRedacted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(encoded), identity.actor.SessionSID) || strings.Contains(string(encoded), "actor") {
-		t.Fatalf("identity JSON leaked private claims: %s", encoded)
+	expectedJSON := `{"public_ref":"op_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}`
+	if string(encoded) != expectedJSON || strings.Contains(string(encoded), identity.actor.SessionSID) || strings.Contains(string(encoded), "actor") || strings.Contains(string(encoded), "LeaseOwner") || strings.Contains(string(encoded), "ID") || strings.Contains(string(encoded), "[") {
+		t.Fatalf("identity JSON is not exact public_ref only: %s", encoded)
+	}
+	expectedString := `OperationIdentity{PublicRef:"op_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}`
+	if identity.String() != expectedString || identity.GoString() != expectedString {
+		t.Fatalf("identity formatting = %q / %q", identity.String(), identity.GoString())
 	}
 }
 

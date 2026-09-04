@@ -97,6 +97,7 @@ func (c *actionExecuteConn) BeginTx(_ context.Context, opts driver.TxOptions) (d
 	c.script.mu.Lock()
 	defer c.script.mu.Unlock()
 	c.script.beginCount++
+	c.script.queryStep = 0
 	c.tx = &actionExecuteTx{conn: c, state: c.script.state}
 	return c.tx, nil
 }
@@ -652,7 +653,7 @@ func executeRows(columns []string, values [][]driver.Value) *actionExecuteRows {
 	return &actionExecuteRows{columns: columns, values: values}
 }
 
-func actionExecuteFixture(t *testing.T) (*ActionOperationService, *actionExecuteScript, OperationIdentity) {
+func actionExecuteFixture(t *testing.T) (*ActionOperationService, *actionExecuteScript, *OperationIdentity) {
 	t.Helper()
 	now := int64(1_800_000_000_000)
 	root := bytes.Repeat([]byte{0x73}, 32)
@@ -717,7 +718,7 @@ func actionExecuteFixture(t *testing.T) (*ActionOperationService, *actionExecute
 	if err != nil {
 		t.Fatal(err)
 	}
-	return service, script, OperationIdentity{ID: operation.ID, PublicRef: publicRef, LeaseOwner: leaseOwner,
+	return service, script, &OperationIdentity{ID: operation.ID, PublicRef: publicRef, LeaseOwner: leaseOwner,
 		actor: ActionActor{UserID: actor.ID, UserGUID: actor.Guid, AuthVersion: actor.AuthVersion, SessionSID: session.SID, SessionVersion: session.SessionVersion}}
 }
 
@@ -730,6 +731,9 @@ func TestActionExecuteSucceededAtomicAndLockOrder(t *testing.T) {
 	}
 	if consumer.calls != 1 || script.state.effects != 1 || script.state.callbackAudits != 1 || script.state.callbackOutbox != 1 || script.state.officialAudits != 1 || script.state.officialOutbox != 1 || script.state.operation.State != models.OperationSucceeded {
 		t.Fatalf("non-atomic success: %#v", script.state)
+	}
+	if !operationLeaseCleared(identity) {
+		t.Fatal("success retained caller lease")
 	}
 	if len(script.queries) != 9 || executeQueryKind(script.queries[0]) != "actor" {
 		t.Fatalf("unexpected pre-transaction DB reads or missing locks: %v", script.queries)
@@ -759,6 +763,9 @@ func TestActionExecuteKnownRejectionRollsBackCallbackSavepoint(t *testing.T) {
 	if !containsExecuteKind(script.execs, "savepoint") || !containsExecuteKind(script.execs, "rollback_to") {
 		t.Fatalf("savepoint events=%v", script.execs)
 	}
+	if !operationLeaseCleared(identity) {
+		t.Fatal("known failure retained caller lease")
+	}
 }
 
 func TestActionExecuteFaultMatrixRollsBackWithoutFalseTerminal(t *testing.T) {
@@ -773,6 +780,9 @@ func TestActionExecuteFaultMatrixRollsBackWithoutFalseTerminal(t *testing.T) {
 			if !executeStateIsPristine(script.state) {
 				t.Fatalf("fault %s committed %#v", point, script.state)
 			}
+			if !operationLeaseCleared(identity) {
+				t.Fatalf("fault %s retained caller lease", point)
+			}
 		})
 	}
 	t.Run("terminal_failed", func(t *testing.T) {
@@ -783,6 +793,9 @@ func TestActionExecuteFaultMatrixRollsBackWithoutFalseTerminal(t *testing.T) {
 		if view != nil || !errors.Is(err, ErrActionOperationUnavailable) || !executeStateIsPristine(script.state) {
 			t.Fatalf("failed-terminal fault=%#v %v %#v", view, err, script.state)
 		}
+		if !operationLeaseCleared(identity) {
+			t.Fatal("failed terminal update retained caller lease")
+		}
 	})
 	t.Run("rollback_to", func(t *testing.T) {
 		service, script, identity := actionExecuteFixture(t)
@@ -792,6 +805,9 @@ func TestActionExecuteFaultMatrixRollsBackWithoutFalseTerminal(t *testing.T) {
 		view, err := service.Execute(context.Background(), identity, consumer, &fixtureActionAuditWriter{}, &fixtureActionOutboxWriter{})
 		if view != nil || !errors.Is(err, ErrActionOperationUnavailable) || consumer.calls != 1 || !executeStateIsPristine(script.state) || script.rollbackCount != 1 {
 			t.Fatalf("rollback-to fault=%#v %v calls=%d state=%#v rollbacks=%d", view, err, consumer.calls, script.state, script.rollbackCount)
+		}
+		if !operationLeaseCleared(identity) {
+			t.Fatal("rollback-to failure retained caller lease")
 		}
 	})
 }
@@ -807,6 +823,9 @@ func TestActionExecuteCommitUnknownDoesNotReplayCallback(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "private") || script.beginCount != 1 || script.state.operation.State != models.OperationSucceeded {
 		t.Fatalf("commit unknown leaked/replayed: %v %#v", err, script.state)
+	}
+	if !operationLeaseCleared(identity) {
+		t.Fatal("commit unknown retained caller lease")
 	}
 }
 
@@ -829,11 +848,14 @@ func TestActionExecuteRejectsWrongLeaseExpiredAndNonProcessing(t *testing.T) {
 	}
 	for _, mutate := range mutations {
 		service, script, identity := actionExecuteFixture(t)
-		mutate(script, &identity)
+		mutate(script, identity)
 		consumer := &fixtureActionConsumer{outcome: TerminalOutcome{ResultKind: models.ResultNone, HTTPStatus: 204}}
 		view, err := service.Execute(context.Background(), identity, consumer, &fixtureActionAuditWriter{}, &fixtureActionOutboxWriter{})
 		if view != nil || err == nil || consumer.calls != 0 || script.state.effects != 0 {
 			t.Fatalf("invalid identity executed: %#v %v %#v", view, err, script.state)
+		}
+		if !operationLeaseCleared(identity) {
+			t.Fatal("identity rejection retained caller lease")
 		}
 	}
 }
@@ -859,7 +881,7 @@ func TestActionExecuteCorruptBindingsAndCallbackErrorsFailClosed(t *testing.T) {
 	}
 	for i, mutate := range mutations {
 		service, script, identity := actionExecuteFixture(t)
-		mutate(service, script, &identity)
+		mutate(service, script, identity)
 		consumer := &fixtureActionConsumer{outcome: TerminalOutcome{ResultKind: models.ResultNone, HTTPStatus: 204}}
 		view, err := service.Execute(context.Background(), identity, consumer, &fixtureActionAuditWriter{}, &fixtureActionOutboxWriter{})
 		if view != nil || err == nil || consumer.calls != 0 || script.state.effects != 0 || script.state.operation.State != models.OperationProcessing {
@@ -897,6 +919,9 @@ func TestActionExecuteRejectsDatabaseIdentityDriftWithoutConsumer(t *testing.T) 
 			if view != nil || !errors.Is(err, ErrActionOperationForbidden) || consumer.calls != 0 || !executeStateIsPristine(script.state) || script.rollbackCount != 1 {
 				t.Fatalf("identity drift executed: %#v %v calls=%d state=%#v rollbacks=%d", view, err, consumer.calls, script.state, script.rollbackCount)
 			}
+			if !operationLeaseCleared(identity) {
+				t.Fatal("database identity drift retained caller lease")
+			}
 		})
 	}
 }
@@ -917,11 +942,14 @@ func TestActionExecuteRejectsMutatedOrMissingPrivateClaims(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			service, script, identity := actionExecuteFixture(t)
-			tc.mutate(&identity)
+			tc.mutate(identity)
 			consumer := &fixtureActionConsumer{outcome: TerminalOutcome{ResultKind: models.ResultNone, HTTPStatus: 204}}
 			view, err := service.Execute(context.Background(), identity, consumer, &fixtureActionAuditWriter{}, &fixtureActionOutboxWriter{})
 			if view != nil || !errors.Is(err, tc.want) || consumer.calls != 0 || !executeStateIsPristine(script.state) {
 				t.Fatalf("private claims accepted: %#v %v want=%v calls=%d state=%#v", view, err, tc.want, consumer.calls, script.state)
+			}
+			if !operationLeaseCleared(identity) {
+				t.Fatal("private claim rejection retained caller lease")
 			}
 		})
 	}
@@ -970,6 +998,9 @@ func TestActionExecuteRedisRevocationUsesBoundSIDAndFailsClosed(t *testing.T) {
 			if view != nil || !errors.Is(err, tc.want) || consumer.calls != 0 || script.beginCount != tc.wantBeginCount || !executeStateIsPristine(script.state) {
 				t.Fatalf("Redis case=%#v %v", view, err)
 			}
+			if !operationLeaseCleared(identity) {
+				t.Fatal("Redis path retained caller lease")
+			}
 			wantKey := service.authRedis.revokedKey(identity.actor.SessionSID)
 			if len(client.keys) != 1 || client.keys[0] != wantKey || strings.Contains(client.keys[0], identity.actor.SessionSID) {
 				t.Fatalf("Redis used wrong/raw SID key: %v", client.keys)
@@ -979,6 +1010,37 @@ func TestActionExecuteRedisRevocationUsesBoundSIDAndFailsClosed(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestActionExecuteNilPrevalidationAndConsumedIdentityCannotReplay(t *testing.T) {
+	service, script, identity := actionExecuteFixture(t)
+	consumer := &fixtureActionConsumer{outcome: TerminalOutcome{ResultKind: models.ResultNone, HTTPStatus: 204}}
+	if view, err := service.Execute(context.Background(), nil, consumer, &fixtureActionAuditWriter{}, &fixtureActionOutboxWriter{}); view != nil || !errors.Is(err, ErrActionOperationUnavailable) || consumer.calls != 0 || script.beginCount != 0 {
+		t.Fatalf("nil identity = %#v %v", view, err)
+	}
+	invalidService, invalidScript, invalid := actionExecuteFixture(t)
+	invalid.ID = 0
+	if view, err := invalidService.Execute(context.Background(), invalid, consumer, &fixtureActionAuditWriter{}, &fixtureActionOutboxWriter{}); view != nil || !errors.Is(err, ErrActionOperationUnavailable) || !operationLeaseCleared(invalid) || consumer.calls != 0 || invalidScript.beginCount != 0 {
+		t.Fatalf("prevalidation = %#v %v", view, err)
+	}
+	if view, err := service.Execute(context.Background(), identity, consumer, &fixtureActionAuditWriter{}, &fixtureActionOutboxWriter{}); err != nil || view == nil || consumer.calls != 1 || !operationLeaseCleared(identity) {
+		t.Fatalf("first Execute = %#v %v", view, err)
+	}
+	if view, err := service.Execute(context.Background(), identity, consumer, &fixtureActionAuditWriter{}, &fixtureActionOutboxWriter{}); view != nil || err == nil || consumer.calls != 1 || !operationLeaseCleared(identity) {
+		t.Fatalf("consumed identity replay = %#v %v calls=%d", view, err, consumer.calls)
+	}
+}
+
+func operationLeaseCleared(identity *OperationIdentity) bool {
+	if identity == nil {
+		return true
+	}
+	for _, value := range identity.LeaseOwner {
+		if value != 0 {
+			return false
+		}
+	}
+	return true
 }
 
 func TestActionExecuteScriptRejectsWeakSelectorsWrongArgsAndLockOrder(t *testing.T) {
