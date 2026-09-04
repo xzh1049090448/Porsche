@@ -135,21 +135,25 @@ func TestActionOperationBeginLimiterPrecedesOperationLookupAndProductionRegistry
 func TestActionOperationBeginIdempotencyConflictsAndTombstone(t *testing.T) {
 	now := int64(1_800_000_000_000)
 	tests := []struct {
-		name       string
-		operation  models.AdminOperation
-		mutate     func(*OperationBegin)
-		want       error
-		wantStatus string
+		name                string
+		operation           models.AdminOperation
+		mutate              func(*OperationBegin)
+		want                error
+		wantStatus          string
+		expiredVerification bool
 	}{
 		{name: "same request", operation: models.AdminOperation{ID: 30, SessionID: 20, State: models.OperationProcessing}, wantStatus: "processing"},
 		{name: "payload conflict", operation: models.AdminOperation{ID: 30, SessionID: 20, State: models.OperationProcessing}, mutate: func(in *OperationBegin) { in.Intent = "other-intent" }, want: ErrActionOperationConflict},
 		{name: "cross session", operation: models.AdminOperation{ID: 30, SessionID: 99, State: models.OperationProcessing}, want: ErrActionOperationCrossSession},
-		{name: "tombstone", operation: models.AdminOperation{ID: 30, SessionID: 20, State: models.OperationExpired, AuditFields: models.AuditFields{IsDeleted: 1}}, want: ErrActionOperationExpired},
+		{name: "tombstone", operation: models.AdminOperation{ID: 30, SessionID: 20, State: models.OperationExpired, QueryExpiresAt: now, AuditFields: models.AuditFields{IsDeleted: 1}}, want: ErrActionOperationExpired, expiredVerification: true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			op := tc.operation
 			service, script, actor, key, ticket := actionOperationFixture(t, now, &op)
+			if tc.expiredVerification {
+				script.verification.ExpiresAt = now
+			}
 			in := OperationBegin{Action: testNoopAction, Actor: actor, IdempotencyKeyValues: []string{key}, TicketValues: []string{ticket}, Intent: "same-intent"}
 			if tc.mutate != nil {
 				tc.mutate(&in)
@@ -232,7 +236,7 @@ func TestActionOperationStateVerificationMatrixDrivesBeginAndQuery(t *testing.T)
 		case models.OperationSucceeded, models.OperationFailed:
 			return kind == verificationConsumed
 		case models.OperationExpired:
-			return kind != verificationInconsistent
+			return kind == verificationExpired || kind == verificationConsumed
 		default:
 			return false
 		}
@@ -244,7 +248,7 @@ func TestActionOperationStateVerificationMatrixDrivesBeginAndQuery(t *testing.T)
 		case models.OperationSucceeded, models.OperationFailed:
 			return kind == verificationConsumed
 		case models.OperationExpired:
-			return kind != verificationInconsistent
+			return kind == verificationExpired || kind == verificationConsumed
 		default:
 			return false
 		}
@@ -310,12 +314,38 @@ func matrixOperation(now int64, state models.AdminOperationState) models.AdminOp
 	op := models.AdminOperation{ID: 30, SessionID: 20, State: state, QueryExpiresAt: now + actionOperationQueryRetentionMS}
 	if state == models.OperationExpired {
 		op.IsDeleted = 1
+		op.QueryExpiresAt = now
 	}
 	if state == models.OperationSucceeded || state == models.OperationFailed {
 		finished := now - 1
 		op.FinishedAt = &finished
 	}
 	return op
+}
+
+func TestActionOperationExpiryWithFutureQueryExpiryIsCorruptBeforeGone(t *testing.T) {
+	now := int64(1_800_000_000_000)
+	for _, call := range []string{"Begin", "Query"} {
+		t.Run(call, func(t *testing.T) {
+			op := matrixOperation(now, models.OperationExpired)
+			op.QueryExpiresAt = now + 1
+			service, script, actor, key, ticket := actionOperationFixture(t, now, &op)
+			consumed := now - 1
+			script.verification.ConsumedAt = &consumed
+			script.verification.IsDeleted = 1
+			if call == "Begin" {
+				identity, view, err := service.Begin(context.Background(), OperationBegin{Action: testNoopAction, Actor: actor, IdempotencyKeyValues: []string{key}, TicketValues: []string{ticket}, Intent: "same-intent"})
+				if identity != nil || view != nil || !errors.Is(err, ErrActionOperationForbidden) || len(script.execs) != 0 {
+					t.Fatalf("corrupt expired Begin = %#v %#v %v writes=%v", identity, view, err, script.execs)
+				}
+				return
+			}
+			view, err := service.Query(context.Background(), testNoopAction, actor, []string{key})
+			if view != nil || !errors.Is(err, ErrActionOperationHidden) || len(script.execs) != 0 {
+				t.Fatalf("corrupt expired Query = %#v %v writes=%v", view, err, script.execs)
+			}
+		})
+	}
 }
 
 func TestActionOperationBeginRejectsVerificationTargetMismatch(t *testing.T) {

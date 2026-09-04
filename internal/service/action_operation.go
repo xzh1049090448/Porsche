@@ -567,7 +567,11 @@ func validOperationVerificationState(operation models.AdminOperation, verificati
 	case models.OperationSucceeded, models.OperationFailed:
 		return relation == operationVerificationConsumed
 	case models.OperationExpired:
-		return relation == operationVerificationActive || relation == operationVerificationExpiredUnconsumed || relation == operationVerificationConsumed
+		if operation.QueryExpiresAt > now {
+			return false
+		}
+		return (relation == operationVerificationExpiredUnconsumed && verification.IsDeleted == 0) ||
+			relation == operationVerificationConsumed
 	default:
 		return false
 	}
