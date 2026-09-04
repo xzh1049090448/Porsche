@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/porsche/ai-gateway-go/internal/actionsecurity"
 	"github.com/porsche/ai-gateway-go/internal/config"
 	"github.com/porsche/ai-gateway-go/internal/persistence"
 	"github.com/porsche/ai-gateway-go/internal/service"
@@ -13,18 +14,19 @@ import (
 )
 
 type State struct {
-	Settings      *config.Settings
-	DB            *gorm.DB
-	Auth          *service.AuthService
-	Billing       *service.BillingService
-	SMS           *service.SMSService
-	Platform      *service.PlatformChatService
-	GatewayTokens *service.GatewayTokenService
-	WhiteLabel    *whitelabel.WhiteLabelService
-	Audit         *service.AuditService
-	AuthRedis     *service.AuthRedis
-	Sessions      *service.SessionService
-	HTTP          *http.Client
+	Settings             *config.Settings
+	DB                   *gorm.DB
+	Auth                 *service.AuthService
+	Billing              *service.BillingService
+	SMS                  *service.SMSService
+	Platform             *service.PlatformChatService
+	GatewayTokens        *service.GatewayTokenService
+	WhiteLabel           *whitelabel.WhiteLabelService
+	Audit                *service.AuditService
+	AuthRedis            *service.AuthRedis
+	Sessions             *service.SessionService
+	ActionSecurityCrypto *actionsecurity.Crypto
+	HTTP                 *http.Client
 }
 
 func NewState(settings *config.Settings, db *gorm.DB) (*State, error) {
@@ -35,6 +37,13 @@ func NewState(settings *config.Settings, db *gorm.DB) (*State, error) {
 		SMS:      service.NewSMSService(settings),
 		Audit:    service.NewAuditService(),
 		HTTP:     &http.Client{},
+	}
+	if len(settings.ActionSecurityHMACKey) > 0 {
+		actionCrypto, err := actionsecurity.NewCrypto(settings.ActionSecurityHMACKey)
+		if err != nil {
+			return nil, err
+		}
+		s.ActionSecurityCrypto = actionCrypto
 	}
 	s.Billing = service.NewBillingService(settings)
 	// Legacy tests can construct Settings directly; production Settings are
