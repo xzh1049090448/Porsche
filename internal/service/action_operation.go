@@ -188,6 +188,7 @@ func (s *ActionOperationService) Begin(ctx context.Context, in OperationBegin) (
 			}
 			if existing.VerificationID == nil || *existing.VerificationID != verification.ID ||
 				!validOperationVerificationBinding(verification, locked, descriptor, requestHex, parsedTarget) ||
+				!validOperationVerificationState(existing, verification, lockedNow) ||
 				!validExistingBeginVerificationState(verification, existing.State, lockedNow) {
 				return ErrActionOperationForbidden
 			}
@@ -248,7 +249,7 @@ func (s *ActionOperationService) Begin(ctx context.Context, in OperationBegin) (
 			return err
 		}
 		if !validOperationVerificationBinding(verification, locked, descriptor, requestHex, parsedTarget) ||
-			verification.ConsumedAt != nil || verification.IsDeleted != 0 || verification.ExpiresAt <= lockedNow {
+			verificationRelationAt(verification, lockedNow) != operationVerificationActive {
 			clear(leaseOwner[:])
 			return ErrActionOperationForbidden
 		}
@@ -256,7 +257,8 @@ func (s *ActionOperationService) Begin(ctx context.Context, in OperationBegin) (
 			clear(leaseOwner[:])
 			return err
 		}
-		result := tx.Model(&models.AdminOperation{}).Where("id = ? AND verification_id IS NULL", operation.ID).
+		result := tx.Model(&models.AdminOperation{}).
+			Where("id = ? AND state = ? AND is_deleted = 0 AND verification_id IS NULL", operation.ID, models.OperationProcessing).
 			Updates(map[string]any{"verification_id": verification.ID, "updated_at": lockedNow, "updated_by": actorID})
 		if result.Error != nil {
 			clear(leaseOwner[:])
@@ -346,7 +348,8 @@ func (s *ActionOperationService) Query(ctx context.Context, action actionsecurit
 			return ErrActionOperationHidden
 		}
 		verification, err := lockOperationVerificationByID(tx, *operation.VerificationID)
-		if err != nil || !validOperationVerificationBinding(verification, locked, descriptor, operation.RequestHMAC, verification.TargetGUID) {
+		if err != nil || !validOperationVerificationBinding(verification, locked, descriptor, operation.RequestHMAC, verification.TargetGUID) ||
+			!validOperationVerificationState(operation, verification, lockedNow) {
 			if errors.Is(err, ErrActionOperationUnavailable) {
 				return err
 			}
@@ -412,8 +415,9 @@ func (s *ActionOperationService) MarkPendingRecovery(ctx context.Context, id int
 			return ErrActionOperationConflict
 		}
 		actorID := operation.ActorUserID
+		leaseCutoff := now - actionOperationRecoveryGraceMS
 		result := tx.Model(&models.AdminOperation{}).
-			Where("id = ? AND state = ? AND is_deleted = 0 AND lease_expires_at = ?", operation.ID, models.OperationProcessing, *operation.LeaseExpiresAt).
+			Where("id = ? AND state = ? AND is_deleted = 0 AND lease_expires_at = ? AND lease_expires_at < ? AND query_expires_at > ?", operation.ID, models.OperationProcessing, *operation.LeaseExpiresAt, leaseCutoff, now).
 			Updates(map[string]any{"state": models.OperationPendingRecovery, "lease_owner_hmac": nil, "lease_expires_at": nil, "updated_at": now, "updated_by": actorID})
 		if result.Error != nil || result.RowsAffected != 1 {
 			return ErrActionOperationUnavailable
@@ -513,10 +517,60 @@ func validOperationVerificationBinding(verification models.AdminActionVerificati
 }
 
 func validExistingBeginVerificationState(verification models.AdminActionVerification, operationState models.AdminOperationState, now int64) bool {
-	if verification.ConsumedAt != nil {
-		return verification.IsDeleted == 1 && (operationState == models.OperationSucceeded || operationState == models.OperationFailed || operationState == models.OperationExpired)
+	relation := verificationRelationAt(verification, now)
+	switch operationState {
+	case models.OperationProcessing, models.OperationPendingRecovery:
+		return relation == operationVerificationActive
+	case models.OperationSucceeded, models.OperationFailed:
+		return relation == operationVerificationConsumed
+	case models.OperationExpired:
+		return relation != operationVerificationInvalid
+	default:
+		return false
 	}
-	return verification.IsDeleted == 0 && verification.ExpiresAt > now
+}
+
+type operationVerificationRelation uint8
+
+const (
+	operationVerificationInvalid operationVerificationRelation = iota
+	operationVerificationActive
+	operationVerificationExpiredUnconsumed
+	operationVerificationConsumed
+)
+
+func verificationRelationAt(verification models.AdminActionVerification, now int64) operationVerificationRelation {
+	if verification.ExpiresAt <= 0 || (verification.IsDeleted != 0 && verification.IsDeleted != 1) {
+		return operationVerificationInvalid
+	}
+	if verification.ConsumedAt != nil {
+		if *verification.ConsumedAt <= 0 || *verification.ConsumedAt > now || verification.IsDeleted != 1 {
+			return operationVerificationInvalid
+		}
+		return operationVerificationConsumed
+	}
+	if verification.IsDeleted == 0 && verification.ExpiresAt > now {
+		return operationVerificationActive
+	}
+	return operationVerificationExpiredUnconsumed
+}
+
+func validOperationVerificationState(operation models.AdminOperation, verification models.AdminActionVerification, now int64) bool {
+	if (operation.State == models.OperationExpired && operation.IsDeleted != 1) ||
+		(operation.State != models.OperationExpired && operation.IsDeleted != 0) {
+		return false
+	}
+	relation := verificationRelationAt(verification, now)
+	switch operation.State {
+	case models.OperationProcessing, models.OperationPendingRecovery:
+		return relation == operationVerificationActive || relation == operationVerificationExpiredUnconsumed
+	case models.OperationSucceeded, models.OperationFailed:
+		return relation == operationVerificationConsumed
+	case models.OperationExpired:
+		return relation == operationVerificationActive || relation == operationVerificationExpiredUnconsumed || relation == operationVerificationConsumed
+	default:
+		return false
+	}
 }
 
 func authorizeOperationDescriptor(tx *gorm.DB, actor models.User, descriptor actionsecurity.Descriptor, targetGUID *int64) error {
@@ -608,11 +662,13 @@ func sameOptionalInt64(left, right *int64) bool {
 }
 
 func expireOperation(tx *gorm.DB, operation *models.AdminOperation, actorID, now int64) error {
-	result := tx.Model(&models.AdminOperation{}).Where("id = ? AND is_deleted = 0", operation.ID).Updates(map[string]any{
-		"state": models.OperationExpired, "is_deleted": 1, "lease_owner_hmac": nil, "lease_expires_at": nil,
-		"error_code": nil, "result_kind": nil, "result_guid": nil, "result_http_status": nil,
-		"updated_at": now, "updated_by": actorID,
-	})
+	result := tx.Model(&models.AdminOperation{}).
+		Where("id = ? AND state = ? AND is_deleted = 0 AND query_expires_at = ? AND query_expires_at <= ?", operation.ID, operation.State, operation.QueryExpiresAt, now).
+		Updates(map[string]any{
+			"state": models.OperationExpired, "is_deleted": 1, "lease_owner_hmac": nil, "lease_expires_at": nil,
+			"error_code": nil, "result_kind": nil, "result_guid": nil, "result_http_status": nil,
+			"updated_at": now, "updated_by": actorID,
+		})
 	if result.Error != nil || result.RowsAffected != 1 {
 		return ErrActionOperationUnavailable
 	}

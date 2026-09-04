@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -213,6 +214,110 @@ func TestActionOperationBeginExistingTerminalAcceptsItsConsumedVerificationWitho
 	}
 }
 
+func TestActionOperationStateVerificationMatrixDrivesBeginAndQuery(t *testing.T) {
+	now := int64(1_800_000_000_000)
+	type verificationKind string
+	const (
+		verificationActive       verificationKind = "active"
+		verificationExpired      verificationKind = "expired_unconsumed"
+		verificationConsumed     verificationKind = "consumed"
+		verificationInconsistent verificationKind = "consumed_not_deleted"
+	)
+	states := []models.AdminOperationState{models.OperationProcessing, models.OperationPendingRecovery, models.OperationSucceeded, models.OperationFailed, models.OperationExpired}
+	kinds := []verificationKind{verificationActive, verificationExpired, verificationConsumed, verificationInconsistent}
+	queryAllowed := func(state models.AdminOperationState, kind verificationKind) bool {
+		switch state {
+		case models.OperationProcessing, models.OperationPendingRecovery:
+			return kind == verificationActive || kind == verificationExpired
+		case models.OperationSucceeded, models.OperationFailed:
+			return kind == verificationConsumed
+		case models.OperationExpired:
+			return kind != verificationInconsistent
+		default:
+			return false
+		}
+	}
+	beginAllowed := func(state models.AdminOperationState, kind verificationKind) bool {
+		switch state {
+		case models.OperationProcessing, models.OperationPendingRecovery:
+			return kind == verificationActive
+		case models.OperationSucceeded, models.OperationFailed:
+			return kind == verificationConsumed
+		case models.OperationExpired:
+			return kind != verificationInconsistent
+		default:
+			return false
+		}
+	}
+	applyVerification := func(script *actionOperationScript, kind verificationKind) {
+		script.verification.ConsumedAt = nil
+		script.verification.IsDeleted = 0
+		script.verification.ExpiresAt = now + 1
+		switch kind {
+		case verificationExpired:
+			script.verification.ExpiresAt = now
+		case verificationConsumed:
+			consumed := now - 1
+			script.verification.ConsumedAt = &consumed
+			script.verification.IsDeleted = 1
+		case verificationInconsistent:
+			consumed := now - 1
+			script.verification.ConsumedAt = &consumed
+		}
+	}
+	for _, state := range states {
+		for _, kind := range kinds {
+			name := state.String() + "/" + string(kind)
+			t.Run("Query/"+name, func(t *testing.T) {
+				op := matrixOperation(now, state)
+				service, script, actor, key, _ := actionOperationFixture(t, now, &op)
+				applyVerification(script, kind)
+				view, err := service.Query(context.Background(), testNoopAction, actor, []string{key})
+				if !queryAllowed(state, kind) {
+					if view != nil || !errors.Is(err, ErrActionOperationHidden) || len(script.execs) != 0 {
+						t.Fatalf("corrupt Query = %#v %v writes=%v", view, err, script.execs)
+					}
+				} else if state == models.OperationExpired {
+					if view != nil || !errors.Is(err, ErrActionOperationExpired) || len(script.execs) != 0 {
+						t.Fatalf("expired Query = %#v %v writes=%v", view, err, script.execs)
+					}
+				} else if err != nil || view == nil || view.Status != state.String() {
+					t.Fatalf("valid Query = %#v %v", view, err)
+				}
+			})
+			t.Run("Begin/"+name, func(t *testing.T) {
+				op := matrixOperation(now, state)
+				service, script, actor, key, ticket := actionOperationFixture(t, now, &op)
+				applyVerification(script, kind)
+				identity, view, err := service.Begin(context.Background(), OperationBegin{Action: testNoopAction, Actor: actor, IdempotencyKeyValues: []string{key}, TicketValues: []string{ticket}, Intent: "same-intent"})
+				if !beginAllowed(state, kind) {
+					if identity != nil || view != nil || !errors.Is(err, ErrActionOperationForbidden) || len(script.execs) != 0 {
+						t.Fatalf("invalid Begin = %#v %#v %v writes=%v", identity, view, err, script.execs)
+					}
+				} else if state == models.OperationExpired {
+					if identity != nil || view != nil || !errors.Is(err, ErrActionOperationExpired) || len(script.execs) != 0 {
+						t.Fatalf("expired Begin = %#v %#v %v writes=%v", identity, view, err, script.execs)
+					}
+				} else if err != nil || identity == nil || view == nil || view.Status != state.String() {
+					t.Fatalf("valid Begin = %#v %#v %v", identity, view, err)
+				}
+			})
+		}
+	}
+}
+
+func matrixOperation(now int64, state models.AdminOperationState) models.AdminOperation {
+	op := models.AdminOperation{ID: 30, SessionID: 20, State: state, QueryExpiresAt: now + actionOperationQueryRetentionMS}
+	if state == models.OperationExpired {
+		op.IsDeleted = 1
+	}
+	if state == models.OperationSucceeded || state == models.OperationFailed {
+		finished := now - 1
+		op.FinishedAt = &finished
+	}
+	return op
+}
+
 func TestActionOperationBeginRejectsVerificationTargetMismatch(t *testing.T) {
 	now := int64(1_800_000_000_000)
 	service, script, actor, key, ticket := actionOperationFixture(t, now, nil)
@@ -366,6 +471,9 @@ func TestActionOperationExpiryBoundaryTombstones(t *testing.T) {
 	status := 409
 	op := models.AdminOperation{ID: 30, SessionID: 20, State: models.OperationFailed, FinishedAt: &finished, QueryExpiresAt: now, ErrorCode: &failure, ResultKind: &resultKind, ResultGUID: &resultGUID, ResultHTTPStatus: &status}
 	service, script, actor, key, _ := actionOperationFixture(t, now, &op)
+	consumed := now - 1
+	script.verification.ConsumedAt = &consumed
+	script.verification.IsDeleted = 1
 	view, err := service.Query(context.Background(), testNoopAction, actor, []string{key})
 	if view != nil || !errors.Is(err, ErrActionOperationExpired) {
 		t.Fatalf("expiry boundary = %#v %v", view, err)
@@ -378,6 +486,31 @@ func TestActionOperationExpiryBoundaryTombstones(t *testing.T) {
 		if !bytes.Contains([]byte(write), []byte(column)) {
 			t.Fatalf("expiry update missing %s: %s", column, write)
 		}
+	}
+	updated := actionOperationUpdateValues(t, script.execs[0], script.execArgs[0])
+	for column, want := range map[string]string{
+		"state": fmt.Sprint(int(models.OperationExpired)), "is_deleted": "1", "lease_owner_hmac": "<nil>", "lease_expires_at": "<nil>",
+		"error_code": "<nil>", "result_kind": "<nil>", "result_guid": "<nil>", "result_http_status": "<nil>",
+		"updated_at": fmt.Sprint(now), "updated_by": "10",
+	} {
+		if got := updated[column]; got != want {
+			t.Fatalf("expiry SET %s=%q, want %q", column, got, want)
+		}
+	}
+}
+
+func TestActionOperationExpiryWriteFailureRollsBack(t *testing.T) {
+	now := int64(1_800_000_000_000)
+	finished := now - actionOperationQueryRetentionMS
+	op := models.AdminOperation{ID: 30, SessionID: 20, State: models.OperationSucceeded, FinishedAt: &finished, QueryExpiresAt: now}
+	service, script, actor, key, _ := actionOperationFixture(t, now, &op)
+	consumed := now - 1
+	script.verification.ConsumedAt = &consumed
+	script.verification.IsDeleted = 1
+	script.failExec = true
+	view, err := service.Query(context.Background(), testNoopAction, actor, []string{key})
+	if view != nil || !errors.Is(err, ErrActionOperationUnavailable) || script.commitCount != 0 || script.rollbackCount != 1 || len(script.execs) != 1 {
+		t.Fatalf("expiry rollback = %#v %v commits=%d rollbacks=%d writes=%v", view, err, script.commitCount, script.rollbackCount, script.execs)
 	}
 }
 
@@ -398,7 +531,7 @@ func TestActionOperationLeaseGraceBoundary(t *testing.T) {
 			service, script, _, _, _ := actionOperationFixture(t, tc.now, &op)
 			err := service.MarkPendingRecovery(context.Background(), op.ID)
 			if !errors.Is(err, tc.want) {
-				t.Fatalf("MarkPendingRecovery error = %v, want %v", err, tc.want)
+				t.Fatalf("MarkPendingRecovery error = %v, want %v; writes=%v args=%v", err, tc.want, script.execs, script.execArgs)
 			}
 			if tc.want == nil && (len(script.execs) != 1 || !bytes.Contains([]byte(script.execs[0]), []byte("pending"))) {
 				// GORM binds the integer state, so the SQL need only prove one update.
@@ -428,6 +561,18 @@ func TestActionOperationLeaseTerminalAndPendingStatesNeverWrite(t *testing.T) {
 				t.Fatalf("state %s wrote %v", state, script.execs)
 			}
 		})
+	}
+}
+
+func TestActionOperationLeaseCASMissRollsBack(t *testing.T) {
+	now := int64(1_800_000_090_001)
+	lease := now - actionOperationRecoveryGraceMS - 1
+	op := models.AdminOperation{ID: 30, SessionID: 20, State: models.OperationProcessing, LeaseExpiresAt: &lease, QueryExpiresAt: now + 1}
+	service, script, _, _, _ := actionOperationFixture(t, now, &op)
+	script.zeroAffected = true
+	err := service.MarkPendingRecovery(context.Background(), op.ID)
+	if !errors.Is(err, ErrActionOperationUnavailable) || script.commitCount != 0 || script.rollbackCount != 1 || len(script.execs) != 1 {
+		t.Fatalf("CAS miss = %v commits=%d rollbacks=%d writes=%v", err, script.commitCount, script.rollbackCount, script.execs)
 	}
 }
 

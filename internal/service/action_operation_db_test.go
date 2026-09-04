@@ -48,6 +48,7 @@ type actionOperationScript struct {
 	failExec      bool
 	failExecAt    int
 	execError     error
+	zeroAffected  bool
 }
 
 type actionOperationDriver struct{}
@@ -104,6 +105,21 @@ func TestActionOperationDBScriptRejectsWrongSelectorsAndIsolation(t *testing.T) 
 	}
 	if _, err := conn.BeginTx(context.Background(), driver.TxOptions{Isolation: driver.IsolationLevel(sql.LevelSerializable)}); err == nil {
 		t.Fatal("script accepted non-READ-COMMITTED transaction")
+	}
+	lease := int64(1)
+	script.operation = &models.AdminOperation{ID: 30, State: models.OperationProcessing, LeaseExpiresAt: &lease, QueryExpiresAt: 200}
+	badWrites := []struct {
+		query string
+		args  []driver.NamedValue
+	}{
+		{query: "UPDATE `admin_operations` SET `verification_id`=? WHERE id = ? AND verification_id IS NULL", args: []driver.NamedValue{{Value: int64(40)}, {Value: int64(30)}}},
+		{query: "UPDATE `admin_operations` SET `is_deleted`=1,`lease_owner_hmac`=NULL,`error_code`=NULL,`result_http_status`=NULL WHERE id = ? AND state = ? AND is_deleted = 0", args: []driver.NamedValue{{Value: int64(30)}, {Value: int64(models.OperationProcessing)}}},
+		{query: "UPDATE `admin_operations` SET `lease_owner_hmac`=NULL,`lease_expires_at`=NULL WHERE id = ? AND state = ? AND is_deleted = 0 AND lease_expires_at = ?", args: []driver.NamedValue{{Value: int64(30)}, {Value: int64(models.OperationProcessing)}, {Value: lease}}},
+	}
+	for _, tc := range badWrites {
+		if _, err := conn.ExecContext(context.Background(), tc.query, tc.args); err == nil {
+			t.Fatalf("script accepted malformed write %q", tc.query)
+		}
 	}
 }
 func (c *actionOperationConn) CheckNamedValue(value *driver.NamedValue) error {
@@ -256,13 +272,84 @@ func (c *actionOperationConn) ExecContext(_ context.Context, query string, args 
 	defer s.mu.Unlock()
 	s.execs = append(s.execs, query)
 	s.execArgs = append(s.execArgs, append([]driver.NamedValue(nil), args...))
+	if err := validateActionOperationExec(s, query, args); err != nil {
+		return nil, err
+	}
 	if s.failExec || (s.failExecAt > 0 && len(s.execs) == s.failExecAt) {
 		if s.execError != nil {
 			return nil, s.execError
 		}
 		return nil, errors.New("scripted operation write failure")
 	}
-	return actionOperationResult{id: 30, affected: 1}, nil
+	affected := int64(1)
+	if s.zeroAffected {
+		affected = 0
+	}
+	return actionOperationResult{id: 30, affected: affected}, nil
+}
+
+func validateActionOperationExec(script *actionOperationScript, query string, args []driver.NamedValue) error {
+	requireFragments := func(fragments ...string) error {
+		for _, fragment := range fragments {
+			if !strings.Contains(query, fragment) {
+				return fmt.Errorf("operation write missing %q", fragment)
+			}
+		}
+		return nil
+	}
+	requireTail := func(expected ...any) error {
+		if len(args) < len(expected) {
+			return fmt.Errorf("operation write args %d, need tail %d", len(args), len(expected))
+		}
+		offset := len(args) - len(expected)
+		for i := range expected {
+			if fmt.Sprint(args[offset+i].Value) != fmt.Sprint(expected[i]) {
+				return fmt.Errorf("operation write tail arg %d=%v, want %v", i, args[offset+i].Value, expected[i])
+			}
+		}
+		return nil
+	}
+	requireHead := func(expected ...any) error {
+		if len(args) < len(expected) {
+			return fmt.Errorf("operation write args %d, need head %d", len(args), len(expected))
+		}
+		for i := range expected {
+			if fmt.Sprint(args[i].Value) != fmt.Sprint(expected[i]) {
+				return fmt.Errorf("operation write head arg %d=%v, want %v", i, args[i].Value, expected[i])
+			}
+		}
+		return nil
+	}
+	switch {
+	case strings.HasPrefix(query, "INSERT INTO `admin_operations`"):
+		return requireFragments("`actor_user_id`", "`idempotency_key_hmac`", "`request_hmac`", "`state`", "`lease_owner_hmac`", "`lease_expires_at`", "`query_expires_at`", "`created_by`", "`updated_by`")
+	case strings.HasPrefix(query, "UPDATE `admin_operations`") && strings.Contains(query, "verification_id IS NULL"):
+		if err := requireFragments("SET", "`verification_id`=?", "id = ? AND state = ? AND is_deleted = 0 AND verification_id IS NULL"); err != nil {
+			return err
+		}
+		return requireTail(int64(30), int64(models.OperationProcessing))
+	case strings.HasPrefix(query, "UPDATE `admin_operations`") && strings.Contains(query, "query_expires_at <= ?"):
+		if script.operation == nil {
+			return errors.New("expiry write has no locked operation")
+		}
+		if err := requireFragments("id = ? AND state = ? AND is_deleted = 0 AND query_expires_at = ? AND query_expires_at <= ?", "`lease_owner_hmac`=?", "`error_code`=?", "`result_http_status`=?"); err != nil {
+			return err
+		}
+		return requireTail(script.operation.ID, int64(script.operation.State), script.operation.QueryExpiresAt, script.now)
+	case strings.HasPrefix(query, "UPDATE `admin_operations`"):
+		if script.operation == nil || script.operation.LeaseExpiresAt == nil {
+			return errors.New("recovery write has no locked lease")
+		}
+		if err := requireFragments("id = ? AND state = ? AND is_deleted = 0 AND lease_expires_at = ? AND lease_expires_at < ? AND query_expires_at > ?", "`lease_owner_hmac`=?", "`lease_expires_at`=?"); err != nil {
+			return err
+		}
+		if err := requireHead(nil, nil, int64(models.OperationPendingRecovery), script.now, script.operation.ActorUserID); err != nil {
+			return err
+		}
+		return requireTail(script.operation.ID, int64(models.OperationProcessing), *script.operation.LeaseExpiresAt, script.now-actionOperationRecoveryGraceMS, script.now)
+	default:
+		return fmt.Errorf("unexpected operation write: %s", query)
+	}
 }
 func (tx *actionOperationTx) Commit() error {
 	tx.script.mu.Lock()
