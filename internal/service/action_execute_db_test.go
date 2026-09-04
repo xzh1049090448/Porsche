@@ -23,6 +23,101 @@ import (
 	"gorm.io/gorm/logger"
 )
 
+func setupRealActionPrimitiveTables(t *testing.T, db *gorm.DB) {
+	t.Helper()
+	tables := []string{
+		"fixture_action_official_outbox", "fixture_action_official_audits",
+		"fixture_action_callback_outbox", "fixture_action_callback_audits", "fixture_action_effects",
+	}
+	for _, table := range tables {
+		if err := db.Exec("DROP TABLE IF EXISTS " + table).Error; err != nil {
+			t.Fatalf("drop stale fixture-only table %s: %v", table, err)
+		}
+	}
+	statements := []string{
+		"CREATE TABLE fixture_action_effects (id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY, operation_ref CHAR(46) NOT NULL, UNIQUE KEY uk_fixture_effect_ref (operation_ref)) ENGINE=InnoDB",
+		"CREATE TABLE fixture_action_callback_audits (id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY, operation_ref CHAR(46) NOT NULL) ENGINE=InnoDB",
+		"CREATE TABLE fixture_action_callback_outbox (id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY, operation_ref CHAR(46) NOT NULL) ENGINE=InnoDB",
+		"CREATE TABLE fixture_action_official_audits (id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY, operation_ref CHAR(46) NOT NULL, state INT NOT NULL) ENGINE=InnoDB",
+		"CREATE TABLE fixture_action_official_outbox (id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY, operation_ref CHAR(46) NOT NULL, state INT NOT NULL) ENGINE=InnoDB",
+	}
+	for _, statement := range statements {
+		if err := db.Exec(statement).Error; err != nil {
+			t.Fatalf("create fixture-only primitive table: %v", err)
+		}
+	}
+	t.Cleanup(func() {
+		for _, table := range tables {
+			if err := db.Exec("DROP TABLE IF EXISTS " + table).Error; err != nil {
+				t.Errorf("drop fixture-only table %s: %v", table, err)
+			}
+		}
+	})
+}
+
+func prepareRealActionOperation(t *testing.T, fixture *realActionFixture, intent, ip string) (*OperationIdentity, string) {
+	t.Helper()
+	issued, err := fixture.verification.Issue(context.Background(), VerificationIssue{Action: testNoopAction, Actor: fixture.actor, Intent: intent, CurrentPassword: []byte(fixture.password), TrustedIP: ip})
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := newRealIdempotencyKey(t)
+	identity, view, err := fixture.operation.Begin(context.Background(), OperationBegin{Action: testNoopAction, Actor: fixture.actor, IdempotencyKeyValues: []string{key}, TicketValues: []string{issued.Ticket}, Intent: intent})
+	if err != nil || identity == nil || view == nil || view.Status != "processing" {
+		t.Fatalf("prepare Begin identity=%v view=%v err=%v", identity, view, err)
+	}
+	return identity, key
+}
+
+type realFailingAuditWriter struct{ err error }
+
+func (writer realFailingAuditWriter) Write(context.Context, *gorm.DB, ActionAuditEvent) error {
+	return writer.err
+}
+
+type realFailingOutboxWriter struct{ err error }
+
+func (writer realFailingOutboxWriter) Write(context.Context, *gorm.DB, ActionOutboxEvent) error {
+	return writer.err
+}
+
+type realCancelOutboxWriter struct {
+	delegate TransactionalOutboxWriter
+	cancel   context.CancelFunc
+}
+
+func (writer realCancelOutboxWriter) Write(ctx context.Context, tx *gorm.DB, event ActionOutboxEvent) error {
+	if err := writer.delegate.Write(ctx, tx, event); err != nil {
+		return err
+	}
+	writer.cancel()
+	return nil
+}
+
+type realCommitUnknownRunner struct{ calls atomic.Int64 }
+
+func (runner *realCommitUnknownRunner) Run(ctx context.Context, db *gorm.DB, callback func(*gorm.DB) error) error {
+	runner.calls.Add(1)
+	if err := db.WithContext(ctx).Transaction(callback, &sql.TxOptions{Isolation: sql.LevelReadCommitted}); err != nil {
+		return err
+	}
+	return errors.New("fixture commit acknowledgement unavailable")
+}
+
+func assertRealPrimitiveCounts(t *testing.T, db *gorm.DB, wantEffect, wantCallback, wantOfficial int64) {
+	t.Helper()
+	for table, want := range map[string]int64{
+		"fixture_action_effects": wantEffect, "fixture_action_callback_audits": wantCallback,
+		"fixture_action_callback_outbox": wantCallback, "fixture_action_official_audits": wantOfficial,
+		"fixture_action_official_outbox": wantOfficial,
+	} {
+		var got int64
+		if err := db.Table(table).Count(&got).Error; err != nil || got != want {
+			t.Fatalf("%s count=%d want=%d err=%v", table, got, want, err)
+		}
+	}
+}
+
 const actionExecuteDriverName = "porsche_action_execute_script"
 
 var (
@@ -1164,4 +1259,123 @@ func containsExecuteKind(queries []string, kind string) bool {
 		}
 	}
 	return false
+}
+
+func TestActionExecuteRealMySQLSuccessRejectionFaultsAndCommitUnknown(t *testing.T) {
+	cases := []struct {
+		name                 string
+		outcome              TerminalOutcome
+		consumerErr          error
+		failAudit            bool
+		failOutbox           bool
+		cancelBeforeTerminal bool
+		wantState            models.AdminOperationState
+		wantEffect           int64
+		wantCallback         int64
+		wantOfficial         int64
+		wantErr              error
+	}{
+		{name: "success", outcome: TerminalOutcome{ResultKind: models.ResultNone, HTTPStatus: 204}, wantState: models.OperationSucceeded, wantEffect: 1, wantCallback: 1, wantOfficial: 1},
+		{name: "known_rejection", outcome: TerminalOutcome{Failure: func() *models.AdminOperationFailure { v := models.FailureActionRejected; return &v }(), HTTPStatus: 409}, wantState: models.OperationFailed, wantOfficial: 1},
+		{name: "consumer_effect_fault", outcome: TerminalOutcome{ResultKind: models.ResultNone, HTTPStatus: 204}, consumerErr: errors.New("fixture effect fault"), wantState: models.OperationProcessing, wantErr: ErrActionOperationUnavailable},
+		{name: "official_audit_fault", outcome: TerminalOutcome{ResultKind: models.ResultNone, HTTPStatus: 204}, failAudit: true, wantState: models.OperationProcessing, wantErr: ErrActionOperationUnavailable},
+		{name: "official_outbox_fault", outcome: TerminalOutcome{ResultKind: models.ResultNone, HTTPStatus: 204}, failOutbox: true, wantState: models.OperationProcessing, wantErr: ErrActionOperationUnavailable},
+		{name: "terminal_update_fault", outcome: TerminalOutcome{ResultKind: models.ResultNone, HTTPStatus: 204}, cancelBeforeTerminal: true, wantState: models.OperationProcessing, wantErr: ErrActionOperationUnavailable},
+	}
+	for index, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			now := int64(1_800_300_000_000 + index*1_000_000)
+			fixture := openRealActionFixture(t, now)
+			setupRealActionPrimitiveTables(t, fixture.db)
+			identity, _ := prepareRealActionOperation(t, fixture, "execute-"+tc.name, fmt.Sprintf("203.0.113.%d", 130+index))
+			consumer := &fixtureActionConsumer{outcome: tc.outcome, err: tc.consumerErr}
+			var audit TransactionalAuditWriter = &fixtureActionAuditWriter{}
+			var outbox TransactionalOutboxWriter = &fixtureActionOutboxWriter{}
+			if tc.failAudit {
+				audit = realFailingAuditWriter{err: errors.New("fixture audit fault")}
+			}
+			if tc.failOutbox {
+				outbox = realFailingOutboxWriter{err: errors.New("fixture outbox fault")}
+			}
+			ctx := context.Background()
+			if tc.cancelBeforeTerminal {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithCancel(ctx)
+				outbox = realCancelOutboxWriter{delegate: outbox, cancel: cancel}
+			}
+			view, err := fixture.operation.Execute(ctx, identity, consumer, audit, outbox)
+			if tc.wantErr != nil {
+				if view != nil || !errors.Is(err, tc.wantErr) {
+					t.Fatalf("Execute view=%v err=%v", view, err)
+				}
+			} else if err != nil || view == nil || view.Status != map[models.AdminOperationState]string{models.OperationSucceeded: "succeeded", models.OperationFailed: "failed"}[tc.wantState] {
+				t.Fatalf("Execute view=%v err=%v", view, err)
+			}
+			var stored models.AdminOperation
+			if err := fixture.db.First(&stored, identity.ID).Error; err != nil {
+				t.Fatal(err)
+			}
+			if stored.State != tc.wantState {
+				t.Fatalf("stored state=%v want=%v", stored.State, tc.wantState)
+			}
+			assertRealPrimitiveCounts(t, fixture.db, tc.wantEffect, tc.wantCallback, tc.wantOfficial)
+		})
+	}
+
+	t.Run("commit_unknown_zero_replay", func(t *testing.T) {
+		fixture := openRealActionFixture(t, 1_800_310_000_000)
+		setupRealActionPrimitiveTables(t, fixture.db)
+		identity, _ := prepareRealActionOperation(t, fixture, "execute-commit-unknown", "203.0.113.140")
+		consumer := &fixtureActionConsumer{outcome: TerminalOutcome{ResultKind: models.ResultNone, HTTPStatus: 204}}
+		audit, outbox := &fixtureActionAuditWriter{}, &fixtureActionOutboxWriter{}
+		runner := &realCommitUnknownRunner{}
+		view, err := fixture.operation.executeWithRunner(context.Background(), identity, consumer, audit, outbox, runner)
+		var unknown *CommitUnknownError
+		if view != nil || !errors.As(err, &unknown) || unknown.PublicRef != identity.PublicRef || runner.calls.Load() != 1 || consumer.calls != 1 {
+			t.Fatalf("commit unknown view=%v err=%v runner=%d consumer=%d", view, err, runner.calls.Load(), consumer.calls)
+		}
+		assertRealPrimitiveCounts(t, fixture.db, 1, 1, 1)
+		if replay, replayErr := fixture.operation.Execute(context.Background(), identity, consumer, audit, outbox); replay != nil || !errors.Is(replayErr, ErrActionOperationUnavailable) || consumer.calls != 1 {
+			t.Fatalf("commit unknown replay view=%v err=%v calls=%d", replay, replayErr, consumer.calls)
+		}
+	})
+}
+
+func TestActionExecuteConcurrencyRealMySQLOneShotCapability(t *testing.T) {
+	fixture := openRealActionFixture(t, 1_800_320_000_000)
+	setupRealActionPrimitiveTables(t, fixture.db)
+	identity, _ := prepareRealActionOperation(t, fixture, "execute-concurrent", "203.0.113.141")
+	copyIdentity := *identity
+	consumer := &fixtureActionConsumer{outcome: TerminalOutcome{ResultKind: models.ResultNone, HTTPStatus: 204}}
+	audit, outbox := &fixtureActionAuditWriter{}, &fixtureActionOutboxWriter{}
+	type result struct {
+		view *OperationView
+		err  error
+	}
+	results := make(chan result, 2)
+	var wg sync.WaitGroup
+	for _, candidate := range []*OperationIdentity{identity, &copyIdentity} {
+		wg.Add(1)
+		go func(value *OperationIdentity) {
+			defer wg.Done()
+			view, err := fixture.operation.Execute(context.Background(), value, consumer, audit, outbox)
+			results <- result{view: view, err: err}
+		}(candidate)
+	}
+	wg.Wait()
+	close(results)
+	succeeded, rejected := 0, 0
+	for got := range results {
+		if got.err == nil && got.view != nil && got.view.Status == "succeeded" {
+			succeeded++
+		} else if got.view == nil && errors.Is(got.err, ErrActionOperationUnavailable) {
+			rejected++
+		} else {
+			t.Fatalf("unexpected concurrent Execute result: view=%v err=%v", got.view, got.err)
+		}
+	}
+	if succeeded != 1 || rejected != 1 || consumer.calls != 1 {
+		t.Fatalf("concurrent Execute succeeded=%d rejected=%d consumer=%d", succeeded, rejected, consumer.calls)
+	}
+	assertRealPrimitiveCounts(t, fixture.db, 1, 1, 1)
 }

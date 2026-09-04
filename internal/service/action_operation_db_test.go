@@ -1,23 +1,361 @@
 package service
 
 import (
+	"bytes"
 	"context"
+	cryptorand "crypto/rand"
 	"database/sql"
 	"database/sql/driver"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
+	"github.com/porsche/ai-gateway-go/internal/actionsecurity"
 	"github.com/porsche/ai-gateway-go/internal/models"
+	"github.com/porsche/ai-gateway-go/internal/security"
+	"github.com/redis/go-redis/v9"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
+
+type realActionClock struct{ now atomic.Int64 }
+
+func newRealActionClock(now int64) *realActionClock {
+	clock := &realActionClock{}
+	clock.now.Store(now)
+	return clock
+}
+
+func (clock *realActionClock) NowMillis() int64 { return clock.now.Load() }
+func (clock *realActionClock) Set(now int64)    { clock.now.Store(now) }
+
+type realActionFixture struct {
+	db           *gorm.DB
+	redis        *redis.Client
+	crypto       *actionsecurity.Crypto
+	limiter      *ActionSecurityRedis
+	authRedis    *AuthRedis
+	verification *ActionVerificationService
+	operation    *ActionOperationService
+	clock        *realActionClock
+	actorRow     models.User
+	sessionRow   models.Session
+	actor        ActionActor
+	password     string
+}
+
+func openRealActionFixture(t *testing.T, now int64) *realActionFixture {
+	t.Helper()
+	db := openTestMySQL(t)
+	rawRedis := strings.TrimSpace(os.Getenv("TEST_REDIS_URL"))
+	if rawRedis == "" {
+		t.Skip("requires explicit disposable TEST_REDIS_URL")
+	}
+	options, err := redis.ParseURL(rawRedis)
+	if err != nil {
+		t.Fatalf("parse TEST_REDIS_URL: %v", err)
+	}
+	client := redis.NewClient(options)
+	t.Cleanup(func() { _ = client.Close() })
+	if err := client.Ping(context.Background()).Err(); err != nil {
+		t.Fatalf("open disposable Redis: %v", err)
+	}
+	rawRoot, reason := actionsecurity.ParseRootKey(strings.TrimSpace(os.Getenv("ACTION_SECURITY_HMAC_KEY")))
+	if reason != "" {
+		t.Fatalf("invalid test action root key: %s", reason)
+	}
+	crypto, err := actionsecurity.NewCrypto(rawRoot)
+	clear(rawRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	limiter, err := NewActionSecurityRedis(client, crypto)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authRedis, err := NewAuthRedis(client, "task12-isolated-auth-hmac-material")
+	if err != nil {
+		t.Fatal(err)
+	}
+	password := "Task12-Strong-Password!"
+	passwordHash, err := security.HashPassword(password)
+	if err != nil {
+		t.Fatal(err)
+	}
+	username := fixtureUsername(testSnowflake.Next())
+	actorRow := models.User{
+		AuditFields: models.AuditFields{Guid: testSnowflake.Next(), CreatedAt: now, UpdatedAt: now},
+		Username:    &username, PasswordHash: &passwordHash, Role: models.UserRoleRoot,
+		Status: models.UserStatusActive, AuthVersion: 7, PlanType: models.PlanFree, AllowedModels: models.JSONSlice{},
+	}
+	if err := db.Create(&actorRow).Error; err != nil {
+		t.Fatal(err)
+	}
+	sid, err := security.NewSessionSID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionRow := models.Session{
+		AuditFields: models.AuditFields{Guid: testSnowflake.Next(), CreatedAt: now, UpdatedAt: now},
+		SID:         sid, UserID: actorRow.ID, LoginMethod: models.LoginMethodPassword, SessionVersion: 3,
+		RefreshHMAC: strings.Repeat("b", 64), LastActiveAt: now, ExpiresAt: now + 3_456_000_000,
+	}
+	if err := db.Create(&sessionRow).Error; err != nil {
+		t.Fatal(err)
+	}
+	actor := ActionActor{UserID: actorRow.ID, UserGUID: actorRow.Guid, AuthVersion: actorRow.AuthVersion, SessionSID: sid, SessionVersion: sessionRow.SessionVersion}
+	clock := newRealActionClock(now)
+	resolver := func(action actionsecurity.Action) (actionsecurity.Descriptor, bool) {
+		if action == testNoopAction {
+			return testNoopDescriptor(), true
+		}
+		return actionsecurity.Descriptor{}, false
+	}
+	verification, err := newActionVerificationService(db, limiter, authRedis, crypto, resolver, clock, cryptorand.Reader, func() int64 { return testSnowflake.Next() })
+	if err != nil {
+		t.Fatal(err)
+	}
+	operation, err := newActionOperationService(db, limiter, authRedis, crypto, resolver, clock, cryptorand.Reader, func() int64 { return testSnowflake.Next() })
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &realActionFixture{db: db, redis: client, crypto: crypto, limiter: limiter, authRedis: authRedis, verification: verification, operation: operation, clock: clock, actorRow: actorRow, sessionRow: sessionRow, actor: actor, password: password}
+}
+
+func newRealIdempotencyKey(t *testing.T) string {
+	t.Helper()
+	var raw [32]byte
+	if _, err := io.ReadFull(cryptorand.Reader, raw[:]); err != nil {
+		t.Fatal(err)
+	}
+	value := "ik_" + base64.RawURLEncoding.EncodeToString(raw[:])
+	clear(raw[:])
+	return value
+}
+
+func TestActionVerificationRealMySQLRedisTicketBoundaryAndLimits(t *testing.T) {
+	now := int64(1_800_000_000_000)
+	fixture := openRealActionFixture(t, now)
+	var latest *IssuedVerification
+	for attempt := 1; attempt <= 5; attempt++ {
+		password := []byte(fixture.password)
+		issued, err := fixture.verification.Issue(context.Background(), VerificationIssue{
+			Action: testNoopAction, Actor: fixture.actor, Intent: "real-ticket-intent",
+			CurrentPassword: password, TrustedIP: "203.0.113.121",
+		})
+		if err != nil {
+			t.Fatalf("Issue attempt %d: %v", attempt, err)
+		}
+		if issued.ExpiresAt != now+300_000 || len(issued.Ticket) != 46 || !strings.HasPrefix(issued.Ticket, "av_") {
+			t.Fatalf("Issue attempt %d returned invalid fixed expiry", attempt)
+		}
+		if !bytes.Equal(password, make([]byte, len(password))) {
+			t.Fatalf("Issue attempt %d retained password bytes", attempt)
+		}
+		latest = issued
+	}
+	password := []byte(fixture.password)
+	if issued, err := fixture.verification.Issue(context.Background(), VerificationIssue{
+		Action: testNoopAction, Actor: fixture.actor, Intent: "real-ticket-intent",
+		CurrentPassword: password, TrustedIP: "203.0.113.121",
+	}); issued != nil {
+		t.Fatal("sixth Issue returned a ticket")
+	} else {
+		var retry *RetryAfterError
+		if !errors.As(err, &retry) || retry.Seconds < 899 || retry.Seconds > 900 {
+			t.Fatalf("sixth Issue error = %#v", err)
+		}
+	}
+	fixture.clock.Set(latest.ExpiresAt)
+	if identity, view, err := fixture.operation.Begin(context.Background(), OperationBegin{
+		Action: testNoopAction, Actor: fixture.actor, IdempotencyKeyValues: []string{newRealIdempotencyKey(t)},
+		TicketValues: []string{latest.Ticket}, Intent: "real-ticket-intent",
+	}); identity != nil || view != nil || !errors.Is(err, ErrActionOperationForbidden) {
+		t.Fatalf("expires_at equality accepted: identity=%v view=%v err=%v", identity, view, err)
+	}
+	var rows []models.AdminActionVerification
+	if err := fixture.db.Unscoped().Where("actor_user_id = ? AND action = ?", fixture.actor.UserID, int(testNoopAction)).Order("id").Find(&rows).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 5 || rows[4].IsDeleted != 0 {
+		t.Fatalf("verification rows=%d latest_deleted=%d", len(rows), rows[len(rows)-1].IsDeleted)
+	}
+	for _, row := range rows {
+		if len(row.IntentHMAC) != 64 || len(row.TicketHMAC) != 64 || strings.Contains(row.IntentHMAC+row.TicketHMAC, latest.Ticket) {
+			t.Fatal("verification persistence was not digest-only")
+		}
+	}
+}
+
+func TestActionSecurityRedisRealWindowsTTLAndTotalFailure(t *testing.T) {
+	fixture := openRealActionFixture(t, 1_800_100_000_000)
+	ctx := context.Background()
+	actorID := fixture.actor.UserID + 100_000
+	sessionID := fixture.sessionRow.ID + 100_000
+	ip := "203.0.113.122"
+	actorPayload, sessionPayload := encodeActionRateID(actorID), encodeActionRateID(sessionID)
+	keys, err := fixture.limiter.rateKeys([]actionRateIdentity{
+		{purpose: actionsecurity.RateVerificationActor, payload: actorPayload[:]},
+		{purpose: actionsecurity.RateVerificationIP, payload: []byte(ip)},
+		{purpose: actionsecurity.RateVerificationSession, payload: sessionPayload[:]},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.redis.Del(ctx, keys...).Err(); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.limiter.ReserveVerification(ctx, actorID, sessionID, ip); err != nil {
+		t.Fatal(err)
+	}
+	firstTTL, err := fixture.redis.PTTL(ctx, keys[0]).Result()
+	if err != nil || firstTTL <= 0 {
+		t.Fatalf("initial TTL=%v err=%v", firstTTL, err)
+	}
+	time.Sleep(20 * time.Millisecond)
+	for attempt := 2; attempt <= 5; attempt++ {
+		if err := fixture.limiter.ReserveVerification(ctx, actorID, sessionID, ip); err != nil {
+			t.Fatalf("verification attempt %d: %v", attempt, err)
+		}
+	}
+	afterTTL, err := fixture.redis.PTTL(ctx, keys[0]).Result()
+	if err != nil || afterTTL <= 0 || afterTTL >= firstTTL {
+		t.Fatalf("verification TTL slid: %v -> %v err=%v", firstTTL, afterTTL, err)
+	}
+	var retry *RetryAfterError
+	if err := fixture.limiter.ReserveVerification(ctx, actorID, sessionID, ip); !errors.As(err, &retry) || retry.Seconds < 899 || retry.Seconds > 900 {
+		t.Fatalf("actor window did not reject sixth attempt: %#v", err)
+	}
+	beginSession := fixture.sessionRow.ID + 200_000
+	for attempt := 1; attempt <= 60; attempt++ {
+		if err := fixture.limiter.ReserveBegin(ctx, beginSession); err != nil {
+			t.Fatalf("Begin rate attempt %d: %v", attempt, err)
+		}
+	}
+	if err := fixture.limiter.ReserveBegin(ctx, beginSession); !errors.As(err, &retry) || retry.Seconds < 59 || retry.Seconds > 60 {
+		t.Fatalf("Begin window did not reject 61st attempt: %#v", err)
+	}
+	brokenClient := redis.NewClient(&redis.Options{Addr: "127.0.0.1:1", DialTimeout: 20 * time.Millisecond, ReadTimeout: 20 * time.Millisecond, WriteTimeout: 20 * time.Millisecond, MaxRetries: 0})
+	t.Cleanup(func() { _ = brokenClient.Close() })
+	brokenLimiter, err := NewActionSecurityRedis(brokenClient, fixture.crypto)
+	if err != nil {
+		t.Fatal(err)
+	}
+	brokenService, err := newActionOperationService(fixture.db, brokenLimiter, fixture.authRedis, fixture.crypto, func(action actionsecurity.Action) (actionsecurity.Descriptor, bool) {
+		return testNoopDescriptor(), action == testNoopAction
+	}, fixture.clock, cryptorand.Reader, func() int64 { return testSnowflake.Next() })
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.clock.Set(1_800_100_000_000)
+	if identity, view, err := brokenService.Begin(ctx, OperationBegin{Action: testNoopAction, Actor: fixture.actor, IdempotencyKeyValues: []string{newRealIdempotencyKey(t)}, TicketValues: []string{"av_" + strings.Repeat("A", 43)}, Intent: "redis-down"}); identity != nil || view != nil || !errors.Is(err, ErrActionOperationUnavailable) || ErrActionOperationUnavailable.Status != 503 {
+		t.Fatalf("Redis total failure did not map to fixed 503: identity=%v view=%v err=%v", identity, view, err)
+	}
+}
+
+func TestActionOperationConcurrencyRealMySQLLocksBindingsAndClockEdges(t *testing.T) {
+	now := int64(1_800_200_000_000)
+	fixture := openRealActionFixture(t, now)
+	issued, err := fixture.verification.Issue(context.Background(), VerificationIssue{Action: testNoopAction, Actor: fixture.actor, Intent: "real-operation-intent", CurrentPassword: []byte(fixture.password), TrustedIP: "203.0.113.123"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := newRealIdempotencyKey(t)
+	input := OperationBegin{Action: testNoopAction, Actor: fixture.actor, IdempotencyKeyValues: []string{key}, TicketValues: []string{issued.Ticket}, Intent: "real-operation-intent"}
+	identity, view, err := fixture.operation.Begin(context.Background(), input)
+	if err != nil || identity == nil || view == nil || view.Status != "processing" {
+		t.Fatalf("initial Begin identity=%v view=%v err=%v", identity, view, err)
+	}
+	var stored models.AdminOperation
+	if err := fixture.db.First(&stored, identity.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if stored.LeaseExpiresAt == nil || *stored.LeaseExpiresAt != now+30_000 || stored.QueryExpiresAt != now+2_592_000_000 {
+		t.Fatalf("lease/query clocks = %v/%d", stored.LeaseExpiresAt, stored.QueryExpiresAt)
+	}
+	results := make(chan error, 2)
+	var wg sync.WaitGroup
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			gotIdentity, gotView, gotErr := fixture.operation.Begin(context.Background(), input)
+			if gotErr == nil && (gotIdentity == nil || gotView == nil || gotIdentity.ID != identity.ID || gotView.PublicRef != identity.PublicRef) {
+				gotErr = errors.New("concurrent Begin returned inconsistent operation")
+			}
+			results <- gotErr
+		}()
+	}
+	wg.Wait()
+	close(results)
+	for err := range results {
+		if err != nil {
+			t.Fatalf("same-key concurrent Begin: %v", err)
+		}
+	}
+	var operationCount int64
+	if err := fixture.db.Model(&models.AdminOperation{}).Where("actor_user_id = ? AND action = ?", fixture.actor.UserID, int(testNoopAction)).Count(&operationCount).Error; err != nil || operationCount != 1 {
+		t.Fatalf("concurrent Begin operations=%d err=%v", operationCount, err)
+	}
+	conflict := input
+	conflict.Intent = "different-payload"
+	if gotIdentity, gotView, err := fixture.operation.Begin(context.Background(), conflict); gotIdentity != nil || gotView != nil || !errors.Is(err, ErrActionOperationConflict) {
+		t.Fatalf("payload conflict identity=%v view=%v err=%v", gotIdentity, gotView, err)
+	}
+	reuse := input
+	reuse.IdempotencyKeyValues = []string{newRealIdempotencyKey(t)}
+	if gotIdentity, gotView, err := fixture.operation.Begin(context.Background(), reuse); gotIdentity != nil || gotView != nil || !errors.Is(err, ErrActionOperationForbidden) {
+		t.Fatalf("ticket reuse identity=%v view=%v err=%v", gotIdentity, gotView, err)
+	}
+	secondSID, err := security.NewSessionSID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondSession := models.Session{AuditFields: models.AuditFields{Guid: testSnowflake.Next(), CreatedAt: now, UpdatedAt: now}, SID: secondSID, UserID: fixture.actorRow.ID, LoginMethod: models.LoginMethodPassword, SessionVersion: 1, RefreshHMAC: strings.Repeat("c", 64), LastActiveAt: now, ExpiresAt: now + 3_456_000_000}
+	if err := fixture.db.Create(&secondSession).Error; err != nil {
+		t.Fatal(err)
+	}
+	cross := input
+	cross.Actor.SessionSID, cross.Actor.SessionVersion = secondSID, 1
+	if gotIdentity, gotView, err := fixture.operation.Begin(context.Background(), cross); gotIdentity != nil || gotView != nil || !errors.Is(err, ErrActionOperationCrossSession) {
+		t.Fatalf("cross-session identity=%v view=%v err=%v", gotIdentity, gotView, err)
+	}
+	if err := fixture.db.Model(&models.Session{}).Where("id = ?", fixture.sessionRow.ID).Updates(map[string]any{"session_version": 4, "updated_at": now + 1}).Error; err != nil {
+		t.Fatal(err)
+	}
+	refreshed := input
+	refreshed.Actor.SessionVersion = 4
+	if gotIdentity, gotView, err := fixture.operation.Begin(context.Background(), refreshed); err != nil || gotIdentity == nil || gotView == nil || gotIdentity.ID != identity.ID {
+		t.Fatalf("refresh-same-session identity=%v view=%v err=%v", gotIdentity, gotView, err)
+	}
+	fixture.clock.Set(*stored.LeaseExpiresAt + 60_000)
+	if err := fixture.operation.MarkPendingRecovery(context.Background(), stored.ID); !errors.Is(err, ErrActionOperationConflict) {
+		t.Fatalf("60s grace equality = %v", err)
+	}
+	fixture.clock.Set(*stored.LeaseExpiresAt + 60_001)
+	if err := fixture.operation.MarkPendingRecovery(context.Background(), stored.ID); err != nil {
+		t.Fatalf("60s grace +1 = %v", err)
+	}
+	fixture.clock.Set(stored.QueryExpiresAt)
+	if got, err := fixture.operation.Query(context.Background(), testNoopAction, refreshed.Actor, []string{key}); got != nil || !errors.Is(err, ErrActionOperationExpired) {
+		t.Fatalf("30d equality query=%v err=%v", got, err)
+	}
+	if err := fixture.db.Unscoped().First(&stored, stored.ID).Error; err != nil || stored.State != models.OperationExpired || stored.IsDeleted != 1 {
+		t.Fatalf("expired tombstone state=%v deleted=%d err=%v", stored.State, stored.IsDeleted, err)
+	}
+	if gotIdentity, gotView, err := fixture.operation.Begin(context.Background(), refreshed); gotIdentity != nil || gotView != nil || !errors.Is(err, ErrActionOperationExpired) {
+		t.Fatalf("tombstone key reuse identity=%v view=%v err=%v", gotIdentity, gotView, err)
+	}
+}
 
 const actionOperationScriptDriverName = "porsche_action_operation_script"
 
