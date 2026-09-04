@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/netip"
+	"os"
 	"reflect"
 	"strconv"
 	"strings"
@@ -39,6 +41,8 @@ func newActionRateEvalClient() *actionRateEvalClient {
 	}
 }
 
+func (*actionRateEvalClient) actionSecurityStandaloneRedis() {}
+
 func (c *actionRateEvalClient) Eval(ctx context.Context, script string, keys []string, args ...interface{}) *redis.Cmd {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -57,7 +61,8 @@ func (c *actionRateEvalClient) Eval(ctx context.Context, script string, keys []s
 		cmd.SetVal(c.malformed)
 		return cmd
 	}
-	if !strings.Contains(script, "PEXPIRE") || !strings.Contains(script, "PTTL") || len(args) != len(keys)*2 {
+	if !strings.Contains(script, "read-only preflight") || !strings.Contains(script, "PTTL") ||
+		!strings.Contains(script, "'SET', key, '1', 'PX'") || len(args) != len(keys)*2 {
 		cmd.SetErr(errors.New("unexpected rate script contract"))
 		return cmd
 	}
@@ -153,6 +158,31 @@ func TestActionSecurityRedisVerificationLimitsAreAtomicAndOpaque(t *testing.T) {
 	}
 }
 
+func TestActionSecurityRedisCanonicalizesTrustedIPBeforeHashing(t *testing.T) {
+	client := newActionRateEvalClient()
+	store := actionRateTestStore(t, client)
+	if err := store.ReserveVerification(context.Background(), 1, 1, "2001:0db8:0:0:0:0:0:1"); err != nil {
+		t.Fatal(err)
+	}
+	firstIPKey := client.lastKeys[1]
+	if err := store.ReserveVerification(context.Background(), 2, 2, "2001:db8::1"); err != nil {
+		t.Fatal(err)
+	}
+	if client.lastKeys[1] != firstIPKey {
+		t.Fatalf("equivalent IPv6 forms produced different keys: %q != %q", client.lastKeys[1], firstIPKey)
+	}
+	if err := store.ReserveVerification(context.Background(), 3, 3, "::ffff:192.0.2.10"); err != nil {
+		t.Fatal(err)
+	}
+	mappedKey := client.lastKeys[1]
+	if err := store.ReserveVerification(context.Background(), 4, 4, "192.0.2.10"); err != nil {
+		t.Fatal(err)
+	}
+	if client.lastKeys[1] != mappedKey {
+		t.Fatal("IPv4-mapped address was not normalized with Unmap")
+	}
+}
+
 func TestActionSecurityRedisVerificationSessionLimitAndNonSlidingTTL(t *testing.T) {
 	client := newActionRateEvalClient()
 	store := actionRateTestStore(t, client)
@@ -231,6 +261,17 @@ func TestActionSecurityRedisFailsClosedForDependenciesContextAndMalformedReply(t
 			}
 		})
 	}
+	cluster := redis.NewClusterClient(&redis.ClusterOptions{Addrs: []string{"127.0.0.1:1"}})
+	ring := redis.NewRing(&redis.RingOptions{Addrs: map[string]string{"one": "127.0.0.1:1"}})
+	defer cluster.Close()
+	defer ring.Close()
+	for name, client := range map[string]redis.UniversalClient{"cluster": cluster, "ring": ring} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := NewActionSecurityRedis(client, crypto); !errors.Is(err, ErrActionSecurityRedisUnavailable) {
+				t.Fatalf("constructor accepted non-standalone %s client: %v", name, err)
+			}
+		})
+	}
 	if _, err := NewActionSecurityRedis(newActionRateEvalClient(), nil); !errors.Is(err, ErrActionSecurityRedisUnavailable) {
 		t.Fatalf("nil crypto constructor error = %v", err)
 	}
@@ -264,7 +305,16 @@ func TestActionSecurityRedisRejectsInvalidInputsBeforeEval(t *testing.T) {
 		"actor":   func() error { return store.ReserveVerification(context.Background(), 0, 1, "203.0.113.1") },
 		"session": func() error { return store.ReserveVerification(context.Background(), 1, 0, "203.0.113.1") },
 		"ip":      func() error { return store.ReserveVerification(context.Background(), 1, 1, "") },
-		"begin":   func() error { return store.ReserveBegin(context.Background(), 0) },
+		"hostname": func() error {
+			return store.ReserveVerification(context.Background(), 1, 1, "example.test")
+		},
+		"host_port": func() error {
+			return store.ReserveVerification(context.Background(), 1, 1, "192.0.2.1:443")
+		},
+		"zone": func() error {
+			return store.ReserveVerification(context.Background(), 1, 1, "fe80::1%en0")
+		},
+		"begin": func() error { return store.ReserveBegin(context.Background(), 0) },
 	} {
 		t.Run(name, func(t *testing.T) {
 			if err := call(); !errors.Is(err, ErrActionSecurityRateInput) {
@@ -274,6 +324,209 @@ func TestActionSecurityRedisRejectsInvalidInputsBeforeEval(t *testing.T) {
 	}
 	if client.evalCalls != 0 {
 		t.Fatalf("invalid inputs reached Redis %d times", client.evalCalls)
+	}
+}
+
+func TestActionSecurityRedisScriptPreflightsEveryKeyBeforeWriting(t *testing.T) {
+	phaseOne := strings.Index(actionSecurityRateScript, "-- phase 1: read-only preflight")
+	phaseTwo := strings.Index(actionSecurityRateScript, "-- phase 2: writes")
+	firstWrite := strings.Index(actionSecurityRateScript, "redis.call('INCR'")
+	firstSet := strings.Index(actionSecurityRateScript, "redis.call('SET'")
+	lastExplicitError := strings.LastIndex(actionSecurityRateScript, "redis.error_reply")
+	if phaseOne < 0 || phaseTwo <= phaseOne || firstWrite <= phaseTwo || firstSet <= phaseTwo || lastExplicitError >= phaseTwo {
+		t.Fatalf("rate script does not separate complete read-only preflight from writes")
+	}
+}
+
+type actionRateRedisSnapshot struct {
+	typeName string
+	dump     string
+	pttl     time.Duration
+}
+
+func TestActionSecurityRedisProductionLuaRejectsCorruptLaterKeysWithoutMutation(t *testing.T) {
+	rawURL := strings.TrimSpace(os.Getenv("TEST_REDIS_URL"))
+	if rawURL == "" {
+		t.Skip("requires explicit disposable TEST_REDIS_URL to execute production Lua")
+	}
+	options, err := redis.ParseURL(rawURL)
+	if err != nil {
+		t.Fatalf("parse TEST_REDIS_URL: %v", err)
+	}
+	client := redis.NewClient(options)
+	t.Cleanup(func() { _ = client.Close() })
+	store := actionRateTestStore(t, client)
+	ctx := context.Background()
+
+	tests := []struct {
+		name  string
+		index int
+		seed  func(string) error
+	}{
+		{name: "second_key_wrong_type", index: 1, seed: func(key string) error {
+			return client.LPush(ctx, key, "not-a-counter").Err()
+		}},
+		{name: "third_key_wrong_type", index: 2, seed: func(key string) error {
+			return client.LPush(ctx, key, "not-a-counter").Err()
+		}},
+		{name: "second_key_persistent", index: 1, seed: func(key string) error {
+			return client.Set(ctx, key, "1", 0).Err()
+		}},
+		{name: "third_key_overflow", index: 2, seed: func(key string) error {
+			return client.Set(ctx, key, "1000000000000000", time.Hour).Err()
+		}},
+	}
+	for offset, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			actorID := int64(8_000_000 + offset*10)
+			sessionID := actorID + 1
+			ip := netip.AddrFrom4([4]byte{198, 18, byte(offset), 1}).String()
+			actorPayload := encodeActionRateID(actorID)
+			sessionPayload := encodeActionRateID(sessionID)
+			keys, err := store.rateKeys([]actionRateIdentity{
+				{purpose: actionsecurity.RateVerificationActor, payload: actorPayload[:]},
+				{purpose: actionsecurity.RateVerificationIP, payload: []byte(ip)},
+				{purpose: actionsecurity.RateVerificationSession, payload: sessionPayload[:]},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = client.Del(context.Background(), keys...).Err() })
+			if err := client.Del(ctx, keys...).Err(); err != nil {
+				t.Fatal(err)
+			}
+			if err := tc.seed(keys[tc.index]); err != nil {
+				t.Fatal(err)
+			}
+			before := actionRateReadSnapshots(t, ctx, client, keys)
+			if err := store.ReserveVerification(ctx, actorID, sessionID, ip); !errors.Is(err, ErrActionSecurityRedisUnavailable) {
+				t.Fatalf("corrupt rate state error = %v", err)
+			}
+			after := actionRateReadSnapshots(t, ctx, client, keys)
+			actionRateAssertSnapshotsUnchanged(t, before, after)
+		})
+	}
+}
+
+func TestActionSecurityRedisProductionLuaFixedWindowAndRetry(t *testing.T) {
+	client, store := openActionRateRedisFixture(t)
+	ctx := context.Background()
+	actorID, sessionID := int64(8_100_000), int64(8_100_001)
+	ip := "2001:db8::8100"
+	actorPayload := encodeActionRateID(actorID)
+	sessionPayload := encodeActionRateID(sessionID)
+	keys, err := store.rateKeys([]actionRateIdentity{
+		{purpose: actionsecurity.RateVerificationActor, payload: actorPayload[:]},
+		{purpose: actionsecurity.RateVerificationIP, payload: []byte(ip)},
+		{purpose: actionsecurity.RateVerificationSession, payload: sessionPayload[:]},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Del(context.Background(), keys...).Err() })
+	if err := client.Del(ctx, keys...).Err(); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ReserveVerification(ctx, actorID, sessionID, ip); err != nil {
+		t.Fatal(err)
+	}
+	firstTTL := make([]time.Duration, len(keys))
+	for i, key := range keys {
+		firstTTL[i], err = client.PTTL(ctx, key).Result()
+		if err != nil || firstTTL[i] <= 0 {
+			t.Fatalf("first PTTL[%d]=%v err=%v", i, firstTTL[i], err)
+		}
+	}
+	time.Sleep(20 * time.Millisecond)
+	if err := store.ReserveVerification(ctx, actorID, sessionID, ip); err != nil {
+		t.Fatal(err)
+	}
+	for i, key := range keys {
+		count, err := client.Get(ctx, key).Int64()
+		if err != nil || count != 2 {
+			t.Fatalf("counter[%d]=%d err=%v", i, count, err)
+		}
+		afterTTL, err := client.PTTL(ctx, key).Result()
+		if err != nil || afterTTL <= 0 || afterTTL >= firstTTL[i] {
+			t.Fatalf("PTTL[%d] slid or vanished: %v -> %v err=%v", i, firstTTL[i], afterTTL, err)
+		}
+	}
+	for attempt := 3; attempt <= 5; attempt++ {
+		if err := store.ReserveVerification(ctx, actorID, sessionID, ip); err != nil {
+			t.Fatalf("attempt %d: %v", attempt, err)
+		}
+	}
+	err = store.ReserveVerification(ctx, actorID, sessionID, ip)
+	var retry *RetryAfterError
+	if !errors.As(err, &retry) || retry.Seconds < 899 || retry.Seconds > 900 {
+		t.Fatalf("sixth attempt error=%#v", err)
+	}
+	for i, key := range keys {
+		count, err := client.Get(ctx, key).Int64()
+		if err != nil || count != 6 {
+			t.Fatalf("rejected attempt did not atomically consume counter[%d]: %d err=%v", i, count, err)
+		}
+	}
+}
+
+func openActionRateRedisFixture(t *testing.T) (*redis.Client, *ActionSecurityRedis) {
+	t.Helper()
+	rawURL := strings.TrimSpace(os.Getenv("TEST_REDIS_URL"))
+	if rawURL == "" {
+		t.Skip("requires explicit disposable TEST_REDIS_URL to execute production Lua")
+	}
+	options, err := redis.ParseURL(rawURL)
+	if err != nil {
+		t.Fatalf("parse TEST_REDIS_URL: %v", err)
+	}
+	client := redis.NewClient(options)
+	t.Cleanup(func() { _ = client.Close() })
+	return client, actionRateTestStore(t, client)
+}
+
+func actionRateReadSnapshots(t *testing.T, ctx context.Context, client *redis.Client, keys []string) []actionRateRedisSnapshot {
+	t.Helper()
+	out := make([]actionRateRedisSnapshot, len(keys))
+	for i, key := range keys {
+		typeName, err := client.Type(ctx, key).Result()
+		if err != nil {
+			t.Fatal(err)
+		}
+		out[i].typeName = typeName
+		if typeName == "none" {
+			continue
+		}
+		out[i].dump, err = client.Dump(ctx, key).Result()
+		if err != nil {
+			t.Fatal(err)
+		}
+		out[i].pttl, err = client.PTTL(ctx, key).Result()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	return out
+}
+
+func actionRateAssertSnapshotsUnchanged(t *testing.T, before, after []actionRateRedisSnapshot) {
+	t.Helper()
+	if len(before) != len(after) {
+		t.Fatalf("snapshot lengths differ")
+	}
+	for i := range before {
+		if before[i].typeName != after[i].typeName || before[i].dump != after[i].dump {
+			t.Fatalf("key %d changed: before=%#v after=%#v", i, before[i], after[i])
+		}
+		if before[i].typeName == "none" {
+			continue
+		}
+		if before[i].pttl < 0 {
+			if before[i].pttl != after[i].pttl {
+				t.Fatalf("key %d TTL state changed: %v -> %v", i, before[i].pttl, after[i].pttl)
+			}
+		} else if after[i].pttl <= 0 || after[i].pttl > before[i].pttl || before[i].pttl-after[i].pttl > time.Second {
+			t.Fatalf("key %d expiry changed beyond clock passage: %v -> %v", i, before[i].pttl, after[i].pttl)
+		}
 	}
 }
 

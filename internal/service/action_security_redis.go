@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
+	"net/netip"
 	"reflect"
 
 	"github.com/porsche/ai-gateway-go/internal/actionsecurity"
@@ -38,7 +39,7 @@ func (e *RetryAfterError) Error() string { return "action security rate limit ex
 // NewActionSecurityRedis rejects unavailable dependencies before a protected
 // operation can reach its MySQL transaction.
 func NewActionSecurityRedis(client redis.UniversalClient, crypto *actionsecurity.Crypto) (*ActionSecurityRedis, error) {
-	if redisClientIsNil(client) || crypto == nil {
+	if redisClientIsNil(client) || crypto == nil || !actionSecurityRedisClientSupported(client) {
 		return nil, ErrActionSecurityRedisUnavailable
 	}
 	return &ActionSecurityRedis{client: client, crypto: crypto}, nil
@@ -47,14 +48,16 @@ func NewActionSecurityRedis(client redis.UniversalClient, crypto *actionsecurity
 // ReserveVerification atomically reserves actor, trusted-IP, and logical
 // session verification windows. A rejection still consumes every dimension.
 func (r *ActionSecurityRedis) ReserveVerification(ctx context.Context, actorID, sessionID int64, trustedIP string) error {
-	if actorID <= 0 || sessionID <= 0 || trustedIP == "" {
+	trustedAddr, err := netip.ParseAddr(trustedIP)
+	if actorID <= 0 || sessionID <= 0 || err != nil || trustedAddr.Zone() != "" {
 		return ErrActionSecurityRateInput
 	}
+	canonicalIP := trustedAddr.Unmap().String()
 	actorPayload := encodeActionRateID(actorID)
 	sessionPayload := encodeActionRateID(sessionID)
 	keys, err := r.rateKeys([]actionRateIdentity{
 		{purpose: actionsecurity.RateVerificationActor, payload: actorPayload[:]},
-		{purpose: actionsecurity.RateVerificationIP, payload: []byte(trustedIP)},
+		{purpose: actionsecurity.RateVerificationIP, payload: []byte(canonicalIP)},
 		{purpose: actionsecurity.RateVerificationSession, payload: sessionPayload[:]},
 	})
 	if err != nil {
@@ -172,30 +175,98 @@ func redisClientIsNil(client redis.UniversalClient) bool {
 	}
 }
 
-const actionSecurityRateScript = `
+// The Lua contract needs all keys on one standalone Redis server. Sentinel
+// clients are represented by *redis.Client and remain compatible; sharded
+// ClusterClient/Ring clients are rejected instead of introducing a public hash
+// tag that would correlate otherwise opaque rate dimensions.
+func actionSecurityRedisClientSupported(client redis.UniversalClient) bool {
+	switch client.(type) {
+	case *redis.Client:
+		return true
+	case interface{ actionSecurityStandaloneRedis() }:
+		return true
+	default:
+		return false
+	}
+}
+
+const actionSecurityRateScript = `#!lua flags=no-cluster
 local allowed = 1
 local retry_ms = 0
+local next_counts = {}
+local windows = {}
+local missing = {}
+local seen = {}
+
+if #KEYS == 0 or #ARGV ~= #KEYS * 2 then
+  return redis.error_reply('invalid rate contract')
+end
+
+-- phase 1: read-only preflight. No state can change on any rejection here.
 for i, key in ipairs(KEYS) do
+  if seen[key] then
+    return redis.error_reply('duplicate rate key')
+  end
+  seen[key] = true
   local limit = tonumber(ARGV[(i - 1) * 2 + 1])
   local window_ms = tonumber(ARGV[(i - 1) * 2 + 2])
-  if not limit or not window_ms or limit <= 0 or window_ms <= 0 then
+  if not limit or not window_ms or limit <= 0 or window_ms <= 0 or
+      limit ~= math.floor(limit) or window_ms ~= math.floor(window_ms) then
     return redis.error_reply('invalid rate contract')
   end
-  local count = redis.call('INCR', key)
-  if count == 1 then
-    if redis.call('PEXPIRE', key, window_ms) ~= 1 then
-      return redis.error_reply('rate expiry unavailable')
+  windows[i] = window_ms
+
+  local kind_reply = redis.call('TYPE', key)
+  local kind = kind_reply['ok']
+  local next_count = 1
+  local remaining = window_ms
+  if kind == 'none' then
+    if not redis.acl_check_cmd('SET', key, '1', 'PX', window_ms) then
+      return redis.error_reply('rate write denied')
     end
+    missing[i] = true
+  elseif kind == 'string' then
+    local raw_count = redis.call('GET', key)
+    if not raw_count or not string.match(raw_count, '^[0-9]+$') or
+        (#raw_count > 1 and string.sub(raw_count, 1, 1) == '0') or
+        #raw_count > 15 then
+      return redis.error_reply('invalid rate counter')
+    end
+    local count = tonumber(raw_count)
+    if not count or count < 0 or count > 999999999999999 then
+      return redis.error_reply('invalid rate counter')
+    end
+    next_count = count + 1
+    remaining = redis.call('PTTL', key)
+    if remaining <= 0 or remaining > window_ms then
+      return redis.error_reply('invalid rate ttl')
+    end
+    if not redis.acl_check_cmd('INCR', key) then
+      return redis.error_reply('rate write denied')
+    end
+    missing[i] = false
+  else
+    return redis.error_reply('invalid rate type')
   end
-  local remaining = redis.call('PTTL', key)
-  if remaining <= 0 then
-    return redis.error_reply('rate ttl unavailable')
-  end
-  if count > limit then
+  next_counts[i] = next_count
+  if next_count > limit then
     allowed = 0
     if retry_ms == 0 or remaining < retry_ms then
       retry_ms = remaining
     end
+  end
+end
+
+-- phase 2: writes. Preflight proved command types, integer bounds and TTLs.
+-- It also checked ACL permission for each exact write. Redis 7 rejects write
+-- scripts before execution on replicas, persistence errors and existing OOM.
+-- Its first memory-growing command can fail before any write; after that it
+-- lets the script finish to preserve atomicity.
+for i, key in ipairs(KEYS) do
+  if missing[i] then
+    redis.call('SET', key, '1', 'PX', windows[i])
+  else
+    redis.call('INCR', key)
   end
 end
 return {allowed, retry_ms}
