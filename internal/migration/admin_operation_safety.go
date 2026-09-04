@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"sort"
 	"strings"
 
 	"gorm.io/gorm"
@@ -33,12 +32,18 @@ type adminOperationForeignKeyContract struct {
 	targetColumn string
 }
 
+type adminOperationCheckContract struct {
+	name     string
+	clause   string
+	enforced string
+}
+
 type adminOperationTableContract struct {
 	name        string
 	columns     []adminOperationColumnContract
 	indexes     []adminOperationIndexContract
 	foreignKeys []adminOperationForeignKeyContract
-	checks      []string
+	checks      []adminOperationCheckContract
 }
 
 type adminOperationColumnMetadata struct {
@@ -67,13 +72,19 @@ type adminOperationForeignKeyMetadata struct {
 	updateRule   string
 }
 
+type adminOperationCheckMetadata struct {
+	name     string
+	clause   string
+	enforced string
+}
+
 type adminOperationTableMetadata struct {
 	engine      string
 	collation   string
 	columns     []adminOperationColumnMetadata
 	indexes     []adminOperationIndexMetadata
 	foreignKeys []adminOperationForeignKeyMetadata
-	checks      []string
+	checks      []adminOperationCheckMetadata
 }
 
 func requiredColumn(name, columnType string) adminOperationColumnContract {
@@ -127,15 +138,18 @@ func adminOperationSafetyContracts() []adminOperationTableContract {
 				{"idx_admin_action_verifications_actor_session_active", []string{"actor_user_id", "session_id", "is_deleted", "expires_at"}, false},
 				{"idx_admin_action_verifications_action_target_active", []string{"action", "target_kind", "target_guid", "is_deleted"}, false},
 				{"idx_admin_action_verifications_expiry", []string{"is_deleted", "expires_at"}, false},
-				// InnoDB creates this source index for the fixed session FK because
-				// none of the public query indexes starts with session_id.
+				// Migration 0005 explicitly declares the fixed session support index.
 				{"fk_admin_action_verifications_session", []string{"session_id"}, false},
 			},
 			foreignKeys: []adminOperationForeignKeyContract{
 				{"fk_admin_action_verifications_actor", "actor_user_id", "users", "id"},
 				{"fk_admin_action_verifications_session", "session_id", "user_sessions", "id"},
 			},
-			checks: []string{"chk_admin_action_verifications_audit", "chk_admin_action_verifications_target", "chk_admin_action_verifications_times"},
+			checks: []adminOperationCheckContract{
+				{"chk_admin_action_verifications_audit", "actor_auth_version >= 0 AND created_at >= 0 AND updated_at >= 0 AND is_deleted IN (0, 1) AND (consumed_at IS NULL OR is_deleted = 1)", "YES"},
+				{"chk_admin_action_verifications_target", "(target_kind = 1 AND target_guid IS NULL) OR (target_kind IN (2, 3) AND target_guid IS NOT NULL)", "YES"},
+				{"chk_admin_action_verifications_times", "expires_at >= 0 AND (consumed_at IS NULL OR consumed_at >= 0)", "YES"},
+			},
 		},
 		{
 			name:    "admin_operations",
@@ -149,7 +163,7 @@ func adminOperationSafetyContracts() []adminOperationTableContract {
 				{"idx_admin_operations_state_session", []string{"state", "session_id", "is_deleted", "lease_expires_at"}, false},
 				{"idx_admin_operations_recovery", []string{"state", "is_deleted", "lease_expires_at"}, false},
 				{"idx_admin_operations_expiry", []string{"is_deleted", "query_expires_at"}, false},
-				// This is the deterministic InnoDB source index for the session FK.
+				// Migration 0005 explicitly declares the fixed session support index.
 				{"fk_admin_operations_session", []string{"session_id"}, false},
 			},
 			foreignKeys: []adminOperationForeignKeyContract{
@@ -157,7 +171,16 @@ func adminOperationSafetyContracts() []adminOperationTableContract {
 				{"fk_admin_operations_session", "session_id", "user_sessions", "id"},
 				{"fk_admin_operations_verification", "verification_id", "admin_action_verifications", "id"},
 			},
-			checks: []string{"chk_admin_operations_audit", "chk_admin_operations_failure", "chk_admin_operations_http_status", "chk_admin_operations_lease", "chk_admin_operations_result", "chk_admin_operations_state", "chk_admin_operations_terminal", "chk_admin_operations_times"},
+			checks: []adminOperationCheckContract{
+				{"chk_admin_operations_audit", "actor_auth_version >= 0 AND created_at >= 0 AND updated_at >= 0 AND ((state = 5 AND is_deleted = 1) OR (state IN (1, 2, 3, 4) AND is_deleted = 0))", "YES"},
+				{"chk_admin_operations_failure", "error_code IS NULL OR error_code BETWEEN 1 AND 999", "YES"},
+				{"chk_admin_operations_http_status", "result_http_status IS NULL OR result_http_status BETWEEN 100 AND 599", "YES"},
+				{"chk_admin_operations_lease", "(lease_owner_hmac IS NULL AND lease_expires_at IS NULL) OR (lease_owner_hmac IS NOT NULL AND lease_expires_at IS NOT NULL AND lease_expires_at >= 0)", "YES"},
+				{"chk_admin_operations_result", "(result_kind IS NULL AND result_guid IS NULL) OR (result_kind = 1 AND result_guid IS NULL) OR (result_kind IN (2, 3) AND result_guid IS NOT NULL)", "YES"},
+				{"chk_admin_operations_state", "state IN (1, 2, 3, 4, 5)", "YES"},
+				{"chk_admin_operations_terminal", "(state = 1 AND lease_owner_hmac IS NOT NULL AND finished_at IS NULL AND error_code IS NULL AND result_kind IS NULL AND result_http_status IS NULL) OR (state = 2 AND lease_owner_hmac IS NULL AND finished_at IS NOT NULL AND error_code IS NULL AND result_kind IS NOT NULL AND result_http_status IS NOT NULL) OR (state = 3 AND lease_owner_hmac IS NULL AND finished_at IS NOT NULL AND error_code IS NOT NULL AND result_kind IS NULL AND result_http_status IS NOT NULL) OR (state = 4 AND lease_owner_hmac IS NULL AND finished_at IS NULL AND error_code IS NULL AND result_kind IS NULL AND result_http_status IS NULL) OR (state = 5 AND lease_owner_hmac IS NULL AND error_code IS NULL AND result_kind IS NULL AND result_http_status IS NULL)", "YES"},
+				{"chk_admin_operations_times", "query_expires_at >= 0 AND (finished_at IS NULL OR finished_at >= 0)", "YES"},
+			},
 		},
 	}
 }
@@ -231,8 +254,17 @@ func verifyAdminOperationTable(ctx context.Context, db *gorm.DB, currentSchema s
 	for _, row := range foreignKeyRows {
 		actual.foreignKeys = append(actual.foreignKeys, adminOperationForeignKeyMetadata{name: row.Name, column: row.Column, ordinal: row.Ordinal, targetSchema: row.TargetSchema, targetTable: row.TargetTable, targetColumn: row.TargetColumn, deleteRule: row.DeleteRule, updateRule: row.UpdateRule})
 	}
-	if err := db.WithContext(ctx).Raw(`SELECT constraint_name FROM information_schema.table_constraints WHERE table_schema=DATABASE() AND table_name=? AND constraint_type='CHECK' ORDER BY constraint_name`, contract.name).Scan(&actual.checks).Error; err != nil {
+	var checkRows []struct {
+		Name     string `gorm:"column:constraint_name"`
+		Clause   string `gorm:"column:check_clause"`
+		Enforced string `gorm:"column:enforced"`
+	}
+	checkQuery := `SELECT tc.constraint_name, cc.check_clause, tc.enforced FROM information_schema.table_constraints tc JOIN information_schema.check_constraints cc ON cc.constraint_schema=tc.constraint_schema AND cc.constraint_name=tc.constraint_name WHERE tc.table_schema=DATABASE() AND tc.table_name=? AND tc.constraint_type='CHECK' ORDER BY tc.constraint_name`
+	if err := db.WithContext(ctx).Raw(checkQuery, contract.name).Scan(&checkRows).Error; err != nil {
 		return false
+	}
+	for _, row := range checkRows {
+		actual.checks = append(actual.checks, adminOperationCheckMetadata{name: row.Name, clause: row.Clause, enforced: row.Enforced})
 	}
 	return matchesAdminOperationTableContract(contract, actual, currentSchema)
 }
@@ -283,19 +315,269 @@ func matchesAdminOperationTableContract(want adminOperationTableContract, got ad
 			return false
 		}
 	}
-	wantChecks := append([]string(nil), want.checks...)
-	actualChecks := append([]string(nil), got.checks...)
-	sort.Strings(wantChecks)
-	sort.Strings(actualChecks)
-	if len(actualChecks) != len(wantChecks) {
+	checks := make(map[string][]adminOperationCheckMetadata)
+	for _, check := range got.checks {
+		checks[check.name] = append(checks[check.name], check)
+	}
+	if len(checks) != len(want.checks) {
 		return false
 	}
-	for i := range actualChecks {
-		if actualChecks[i] != wantChecks[i] {
+	for _, expected := range want.checks {
+		rows, exists := checks[expected.name]
+		if !exists || len(rows) != 1 || rows[0].enforced != expected.enforced || expected.enforced != "YES" {
+			return false
+		}
+		wantClause, wantOK := canonicalizeCheckClause(expected.clause)
+		actualClause, actualOK := canonicalizeCheckClause(rows[0].clause)
+		if !wantOK || !actualOK || actualClause != wantClause {
 			return false
 		}
 	}
 	return true
+}
+
+// canonicalizeCheckClause parses the deliberately small expression language
+// used by migration 0005. Parsing an AST permits MySQL's case, backtick,
+// whitespace, and redundant-parenthesis formatting while rejecting functions,
+// strings, arithmetic, reordered predicates, and any unrecognised syntax.
+func canonicalizeCheckClause(clause string) (string, bool) {
+	tokens, ok := tokenizeCheckClause(clause)
+	if !ok || len(tokens) == 0 {
+		return "", false
+	}
+	parser := checkClauseParser{tokens: tokens}
+	result, ok := parser.parseOr()
+	return result, ok && parser.pos == len(tokens)
+}
+
+func tokenizeCheckClause(clause string) ([]string, bool) {
+	var tokens []string
+	for pos := 0; pos < len(clause); {
+		if isCheckSpace(clause[pos]) {
+			pos++
+			continue
+		}
+		if clause[pos] == '`' {
+			end := pos + 1
+			for end < len(clause) && clause[end] != '`' {
+				end++
+			}
+			if end == len(clause) || !isCheckIdentifier(clause[pos+1:end]) {
+				return nil, false
+			}
+			tokens = append(tokens, strings.ToLower(clause[pos+1:end]))
+			pos = end + 1
+			continue
+		}
+		if isASCIIAlpha(clause[pos]) || clause[pos] == '_' {
+			end := pos + 1
+			for end < len(clause) && (isASCIIAlpha(clause[end]) || isASCIIDigit(clause[end]) || clause[end] == '_') {
+				end++
+			}
+			tokens = append(tokens, strings.ToLower(clause[pos:end]))
+			pos = end
+			continue
+		}
+		if isASCIIDigit(clause[pos]) {
+			end := pos + 1
+			for end < len(clause) && isASCIIDigit(clause[end]) {
+				end++
+			}
+			tokens = append(tokens, clause[pos:end])
+			pos = end
+			continue
+		}
+		if strings.ContainsRune("(),", rune(clause[pos])) {
+			tokens = append(tokens, clause[pos:pos+1])
+			pos++
+			continue
+		}
+		if strings.ContainsRune("=><", rune(clause[pos])) {
+			end := pos + 1
+			if end < len(clause) && clause[end] == '=' {
+				end++
+			}
+			op := clause[pos:end]
+			if op != "=" && op != ">=" && op != "<=" && op != ">" && op != "<" {
+				return nil, false
+			}
+			tokens = append(tokens, op)
+			pos = end
+			continue
+		}
+		return nil, false
+	}
+	return tokens, true
+}
+
+type checkClauseParser struct {
+	tokens []string
+	pos    int
+}
+
+func (p *checkClauseParser) parseOr() (string, bool) {
+	left, ok := p.parseAnd()
+	if !ok {
+		return "", false
+	}
+	for p.match("or") {
+		right, ok := p.parseAnd()
+		if !ok {
+			return "", false
+		}
+		left = "or(" + left + "," + right + ")"
+	}
+	return left, true
+}
+
+func (p *checkClauseParser) parseAnd() (string, bool) {
+	left, ok := p.parsePrimary()
+	if !ok {
+		return "", false
+	}
+	for p.match("and") {
+		right, ok := p.parsePrimary()
+		if !ok {
+			return "", false
+		}
+		left = "and(" + left + "," + right + ")"
+	}
+	return left, true
+}
+
+func (p *checkClauseParser) parsePrimary() (string, bool) {
+	if p.match("(") {
+		expression, ok := p.parseOr()
+		if !ok || !p.match(")") {
+			return "", false
+		}
+		return expression, true
+	}
+	if p.pos >= len(p.tokens) || !isCheckIdentifier(p.tokens[p.pos]) {
+		return "", false
+	}
+	identifier := p.tokens[p.pos]
+	p.pos++
+	if p.match("is") {
+		negated := p.match("not")
+		if !p.match("null") {
+			return "", false
+		}
+		if negated {
+			return "notnull(" + identifier + ")", true
+		}
+		return "isnull(" + identifier + ")", true
+	}
+	if p.match("in") {
+		if !p.match("(") {
+			return "", false
+		}
+		var values []string
+		for {
+			value, ok := p.parseNumber()
+			if !ok {
+				return "", false
+			}
+			values = append(values, value)
+			if !p.match(",") {
+				break
+			}
+		}
+		if !p.match(")") {
+			return "", false
+		}
+		return "in(" + identifier + "," + strings.Join(values, ",") + ")", true
+	}
+	if p.match("between") {
+		low, lowOK := p.parseNumber()
+		if !lowOK || !p.match("and") {
+			return "", false
+		}
+		high, highOK := p.parseNumber()
+		if !highOK {
+			return "", false
+		}
+		return "between(" + identifier + "," + low + "," + high + ")", true
+	}
+	if p.pos >= len(p.tokens) || !isCheckComparison(p.tokens[p.pos]) {
+		return "", false
+	}
+	operator := p.tokens[p.pos]
+	p.pos++
+	value, ok := p.parseNumber()
+	if !ok {
+		return "", false
+	}
+	return "compare(" + operator + "," + identifier + "," + value + ")", true
+}
+
+func (p *checkClauseParser) parseNumber() (string, bool) {
+	parentheses := 0
+	for p.match("(") {
+		parentheses++
+	}
+	if p.pos >= len(p.tokens) || !isCheckNumber(p.tokens[p.pos]) {
+		return "", false
+	}
+	value := strings.TrimLeft(p.tokens[p.pos], "0")
+	if value == "" {
+		value = "0"
+	}
+	p.pos++
+	for ; parentheses > 0; parentheses-- {
+		if !p.match(")") {
+			return "", false
+		}
+	}
+	return value, true
+}
+
+func (p *checkClauseParser) match(token string) bool {
+	if p.pos >= len(p.tokens) || p.tokens[p.pos] != token {
+		return false
+	}
+	p.pos++
+	return true
+}
+
+func isCheckIdentifier(value string) bool {
+	if value == "" || (!isASCIIAlpha(value[0]) && value[0] != '_') {
+		return false
+	}
+	for i := 1; i < len(value); i++ {
+		if !isASCIIAlpha(value[i]) && !isASCIIDigit(value[i]) && value[i] != '_' {
+			return false
+		}
+	}
+	return true
+}
+
+func isCheckNumber(value string) bool {
+	if value == "" {
+		return false
+	}
+	for i := range value {
+		if !isASCIIDigit(value[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func isCheckComparison(value string) bool {
+	return value == "=" || value == ">=" || value == "<=" || value == ">" || value == "<"
+}
+
+func isASCIIAlpha(value byte) bool {
+	return value >= 'a' && value <= 'z' || value >= 'A' && value <= 'Z'
+}
+
+func isASCIIDigit(value byte) bool {
+	return value >= '0' && value <= '9'
+}
+
+func isCheckSpace(value byte) bool {
+	return value == ' ' || value == '\t' || value == '\n' || value == '\r' || value == '\f'
 }
 
 func restrictRule(rule string) bool {

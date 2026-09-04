@@ -18,7 +18,7 @@ func cloneAdminOperationTableMetadata(value adminOperationTableMetadata) adminOp
 	value.columns = append([]adminOperationColumnMetadata(nil), value.columns...)
 	value.indexes = append([]adminOperationIndexMetadata(nil), value.indexes...)
 	value.foreignKeys = append([]adminOperationForeignKeyMetadata(nil), value.foreignKeys...)
-	value.checks = append([]string(nil), value.checks...)
+	value.checks = append([]adminOperationCheckMetadata(nil), value.checks...)
 	return value
 }
 
@@ -120,7 +120,7 @@ func TestAdminOperationSafetyMetadataComparisonIsExact(t *testing.T) {
 		foreignKeys: []adminOperationForeignKeyContract{
 			{name: "fk_sample", column: "id", targetTable: "users", targetColumn: "id"},
 		},
-		checks: []string{"chk_sample"},
+		checks: []adminOperationCheckContract{{name: "chk_sample", clause: "is_deleted IN (0, 1)", enforced: "YES"}},
 	}
 	valid := adminOperationTableMetadata{
 		engine: "InnoDB", collation: "utf8mb4_unicode_ci",
@@ -136,7 +136,7 @@ func TestAdminOperationSafetyMetadataComparisonIsExact(t *testing.T) {
 		foreignKeys: []adminOperationForeignKeyMetadata{
 			{name: "fk_sample", column: "id", ordinal: 1, targetSchema: "fixture", targetTable: "users", targetColumn: "id", deleteRule: "RESTRICT", updateRule: "NO ACTION"},
 		},
-		checks: []string{"chk_sample"},
+		checks: []adminOperationCheckMetadata{{name: "chk_sample", clause: " (((`IS_DELETED` in ( 0 , 1 ))) ) ", enforced: "YES"}},
 	}
 	if !matchesAdminOperationTableContract(want, valid, "fixture") {
 		t.Fatal("exact metadata rejected")
@@ -146,6 +146,17 @@ func TestAdminOperationSafetyMetadataComparisonIsExact(t *testing.T) {
 		name string
 		edit func(*adminOperationTableMetadata)
 	}{
+		{"engine", func(got *adminOperationTableMetadata) { got.engine = "MyISAM" }},
+		{"collation", func(got *adminOperationTableMetadata) { got.collation = "utf8mb4_bin" }},
+		{"column_name", func(got *adminOperationTableMetadata) { got.columns[0].name = "other" }},
+		{"column_order", func(got *adminOperationTableMetadata) {
+			got.columns[0], got.columns[1] = got.columns[1], got.columns[0]
+		}},
+		{"column_type", func(got *adminOperationTableMetadata) { got.columns[0].columnType = "int" }},
+		{"column_nullable", func(got *adminOperationTableMetadata) { got.columns[0].nullable = "YES" }},
+		{"column_default", func(got *adminOperationTableMetadata) { got.columns[1].defaultVal = nullString("1") }},
+		{"column_extra", func(got *adminOperationTableMetadata) { got.columns[0].extra = "" }},
+		{"column_unsigned", func(got *adminOperationTableMetadata) { got.columns[0].columnType = "bigint unsigned" }},
 		{"missing_index", func(got *adminOperationTableMetadata) { got.indexes = got.indexes[:1] }},
 		{"extra_index", func(got *adminOperationTableMetadata) {
 			got.indexes = append(got.indexes, adminOperationIndexMetadata{name: "extra", column: "id", sequence: 1, nonUnique: 1})
@@ -158,6 +169,13 @@ func TestAdminOperationSafetyMetadataComparisonIsExact(t *testing.T) {
 		}},
 		{"wrong_fk_rule", func(got *adminOperationTableMetadata) { got.foreignKeys[0].deleteRule = "CASCADE" }},
 		{"duplicate_fk", func(got *adminOperationTableMetadata) { got.foreignKeys = append(got.foreignKeys, got.foreignKeys[0]) }},
+		{"missing_check", func(got *adminOperationTableMetadata) { got.checks = nil }},
+		{"extra_check", func(got *adminOperationTableMetadata) {
+			got.checks = append(got.checks, adminOperationCheckMetadata{name: "extra", clause: "is_deleted = 0", enforced: "YES"})
+		}},
+		{"duplicate_check", func(got *adminOperationTableMetadata) { got.checks = append(got.checks, got.checks[0]) }},
+		{"disabled_check", func(got *adminOperationTableMetadata) { got.checks[0].enforced = "NO" }},
+		{"check_expression", func(got *adminOperationTableMetadata) { got.checks[0].clause = "is_deleted IN (0, 2)" }},
 	}
 	for _, tc := range mutations {
 		t.Run(tc.name, func(t *testing.T) {
@@ -180,6 +198,27 @@ func TestAdminOperationSafetyVerifierErrorsAreFailClosedAndRedacted(t *testing.T
 	}
 	if matchesAdminOperationTableContract(adminOperationTableContract{}, adminOperationTableMetadata{}, "private_schema") {
 		t.Fatal("unavailable metadata accepted")
+	}
+}
+
+func TestAdminOperationSafetyCheckContractsUseSupportedStrictGrammar(t *testing.T) {
+	for _, table := range adminOperationSafetyContracts() {
+		for _, check := range table.checks {
+			if canonical, ok := canonicalizeCheckClause(check.clause); !ok || canonical == "" {
+				t.Errorf("contract %s.%s is not canonicalizable", table.name, check.name)
+			}
+		}
+	}
+	for _, unsafe := range []string{
+		"is_deleted IN (0, 1) OR 1 = 1",
+		"LOWER(state) = 1",
+		"state + 1 = 2",
+		"state = '1'",
+		"state IN (1, 2) /* drift */",
+	} {
+		if canonical, ok := canonicalizeCheckClause(unsafe); ok || canonical != "" {
+			t.Errorf("unsupported CHECK syntax accepted: %q", unsafe)
+		}
 	}
 }
 
