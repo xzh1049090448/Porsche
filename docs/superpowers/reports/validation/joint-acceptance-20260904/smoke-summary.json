@@ -1,0 +1,16 @@
+{
+  "frontend_root": 200,
+  "backend_health": 200,
+  "root_login": 200,
+  "refresh_cookie": "present_httponly",
+  "bearer_list": 200,
+  "list_total": 3,
+  "bearer_detail": 200,
+  "detail_username": "joint_user",
+  "admin_login": 200,
+  "admin_refresh_cookie": "present_httponly",
+  "admin_bearer_list": 200,
+  "admin_list_total": 2,
+  "root_deleted_list": 200,
+  "deleted_total": 1
+}

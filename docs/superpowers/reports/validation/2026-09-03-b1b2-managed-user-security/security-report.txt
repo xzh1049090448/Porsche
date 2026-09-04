@@ -1,0 +1,37 @@
+SECURITY_REPORT
+Scope: B1-B2 security tightening of the existing managed-user PUT/update flow only.
+
+CRITICAL: None.
+HIGH: None.
+MEDIUM: None.
+LOW: None.
+
+Verified security properties:
+- internal/handler/admin_user_update_decode.go:33-128 enforces a 64KiB bound, one UTF-8 JSON object, exact key allowlist, decoded-key duplicate rejection, no trailing value, and typed field/range validation before a service call.
+- internal/handler/admin.go:85-130 requires positive int64 GUIDs, maps malformed requests to fixed 400/413 and known invalid enums to fixed 422, then routes only validated input to UpdateManagedUser.
+- internal/service/auth_account.go:142-240 validates typed inputs, locks/re-authorizes actor and target, avoids all mutation for semantic no-op, writes a Redis deny barrier before the durable security transition, and returns nil/fixed 503 for database or commit errors.
+- internal/service/auth_account.go:174-230 advances AuthVersion and writes event 10 exactly once for actual status/plan/ACL changes; daily-limit-only updates do not alter AuthVersion or revoke sessions.
+- internal/service/auth_session.go:318-336 attributes durable session mutation and audit fields to actorID while retaining the target session UserID.
+- internal/models/models.go:208-275 appends stable audit integer 10 without altering 1..9 and supplies both string mappings.
+
+Fresh command evidence:
+- GOCACHE=/private/tmp/porsche-go-build-cache go build ./... => exit 0.
+- GOCACHE=/private/tmp/porsche-go-build-cache go vet ./... => exit 0.
+- git diff --check => exit 0; jq empty feature_list.json => exit 0.
+- fixture-backed GOCACHE=/private/tmp/porsche-go-build-cache go test -race -p 1 ./internal/models ./internal/service ./internal/handler -run '^(TestUpdateManagedUser|TestAdminUserUpdate|TestAuthAuditEventManagedUserUpdated)' -count=1 => exit 0; all three packages passed.
+- fixture-backed GOCACHE=/private/tmp/porsche-go-build-cache go test -json -p 1 ./... -count=1 => raw JSON test_pass=512, test_fail=0, test_skip=0, package_pass=15, package_fail=0, package_skip=4.
+
+Independent actual HTTP adversarial probe:
+- Source: /private/tmp/porsche-b1b2-independent-probe/admin_user_update_probe_test.go
+- Overlay: /private/tmp/porsche-b1b2-independent-probe/overlay.json
+- Command: fixture-backed GOCACHE=/private/tmp/porsche-go-build-cache go test -vet=off -overlay /private/tmp/porsche-b1b2-independent-probe/overlay.json ./internal/handler -run '^TestIndependentHTTPStrictDecoderNoPartialWritesAndBoundary$' -count=1
+- Output: ok github.com/porsche/ai-gateway-go/internal/handler 1.515s
+- Result: a valid plan field followed by a null ACL element returned 400 without changing plan, AuthVersion, session state, or event 10. An escaped duplicate key returned 400. Whitespace-formatted explicit nulls returned 200 without mutation. An exactly 64KiB valid ACL body returned 200 with one security transition; the same body plus one byte returned 413 without another mutation.
+
+Review precision:
+- Existing role matrix confirms the self branch rejects early; this review does not infer separate target-field or Redis observations from that branch.
+- MySQL commit failure intentionally returns nil/fixed 503 while outcome can be unknown; idempotent replay remains explicitly out of scope.
+- No project file was modified by this verifier. No production target, production environment, fixture flush, container stop/removal, dependency installation, or git write was performed.
+
+FINAL VERDICT: PASS.
+FINAL SEVERITY SUMMARY: CRITICAL none; HIGH none; MEDIUM none; LOW none.

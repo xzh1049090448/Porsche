@@ -1,6 +1,6 @@
 {
   "project": "Porsche Go AI Gateway",
-  "last_updated": "2026-09-03",
+  "last_updated": "2026-09-04",
   "rules": {
     "single_active_feature": true,
     "passing_requires_evidence": true,
@@ -13,6 +13,124 @@
     "passing": "验证命令和证据均已记录。"
   },
   "features": [
+    {
+      "id": "go-016",
+      "priority": 0,
+      "area": "admin-users-read",
+      "title": "B1-D 管理用户只读与四来源认证权限投影",
+      "status": "passing",
+      "verification": [
+        "B1-D query/DTO/fresh read/auth projection TDD",
+        "隔离 MySQL8/Redis7 focused/full/race/build/vet 与 100k warm 性能门禁",
+        "后端 PM 规格与独立质量复核"
+      ],
+      "evidence": [
+        "2026-09-04：Root/后端 PM 已确认 r1 AGREED_FOR_IMPLEMENTATION；基线 init 通过，spec/plan 已落盘。纯 query/DTO 首轮 RED→GREEN；共享 fresh read 服务实现中。",
+        "2026-09-04：九生产文件候选冻结；无fixture fresh全量386PASS/258SKIP/0FAIL、focusedrace30PASS/29SKIP/0FAIL，build/vet/diff exit0。真实DB及性能NOT_RUN；独立静态审查中，等待本批专用fixture授权。",
+        "2026-09-04：独立b1d_security_review静态SECURITY_REPORT REVIEW_ONLY PASS，四级问题均0、9生产hash匹配、diff-check通过；回执归档同名validation/security-review.md。真实MySQL/Redis/锁竞争/100k均NOT_RUN，全批仍PARTIAL/awaiting_fixture_authorization。",
+        "2026-09-04：本批隔离MySQL8.0.46/Redis7.4.11已获授权并执行。focused service46/42 leaf、handler17/8 leaf及对应race全部PASS；fresh serial full691 terminal PASS/1性能opt-in SKIP/0FAIL（631 leaf PASS/1SKIP，15 package PASS/4无测试package SKIP）；build/vet/diff PASS。writer单次100k warm P95340.023ms仅为历史候选，等待独立复现。真实fixture仅修4个测试文件（VARCHAR20夹具与冻结404隐藏断言），9生产hash不变。",
+        "2026-09-04：独立real-fixture QA确认功能/security/integration PASS、四级安全问题0、9生产hash匹配；三次fresh 100k warm P95为633.956ms FAIL、466.753ms PASS、504.793ms FAIL，整体PARTIAL/PERFORMANCE_BLOCKED。exact count使用idx_users_active_updated扫描100001行约312ms，page约0.09ms。PM推荐待扩展授权后新增forward 0004 idx_users_admin_read_count(is_deleted,role,status)，初始查询不变，三次fresh均<=500ms才可解除阻断；disk-cold、FE-BE联合、26case仍NOT_RUN。",
+        "2026-09-04：用户扩展授权后0004已严格TDD实现并仅应用隔离fixture；SHOW INDEX确认idx_users_admin_read_count(is_deleted,role,status)，0001–0004 ledger通过。migration focused20、service focused/race各46、handler focused/race各17、fresh full692PASS/1性能SKIP/0FAIL，build/vet/diff PASS。第1次fresh 100k first90.669ms/warm P95470.646ms数值PASS，但EXPLAIN exact count仍选择idx_users_active_updated扫描100001行约203ms，未选择新索引。按预设停点停止第2/3次及ANALYZE/hint/成本采样；历史三次不稳定结果保留，状态PERFORMANCE_BLOCKED/OPTIMIZER_REVIEW_REQUIRED，等待PM新范围与独立QA。",
+        "2026-09-04：PM批准在当前100k隔离fixture执行ANALYZE TABLE users；返回OK、墙钟0.10s，总量100001/匹配100000不变。但新idx_users_admin_read_count三列cardinality仍均为1，exact count仍选择idx_users_active_updated扫描100001行（约148ms），page继续使用uk_users_guid约0.054ms。第二停点触发，新的三次fresh、hint、索引修改和成本采样均NOT_RUN；状态PERFORMANCE_BLOCKED/INDEX_DESIGN_REVIEW_REQUIRED，fixture再次静止。",
+        "2026-09-04：PM批准只读B0/H1/H2实验。三者完整statement均返回total100000与相同20个降序GUID，page均保持uk_users_guid。direct count：B0旧idx_users_active_updated扫描100001行约112ms；H1 USE INDEX未选择新索引而table scan约37.9ms；按分支执行H2 FORCE INDEX后选idx_users_admin_read_count但约184ms、更慢。合成数据几乎全未删除/user/active，不能外推生产。H1/H2均无落生产依据，三次fresh仍未运行；动态deleted/role/status/LIKE/GUID谓词直接count存在参数复制与total/page漂移风险。状态PERFORMANCE_BLOCKED/QUERY_AND_INDEX_REDESIGN_REQUIRED。",
+        "2026-09-04：PM批准H3只读实验，临时overlay直接调用现有usersReadWhere生成同一P并仅复制args。B0/H3完整statement均total100000、同20 GUID，page仍uk_users_guid。direct count B0选idx_users_active_updated约77.2ms，H3 IGNORE旧索引后选PRIMARY约30.5ms；7组交替墙钟中位数67.241→24.042ms，每次total一致。H3在默认100k分布内重复改善，但尚非HTTP并发P95，且deleted/role/status/LIKE/GUID组合未覆盖；未改源码/索引/DB，状态PERFORMANCE_BLOCKED/H3_PROMISING_PENDING_QUERY_REVIEW。",
+        "2026-09-04：H3本地候选严格TDD完成：同一usersReadWhere P用于filtered/count，args按P/P/limit/offset复制，counted仅IGNORE旧索引，单statement snapshot保留，0004不变。focused/race 0FAIL；最终fresh full693PASS/1性能SKIP/0FAIL（633 leaf；15 package PASS/4 no-test SKIP），build/vet/diff PASS。三次独立fresh seed+ANALYZE warm P95=77.817/75.512/74.710ms，均<=500；first35.218/35.101/36.317ms。成本单样本已归档。当前WRITER_PASS_PENDING_INDEPENDENT_QA_AND_EXACT_CLEANUP，go-016仍in_progress。",
+        "2026-09-04：独立H3 QA最终PASS，动态合同/focused/race/fresh full/build/vet/diff全通过，四级安全问题0；独立三次fresh P95=113.688/76.997/78.737ms均<=500。用户授权exact cleanup完成：两个精确ID/名称和同label残留均不存在，私密目录不存在；无prune/volume/其它容器操作。go-016最终passing/PASS_LIMITED_SCOPE；disk-cold、FE-BE、26case、旧写链及生产仍NOT_RUN。"
+      ],
+      "notes": "PASS_LIMITED_SCOPE：H3本地候选经writer与独立QA动态合同、回归及各三次fresh性能通过，安全四级问题0；exact fixture cleanup完成。disk-cold、FE-BE、26联合用例、旧写链、其它管理域和生产迁移/部署不在本PASS内。报告 docs/superpowers/reports/2026-09-03-b1d-admin-users-read.md。"
+    },
+    {
+      "id": "go-015",
+      "priority": 1,
+      "area": "admin-authz-read",
+      "title": "PRD-260903 B1-C 管理权限只读展示接口",
+      "status": "passing",
+      "notes": "PASS_LIMITED_SCOPE：两个只读权限展示API本地验收完成，PM SPEC PASS、独立真实质量VERDICT PASS。writer full627/focused83/race107及独立focused96/race96/HTTPprobe1全部0fail/0skip；8生产hash不变。本批exact容器AutoRemove且私密凭据目录删除。无生产部署、权限writer、FE业务接线或26项联合验收完成。",
+      "verification": [
+        "实际真实fixture前提：unset APP_ENV SNOWFLAKE_NODE_ID DATABASE_URL REDIS_URL RUN_START_COMMAND；静默加载本批已核实的 TEST_DATABASE_URL/TEST_REDIS_URL（不输出凭据），GOCACHE=/private/tmp/porsche-go-build-cache。具体执行证据见 docs/superpowers/reports/2026-09-03-b1c-admin-authz-read.md 与 validation/2026-09-03-b1c-admin-authz-read/real-fixture/independent-real/security-report.txt。",
+        "go test -p 1 ./... -count=1 -json",
+        "go test -p 1 ./internal/service ./internal/handler -run '^(TestAdminPermission.*|TestAdminAuthz.*)$' -count=1 -json",
+        "go test -race -p 1 ./internal/service ./internal/handler ./internal/authz ./internal/middleware -run '^(TestAdminPermission.*|TestAdminAuthz.*|TestPermission.*)$' -count=1 -json",
+        "go build ./...; go vet ./...; git diff --check",
+        "本批fixture、私密TEST_*文件与凭据已清理；重现须使用新授权且核验隔离的环境。旧env -u TEST_*无fixture验证只作为历史evidence/report，不代表当前627项真实验证命令。"
+      ],
+      "evidence": [
+        "历史阶段：2026-09-03：本地生产候选已实现并冻结；无fixture最终全量356 test pass/229 test skip/0 fail，15 package pass/4 no-test。HTTP1 pass/5 skip/0 fail；build/vet/race通过。真实DB/Redis NOT_RUN，不能替代限定验收。",
+        "历史阶段：PM conditional SPEC CODE ALIGNED：代码无剩余规格gap，条件为文档一致及本批真实fixture证据；独立静态/无fixture复核已完成，VERDICT PARTIAL；四级安全问题均0、8生产hash匹配，纯JSON叶子18 PASS/34 fixture SKIP/0 FAIL，focused race/HTTP overlay probe/gofmt/diff/build/vet PASS，真实DB严格NOT_RUN。",
+        "历史阶段：2026-09-03：实际本批MySQL8.0.46/Redis7.4.11迁移0001–0003 ledger已核验。fresh full627 test pass/0 fail/0 skip，15 package pass/4 no-test；focused83/race107均无fail/skip；build/vet/diff PASS。初次full仅证据.go误扫描及runner迁移环境污染导致失败，均已修复并fresh复跑，生产代码和测试断言未改。等待独立真实fixture与PM最终签收，fixture保持运行。",
+        "历史阶段：PM重新统计full627/focused83/race107及8生产hash后最终限定SPEC PASS，仅双只读API本地联调准入；独立真实质量仍在执行，go-015不标passing且fixture不清理。",
+        "最终：PM限定SPEC PASS；独立真实质量VERDICT PASS（四级安全问题均0），focused96叶子PASS/race96叶子PASS/HTTPboundary1PASS，0FAIL/0SKIP，8生产hash二次匹配。writer full627PASS/0FAIL/0SKIP、build/vet/diff PASS。用户已授权的exact清理已完成，两容器均不存在、fixture.env及本批私密目录均已删除；完整证据见B1-C报告与manifest。"
+      ]
+    },
+    {
+      "id": "go-014",
+      "priority": 1,
+      "area": "gateway-owner-acl",
+      "title": "PRD-260903 B1-B3 Gateway Key 最新用户 ACL 约束",
+      "status": "passing",
+      "notes": "PASS_LIMITED_SCOPE：每请求读取最新 owner ACL 并与 Key ACL 同时授权；无 Key CRUD DTO、票据/outbox/FE/生产操作。"
+    },
+    {
+      "id": "go-013",
+      "priority": 1,
+      "area": "admin-user-security",
+      "title": "PRD-260903 B1-B2 管理用户安全更新",
+      "user_visible_behavior": "管理员实际变更用户状态、套餐或模型 ACL 时会撤销旧会话并使旧凭据失效；管理员更新 JSON 严格拒绝歧义输入。",
+      "status": "passing",
+      "verification": [
+        "真实隔离 MySQL 8/Redis 7：套餐、状态、用户 ACL、额度与会话撤销/审计事务验证",
+        "真实 Gin PUT /admin/users/:guid：64KiB 边界、严格 JSON、枚举与无副作用拒绝验证",
+        "GOCACHE=/private/tmp/porsche-go-build-cache go test -p 1 ./... -count=1",
+        "GOCACHE=/private/tmp/porsche-go-build-cache go build ./... && GOCACHE=/private/tmp/porsche-go-build-cache go vet ./...",
+        "git diff --check"
+      ],
+      "evidence": [
+        "2026-09-03：PM SPEC PASS；独立 permission_snapshot_verify VERDICT PASS，Critical/High/Medium/Low均none。fresh JSON为512 test pass、0 skip、0 fail，15 package pass、4 no-test-file；race/build/vet/diff/feature JSON与实际HTTP adversarial probe均通过。"
+      ],
+      "notes": "限定既有 managed-user 更新的严格解码、会话撤销、AuthVersion 和 event10 审计。无新 HTTP 路由/DTO、权限覆盖 writer、ticket、outbox、schema 迁移、前端、生产部署、commit或push。"
+    },
+    {
+      "id": "go-012",
+      "priority": 1,
+      "area": "admin-authorization",
+      "title": "PRD-260903 B1-B1 权限策略持久化快照",
+      "user_visible_behavior": "尚无公开接口变化；为后续管理授权接线提供 MySQL 版本化策略与只读 fail-closed 快照。",
+      "status": "passing",
+      "verification": [
+        "真实隔离 MySQL 8：0003 metadata、index、foreign key、rerun 和 ledger 验证",
+        "真实隔离 MySQL 8：permission snapshot baseline、有效覆盖、损坏状态、事务与锁序验证",
+        "GOCACHE=/private/tmp/porsche-go-build-cache go test -p 1 ./... -count=1",
+        "GOCACHE=/private/tmp/porsche-go-build-cache go vet ./...",
+        "git diff --check"
+      ],
+      "evidence": [
+        "2026-09-03：真实隔离 MySQL 8/Redis 7 fixture 完成 0003 schema、loader 和全量验证；fresh JSON 为456 test pass、0 skip、0 fail，15 package pass、4 no-test-file，build/vet/diff/JSON均通过。",
+        "2026-09-03：backend project manager final SPEC PASS；独立 permission_snapshot_verify VERDICT PASS，Critical/High/Medium/Low 均为 none。独立 reader-before-writer probe 验证 FOR SHARE 至 commit、writer 阻塞后由 v1 allow 变为 v2 deny。"
+      ],
+      "notes": "只允许本地持久化 schema 与只读 loader；未接 HTTP、DTO、权限写路径、角色变更、前端、部署、生产迁移、commit或push。0001/0002与B1-A哈希未变；0003后旧二进制拒启动是发布前独立回滚门禁。"
+    },
+    {
+      "id": "go-011",
+      "priority": 1,
+      "area": "admin-authorization",
+      "title": "PRD-260903 B1-A 纯授权评估器",
+      "user_visible_behavior": "尚无公开行为变化；为后续管理端提供固定能力目录和纯内存授权判断。",
+      "status": "passing",
+      "verification": [
+        "GOCACHE=/private/tmp/porsche-go-build-cache go test ./internal/authz -count=1",
+        "GOCACHE=/private/tmp/porsche-go-build-cache go test ./internal/authz -race -count=1",
+        "GOCACHE=/private/tmp/porsche-go-build-cache go vet ./internal/authz",
+        "GOCACHE=/private/tmp/porsche-go-build-cache go build ./...",
+        "GOCACHE=/private/tmp/porsche-go-build-cache go test ./... -count=1"
+      ],
+      "evidence": [
+        "2026-09-03：已获准实施纯 Go 内部合同；不接 HTTP、DTO、数据库、迁移、前端或模型调用。",
+        "2026-09-03：TDD compile RED、deny-all behavior RED 后 focused GREEN；authz race、vet、全仓 build 及显式清除 TEST_DATABASE_URL/TEST_REDIS_URL/RUN_START_COMMAND 的全量 Go 测试均 exit 0。JSON 全量记录 98 个 fixture 测试跳过及 4 个无测试文件包跳过，不能当作数据库或 Redis 集成验收。",
+        "2026-09-03：backend_project_manager 规格复核对限定 B1-A PASS：24cap、三态、四入口、Root/peer/self、墓碑、复制和未接线均符合。scope/Decision 是不持久化内部值，未来不可直接作为稳定 DB/API 编码。独立安全/测试复核运行中，未标 passing。",
+        "2026-09-03：admin_authz_security_verify 最终 PASS，无 Critical/High/Medium。全量 JSON 为 Test 312 pass/98 skip/0 fail，package 15 pass/4 无测试文件 skip/0 fail；独立外部消费者 2 测试和 32 并发读取 PASS。报告 docs/superpowers/reports/2026-09-03-b1a-pure-authz.md。"
+      ],
+      "notes": "B1-A 仅接受可信账户快照，不能替代认证、会话、数据新鲜度、事务、票据、审计或公开 API 验收。PRD 其他项目仍未运行。"
+    },
     {
       "id": "go-007",
       "priority": 1,

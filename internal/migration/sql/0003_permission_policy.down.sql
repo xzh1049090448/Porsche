@@ -1,0 +1,2 @@
+-- Forward-only: preserve permission history, policy heads and migration evidence.
+-- No automatic rollback or deletion. Production recovery requires a reviewed plan.

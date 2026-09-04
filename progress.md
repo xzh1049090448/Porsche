@@ -1,5 +1,78 @@
 # Porsche 开发进度
 
+## 2026-09-04：B1-D 0004已在隔离fixture验证，optimizer未选新索引
+
+- `go-016` 唯一 `in_progress / PERFORMANCE_BLOCKED`。两个 v2 用户读接口、三个旧 GET 适配及 login/refresh/self/me 同投影已接线；fresh actor→target→session→Redis、严格 policy、commit 后响应；身份无效与单独 policy 不可用分开处理。
+- 已批准 B2 列表/详情提前作为 B1-D 只读子集，不代表 B1 写链/票据、M1/A04 或 26 联合用例完成。旧管理写/日志/告警/dashboard 权限风险保留。FE 业务由独立 writer 处理。
+- 独立QA确认新隔离MySQL8.0.46/Redis7.4.11的focused service46 terminal/42 leaf、handler17/8及对应race全PASS；fresh serial full691 terminal PASS/1性能opt-in SKIP/0FAIL（631 leaf PASS/1SKIP；15 package PASS/4无测试package SKIP）；build/vet/diff PASS。安全四级问题均0，九生产hash匹配，功能/security/integration均PASS。
+- 独立100k、10×20、page20三次fresh warm P95为633.956ms FAIL、466.753ms PASS、504.793ms FAIL，整体性能FAIL；disk-cold仍NOT_RUN。exact count扫描100001行约312ms，page约0.09ms，当前缺少覆盖`is_deleted+role+status`的count索引。
+- 用户扩展授权后，0004 `idx_users_admin_read_count(is_deleted,role,status)` 已按TDD实现并仅应用到隔离fixture；真实SHOW INDEX与0001–0004 ledger通过。migration focused20、service focused/race各46、handler focused/race各17、fresh full692PASS/1性能SKIP/0FAIL，build/vet/diff均PASS。0001–0003及九个B1-D业务生产文件hash不变。
+- 第1次fresh 100k为first90.669ms、warm P95470.646ms，单次数值PASS；但EXPLAIN exact count仍使用`idx_users_active_updated`扫描100001行、约203ms，未选择新索引。按预设停点未跑第2/3次、未做ANALYZE/hint/索引调整/成本采样；历史三次不稳定结果继续有效，状态为`PERFORMANCE_BLOCKED / OPTIMIZER_REVIEW_REQUIRED`。
+- PM随后批准在同一fixture执行`ANALYZE TABLE users`，返回OK、墙钟0.10s；但新索引三列cardinality仍均为1，exact count仍选择旧索引扫描100001行（约148ms），page约0.054ms、总量不变。第二停点触发，新的三次fresh、hint、索引调整与成本采样均未执行。
+- PM批准的只读H1/H2确认B0/H1/H2均返回total100000与相同20 GUID，page均保持`uk_users_guid`。B0旧索引约112ms；H1 USE INDEX未选新索引而table scan约37.9ms；H2 FORCE INDEX才选0004新索引但约184ms、更慢。100k分布几乎全为未删除/user/active，不能外推生产混合分布。
+- PM批准的H3用临时overlay直接调用现有`usersReadWhere`生成同一P，counted仅`IGNORE INDEX(idx_users_active_updated)`并复制args。B0/H3 total100000、同20 GUID，page仍`uk_users_guid`。direct EXPLAIN约77.2→30.5ms；7组交替墙钟中位数67.241→24.042ms，H3选择PRIMARY且改善重复成立。
+- H3仍未覆盖deleted、role/status、escaped LIKE和可选GUID OR，也不是HTTP并发P95；直接count必须维持单一谓词来源与严格参数复制。任务容器与凭据再次静止保留，等待PM查询设计审查及独立QA；当前状态`PERFORMANCE_BLOCKED / H3_PROMISING_PENDING_QUERY_REVIEW`。生产、commit/push/deploy、cleanup、FE-BE联合验收均未执行。
+- PM批准后H3已按TDD最小实现：同一`usersReadWhere` P用于filtered/count，args按P/P/limit/offset复制，counted仅IGNORE旧索引，单statement snapshot不变；0004不变。动态筛选、排序、空页/total-items测试已补强。
+- focused/race全部0FAIL；最终fresh full693PASS/1性能opt-in SKIP/0FAIL（633 leaf，15 package PASS+4 no-test SKIP），build/vet/diff PASS。三次独立fresh warm P95为77.817/75.512/74.710ms，均通过500ms；disk-cold仍NOT_RUN。
+- 0004成本单样本：100001行clone构建0.16s，users索引约2.64MB；10k insert 0.19/0.17s、5k软删除0.13/0.12s、5k status+role 0.13/0.09s（有/无0004），只用于写放大方向。临时表已删除。
+- 当前`WRITER_PASS_PENDING_INDEPENDENT_QA_AND_EXACT_CLEANUP`；go-016仍in_progress。资源静止保留，生产、commit/push/deploy、cleanup、FE-BE联合验收均未执行。
+- 独立H3 QA最终PASS：动态合同与全部回归通过，四级安全问题0；独立三次fresh P95为113.688/76.997/78.737ms，均<=500。用户授权的exact cleanup已完成：两个精确ID/名称及同label残留均不存在，私密目录不存在；无prune/volume/其它容器操作。
+- `go-016`现为`passing / PASS_LIMITED_SCOPE`。disk-cold、FE-BE、26联合用例、旧写链、其它管理域及生产迁移/部署仍NOT_RUN。
+
+
+
+## 2026-09-03：B1-C 双只读权限展示接口限定通过，fixture已清理
+
+- `go-015` 已为 `passing / PASS_LIMITED_SCOPE`。PM最终SPEC PASS；独立真实质量VERDICT PASS，四级安全问题均0，8生产hash二次匹配。限定两个GET展示接口，不完成整体B1、权限写操作、FE接线或26项联合验收。
+- Writer：focused83/race107/fresh full627全部PASS、0fail/0testskip，15 package pass/4 no-test；build/vet/diff PASS。独立：focused96叶子PASS（service72/handler24）、race96叶子PASS、真实HTTP边界overlay1PASS，均0fail/0skip。
+- 本批现有0001–0003迁移ledger和所有脱敏日志已归档。初次归档.go误扫描及runner环境污染的失败属于历史，修后fresh full为最终依据；生产代码/断言/迁移未改。
+- 已按用户本次生命周期授权完成exact ID/name/label/image/AutoRemove核验后清理：MySQL133f7729e687、Redisf3c304aaec4b均已不存在；本批fixture.env、随机凭据及私密目录已删除。未触生产、缓存、卷或其它任务。
+- 最终报告：`docs/superpowers/reports/2026-09-03-b1c-admin-authz-read.md`；独立报告、JSON与cleanup在同名validation目录。FE仅两GET合同和协调文档更新，其余25entry/root合同/web-012/26jointcases保持原状。以下B1-C NOT_RUN/awaiting/复核中均为已标记历史。
+
+
+## 历史阶段 2026-09-03：B1-C 真实fixture验证通过，等待独立与PM最终复核
+
+- 本次用户已授权的隔离生命周期已实际执行；MySQL8.0.46/Redis7.4.11与现有0001–0003迁移ledger核对通过。focused83、race107、修正后fresh full627 test全部PASS，0fail/0skip；15 package pass/4 no-test，build/vet/diff PASS。所有8个生产hash不变。
+- 初次full失败源于归档探针.go被包扫描及runner迁移APP_ENV污染两config test；改为.go.txt保留原bytes，migration env局限其进程，断言/生产代码/迁移不变；修后fresh full结果是最终计数，失败历史日志保留。
+- `go-015` 继续唯一 `in_progress / REAL_FIXTURE_VALIDATING_PENDING_INDEPENDENT_QUALITY`。PM已重计627/83/107并重算8生产hash，最终限定SPEC PASS；fixture窗口已释放给独立实测，MySQL/Redis任务容器暂保留，未清理。当前不再是DB NOT_RUN；以下NOT_RUN/awaiting记录均为前一阶段历史。
+- 证据：`docs/superpowers/reports/validation/2026-09-03-b1c-admin-authz-read/real-fixture/`。没有生产、真实模型调用、commit/push或FE业务改动；整体B1及26项联合验收仍未完成。
+
+## 历史阶段 2026-09-03：B1-C 本批隔离fixture生命周期已授权，开始验证
+
+用户对本批具体生命周期请求回复「就行」并要求「继续」。已获授权范围为任务MySQL/Redis容器与库、现有0001–0003迁移、隔离测试及owned子库创建/清理、最终exact task清理，不涉及生产。工作树与8个冻结生产hash已核对，精确标签/名称检查未发现残留；当前 `go-015` 为 `in_progress / validating`。下方NOT_RUN与awaiting记录是上一阶段历史，不能当作本次最终结果。
+
+## 历史阶段 2026-09-03：PRD-260903 B1-C 两个权限展示只读接口已实现候选
+
+- `go-015` 为唯一 `in_progress / awaiting_fixture_authorization`。两个已注册 GET 路由、白名单 DTO、request ID/no-store、私有认证会话版本、READ COMMITTED actor→可选target→session SHARE→Redis 与 commit后返回已落地；disabled Admin仅展示投影，无授权Evaluator或写入口。
+- 新鲜认证失效401（原middleware401不变）；先验证session/Redis再返回角色403或隐藏目标404。hidden target规则优先于其坏status/AuthVersion；只有未被隐藏的可见目标腐败503。未匹配路径保留Gin语义。
+- 最终无fixture全量：356 test pass、229 test skip、0 fail，15 package pass、4 no-test；HTTP1 pass/5 skip/0 fail，build/vet/专项race及authz/middleware full race通过。初始受限执行因httptest回环bind被拒，正常工具升级后复跑通过；所有DB/Redis验收仍NOT_RUN。
+- PM conditional SPEC CODE ALIGNED（代码无剩余规格gap，条件为docs一致和真实fixture）；独立静态/无fixture复核已完成：VERDICT PARTIAL，四级安全问题均0、8生产hash匹配、纯JSON叶子18 PASS/34 fixture SKIP/0 FAIL；focused race、HTTP overlay probe、gofmt/diff/build/vet PASS，真实DB严格NOT_RUN。双连接半策略、commitfail无DTO、session/Redis与corrupt policy用例源码已完成，但没有本批fixture运行证据。
+- FE仅同步两GET合同和四份协调文档；其余25项接口与根合同不变，web-012不变、26项联合验收NOT_RUN。本批fixture生命周期脚本只为DRAFT_ONLY，未创建容器/数据库、执行迁移或真实上游；无commit/push/生产操作。报告：`docs/superpowers/reports/2026-09-03-b1c-admin-authz-read.md`。
+
+## 2026-09-03：PRD-260903 B1-B3 Gateway Key 最新用户 ACL 约束限定通过
+
+- `go-014` 为 PASS_LIMITED_SCOPE：Gateway Key 每请求读取最新 owner ACL 并与 Key ACL 双重授权，owner ACL 收窄在下一请求生效；列表先读取 Key/global catalog，再按 owner ACL 过滤；详情、chat/SSE 拒绝路径在目录或生成上游前 fail closed。成功 models/detail 使用 `Cache-Control: no-store`，新 503 为固定 `gateway_authentication_unavailable`。
+- 用户明确授权后，仅向任务专属 disposable MySQL 8 库执行现有 0001–0003。PM 最终 SPEC PASS；独立 VERDICT PASS，fresh JSON 544 pass/0 fail/0 skip、15 package pass/4 no-test，race service 1.803s/handler 2.383s，build/vet/diff/feature JSON均通过，四级风险均0。完整证据见 `docs/superpowers/reports/2026-09-03-b1b3-gateway-owner-acl.md`。该通过不完成整体 B1、FE 接线、票据/idempotency/outbox或26项联合验收，也不授权生产、commit或push。
+
+## 2026-09-03：PRD-260903 B1-B2 管理用户安全更新限定通过
+
+- `go-013` 已通过本地限定验收：严格 `PUT /admin/users/:guid` JSON、真实 status/plan/用户 ACL 会话失效与 AuthVersion、daily-limit-only 审计、event10和会话撤销审计归属。`allowed_models: []` 明确保持既有用户 ACL **unrestricted** 语义；daily limit 0 的既有额度计算不变。
+- backend PM 为限定合同给出 SPEC PASS；独立 `permission_snapshot_verify` VERDICT PASS，Critical/High/Medium/Low均none。fresh JSON：512 pass、0 fail、0 skip；15 package pass、4 no-test；models/service/handler race分别1.466s/13.693s/3.235s；HTTP adversarial probe 1.515s通过。build/vet/diff/feature JSON均通过。
+- 该 PASS 不覆盖旧角色授权、细粒度权限 writer、ticket/idempotency/outbox、Key ACL repair、前端接线或26项联合验收；不授权生产、commit或push。报告：`docs/superpowers/reports/2026-09-03-b1b2-managed-user-security.md`。
+
+## 2026-09-03：PRD-260903 B1-B1 权限策略持久化快照本地验证完成
+
+- 用户已授权仅在任务独占 MySQL 8 / Redis 7 fixture 中实现并验证 0003 policy head/override schema 与只读 snapshot loader；不接 HTTP、DTO、权限写操作、角色变更、前端或部署。
+- 任务容器使用 loopback 随机端口、`codex.task=authz-persistence-b1` 标签、AutoRemove 与 tmpfs，不使用既有 `porsche-mysql-test`/`porsche-redis-test`、命名卷、生产 `.env` 或连接串。`TEST_*` 仅存在于私有临时文件，未输出凭据。真实 `TestAuthCoreMigrationOnIsolatedMySQL` 已 PASS；基线 `init.sh` 亦在清除 `TEST_*` / `RUN_START_COMMAND` 后 PASS 且未启动服务。
+- B1-B1 规格和按 TDD 拆分的实施计划已建立：`docs/superpowers/specs/2026-09-03-b1b1-permission-snapshot-design.md`、`docs/superpowers/plans/2026-09-03-b1b1-permission-snapshot.md`。真实 fresh 全量为456 test pass、0 skip、0 fail，15 package pass、4 no-test-file，build/vet/diff/JSON通过；backend project manager final SPEC PASS，独立 `permission_snapshot_verify` VERDICT PASS（无Critical/High/Medium/Low）。reader-before-writer probe确认FOR SHARE保留到commit、writer阻塞250ms、v1 allow到commit v2 deny。`go-012`、`go-011`为passing，`go-004`保持blocked；未接HTTP/DTO/前端或生产部署。
+
+## 2026-09-03：PRD-260903 B1-A 纯授权评估器本地验证完成，待独立复核
+
+- 新增仅限 `internal/authz` 的固定 24 能力目录和纯内存评估器；未接入 HTTP、DTO、数据库、迁移、前端、SSE 或模型调用。有效 active 普通用户可构造 evaluator，但全部管理决策保持 deny。
+- 先记录 compile RED 和 deny-all behavior RED，再实现 GREEN。focused、race、vet、全仓 build 与显式清除 `TEST_DATABASE_URL`、`TEST_REDIS_URL`、`RUN_START_COMMAND` 的全量 Go 验证均 exit 0。全量 JSON 记录 98 个 DB/Redis fixture 测试跳过和 4 个无测试文件包跳过；跳过不是集成验收通过。
+- B1-A 本地实现、规格审查和独立安全/测试复核均完成并 passing。B1 其余项目和全部公开 HTTP 仍未实施，go-004 继续 blocked，未提交、推送、部署或迁移。
+- backend_project_manager 已完成限定 B1-A 规格复核并判定 PASS；`admin_authz_security_verify` 最终 PASS 且无 Critical/High/Medium。全量 JSON 为 Test 312 pass/98 skip/0 fail，package 15 pass/4 无测试文件 skip/0 fail；跳过不能当作数据库或 Redis 集成验收。`scope` 和 `Decision` 是当前纯内部、非持久化数值，未来不能当作稳定 DB/API 编码。报告：docs/superpowers/reports/2026-09-03-b1a-pure-authz.md。
+
 ## 2026-09-03 15:48：ad3f5b4发布及正常SSE复测通过
 
 本节为最新状态，后续旧记录的“未发布/剩余1次/有效流FAIL”仅适用于当时。

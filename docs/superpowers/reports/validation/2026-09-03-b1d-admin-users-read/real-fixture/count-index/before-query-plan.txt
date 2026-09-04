@@ -1,0 +1,12 @@
+mysql: [Warning] Using a password on the command line interface can be insecure.
+Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_part	Packed	Null	Index_type	Comment	Index_comment	Visible	Expression
+users	0	PRIMARY	1	id	A	99360	NULL	NULL		BTREE			YES	NULL
+users	0	uk_users_guid	1	guid	A	97768	NULL	NULL		BTREE			YES	NULL
+users	0	uk_users_phone	1	phone	A	1	NULL	NULL	YES	BTREE			YES	NULL
+users	0	uk_users_username	1	username	A	99360	NULL	NULL	YES	BTREE			YES	NULL
+users	1	idx_users_active_updated	1	is_deleted	A	1	NULL	NULL		BTREE			YES	NULL
+users	1	idx_users_active_updated	2	updated_at	A	1	NULL	NULL		BTREE			YES	NULL
+total_users	matching_users
+100001	100000
+EXPLAIN
+-> Sort: paged.guid DESC  (actual time=0.148..0.149 rows=20 loops=1)\n    -> Stream results  (cost=4.75 rows=20) (actual time=0.126..0.134 rows=20 loops=1)\n        -> Nested loop left join  (cost=4.75 rows=20) (actual time=0.123..0.127 rows=20 loops=1)\n            -> Rows fetched before execution  (cost=0..0 rows=1) (actual time=83e-6..208e-6 rows=1 loops=1)\n            -> Table scan on paged  (cost=574..4.75 rows=20) (actual time=0.117..0.12 rows=20 loops=1)\n                -> Materialize CTE paged  (cost=604..604 rows=20) (actual time=0.116..0.116 rows=20 loops=1)\n                    -> Limit: 20 row(s)  (cost=602 rows=20) (actual time=0.0882..0.0918 rows=20 loops=1)\n                        -> Filter: ((users.is_deleted = 0) and (users.`role` in (1,10)) and (users.`status` in (1,2)))  (cost=602 rows=497) (actual time=0.0878..0.0908 rows=20 loops=1)\n                            -> Index range scan on users using uk_users_guid over (guid < -1) OR (-1 < guid) (reverse), with index condition: ((users.id <> -1) and (users.guid <> -1))  (cost=602 rows=49681) (actual time=0.0861..0.0882 rows=21 loops=1)\n

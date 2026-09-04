@@ -65,8 +65,9 @@ func RegisterAuth(r *gin.Engine, state *app.State) {
 			authAbort(c, http.StatusUnauthorized, "auth_invalid_credentials", "用户名或密码错误")
 			return
 		}
-		setRefreshCookie(c, issued.RefreshToken, state.Settings.SessionDays)
-		c.JSON(http.StatusOK, gin.H{"access_token": access, "token_type": "Bearer", "expires_in": state.Settings.SessionAccessMinutes * 60, "user": dto.AuthUser(user)})
+		proof := service.AdminPermissionReadActor{UserID: user.ID, AuthVersion: user.AuthVersion, SessionSID: issued.Session.SID, SessionVersion: issued.Session.SessionVersion}
+		fresh, err := service.NewAdminUsersReadService(state.DB, state.AuthRedis).AuthProjection(c.Request.Context(), proof)
+		respondIssuedAuth(c, state, issued, access, fresh, err)
 	})
 	// Refresh accepts only the browser cookie from a configured same-site origin.
 	g.POST("/refresh", func(c *gin.Context) {
@@ -83,18 +84,17 @@ func RegisterAuth(r *gin.Engine, state *app.State) {
 			authServiceError(c, err)
 			return
 		}
-		var user models.User
-		if err := state.DB.Where("id = ? AND is_deleted = 0", issued.Session.UserID).First(&user).Error; err != nil || !user.Status.IsActive() {
-			authAbort(c, http.StatusUnauthorized, "auth_invalid_refresh", "刷新凭据无效")
-			return
-		}
-		access, err := state.Auth.IssueAccessToken(&user, issued.Session)
+		fresh, err := service.NewAdminUsersReadService(state.DB, state.AuthRedis).RefreshProjection(c.Request.Context(), issued)
 		if err != nil {
-			authAbort(c, http.StatusUnauthorized, "auth_invalid_refresh", "刷新凭据无效")
+			authProjectionError(c, err)
 			return
 		}
-		setRefreshCookie(c, issued.RefreshToken, state.Settings.SessionDays)
-		c.JSON(http.StatusOK, gin.H{"access_token": access, "token_type": "Bearer", "expires_in": state.Settings.SessionAccessMinutes * 60, "user": dto.AuthUser(&user)})
+		access, err := state.Auth.IssueAccessToken(&fresh.User, issued.Session)
+		if err != nil {
+			authProjectionError(c, service.ErrAdminPermissionUnavailable)
+			return
+		}
+		respondIssuedAuth(c, state, issued, access, fresh, nil)
 	})
 	protected := g.Group("", middleware.RequireUser(state))
 	protected.POST("/logout", func(c *gin.Context) {
@@ -123,7 +123,14 @@ func RegisterAuth(r *gin.Engine, state *app.State) {
 		clearRefreshCookie(c)
 		c.Status(http.StatusNoContent)
 	})
-	protected.GET("/self", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"user": dto.AuthUser(middleware.CurrentUser(c))}) })
+	protected.GET("/self", func(c *gin.Context) {
+		fresh, err := service.NewAdminUsersReadService(state.DB, state.AuthRedis).AuthProjection(c.Request.Context(), adminAuthzActor(c))
+		if err != nil {
+			authProjectionError(c, err)
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"user": withAuthPermissions(dto.AuthUser(&fresh.User), fresh)})
+	})
 	protected.GET("/sessions", func(c *gin.Context) {
 		user := middleware.CurrentUser(c)
 		sessions, err := state.Sessions.List(c.Request.Context(), user.ID, user.AuthVersion)
@@ -271,9 +278,13 @@ func clearRefreshCookie(c *gin.Context) {
 
 func RegisterUsers(r *gin.Engine, state *app.State) {
 	g := r.Group("/api/v1/users", middleware.RequireUser(state))
-	g.GET("/me", func(c *gin.Context) {
-		user := middleware.CurrentUser(c)
-		c.JSON(http.StatusOK, dto.UserProfile(user))
+	g.GET("/me", gatewayRequestID(), func(c *gin.Context) {
+		fresh, err := service.NewAdminUsersReadService(state.DB, state.AuthRedis).AuthProjection(c.Request.Context(), adminAuthzActor(c))
+		if err != nil {
+			authProjectionError(c, err)
+			return
+		}
+		c.JSON(http.StatusOK, withAuthPermissions(dto.UserProfile(&fresh.User), fresh))
 	})
 	g.PUT("/me", func(c *gin.Context) {
 		user := middleware.CurrentUser(c)

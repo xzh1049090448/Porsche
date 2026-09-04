@@ -2,6 +2,7 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strconv"
@@ -21,46 +22,8 @@ func RegisterOpenAIChat(r *gin.Engine, state *app.State) {
 }
 
 func RegisterAdminUsers(r *gin.Engine, state *app.State) {
+	registerLegacyAdminUsersRead(r, state)
 	g := r.Group("/admin/users", middleware.RequireAdmin(state))
-	g.GET("", func(c *gin.Context) {
-		actor := middleware.CurrentUser(c)
-		skip := parseUintQuery(c, "skip", 0)
-		limit := parseUintQuery(c, "limit", 50)
-		status := c.Query("status")
-		q := state.DB.Where("is_deleted = 0 AND role < ?", actor.Role).Order("created_at desc").Offset(skip).Limit(limit)
-		if status != "" {
-			parsed, ok := models.ParseUserStatus(status)
-			if !ok {
-				httpx.AbortJSON(c, http.StatusUnprocessableEntity, "无效用户状态")
-				return
-			}
-			q = q.Where("status = ?", parsed)
-		}
-		var users []models.User
-		if err := q.Find(&users).Error; err != nil {
-			httpx.AbortJSON(c, http.StatusInternalServerError, "读取用户失败")
-			return
-		}
-		out := make([]map[string]interface{}, 0, len(users))
-		for i := range users {
-			out = append(out, dto.AdminUser(&users[i]))
-		}
-		c.JSON(http.StatusOK, out)
-	})
-	g.GET("/:guid", func(c *gin.Context) {
-		id, _ := strconv.ParseUint(c.Param("guid"), 10, 64)
-		var user models.User
-		if err := state.DB.Where("guid = ? AND is_deleted = 0", id).First(&user).Error; err != nil {
-			httpx.AbortJSON(c, http.StatusNotFound, "用户不存在")
-			return
-		}
-		if err := service.CanManageUser(middleware.CurrentUser(c), &user); err != nil {
-			code, message := service.StatusFromError(err)
-			httpx.AbortJSON(c, code, message)
-			return
-		}
-		c.JSON(http.StatusOK, dto.AdminUser(&user))
-	})
 	// DELETE creates a tombstone through AuthService; the handler never issues
 	// a database write and Root/equal-role protection remains service-owned.
 	g.DELETE("/:guid", func(c *gin.Context) {
@@ -82,14 +45,20 @@ func RegisterAdminUsers(r *gin.Engine, state *app.State) {
 		c.Status(http.StatusNoContent)
 	})
 	g.PUT("/:guid", func(c *gin.Context) {
-		guid, _ := strconv.ParseInt(c.Param("guid"), 10, 64)
-		var body struct {
-			Status         *string  `json:"status"`
-			PlanType       *string  `json:"plan_type"`
-			AllowedModels  []string `json:"allowed_models"`
-			DailyCallLimit *int     `json:"daily_call_limit"`
+		guid, err := strconv.ParseInt(c.Param("guid"), 10, 64)
+		if err != nil || guid <= 0 {
+			httpx.AbortJSON(c, http.StatusBadRequest, "无效用户标识")
+			return
 		}
-		_ = c.ShouldBindJSON(&body)
+		body, err := decodeAdminUserUpdate(c.Request.Body)
+		if errors.Is(err, errAdminUserUpdateTooLarge) {
+			httpx.AbortJSON(c, http.StatusRequestEntityTooLarge, "请求体过大")
+			return
+		}
+		if err != nil {
+			httpx.AbortJSON(c, http.StatusBadRequest, "无效请求体")
+			return
+		}
 		input := service.ManagedUserUpdateInput{}
 		if body.Status != nil {
 			status, ok := models.ParseUserStatus(*body.Status)
@@ -108,7 +77,7 @@ func RegisterAdminUsers(r *gin.Engine, state *app.State) {
 			input.PlanType = &plan
 		}
 		if body.AllowedModels != nil {
-			allowedModels := models.JSONSlice(body.AllowedModels)
+			allowedModels := models.JSONSlice(*body.AllowedModels)
 			input.AllowedModels = &allowedModels
 		}
 		if body.DailyCallLimit != nil {
@@ -122,25 +91,7 @@ func RegisterAdminUsers(r *gin.Engine, state *app.State) {
 		}
 		c.JSON(http.StatusOK, dto.AdminUser(user))
 	})
-	g.GET("/:guid/behavior", func(c *gin.Context) {
-		id, _ := strconv.ParseUint(c.Param("guid"), 10, 64)
-		var user models.User
-		if err := state.DB.Where("guid = ? AND is_deleted = 0", id).First(&user).Error; err != nil {
-			httpx.AbortJSON(c, http.StatusNotFound, "用户不存在")
-			return
-		}
-		if err := service.CanManageUser(middleware.CurrentUser(c), &user); err != nil {
-			code, message := service.StatusFromError(err)
-			httpx.AbortJSON(c, code, message)
-			return
-		}
-		behavior, err := service.UserBehavior(state.DB, user.ID)
-		if err != nil {
-			httpx.AbortJSON(c, http.StatusInternalServerError, "读取用户行为失败")
-			return
-		}
-		c.JSON(http.StatusOK, behavior)
-	})
+
 }
 
 var alertConfigs = []map[string]interface{}{

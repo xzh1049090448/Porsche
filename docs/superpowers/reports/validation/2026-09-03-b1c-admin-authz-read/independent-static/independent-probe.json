@@ -1,0 +1,8 @@
+{"Time":"2026-09-03T21:59:31.524485+08:00","Action":"start","Package":"github.com/porsche/ai-gateway-go/internal/handler"}
+{"Time":"2026-09-03T21:59:32.459658+08:00","Action":"run","Package":"github.com/porsche/ai-gateway-go/internal/handler","Test":"TestIndependentAdminAuthzNoFixtureProbe"}
+{"Time":"2026-09-03T21:59:32.459748+08:00","Action":"output","Package":"github.com/porsche/ai-gateway-go/internal/handler","Test":"TestIndependentAdminAuthzNoFixtureProbe","Output":"=== RUN   TestIndependentAdminAuthzNoFixtureProbe\n"}
+{"Time":"2026-09-03T21:59:32.459977+08:00","Action":"output","Package":"github.com/porsche/ai-gateway-go/internal/handler","Test":"TestIndependentAdminAuthzNoFixtureProbe","Output":"--- PASS: TestIndependentAdminAuthzNoFixtureProbe (0.00s)\n"}
+{"Time":"2026-09-03T21:59:32.459998+08:00","Action":"pass","Package":"github.com/porsche/ai-gateway-go/internal/handler","Test":"TestIndependentAdminAuthzNoFixtureProbe","Elapsed":0}
+{"Time":"2026-09-03T21:59:32.460011+08:00","Action":"output","Package":"github.com/porsche/ai-gateway-go/internal/handler","Output":"PASS\n"}
+{"Time":"2026-09-03T21:59:32.460867+08:00","Action":"output","Package":"github.com/porsche/ai-gateway-go/internal/handler","Output":"ok  \tgithub.com/porsche/ai-gateway-go/internal/handler\t0.936s\n"}
+{"Time":"2026-09-03T21:59:32.460912+08:00","Action":"pass","Package":"github.com/porsche/ai-gateway-go/internal/handler","Elapsed":0.936}

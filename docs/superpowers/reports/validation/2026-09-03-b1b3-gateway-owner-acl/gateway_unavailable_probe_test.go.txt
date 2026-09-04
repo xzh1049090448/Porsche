@@ -1,0 +1,39 @@
+package handler
+
+import (
+    "encoding/json"
+    "net/http"
+    "net/http/httptest"
+    "testing"
+
+    "github.com/gin-gonic/gin"
+    "github.com/porsche/ai-gateway-go/internal/app"
+)
+
+func TestIndependentGatewayUnavailableEnvelope(t *testing.T) {
+    gin.SetMode(gin.TestMode)
+    recorder := httptest.NewRecorder()
+    context, _ := gin.CreateTestContext(recorder)
+    context.Request = httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+
+    principal, ok := authenticateGatewayToken(context, &app.State{}, "")
+    if principal != nil || ok {
+        t.Fatalf("nil gateway service accepted: principal=%v ok=%v", principal, ok)
+    }
+    if recorder.Code != http.StatusServiceUnavailable {
+        t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+    }
+    var response struct {
+        Error struct {
+            Code    string `json:"code"`
+            Message string `json:"message"`
+            Type    string `json:"type"`
+        } `json:"error"`
+    }
+    if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+        t.Fatalf("decode response: %v", err)
+    }
+    if response.Error.Code != "gateway_authentication_unavailable" || response.Error.Type != "api_error" || response.Error.Message != "Gateway authentication is temporarily unavailable." {
+        t.Fatalf("unexpected public error: %#v", response.Error)
+    }
+}

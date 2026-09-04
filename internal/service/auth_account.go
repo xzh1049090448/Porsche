@@ -141,41 +141,72 @@ type ManagedUserUpdateInput struct {
 // durable write when the actor may have been disabled or demoted.
 func (a *AuthService) UpdateManagedUser(ctx context.Context, actorID, targetGUID int64, input ManagedUserUpdateInput) (*models.User, error) {
 	if a == nil || a.db == nil {
-		return nil, errors.New("authentication service is unavailable")
+		return nil, errUnavailable("管理员用户更新暂不可用")
+	}
+	if err := validateManagedUserUpdateInput(input); err != nil {
+		return nil, err
 	}
 	var updated models.User
 	err := a.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var actor, target models.User
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ? AND is_deleted = 0", actorID).First(&actor).Error; err != nil {
+			if !errors.Is(err, gorm.ErrRecordNotFound) {
+				return errUnavailable("管理员用户更新暂不可用")
+			}
 			return errForbidden("无权限管理该用户")
 		}
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("guid = ? AND is_deleted = 0", targetGUID).First(&target).Error; err != nil {
+			if !errors.Is(err, gorm.ErrRecordNotFound) {
+				return errUnavailable("管理员用户更新暂不可用")
+			}
 			return errNotFound("用户不存在")
+		}
+		if !isManagedActorRole(actor.Role) || !isManagedTargetRole(target.Role) {
+			return errForbidden("无权限管理该用户")
 		}
 		if err := CanManageUser(&actor, &target); err != nil {
 			return err
 		}
+		if actor.AuthVersion <= 0 || target.AuthVersion <= 0 {
+			return errUnavailable("管理员用户更新暂不可用")
+		}
 
-		if input.Status != nil && *input.Status == models.UserStatusDisabled {
-			if err := a.requireAuthRedis(ctx); err != nil {
-				return err
+		statusChanged := input.Status != nil && target.Status != *input.Status
+		planChanged := input.PlanType != nil && target.PlanType != *input.PlanType
+		aclChanged := input.AllowedModels != nil && !sameManagedUserACL(target.AllowedModels, *input.AllowedModels)
+		limitChanged := input.DailyCallLimit != nil && target.DailyCallLimit != *input.DailyCallLimit
+		securityChanged := statusChanged || planChanged || aclChanged
+		if securityChanged {
+			if target.AuthVersion >= 2147483647 {
+				return errUnavailable("管理员用户更新暂不可用")
 			}
-			if err := a.revokeUserSessionsLocked(ctx, tx, &target, actor.ID, models.AuthAuditEventUserDisabled); err != nil {
-				return err
+			if err := a.requireAuthRedis(ctx); err != nil {
+				return errUnavailable("管理员用户更新暂不可用")
+			}
+			event := models.AuthAuditEventSessionRevoked
+			if statusChanged && *input.Status == models.UserStatusDisabled {
+				event = models.AuthAuditEventUserDisabled
+			}
+			if err := a.revokeUserSessionsLocked(ctx, tx, &target, actor.ID, event); err != nil {
+				return errUnavailable("管理员用户更新暂不可用")
 			}
 			target.AuthVersion++
 		}
-		if input.Status != nil {
+		if statusChanged {
 			target.Status = *input.Status
 		}
-		if input.PlanType != nil {
+		if planChanged {
 			target.PlanType = *input.PlanType
 		}
-		if input.AllowedModels != nil {
+		if aclChanged {
 			target.AllowedModels = *input.AllowedModels
 		}
-		if input.DailyCallLimit != nil {
+		if limitChanged {
 			target.DailyCallLimit = *input.DailyCallLimit
+		}
+		if !statusChanged && !planChanged && !aclChanged && !limitChanged {
+			updated = target
+			return nil
 		}
 		TouchAudit(&target.AuditFields, actor.ID)
 		updates := map[string]any{
@@ -188,15 +219,79 @@ func (a *AuthService) UpdateManagedUser(ctx context.Context, actorID, targetGUID
 			"updated_by":       target.UpdatedBy,
 		}
 		if err := tx.Model(&models.User{}).Where("id = ? AND is_deleted = 0", target.ID).Updates(updates).Error; err != nil {
-			return err
+			return errUnavailable("管理员用户更新暂不可用")
+		}
+		if err := tx.Create(&models.AuthAuditEvent{
+			AuditFields: auditFields(&actor.ID),
+			UserID:      &target.ID,
+			EventType:   models.AuthAuditEventManagedUserUpdated,
+		}).Error; err != nil {
+			return errUnavailable("管理员用户更新暂不可用")
 		}
 		updated = target
 		return nil
 	})
 	if err != nil {
-		return nil, err
+		if _, ok := err.(*HTTPError); ok {
+			return nil, err
+		}
+		return nil, errUnavailable("管理员用户更新暂不可用")
 	}
 	return &updated, nil
+}
+
+func isManagedActorRole(role models.UserRole) bool {
+	return role == models.UserRoleAdmin || role == models.UserRoleRoot
+}
+
+func isManagedTargetRole(role models.UserRole) bool {
+	return role == models.UserRoleUser || role == models.UserRoleAdmin || role == models.UserRoleRoot
+}
+
+func validateManagedUserUpdateInput(input ManagedUserUpdateInput) error {
+	if input.Status != nil && *input.Status != models.UserStatusActive && *input.Status != models.UserStatusDisabled {
+		return errUnprocessable("无效用户状态")
+	}
+	if input.PlanType != nil && *input.PlanType != models.PlanFree && *input.PlanType != models.PlanProfessional && *input.PlanType != models.PlanEnterprise {
+		return errUnprocessable("无效套餐类型")
+	}
+	if input.DailyCallLimit != nil && (*input.DailyCallLimit < 0 || *input.DailyCallLimit > 2147483647) {
+		return errBadRequest("无效每日调用额度")
+	}
+	if input.AllowedModels != nil {
+		for _, modelID := range *input.AllowedModels {
+			if modelID == "" {
+				return errBadRequest("无效用户模型权限")
+			}
+		}
+	}
+	return nil
+}
+
+// sameManagedUserACL compares the persisted authorization meaning without
+// changing either input. ACL ordering and duplicate values do not change the
+// allowed-model set; nil and an empty slice both mean no user ACL restriction.
+func sameManagedUserACL(left, right models.JSONSlice) bool {
+	if len(left) == 0 && len(right) == 0 {
+		return true
+	}
+	leftSet := make(map[string]struct{}, len(left))
+	rightSet := make(map[string]struct{}, len(right))
+	for _, value := range left {
+		leftSet[value] = struct{}{}
+	}
+	for _, value := range right {
+		rightSet[value] = struct{}{}
+	}
+	if len(leftSet) != len(rightSet) {
+		return false
+	}
+	for value := range leftSet {
+		if _, ok := rightSet[value]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 func (a *AuthService) mutateManagedUser(ctx context.Context, actorID, targetID int64, deleteUser bool) error {

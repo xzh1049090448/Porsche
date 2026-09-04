@@ -1,0 +1,5 @@
+mysql: [Warning] Using a password on the command line interface can be insecure.
+idx_users_admin_read_count	1	is_deleted	1
+idx_users_admin_read_count	2	role	1
+idx_users_admin_read_count	3	status	1
+0

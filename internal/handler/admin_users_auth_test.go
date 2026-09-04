@@ -24,8 +24,8 @@ func TestAdminUserBehaviorRequiresStrictlyLowerTargetRole(t *testing.T) {
 		deleted    int
 		wantStatus int
 	}{
-		{name: "admin-reads-same-admin", actorRole: models.UserRoleAdmin, targetRole: models.UserRoleAdmin, wantStatus: http.StatusForbidden},
-		{name: "admin-reads-root", actorRole: models.UserRoleAdmin, targetRole: models.UserRoleRoot, wantStatus: http.StatusForbidden},
+		{name: "admin-reads-same-admin", actorRole: models.UserRoleAdmin, targetRole: models.UserRoleAdmin, wantStatus: http.StatusNotFound},
+		{name: "admin-reads-root", actorRole: models.UserRoleAdmin, targetRole: models.UserRoleRoot, wantStatus: http.StatusNotFound},
 		{name: "root-reads-lower-role", actorRole: models.UserRoleRoot, targetRole: models.UserRoleUser, wantStatus: http.StatusOK},
 		{name: "soft-deleted-target", actorRole: models.UserRoleRoot, targetRole: models.UserRoleUser, deleted: 1, wantStatus: http.StatusNotFound},
 	} {

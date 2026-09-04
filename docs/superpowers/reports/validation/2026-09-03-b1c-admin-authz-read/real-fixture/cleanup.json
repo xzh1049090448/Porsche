@@ -1,0 +1,25 @@
+{
+  "task": "b1c-admin-authz-read-260903",
+  "database": "porsche_b1c_admin_authz_260903_test",
+  "completed_at_utc": "2026-09-03T14:18:02.628293+00:00",
+  "containers": {
+    "mysql": {
+      "id": "133f7729e68712032b691f154657c8c504f52dc6030bf40bd2dcf96443cf6816",
+      "image": "sha256:7dcddc01f13bab2f15cde676d44d01f61fc9f99fe7785e86196dfc07d358ae2b",
+      "container_port": 3306,
+      "host_port": 64128
+    },
+    "redis": {
+      "id": "f3c304aaec4be4bdf30a8f4adab914b416be679db13c0957705d93ee9c2d7f0a",
+      "image": "sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf",
+      "container_port": 6379,
+      "host_port": 64139
+    }
+  },
+  "exact_identity_verified_before_stop": true,
+  "containers_absent_after_stop": true,
+  "private_directory_deleted": true,
+  "private_environment_deleted": true,
+  "credential_files_deleted": true,
+  "volumes_cache_other_tasks_touched": false
+}

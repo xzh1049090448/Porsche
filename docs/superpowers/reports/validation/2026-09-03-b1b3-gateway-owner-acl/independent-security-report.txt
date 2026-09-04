@@ -1,0 +1,43 @@
+B1-B3 Gateway owner ACL — independent partial verification
+Date: 2026-09-03
+Scope: frozen production diff static review plus tests that cannot open or mutate a database. TEST_DATABASE_URL and TEST_REDIS_URL were explicitly unset for every go test/build/vet command.
+
+SECURITY_REPORT
+Critical: 0 observed
+High: 0 observed
+Medium: 0 observed
+Low: 0 observed
+
+Static findings
+- The final diff moves raw Key ACL capture into the initial token query with the active/non-deleted predicate, avoiding the former second unscoped raw read.
+- GatewayTokenPrincipal has a private validity marker and separate Key/owner ACLs. ACL and token accessors clone mutable slices, including IPAllowlist.
+- Strict raw ACL parsing treats SQL NULL, whole null and [] as unrestricted; it rejects null elements, empty strings, numbers, objects and a non-array root.
+- /v1 list keeps WhiteLabel Key/global filtering then applies owner filtering to a new slice. Detail checks dual ACL before a nil WhiteLabel response; chat/SSE checks dual ACL before catalog/generation calls.
+- The unavailable sentinel maps to HTTP 503 with the fixed gateway_authentication_unavailable/api_error/Gateway authentication is temporarily unavailable. public envelope.
+- No code defect was found by this bounded review.
+
+Executed evidence
+1. `rg ... TestMain ...` returned no TestMain in internal/service, internal/handler or internal/whitelabel, so selected tests have no suite-level migration hook.
+2. `GOCACHE=/private/tmp/porsche-go-build-cache env -u TEST_DATABASE_URL -u TEST_REDIS_URL go test ./internal/service -run '^(TestGatewayTokenAuthenticateNilServiceFailsClosed|TestGatewayAllowedModelsRawValidationAndPrincipalCopies)$' -count=1`
+   Result: PASS, package internal/service, 0.829s.
+   Count: 2 top-level tests; strict-parser test ran 9 subtests.
+3. `GOCACHE=/private/tmp/porsche-go-build-cache env -u TEST_DATABASE_URL -u TEST_REDIS_URL go test -overlay=/private/tmp/porsche-b1b3-partial-probe/overlay.json ./internal/handler -run '^TestIndependentGatewayUnavailableEnvelope$' -count=1`
+   Result: PASS, package internal/handler, 0.519s.
+   Count: 1 independent HTTP probe. It directly called the nil-service route authentication path and asserted status 503 plus the exact public code, type and message.
+4. `GOCACHE=/private/tmp/porsche-go-build-cache env -u TEST_DATABASE_URL -u TEST_REDIS_URL go test -overlay=/private/tmp/porsche-b1b3-partial-probe/principal-overlay.json ./internal/service -run '^TestIndependentGatewayPrincipalTwoACLMatrix$' -count=1`
+   Result: PASS, package internal/service, 0.904s.
+   Count: 1 independent two-ACL matrix with 8 subtests: unrestricted, each one-sided restriction allow/deny, common allow, non-overlap, empty model and nil principal denial.
+5. `go build ./...`; `go vet ./...`; `git diff --check`
+   Result: all PASS. B1-B3 production/test diff numstat: handler 31/23, service 118/8, service test 91/0, whitelabel errors 12/5.
+
+Temporary independent artifacts
+- /private/tmp/porsche-b1b3-partial-probe/gateway_unavailable_probe_test.go
+- /private/tmp/porsche-b1b3-partial-probe/overlay.json
+- /private/tmp/porsche-b1b3-partial-probe/gateway_principal_matrix_probe_test.go
+- /private/tmp/porsche-b1b3-partial-probe/principal-overlay.json
+
+Residual required before final verification
+- NOT RUN: every fixture-dependent test, schema migration, real MySQL raw JSON scans, owner-next-request commit visibility, query/write failure injection, real /v1 list/detail/chat/SSE behavior, WhiteLabel cache behavior, and upstream zero-call checks. The fixture authorization was rejected; do not treat this partial result as end-to-end evidence.
+- No fixture/container/database was accessed, created, migrated, stopped or cleaned.
+
+VERDICT: PARTIAL

@@ -1,0 +1,80 @@
+HEAD aec1619ee710c80cd71dbe529660e2d12b3fda7b
+branch feature/admin-public-260903
+ M feature_list.json
+ M internal/handler/admin.go
+ M internal/handler/admin_users_auth_test.go
+ M internal/handler/auth_sessions_integration_test.go
+ M internal/handler/auth_users.go
+ M internal/handler/gateway_tokens.go
+ M internal/middleware/middleware.go
+ M internal/migration/runner.go
+ M internal/migration/runner_test.go
+ M internal/models/models.go
+ M internal/router/router.go
+ M internal/service/auth_account.go
+ M internal/service/auth_session.go
+ M internal/service/errors.go
+ M internal/service/gateway_token.go
+ M internal/service/gateway_token_test.go
+ M internal/whitelabel/errors.go
+ M progress.md
+?? docs/superpowers/plans/2026-09-03-b1a-pure-authz.md
+?? docs/superpowers/plans/2026-09-03-b1b1-permission-snapshot.md
+?? docs/superpowers/plans/2026-09-03-b1b2-managed-user-security-draft.md
+?? docs/superpowers/plans/2026-09-03-b1b3-gateway-owner-acl-plan.md
+?? docs/superpowers/plans/2026-09-03-b1c-admin-authz-read-plan.md
+?? docs/superpowers/plans/2026-09-03-b1d-admin-users-read-plan.md
+?? docs/superpowers/plans/2026-09-04-b1d-admin-users-count-index-plan.md
+?? docs/superpowers/reports/2026-09-03-b1a-pure-authz.md
+?? docs/superpowers/reports/2026-09-03-b1b1-permission-snapshot.md
+?? docs/superpowers/reports/2026-09-03-b1b2-managed-user-security.md
+?? docs/superpowers/reports/2026-09-03-b1b3-gateway-owner-acl.md
+?? docs/superpowers/reports/2026-09-03-b1c-admin-authz-read.md
+?? docs/superpowers/reports/2026-09-03-b1d-admin-users-read.md
+?? docs/superpowers/reports/validation/2026-09-03-b1a-pure-authz/
+?? docs/superpowers/reports/validation/2026-09-03-b1b1-permission-snapshot/
+?? docs/superpowers/reports/validation/2026-09-03-b1b2-managed-user-security/
+?? docs/superpowers/reports/validation/2026-09-03-b1b3-gateway-owner-acl/
+?? docs/superpowers/reports/validation/2026-09-03-b1c-admin-authz-read/
+?? docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/
+?? docs/superpowers/reports/validation/joint-acceptance-20260904/
+?? docs/superpowers/specs/2026-09-03-b1a-pure-authz-design.md
+?? docs/superpowers/specs/2026-09-03-b1b1-permission-snapshot-design.md
+?? docs/superpowers/specs/2026-09-03-b1b2-managed-user-security-draft.md
+?? docs/superpowers/specs/2026-09-03-b1b3-gateway-owner-acl-design.md
+?? docs/superpowers/specs/2026-09-03-b1c-admin-authz-read-design.md
+?? docs/superpowers/specs/2026-09-03-b1d-admin-users-read-design.md
+?? internal/authz/
+?? internal/dto/admin_permissions.go
+?? internal/handler/admin_authz.go
+?? internal/handler/admin_authz_test.go
+?? internal/handler/admin_user_update_decode.go
+?? internal/handler/admin_user_update_test.go
+?? internal/handler/admin_users_read.go
+?? internal/handler/admin_users_read_performance_test.go
+?? internal/handler/admin_users_read_test.go
+?? internal/handler/auth_projection.go
+?? internal/handler/gateway_owner_acl_test.go
+?? internal/migration/admin_users_read_count.go
+?? internal/migration/permission_schema.go
+?? internal/migration/permission_schema_test.go
+?? internal/migration/sql/0003_permission_policy.down.sql
+?? internal/migration/sql/0003_permission_policy.up.sql
+?? internal/migration/sql/0004_admin_users_read_count.down.sql
+?? internal/migration/sql/0004_admin_users_read_count.up.sql
+?? internal/models/managed_user_update_event_test.go
+?? internal/models/permission_policy.go
+?? internal/models/permission_policy_test.go
+?? internal/service/admin_permission_read.go
+?? internal/service/admin_permission_read_db_test.go
+?? internal/service/admin_permission_read_test.go
+?? internal/service/admin_users_projection.go
+?? internal/service/admin_users_query.go
+?? internal/service/admin_users_read.go
+?? internal/service/admin_users_read_db_test.go
+?? internal/service/admin_users_read_test.go
+?? internal/service/gateway_auth_failures_test.go
+?? internal/service/managed_user_security_failures_test.go
+?? internal/service/managed_user_security_test.go
+?? internal/service/permission_snapshot.go
+?? internal/service/permission_snapshot_test.go

@@ -1,0 +1,6 @@
+=== RUN   TestAdminUsersReadPerformance
+    admin_users_read_performance_test.go:35: seed task-owned synthetic users failed
+--- FAIL: TestAdminUsersReadPerformance (0.05s)
+FAIL
+FAIL	github.com/porsche/ai-gateway-go/internal/handler	0.888s
+FAIL

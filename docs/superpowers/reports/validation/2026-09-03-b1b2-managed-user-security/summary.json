@@ -1,0 +1,18 @@
+{
+  "independent_verdict": "PASS",
+  "severity": {"critical": "none", "high": "none", "medium": "none", "low": "none"},
+  "full_json": {"test_pass": 512, "test_fail": 0, "test_skip": 0, "package_pass": 15, "package_no_test_files": 4},
+  "source_sha256": {
+    "internal/handler/admin.go": "c9c7a638298303a96410d5ecfab2498ea6d06f76da190e7ed135ed1bf5860208",
+    "internal/handler/admin_user_update_decode.go": "9399d7af9f120d907ffa2d508ab297ad2be7763717063a4f741a2138d92b1e07",
+    "internal/models/models.go": "8cf7f616440bc83bc737f48d42cfcf6a3691d170351ea4525602dc93d2e938e1",
+    "internal/service/auth.go": "ae414ce4f258e4bfabc84ae9092db96b1b28797eb92af8920db87b3e7819ba7b",
+    "internal/service/auth_account.go": "8660de58d45e588908e425150566e6e3ec4825251dfbecbcdd4145f6a118a6d7",
+    "internal/service/auth_session.go": "71eff7ae243e1c30aa9a17d72f7cfbc782b4a5f071d5d188adf234996034a38e",
+    "internal/service/errors.go": "38f7ee4cc871b16fe2e679b59e62c9336a8c6d6b67821cdccd03ea5759beb95a",
+    "internal/handler/admin_user_update_test.go": "d8a5d0f6d0967fd02d7cc56a10c7ac3c02ef1de10df44a0cddd8be257a339f6a",
+    "internal/models/managed_user_update_event_test.go": "17912d1579cf105902cf6cf0f631627c75e6079f6a18fb59ce18642bb00f057f",
+    "internal/service/managed_user_security_test.go": "5169a3b4cf45098e300cb5c59987f6594c62f4a4325ca156979b25be29ceffd0",
+    "internal/service/managed_user_security_failures_test.go": "0b505ffaf3452c3067fe70ce464fbc7df176e79935f29b95565e972f67176815"
+  }
+}

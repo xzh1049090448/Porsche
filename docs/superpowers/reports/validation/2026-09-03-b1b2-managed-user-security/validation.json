@@ -1,0 +1,45 @@
+{
+  "feature": "go-013",
+  "status": "passing",
+  "scope": "local strict managed-user update parsing, security invalidation, audit attribution, and validation only",
+  "tdd": {
+    "service_behavior_red": "plan change initially left an existing target session live with AuthVersion unchanged",
+    "audit_behavior_red": "actual plan change initially wrote no event 10",
+    "handler_note": "an initial handler result skipped due unexported TEST variables and is explicitly excluded; exported-fixture route RED accepted duplicate status and malformed inputs"
+  },
+  "focused": {
+    "service": "pass; real MySQL 8 and Redis 7 fixture; transition, no-op, invalid input, failure, concurrency, credential and role/version matrices",
+    "handler_and_model": "pass; real exported fixture; strict actual PUT route and event-10 mapping matrix",
+    "skips": "no authorized focused fixture skip reported"
+  },
+  "latest_full_before_independent": {
+    "command": "GOCACHE=/private/tmp/porsche-go-build-cache go test -p 1 ./... -count=1",
+    "package_pass": 15,
+    "package_no_test_files": 4
+  },
+  "independent_full": {
+    "command": "GOCACHE=/private/tmp/porsche-go-build-cache go test -json -p 1 ./... -count=1",
+    "test_pass": 512,
+    "test_fail": 0,
+    "test_skip": 0,
+    "package_pass": 15,
+    "package_no_test_files": 4,
+    "raw_output": "docs/superpowers/reports/validation/2026-09-03-b1b2-managed-user-security/full-test.json"
+  },
+  "checks": {"build": "pass", "vet": "pass", "diff_check": "pass", "feature_json": "pass"},
+  "pm_review": {"role": "backend project manager", "result": "SPEC PASS", "scope": "B1-B2 limited local contract"},
+  "independent_review": {"role": "permission_snapshot_verify", "result": "VERDICT PASS; Critical/High/Medium/Low none; HTTP probe 1.515s; focused race models 1.466s, service 13.693s, handler 3.235s"},
+  "production": "not authorized",
+  "fixture_cleanup": "verified exact task label admin-next-slice-260903 with disposable/AutoRemove/tmpfs before stopping exact MySQL and Redis IDs; no matching container remains and private fixture env was removed",
+  "sha256": {
+    "handler": "c9c7a638298303a96410d5ecfab2498ea6d06f76da190e7ed135ed1bf5860208",
+    "decoder": "9399d7af9f120d907ffa2d508ab297ad2be7763717063a4f741a2138d92b1e07",
+    "models": "8cf7f616440bc83bc737f48d42cfcf6a3691d170351ea4525602dc93d2e938e1",
+    "auth_account": "8660de58d45e588908e425150566e6e3ec4825251dfbecbcdd4145f6a118a6d7",
+    "auth_session": "71eff7ae243e1c30aa9a17d72f7cfbc782b4a5f071d5d188adf234996034a38e",
+    "handler_tests": "d8a5d0f6d0967fd02d7cc56a10c7ac3c02ef1de10df44a0cddd8be257a339f6a",
+    "service_tests": "5169a3b4cf45098e300cb5c59987f6594c62f4a4325ca156979b25be29ceffd0",
+    "failure_tests": "0b505ffaf3452c3067fe70ce464fbc7df176e79935f29b95565e972f67176815"
+  },
+  "known_debt": ["old role authorization", "fine-grained permission writer", "ticket", "idempotency", "outbox", "Key ACL repair", "front-end integration"]
+}

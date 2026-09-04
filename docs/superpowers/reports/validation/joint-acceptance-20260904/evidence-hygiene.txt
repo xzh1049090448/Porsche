@@ -1,0 +1,9 @@
+Evidence hygiene validation
+===========================
+
+Pre-cleanup exact-value scan: PASS (22 evidence files; 15 private values compared; 0 exact or sensitive-pattern matches; 0 permission mismatches).
+Post-cleanup evidence files scanned: 25
+Post-cleanup sensitive value pattern matches: 0
+Private credential directory absent: true
+Result: PASS
+No password, token, cookie, Authorization header, or credentialed connection string value is printed in this report.

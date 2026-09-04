@@ -5,11 +5,12 @@ import "fmt"
 type Code string
 
 const (
-	CodeInvalidRequest             Code = "invalid_request"
-	CodeUnsupportedParameter       Code = "unsupported_parameter"
-	CodeMissingMaxTokens           Code = "missing_max_tokens"
-	CodeRequestTooLarge            Code = "request_too_large"
-	CodeGatewayUpstreamUnavailable Code = "gateway_upstream_unavailable"
+	CodeInvalidRequest                   Code = "invalid_request"
+	CodeUnsupportedParameter             Code = "unsupported_parameter"
+	CodeMissingMaxTokens                 Code = "missing_max_tokens"
+	CodeRequestTooLarge                  Code = "request_too_large"
+	CodeGatewayUpstreamUnavailable       Code = "gateway_upstream_unavailable"
+	CodeGatewayAuthenticationUnavailable Code = "gateway_authentication_unavailable"
 )
 
 type ErrorType string
@@ -50,6 +51,10 @@ func ErrUpstreamUnavailable(detail string) *Error {
 	return &Error{Code: CodeGatewayUpstreamUnavailable, Status: 503, Type: TypeAPI, Detail: detail}
 }
 
+func ErrGatewayAuthenticationUnavailable() *Error {
+	return &Error{Code: CodeGatewayAuthenticationUnavailable, Status: 503, Type: TypeAPI}
+}
+
 type PublicAPIError struct {
 	Code      Code      `json:"code"`
 	Message   string    `json:"message"`
@@ -77,6 +82,8 @@ func PublicError(err *Error, requestID string) PublicErrorResponse {
 		message = "Request body is too large."
 	case CodeGatewayUpstreamUnavailable:
 		message = "The upstream service is unavailable."
+	case CodeGatewayAuthenticationUnavailable:
+		message = "Gateway authentication is temporarily unavailable."
 	}
 	status := err.Status
 	if status == 0 {

@@ -1,0 +1,2594 @@
+{
+  "schema_version": 1,
+  "archive": "B1-A-through-B1-D-candidate-parent-for-B1-E",
+  "baseline_head": "aec1619ee710c80cd71dbe529660e2d12b3fda7b",
+  "created_date": "2026-09-04",
+  "preexisting_inventory": {
+    "path_count": 353,
+    "tracked_modified": 18,
+    "untracked": 335,
+    "bytes": 16180422,
+    "unassigned": 0
+  },
+  "verification": {
+    "init": "PASS after sandbox-only cache/bind rerun with private GOCACHE and cleared runtime connection variables",
+    "fresh_full": {
+      "test_pass": 389,
+      "test_skip_fixture": 258,
+      "test_fail": 0,
+      "package_pass": 15,
+      "package_skip_no_test_files": 4
+    },
+    "race_b1_packages": {
+      "test_pass": 130,
+      "test_skip_fixture": 248,
+      "test_fail": 0,
+      "package_pass": 6
+    },
+    "migration_focused": {
+      "test_pass": 6,
+      "test_skip_fixture": 14,
+      "test_fail": 0,
+      "fresh_real_fixture": "NOT_RUN"
+    },
+    "build": "PASS",
+    "vet": "PASS",
+    "diff_check": "PASS for all staged paths except six immutable non-executable raw-evidence files whose exact bytes match their historical manifests",
+    "json_validation": {
+      "json_documents": 18,
+      "json_event_streams_with_json_suffix": 4,
+      "jsonl_streams": 48,
+      "invalid_records": 0
+    },
+    "secret_scan": {
+      "private_keys": 0,
+      "jwt": 0,
+      "credential_dsns": 0,
+      "root_password_assignments": 0,
+      "test_url_assignments": 0,
+      "bearer_headers": 0,
+      "set_cookie_values": 0
+    }
+  },
+  "historical_hash_notes": [
+    {
+      "file": "docs/superpowers/reports/validation/2026-09-03-b1c-admin-authz-read/independent-static/final-shasum.txt",
+      "target": "internal/router/router.go",
+      "reason": "later B1-C/B1-D route registration"
+    },
+    {
+      "file": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa/final-production-hashes.sha256",
+      "target": "internal/service/admin_users_read.go",
+      "reason": "later reviewed H3 query implementation"
+    },
+    {
+      "file": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/production-hashes.sha256",
+      "target": "internal/service/admin_users_read.go",
+      "reason": "later reviewed H3 query implementation"
+    },
+    {
+      "file": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa-h3/final-hashes.sha256",
+      "target": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/manifest.json",
+      "reason": "later exact-cleanup manifest update"
+    }
+  ],
+  "limits": [
+    "no production",
+    "no deploy",
+    "no push",
+    "no model/SSE/upstream call",
+    "no Docker fixture",
+    "fixture skips are not passes"
+  ],
+  "files": [
+    {
+      "path": "feature_list.json",
+      "git_status": " M",
+      "scope": "B1-tracking",
+      "size": 37908,
+      "sha256": "7f66d387a3fa1940004395c7031a8dba60ae8014be7d057a2fc41481a19e3978"
+    },
+    {
+      "path": "internal/handler/admin.go",
+      "git_status": " M",
+      "scope": "shared-B1-integration",
+      "size": 8050,
+      "sha256": "b59a0fad2676634b2744043e4265f934488e594fc0d52720aa9bf13124f06b0f"
+    },
+    {
+      "path": "internal/handler/admin_users_auth_test.go",
+      "git_status": " M",
+      "scope": "shared-B1-integration",
+      "size": 2079,
+      "sha256": "6b488efd1732c49edee254e771cbe11e42a7876d1781c06e61fedff6f9ae3589"
+    },
+    {
+      "path": "internal/handler/auth_sessions_integration_test.go",
+      "git_status": " M",
+      "scope": "shared-B1-integration",
+      "size": 11373,
+      "sha256": "3598a13e09a21ac10aac78c536ee5f5f8f45c4dc58ad9293e49aafd2764bff91"
+    },
+    {
+      "path": "internal/handler/auth_users.go",
+      "git_status": " M",
+      "scope": "shared-B1-integration",
+      "size": 13272,
+      "sha256": "93ecf82a0cc492678069dd732579ed2415450bce76d6a6f411db771aa3867e36"
+    },
+    {
+      "path": "internal/handler/gateway_tokens.go",
+      "git_status": " M",
+      "scope": "B1-B3",
+      "size": 13840,
+      "sha256": "96670642cada1b22b8002e284fa4467c9cc7c7b7320d15e4c85b85e57997e02f"
+    },
+    {
+      "path": "internal/middleware/middleware.go",
+      "git_status": " M",
+      "scope": "shared-B1-integration",
+      "size": 4763,
+      "sha256": "619a25a4a3f03962783ff660591a45e0405e848d7c061b79fb73fc40063d55a1"
+    },
+    {
+      "path": "internal/migration/runner.go",
+      "git_status": " M",
+      "scope": "shared-B1-integration",
+      "size": 7652,
+      "sha256": "d52e1f85b5e2c422c0d974d986a899999f522bdf92cff707e22aa97726ba7022"
+    },
+    {
+      "path": "internal/migration/runner_test.go",
+      "git_status": " M",
+      "scope": "shared-B1-integration",
+      "size": 8575,
+      "sha256": "265f7d19ad065ceab1e44bb4d9c4f9196830f2072101c94d9fec16cb8eeedc22"
+    },
+    {
+      "path": "internal/models/models.go",
+      "git_status": " M",
+      "scope": "shared-B1-integration",
+      "size": 13742,
+      "sha256": "8cf7f616440bc83bc737f48d42cfcf6a3691d170351ea4525602dc93d2e938e1"
+    },
+    {
+      "path": "internal/router/router.go",
+      "git_status": " M",
+      "scope": "shared-B1-integration",
+      "size": 1552,
+      "sha256": "27286e1d44796456327bd9cbf623e0eb87d98e402065ed19564b0108fc3972ef"
+    },
+    {
+      "path": "internal/service/auth_account.go",
+      "git_status": " M",
+      "scope": "shared-B1-integration",
+      "size": 13771,
+      "sha256": "8660de58d45e588908e425150566e6e3ec4825251dfbecbcdd4145f6a118a6d7"
+    },
+    {
+      "path": "internal/service/auth_session.go",
+      "git_status": " M",
+      "scope": "shared-B1-integration",
+      "size": 15915,
+      "sha256": "fdb2b231c3e570407689db079b1a47ad4b8853b4c6bfe81603e0ee7e0c1590e6"
+    },
+    {
+      "path": "internal/service/errors.go",
+      "git_status": " M",
+      "scope": "shared-B1-integration",
+      "size": 1014,
+      "sha256": "38f7ee4cc871b16fe2e679b59e62c9336a8c6d6b67821cdccd03ea5759beb95a"
+    },
+    {
+      "path": "internal/service/gateway_token.go",
+      "git_status": " M",
+      "scope": "B1-B3",
+      "size": 11690,
+      "sha256": "73a94557bcd2ee44d194c891829072de6ad5acd68a7e50e01a0d5055aea989ed"
+    },
+    {
+      "path": "internal/service/gateway_token_test.go",
+      "git_status": " M",
+      "scope": "B1-B3",
+      "size": 9690,
+      "sha256": "b42b179761f8ed8199796e6434298e3bd26279461053907ff76ad77780357996"
+    },
+    {
+      "path": "internal/whitelabel/errors.go",
+      "git_status": " M",
+      "scope": "shared-B1-integration",
+      "size": 2937,
+      "sha256": "e63281723fa991a43857dc9aa31a6843f77c11d3199a3bd4b74d4f09db4f6634"
+    },
+    {
+      "path": "progress.md",
+      "git_status": " M",
+      "scope": "B1-tracking",
+      "size": 55871,
+      "sha256": "f2400ccef5725a889a7d17b0da06df6cc8f570577dcbc7e99af77612e2cf6311"
+    },
+    {
+      "path": "docs/superpowers/plans/2026-09-03-b1a-pure-authz.md",
+      "git_status": "??",
+      "scope": "B1-A",
+      "size": 8198,
+      "sha256": "fb26b6c4d66d2a37481d9e8df063f156310cf07fd4b7c0819dab32f6992d3da0"
+    },
+    {
+      "path": "docs/superpowers/plans/2026-09-03-b1b1-permission-snapshot.md",
+      "git_status": "??",
+      "scope": "B1-B1",
+      "size": 5521,
+      "sha256": "3b523c52b8c0b558ce7e149833be3117ecfa8868ff023f2dc01b5f83db2757f0"
+    },
+    {
+      "path": "docs/superpowers/plans/2026-09-03-b1b2-managed-user-security-draft.md",
+      "git_status": "??",
+      "scope": "B1-B2",
+      "size": 11671,
+      "sha256": "bedd03f0bfd197689b1250ea404691413128bf891c1d9976dc6f88a21fdee1bb"
+    },
+    {
+      "path": "docs/superpowers/plans/2026-09-03-b1b3-gateway-owner-acl-plan.md",
+      "git_status": "??",
+      "scope": "B1-B3",
+      "size": 3820,
+      "sha256": "65feb28aa8f9b58a6fde6f61bb7f1d6f684dadb1cdb4fe1657a8c068aa00420a"
+    },
+    {
+      "path": "docs/superpowers/plans/2026-09-03-b1c-admin-authz-read-plan.md",
+      "git_status": "??",
+      "scope": "B1-C",
+      "size": 2581,
+      "sha256": "ff25b3ea3d73b2437b3684948b0ef7c0494f60b5a65ad65922ba10a9cadfc5cf"
+    },
+    {
+      "path": "docs/superpowers/plans/2026-09-03-b1d-admin-users-read-plan.md",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 2982,
+      "sha256": "f8c4526e06c3247974a6744906d708e345cc5fffdc5189664619045883f2214a"
+    },
+    {
+      "path": "docs/superpowers/plans/2026-09-04-b1d-admin-users-count-index-plan.md",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 4718,
+      "sha256": "627d3551b67d45c5506716c50736daaa9f632cdac8538c548940d1cb668212b9"
+    },
+    {
+      "path": "docs/superpowers/reports/2026-09-03-b1a-pure-authz.md",
+      "git_status": "??",
+      "scope": "B1-A",
+      "size": 2580,
+      "sha256": "c8cd96f10974d60d468a6bb1716c92a5fca03b51d977c986bfe455c86da53d5d"
+    },
+    {
+      "path": "docs/superpowers/reports/2026-09-03-b1b1-permission-snapshot.md",
+      "git_status": "??",
+      "scope": "B1-B1",
+      "size": 3477,
+      "sha256": "665b6f377842c273bd389b65d29aa390b6b6aabdd01f176f96806dda1febd588"
+    },
+    {
+      "path": "docs/superpowers/reports/2026-09-03-b1b2-managed-user-security.md",
+      "git_status": "??",
+      "scope": "B1-B2",
+      "size": 4168,
+      "sha256": "3c6640354d5d9e39c7cc420543b6ff029d722d3cacee2ec25f1a9c1cadd2c916"
+    },
+    {
+      "path": "docs/superpowers/reports/2026-09-03-b1b3-gateway-owner-acl.md",
+      "git_status": "??",
+      "scope": "B1-B3",
+      "size": 3847,
+      "sha256": "76e3af7d36fd0f6c013714d1907ea93c7302f2b033a1c3d89d1165f0816de4fb"
+    },
+    {
+      "path": "docs/superpowers/reports/2026-09-03-b1c-admin-authz-read.md",
+      "git_status": "??",
+      "scope": "B1-C",
+      "size": 6477,
+      "sha256": "2fdd4b8a4ed714f13506414862ce6a339f4297ea63220313ef4814baacfd64cb"
+    },
+    {
+      "path": "docs/superpowers/reports/2026-09-03-b1d-admin-users-read.md",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 21244,
+      "sha256": "1ccad851a1f9e387c79b132034d7423f1b4d6f0efe137181a5dc225c2b2c48b8"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1a-pure-authz/external_authz_test.go.txt",
+      "git_status": "??",
+      "scope": "B1-A",
+      "size": 7164,
+      "sha256": "eec5980c5bbf6336c5bff02c694be83b184b5db8421b330060bc3867954ee153"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1a-pure-authz/validation.json",
+      "git_status": "??",
+      "scope": "B1-A",
+      "size": 883,
+      "sha256": "44bb12ef4fb0109ab0159088f1cac4fd8145db4fb0bb7d733b6e65afdd8cfe07"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1b1-permission-snapshot/full-test.json",
+      "git_status": "??",
+      "scope": "B1-B1",
+      "size": 698551,
+      "sha256": "3a18aeda05db799175bcc2fb38f24366416435ec8f3be8bfdba568574ca6dd62"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1b1-permission-snapshot/permission_snapshot_probe_test.go.txt",
+      "git_status": "??",
+      "scope": "B1-B1",
+      "size": 5978,
+      "sha256": "0073871265600b225db74fedcecc96b2d5bd4f0a6fa63dce2eb4d80401e05535"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1b1-permission-snapshot/security-report.txt",
+      "git_status": "??",
+      "scope": "B1-B1",
+      "size": 2517,
+      "sha256": "5e7713aacdc02cc052d34a2e79e960cbbf13c7e9049b3c5a2815e87b11d0558d"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1b1-permission-snapshot/validation.json",
+      "git_status": "??",
+      "scope": "B1-B1",
+      "size": 2201,
+      "sha256": "1d54d11a5e70bb6d298722b60669d2b75274e122f92b5397f04e3c2cc68a4297"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1b2-managed-user-security/admin_user_update_probe_test.go.txt",
+      "git_status": "??",
+      "scope": "B1-B2",
+      "size": 5491,
+      "sha256": "dc893f5bc8e867eae3a8fcde2408ebd989ec2751ccf3ca1387df2f2892ac3dd7"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1b2-managed-user-security/full-test.json",
+      "git_status": "??",
+      "scope": "B1-B2",
+      "size": 756478,
+      "sha256": "e21481af7cd1b0936c9c9959b3808348a5a35608aaff256932ef6144848dfaeb"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1b2-managed-user-security/security-report.txt",
+      "git_status": "??",
+      "scope": "B1-B2",
+      "size": 3562,
+      "sha256": "33fda1603c4f8aa66eab662c4ba74e4da067df3a42c001a7957a22e7d4eba2de"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1b2-managed-user-security/summary.json",
+      "git_status": "??",
+      "scope": "B1-B2",
+      "size": 1497,
+      "sha256": "01253d9c0d3e8956632fe1c55cbf54e63675d98949a2425945f8e5fe58a87131"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1b2-managed-user-security/validation.json",
+      "git_status": "??",
+      "scope": "B1-B2",
+      "size": 2967,
+      "sha256": "863e4a96bff17e7ca6c00651801d7c0cbb6a7fb47a295d040cb9f379907a6776"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1b3-gateway-owner-acl/final-full-test.jsonl",
+      "git_status": "??",
+      "scope": "B1-B3",
+      "size": 802830,
+      "sha256": "936c2cd150b9addd9f892cf149821962eea46770c937f8ce7b013a7a1adc5735"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1b3-gateway-owner-acl/final-security-report.txt",
+      "git_status": "??",
+      "scope": "B1-B3",
+      "size": 3475,
+      "sha256": "fa3488106b7fa00695620b0ed34337eb1d673b67331dcb1b1ba6b500839fbcf4"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1b3-gateway-owner-acl/final-sha256.txt",
+      "git_status": "??",
+      "scope": "B1-B3",
+      "size": 734,
+      "sha256": "8c4f8a1b3a087ed906f4383f5be6a3c4b8a14ecf48973712b8552ca7395e5b32"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1b3-gateway-owner-acl/gateway_principal_matrix_probe_test.go.txt",
+      "git_status": "??",
+      "scope": "B1-B3",
+      "size": 1472,
+      "sha256": "1fd0a47cb06e1c35d907eb9a87f5ae0bcc67d087f4830f4e88d15f4eeae65305"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1b3-gateway-owner-acl/gateway_unavailable_probe_test.go.txt",
+      "git_status": "??",
+      "scope": "B1-B3",
+      "size": 1376,
+      "sha256": "7c86a4ec420499558b5acad92a6645c8615432dd32bc6c01546298970eafce9f"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1b3-gateway-owner-acl/independent-security-report.txt",
+      "git_status": "??",
+      "scope": "B1-B3",
+      "size": 3745,
+      "sha256": "ca1ceb50bd0e020fa4efb516c4aad8dae898ee53e70a71f95bbc19ee5d005b1d"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1b3-gateway-owner-acl/summary.json",
+      "git_status": "??",
+      "scope": "B1-B3",
+      "size": 483,
+      "sha256": "235a3ac63da14a8f85a0ea6802ff043d4893bffe10559a53aebad49dad032e9b"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1b3-gateway-owner-acl/validation.json",
+      "git_status": "??",
+      "scope": "B1-B3",
+      "size": 2934,
+      "sha256": "bd654aaeec514ff8a04aa4e3d01b551541ad559cfceedfe33e44d6e916adf918"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1c-admin-authz-read/authz-middleware-race-no-fixture.txt",
+      "git_status": "??",
+      "scope": "B1-C",
+      "size": 125,
+      "sha256": "7128533796c6438c0ac8e2fe27302a308b4588b8008718716ca4560418d40ea6"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1c-admin-authz-read/fixture-lifecycle.draft.sh",
+      "git_status": "??",
+      "scope": "B1-C",
+      "size": 3938,
+      "sha256": "44ee1489a15d3c51d85adb25b2a9f4278967924a07c7849cf07524b874ba7486"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1c-admin-authz-read/focused-race-no-fixture.txt",
+      "git_status": "??",
+      "scope": "B1-C",
+      "size": 285,
+      "sha256": "e2cdc50ff81faadfa6447bf116f80a614e9d63954122012e8a35fd0424b3cc79"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1c-admin-authz-read/full-no-fixture.jsonl",
+      "git_status": "??",
+      "scope": "B1-C",
+      "size": 626563,
+      "sha256": "0ce261d8c0e827af839d6bcf7d7b09e45995cccce5444cd4249209352dc9b0d0"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1c-admin-authz-read/http-no-fixture.jsonl",
+      "git_status": "??",
+      "scope": "B1-C",
+      "size": 7370,
+      "sha256": "49498026ae357cf88659ab197c02204fd9837919f2237fe41834b2414c29fb42"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1c-admin-authz-read/independent-static/build.txt",
+      "git_status": "??",
+      "scope": "B1-C",
+      "size": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1c-admin-authz-read/independent-static/diff-check.txt",
+      "git_status": "??",
+      "scope": "B1-C",
+      "size": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1c-admin-authz-read/independent-static/final-shasum.txt",
+      "git_status": "??",
+      "scope": "B1-C",
+      "size": 796,
+      "sha256": "aa35f6eab89b32cd1d6250a68eb6bb1d202921412ac1f464264729fcf7b51126"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1c-admin-authz-read/independent-static/focused-pure-race.txt",
+      "git_status": "??",
+      "scope": "B1-C",
+      "size": 124,
+      "sha256": "20f6b7f98098325aaab73d7bb58cff3b9d147f521f08f1af6a3871d21f699316"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1c-admin-authz-read/independent-static/focused-pure.json",
+      "git_status": "??",
+      "scope": "B1-C",
+      "size": 64929,
+      "sha256": "9c37bd4385db8bd0500abe422348e4e7e2d5bbaa3fe9e3b2c2095774d09d06b8"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1c-admin-authz-read/independent-static/gofmt.diff",
+      "git_status": "??",
+      "scope": "B1-C",
+      "size": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1c-admin-authz-read/independent-static/independent-probe.json",
+      "git_status": "??",
+      "scope": "B1-C",
+      "size": 1437,
+      "sha256": "0756ad27e71d2791ee2f10f34be5f9721cd068838309cdd35580df897d68226c"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1c-admin-authz-read/independent-static/independent-probe/admin_authz_independent_probe_test.go.txt",
+      "git_status": "??",
+      "scope": "B1-C",
+      "size": 1631,
+      "sha256": "3c6874f9820ff703e8d8ff592d068c366ae9d89dc32c90c8e849312707121b3f"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1c-admin-authz-read/independent-static/independent-probe/admin_authz_overlay_test.go.txt",
+      "git_status": "??",
+      "scope": "B1-C",
+      "size": 15622,
+      "sha256": "07a859bfc1f7a68d8022a5cb1943cc6693a0c5c76c39c1ac0d19a8a4140fc45f"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1c-admin-authz-read/independent-static/independent-probe/overlay.json",
+      "git_status": "??",
+      "scope": "B1-C",
+      "size": 206,
+      "sha256": "c124c3ab4ba664a120b36902e1e9fb45376a1de18fa466a6550cbd5c723f2e42"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1c-admin-authz-read/independent-static/security-report.txt",
+      "git_status": "??",
+      "scope": "B1-C",
+      "size": 7222,
+      "sha256": "d60b0ba17c7f3c02601f38bccbef1dd441f6361042279d7786d48140a0ca2294"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1c-admin-authz-read/independent-static/vet.txt",
+      "git_status": "??",
+      "scope": "B1-C",
+      "size": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1c-admin-authz-read/manifest.json",
+      "git_status": "??",
+      "scope": "B1-C",
+      "size": 6911,
+      "sha256": "e30d75bdfbf5ff93329d6c374cbc71b226178739b2e49f2ee60bfe3df6da9697"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1c-admin-authz-read/real-fixture/README.md",
+      "git_status": "??",
+      "scope": "B1-C",
+      "size": 1441,
+      "sha256": "d78aa4473c882e3d009eaea124a735d6a2ba307f95f6c9482a6f5256961b195c"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1c-admin-authz-read/real-fixture/build.txt",
+      "git_status": "??",
+      "scope": "B1-C",
+      "size": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1c-admin-authz-read/real-fixture/cleanup.json",
+      "git_status": "??",
+      "scope": "B1-C",
+      "size": 916,
+      "sha256": "e854e37c73c7844c41a7c6e20f801f48ca251e3e576c096823ff8814c8f4c33f"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1c-admin-authz-read/real-fixture/fixture-identity.json",
+      "git_status": "??",
+      "scope": "B1-C",
+      "size": 846,
+      "sha256": "c75c4edde51b8c386005d4fa1774ed8249e2a72426dfe3a77d67bac1b97c89dd"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1c-admin-authz-read/real-fixture/focused.jsonl",
+      "git_status": "??",
+      "scope": "B1-C",
+      "size": 80930,
+      "sha256": "755fb498f7d8fc8da613db84d8a6d05e5f4e977e2d4fdf71c3488c652a3e6f0a"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1c-admin-authz-read/real-fixture/full-initial-harness-failure.jsonl",
+      "git_status": "??",
+      "scope": "B1-C",
+      "size": 819161,
+      "sha256": "bbc9efbe2984babb6e55d4038043553eb1b5aaf174192689d9ee517bf0910b3b"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1c-admin-authz-read/real-fixture/full.jsonl",
+      "git_status": "??",
+      "scope": "B1-C",
+      "size": 813902,
+      "sha256": "9eb7929f730b5c685d642e094713d85173d9abfd88360be9b807aec2c8f63710"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1c-admin-authz-read/real-fixture/independent-real/REPRODUCTION.md",
+      "git_status": "??",
+      "scope": "B1-C",
+      "size": 752,
+      "sha256": "35f261e306a401a246acadaf02437660dbff77beaba796482669ea1251609da9"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1c-admin-authz-read/real-fixture/independent-real/adversarial-http-probe.jsonl",
+      "git_status": "??",
+      "scope": "B1-C",
+      "size": 1457,
+      "sha256": "5e08b4b379399313eedc705965e685edc6c80e8beaad229a8227f88984a8c773"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1c-admin-authz-read/real-fixture/independent-real/adversarial-http-probe/admin_authz_overlay.go.txt",
+      "git_status": "??",
+      "scope": "B1-C",
+      "size": 15973,
+      "sha256": "8a7c5d714a91e3a8fc2e09c07a9f93c4f5e49d831a1226dc9d4c7a65c5948e0f"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1c-admin-authz-read/real-fixture/independent-real/adversarial-http-probe/overlay.json",
+      "git_status": "??",
+      "scope": "B1-C",
+      "size": 207,
+      "sha256": "72e7c146a372a0b99de03051570cc5e17698fecfd7b195760f2e5aa862760c5c"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1c-admin-authz-read/real-fixture/independent-real/focused-race.jsonl",
+      "git_status": "??",
+      "scope": "B1-C",
+      "size": 109879,
+      "sha256": "5ee8503ebef77a6f06454a611978d4d3f73243ec3d0673b4ec314120ccb85df5"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1c-admin-authz-read/real-fixture/independent-real/focused.jsonl",
+      "git_status": "??",
+      "scope": "B1-C",
+      "size": 104702,
+      "sha256": "9f9cc6f859f9021cf3bb8ddf153448a6e9e21c7c4926f03d3208d0bcd8923b81"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1c-admin-authz-read/real-fixture/independent-real/security-report.txt",
+      "git_status": "??",
+      "scope": "B1-C",
+      "size": 6646,
+      "sha256": "f096a9477dce9b00619fe598b40dce3d96de6f8f7d99af05204c1cb0973c25b5"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1c-admin-authz-read/real-fixture/migration-ledger.txt",
+      "git_status": "??",
+      "scope": "B1-C",
+      "size": 210,
+      "sha256": "380eeea5bb381d31a247966324511d9d1fedc7fe2905d5a2d86db2c01d566862"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1c-admin-authz-read/real-fixture/race.jsonl",
+      "git_status": "??",
+      "scope": "B1-C",
+      "size": 110427,
+      "sha256": "76fc803d89a8a56df85435450a8dce90135d560cc195423ed9bb89b1fca9ce4d"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1c-admin-authz-read/real-fixture/vet.txt",
+      "git_status": "??",
+      "scope": "B1-C",
+      "size": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/fixture-lifecycle-plan.md",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 4365,
+      "sha256": "350da68be0c2870aeea75dd36cfc0605d858e0b98eee2ecc000186a932a357d3"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/manifest.json",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 55513,
+      "sha256": "70427948ad19132f3ad4fc0a48c2da5a1d9276c6fda93589b5abb36691f70922"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/porsche-b1d-build.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/porsche-b1d-cookie-green.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 62,
+      "sha256": "4f270e653bdabd3c0d2f783331b3f723fd44d9d2dcc5e7bb62952542897d41a2"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/porsche-b1d-cookie-red.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 261,
+      "sha256": "9bba2b824f2262bd7db1b3419b501b47838b50a8f894819b100184c3fba58183"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/porsche-b1d-focused-pure.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 124,
+      "sha256": "5ab2d34c3e6ca9abde717cd667f357c26b1483c05a903f7f5f0f5957453d6bc1"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/porsche-b1d-full-no-fixture.jsonl",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 689323,
+      "sha256": "424a09106add0801617927fa23626702e58b4ba5681538684615ecf079284a54"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/porsche-b1d-handler-green.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 62,
+      "sha256": "8b3a9b8efa11cb326682013e91cd6850df53c090f50d3cf831608f394e737e2a"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/porsche-b1d-handler-red.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 267,
+      "sha256": "2105c5003d460bc96395f7cae2f594b860d0d78e790880150a9e42fb30c9e0d6"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/porsche-b1d-legacy-red.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 226,
+      "sha256": "cef60e68cc07bf774f59752b2a2e237ca31749ec31e915368558914b172fc742"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/porsche-b1d-performance-response-focused.jsonl",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 64874,
+      "sha256": "78144e2356bbd9000a131a522b19165d8e34c02bfeb24bf74114dd7689fab00d"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/porsche-b1d-performance-response-red.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 389,
+      "sha256": "da5a3c769f23a5f6a18784fa714a763e282dbe3fbc686608c6843451c1b0a440"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/porsche-b1d-pure-green.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 62,
+      "sha256": "6429202352aac38464e30a6090fd6a6712d213eaf0f9e1d8a19f2374d39ec073"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/porsche-b1d-pure-red.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 1063,
+      "sha256": "c0320cc67b8d518ea211efff85df8c23e32aaab9aaeefb612b8dd9e513a87190"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/porsche-b1d-race-no-fixture.jsonl",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 64016,
+      "sha256": "b9016d59be6c24f1cc923c523f6ef69601db3351cbdd3fd4039f9d80e09e52f9"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/porsche-b1d-vet.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/README.md",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 4565,
+      "sha256": "10cef8b8341a227033739bc22917b2a32ef18160dde3b29873bd122297aa26b3"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/build.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/commands.md",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 1568,
+      "sha256": "a1f7243ba722d8c77fc70f7cf396978f4a1cd0be202ca7111130ec88f2d1015c"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/README.md",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 13584,
+      "sha256": "3524ccacb2bf20ed87b14b5dd5e1762526f27bd88fdd6a403bf19d36784592bb"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/analyze-current-after.txt",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 1564,
+      "sha256": "4fb4ae81ea1d8daf0bdcba0c95c5d104644dbdad9e8aff42dc0b51cc240c1cde"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/analyze-current-before.txt",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 1565,
+      "sha256": "eca9e348d790e145b2c5949fab23216a62fba66366375ef58756b57b8d92e993"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/analyze-current-time.txt",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 29,
+      "sha256": "90e1289d2ecb80d0cef458ad0eed4767a5cb8e4afe76fc0e93fb492c5dc0e7a0"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/analyze-current.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 87,
+      "sha256": "9b79bb18f04f1bb32c6e8653ebb721d088674a93365ed7ff6e42311d0571598b"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/before-explain-components.txt",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 1015,
+      "sha256": "56ed8f8dce08d0a96b516572a8634db54d5b315ab0f12beb24a72e0b29e934c3"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/before-query-plan.txt",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 1820,
+      "sha256": "a6e51fb0c54a153497773ac6c9ba24bf5d0b2dff1c78b5880d5821a15f8c3733"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/build.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/counts.json",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 4115,
+      "sha256": "cfb276531fed70fefd316fea1d84d4bdf056a4ebff3eaee312530b14775725ab"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/diff-check.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/exact-cleanup-container-verification.txt",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 90,
+      "sha256": "e6ecb17b7e078bf09e0aeab431c2e1d99ffeb771f62afb6edc06b7e5dc3b7d5d"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/exact-cleanup-precheck.txt",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 292,
+      "sha256": "209c8a4732d2430fc6ffad98990db5cc93593a6f7475b8f77fd097ede386b1ed"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/exact-cleanup-private-path-verification.txt",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 31,
+      "sha256": "bdf731ce45dfa4037cc67b37f41836eb6d419179c8371e82b35b7abbc6b81f4b"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/exact-cleanup-stop.txt",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 130,
+      "sha256": "8a2df9ad87a6e065e5408faa2a157b4859584af4cdbc27174bf1e2368c349bf3"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/focused-handler.jsonl",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 16560,
+      "sha256": "e1551d7de21c59a3ec7861a2d5c83cd6b3a0b53233d2c9547826dd77413bba58"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/focused-service.jsonl",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 44131,
+      "sha256": "dd313254edf65efbafc506233f3e3836023fc1b2047b37d53f89bced1178907a"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/full.jsonl",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 958492,
+      "sha256": "b1081908cb97bbf598f7db0d13c168135f9911ae462d94d01c24b20ada6d687f"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h1-use-index-count-explain.txt",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 959,
+      "sha256": "49a3e97fb59f161b6bdf5f841e5670c55fa5763d9a425d5e293d7f748d0e240d"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h1-use-index-output-and-explain.txt",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 3383,
+      "sha256": "5a232e0da4be4a8bd9026e30c94fa1e4feabe110379ab80d56e4206598faa25e"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h2-force-index-output-and-explain.txt",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 2353,
+      "sha256": "ba86e5e7490dcc793c2722ead4116849f03ceefd0524f602977b8693cc36692f"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-build.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-cost-build-seed-time.txt",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 29,
+      "sha256": "8a8a9a78925ecbcad773f685f95e344295cafd9284dcaf89492cd0145f65d91e"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-cost-build-seed.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-cost-index-build-time.txt",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 29,
+      "sha256": "35fdc32c6095323cbf756bdf9dcaeb75eb7c10c8f7953df19faef4233f7a3e65"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-cost-index-build.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-cost-index-size-and-locks.txt",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 316,
+      "sha256": "80cd38dfb7c4b1a0720a0e2e8d437f0ecd9545c53f5bffe8635848bb3cd82ee8"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-cost-results-and-cleanup.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 108,
+      "sha256": "2fc5e51ad7dd9d9652ee99162b7169bb9d71413b39f867a398a1bb79749dbe5a"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-cost-setup.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-cost-write-setup.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-cost-write-with-insert-time.txt",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 29,
+      "sha256": "c655d1eac5323d122f10c9d7bc4dfc4957812cfa25e154f687bfcc0fa5bba712"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-cost-write-with-insert.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-cost-write-with-soft-delete-time.txt",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 29,
+      "sha256": "048e6d2aca26db26f47359e1db27f51edcaf676c15eb9a84e9a436e58633e551"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-cost-write-with-soft-delete.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-cost-write-with-status-role-time.txt",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 29,
+      "sha256": "048e6d2aca26db26f47359e1db27f51edcaf676c15eb9a84e9a436e58633e551"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-cost-write-with-status-role.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-cost-write-without-insert-time.txt",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 29,
+      "sha256": "5821e55c28a0788144ad5f556409f20780b4362f2eece5fbd5aad5bb11edf85d"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-cost-write-without-insert.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-cost-write-without-soft-delete-time.txt",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 29,
+      "sha256": "6107a3d506ea9534cbaf9d77358841aa5a86842cdd2b9d31694a1b4d5649277f"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-cost-write-without-soft-delete.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-cost-write-without-status-role-time.txt",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 29,
+      "sha256": "fccfbf33e9368d8a083349527c65d023f55fd44a2dc2e49f4999ec4290544545"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-cost-write-without-status-role.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-diff-check.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-final-db-reset.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-final-full.jsonl",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 959420,
+      "sha256": "ec89e3f259876c66fc79bf99ceecf5ef6385571a3015eb90cb9d77fa66fddae2"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-final-migration.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 280,
+      "sha256": "813bc27cca79c1c3c2ab1579f1a88523b2f1aac1866d03ef73289c3c8082c433"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-final-redis-reset.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 3,
+      "sha256": "a12b7cb43c9d9134b5bb1b35e9096b66775d9e92e7611d1cc92b02edd6782a87"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-focused-handler.jsonl",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 18529,
+      "sha256": "ed9d439cabd3b4acbd98ab29e0ee5805e9092b67d094ac7114808c04852f6006"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-focused-service.jsonl",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 44127,
+      "sha256": "31ceb72bd3fc9b38d2d71d7f5a5230aa18042830cceba399e3f2a2104ce6ff6f"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-full-db-reset.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-full-migration.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 280,
+      "sha256": "813bc27cca79c1c3c2ab1579f1a88523b2f1aac1866d03ef73289c3c8082c433"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-full-redis-reset.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 3,
+      "sha256": "a12b7cb43c9d9134b5bb1b35e9096b66775d9e92e7611d1cc92b02edd6782a87"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-full.jsonl",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 959403,
+      "sha256": "7038e74d3c02162904d9ff7f7223b1f0f40a1016f9e632208a7e107357531efb"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-ignore-active-updated-overlay-initial-env-not-exported.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 267,
+      "sha256": "6b683934a379868e4be79cf9fec712b567ec1a0ab08cbbe4464bc61af8f3d965"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-ignore-active-updated-overlay.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 6908,
+      "sha256": "35cb0d2ed5423f05c17e034c743e34bcedd210b34df0f1df54171e932cb20bef"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-overlay-test.go.txt",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 3995,
+      "sha256": "26cc246073be0f0d7d2bb5ab90f19511768e0a1a476f1c183523c59cbc6f372d"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-perf-1-db-reset.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-perf-1-migration.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 280,
+      "sha256": "813bc27cca79c1c3c2ab1579f1a88523b2f1aac1866d03ef73289c3c8082c433"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-perf-1-redis-reset.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 3,
+      "sha256": "a12b7cb43c9d9134b5bb1b35e9096b66775d9e92e7611d1cc92b02edd6782a87"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-perf-1.exit",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-perf-1.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 460,
+      "sha256": "d42ce658745b7ea32bed238293c728131deb8770d80dae174d42de23c9c60da1"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-perf-2-db-reset.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-perf-2-migration.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 280,
+      "sha256": "813bc27cca79c1c3c2ab1579f1a88523b2f1aac1866d03ef73289c3c8082c433"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-perf-2-redis-reset.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 3,
+      "sha256": "a12b7cb43c9d9134b5bb1b35e9096b66775d9e92e7611d1cc92b02edd6782a87"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-perf-2.exit",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-perf-2.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 460,
+      "sha256": "d2df33ad8bd6f222da7fc0adf84e925743f4fd2ae0ab748a075e90cb4d5e728b"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-perf-3-db-reset.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-perf-3-migration.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 280,
+      "sha256": "813bc27cca79c1c3c2ab1579f1a88523b2f1aac1866d03ef73289c3c8082c433"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-perf-3-redis-reset.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 3,
+      "sha256": "a12b7cb43c9d9134b5bb1b35e9096b66775d9e92e7611d1cc92b02edd6782a87"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-perf-3.exit",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-perf-3.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 460,
+      "sha256": "5978f979e508f5badd9b67f28649fb087c7b524843511a169b00a1c663757f62"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-post-performance-explain.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 6338,
+      "sha256": "f8f8e3332ad794e3d7346be892486dac9844ad4b55253901cae01abddcf87028"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-race-handler.jsonl",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 18522,
+      "sha256": "1e68864c7f366bd1766320267d1dc8f24092cf9fc0a0bee071cd68b9aae04342"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-race-service.jsonl",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 44128,
+      "sha256": "685a413a0331508d8f065f72356f1241802a7ec95d36e373cf944181bb856d8b"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-vet.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/migration-focused-initial-verifier-fail.jsonl",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 23928,
+      "sha256": "095a971f83a47bd87d49abb5df8e47ae3c598d1966fa1ff0939f6c379db3b93b"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/migration-focused.jsonl",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 18624,
+      "sha256": "afd01ef4ded99b181c5380783572a4659931859332d6bbff7d7a71eb387eec2a"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/migration-full.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 280,
+      "sha256": "813bc27cca79c1c3c2ab1579f1a88523b2f1aac1866d03ef73289c3c8082c433"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/migration-status.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 210,
+      "sha256": "380eeea5bb381d31a247966324511d9d1fedc7fe2905d5a2d86db2c01d566862"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/migration-up-initial-verifier-scan-fail.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 85,
+      "sha256": "5fb4055f13f81049a93de1fb82fa1dbd578b1ee55efc117cb1171257f436c104"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/migration-up.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 280,
+      "sha256": "813bc27cca79c1c3c2ab1579f1a88523b2f1aac1866d03ef73289c3c8082c433"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/migration-wall.txt",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 27,
+      "sha256": "6d4c071c30c27169f8f4bb1605efd6c9a35da5e6070910b480140daa3e5d84d9"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/perf-1-explain.txt",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 2449,
+      "sha256": "e2a19fb0fa5766b71b672fad9e54e8e4cadd66f88a1f125818cf9db60f4473c7"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/perf-1-migration.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 280,
+      "sha256": "813bc27cca79c1c3c2ab1579f1a88523b2f1aac1866d03ef73289c3c8082c433"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/perf-1.exit",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/perf-1.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 434,
+      "sha256": "03ea40227f3b644ba360e1706948751306cd0f3300e40b98b6d904d93ca84371"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/race-handler.jsonl",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 16563,
+      "sha256": "c8f5408f4b2956e58c8064e2e383ad8240b7c11e8810de497dc265250c9ed92b"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/race-service.jsonl",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 44138,
+      "sha256": "91519c56f865376389867e1dbdffc1ff8c8e86f3c3ed7e1f2ca9d6faa749bf8c"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/show-index-and-locks.txt",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 199,
+      "sha256": "5b50aa12b1f4df526e60204a72f554cac2a7f5d2fd9f9ba3378d98dc639329cc"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/tdd-green-pure-2.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 64,
+      "sha256": "b0260704443d1d19b7d7085bcf49d6f71b91946332cf326087ab7cc41d00f80f"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/tdd-green-pure.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 64,
+      "sha256": "5ea9ac1a82ea5a0ca824b59cf84c4d302f0b6c3b7ac60814d2fcd36f145c637e"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/tdd-h3-green-pure.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 62,
+      "sha256": "e7d1ffdb2185cd214345142b3bc226932ea95a16af90aa3aa1d434c476748886"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/tdd-h3-red.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 269,
+      "sha256": "b49caa39384e7b0af87f77e611b2b1b07453c69518020cd063b6a3ca949846f8"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/tdd-red.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 62127,
+      "sha256": "fd460021f8a071b597b1e0f7ec274bb4127a1d9e46b32c7805d0aa891f35e96b"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/vet.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/counts.json",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 949,
+      "sha256": "46bf21f642f8148bc7766940073a875f7a9714184779e196e4487c74af1959fe"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/diff-check.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/final-db-and-redis-reset.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 124,
+      "sha256": "da2e61415c1f7b1f4a005dfa64503b21ec4a935aa8282f03bd839e32db2ea269"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/final-fresh-db-reset.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 124,
+      "sha256": "da2e61415c1f7b1f4a005dfa64503b21ec4a935aa8282f03bd839e32db2ea269"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/final-redis-reset.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 3,
+      "sha256": "a12b7cb43c9d9134b5bb1b35e9096b66775d9e92e7611d1cc92b02edd6782a87"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/focused-handler.jsonl",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 16563,
+      "sha256": "274650d176166943b01773500b8db5e7efd9ffa90d023ef97144a01011246792"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/focused-initial-fixture-bug.jsonl",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 60955,
+      "sha256": "c58e948e6fb8b4b1310ae0c7dfa7aa3dbd3815f6a8352bdadc4d8fd162ff113a"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/focused-parallel-package-fail.jsonl",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 60966,
+      "sha256": "e875c654226b6b8568b8e3a5e11dd1ef1f4863e95f544c970ee86413c4902775"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/focused-service.jsonl",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 44136,
+      "sha256": "151ffa32cc456d74b9f8fbdcd6d0248c2d6aea305f7c083f7951d6f53aeb5cb5"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/fresh-db-reset.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 124,
+      "sha256": "da2e61415c1f7b1f4a005dfa64503b21ec4a935aa8282f03bd839e32db2ea269"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/full-before-performance-fixture-fix.jsonl",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 957620,
+      "sha256": "e26fbe8375843c2a30c7270cced64c4445d4a4b2fd3c735ef37629b6f70fd55a"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/full-initial-stale-assertion-and-dirty-fixture.jsonl",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 962049,
+      "sha256": "dda8f4e031826ceeef0d803fc1c0484116893d8e5c593f32cf1b386d3fd78581"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/full-mysql-only-reset-redis-counter-fail.jsonl",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 957863,
+      "sha256": "a3369d866972f67968441ebc4c2f519ba7dd59f2fe172eb7e1808564ef972244"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/full.jsonl",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 957595,
+      "sha256": "1a17980c68b4de14b102e310ae941c576a5d05cbe3a156e1e94b6b7a44175485"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa-h3/SECURITY_REPORT.md",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 4586,
+      "sha256": "09f89d3758ce4ce5122541d7bf4d785e68a50ce2834a6095bdb1d949380dcfb1"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa-h3/build.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa-h3/diff-check.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa-h3/dynamic-contract.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 3497,
+      "sha256": "b528cdb753d6f276fd0cecae51f7d1bba36b867a1743d7a41cf0f149c2d5b97d"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa-h3/evidence-hygiene.txt",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 6,
+      "sha256": "0b98843240a0b1a2384483206c02be8968dd809eb73838820be24cb7d6d6aeb9"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa-h3/final-diff-check.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa-h3/final-hashes.sha256",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 375,
+      "sha256": "1bd8c68866021c2ef09cfb7417a2d345f71b1348aa0357458c670d93b007b7f3"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa-h3/focused-handler.jsonl",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 16565,
+      "sha256": "33c871431dcf27b6407a85e87a9f023f3f1cd18d12f735064bde1459a8134269"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa-h3/focused-service-migration.jsonl",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 46546,
+      "sha256": "a4214458cac3562cdd99cb3b977e0b2637b5d32eee44800127ac8c6bee5dddbd"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa-h3/full.jsonl",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 959431,
+      "sha256": "ec872a6e97b536196315d5d75686ba8c16944838d37514e8943f7c0a94a9e4b3"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa-h3/ledger.md",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 1067,
+      "sha256": "045857a958ffda9a658394a52bd9a4b71dd2b1218432c35383fea8c4cfbb3a21"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa-h3/migration-full.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 280,
+      "sha256": "813bc27cca79c1c3c2ab1579f1a88523b2f1aac1866d03ef73289c3c8082c433"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa-h3/migration-race.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 280,
+      "sha256": "813bc27cca79c1c3c2ab1579f1a88523b2f1aac1866d03ef73289c3c8082c433"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa-h3/migration-status.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 280,
+      "sha256": "813bc27cca79c1c3c2ab1579f1a88523b2f1aac1866d03ef73289c3c8082c433"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa-h3/migration-up.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 280,
+      "sha256": "813bc27cca79c1c3c2ab1579f1a88523b2f1aac1866d03ef73289c3c8082c433"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa-h3/perf-1-migration.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 280,
+      "sha256": "813bc27cca79c1c3c2ab1579f1a88523b2f1aac1866d03ef73289c3c8082c433"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa-h3/perf-1.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 461,
+      "sha256": "6052e3a75718685c740bd7e7a891a40c2ff89f5e4eeef459c0e80ca6b47e46fd"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa-h3/perf-2-migration.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 280,
+      "sha256": "813bc27cca79c1c3c2ab1579f1a88523b2f1aac1866d03ef73289c3c8082c433"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa-h3/perf-2.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 460,
+      "sha256": "9ba92b64143f5c1d285fa65d1ac5a83d093c00c5adab64ac90a02188164449ea"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa-h3/perf-3-migration.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 280,
+      "sha256": "813bc27cca79c1c3c2ab1579f1a88523b2f1aac1866d03ef73289c3c8082c433"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa-h3/perf-3.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 460,
+      "sha256": "bba1ec0128b8aad2158ab3c97b51ddc14df2d1b985e72c6d1c14ce4f9057310e"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa-h3/post-perf-query-plan.txt",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 2305,
+      "sha256": "86eb471b7f4edfbcb6fecc3b11ce4a9e072d0469ad16f3b8e86cbd7787062b9c"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa-h3/race-handler.jsonl",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 16563,
+      "sha256": "5903c074d297e6a5fe2b8a465a5fc2309747d010a9d11e9dbe484299a2f3d24c"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa-h3/race-service.jsonl",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 45056,
+      "sha256": "a8c05786e03c52d3ad480f52544222c4c68b687131fe7b1415107e9f55fcfb23"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa-h3/vet.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa/SECURITY_REPORT.md",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 4754,
+      "sha256": "c437e87412809960217f54046dd1420093ffe9abaf969bf116da621d9ea36356"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa/build.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa/diff-check.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa/evidence-hygiene.txt",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 6,
+      "sha256": "0b98843240a0b1a2384483206c02be8968dd809eb73838820be24cb7d6d6aeb9"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa/final-diff-check.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa/final-production-hashes.sha256",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 901,
+      "sha256": "b713540a8965081ad745100a96d93d9ec9e41aabc9869206da003370a4ad389e"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa/focused-handler.jsonl",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 16558,
+      "sha256": "2718ea66e3a09ecbe71682a468e7f638450dfeb37e057514784fbdb21d092247"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa/focused-service.jsonl",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 44134,
+      "sha256": "97f278103352bc528a7ef2ce823cd2dfd929d45dcebd3bb9d02b1361fd1dabe8"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa/full.jsonl",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 959607,
+      "sha256": "ef44b6aee64315a320e2dba8145ccf41d95b5d711c08823bce303ee90f971672"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa/ledger.md",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 1366,
+      "sha256": "1be611e87b9b50b4c71cd097071ab4f14c8b5be168a44e59c6b298f70769ae2f"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa/migration-full.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 210,
+      "sha256": "380eeea5bb381d31a247966324511d9d1fedc7fe2905d5a2d86db2c01d566862"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa/migration-performance-repro.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 210,
+      "sha256": "380eeea5bb381d31a247966324511d9d1fedc7fe2905d5a2d86db2c01d566862"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa/migration-performance-third.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 210,
+      "sha256": "380eeea5bb381d31a247966324511d9d1fedc7fe2905d5a2d86db2c01d566862"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa/migration-performance.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 210,
+      "sha256": "380eeea5bb381d31a247966324511d9d1fedc7fe2905d5a2d86db2c01d566862"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa/migration-race-handler.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 210,
+      "sha256": "380eeea5bb381d31a247966324511d9d1fedc7fe2905d5a2d86db2c01d566862"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa/migration-race.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 210,
+      "sha256": "380eeea5bb381d31a247966324511d9d1fedc7fe2905d5a2d86db2c01d566862"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa/migration-status.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 210,
+      "sha256": "380eeea5bb381d31a247966324511d9d1fedc7fe2905d5a2d86db2c01d566862"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa/migration-up.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 210,
+      "sha256": "380eeea5bb381d31a247966324511d9d1fedc7fe2905d5a2d86db2c01d566862"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa/mysql-query-components.txt",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 1015,
+      "sha256": "56ed8f8dce08d0a96b516572a8634db54d5b315ab0f12beb24a72e0b29e934c3"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa/mysql-query-plan.txt",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 1820,
+      "sha256": "a6e51fb0c54a153497773ac6c9ba24bf5d0b2dff1c78b5880d5821a15f8c3733"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa/performance-repro.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 435,
+      "sha256": "6ab15eff08b3d92c4339cff27e1feda3b149919182f9c69cc1405c6acc3c73a7"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa/performance-third.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 533,
+      "sha256": "f924ccfebcb1e7ee6b2056583414aec96f4c3b0f3e3cd95dd17191ba792c5690"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa/performance.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 533,
+      "sha256": "4aeb0295da58ec1d981e07fd30f290ca7fed37a032de1e2ae39e5e50289a1a3f"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa/race-handler.jsonl",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 16566,
+      "sha256": "90cf0e003dadc372e113f36a222b7e2345481ea3d07b3f4983213449151bfd2d"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa/race-service.jsonl",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 44139,
+      "sha256": "f0dfa263e53305f50c7f72a79cda1c700d027e3e627d3c6d672c537b87f953df"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa/vet.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/migration-final-clean-both.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 210,
+      "sha256": "380eeea5bb381d31a247966324511d9d1fedc7fe2905d5a2d86db2c01d566862"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/migration-final.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 210,
+      "sha256": "380eeea5bb381d31a247966324511d9d1fedc7fe2905d5a2d86db2c01d566862"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/migration-fresh-full.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 210,
+      "sha256": "380eeea5bb381d31a247966324511d9d1fedc7fe2905d5a2d86db2c01d566862"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/migration-qa-window.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 210,
+      "sha256": "380eeea5bb381d31a247966324511d9d1fedc7fe2905d5a2d86db2c01d566862"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/migration-status.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 210,
+      "sha256": "380eeea5bb381d31a247966324511d9d1fedc7fe2905d5a2d86db2c01d566862"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/migration-up.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 210,
+      "sha256": "380eeea5bb381d31a247966324511d9d1fedc7fe2905d5a2d86db2c01d566862"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/performance-before-final-qa-window.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 434,
+      "sha256": "ffe753d8a2ced4efc3b5d7bdf332747f2037c346a43aa35a1e0d46e6bcc0423d"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/performance-initial.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 244,
+      "sha256": "2d8f41ea667ca5770576f52c03f40651f985a8c76745983fdc268040b34d1864"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/performance.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 434,
+      "sha256": "773168a6be48b9470f3d18df8b868b64661d12e8f38920352a669b7a22d2469b"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/production-hashes.sha256",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 901,
+      "sha256": "c182f388dedaa0c49560bc48de9f9d472fcef87c0c8aab4674c023bc3da90de2"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/qa-window-db-reset.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 124,
+      "sha256": "da2e61415c1f7b1f4a005dfa64503b21ec4a935aa8282f03bd839e32db2ea269"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/qa-window-redis-reset.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 3,
+      "sha256": "a12b7cb43c9d9134b5bb1b35e9096b66775d9e92e7611d1cc92b02edd6782a87"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/race-handler.jsonl",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 16562,
+      "sha256": "e6cc941172ca2bdfc98a9b3e259c784fa407cb1098ce129a9220f40e7810dabe"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/race-service.jsonl",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 44135,
+      "sha256": "ecde408466ee18ae87170b44ac8e6d0b37553e21e947c7f55f471e23c2b15512"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/resource-ledger.md",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 1594,
+      "sha256": "35cf7df66fe45d5fbc1893239c99468ccb770d147ffb47eef53eee0b4e76e626"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/stale-404-contract-focused-dirty-after-full-fail.jsonl",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 6737,
+      "sha256": "373cddb01f460172c2a8514df310146fc10de048feec605479c51e12408ea7ee"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/stale-404-contract-focused.jsonl",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 6426,
+      "sha256": "04e3ba86b4235991d8e01974048be21d3fee28f95f60c6858642e6875842bde4"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/vet.log",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/security-review.md",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 1482,
+      "sha256": "86c210b0ef053e888edfe1aa68e39c12aebd68692c6e8e36e4746e5728bf9505"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/joint-acceptance-20260904/README.md",
+      "git_status": "??",
+      "scope": "B1-D-joint-acceptance",
+      "size": 6429,
+      "sha256": "0118d64850fca79512ee76275485c887f4a509404f0b8a7656040d881af23cdb"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/joint-acceptance-20260904/backend-baseline.txt",
+      "git_status": "??",
+      "scope": "B1-D-joint-acceptance",
+      "size": 4047,
+      "sha256": "6a6d521a7c780fbc20a1fd760e352c7b673c497c27ceca7a9dd9b790d041d9a4"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/joint-acceptance-20260904/backend-candidate-hashes.sha256",
+      "git_status": "??",
+      "scope": "B1-D-joint-acceptance",
+      "size": 573,
+      "sha256": "6b466d528521cb302db5cc481906b445b658f6b7f667e4ccfaaf3df4a45caf8e"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/joint-acceptance-20260904/backend-health.json",
+      "git_status": "??",
+      "scope": "B1-D-joint-acceptance",
+      "size": 39,
+      "sha256": "f335de695ca26ff67351c6a52f9497db00fe3c5de988481a95902d390c4f9af7"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/joint-acceptance-20260904/backend-listener.txt",
+      "git_status": "??",
+      "scope": "B1-D-joint-acceptance",
+      "size": 166,
+      "sha256": "c4b0400c37e6cdbb44a2cbd4de32669e07d425e7e87fefea8c4b538c1d6d4c76"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/joint-acceptance-20260904/bootstrap.log",
+      "git_status": "??",
+      "scope": "B1-D-joint-acceptance",
+      "size": 187,
+      "sha256": "67feba718b941cdd9e3a34e62e04f490deb9e6db7867a75e9f8f5be64041f50b"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/joint-acceptance-20260904/cleanup-precheck.txt",
+      "git_status": "??",
+      "scope": "B1-D-joint-acceptance",
+      "size": 1207,
+      "sha256": "4500d20ee9c77f91a0a946bbe50e371b5ba11978b23f232af473504f08f6f695"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/joint-acceptance-20260904/cleanup-stop.txt",
+      "git_status": "??",
+      "scope": "B1-D-joint-acceptance",
+      "size": 434,
+      "sha256": "9635e18e4e8383b2694f4b9f4c50dcda2c948072c8842453f73d73781c3c217c"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/joint-acceptance-20260904/cleanup-verification.txt",
+      "git_status": "??",
+      "scope": "B1-D-joint-acceptance",
+      "size": 498,
+      "sha256": "2360857a433dcf6bc60cae457e31ecc1114637a34e2920810a865bf62ce62ed1"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/joint-acceptance-20260904/dataset-ledger.txt",
+      "git_status": "??",
+      "scope": "B1-D-joint-acceptance",
+      "size": 228,
+      "sha256": "98d574944cd364714c84a37fb5f3128c602137dc7174f2ac8fc0c7aff1ec2245"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/joint-acceptance-20260904/evidence-hygiene.txt",
+      "git_status": "??",
+      "scope": "B1-D-joint-acceptance",
+      "size": 464,
+      "sha256": "119543e6877ec8ac126b985d46f56da52d0449949b641b33dd15dbbbb8bfd171"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/joint-acceptance-20260904/final-live-check.txt",
+      "git_status": "??",
+      "scope": "B1-D-joint-acceptance",
+      "size": 473,
+      "sha256": "7d58ac6868a20f0cc339d7cb7b702ed28c311666599f2e7c866b99f667127cf7"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/joint-acceptance-20260904/frontend-baseline.txt",
+      "git_status": "??",
+      "scope": "B1-D-joint-acceptance",
+      "size": 1132,
+      "sha256": "6fd79aeb65e82343e4221c3c50e0bc436d74cb2fd7b89362c9ca2a6ca61583a9"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/joint-acceptance-20260904/frontend-candidate-hashes.sha256",
+      "git_status": "??",
+      "scope": "B1-D-joint-acceptance",
+      "size": 923,
+      "sha256": "7954cc358b175b7763f37ebcb3b6695cb8b740e99d0728d185ece2b3c783a7d5"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/joint-acceptance-20260904/frontend-listener.txt",
+      "git_status": "??",
+      "scope": "B1-D-joint-acceptance",
+      "size": 166,
+      "sha256": "331118b9052d8cc8936f0d151331e2611531a5bcf2ce239ed63fdbb6c6489e7b"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/joint-acceptance-20260904/frontend-login-route.html",
+      "git_status": "??",
+      "scope": "B1-D-joint-acceptance",
+      "size": 1307,
+      "sha256": "212add08ffb81e2f6877116b8bc6aeae54fdd8cb865b7cfdc9b60afd8f07f3eb"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/joint-acceptance-20260904/frontend-route-status.txt",
+      "git_status": "??",
+      "scope": "B1-D-joint-acceptance",
+      "size": 46,
+      "sha256": "ce668b8d01cff7e5736179fa3c06af81c3346a5311343db0a3aed909511da2ab"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/joint-acceptance-20260904/frontend-users-route.html",
+      "git_status": "??",
+      "scope": "B1-D-joint-acceptance",
+      "size": 1307,
+      "sha256": "212add08ffb81e2f6877116b8bc6aeae54fdd8cb865b7cfdc9b60afd8f07f3eb"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/joint-acceptance-20260904/initial-smoke-shell-failure.txt",
+      "git_status": "??",
+      "scope": "B1-D-joint-acceptance",
+      "size": 95,
+      "sha256": "adcaf225c1f142626045dbf3d0e0bdd1dc8865c0e9446a9951a985a6c62ef367"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/joint-acceptance-20260904/manifest.json",
+      "git_status": "??",
+      "scope": "B1-D-joint-acceptance",
+      "size": 11782,
+      "sha256": "4e2c313b7eecd1e19e3bf2915438af3a2b39833529784419f4f28db1bfc46448"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/joint-acceptance-20260904/manifest.sha256",
+      "git_status": "??",
+      "scope": "B1-D-joint-acceptance",
+      "size": 80,
+      "sha256": "59670834228644d0d15d427630edb70be0f6749fe1a2fa7da206b565a52db8d9"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/joint-acceptance-20260904/migration-ledger.txt",
+      "git_status": "??",
+      "scope": "B1-D-joint-acceptance",
+      "size": 280,
+      "sha256": "813bc27cca79c1c3c2ab1579f1a88523b2f1aac1866d03ef73289c3c8082c433"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/joint-acceptance-20260904/named-volume-inventory.txt",
+      "git_status": "??",
+      "scope": "B1-D-joint-acceptance",
+      "size": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/joint-acceptance-20260904/process-and-url-ledger.txt",
+      "git_status": "??",
+      "scope": "B1-D-joint-acceptance",
+      "size": 230,
+      "sha256": "ecd537af98edcfb2a9b105dee2417d81b0a21fd77dbd6d85a72bb10b77a9e376"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/joint-acceptance-20260904/recovery-live-check.txt",
+      "git_status": "??",
+      "scope": "B1-D-joint-acceptance",
+      "size": 1160,
+      "sha256": "9757880f55b9150f13fc914929ecb96eabfd86b48c8258f372a70a9691fa9dfc"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/joint-acceptance-20260904/resource-ledger.txt",
+      "git_status": "??",
+      "scope": "B1-D-joint-acceptance",
+      "size": 2504,
+      "sha256": "fa5a48b0d3c04276ebaa0c9945d01817c4fc4bf878516a256eea30f9c825288e"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/joint-acceptance-20260904/setup-failures.md",
+      "git_status": "??",
+      "scope": "B1-D-joint-acceptance",
+      "size": 959,
+      "sha256": "a86b77b8c59f9572c78e5ebaf763306a5ebd2e1411d9edd67f0b73cf173054f8"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/joint-acceptance-20260904/smoke-summary.json",
+      "git_status": "??",
+      "scope": "B1-D-joint-acceptance",
+      "size": 384,
+      "sha256": "adf8bf34b3d2ffa58b15fad90b4ce373158643fdd3bc6db7d34f3889febeacda"
+    },
+    {
+      "path": "docs/superpowers/specs/2026-09-03-b1a-pure-authz-design.md",
+      "git_status": "??",
+      "scope": "B1-A",
+      "size": 2108,
+      "sha256": "898919f8808945919fa4ba8e010b10fa3b9197020365d2d9454f8c3b51195e3c"
+    },
+    {
+      "path": "docs/superpowers/specs/2026-09-03-b1b1-permission-snapshot-design.md",
+      "git_status": "??",
+      "scope": "B1-B1",
+      "size": 2708,
+      "sha256": "1376ec1377aa2d3d69a6f132fd1eef2860ac671b415fd4bca2e8bfb3a1a1e61a"
+    },
+    {
+      "path": "docs/superpowers/specs/2026-09-03-b1b2-managed-user-security-draft.md",
+      "git_status": "??",
+      "scope": "B1-B2",
+      "size": 5608,
+      "sha256": "e03c35b4b55df56ba60701378501d0875cba9be2fd6cc257e88345ccc903a703"
+    },
+    {
+      "path": "docs/superpowers/specs/2026-09-03-b1b3-gateway-owner-acl-design.md",
+      "git_status": "??",
+      "scope": "B1-B3",
+      "size": 2892,
+      "sha256": "7d848e388ab44639358ae412e28543d49e9cc6b5debc31ad45ea883ab486b371"
+    },
+    {
+      "path": "docs/superpowers/specs/2026-09-03-b1c-admin-authz-read-design.md",
+      "git_status": "??",
+      "scope": "B1-C",
+      "size": 5103,
+      "sha256": "f1514d4a2b8c9cc7be99ac39a78c3b665ed936cb83770e4f2cd6d4c7e79c2921"
+    },
+    {
+      "path": "docs/superpowers/specs/2026-09-03-b1d-admin-users-read-design.md",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 7664,
+      "sha256": "2b42fc0bae1a8e3e0a782f0bec313716b49e460cefd9ba3b3e1a8385452c0d57"
+    },
+    {
+      "path": "internal/authz/admin_display.go",
+      "git_status": "??",
+      "scope": "B1-A+B1-C",
+      "size": 1317,
+      "sha256": "91e4cdfed1318f2a5f3d2984f18048703434062259217e26e32066e9593af3e5"
+    },
+    {
+      "path": "internal/authz/catalog.go",
+      "git_status": "??",
+      "scope": "B1-A+B1-C",
+      "size": 2319,
+      "sha256": "d4360b588247d478d878e71a70b787785c6a3315a30b8bb5d8312692c6f94628"
+    },
+    {
+      "path": "internal/authz/evaluator.go",
+      "git_status": "??",
+      "scope": "B1-A+B1-C",
+      "size": 6644,
+      "sha256": "f87b9d7d733e35d17e717b5e37a845d5f91a1afb522ea916bb0e3ad4363ca21f"
+    },
+    {
+      "path": "internal/authz/evaluator_test.go",
+      "git_status": "??",
+      "scope": "B1-A+B1-C",
+      "size": 10472,
+      "sha256": "a7ccfecdf6a9ed7ea4331e61b05e20a2958aaee9da632adeaed8fffb4ab0b63d"
+    },
+    {
+      "path": "internal/dto/admin_permissions.go",
+      "git_status": "??",
+      "scope": "B1-B1+B1-C",
+      "size": 353,
+      "sha256": "98b9bef5980752b88d7ed36ae59d0cdfa1d92efb7848a27c62a3e542a5ee34ac"
+    },
+    {
+      "path": "internal/handler/admin_authz.go",
+      "git_status": "??",
+      "scope": "B1-B1+B1-C",
+      "size": 2655,
+      "sha256": "4cba7ccdc02e2d8d3e0e004bafb35114000150d6110401a7f1a1cb2e79501b62"
+    },
+    {
+      "path": "internal/handler/admin_authz_test.go",
+      "git_status": "??",
+      "scope": "B1-B1+B1-C",
+      "size": 14763,
+      "sha256": "1886dbfa33b6f9192ee091a9fb8833a9a953947cadbdb3a0ae83f47e358b4f01"
+    },
+    {
+      "path": "internal/handler/admin_user_update_decode.go",
+      "git_status": "??",
+      "scope": "B1-B2",
+      "size": 4278,
+      "sha256": "9399d7af9f120d907ffa2d508ab297ad2be7763717063a4f741a2138d92b1e07"
+    },
+    {
+      "path": "internal/handler/admin_user_update_test.go",
+      "git_status": "??",
+      "scope": "B1-B2",
+      "size": 11374,
+      "sha256": "d8a5d0f6d0967fd02d7cc56a10c7ac3c02ef1de10df44a0cddd8be257a339f6a"
+    },
+    {
+      "path": "internal/handler/admin_users_read.go",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 4262,
+      "sha256": "b40c3ad76f18e6fa61ed4c1af601d157ff460bc5c70326c7edb08c9ef7392097"
+    },
+    {
+      "path": "internal/handler/admin_users_read_performance_test.go",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 5313,
+      "sha256": "1c9d3ba48bb0f19e5d28b39afbf886f7e273a91c879b6a142df7a387e5f4b190"
+    },
+    {
+      "path": "internal/handler/admin_users_read_test.go",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 7918,
+      "sha256": "a2e931991902a79dcbce07ec04f14dc987f953c76735e9366de29097c8f2b26f"
+    },
+    {
+      "path": "internal/handler/auth_projection.go",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 1742,
+      "sha256": "14f3816c50d758b8877c772b532c8002448e096c51798e50cf2672df333ad04b"
+    },
+    {
+      "path": "internal/handler/gateway_owner_acl_test.go",
+      "git_status": "??",
+      "scope": "B1-B3",
+      "size": 13633,
+      "sha256": "0754d570db2853d6b4e842d2cd30a2fa79f09a8e0fa6a990d2cc95671a41c1e4"
+    },
+    {
+      "path": "internal/migration/admin_users_read_count.go",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 1542,
+      "sha256": "31e4d7fe5eca16feda845f5c6e1aa47c5a92228c8098102ff0eaa043afd0aba0"
+    },
+    {
+      "path": "internal/migration/permission_schema.go",
+      "git_status": "??",
+      "scope": "B1-B1+B1-C",
+      "size": 5473,
+      "sha256": "d50ec8212f5a926e3a0f14b906bd2e76d436a861f2cfb439996ad02f7345b725"
+    },
+    {
+      "path": "internal/migration/permission_schema_test.go",
+      "git_status": "??",
+      "scope": "B1-B1+B1-C",
+      "size": 9248,
+      "sha256": "1f53589b9b895487f6ba5aeff20082d7ee3b1e583062f0130deb9aaffb03b383"
+    },
+    {
+      "path": "internal/migration/sql/0003_permission_policy.down.sql",
+      "git_status": "??",
+      "scope": "B1-B1+B1-C",
+      "size": 167,
+      "sha256": "3b6432e0ed9144b85c3a95bc0b90c6150a46e9eaf80e59581c5d0c2d818d0444"
+    },
+    {
+      "path": "internal/migration/sql/0003_permission_policy.up.sql",
+      "git_status": "??",
+      "scope": "B1-B1+B1-C",
+      "size": 1401,
+      "sha256": "31c49d9bb1f171d9ea6caab49714d9de05552b8f6e9cb73f2989760efd0a015c"
+    },
+    {
+      "path": "internal/migration/sql/0004_admin_users_read_count.down.sql",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 160,
+      "sha256": "e96a7838447073004e1fcca34eea77f88bf24d37d2997e5c4837fcb87ed8db91"
+    },
+    {
+      "path": "internal/migration/sql/0004_admin_users_read_count.up.sql",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 109,
+      "sha256": "44b5caba0473162c239e6b3035e6d9067e3af0b35e998a79c827a1424621494e"
+    },
+    {
+      "path": "internal/models/managed_user_update_event_test.go",
+      "git_status": "??",
+      "scope": "B1-B2",
+      "size": 1708,
+      "sha256": "17912d1579cf105902cf6cf0f631627c75e6079f6a18fb59ce18642bb00f057f"
+    },
+    {
+      "path": "internal/models/permission_policy.go",
+      "git_status": "??",
+      "scope": "B1-B1+B1-C",
+      "size": 2212,
+      "sha256": "22d011d5c6dcc029c04fc0084f887fd7baca2aac5c21b8a04d796664d11b3c6f"
+    },
+    {
+      "path": "internal/models/permission_policy_test.go",
+      "git_status": "??",
+      "scope": "B1-B1+B1-C",
+      "size": 2229,
+      "sha256": "f9300f3a61e6a830bd7638843d7ed1870bc4d7595ad8d6ebec31f23844692144"
+    },
+    {
+      "path": "internal/service/admin_permission_read.go",
+      "git_status": "??",
+      "scope": "B1-B1+B1-C",
+      "size": 9729,
+      "sha256": "1ddb8282b7b537299d7c77cc5789dffd029e84c77bd372f897111c74c19e2225"
+    },
+    {
+      "path": "internal/service/admin_permission_read_db_test.go",
+      "git_status": "??",
+      "scope": "B1-B1+B1-C",
+      "size": 17074,
+      "sha256": "08b69be63195a847aa58314a3c8dac31d98d61375d3f42e9149f579967dc65f7"
+    },
+    {
+      "path": "internal/service/admin_permission_read_test.go",
+      "git_status": "??",
+      "scope": "B1-B1+B1-C",
+      "size": 5283,
+      "sha256": "c6cf37f34515745b5398a2a610d666b2085329ef1a63f47b13fb84c52d3f86eb"
+    },
+    {
+      "path": "internal/service/admin_users_projection.go",
+      "git_status": "??",
+      "scope": "shared-B1-integration",
+      "size": 1570,
+      "sha256": "6f04f0f38711bf7a62dc084d4f975066b22c41e6f94bfddc7181276e7ebad78b"
+    },
+    {
+      "path": "internal/service/admin_users_query.go",
+      "git_status": "??",
+      "scope": "shared-B1-integration",
+      "size": 3466,
+      "sha256": "7898587e03f3db2805a4ab526415f46a5af5f8c601467b346d5d4ae160920ac6"
+    },
+    {
+      "path": "internal/service/admin_users_read.go",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 14227,
+      "sha256": "7a20df0cb257feb393f930b0d006fc88795acbc0b9dead2784f5ae3b61d4f715"
+    },
+    {
+      "path": "internal/service/admin_users_read_db_test.go",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 16971,
+      "sha256": "ffd8cee3084967f43e13afc8269c12e81360990b70fd9967180e5c3e957dd067"
+    },
+    {
+      "path": "internal/service/admin_users_read_test.go",
+      "git_status": "??",
+      "scope": "B1-D",
+      "size": 5674,
+      "sha256": "80d90c10459fb09d1ce054bd5554295f298bf01121a96b3b13247d3ed7bf00c0"
+    },
+    {
+      "path": "internal/service/gateway_auth_failures_test.go",
+      "git_status": "??",
+      "scope": "B1-B3",
+      "size": 2365,
+      "sha256": "53f2ea8c9247733a24b6c338bcbf8e6519f410b8b29375e5f00ac0281c330540"
+    },
+    {
+      "path": "internal/service/managed_user_security_failures_test.go",
+      "git_status": "??",
+      "scope": "B1-B2",
+      "size": 8728,
+      "sha256": "0b505ffaf3452c3067fe70ce464fbc7df176e79935f29b95565e972f67176815"
+    },
+    {
+      "path": "internal/service/managed_user_security_test.go",
+      "git_status": "??",
+      "scope": "B1-B2",
+      "size": 14114,
+      "sha256": "5169a3b4cf45098e300cb5c59987f6594c62f4a4325ca156979b25be29ceffd0"
+    },
+    {
+      "path": "internal/service/permission_snapshot.go",
+      "git_status": "??",
+      "scope": "B1-B1+B1-C",
+      "size": 5331,
+      "sha256": "76572a3c7d5c99c530afe0998b149adcc7cdb7205f4d6b5598b5ec19a0c2b014"
+    },
+    {
+      "path": "internal/service/permission_snapshot_test.go",
+      "git_status": "??",
+      "scope": "B1-B1+B1-C",
+      "size": 12580,
+      "sha256": "25700c52a6da60f648c9ebb057d7c9552c01338bdae648ddd4267feb1bd25177"
+    }
+  ],
+  "diff_check_exceptions": [
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/analyze-current-after.txt",
+      "sha256": "4fb4ae81ea1d8daf0bdcba0c95c5d104644dbdad9e8aff42dc0b51cc240c1cde",
+      "source": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/manifest.json",
+      "kind": "non-executable raw database analysis output"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/analyze-current-before.txt",
+      "sha256": "eca9e348d790e145b2c5949fab23216a62fba66366375ef58756b57b8d92e993",
+      "source": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/manifest.json",
+      "kind": "non-executable raw database analysis output"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h1-use-index-output-and-explain.txt",
+      "sha256": "5a232e0da4be4a8bd9026e30c94fa1e4feabe110379ab80d56e4206598faa25e",
+      "source": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/manifest.json",
+      "kind": "non-executable raw query and EXPLAIN output"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-ignore-active-updated-overlay.log",
+      "sha256": "35cb0d2ed5423f05c17e034c743e34bcedd210b34df0f1df54171e932cb20bef",
+      "source": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/manifest.json",
+      "kind": "non-executable raw test log"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/counts.json",
+      "sha256": "46bf21f642f8148bc7766940073a875f7a9714184779e196e4487c74af1959fe",
+      "source": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/manifest.json",
+      "kind": "non-executable raw evidence JSON"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/joint-acceptance-20260904/bootstrap.log",
+      "sha256": "67feba718b941cdd9e3a34e62e04f490deb9e6db7867a75e9f8f5be64041f50b",
+      "source": "docs/superpowers/reports/validation/joint-acceptance-20260904/manifest.json",
+      "kind": "non-executable redacted bootstrap log"
+    }
+  ]
+}

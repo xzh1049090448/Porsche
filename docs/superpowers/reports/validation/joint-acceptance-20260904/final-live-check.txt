@@ -1,0 +1,9 @@
+Final read-only live check (2026-09-04)
+=======================================
+
+MySQL exact ID/name/label: matched; running=true; autoremove=true
+Redis exact ID/name/label: matched; running=true; autoremove=true
+Frontend /users: HTTP 200
+Backend /health: HTTP 200
+
+An unprivileged `ps` check was denied by the local sandbox. HTTP listeners and exact Docker identities provide the retained-environment liveness evidence; no resource was restarted or changed by this check.

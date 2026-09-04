@@ -1,0 +1,29 @@
+SECURITY_REPORT
+Scope: B1-B1 MySQL permission-policy persistence and read-only snapshot loader only.
+
+CRITICAL: None.
+HIGH: None.
+MEDIUM: None.
+LOW: None.
+
+Verified security properties:
+- internal/service/permission_snapshot.go:55-139 accepts only a root *sql.DB-backed GORM handle, owns READ COMMITTED, locks users FOR SHARE, fail-closes invalid actor/policy or any DB/context/commit error with nil snapshot.
+- internal/service/permission_snapshot.go:78-127 rejects deleted/invalid heads, orphan/history fallback, count/version/catalog/enums and evaluator-invalid overrides; only permitted stable integer codes reach authz.NewEvaluator.
+- internal/migration/runner.go:99-169 adds immutable 0003, validates schema before recording and on rerun, and keeps VerifyApplied before schema verification.
+- internal/migration/permission_schema.go:25-115 rejects table shape/index/FK/engine drift, unsigned columns, cross-schema/composite/cascade foreign keys.
+- No B1-B1 runtime reference was found in internal/handler, internal/router, or internal/dto; the loader is not connected to an HTTP/write surface.
+
+Fresh command evidence:
+- GOCACHE=/private/tmp/porsche-go-build-cache go build ./... => exit 0
+- fixture-backed GOCACHE=/private/tmp/porsche-go-build-cache go test -json -p 1 ./... -count=1 => exit 0; test_pass=456, test_fail=0, test_skip=0, package_pass=15, package_fail=0, package_skip=4.
+- GOCACHE=/private/tmp/porsche-go-build-cache go vet ./... => exit 0.
+- git diff --check => exit 0; jq empty feature_list.json => exit 0.
+
+Independent adversarial probe:
+- Source: /private/tmp/porsche-b1b1-independent-probe/permission_snapshot_probe_test.go
+- Overlay: /private/tmp/porsche-b1b1-independent-probe/overlay.json
+- Command: fixture-backed GOCACHE=/private/tmp/porsche-go-build-cache go test -vet=off -overlay /private/tmp/porsche-b1b1-independent-probe/overlay.json ./internal/service -run '^TestIndependentReaderShareLockBlocksWriterAndRefreshesVersion$' -count=1
+- Output: ok github.com/porsche/ai-gateway-go/internal/service 1.362s
+- Result: while the reader had already loaded rules and was held before commit, an independent root pool's users FOR UPDATE writer did not complete for 250ms. After reader commit, the reader returned v1 allow, the writer committed v2 deny, and a subsequent load observed v2 deny.
+
+No production target, project file, migration execution against a shared fixture database, dependency installation, git write, container stop, or container removal was performed by this verifier.

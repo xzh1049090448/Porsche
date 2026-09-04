@@ -1,0 +1,19 @@
+Joint acceptance listener recovery check (2026-09-04 12:21 CST)
+================================================================
+
+Trigger: an independent caller reported connection refused for the retained FE and BE URLs.
+
+Identity and state check:
+- MySQL exact ID/name/task label/image/loopback ports/tmpfs/AutoRemove matched; running=true.
+- Redis exact ID/name/task label/image/loopback ports/tmpfs/AutoRemove matched; running=true.
+- Backend original PID 22213 listens on 127.0.0.1:18080; persistent exec session 37608 remains open.
+- Frontend original PID 22388; persistent exec session 23561 remains open.
+
+Read-only verification:
+- Backend /health: HTTP 200.
+- Frontend /users: HTTP 200.
+- Both persistent sessions accepted a non-writing poll and remained active.
+
+One attempted second backend start completed initialization but exited safely when bind returned `address already in use`; the existing PID was already listening. No second instance remained, and no database reset, migration, seed, code change, container replacement, or cleanup occurred.
+
+Current state: READY_FOR_INDEPENDENT_RECHECK; original resources and listener sessions retained.

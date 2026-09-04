@@ -138,7 +138,7 @@ func TestAdminUsersHTTPHierarchy(t *testing.T) {
 	for _, target := range []*models.User{&peer, &root} {
 		req := authJSONRequest(http.MethodGet, "/admin/users/"+strconv.FormatInt(target.Guid, 10), "")
 		req.Header.Set("Authorization", "Bearer "+adminAccess)
-		if rec := serveAuthRequest(engine, req); rec.Code != http.StatusForbidden {
+		if rec := serveAuthRequest(engine, req); rec.Code != http.StatusNotFound {
 			t.Fatalf("admin accessed target role=%v: status=%d body=%s", target.Role, rec.Code, rec.Body.String())
 		}
 	}

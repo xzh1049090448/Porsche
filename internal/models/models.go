@@ -206,15 +206,16 @@ func ParseLoginMethod(value string) (LoginMethod, bool) {
 type AuthAuditEventType int
 
 const (
-	AuthAuditEventRegistered       AuthAuditEventType = 1
-	AuthAuditEventLoginSucceeded   AuthAuditEventType = 2
-	AuthAuditEventRefreshSucceeded AuthAuditEventType = 3
-	AuthAuditEventReplayRevoked    AuthAuditEventType = 4
-	AuthAuditEventLoggedOut        AuthAuditEventType = 5
-	AuthAuditEventSessionRevoked   AuthAuditEventType = 6
-	AuthAuditEventUserDisabled     AuthAuditEventType = 7
-	AuthAuditEventUserDeleted      AuthAuditEventType = 8
-	AuthAuditEventPasswordChanged  AuthAuditEventType = 9
+	AuthAuditEventRegistered         AuthAuditEventType = 1
+	AuthAuditEventLoginSucceeded     AuthAuditEventType = 2
+	AuthAuditEventRefreshSucceeded   AuthAuditEventType = 3
+	AuthAuditEventReplayRevoked      AuthAuditEventType = 4
+	AuthAuditEventLoggedOut          AuthAuditEventType = 5
+	AuthAuditEventSessionRevoked     AuthAuditEventType = 6
+	AuthAuditEventUserDisabled       AuthAuditEventType = 7
+	AuthAuditEventUserDeleted        AuthAuditEventType = 8
+	AuthAuditEventPasswordChanged    AuthAuditEventType = 9
+	AuthAuditEventManagedUserUpdated AuthAuditEventType = 10
 )
 
 func (e AuthAuditEventType) String() string {
@@ -237,6 +238,8 @@ func (e AuthAuditEventType) String() string {
 		return "user_deleted"
 	case AuthAuditEventPasswordChanged:
 		return "password_changed"
+	case AuthAuditEventManagedUserUpdated:
+		return "managed_user_updated"
 	default:
 		return "unknown"
 	}
@@ -264,6 +267,8 @@ func ParseAuthAuditEventType(value string) (AuthAuditEventType, bool) {
 		return AuthAuditEventUserDeleted, true
 	case "password_changed":
 		return AuthAuditEventPasswordChanged, true
+	case "managed_user_updated":
+		return AuthAuditEventManagedUserUpdated, true
 	default:
 		return 0, false
 	}

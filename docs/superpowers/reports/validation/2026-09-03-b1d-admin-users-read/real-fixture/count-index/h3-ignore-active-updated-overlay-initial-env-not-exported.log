@@ -1,0 +1,5 @@
+=== RUN   TestH3IgnoreActiveUpdatedReadOnlyExperiment
+    admin_users_read_test.go:104: requires isolated TEST_DATABASE_URL MySQL fixture
+--- SKIP: TestH3IgnoreActiveUpdatedReadOnlyExperiment (0.00s)
+PASS
+ok  	github.com/porsche/ai-gateway-go/internal/service	0.960s

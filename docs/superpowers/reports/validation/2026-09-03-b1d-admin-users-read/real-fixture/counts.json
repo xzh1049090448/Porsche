@@ -1,0 +1,30 @@
+{
+  "focused_service": {"terminal_pass": 46, "leaf_pass": 42, "skip": 0, "fail": 0},
+  "focused_handler": {"terminal_pass": 17, "leaf_pass": 8, "skip": 0, "fail": 0},
+  "race_service": {"terminal_pass": 46, "leaf_pass": 42, "skip": 0, "fail": 0},
+  "race_handler": {"terminal_pass": 17, "leaf_pass": 8, "skip": 0, "fail": 0},
+  "fresh_serial_full": {
+    "terminal_pass": 691,
+    "terminal_skip": 1,
+    "terminal_fail": 0,
+    "leaf_pass": 631,
+    "leaf_skip": 1,
+    "leaf_fail": 0,
+    "package_pass": 15,
+    "package_no_test_skip": 4,
+    "package_fail": 0
+  },
+  "stale_404_contract_focused": {"terminal_pass": 6, "leaf_pass": 5, "skip": 0, "fail": 0},
+  "performance": {
+    "synthetic_users": 100000,
+    "concurrency": 10,
+    "requests_per_worker": 20,
+    "measured_requests": 200,
+    "page_size": 20,
+    "first_application_read_ms": 96.890,
+    "warm_p95_ms": 340.023,
+    "threshold_ms": 500,
+    "true_disk_cold": "NOT_RUN"
+  }
+}
+

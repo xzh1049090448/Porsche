@@ -1,0 +1,4 @@
+
+2026/09/04 12:03:11 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/db/db.go:46
+[0m[33m[1.226ms] [34;1m[rows:1][0m SELECT VERSION()
+Root bootstrap created

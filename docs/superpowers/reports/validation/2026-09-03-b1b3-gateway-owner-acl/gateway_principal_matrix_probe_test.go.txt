@@ -1,0 +1,38 @@
+package service
+
+import (
+    "testing"
+
+    "github.com/porsche/ai-gateway-go/internal/models"
+)
+
+func TestIndependentGatewayPrincipalTwoACLMatrix(t *testing.T) {
+    cases := []struct {
+        name  string
+        key   models.JSONSlice
+        owner models.JSONSlice
+        model string
+        want  bool
+    }{
+        {"both-unrestricted", nil, nil, "model-a", true},
+        {"key-restricted-allow", models.JSONSlice{"model-a"}, nil, "model-a", true},
+        {"key-restricted-deny", models.JSONSlice{"model-a"}, nil, "model-b", false},
+        {"owner-restricted-allow", nil, models.JSONSlice{"model-a"}, "model-a", true},
+        {"owner-restricted-deny", nil, models.JSONSlice{"model-a"}, "model-b", false},
+        {"both-allow", models.JSONSlice{"model-a"}, models.JSONSlice{"model-a"}, "model-a", true},
+        {"non-overlap", models.JSONSlice{"model-a"}, models.JSONSlice{"model-b"}, "model-a", false},
+        {"empty-model", nil, nil, "", false},
+    }
+    for _, tc := range cases {
+        t.Run(tc.name, func(t *testing.T) {
+            p := &GatewayTokenPrincipal{valid: true, keyAllowedModels: tc.key, ownerAllowedModels: tc.owner}
+            if got := p.AllowsModel(tc.model); got != tc.want {
+                t.Fatalf("AllowsModel(%q)=%v, want %v", tc.model, got, tc.want)
+            }
+        })
+    }
+    var nilPrincipal *GatewayTokenPrincipal
+    if nilPrincipal.AllowsModel("model-a") {
+        t.Fatal("nil principal authorized")
+    }
+}

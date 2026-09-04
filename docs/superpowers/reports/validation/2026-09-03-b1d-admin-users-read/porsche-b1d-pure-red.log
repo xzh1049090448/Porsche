@@ -1,0 +1,14 @@
+# github.com/porsche/ai-gateway-go/internal/service [github.com/porsche/ai-gateway-go/internal/service.test]
+internal/service/admin_users_read_test.go:12:42: undefined: ParseAdminUsersReadQuery
+internal/service/admin_users_read_test.go:14:9: undefined: ParseAdminUsersReadQuery
+internal/service/admin_users_read_test.go:16:8: undefined: ParseAdminUsersReadQuery
+internal/service/admin_users_read_test.go:18:8: undefined: ParseAdminUsersReadQuery
+internal/service/admin_users_read_test.go:20:69: undefined: ParseAdminUsersReadQuery
+internal/service/admin_users_read_test.go:21:6: undefined: ParseAdminUsersReadQuery
+internal/service/admin_users_read_test.go:25:178: undefined: models.PlanTypeFree
+internal/service/admin_users_read_test.go:26:9: undefined: ProjectUserRead
+internal/service/admin_users_read_test.go:29:24: undefined: ProjectUserRead
+internal/service/admin_users_read_test.go:30:25: undefined: ProjectUserRead
+internal/service/admin_users_read_test.go:30:25: too many errors
+FAIL	github.com/porsche/ai-gateway-go/internal/service [build failed]
+FAIL

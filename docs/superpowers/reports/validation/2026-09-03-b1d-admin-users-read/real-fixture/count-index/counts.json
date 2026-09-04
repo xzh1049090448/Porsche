@@ -1,0 +1,181 @@
+{
+  "migration_focused": {
+    "terminal_pass": 20,
+    "leaf_pass": 18,
+    "skip": 0,
+    "fail": 0,
+    "package_pass": 1
+  },
+  "focused_service": {
+    "terminal_pass": 46,
+    "leaf_pass": 42,
+    "skip": 0,
+    "fail": 0,
+    "package_pass": 1
+  },
+  "focused_handler": {
+    "terminal_pass": 17,
+    "leaf_pass": 8,
+    "skip": 0,
+    "fail": 0,
+    "package_pass": 1
+  },
+  "race_service": {
+    "terminal_pass": 46,
+    "leaf_pass": 42,
+    "skip": 0,
+    "fail": 0,
+    "package_pass": 1
+  },
+  "race_handler": {
+    "terminal_pass": 17,
+    "leaf_pass": 8,
+    "skip": 0,
+    "fail": 0,
+    "package_pass": 1
+  },
+  "fresh_serial_full": {
+    "terminal_pass": 692,
+    "leaf_pass": 632,
+    "test_skip": 1,
+    "fail": 0,
+    "package_pass": 15,
+    "package_no_test_skip": 4
+  },
+  "performance_run_1": {
+    "first_application_read_ms": 90.669,
+    "warm_p95_ms": 470.646,
+    "threshold_ms": 500,
+    "numeric_result": "PASS",
+    "optimizer_result": "FAIL_OLD_INDEX_SELECTED"
+  },
+  "analyze_current_fixture": {
+    "result": "OK",
+    "wall_seconds": 0.1,
+    "matching_users": 100000,
+    "total_users": 100001,
+    "chosen_count_index_after": "idx_users_active_updated",
+    "count_rows_scanned_after": 100001,
+    "count_actual_ms_after": 148,
+    "page_actual_ms_after": 0.054
+  },
+  "read_only_hint_experiment": {
+    "outputs_equal": true,
+    "total": 100000,
+    "page_items": 20,
+    "b0": {
+      "access": "idx_users_active_updated",
+      "rows_read": 100001,
+      "rows_output": 100000,
+      "actual_ms": 112
+    },
+    "h1_use_index": {
+      "access": "table_scan",
+      "rows_read": 100001,
+      "rows_output": 100000,
+      "actual_ms": 37.9,
+      "selected_new_index": false
+    },
+    "h2_force_index": {
+      "access": "idx_users_admin_read_count",
+      "rows_output": 100000,
+      "actual_ms": 184,
+      "selected_new_index": true
+    },
+    "paged_access": "uk_users_guid",
+    "conclusion": "QUERY_AND_INDEX_REDESIGN_REQUIRED"
+  },
+  "h3_ignore_active_updated": {
+    "predicate_source": "usersReadWhere",
+    "arguments": "copied_from_same_result",
+    "outputs_equal": true,
+    "total": 100000,
+    "page_items": 20,
+    "page_access": "uk_users_guid",
+    "b0_explain": {
+      "access": "idx_users_active_updated",
+      "rows_read": 100001,
+      "rows_output": 100000,
+      "actual_ms": 77.2
+    },
+    "h3_explain": {
+      "access": "PRIMARY",
+      "rows_read": 100001,
+      "rows_output": 100000,
+      "actual_ms": 30.5
+    },
+    "b0_wall_ms_7": {
+      "min": 65.115,
+      "median": 67.241,
+      "mean": 68.572,
+      "max": 75.007
+    },
+    "h3_wall_ms_7": {
+      "min": 23.317,
+      "median": 24.042,
+      "mean": 26.938,
+      "max": 33.421
+    },
+    "result": "PROMISING_READ_ONLY_PENDING_QUERY_REVIEW_AND_FRESH_HTTP_PERFORMANCE"
+  },
+  "performance_runs_2_and_3": "NOT_RUN_AFTER_ANALYZE_STILL_SELECTED_OLD_INDEX",
+  "disk_cold": "NOT_RUN",
+  "h3_implementation": {
+    "focused_service": {
+      "terminal_pass": 46,
+      "leaf_pass": 42,
+      "fail": 0,
+      "skip": 0
+    },
+    "focused_handler": {
+      "terminal_pass": 18,
+      "leaf_pass": 9,
+      "fail": 0,
+      "skip": 1
+    },
+    "race_service": {
+      "terminal_pass": 46,
+      "leaf_pass": 42,
+      "fail": 0,
+      "skip": 0
+    },
+    "race_handler": {
+      "terminal_pass": 18,
+      "leaf_pass": 9,
+      "fail": 0,
+      "skip": 1
+    },
+    "fresh_full": {
+      "terminal_pass": 693,
+      "leaf_pass": 633,
+      "fail": 0,
+      "test_skip": 1,
+      "package_pass": 15,
+      "package_no_test_skip": 4
+    },
+    "performance": [
+      {
+        "run": 1,
+        "analyze_ms": 4.652,
+        "first_ms": 35.218,
+        "warm_p95_ms": 77.817,
+        "result": "PASS"
+      },
+      {
+        "run": 2,
+        "analyze_ms": 4.48,
+        "first_ms": 35.101,
+        "warm_p95_ms": 75.512,
+        "result": "PASS"
+      },
+      {
+        "run": 3,
+        "analyze_ms": 4.652,
+        "first_ms": 36.317,
+        "warm_p95_ms": 74.71,
+        "result": "PASS"
+      }
+    ],
+    "writer_verdict": "PASS_PENDING_INDEPENDENT_QA_AND_EXACT_CLEANUP"
+  }
+}

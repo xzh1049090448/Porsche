@@ -24,6 +24,18 @@ var authCoreUp []byte
 //go:embed sql/0002_auth_core.down.sql
 var authCoreDown []byte
 
+//go:embed sql/0003_permission_policy.up.sql
+var permissionPolicyUp []byte
+
+//go:embed sql/0003_permission_policy.down.sql
+var permissionPolicyDown []byte
+
+//go:embed sql/0004_admin_users_read_count.up.sql
+var adminUsersReadCountUp []byte
+
+//go:embed sql/0004_admin_users_read_count.down.sql
+var adminUsersReadCountDown []byte
+
 // Migration is an immutable, embedded schema version.
 type Migration struct {
 	Version string
@@ -42,6 +54,8 @@ func All() ([]Migration, error) {
 	migrations := []Migration{
 		{Version: "0001", UpSQL: initialSchemaUp, DownSQL: initialSchemaDown},
 		{Version: "0002", UpSQL: authCoreUp, DownSQL: authCoreDown},
+		{Version: "0003", UpSQL: permissionPolicyUp, DownSQL: permissionPolicyDown},
+		{Version: "0004", UpSQL: adminUsersReadCountUp, DownSQL: adminUsersReadCountDown},
 	}
 	sort.Slice(migrations, func(i, j int) bool { return migrations[i].Version < migrations[j].Version })
 	return migrations, nil
@@ -100,11 +114,31 @@ func Up(ctx context.Context, db *gorm.DB, nextGUID func() int64, nowMillis func(
 				if applied.Checksum != checksum {
 					return fmt.Errorf("migration %s checksum mismatch", migration.Version)
 				}
+				if migration.Version == "0003" {
+					if err := VerifyPermissionSchema(ctx, conn); err != nil {
+						return err
+					}
+				}
+				if migration.Version == "0004" {
+					if err := VerifyAdminUsersReadCountIndex(ctx, conn); err != nil {
+						return err
+					}
+				}
 				continue
 			}
 			for _, statement := range splitStatements(string(migration.UpSQL)) {
 				if err := conn.Exec(statement).Error; err != nil {
 					return fmt.Errorf("apply migration %s: %w", migration.Version, err)
+				}
+			}
+			if migration.Version == "0003" {
+				if err := VerifyPermissionSchema(ctx, conn); err != nil {
+					return err
+				}
+			}
+			if migration.Version == "0004" {
+				if err := VerifyAdminUsersReadCountIndex(ctx, conn); err != nil {
+					return err
 				}
 			}
 			now := nowMillis()
@@ -146,7 +180,13 @@ func Verify(ctx context.Context, db *gorm.DB) error {
 	if err != nil {
 		return err
 	}
-	return VerifyApplied(migrations, status)
+	if err := VerifyApplied(migrations, status); err != nil {
+		return err
+	}
+	if err := VerifyPermissionSchema(ctx, db); err != nil {
+		return err
+	}
+	return VerifyAdminUsersReadCountIndex(ctx, db)
 }
 
 // VerifyApplied is the side-effect-free portion of Verify, kept separate so
