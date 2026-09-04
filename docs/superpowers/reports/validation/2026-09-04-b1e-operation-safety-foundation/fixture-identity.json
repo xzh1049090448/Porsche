@@ -108,6 +108,21 @@
       "name": "porsche_b1e_specrace_c71f_test",
       "purpose": "fresh post-SPEC Action race gate",
       "retained_until_container_stop": true
+    },
+    {
+      "name": "porsche_b1e_thirdqa_c71f_test",
+      "purpose": "third independent QA migration and real service verification",
+      "retained_until_container_stop": true
+    },
+    {
+      "name": "porsche_b1e_thirdqa_serial_c71f_test",
+      "purpose": "third independent QA fresh serial full gate",
+      "retained_until_container_stop": true
+    },
+    {
+      "name": "porsche_b1e_thirdqa_race_c71f_test",
+      "purpose": "third independent QA fresh Action race gate",
+      "retained_until_container_stop": true
     }
   ],
   "named_volumes": 0,
@@ -126,8 +141,8 @@
     "regular_file_mode": "0600",
     "nonconforming_directories": 0,
     "nonconforming_regular_files": 0,
-    "directories": 515,
-    "regular_files": 5835,
+    "directories": 772,
+    "regular_files": 9832,
     "non_0700_directories": 0,
     "non_0600_regular_files": 0
   },
@@ -144,5 +159,26 @@
     "test_commit": "479915c6a2c224bfd1c25ab7054503e19bc05663",
     "ten_point_execute_fault_matrix": "PASS",
     "retained_alive_for_fresh_qa": true
+  },
+  "third_independent_qa": {
+    "verdict": "QA_PASS",
+    "signed_result_sha256": "5938c0be63d7739f227320f7b1880b165d4889bc3cb9dcc97b121228f4a9783a",
+    "reviewed_head": "2408ee3ace6f1a2ff07645653aed354a0ca245fa",
+    "retained_alive": true,
+    "directories_0700": 772,
+    "regular_files_0600": 9832,
+    "symlinks": 0,
+    "redis_logical_databases": [
+      10,
+      7,
+      13
+    ],
+    "redis_dbsize_before_run": {
+      "10": 0,
+      "7": 0,
+      "13": 0
+    },
+    "redis_flush_commands": 0,
+    "redis_scope_note": "All 16 logical DBs have historical-use evidence. QA reused empty DB10/7/13 without FLUSH and used fresh unique random or canonical identities; these databases are not claimed as never-used."
   }
 }
