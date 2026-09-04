@@ -1,11 +1,26 @@
 package migration
 
 import (
+	"context"
 	"crypto/sha256"
+	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
 )
+
+func nullString(value string) sql.NullString {
+	return sql.NullString{String: value, Valid: true}
+}
+
+func cloneAdminOperationTableMetadata(value adminOperationTableMetadata) adminOperationTableMetadata {
+	value.columns = append([]adminOperationColumnMetadata(nil), value.columns...)
+	value.indexes = append([]adminOperationIndexMetadata(nil), value.indexes...)
+	value.foreignKeys = append([]adminOperationForeignKeyMetadata(nil), value.foreignKeys...)
+	value.checks = append([]string(nil), value.checks...)
+	return value
+}
 
 func TestAdminOperationSafetyMigrationContract(t *testing.T) {
 	migrations, err := All()
@@ -48,11 +63,107 @@ func TestAdminOperationSafetyMigrationContract(t *testing.T) {
 			t.Errorf("0005 contains forbidden %q", forbidden)
 		}
 	}
+	for _, forbidden := range []string{
+		"fk_admin_action_verifications_created_by",
+		"fk_admin_action_verifications_updated_by",
+		"fk_admin_operations_created_by",
+		"fk_admin_operations_updated_by",
+	} {
+		if strings.Contains(up, forbidden) {
+			t.Errorf("0005 contains non-contract audit FK %q", forbidden)
+		}
+	}
+	for _, fragment := range []string{
+		"consumed_at is null or is_deleted = 1",
+		"state = 5 and is_deleted = 1",
+		"state in (1, 2, 3, 4) and is_deleted = 0",
+	} {
+		if !strings.Contains(up, fragment) {
+			t.Errorf("0005 missing lifecycle coherence %q", fragment)
+		}
+	}
 
 	down := strings.ToLower(strings.TrimSpace(string(migrations[4].DownSQL)))
 	wantDown := "drop table if exists admin_operations;\ndrop table if exists admin_action_verifications;"
 	if down != wantDown {
 		t.Fatalf("0005 down = %q, want exact dependency-safe rollback %q", down, wantDown)
+	}
+}
+
+func TestAdminOperationSafetyMetadataComparisonIsExact(t *testing.T) {
+	want := adminOperationTableContract{
+		name: "sample",
+		columns: []adminOperationColumnContract{
+			{name: "id", columnType: "bigint", nullable: "NO", extra: "auto_increment"},
+			{name: "is_deleted", columnType: "int", nullable: "NO", defaultVal: nullString("0")},
+		},
+		indexes: []adminOperationIndexContract{
+			{name: "PRIMARY", columns: []string{"id"}, unique: true},
+			{name: "idx_sample", columns: []string{"is_deleted", "id"}, unique: false},
+		},
+		foreignKeys: []adminOperationForeignKeyContract{
+			{name: "fk_sample", column: "id", targetTable: "users", targetColumn: "id"},
+		},
+		checks: []string{"chk_sample"},
+	}
+	valid := adminOperationTableMetadata{
+		engine: "InnoDB", collation: "utf8mb4_unicode_ci",
+		columns: []adminOperationColumnMetadata{
+			{name: "id", columnType: "bigint", nullable: "NO", extra: "auto_increment"},
+			{name: "is_deleted", columnType: "int", nullable: "NO", defaultVal: nullString("0")},
+		},
+		indexes: []adminOperationIndexMetadata{
+			{name: "idx_sample", column: "is_deleted", sequence: 1, nonUnique: 1},
+			{name: "idx_sample", column: "id", sequence: 2, nonUnique: 1},
+			{name: "PRIMARY", column: "id", sequence: 1, nonUnique: 0},
+		},
+		foreignKeys: []adminOperationForeignKeyMetadata{
+			{name: "fk_sample", column: "id", ordinal: 1, targetSchema: "fixture", targetTable: "users", targetColumn: "id", deleteRule: "RESTRICT", updateRule: "NO ACTION"},
+		},
+		checks: []string{"chk_sample"},
+	}
+	if !matchesAdminOperationTableContract(want, valid, "fixture") {
+		t.Fatal("exact metadata rejected")
+	}
+
+	mutations := []struct {
+		name string
+		edit func(*adminOperationTableMetadata)
+	}{
+		{"missing_index", func(got *adminOperationTableMetadata) { got.indexes = got.indexes[:1] }},
+		{"extra_index", func(got *adminOperationTableMetadata) {
+			got.indexes = append(got.indexes, adminOperationIndexMetadata{name: "extra", column: "id", sequence: 1, nonUnique: 1})
+		}},
+		{"wrong_index_order", func(got *adminOperationTableMetadata) { got.indexes[0].sequence, got.indexes[1].sequence = 2, 1 }},
+		{"duplicate_index_sequence", func(got *adminOperationTableMetadata) { got.indexes = append(got.indexes, got.indexes[0]) }},
+		{"missing_fk", func(got *adminOperationTableMetadata) { got.foreignKeys = nil }},
+		{"extra_fk", func(got *adminOperationTableMetadata) {
+			got.foreignKeys = append(got.foreignKeys, adminOperationForeignKeyMetadata{name: "extra"})
+		}},
+		{"wrong_fk_rule", func(got *adminOperationTableMetadata) { got.foreignKeys[0].deleteRule = "CASCADE" }},
+		{"duplicate_fk", func(got *adminOperationTableMetadata) { got.foreignKeys = append(got.foreignKeys, got.foreignKeys[0]) }},
+	}
+	for _, tc := range mutations {
+		t.Run(tc.name, func(t *testing.T) {
+			got := cloneAdminOperationTableMetadata(valid)
+			tc.edit(&got)
+			if matchesAdminOperationTableContract(want, got, "fixture") {
+				t.Fatal("schema drift accepted")
+			}
+		})
+	}
+}
+
+func TestAdminOperationSafetyVerifierErrorsAreFailClosedAndRedacted(t *testing.T) {
+	err := VerifyAdminOperationSafetySchema(context.Background(), nil)
+	if !errors.Is(err, ErrAdminOperationSafetySchema) {
+		t.Fatalf("nil database error = %v", err)
+	}
+	if err.Error() != "admin operation safety schema mismatch or unavailable" {
+		t.Fatalf("verifier exposed variable diagnostics: %q", err)
+	}
+	if matchesAdminOperationTableContract(adminOperationTableContract{}, adminOperationTableMetadata{}, "private_schema") {
+		t.Fatal("unavailable metadata accepted")
 	}
 }
 

@@ -23,8 +23,6 @@ CREATE TABLE IF NOT EXISTS admin_action_verifications (
   KEY idx_admin_action_verifications_expiry (is_deleted, expires_at),
   CONSTRAINT fk_admin_action_verifications_actor FOREIGN KEY (actor_user_id) REFERENCES users(id),
   CONSTRAINT fk_admin_action_verifications_session FOREIGN KEY (session_id) REFERENCES user_sessions(id),
-  CONSTRAINT fk_admin_action_verifications_created_by FOREIGN KEY (created_by) REFERENCES users(id),
-  CONSTRAINT fk_admin_action_verifications_updated_by FOREIGN KEY (updated_by) REFERENCES users(id),
   CONSTRAINT chk_admin_action_verifications_target CHECK (
     (target_kind = 1 AND target_guid IS NULL) OR
     (target_kind IN (2, 3) AND target_guid IS NOT NULL)
@@ -33,7 +31,8 @@ CREATE TABLE IF NOT EXISTS admin_action_verifications (
     expires_at >= 0 AND (consumed_at IS NULL OR consumed_at >= 0)
   ),
   CONSTRAINT chk_admin_action_verifications_audit CHECK (
-    actor_auth_version >= 0 AND created_at >= 0 AND updated_at >= 0 AND is_deleted IN (0, 1)
+    actor_auth_version >= 0 AND created_at >= 0 AND updated_at >= 0 AND is_deleted IN (0, 1) AND
+    (consumed_at IS NULL OR is_deleted = 1)
   )
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -72,8 +71,6 @@ CREATE TABLE IF NOT EXISTS admin_operations (
   CONSTRAINT fk_admin_operations_actor FOREIGN KEY (actor_user_id) REFERENCES users(id),
   CONSTRAINT fk_admin_operations_session FOREIGN KEY (session_id) REFERENCES user_sessions(id),
   CONSTRAINT fk_admin_operations_verification FOREIGN KEY (verification_id) REFERENCES admin_action_verifications(id),
-  CONSTRAINT fk_admin_operations_created_by FOREIGN KEY (created_by) REFERENCES users(id),
-  CONSTRAINT fk_admin_operations_updated_by FOREIGN KEY (updated_by) REFERENCES users(id),
   CONSTRAINT chk_admin_operations_state CHECK (state IN (1, 2, 3, 4, 5)),
   CONSTRAINT chk_admin_operations_lease CHECK (
     (lease_owner_hmac IS NULL AND lease_expires_at IS NULL) OR
@@ -97,6 +94,7 @@ CREATE TABLE IF NOT EXISTS admin_operations (
     query_expires_at >= 0 AND (finished_at IS NULL OR finished_at >= 0)
   ),
   CONSTRAINT chk_admin_operations_audit CHECK (
-    actor_auth_version >= 0 AND created_at >= 0 AND updated_at >= 0 AND is_deleted IN (0, 1)
+    actor_auth_version >= 0 AND created_at >= 0 AND updated_at >= 0 AND
+    ((state = 5 AND is_deleted = 1) OR (state IN (1, 2, 3, 4) AND is_deleted = 0))
   )
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
