@@ -24,6 +24,7 @@ func TestLoadActionSecurityRootKey(t *testing.T) {
 		{name: "development declared empty", env: "development", raw: "", declared: true, wantReason: "missing"},
 		{name: "development declared invalid", env: "development", raw: "short", declared: true, wantReason: "invalid_length"},
 		{name: "test declared invalid", env: "test", raw: "not valid", declared: true, wantReason: "invalid_length"},
+		{name: "staging declared invalid", env: "staging", raw: "not valid", declared: true, wantReason: "invalid_length"},
 		{name: "production invalid encoding", env: "production", raw: valid[:42] + "+", declared: true, wantReason: "invalid_encoding"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -55,6 +56,23 @@ func TestLoadActionSecurityRootKey(t *testing.T) {
 				t.Fatal("Load() populated an omitted optional action-security key")
 			}
 		})
+	}
+}
+
+func TestActionSecurityRootKeyReuseChecksAllSecrets(t *testing.T) {
+	calls := 0
+	compare := func(_, _ []byte) int {
+		calls++
+		if calls == 1 {
+			return 1
+		}
+		return 0
+	}
+	if !actionSecurityRootKeyReused([]byte("root"), []byte("auth"), []byte("jwt"), compare) {
+		t.Fatal("actionSecurityRootKeyReused() did not retain the first match")
+	}
+	if calls != 2 {
+		t.Fatalf("constant-time comparisons = %d, want 2", calls)
 	}
 }
 
