@@ -39,11 +39,17 @@ type actionIssueSQLCall struct {
 
 type actionIssueSQLScript struct {
 	mu         sync.Mutex
+	now        int64
 	actor      models.User
 	sessions   []models.Session
 	target     *models.User
+	targetGUID int64
+	policyHead *models.PermissionPolicyHead
+	overrides  []models.PermissionOverride
 	queries    []actionIssueSQLCall
 	execs      []actionIssueSQLCall
+	failQuery  string
+	scanError  string
 	failExecAt int
 	failCommit bool
 	begins     int
@@ -58,6 +64,7 @@ type actionIssueRows struct {
 	columns []string
 	values  [][]driver.Value
 	index   int
+	nextErr error
 }
 type actionIssueResult struct{ id int64 }
 
@@ -86,22 +93,48 @@ func (c *actionIssueConn) QueryContext(_ context.Context, query string, args []d
 	c.script.mu.Lock()
 	defer c.script.mu.Unlock()
 	c.script.queries = append(c.script.queries, actionIssueSQLCall{query: query, args: copyNamedValues(args)})
+	kind := ""
 	switch {
 	case strings.Contains(query, "FROM `users`") && strings.Contains(query, "guid = ?"):
+		kind = "target"
+		if err := requireActionIssueQuery(query, args, []string{"FROM `users`", "guid = ?", "is_deleted = 0", "FOR UPDATE"}, c.script.targetGUID, int64(1)); err != nil {
+			return nil, err
+		}
+		if c.script.failQuery == kind {
+			return nil, errors.New("private target query failure")
+		}
 		columns := []string{"id", "guid", "role", "status", "is_deleted", "auth_version"}
 		if c.script.target == nil {
-			return &actionIssueRows{columns: columns}, nil
+			return scriptedActionIssueRows(kind, c.script, columns, nil), nil
 		}
 		u := c.script.target
-		return &actionIssueRows{columns: columns, values: [][]driver.Value{{u.ID, u.Guid, int64(u.Role), int64(u.Status), int64(u.IsDeleted), int64(u.AuthVersion)}}}, nil
+		return scriptedActionIssueRows(kind, c.script, columns, [][]driver.Value{{u.ID, u.Guid, int64(u.Role), int64(u.Status), int64(u.IsDeleted), int64(u.AuthVersion)}}), nil
 	case strings.Contains(query, "FROM `users`"):
+		kind = "actor"
+		if err := requireActionIssueQuery(query, args, []string{"FROM `users`", "id = ?", "FOR UPDATE"}, c.script.actor.ID, int64(1)); err != nil {
+			return nil, err
+		}
+		if c.script.failQuery == kind {
+			return nil, errors.New("private actor query failure")
+		}
 		u := &c.script.actor
 		var password driver.Value
 		if u.PasswordHash != nil {
 			password = *u.PasswordHash
 		}
-		return &actionIssueRows{columns: []string{"id", "guid", "password_hash", "role", "status", "is_deleted", "auth_version"}, values: [][]driver.Value{{u.ID, u.Guid, password, int64(u.Role), int64(u.Status), int64(u.IsDeleted), int64(u.AuthVersion)}}}, nil
+		columns := []string{"id", "guid", "password_hash", "role", "status", "is_deleted", "auth_version"}
+		return scriptedActionIssueRows(kind, c.script, columns, [][]driver.Value{{u.ID, u.Guid, password, int64(u.Role), int64(u.Status), int64(u.IsDeleted), int64(u.AuthVersion)}}), nil
 	case strings.Contains(query, "FROM `user_sessions`"):
+		kind = "session"
+		if err := requireActionIssueQuery(query, args, []string{"FROM `user_sessions`", "user_id = ?", "is_deleted = 0", "revoked_at IS NULL", "expires_at > ?", "ORDER BY id ASC", "FOR UPDATE"}, c.script.actor.ID, c.script.now); err != nil {
+			return nil, err
+		}
+		if strings.Contains(strings.ToUpper(query), " LIMIT ") {
+			return nil, errors.New("unexpected session limit")
+		}
+		if c.script.failQuery == kind {
+			return nil, errors.New("private session query failure")
+		}
 		columns := []string{"id", "guid", "sid", "user_id", "session_version", "is_deleted", "revoked_at", "expires_at"}
 		values := make([][]driver.Value, 0, len(c.script.sessions))
 		for i := range c.script.sessions {
@@ -112,14 +145,73 @@ func (c *actionIssueConn) QueryContext(_ context.Context, query string, args []d
 			}
 			values = append(values, []driver.Value{s.ID, s.Guid, s.SID, s.UserID, int64(s.SessionVersion), int64(s.IsDeleted), revoked, s.ExpiresAt})
 		}
-		return &actionIssueRows{columns: columns, values: values}, nil
+		return scriptedActionIssueRows(kind, c.script, columns, values), nil
 	case strings.Contains(query, "FROM `user_permission_heads`"):
-		return &actionIssueRows{columns: []string{"id", "guid", "is_deleted", "policy_version", "catalog_version", "rule_count"}}, nil
+		kind = "policy_head"
+		if err := requireActionIssueQuery(query, args, []string{"FROM `user_permission_heads`", "user_id = ?"}, c.script.actor.ID, int64(1)); err != nil {
+			return nil, err
+		}
+		if c.script.failQuery == kind {
+			return nil, errors.New("private policy head failure")
+		}
+		columns := []string{"id", "guid", "is_deleted", "policy_version", "catalog_version", "rule_count"}
+		if c.script.policyHead == nil {
+			return scriptedActionIssueRows(kind, c.script, columns, nil), nil
+		}
+		h := c.script.policyHead
+		return scriptedActionIssueRows(kind, c.script, columns, [][]driver.Value{{h.ID, h.Guid, int64(h.IsDeleted), h.PolicyVersion, int64(h.CatalogVersion), int64(h.RuleCount)}}), nil
 	case strings.Contains(query, "FROM `user_permission_overrides`"):
-		return &actionIssueRows{columns: []string{"id"}}, nil
+		kind = "policy_rules"
+		if len(args) < 2 || fmt.Sprint(args[0].Value) != fmt.Sprint(c.script.actor.ID) {
+			return nil, errors.New("unexpected policy rule vars")
+		}
+		if c.script.failQuery == kind {
+			return nil, errors.New("private policy rules failure")
+		}
+		if c.script.policyHead == nil {
+			if err := requireActionIssueQuery(query, args, []string{"FROM `user_permission_overrides`", "user_id = ?", "LIMIT ?"}, c.script.actor.ID, int64(1)); err != nil {
+				return nil, err
+			}
+			return scriptedActionIssueRows(kind, c.script, []string{"id"}, nil), nil
+		}
+		if err := requireActionIssueQuery(query, args, []string{"FROM `user_permission_overrides`", "user_id = ?", "is_deleted <> 1", "ORDER BY capability", "LIMIT ?"}, c.script.actor.ID, int64(25)); err != nil {
+			return nil, err
+		}
+		columns := []string{"id", "guid", "is_deleted", "policy_version", "capability", "effect"}
+		values := make([][]driver.Value, 0, len(c.script.overrides))
+		for i := range c.script.overrides {
+			r := &c.script.overrides[i]
+			values = append(values, []driver.Value{r.ID, r.Guid, int64(r.IsDeleted), r.PolicyVersion, int64(r.Capability), int64(r.Effect)})
+		}
+		return scriptedActionIssueRows(kind, c.script, columns, values), nil
 	default:
 		return nil, fmt.Errorf("unexpected query: %s", query)
 	}
+}
+
+func requireActionIssueQuery(query string, args []driver.NamedValue, fragments []string, expected ...any) error {
+	for _, fragment := range fragments {
+		if !strings.Contains(query, fragment) {
+			return fmt.Errorf("missing query fragment %q", fragment)
+		}
+	}
+	if len(args) != len(expected) {
+		return fmt.Errorf("query vars count %d, want %d", len(args), len(expected))
+	}
+	for i := range expected {
+		if fmt.Sprint(args[i].Value) != fmt.Sprint(expected[i]) {
+			return fmt.Errorf("query var %d = %v, want %v", i, args[i].Value, expected[i])
+		}
+	}
+	return nil
+}
+
+func scriptedActionIssueRows(kind string, script *actionIssueSQLScript, columns []string, values [][]driver.Value) *actionIssueRows {
+	rows := &actionIssueRows{columns: columns, values: values}
+	if script.scanError == kind {
+		rows.nextErr = errors.New("private row scan failure")
+	}
+	return rows
 }
 func (c *actionIssueConn) ExecContext(_ context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
 	c.script.mu.Lock()
@@ -148,6 +240,11 @@ func (tx *actionIssueTx) Rollback() error {
 func (r *actionIssueRows) Columns() []string { return r.columns }
 func (r *actionIssueRows) Close() error      { return nil }
 func (r *actionIssueRows) Next(dest []driver.Value) error {
+	if r.nextErr != nil {
+		err := r.nextErr
+		r.nextErr = nil
+		return err
+	}
 	if r.index >= len(r.values) {
 		return io.EOF
 	}
@@ -222,9 +319,33 @@ func actionIssueScriptFixture(t *testing.T, now int64) (*actionIssueSQLScript, A
 	sid := "11111111-2222-4333-8444-555555555555"
 	actor := models.User{ID: 10, AuditFields: models.AuditFields{Guid: 1001}, PasswordHash: &hash, Role: models.UserRoleRoot, Status: models.UserStatusActive, AuthVersion: 7}
 	session := models.Session{ID: 20, AuditFields: models.AuditFields{Guid: 2001}, SID: sid, UserID: actor.ID, SessionVersion: 3, ExpiresAt: now + 60_000}
-	script := &actionIssueSQLScript{actor: actor, sessions: []models.Session{session}}
+	script := &actionIssueSQLScript{now: now, actor: actor, sessions: []models.Session{session}}
 	claims := ActionActor{UserID: actor.ID, UserGUID: actor.Guid, AuthVersion: actor.AuthVersion, SessionSID: sid, SessionVersion: session.SessionVersion}
 	return script, claims, password
+}
+
+func testTargetUserDescriptor(action actionsecurity.Action) actionsecurity.Descriptor {
+	return actionsecurity.Descriptor{Action: action, Name: "test.noop", Capability: "users.delete", RequiresTicket: true, Active: true, TargetKind: actionsecurity.TargetUser, Encode: func(any) ([]byte, error) { return []byte("target-intent"), nil }}
+}
+
+func TestActionIssueScriptDriverRejectsWrongShapeAndVars(t *testing.T) {
+	script, _, _ := actionIssueScriptFixture(t, 1_800_000_000_000)
+	conn := &actionIssueConn{script: script}
+	for _, tc := range []struct {
+		name  string
+		query string
+		args  []driver.NamedValue
+	}{
+		{name: "missing actor where", query: "SELECT id FROM `users` FOR UPDATE", args: []driver.NamedValue{{Ordinal: 1, Value: script.actor.ID}, {Ordinal: 2, Value: int64(1)}}},
+		{name: "wrong actor arg", query: "SELECT id FROM `users` WHERE id = ? LIMIT ? FOR UPDATE", args: []driver.NamedValue{{Ordinal: 1, Value: int64(999)}, {Ordinal: 2, Value: int64(1)}}},
+		{name: "raw sid session where", query: "SELECT id FROM `user_sessions` WHERE sid = ? FOR UPDATE", args: []driver.NamedValue{{Ordinal: 1, Value: script.sessions[0].SID}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := conn.QueryContext(context.Background(), tc.query, tc.args); err == nil {
+				t.Fatal("script driver accepted malformed query contract")
+			}
+		})
+	}
 }
 
 func TestActionVerificationIssueContractExists(t *testing.T) {
@@ -260,7 +381,7 @@ func TestActionVerificationIssueScriptedTransactionIsOrderedSecretFreeAndImmedia
 	}
 	if strings.Contains(script.queries[1].query, "sid = ?") || !strings.Contains(script.queries[1].query, "user_id = ?") ||
 		!strings.Contains(script.queries[1].query, "is_deleted = 0") || !strings.Contains(script.queries[1].query, "revoked_at IS NULL") ||
-		!strings.Contains(script.queries[1].query, "expires_at > ?") || !strings.Contains(script.queries[1].query, "LIMIT ?") {
+		!strings.Contains(script.queries[1].query, "expires_at > ?") || strings.Contains(strings.ToUpper(script.queries[1].query), " LIMIT ") {
 		t.Fatalf("unsafe or unbounded session lookup: %s", script.queries[1].query)
 	}
 	if !strings.HasPrefix(script.execs[0].query, "UPDATE `admin_action_verifications`") || strings.HasPrefix(strings.ToUpper(strings.TrimSpace(script.execs[0].query)), "DELETE ") ||
@@ -367,14 +488,6 @@ func TestActionIdentityFreshClaimsCandidateBoundsAndLockWaitExpiry(t *testing.T)
 		{name: "duplicate sid", mutate: func(script *actionIssueSQLScript, _ *ActionActor) {
 			script.sessions = append(script.sessions, script.sessions[0])
 		}, want: ErrActionVerificationForbidden},
-		{name: "candidate overflow", mutate: func(script *actionIssueSQLScript, _ *ActionActor) {
-			for len(script.sessions) < 51 {
-				copy := script.sessions[0]
-				copy.ID = int64(100 + len(script.sessions))
-				copy.SID = fmt.Sprintf("%036d", copy.ID)
-				script.sessions = append(script.sessions, copy)
-			}
-		}, want: ErrActionVerificationUnavailable},
 		{name: "expired while waiting", mutate: func(script *actionIssueSQLScript, _ *ActionActor) { script.sessions[0].ExpiresAt = now + 1 }, clock: &actionIssueSequenceClock{values: []int64{now, now + 1}}, want: ErrActionVerificationForbidden},
 	}
 	for _, tc := range tests {
@@ -411,18 +524,138 @@ func TestActionIdentityTargetUserHiddenAndHierarchy(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			script, actor, passwordText := actionIssueScriptFixture(t, now)
 			script.target = tc.target
+			script.targetGUID = 3001
 			password := []byte(passwordText)
 			service := newTestActionVerificationService(t, openActionIssueScriptDB(t, script, nil), &actionIssueRedisClient{actionRateEvalClient: newActionRateEvalClient()}, &actionIssueClock{now: now}, &actionIssueObservingReader{password: password, data: bytes.Repeat([]byte{1}, 32)}, func() int64 { return 9004 })
 			service.resolve = func(action actionsecurity.Action) (actionsecurity.Descriptor, bool) {
 				if action != testNoopAction {
 					return actionsecurity.Descriptor{}, false
 				}
-				return actionsecurity.Descriptor{Action: action, Name: "test.noop", Capability: "users.delete", RequiresTicket: true, Active: true, TargetKind: actionsecurity.TargetUser, Encode: func(any) ([]byte, error) { return []byte("target"), nil }}, true
+				return testTargetUserDescriptor(action), true
 			}
 			targetGUID := int64(3001)
 			result, err := service.Issue(context.Background(), VerificationIssue{Action: testNoopAction, Actor: actor, TargetGUID: &targetGUID, Intent: "target", CurrentPassword: password, TrustedIP: "203.0.113.23"})
 			if result != nil || !errors.Is(err, ErrActionVerificationHidden) || len(script.execs) != 0 {
 				t.Fatalf("result/error/execs = %#v/%v/%d", result, err, len(script.execs))
+			}
+		})
+	}
+}
+
+func TestActionIdentityAllConfiguredSessionCandidatesRemainEligible(t *testing.T) {
+	const now int64 = 1_800_000_000_000
+	script, actor, passwordText := actionIssueScriptFixture(t, now)
+	match := script.sessions[0]
+	script.sessions = nil
+	for i := 0; i < 75; i++ {
+		candidate := match
+		candidate.ID = int64(100 + i)
+		candidate.Guid = int64(10_000 + i)
+		candidate.SID = fmt.Sprintf("00000000-0000-4000-8000-%012d", i)
+		script.sessions = append(script.sessions, candidate)
+	}
+	match.ID = 999
+	match.Guid = 9999
+	script.sessions = append(script.sessions, match)
+	password := []byte(passwordText)
+	service := newTestActionVerificationService(t, openActionIssueScriptDB(t, script, nil), &actionIssueRedisClient{actionRateEvalClient: newActionRateEvalClient()}, &actionIssueClock{now: now}, &actionIssueObservingReader{password: password, data: bytes.Repeat([]byte{1}, 32)}, func() int64 { return 9100 })
+	if _, err := service.Issue(context.Background(), VerificationIssue{Action: testNoopAction, Actor: actor, Intent: "many-sessions", CurrentPassword: password, TrustedIP: "203.0.113.24"}); err != nil {
+		t.Fatal(err)
+	}
+	if script.commits != 1 || len(script.execs) != 2 || strings.Contains(strings.ToUpper(script.queries[1].query), " LIMIT ") {
+		t.Fatalf("many-candidate transaction = commits:%d execs:%d query:%s", script.commits, len(script.execs), script.queries[1].query)
+	}
+}
+
+func TestActionIdentityTargetUserAllowedAndFreshPolicyAllowDeny(t *testing.T) {
+	const now int64 = 1_800_000_000_000
+	script, actor, passwordText := actionIssueScriptFixture(t, now)
+	script.actor.Role = models.UserRoleAdmin
+	target := &models.User{ID: 30, AuditFields: models.AuditFields{Guid: 3001}, Role: models.UserRoleUser, Status: models.UserStatusActive, AuthVersion: 4}
+	script.target, script.targetGUID = target, target.Guid
+	script.policyHead = &models.PermissionPolicyHead{ID: 40, AuditFields: models.AuditFields{Guid: 4001}, UserID: script.actor.ID, PolicyVersion: 2, CatalogVersion: models.PermissionCatalogVersion, RuleCount: 1}
+	script.overrides = []models.PermissionOverride{{ID: 41, AuditFields: models.AuditFields{Guid: 4101}, UserID: script.actor.ID, PolicyVersion: 2, Capability: 12, Effect: 2}}
+	db := openActionIssueScriptDB(t, script, nil)
+	client := &actionIssueRedisClient{actionRateEvalClient: newActionRateEvalClient()}
+	service := newTestActionVerificationService(t, db, client, &actionIssueClock{now: now}, bytes.NewReader(bytes.Repeat([]byte{0x31}, 64)), func() int64 { return 9200 })
+	service.resolve = func(action actionsecurity.Action) (actionsecurity.Descriptor, bool) {
+		if action != testNoopAction {
+			return actionsecurity.Descriptor{}, false
+		}
+		return testTargetUserDescriptor(action), true
+	}
+	password := []byte(passwordText)
+	result, err := service.Issue(context.Background(), VerificationIssue{Action: testNoopAction, Actor: actor, TargetGUID: &target.Guid, Intent: "allowed", CurrentPassword: password, TrustedIP: "203.0.113.25"})
+	if err != nil || result == nil {
+		t.Fatalf("allowed policy result/error = %#v/%v", result, err)
+	}
+	if len(script.execs) != 2 {
+		t.Fatalf("allowed policy writes = %d", len(script.execs))
+	}
+	insertArgs := script.execs[1].args
+	storedTarget, ok := insertArgs[11].Value.(*int64)
+	if !ok || storedTarget == nil || *storedTarget != target.Guid || len(fmt.Sprint(insertArgs[12].Value)) != 64 || len(fmt.Sprint(insertArgs[13].Value)) != 64 {
+		t.Fatalf("target/hash persistence args = %#v", insertArgs)
+	}
+
+	// A fresh policy read on the next Issue must observe deny and produce no
+	// additional mutation, even though the same service instance previously saw allow.
+	script.overrides[0].Effect = 3
+	password = []byte(passwordText)
+	result, err = service.Issue(context.Background(), VerificationIssue{Action: testNoopAction, Actor: actor, TargetGUID: &target.Guid, Intent: "denied", CurrentPassword: password, TrustedIP: "203.0.113.25"})
+	if result != nil || !errors.Is(err, ErrActionVerificationForbidden) || len(script.execs) != 2 || script.rollbacks != 1 {
+		t.Fatalf("fresh deny result/error/writes/rollbacks = %#v/%v/%d/%d", result, err, len(script.execs), script.rollbacks)
+	}
+}
+
+func TestActionIdentityQueryFailuresAreFixedRollbackAndStop(t *testing.T) {
+	const now int64 = 1_800_000_000_000
+	for _, tc := range []struct {
+		stage       string
+		target      bool
+		scan        bool
+		wantQueries int
+	}{
+		{stage: "actor", wantQueries: 1},
+		{stage: "actor", scan: true, wantQueries: 1},
+		{stage: "session", wantQueries: 2},
+		{stage: "session", scan: true, wantQueries: 2},
+		{stage: "target", target: true, wantQueries: 3},
+		{stage: "target", target: true, scan: true, wantQueries: 3},
+		{stage: "policy_head", wantQueries: 3},
+		{stage: "policy_head", scan: true, wantQueries: 3},
+		{stage: "policy_rules", wantQueries: 4},
+		{stage: "policy_rules", scan: true, wantQueries: 4},
+	} {
+		name := tc.stage
+		if tc.scan {
+			name += " scan"
+		}
+		t.Run(name, func(t *testing.T) {
+			script, actor, passwordText := actionIssueScriptFixture(t, now)
+			if tc.scan {
+				script.scanError = tc.stage
+			} else {
+				script.failQuery = tc.stage
+			}
+			var targetGUID *int64
+			password := []byte(passwordText)
+			service := newTestActionVerificationService(t, openActionIssueScriptDB(t, script, nil), &actionIssueRedisClient{actionRateEvalClient: newActionRateEvalClient()}, &actionIssueClock{now: now}, &actionIssueObservingReader{password: password, data: bytes.Repeat([]byte{1}, 32)}, func() int64 { return 9300 })
+			if tc.target {
+				target := models.User{ID: 30, AuditFields: models.AuditFields{Guid: 3001}, Role: models.UserRoleUser, Status: models.UserStatusActive, AuthVersion: 1}
+				script.target, script.targetGUID = &target, target.Guid
+				targetGUID = &target.Guid
+				service.resolve = func(action actionsecurity.Action) (actionsecurity.Descriptor, bool) {
+					return testTargetUserDescriptor(action), true
+				}
+			}
+			result, err := service.Issue(context.Background(), VerificationIssue{Action: testNoopAction, Actor: actor, TargetGUID: targetGUID, Intent: "query-failure", CurrentPassword: password, TrustedIP: "203.0.113.26"})
+			if result != nil || !errors.Is(err, ErrActionVerificationUnavailable) || err.Error() != ErrActionVerificationUnavailable.Error() ||
+				len(script.queries) != tc.wantQueries || len(script.execs) != 0 || script.begins != 1 || script.rollbacks != 1 || script.commits != 0 {
+				t.Fatalf("result/error/q/e/b/r/c = %#v/%v/%d/%d/%d/%d/%d", result, err, len(script.queries), len(script.execs), script.begins, script.rollbacks, script.commits)
+			}
+			if strings.Contains(err.Error(), actor.SessionSID) || strings.Contains(err.Error(), passwordText) {
+				t.Fatal("fixed query error leaked a secret")
 			}
 		})
 	}

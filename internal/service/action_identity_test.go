@@ -101,6 +101,9 @@ func TestActionIdentityNeverBindsRawSIDAsSQLArgument(t *testing.T) {
 	if strings.Contains(string(source), `Where("sid = ?", actor.SessionSID)`) {
 		t.Fatal("raw authenticated SID is still bound as a SQL argument")
 	}
+	if strings.Contains(string(source), ".Limit(51)") || strings.Contains(string(source), "len(candidates) > 50") {
+		t.Fatal("action identity introduced an unapproved session-count limit")
+	}
 }
 
 func TestActionSecurityConstructorRejectsPartialAndTypedNilDependencies(t *testing.T) {

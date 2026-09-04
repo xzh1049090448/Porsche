@@ -48,18 +48,14 @@ func lockActionIdentity(tx *gorm.DB, actor ActionActor, descriptor actionsecurit
 	}
 
 	// SID is a secret selector and must never be a SQL argument or query log.
-	// Lock the actor's bounded active candidate set by non-secret user ID, then
-	// select the exact SID in memory with constant-time comparisons. The normal
-	// session lifecycle caps active rows at 50; 51 candidates fail closed rather
-	// than allowing unbounded work or choosing an ambiguous match.
+	// Lock the actor's full active candidate set by non-secret user ID, then
+	// select the exact SID in memory with constant-time comparisons. The session
+	// writer's configured limit remains the single source of lifecycle policy.
 	var candidates []models.Session
 	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
 		Select("id", "guid", "sid", "user_id", "session_version", "is_deleted", "revoked_at", "expires_at").
 		Where("user_id = ? AND is_deleted = 0 AND revoked_at IS NULL AND expires_at > ?", storedActor.ID, now).
-		Order("id ASC").Limit(51).Find(&candidates).Error; err != nil {
-		return lockedActionIdentity{}, ErrActionVerificationUnavailable
-	}
-	if len(candidates) > 50 {
+		Order("id ASC").Find(&candidates).Error; err != nil {
 		return lockedActionIdentity{}, ErrActionVerificationUnavailable
 	}
 	var session models.Session
