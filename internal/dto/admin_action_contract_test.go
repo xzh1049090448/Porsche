@@ -3,10 +3,13 @@ package dto
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"reflect"
 	"slices"
+	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -323,6 +326,380 @@ func TestAdminActionFutureContractDocumentMatchesFrozenFixtures(t *testing.T) {
 	if document.Acceptance.InternalFoundationIsHTTPAcceptance || document.Acceptance.ContractCallable || document.Acceptance.ContractAccepted || document.Acceptance.Statement != "The internal foundation does not constitute HTTP acceptance." {
 		t.Fatalf("inactive contract overclaims acceptance: %+v", document.Acceptance)
 	}
+}
+
+func TestAdminActionFutureContractRawShapeRejectsSchemaMutations(t *testing.T) {
+	original := readFutureContractTree(t)
+	if err := validateFutureContractShape(original); err != nil {
+		t.Fatalf("original contract shape rejected: %v", err)
+	}
+
+	mutations := []struct {
+		name   string
+		mutate func(map[string]any)
+	}{
+		{name: "missing processing finished_at null", mutate: deleteFutureContractPath("endpoints", "query", "processing_response", "finished_at")},
+		{name: "missing processing failure_code null", mutate: deleteFutureContractPath("endpoints", "query", "processing_response", "failure_code")},
+		{name: "missing implementation handler_exists false", mutate: deleteFutureContractPath("implementation", "handler_exists")},
+		{name: "missing business generic_execute_route false", mutate: deleteFutureContractPath("endpoints", "business_posts", "generic_execute_route")},
+		{name: "missing frontend unload_recovery false", mutate: deleteFutureContractPath("frontend", "unload_recovery")},
+		{name: "missing HTTP 400 null range", mutate: deleteFutureContractPath("error_contract", "http_statuses", 0, "retry_after_seconds_range")},
+		{name: "missing HTTP 429 maximum null", mutate: deleteFutureContractPath("error_contract", "http_statuses", 7, "retry_after_seconds_range", "maximum")},
+		{name: "unknown root field", mutate: setFutureContractPath(true, "unknown")},
+		{name: "unknown nested field", mutate: setFutureContractPath("leak", "error_contract", "envelope_example", "error", "unknown")},
+		{name: "false changed to string", mutate: setFutureContractPath("false", "implementation", "handler_exists")},
+		{name: "nullable number changed to bool", mutate: setFutureContractPath(false, "endpoints", "query", "processing_response", "finished_at")},
+		{name: "required null changed to object", mutate: setFutureContractPath(map[string]any{}, "error_contract", "http_statuses", 0, "retry_after_seconds_range")},
+		{name: "nullable maximum changed to bool", mutate: setFutureContractPath(false, "error_contract", "http_statuses", 7, "retry_after_seconds_range", "maximum")},
+		{name: "string changed to number", mutate: setFutureContractPath(json.Number("404"), "status")},
+		{name: "array item changed to bool", mutate: setFutureContractPath(false, "operation_statuses", 0)},
+		{name: "array changed to empty", mutate: setFutureContractPath([]any{}, "failure_codes")},
+		{name: "object changed to empty", mutate: setFutureContractPath(map[string]any{}, "implementation")},
+	}
+
+	for _, mutation := range mutations {
+		t.Run(mutation.name, func(t *testing.T) {
+			candidate := cloneFutureContractTree(t, original)
+			mutation.mutate(candidate)
+			if err := validateFutureContractShape(candidate); err == nil {
+				t.Fatal("mutated contract shape was accepted")
+			}
+		})
+	}
+}
+
+type futureJSONKind uint8
+
+const (
+	futureJSONObject futureJSONKind = iota + 1
+	futureJSONArray
+	futureJSONString
+	futureJSONInteger
+	futureJSONBool
+	futureJSONNull
+)
+
+type futureJSONShape struct {
+	kind     futureJSONKind
+	nullable bool
+	fields   map[string]*futureJSONShape
+	items    []*futureJSONShape
+}
+
+func validateFutureContractShape(document map[string]any) error {
+	return validateFutureJSONShape(document, futureContractDocumentShape(), "$.")
+}
+
+func futureContractDocumentShape() *futureJSONShape {
+	stringList := func(length int) *futureJSONShape {
+		items := make([]*futureJSONShape, length)
+		for index := range items {
+			items[index] = futureShape(futureJSONString)
+		}
+		return futureArrayShape(items...)
+	}
+	requestHeaders := func(withTicket bool) *futureJSONShape {
+		fields := map[string]*futureJSONShape{"Idempotency-Key": futureShape(futureJSONString)}
+		if withTicket {
+			fields["X-Action-Ticket"] = futureShape(futureJSONString)
+		}
+		return futureObjectShape(fields)
+	}
+	responseHeaders := func(withRetryAfter bool) *futureJSONShape {
+		fields := map[string]*futureJSONShape{
+			"Cache-Control": futureShape(futureJSONString),
+			"X-Request-ID":  futureShape(futureJSONString),
+		}
+		if withRetryAfter {
+			fields["Retry-After"] = futureShape(futureJSONString)
+		}
+		return futureObjectShape(fields)
+	}
+	errorShape := func(withOperationRef bool) *futureJSONShape {
+		fields := map[string]*futureJSONShape{
+			"code":       futureShape(futureJSONString),
+			"message":    futureShape(futureJSONString),
+			"type":       futureShape(futureJSONString),
+			"request_id": futureShape(futureJSONString),
+		}
+		if withOperationRef {
+			fields["operation_ref"] = futureShape(futureJSONString)
+		}
+		return futureObjectShape(map[string]*futureJSONShape{"error": futureObjectShape(fields)})
+	}
+	httpStatusShape := func(withRetryHeader bool, retryRange *futureJSONShape) *futureJSONShape {
+		fields := map[string]*futureJSONShape{
+			"status":                    futureShape(futureJSONInteger),
+			"category":                  futureShape(futureJSONString),
+			"retry_after_seconds_range": retryRange,
+		}
+		if withRetryHeader {
+			fields["retry_after_header"] = futureShape(futureJSONString)
+		}
+		return futureObjectShape(fields)
+	}
+
+	nullRange := futureShape(futureJSONNull)
+	return futureObjectShape(map[string]*futureJSONShape{
+		"status":                 futureShape(futureJSONString),
+		"production_observation": futureShape(futureJSONInteger),
+		"implementation": futureObjectShape(map[string]*futureJSONShape{
+			"handler_exists":         futureShape(futureJSONBool),
+			"backend_route_exists":   futureShape(futureJSONBool),
+			"frontend_client_exists": futureShape(futureJSONBool),
+		}),
+		"endpoints": futureObjectShape(map[string]*futureJSONShape{
+			"issue": futureObjectShape(map[string]*futureJSONShape{
+				"method":           futureShape(futureJSONString),
+				"path":             futureShape(futureJSONString),
+				"request_headers":  requestHeaders(true),
+				"response_headers": responseHeaders(false),
+				"request_example": futureObjectShape(map[string]*futureJSONShape{
+					"action": futureShape(futureJSONString),
+					"intent": futureObjectShape(map[string]*futureJSONShape{
+						"target_guid":           futureShape(futureJSONString),
+						"expected_auth_version": futureShape(futureJSONInteger),
+						"reason":                futureShape(futureJSONString),
+					}),
+					"current_password": futureShape(futureJSONString),
+				}),
+				"response_status": futureShape(futureJSONInteger),
+				"response_example": futureObjectShape(map[string]*futureJSONShape{
+					"ticket":     futureShape(futureJSONString),
+					"expires_at": futureShape(futureJSONInteger),
+				}),
+				"post_replay_count": futureShape(futureJSONInteger),
+			}),
+			"business_posts": futureObjectShape(map[string]*futureJSONShape{
+				"method":                       futureShape(futureJSONString),
+				"path_rule":                    futureShape(futureJSONString),
+				"generic_execute_route":        futureShape(futureJSONBool),
+				"currently_unregistered_paths": stringList(4),
+				"request_headers":              requestHeaders(true),
+				"response_headers":             responseHeaders(false),
+				"success_semantics":            futureShape(futureJSONString),
+				"post_replay_count":            futureShape(futureJSONInteger),
+			}),
+			"query": futureObjectShape(map[string]*futureJSONShape{
+				"method":           futureShape(futureJSONString),
+				"path":             futureShape(futureJSONString),
+				"example_path":     futureShape(futureJSONString),
+				"request_headers":  requestHeaders(false),
+				"response_headers": responseHeaders(true),
+				"processing_response": futureObjectShape(map[string]*futureJSONShape{
+					"operation_ref": futureShape(futureJSONString),
+					"scope":         futureShape(futureJSONString),
+					"status":        futureShape(futureJSONString),
+					"finished_at":   futureNullableShape(futureJSONInteger),
+					"failure_code":  futureNullableShape(futureJSONString),
+				}),
+				"get_replay_after_refresh":    futureShape(futureJSONInteger),
+				"requires_exact_adapter":      futureShape(futureJSONBool),
+				"requires_original_scope_key": futureShape(futureJSONBool),
+			}),
+		}),
+		"operation_statuses": stringList(4),
+		"failure_codes":      stringList(5),
+		"error_contract": futureObjectShape(map[string]*futureJSONShape{
+			"envelope_example":       errorShape(false),
+			"commit_unknown_example": errorShape(true),
+			"required_fields":        stringList(4),
+			"fixed_message":          futureShape(futureJSONString),
+			"fixed_type":             futureShape(futureJSONString),
+			"prohibited_fields":      stringList(6),
+			"operation_ref_rule":     futureShape(futureJSONString),
+			"http_statuses": futureArrayShape(
+				httpStatusShape(false, nullRange),
+				httpStatusShape(false, futureShape(futureJSONNull)),
+				httpStatusShape(false, futureShape(futureJSONNull)),
+				httpStatusShape(false, futureShape(futureJSONNull)),
+				httpStatusShape(false, futureShape(futureJSONNull)),
+				httpStatusShape(false, futureShape(futureJSONNull)),
+				httpStatusShape(false, futureShape(futureJSONNull)),
+				httpStatusShape(true, futureObjectShape(map[string]*futureJSONShape{
+					"minimum": futureShape(futureJSONInteger),
+					"maximum": futureNullableShape(futureJSONInteger),
+				})),
+				httpStatusShape(false, futureShape(futureJSONNull)),
+			),
+		}),
+		"frontend": futureObjectShape(map[string]*futureJSONShape{
+			"memory_only":                 stringList(3),
+			"storage_prohibitions":        stringList(5),
+			"post_replay_count":           futureShape(futureJSONInteger),
+			"query_get_after_refresh_max": futureShape(futureJSONInteger),
+			"unload_recovery":             futureShape(futureJSONBool),
+		}),
+		"acceptance": futureObjectShape(map[string]*futureJSONShape{
+			"internal_foundation_is_http_acceptance": futureShape(futureJSONBool),
+			"contract_callable":                      futureShape(futureJSONBool),
+			"contract_accepted":                      futureShape(futureJSONBool),
+			"statement":                              futureShape(futureJSONString),
+		}),
+	})
+}
+
+func futureShape(kind futureJSONKind) *futureJSONShape {
+	return &futureJSONShape{kind: kind}
+}
+
+func futureNullableShape(kind futureJSONKind) *futureJSONShape {
+	return &futureJSONShape{kind: kind, nullable: true}
+}
+
+func futureObjectShape(fields map[string]*futureJSONShape) *futureJSONShape {
+	return &futureJSONShape{kind: futureJSONObject, fields: fields}
+}
+
+func futureArrayShape(items ...*futureJSONShape) *futureJSONShape {
+	return &futureJSONShape{kind: futureJSONArray, items: items}
+}
+
+func validateFutureJSONShape(value any, shape *futureJSONShape, path string) error {
+	if value == nil {
+		if shape.nullable || shape.kind == futureJSONNull {
+			return nil
+		}
+		return fmt.Errorf("%s must not be null", strings.TrimSuffix(path, "."))
+	}
+	if shape.kind == futureJSONNull {
+		return fmt.Errorf("%s must be null", strings.TrimSuffix(path, "."))
+	}
+	switch shape.kind {
+	case futureJSONObject:
+		object, ok := value.(map[string]any)
+		if !ok {
+			return fmt.Errorf("%s must be object, got %T", strings.TrimSuffix(path, "."), value)
+		}
+		if len(object) != len(shape.fields) {
+			return fmt.Errorf("%s object key count=%d, want %d", strings.TrimSuffix(path, "."), len(object), len(shape.fields))
+		}
+		for key, childShape := range shape.fields {
+			child, exists := object[key]
+			if !exists {
+				return fmt.Errorf("%s%s is missing", path, key)
+			}
+			if err := validateFutureJSONShape(child, childShape, path+key+"."); err != nil {
+				return err
+			}
+		}
+		for key := range object {
+			if _, exists := shape.fields[key]; !exists {
+				return fmt.Errorf("%s%s is unknown", path, key)
+			}
+		}
+		return nil
+	case futureJSONArray:
+		array, ok := value.([]any)
+		if !ok {
+			return fmt.Errorf("%s must be array, got %T", strings.TrimSuffix(path, "."), value)
+		}
+		if len(array) != len(shape.items) {
+			return fmt.Errorf("%s array length=%d, want %d", strings.TrimSuffix(path, "."), len(array), len(shape.items))
+		}
+		for index, childShape := range shape.items {
+			if err := validateFutureJSONShape(array[index], childShape, fmt.Sprintf("%s[%d].", path, index)); err != nil {
+				return err
+			}
+		}
+		return nil
+	case futureJSONString:
+		if _, ok := value.(string); !ok {
+			return fmt.Errorf("%s must be string, got %T", strings.TrimSuffix(path, "."), value)
+		}
+		return nil
+	case futureJSONInteger:
+		number, ok := value.(json.Number)
+		if !ok {
+			return fmt.Errorf("%s must be integer, got %T", strings.TrimSuffix(path, "."), value)
+		}
+		if _, err := strconv.ParseInt(number.String(), 10, 64); err != nil {
+			return fmt.Errorf("%s must be base-10 int64: %w", strings.TrimSuffix(path, "."), err)
+		}
+		return nil
+	case futureJSONBool:
+		if _, ok := value.(bool); !ok {
+			return fmt.Errorf("%s must be bool, got %T", strings.TrimSuffix(path, "."), value)
+		}
+		return nil
+	default:
+		return fmt.Errorf("%s has unsupported schema kind %d", strings.TrimSuffix(path, "."), shape.kind)
+	}
+}
+
+func readFutureContractTree(t *testing.T) map[string]any {
+	t.Helper()
+	contents, err := os.ReadFile(adminActionContractPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return decodeFutureContractTree(t, contents)
+}
+
+func cloneFutureContractTree(t *testing.T, original map[string]any) map[string]any {
+	t.Helper()
+	contents, err := json.Marshal(original)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return decodeFutureContractTree(t, contents)
+}
+
+func decodeFutureContractTree(t *testing.T, contents []byte) map[string]any {
+	t.Helper()
+	var document map[string]any
+	decoder := json.NewDecoder(bytes.NewReader(contents))
+	decoder.UseNumber()
+	if err := decoder.Decode(&document); err != nil {
+		t.Fatal(err)
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		t.Fatalf("contract contains trailing JSON data: %v", err)
+	}
+	return document
+}
+
+func deleteFutureContractPath(path ...any) func(map[string]any) {
+	return func(document map[string]any) {
+		parent := futureContractPathParent(document, path)
+		key, ok := path[len(path)-1].(string)
+		if !ok {
+			panic("delete path must end in an object key")
+		}
+		delete(parent.(map[string]any), key)
+	}
+}
+
+func setFutureContractPath(value any, path ...any) func(map[string]any) {
+	return func(document map[string]any) {
+		parent := futureContractPathParent(document, path)
+		switch key := path[len(path)-1].(type) {
+		case string:
+			parent.(map[string]any)[key] = value
+		case int:
+			parent.([]any)[key] = value
+		default:
+			panic("unsupported path component")
+		}
+	}
+}
+
+func futureContractPathParent(document map[string]any, path []any) any {
+	if len(path) == 0 {
+		panic("path must not be empty")
+	}
+	var current any = document
+	for _, component := range path[:len(path)-1] {
+		switch component := component.(type) {
+		case string:
+			current = current.(map[string]any)[component]
+		case int:
+			current = current.([]any)[component]
+		default:
+			panic("unsupported path component")
+		}
+	}
+	return current
 }
 
 func assertExactJSON(t *testing.T, value any, want string) {
