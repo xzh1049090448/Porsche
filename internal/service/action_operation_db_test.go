@@ -27,28 +27,30 @@ var (
 )
 
 type actionOperationScript struct {
-	mu            sync.Mutex
-	now           int64
-	keyHex        string
-	actor         models.User
-	target        *models.User
-	sessions      []models.Session
-	operation     *models.AdminOperation
-	verification  *models.AdminActionVerification
-	policyHead    *models.PermissionPolicyHead
-	overrides     []models.PermissionOverride
-	queries       []string
-	queryArgs     [][]driver.NamedValue
-	execs         []string
-	execArgs      [][]driver.NamedValue
-	beginCount    int
-	commitCount   int
-	rollbackCount int
-	isolations    []driver.IsolationLevel
-	failExec      bool
-	failExecAt    int
-	execError     error
-	zeroAffected  bool
+	mu               sync.Mutex
+	now              int64
+	keyHex           string
+	actor            models.User
+	target           *models.User
+	sessions         []models.Session
+	operation        *models.AdminOperation
+	pendingOperation *models.AdminOperation
+	verification     *models.AdminActionVerification
+	policyHead       *models.PermissionPolicyHead
+	overrides        []models.PermissionOverride
+	queries          []string
+	queryArgs        [][]driver.NamedValue
+	execs            []string
+	execArgs         [][]driver.NamedValue
+	beginCount       int
+	commitCount      int
+	rollbackCount    int
+	isolations       []driver.IsolationLevel
+	failExec         bool
+	failExecAt       int
+	execError        error
+	zeroAffected     bool
+	failCommit       bool
 }
 
 type actionOperationDriver struct{}
@@ -81,6 +83,7 @@ func (c *actionOperationConn) BeginTx(_ context.Context, opts driver.TxOptions) 
 	}
 	c.script.mu.Lock()
 	c.script.beginCount++
+	c.script.pendingOperation = nil
 	c.script.isolations = append(c.script.isolations, opts.Isolation)
 	c.script.mu.Unlock()
 	return &actionOperationTx{script: c.script}, nil
@@ -285,6 +288,24 @@ func (c *actionOperationConn) ExecContext(_ context.Context, query string, args 
 	if s.zeroAffected {
 		affected = 0
 	}
+	if affected == 1 && s.operation != nil && strings.HasPrefix(query, "UPDATE `admin_operations`") {
+		copy := *s.operation
+		if strings.Contains(query, "query_expires_at <= ?") {
+			copy.State = models.OperationExpired
+			copy.IsDeleted = 1
+			copy.LeaseOwnerHMAC = nil
+			copy.LeaseExpiresAt = nil
+			copy.ErrorCode = nil
+			copy.ResultKind = nil
+			copy.ResultGUID = nil
+			copy.ResultHTTPStatus = nil
+		} else if !strings.Contains(query, "verification_id IS NULL") {
+			copy.State = models.OperationPendingRecovery
+			copy.LeaseOwnerHMAC = nil
+			copy.LeaseExpiresAt = nil
+		}
+		s.pendingOperation = &copy
+	}
 	return actionOperationResult{id: 30, affected: affected}, nil
 }
 
@@ -340,25 +361,35 @@ func validateActionOperationExec(script *actionOperationScript, query string, ar
 		if script.operation == nil || script.operation.LeaseExpiresAt == nil {
 			return errors.New("recovery write has no locked lease")
 		}
-		if err := requireFragments("id = ? AND state = ? AND is_deleted = 0 AND lease_expires_at = ? AND lease_expires_at < ? AND query_expires_at > ?", "`lease_owner_hmac`=?", "`lease_expires_at`=?"); err != nil {
+		if err := requireFragments("id = ? AND state = ? AND is_deleted = 0 AND lease_expires_at = ? AND lease_expires_at < ?", "`lease_owner_hmac`=?", "`lease_expires_at`=?"); err != nil {
 			return err
 		}
-		if err := requireHead(nil, nil, int64(models.OperationPendingRecovery), script.now, script.operation.ActorUserID); err != nil {
+		if err := requireHead(nil, nil, int64(models.OperationPendingRecovery), script.now, nil); err != nil {
 			return err
 		}
-		return requireTail(script.operation.ID, int64(models.OperationProcessing), *script.operation.LeaseExpiresAt, script.now-actionOperationRecoveryGraceMS, script.now)
+		return requireTail(script.operation.ID, int64(models.OperationProcessing), *script.operation.LeaseExpiresAt, script.now-actionOperationRecoveryGraceMS)
 	default:
 		return fmt.Errorf("unexpected operation write: %s", query)
 	}
 }
 func (tx *actionOperationTx) Commit() error {
 	tx.script.mu.Lock()
+	if tx.script.failCommit {
+		tx.script.pendingOperation = nil
+		tx.script.mu.Unlock()
+		return errors.New("scripted commit failure")
+	}
+	if tx.script.pendingOperation != nil && tx.script.operation != nil {
+		*tx.script.operation = *tx.script.pendingOperation
+	}
+	tx.script.pendingOperation = nil
 	tx.script.commitCount++
 	tx.script.mu.Unlock()
 	return nil
 }
 func (tx *actionOperationTx) Rollback() error {
 	tx.script.mu.Lock()
+	tx.script.pendingOperation = nil
 	tx.script.rollbackCount++
 	tx.script.mu.Unlock()
 	return nil

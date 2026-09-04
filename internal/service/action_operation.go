@@ -155,17 +155,11 @@ func (s *ActionOperationService) Begin(ctx context.Context, in OperationBegin) (
 	}
 	var identity *OperationIdentity
 	var view *OperationView
+	expiredOutcome := false
 	err = s.operationDB(ctx).Transaction(func(tx *gorm.DB) error {
 		locked, lockErr := lockOperationActorSession(tx, in.Actor, now)
 		if lockErr != nil {
 			return lockErr
-		}
-		lockedNow := s.clock.NowMillis()
-		if lockedNow < now || !validOperationNow(lockedNow) {
-			return ErrActionOperationUnavailable
-		}
-		if locked.session.ExpiresAt <= lockedNow {
-			return ErrActionOperationForbidden
 		}
 
 		var existing models.AdminOperation
@@ -187,30 +181,56 @@ func (s *ActionOperationService) Begin(ctx context.Context, in OperationBegin) (
 				return err
 			}
 			if existing.VerificationID == nil || *existing.VerificationID != verification.ID ||
-				!validOperationVerificationBinding(verification, locked, descriptor, requestHex, parsedTarget) ||
-				!validOperationVerificationState(existing, verification, lockedNow) ||
-				!validExistingBeginVerificationState(verification, existing.State, lockedNow) {
+				!validOperationVerificationBinding(verification, locked, descriptor, requestHex, parsedTarget) {
 				return ErrActionOperationForbidden
 			}
 			if err := authorizeOperationDescriptor(tx, locked.actor, descriptor, parsedTarget); err != nil {
 				return err
 			}
-			if existing.State == models.OperationExpired || existing.IsDeleted == 1 || lockedNow >= existing.QueryExpiresAt {
-				if existing.State != models.OperationExpired || existing.IsDeleted != 1 {
-					if err := expireOperation(tx, &existing, locked.actor.ID, lockedNow); err != nil {
-						return ErrActionOperationUnavailable
-					}
+			finalNow := s.clock.NowMillis()
+			if finalNow < now || !validOperationNow(finalNow) {
+				return ErrActionOperationUnavailable
+			}
+			if locked.session.ExpiresAt <= finalNow || !validOperationVerificationState(existing, verification, finalNow) ||
+				!validExistingBeginVerificationState(verification, existing.State, finalNow) {
+				return ErrActionOperationForbidden
+			}
+			if existing.State == models.OperationExpired {
+				expiredOutcome = true
+				return nil
+			}
+			if finalNow >= existing.QueryExpiresAt && existing.State.CanTransitionTo(models.OperationExpired) {
+				if err := expireOperation(tx, &existing, locked.actor.ID, finalNow); err != nil {
+					return ErrActionOperationUnavailable
 				}
-				return ErrActionOperationExpired
+				expiredOutcome = true
+				return nil
 			}
 			identity = &OperationIdentity{ID: existing.ID, PublicRef: existing.PublicRef}
-			view = operationView(descriptor, existing, lockedNow)
+			view = operationView(descriptor, existing, finalNow)
 			return nil
 		}
 		if !errors.Is(find.Error, gorm.ErrRecordNotFound) {
 			return ErrActionOperationUnavailable
 		}
 
+		verification, err := lockOperationVerificationByTicket(tx, ticketHex)
+		if err != nil {
+			return err
+		}
+		if !validOperationVerificationBinding(verification, locked, descriptor, requestHex, parsedTarget) {
+			return ErrActionOperationForbidden
+		}
+		if err := authorizeOperationDescriptor(tx, locked.actor, descriptor, parsedTarget); err != nil {
+			return err
+		}
+		finalNow := s.clock.NowMillis()
+		if finalNow < now || !validOperationNow(finalNow) {
+			return ErrActionOperationUnavailable
+		}
+		if locked.session.ExpiresAt <= finalNow || verificationRelationAt(verification, finalNow) != operationVerificationActive {
+			return ErrActionOperationForbidden
+		}
 		publicRef, err := actionsecurity.NewPublicRef(s.random)
 		if err != nil {
 			return ErrActionOperationUnavailable
@@ -229,10 +249,10 @@ func (s *ActionOperationService) Begin(ctx context.Context, in OperationBegin) (
 			return ErrActionOperationUnavailable
 		}
 		actorID := locked.actor.ID
-		leaseExpires := lockedNow + actionOperationLeaseMillis
-		queryExpires := lockedNow + actionOperationQueryRetentionMS
+		leaseExpires := finalNow + actionOperationLeaseMillis
+		queryExpires := finalNow + actionOperationQueryRetentionMS
 		operation := models.AdminOperation{
-			AuditFields: models.AuditFields{Guid: guid, CreatedAt: lockedNow, CreatedBy: &actorID, UpdatedAt: lockedNow, UpdatedBy: &actorID},
+			AuditFields: models.AuditFields{Guid: guid, CreatedAt: finalNow, CreatedBy: &actorID, UpdatedAt: finalNow, UpdatedBy: &actorID},
 			ActorUserID: actorID, ActorAuthVersion: locked.actor.AuthVersion, SessionID: locked.session.ID,
 			Action: int(descriptor.Action), IdempotencyKeyHMAC: keyHex, RequestHMAC: requestHex,
 			State: models.OperationProcessing, PublicRef: publicRef, LeaseOwnerHMAC: &leaseHex,
@@ -242,24 +262,9 @@ func (s *ActionOperationService) Begin(ctx context.Context, in OperationBegin) (
 			clear(leaseOwner[:])
 			return ErrActionOperationUnavailable
 		}
-
-		verification, err := lockOperationVerificationByTicket(tx, ticketHex)
-		if err != nil {
-			clear(leaseOwner[:])
-			return err
-		}
-		if !validOperationVerificationBinding(verification, locked, descriptor, requestHex, parsedTarget) ||
-			verificationRelationAt(verification, lockedNow) != operationVerificationActive {
-			clear(leaseOwner[:])
-			return ErrActionOperationForbidden
-		}
-		if err := authorizeOperationDescriptor(tx, locked.actor, descriptor, parsedTarget); err != nil {
-			clear(leaseOwner[:])
-			return err
-		}
 		result := tx.Model(&models.AdminOperation{}).
 			Where("id = ? AND state = ? AND is_deleted = 0 AND verification_id IS NULL", operation.ID, models.OperationProcessing).
-			Updates(map[string]any{"verification_id": verification.ID, "updated_at": lockedNow, "updated_by": actorID})
+			Updates(map[string]any{"verification_id": verification.ID, "updated_at": finalNow, "updated_by": actorID})
 		if result.Error != nil {
 			clear(leaseOwner[:])
 			var mysqlErr *mysqlDriver.MySQLError
@@ -274,11 +279,19 @@ func (s *ActionOperationService) Begin(ctx context.Context, in OperationBegin) (
 		}
 		operation.VerificationID = &verification.ID
 		identity = &OperationIdentity{ID: operation.ID, PublicRef: publicRef, LeaseOwner: leaseOwner}
-		view = operationView(descriptor, operation, lockedNow)
+		clear(leaseOwner[:])
+		view = operationView(descriptor, operation, finalNow)
 		return nil
 	}, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
+		if identity != nil {
+			clear(identity.LeaseOwner[:])
+			identity = nil
+		}
 		return nil, nil, mapOperationError(err)
+	}
+	if expiredOutcome {
+		return nil, nil, ErrActionOperationExpired
 	}
 	if identity == nil || view == nil {
 		return nil, nil, ErrActionOperationUnavailable
@@ -314,19 +327,13 @@ func (s *ActionOperationService) Query(ctx context.Context, action actionsecurit
 		return nil, ErrActionOperationUnavailable
 	}
 	var view *OperationView
+	expiredOutcome := false
 	err = s.operationDB(ctx).Transaction(func(tx *gorm.DB) error {
 		locked, err := lockOperationActorSession(tx, actor, now)
 		if err != nil {
 			if errors.Is(err, ErrActionOperationUnavailable) {
 				return err
 			}
-			return ErrActionOperationHidden
-		}
-		lockedNow := s.clock.NowMillis()
-		if lockedNow < now || !validOperationNow(lockedNow) {
-			return ErrActionOperationUnavailable
-		}
-		if locked.session.ExpiresAt <= lockedNow {
 			return ErrActionOperationHidden
 		}
 		var operation models.AdminOperation
@@ -348,8 +355,7 @@ func (s *ActionOperationService) Query(ctx context.Context, action actionsecurit
 			return ErrActionOperationHidden
 		}
 		verification, err := lockOperationVerificationByID(tx, *operation.VerificationID)
-		if err != nil || !validOperationVerificationBinding(verification, locked, descriptor, operation.RequestHMAC, verification.TargetGUID) ||
-			!validOperationVerificationState(operation, verification, lockedNow) {
+		if err != nil || !validOperationVerificationBinding(verification, locked, descriptor, operation.RequestHMAC, verification.TargetGUID) {
 			if errors.Is(err, ErrActionOperationUnavailable) {
 				return err
 			}
@@ -361,20 +367,32 @@ func (s *ActionOperationService) Query(ctx context.Context, action actionsecurit
 			}
 			return ErrActionOperationHidden
 		}
-		if operation.State == models.OperationExpired || operation.IsDeleted == 1 {
-			return ErrActionOperationExpired
+		finalNow := s.clock.NowMillis()
+		if finalNow < now || !validOperationNow(finalNow) {
+			return ErrActionOperationUnavailable
 		}
-		if lockedNow >= operation.QueryExpiresAt {
-			if err := expireOperation(tx, &operation, locked.actor.ID, lockedNow); err != nil {
+		if locked.session.ExpiresAt <= finalNow || !validOperationVerificationState(operation, verification, finalNow) {
+			return ErrActionOperationHidden
+		}
+		if operation.State == models.OperationExpired {
+			expiredOutcome = true
+			return nil
+		}
+		if finalNow >= operation.QueryExpiresAt && operation.State.CanTransitionTo(models.OperationExpired) {
+			if err := expireOperation(tx, &operation, locked.actor.ID, finalNow); err != nil {
 				return ErrActionOperationUnavailable
 			}
-			return ErrActionOperationExpired
+			expiredOutcome = true
+			return nil
 		}
-		view = operationView(descriptor, operation, lockedNow)
+		view = operationView(descriptor, operation, finalNow)
 		return nil
 	}, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		return nil, mapOperationError(err)
+	}
+	if expiredOutcome {
+		return nil, ErrActionOperationExpired
 	}
 	if view == nil {
 		return nil, ErrActionOperationUnavailable
@@ -390,6 +408,7 @@ func (s *ActionOperationService) MarkPendingRecovery(ctx context.Context, id int
 	if !validOperationNow(now) {
 		return ErrActionOperationUnavailable
 	}
+	expiredOutcome := false
 	err := s.operationDB(ctx).Transaction(func(tx *gorm.DB) error {
 		var operation models.AdminOperation
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", id).First(&operation).Error; err != nil {
@@ -401,30 +420,43 @@ func (s *ActionOperationService) MarkPendingRecovery(ctx context.Context, id int
 		if operation.State == models.OperationExpired || operation.IsDeleted == 1 {
 			return ErrActionOperationExpired
 		}
+		lockedNow := s.clock.NowMillis()
+		if lockedNow < now || !validOperationNow(lockedNow) {
+			return ErrActionOperationUnavailable
+		}
+		if operation.State == models.OperationPendingRecovery {
+			if lockedNow < operation.QueryExpiresAt {
+				return ErrActionOperationConflict
+			}
+			if err := expireOperation(tx, &operation, 0, lockedNow); err != nil {
+				return ErrActionOperationUnavailable
+			}
+			expiredOutcome = true
+			return nil
+		}
 		if operation.State != models.OperationProcessing {
 			return ErrActionOperationConflict
 		}
-		if now >= operation.QueryExpiresAt {
-			if err := expireOperation(tx, &operation, operation.ActorUserID, now); err != nil {
-				return ErrActionOperationUnavailable
-			}
-			return ErrActionOperationExpired
-		}
 		if operation.LeaseExpiresAt == nil ||
-			*operation.LeaseExpiresAt > math.MaxInt64-actionOperationRecoveryGraceMS || now <= *operation.LeaseExpiresAt+actionOperationRecoveryGraceMS {
+			*operation.LeaseExpiresAt > math.MaxInt64-actionOperationRecoveryGraceMS || lockedNow <= *operation.LeaseExpiresAt+actionOperationRecoveryGraceMS {
 			return ErrActionOperationConflict
 		}
-		actorID := operation.ActorUserID
-		leaseCutoff := now - actionOperationRecoveryGraceMS
+		leaseCutoff := lockedNow - actionOperationRecoveryGraceMS
 		result := tx.Model(&models.AdminOperation{}).
-			Where("id = ? AND state = ? AND is_deleted = 0 AND lease_expires_at = ? AND lease_expires_at < ? AND query_expires_at > ?", operation.ID, models.OperationProcessing, *operation.LeaseExpiresAt, leaseCutoff, now).
-			Updates(map[string]any{"state": models.OperationPendingRecovery, "lease_owner_hmac": nil, "lease_expires_at": nil, "updated_at": now, "updated_by": actorID})
+			Where("id = ? AND state = ? AND is_deleted = 0 AND lease_expires_at = ? AND lease_expires_at < ?", operation.ID, models.OperationProcessing, *operation.LeaseExpiresAt, leaseCutoff).
+			Updates(map[string]any{"state": models.OperationPendingRecovery, "lease_owner_hmac": nil, "lease_expires_at": nil, "updated_at": lockedNow, "updated_by": nil})
 		if result.Error != nil || result.RowsAffected != 1 {
 			return ErrActionOperationUnavailable
 		}
 		return nil
 	}, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
-	return mapOperationError(err)
+	if err != nil {
+		return mapOperationError(err)
+	}
+	if expiredOutcome {
+		return ErrActionOperationExpired
+	}
+	return nil
 }
 
 func (s *ActionOperationService) reserveBegin(ctx context.Context, sessionSID string) error {
@@ -666,12 +698,19 @@ func sameOptionalInt64(left, right *int64) bool {
 }
 
 func expireOperation(tx *gorm.DB, operation *models.AdminOperation, actorID, now int64) error {
+	if operation == nil || !operation.State.CanTransitionTo(models.OperationExpired) {
+		return ErrActionOperationUnavailable
+	}
+	var updatedBy any
+	if actorID > 0 {
+		updatedBy = actorID
+	}
 	result := tx.Model(&models.AdminOperation{}).
 		Where("id = ? AND state = ? AND is_deleted = 0 AND query_expires_at = ? AND query_expires_at <= ?", operation.ID, operation.State, operation.QueryExpiresAt, now).
 		Updates(map[string]any{
 			"state": models.OperationExpired, "is_deleted": 1, "lease_owner_hmac": nil, "lease_expires_at": nil,
 			"error_code": nil, "result_kind": nil, "result_guid": nil, "result_http_status": nil,
-			"updated_at": now, "updated_by": actorID,
+			"updated_at": now, "updated_by": updatedBy,
 		})
 	if result.Error != nil || result.RowsAffected != 1 {
 		return ErrActionOperationUnavailable
