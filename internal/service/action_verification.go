@@ -136,6 +136,17 @@ func (s *ActionVerificationService) Issue(ctx context.Context, in VerificationIs
 		if err != nil {
 			return err
 		}
+		// A row lock may have waited. Re-read the injected clock after every
+		// identity/target/policy lock so an expired session cannot be accepted
+		// with the pre-transaction timestamp and the ticket receives a full,
+		// exact five-minute lifetime from the successful locked check.
+		lockedNow := s.clock.NowMillis()
+		if lockedNow < now || lockedNow <= 0 || lockedNow > math.MaxInt64-actionVerificationTTLMillis {
+			return ErrActionVerificationUnavailable
+		}
+		if identity.session.ExpiresAt <= lockedNow {
+			return ErrActionVerificationForbidden
+		}
 		if identity.actor.PasswordHash == nil || !security.VerifyPassword(string(in.CurrentPassword), *identity.actor.PasswordHash) {
 			return ErrActionVerificationForbidden
 		}
@@ -154,22 +165,22 @@ func (s *ActionVerificationService) Issue(ctx context.Context, in VerificationIs
 		if guid <= 0 {
 			return ErrActionVerificationUnavailable
 		}
-		expiresAt := now + actionVerificationTTLMillis
+		expiresAt := lockedNow + actionVerificationTTLMillis
 		actorID := identity.actor.ID
 
 		old := tx.Model(&models.AdminActionVerification{}).
-			Where("session_id = ? AND action = ? AND target_kind = ? AND consumed_at IS NULL AND is_deleted = 0 AND expires_at > ?", identity.session.ID, int(descriptor.Action), int(descriptor.TargetKind), now)
+			Where("session_id = ? AND action = ? AND target_kind = ? AND consumed_at IS NULL AND is_deleted = 0 AND expires_at > ?", identity.session.ID, int(descriptor.Action), int(descriptor.TargetKind), lockedNow)
 		if in.TargetGUID == nil {
 			old = old.Where("target_guid IS NULL")
 		} else {
 			old = old.Where("target_guid = ?", *in.TargetGUID)
 		}
-		if err := old.Updates(map[string]any{"is_deleted": 1, "updated_at": now, "updated_by": actorID}).Error; err != nil {
+		if err := old.Updates(map[string]any{"is_deleted": 1, "updated_at": lockedNow, "updated_by": actorID}).Error; err != nil {
 			return ErrActionVerificationUnavailable
 		}
 
 		verification := models.AdminActionVerification{
-			AuditFields: models.AuditFields{Guid: guid, CreatedAt: now, CreatedBy: &actorID, UpdatedAt: now, UpdatedBy: &actorID, IsDeleted: 0},
+			AuditFields: models.AuditFields{Guid: guid, CreatedAt: lockedNow, CreatedBy: &actorID, UpdatedAt: lockedNow, UpdatedBy: &actorID, IsDeleted: 0},
 			ActorUserID: identity.actor.ID, ActorAuthVersion: identity.actor.AuthVersion, SessionID: identity.session.ID,
 			Action: int(descriptor.Action), TargetKind: int(descriptor.TargetKind), TargetGUID: copyInt64(in.TargetGUID),
 			IntentHMAC: intentHex, TicketHMAC: ticketHex, ExpiresAt: expiresAt,
