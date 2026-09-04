@@ -27,7 +27,7 @@ func setupRealActionPrimitiveTables(t *testing.T, db *gorm.DB) {
 	t.Helper()
 	tables := []string{
 		"fixture_action_official_outbox", "fixture_action_official_audits",
-		"fixture_action_callback_outbox", "fixture_action_callback_audits", "fixture_action_effects",
+		"fixture_action_callback_outbox", "fixture_action_callback_audits", "fixture_action_effects", "fixture_action_rollback_probes",
 	}
 	for _, table := range tables {
 		if err := db.Exec("DROP TABLE IF EXISTS " + table).Error; err != nil {
@@ -40,6 +40,7 @@ func setupRealActionPrimitiveTables(t *testing.T, db *gorm.DB) {
 		"CREATE TABLE fixture_action_callback_outbox (id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY, operation_ref CHAR(46) NOT NULL) ENGINE=InnoDB",
 		"CREATE TABLE fixture_action_official_audits (id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY, operation_ref CHAR(46) NOT NULL, state INT NOT NULL) ENGINE=InnoDB",
 		"CREATE TABLE fixture_action_official_outbox (id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY, operation_ref CHAR(46) NOT NULL, state INT NOT NULL) ENGINE=InnoDB",
+		"CREATE TABLE fixture_action_rollback_probes (id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY, stage VARCHAR(64) NOT NULL) ENGINE=InnoDB",
 	}
 	for _, statement := range statements {
 		if err := db.Exec(statement).Error; err != nil {
@@ -1360,6 +1361,148 @@ func TestActionExecuteRealMySQLSuccessRejectionFaultsAndCommitUnknown(t *testing
 			t.Fatalf("commit unknown replay view=%v err=%v calls=%d", replay, replayErr, consumer.calls)
 		}
 	})
+}
+
+func TestActionExecuteRealMySQLLockAndConsumeFaultMatrix(t *testing.T) {
+	type faultCase struct {
+		name          string
+		queryTable    string
+		updateTable   string
+		completedLock []string
+	}
+	cases := []faultCase{
+		{name: "actor_lock", queryTable: "users"},
+		{name: "session_lock", queryTable: "user_sessions", completedLock: []string{"users"}},
+		{name: "operation_lock", queryTable: "admin_operations", completedLock: []string{"users", "user_sessions"}},
+		{name: "verification_lock", queryTable: "admin_action_verifications", completedLock: []string{"users", "user_sessions", "admin_operations"}},
+		{name: "ticket_consume_update", updateTable: "admin_action_verifications", completedLock: []string{"users", "user_sessions", "admin_operations", "admin_action_verifications", "users", "user_permission_heads", "user_permission_overrides", "user_permission_heads", "user_permission_overrides"}},
+	}
+	for index, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := openRealActionFixture(t, 1_800_325_000_000+int64(index)*1_000_000)
+			setupRealActionPrimitiveTables(t, fixture.db)
+			identity, _ := prepareRealActionOperation(t, fixture, "execute-fault-"+tc.name, fmt.Sprintf("198.18.12.%d", index+1))
+			var before models.AdminOperation
+			if err := fixture.db.First(&before, identity.ID).Error; err != nil {
+				t.Fatal(err)
+			}
+			if before.LeaseOwnerHMAC == nil || before.LeaseExpiresAt == nil || before.VerificationID == nil {
+				t.Fatal("prepared operation lacks lease or verification binding")
+			}
+			var beforeVerification models.AdminActionVerification
+			if err := fixture.db.First(&beforeVerification, *before.VerificationID).Error; err != nil {
+				t.Fatal(err)
+			}
+
+			sentinel := errors.New("fixture execute stage unavailable")
+			callbackName := fmt.Sprintf("b1e_execute_fault_%d", testSnowflake.Next())
+			completed := make([]string, 0, len(tc.completedLock))
+			hit := 0
+			probe := func(tx *gorm.DB) {
+				if err := tx.Session(&gorm.Session{NewDB: true}).Exec("INSERT INTO fixture_action_rollback_probes (stage) VALUES (?)", tc.name).Error; err != nil {
+					tx.AddError(err)
+					return
+				}
+				hit++
+				tx.AddError(sentinel)
+			}
+			queryBefore := func(tx *gorm.DB) {
+				table := tx.Statement.Table
+				if table == "" && tx.Statement.Schema != nil {
+					table = tx.Statement.Schema.Table
+				}
+				if tc.queryTable == table && hit == 0 {
+					if _, ok := tx.Statement.Clauses["FOR"]; !ok {
+						tx.AddError(errors.New("fixture fault did not target a locking query"))
+						return
+					}
+					probe(tx)
+				}
+			}
+			queryAfter := func(tx *gorm.DB) {
+				if tx.Error != nil && !errors.Is(tx.Error, gorm.ErrRecordNotFound) {
+					return
+				}
+				table := tx.Statement.Table
+				if table == "" && tx.Statement.Schema != nil {
+					table = tx.Statement.Schema.Table
+				}
+				completed = append(completed, table)
+			}
+			updateBefore := func(tx *gorm.DB) {
+				table := tx.Statement.Table
+				if table == "" && tx.Statement.Schema != nil {
+					table = tx.Statement.Schema.Table
+				}
+				if tc.updateTable != table || hit != 0 {
+					return
+				}
+				values, ok := tx.Statement.Dest.(map[string]any)
+				if !ok || values["consumed_at"] == nil || fmt.Sprint(values["is_deleted"]) != "1" {
+					tx.AddError(errors.New("fixture fault did not target ticket consumption"))
+					return
+				}
+				probe(tx)
+			}
+			if err := fixture.db.Callback().Query().Before("gorm:query").Register(callbackName+"_before", queryBefore); err != nil {
+				t.Fatal(err)
+			}
+			if err := fixture.db.Callback().Query().After("gorm:query").Register(callbackName+"_after", queryAfter); err != nil {
+				t.Fatal(err)
+			}
+			if err := fixture.db.Callback().Update().Before("gorm:update").Register(callbackName+"_update", updateBefore); err != nil {
+				t.Fatal(err)
+			}
+			removed := false
+			removeCallbacks := func() {
+				if removed {
+					return
+				}
+				removed = true
+				_ = fixture.db.Callback().Query().Remove(callbackName + "_before")
+				_ = fixture.db.Callback().Query().Remove(callbackName + "_after")
+				_ = fixture.db.Callback().Update().Remove(callbackName + "_update")
+			}
+			t.Cleanup(removeCallbacks)
+
+			consumer := &fixtureActionConsumer{outcome: TerminalOutcome{ResultKind: models.ResultNone, HTTPStatus: 204}}
+			audit, outbox := &fixtureActionAuditWriter{}, &fixtureActionOutboxWriter{}
+			view, err := fixture.operation.Execute(context.Background(), identity, consumer, audit, outbox)
+			removeCallbacks()
+			if view != nil || !errors.Is(err, ErrActionOperationUnavailable) || err.Error() != ErrActionOperationUnavailable.Error() {
+				t.Fatalf("Execute fault view=%v err=%v", view, err)
+			}
+			if hit != 1 {
+				t.Fatalf("fault hit count=%d", hit)
+			}
+			if strings.Join(completed, ",") != strings.Join(tc.completedLock, ",") {
+				t.Fatalf("completed locks=%v want=%v", completed, tc.completedLock)
+			}
+			if consumer.calls != 0 || audit.calls != 0 || outbox.calls != 0 {
+				t.Fatalf("post-fault callbacks consumer/audit/outbox=%d/%d/%d", consumer.calls, audit.calls, outbox.calls)
+			}
+			var probeCount int64
+			if err := fixture.db.Table("fixture_action_rollback_probes").Count(&probeCount).Error; err != nil || probeCount != 0 {
+				t.Fatalf("outer rollback probe count=%d err=%v", probeCount, err)
+			}
+			var after models.AdminOperation
+			if err := fixture.db.First(&after, before.ID).Error; err != nil {
+				t.Fatal(err)
+			}
+			if after.State != models.OperationProcessing || after.LeaseOwnerHMAC == nil || after.LeaseExpiresAt == nil ||
+				*after.LeaseOwnerHMAC != *before.LeaseOwnerHMAC || *after.LeaseExpiresAt != *before.LeaseExpiresAt {
+				t.Fatalf("operation changed after rollback: %#v", after)
+			}
+			var verification models.AdminActionVerification
+			if err := fixture.db.Unscoped().First(&verification, beforeVerification.ID).Error; err != nil {
+				t.Fatal(err)
+			}
+			if verification.ConsumedAt != nil || verification.IsDeleted != 0 {
+				t.Fatalf("verification consumed after rollback: %#v", verification)
+			}
+			assertRealPrimitiveCounts(t, fixture.db, 0, 0, 0)
+		})
+	}
 }
 
 func TestActionExecuteConcurrencyRealMySQLOneShotCapability(t *testing.T) {
