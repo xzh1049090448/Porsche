@@ -1,0 +1,302 @@
+# B1-E implementation baseline
+
+## Commit
+
+- Repository root: `/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903`
+- Baseline HEAD: `8fa276e50a1236d74069b0e96b11a3d04023efe1`
+- Approved design commit in parent chain: `4df7482c2e5eb9c3ba829acf8da8f272978b9096`
+- Approved design SHA-256: `3e02e12386a994d34e7704110b96185e73cfcbd7ff98a3a20c648069fbaaf9ff`
+- The plan's older expected HEAD names the design commit; the clean implementation baseline is the subsequent plan commit `8fa276e5`, which preserves `4df7482c` as its parent.
+
+## Commands and exit codes
+
+| Command | Exit code | Result |
+| --- | ---: | --- |
+| `pwd; git rev-parse HEAD; git status --short; git log -5 --oneline; sha256sum docs/superpowers/specs/2026-09-04-b1e-operation-safety-foundation-design.md` | 0 | root, commit chain, clean status, and design digest matched |
+| `env -u TEST_DATABASE_URL -u TEST_REDIS_URL -u DATABASE_URL -u REDIS_URL -u APP_ENV -u RUN_START_COMMAND ./init.sh` | 1 | sandbox denied the default Go build cache before tests |
+| `GOCACHE=<private-cache> env -u TEST_DATABASE_URL -u TEST_REDIS_URL -u DATABASE_URL -u REDIS_URL -u APP_ENV -u RUN_START_COMMAND ./init.sh` | 1 | sandbox denied `httptest` loopback binds |
+| same initialization command through approved sandbox escalation | 0 | initialization and all packages passed; start command was not executed |
+| `GOCACHE=<private-cache> env -u TEST_DATABASE_URL -u TEST_REDIS_URL go test -p 1 ./... -count=1` through approved sandbox escalation | 0 | full no-fixture gate passed |
+| supplemental JSON run of the same full test selection for counts | 0 | counts below |
+| `GOCACHE=<private-cache> go build ./...` | 0 | passed |
+| `GOCACHE=<private-cache> go vet ./...` | 0 | passed |
+| `git diff --check` | 0 | passed |
+
+## Package and test counts
+
+- Go packages: 19 total; 15 passed; 4 had no test files; 0 failed.
+- Packages with no test files: `cmd/migrate`, `cmd/server`, `internal/httpx`, `internal/security`.
+- Terminal test events: 389 passed; 258 skipped; 0 failed.
+- Leaf tests: 345 passed; 256 skipped; 0 failed.
+- Fixture-dependent skips occurred only with explicit test fixture variables absent.
+
+## Leaf skip names
+
+- `github.com/porsche/ai-gateway-go/internal/handler::TestAdminAuthzHTTPCatalogRoleMatrixAndDTO`
+- `github.com/porsche/ai-gateway-go/internal/handler::TestAdminAuthzHTTPDetailTargetVisibility`
+- `github.com/porsche/ai-gateway-go/internal/handler::TestAdminAuthzHTTPPolicyProjectionAndCorruption`
+- `github.com/porsche/ai-gateway-go/internal/handler::TestAdminAuthzHTTPRejectsNoncanonicalGUIDAndQuery`
+- `github.com/porsche/ai-gateway-go/internal/handler::TestAdminAuthzHTTPRejectsStaleOrRevokedAuthentication`
+- `github.com/porsche/ai-gateway-go/internal/handler::TestAdminHealthCheckRejectsConcurrentSameModel`
+- `github.com/porsche/ai-gateway-go/internal/handler::TestAdminUserBehaviorRequiresStrictlyLowerTargetRole`
+- `github.com/porsche/ai-gateway-go/internal/handler::TestAdminUserUpdateAppliesPlanAndRevokesOnlyTheTargetSession`
+- `github.com/porsche/ai-gateway-go/internal/handler::TestAdminUserUpdateNoOpAndAuthenticationPreconditions`
+- `github.com/porsche/ai-gateway-go/internal/handler::TestAdminUserUpdateRejectsMalformedOrOutOfContractJSON/acl-empty-model`
+- `github.com/porsche/ai-gateway-go/internal/handler::TestAdminUserUpdateRejectsMalformedOrOutOfContractJSON/acl-null-element`
+- `github.com/porsche/ai-gateway-go/internal/handler::TestAdminUserUpdateRejectsMalformedOrOutOfContractJSON/acl-wrong-type`
+- `github.com/porsche/ai-gateway-go/internal/handler::TestAdminUserUpdateRejectsMalformedOrOutOfContractJSON/array`
+- `github.com/porsche/ai-gateway-go/internal/handler::TestAdminUserUpdateRejectsMalformedOrOutOfContractJSON/case-alias`
+- `github.com/porsche/ai-gateway-go/internal/handler::TestAdminUserUpdateRejectsMalformedOrOutOfContractJSON/daily-limit-negative`
+- `github.com/porsche/ai-gateway-go/internal/handler::TestAdminUserUpdateRejectsMalformedOrOutOfContractJSON/daily-limit-over-int32`
+- `github.com/porsche/ai-gateway-go/internal/handler::TestAdminUserUpdateRejectsMalformedOrOutOfContractJSON/daily-limit-wrong-type`
+- `github.com/porsche/ai-gateway-go/internal/handler::TestAdminUserUpdateRejectsMalformedOrOutOfContractJSON/duplicate-key`
+- `github.com/porsche/ai-gateway-go/internal/handler::TestAdminUserUpdateRejectsMalformedOrOutOfContractJSON/empty-body`
+- `github.com/porsche/ai-gateway-go/internal/handler::TestAdminUserUpdateRejectsMalformedOrOutOfContractJSON/over-64-kib`
+- `github.com/porsche/ai-gateway-go/internal/handler::TestAdminUserUpdateRejectsMalformedOrOutOfContractJSON/plan-wrong-type`
+- `github.com/porsche/ai-gateway-go/internal/handler::TestAdminUserUpdateRejectsMalformedOrOutOfContractJSON/status-wrong-type`
+- `github.com/porsche/ai-gateway-go/internal/handler::TestAdminUserUpdateRejectsMalformedOrOutOfContractJSON/top-level-null`
+- `github.com/porsche/ai-gateway-go/internal/handler::TestAdminUserUpdateRejectsMalformedOrOutOfContractJSON/trailing-json`
+- `github.com/porsche/ai-gateway-go/internal/handler::TestAdminUserUpdateRejectsMalformedOrOutOfContractJSON/unknown-money`
+- `github.com/porsche/ai-gateway-go/internal/handler::TestAdminUserUpdateRejectsMalformedOrOutOfContractJSON/unknown-permissions`
+- `github.com/porsche/ai-gateway-go/internal/handler::TestAdminUserUpdateRejectsMalformedOrOutOfContractJSON/unknown-plan-enum`
+- `github.com/porsche/ai-gateway-go/internal/handler::TestAdminUserUpdateRejectsMalformedOrOutOfContractJSON/unknown-role`
+- `github.com/porsche/ai-gateway-go/internal/handler::TestAdminUserUpdateRejectsMalformedOrOutOfContractJSON/unknown-status-enum`
+- `github.com/porsche/ai-gateway-go/internal/handler::TestAdminUsersHTTPHierarchy`
+- `github.com/porsche/ai-gateway-go/internal/handler::TestAdminUsersReadHTTPExplicitDenyAllAdapters`
+- `github.com/porsche/ai-gateway-go/internal/handler::TestAdminUsersReadHTTPQueryAndVisibility`
+- `github.com/porsche/ai-gateway-go/internal/handler::TestAdminUsersReadPerformance`
+- `github.com/porsche/ai-gateway-go/internal/handler::TestAuthProjectionHTTPFourSources/false`
+- `github.com/porsche/ai-gateway-go/internal/handler::TestAuthProjectionHTTPFourSources/true`
+- `github.com/porsche/ai-gateway-go/internal/handler::TestAuthSessionHTTPFlow`
+- `github.com/porsche/ai-gateway-go/internal/handler::TestGatewayChatAuthenticatesBeforeReadingOrValidatingBody`
+- `github.com/porsche/ai-gateway-go/internal/handler::TestGatewayChatKeepsAuthenticatedRequestBodyLimit`
+- `github.com/porsche/ai-gateway-go/internal/handler::TestGatewayChatProjectsValidatedCompletionAndMasksUpstreamFields`
+- `github.com/porsche/ai-gateway-go/internal/handler::TestGatewayChatRejectsBeforeWhiteLabelUpstream`
+- `github.com/porsche/ai-gateway-go/internal/handler::TestGatewayChatRejectsMalformedUpstreamCompletion`
+- `github.com/porsche/ai-gateway-go/internal/handler::TestGatewayChatRequiresCurrentCatalogAndEnabledModelBeforeChat`
+- `github.com/porsche/ai-gateway-go/internal/handler::TestGatewayChatRequiresExactJSONMediaTypeAndStableErrors`
+- `github.com/porsche/ai-gateway-go/internal/handler::TestGatewayDetailRoutePreservesLegacyDetailModelID`
+- `github.com/porsche/ai-gateway-go/internal/handler::TestGatewayMalformedOrDuplicateDetailQueryDoesNotCallUpstream`
+- `github.com/porsche/ai-gateway-go/internal/handler::TestGatewayModelsUseTokenACLAndDynamicCatalog`
+- `github.com/porsche/ai-gateway-go/internal/handler::TestGatewayOwnerACLAuthenticationUnavailableHTTPEnvelope`
+- `github.com/porsche/ai-gateway-go/internal/handler::TestGatewayOwnerACLManagedUpdateImmediatelyFiltersWarmHTTPMetadata`
+- `github.com/porsche/ai-gateway-go/internal/handler::TestGatewaySSEBeforeFirstPayloadReturnsJSONError`
+- `github.com/porsche/ai-gateway-go/internal/handler::TestGatewaySSEMalformedFirstChunkReturnsJSON503`
+- `github.com/porsche/ai-gateway-go/internal/handler::TestGatewaySSEPostFirstChunkEmitsErrorAndDone`
+- `github.com/porsche/ai-gateway-go/internal/handler::TestGatewaySSEProjectsChunksAndDropsUpstreamFields`
+- `github.com/porsche/ai-gateway-go/internal/handler::TestGatewaySlashModelDetailDoesNotCallUpstreamWhenTokenDenied`
+- `github.com/porsche/ai-gateway-go/internal/handler::TestGatewaySlashModelDetailUsesQueryIDAndTokenACL`
+- `github.com/porsche/ai-gateway-go/internal/handler::TestPlatformDetailRoutePreservesLegacyDetailModelID`
+- `github.com/porsche/ai-gateway-go/internal/handler::TestPlatformDiagnosticPipeline/429`
+- `github.com/porsche/ai-gateway-go/internal/handler::TestPlatformDiagnosticPipeline/500`
+- `github.com/porsche/ai-gateway-go/internal/handler::TestPlatformDiagnosticPipeline/acl`
+- `github.com/porsche/ai-gateway-go/internal/handler::TestPlatformDiagnosticPipeline/assistant_db`
+- `github.com/porsche/ai-gateway-go/internal/handler::TestPlatformDiagnosticPipeline/cancel_connect`
+- `github.com/porsche/ai-gateway-go/internal/handler::TestPlatformDiagnosticPipeline/cancel_stream`
+- `github.com/porsche/ai-gateway-go/internal/handler::TestPlatformDiagnosticPipeline/conversation_db`
+- `github.com/porsche/ai-gateway-go/internal/handler::TestPlatformDiagnosticPipeline/conversation_missing`
+- `github.com/porsche/ai-gateway-go/internal/handler::TestPlatformDiagnosticPipeline/conversation_other_user`
+- `github.com/porsche/ai-gateway-go/internal/handler::TestPlatformDiagnosticPipeline/early_eof`
+- `github.com/porsche/ai-gateway-go/internal/handler::TestPlatformDiagnosticPipeline/malformed`
+- `github.com/porsche/ai-gateway-go/internal/handler::TestPlatformDiagnosticPipeline/message_db`
+- `github.com/porsche/ai-gateway-go/internal/handler::TestPlatformDiagnosticPipeline/normal`
+- `github.com/porsche/ai-gateway-go/internal/handler::TestPlatformDiagnosticPipeline/quota_db`
+- `github.com/porsche/ai-gateway-go/internal/handler::TestPlatformDiagnosticPipeline/quota_exhausted`
+- `github.com/porsche/ai-gateway-go/internal/handler::TestPlatformDiagnosticPipeline/timeout`
+- `github.com/porsche/ai-gateway-go/internal/handler::TestPlatformDiagnosticPipeline/title_db`
+- `github.com/porsche/ai-gateway-go/internal/handler::TestPlatformDiagnosticPipeline/usage_db`
+- `github.com/porsche/ai-gateway-go/internal/handler::TestPlatformDiagnosticPipeline/validation`
+- `github.com/porsche/ai-gateway-go/internal/handler::TestPlatformDiagnosticPipeline/write_delta`
+- `github.com/porsche/ai-gateway-go/internal/handler::TestPlatformDiagnosticPipeline/write_done`
+- `github.com/porsche/ai-gateway-go/internal/handler::TestPlatformDiagnosticPipeline/write_meta`
+- `github.com/porsche/ai-gateway-go/internal/handler::TestPlatformDiagnosticRequestIDAndRouteScope`
+- `github.com/porsche/ai-gateway-go/internal/handler::TestPlatformDiagnosticSerializationFailureBeforeUpstream`
+- `github.com/porsche/ai-gateway-go/internal/handler::TestPlatformMalformedOrDuplicateDetailQueryDoesNotCallUpstream`
+- `github.com/porsche/ai-gateway-go/internal/handler::TestPlatformModelDetailHidesUnauthorizedAs404`
+- `github.com/porsche/ai-gateway-go/internal/handler::TestPlatformModelsUseWhiteLabelCatalogAndUserACL`
+- `github.com/porsche/ai-gateway-go/internal/handler::TestPlatformRejectsLegacyJWTWithoutSessionClaims`
+- `github.com/porsche/ai-gateway-go/internal/handler::TestPlatformSlashModelDetailDoesNotCallUpstreamWhenUserDenied`
+- `github.com/porsche/ai-gateway-go/internal/handler::TestPlatformSlashModelDetailUsesQueryIDAndUserACL`
+- `github.com/porsche/ai-gateway-go/internal/handler::TestPlatformStreamFailureBeforeFirstFrameReturnsJSON`
+- `github.com/porsche/ai-gateway-go/internal/handler::TestRefreshReplayHTTPRejectsAfterCommittedRevocation`
+- `github.com/porsche/ai-gateway-go/internal/migration::TestAuthCoreMigrationOnIsolatedMySQL`
+- `github.com/porsche/ai-gateway-go/internal/migration::TestPermissionMigrationRejectsPartialDDLAndLedgerDrift`
+- `github.com/porsche/ai-gateway-go/internal/migration::TestPermissionMigrationRejectsRecordedSchemaDriftAndForwardOnlyDown`
+- `github.com/porsche/ai-gateway-go/internal/migration::TestPermissionMigrationRepairsValidPartialDDLOnRerun`
+- `github.com/porsche/ai-gateway-go/internal/migration::TestPermissionSchemaMigratesAuthDataAndReruns`
+- `github.com/porsche/ai-gateway-go/internal/migration::TestPermissionSchemaRejectsCrossSchemaAndCompositeForeignKeys/composite`
+- `github.com/porsche/ai-gateway-go/internal/migration::TestPermissionSchemaRejectsCrossSchemaAndCompositeForeignKeys/cross_schema`
+- `github.com/porsche/ai-gateway-go/internal/migration::TestPermissionSchemaRejectsDrift/cascade_delete`
+- `github.com/porsche/ai-gateway-go/internal/migration::TestPermissionSchemaRejectsDrift/cascade_update`
+- `github.com/porsche/ai-gateway-go/internal/migration::TestPermissionSchemaRejectsDrift/default`
+- `github.com/porsche/ai-gateway-go/internal/migration::TestPermissionSchemaRejectsDrift/missing_fk`
+- `github.com/porsche/ai-gateway-go/internal/migration::TestPermissionSchemaRejectsDrift/missing_unique`
+- `github.com/porsche/ai-gateway-go/internal/migration::TestPermissionSchemaRejectsDrift/nullable`
+- `github.com/porsche/ai-gateway-go/internal/migration::TestPermissionSchemaRejectsDrift/unsigned`
+- `github.com/porsche/ai-gateway-go/internal/router::TestAnalyticsChartsRejectInvalidQueriesAfterAdminAuthorization`
+- `github.com/porsche/ai-gateway-go/internal/router::TestGatewayErrorDoesNotEchoSecretAndSanitizesRequestID`
+- `github.com/porsche/ai-gateway-go/internal/router::TestGatewayModelsAreFilteredByDatabaseToken`
+- `github.com/porsche/ai-gateway-go/internal/router::TestGatewayRejectsIPBeforeUpstreamAndHonorsTrustedProxy`
+- `github.com/porsche/ai-gateway-go/internal/router::TestGatewayRejectsSpoofedForwardedIPFromUntrustedPeer`
+- `github.com/porsche/ai-gateway-go/internal/router::TestGatewayRejectsTokenModelBeforeUpstream`
+- `github.com/porsche/ai-gateway-go/internal/router::TestGatewayTokenJWTCRUDScopesOwnerAndNeverReturnsPlaintextAgain`
+- `github.com/porsche/ai-gateway-go/internal/router::TestGatewayTokenManagementRejectsLegacyJWTWithoutSessionClaims`
+- `github.com/porsche/ai-gateway-go/internal/router::TestHealthOK`
+- `github.com/porsche/ai-gateway-go/internal/router::TestHostAllowlistAcceptsDomainAndRejectsDirectIPAddress`
+- `github.com/porsche/ai-gateway-go/internal/service::TestAdminPermissionDBCorruptPolicy/capability`
+- `github.com/porsche/ai-gateway-go/internal/service::TestAdminPermissionDBCorruptPolicy/catalog`
+- `github.com/porsche/ai-gateway-go/internal/service::TestAdminPermissionDBCorruptPolicy/count`
+- `github.com/porsche/ai-gateway-go/internal/service::TestAdminPermissionDBCorruptPolicy/effect`
+- `github.com/porsche/ai-gateway-go/internal/service::TestAdminPermissionDBCorruptPolicy/head_version`
+- `github.com/porsche/ai-gateway-go/internal/service::TestAdminPermissionDBCorruptPolicy/orphan`
+- `github.com/porsche/ai-gateway-go/internal/service::TestAdminPermissionDBCorruptPolicy/row_version`
+- `github.com/porsche/ai-gateway-go/internal/service::TestAdminPermissionDBCorruptPolicy/tombstone`
+- `github.com/porsche/ai-gateway-go/internal/service::TestAdminPermissionDBCorruptPolicy/ungrantable`
+- `github.com/porsche/ai-gateway-go/internal/service::TestAdminPermissionDBFreshActorSessionAndRedis/actor_deleted`
+- `github.com/porsche/ai-gateway-go/internal/service::TestAdminPermissionDBFreshActorSessionAndRedis/actor_disabled`
+- `github.com/porsche/ai-gateway-go/internal/service::TestAdminPermissionDBFreshActorSessionAndRedis/actor_missing`
+- `github.com/porsche/ai-gateway-go/internal/service::TestAdminPermissionDBFreshActorSessionAndRedis/actor_role_corrupt`
+- `github.com/porsche/ai-gateway-go/internal/service::TestAdminPermissionDBFreshActorSessionAndRedis/actor_stale`
+- `github.com/porsche/ai-gateway-go/internal/service::TestAdminPermissionDBFreshActorSessionAndRedis/actor_status_corrupt`
+- `github.com/porsche/ai-gateway-go/internal/service::TestAdminPermissionDBFreshActorSessionAndRedis/actor_version_corrupt`
+- `github.com/porsche/ai-gateway-go/internal/service::TestAdminPermissionDBFreshActorSessionAndRedis/hidden_target_and_redis_revoked`
+- `github.com/porsche/ai-gateway-go/internal/service::TestAdminPermissionDBFreshActorSessionAndRedis/redis_error`
+- `github.com/porsche/ai-gateway-go/internal/service::TestAdminPermissionDBFreshActorSessionAndRedis/redis_revoked`
+- `github.com/porsche/ai-gateway-go/internal/service::TestAdminPermissionDBFreshActorSessionAndRedis/role_denied_and_redis_revoked`
+- `github.com/porsche/ai-gateway-go/internal/service::TestAdminPermissionDBFreshActorSessionAndRedis/session_deleted`
+- `github.com/porsche/ai-gateway-go/internal/service::TestAdminPermissionDBFreshActorSessionAndRedis/session_expired`
+- `github.com/porsche/ai-gateway-go/internal/service::TestAdminPermissionDBFreshActorSessionAndRedis/session_foreign`
+- `github.com/porsche/ai-gateway-go/internal/service::TestAdminPermissionDBFreshActorSessionAndRedis/session_missing`
+- `github.com/porsche/ai-gateway-go/internal/service::TestAdminPermissionDBFreshActorSessionAndRedis/session_revoked`
+- `github.com/porsche/ai-gateway-go/internal/service::TestAdminPermissionDBFreshActorSessionAndRedis/session_stale`
+- `github.com/porsche/ai-gateway-go/internal/service::TestAdminPermissionDBFreshActorSessionAndRedis/session_version_corrupt`
+- `github.com/porsche/ai-gateway-go/internal/service::TestAdminPermissionDBFreshActorSessionAndRedis/target_role_corrupt`
+- `github.com/porsche/ai-gateway-go/internal/service::TestAdminPermissionDBFreshActorSessionAndRedis/target_status_corrupt`
+- `github.com/porsche/ai-gateway-go/internal/service::TestAdminPermissionDBFreshActorSessionAndRedis/target_version_corrupt`
+- `github.com/porsche/ai-gateway-go/internal/service::TestAdminPermissionDBLockOrderAndFreshExpiry`
+- `github.com/porsche/ai-gateway-go/internal/service::TestAdminPermissionDBReadPolicyAndRoleMatrix`
+- `github.com/porsche/ai-gateway-go/internal/service::TestAdminPermissionDBRejectsExternalTransactionAndCommitFailure`
+- `github.com/porsche/ai-gateway-go/internal/service::TestAdminPermissionDBUserWriterSerializesRead`
+- `github.com/porsche/ai-gateway-go/internal/service::TestAdminUsersReadDBActorPolicyWriterSerializes`
+- `github.com/porsche/ai-gateway-go/internal/service::TestAdminUsersReadDBCommitFailureAndOuterTransaction/false`
+- `github.com/porsche/ai-gateway-go/internal/service::TestAdminUsersReadDBCommitFailureAndOuterTransaction/true`
+- `github.com/porsche/ai-gateway-go/internal/service::TestAdminUsersReadDBDeletedAndPolicy/allow_deleted`
+- `github.com/porsche/ai-gateway-go/internal/service::TestAdminUsersReadDBDeletedAndPolicy/baseline`
+- `github.com/porsche/ai-gateway-go/internal/service::TestAdminUsersReadDBDeletedAndPolicy/corrupt`
+- `github.com/porsche/ai-gateway-go/internal/service::TestAdminUsersReadDBDeletedAndPolicy/deny_read`
+- `github.com/porsche/ai-gateway-go/internal/service::TestAdminUsersReadDBDeletedAndPolicy/ordinary`
+- `github.com/porsche/ai-gateway-go/internal/service::TestAdminUsersReadDBListAndDetail`
+- `github.com/porsche/ai-gateway-go/internal/service::TestAdminUsersReadDBStableNullOrderingAcrossPages`
+- `github.com/porsche/ai-gateway-go/internal/service::TestAnalyticsChartBuildsAllApprovedViewsFromFilteredUsage`
+- `github.com/porsche/ai-gateway-go/internal/service::TestAnalyticsExportCSVEscapesFormulaLikeModelNames`
+- `github.com/porsche/ai-gateway-go/internal/service::TestAuthProjectionDBAdminOverridesAndRefreshProof`
+- `github.com/porsche/ai-gateway-go/internal/service::TestAuthProjectionDBFreshnessAndOmission/actor_av`
+- `github.com/porsche/ai-gateway-go/internal/service::TestAuthProjectionDBFreshnessAndOmission/actor_deleted`
+- `github.com/porsche/ai-gateway-go/internal/service::TestAuthProjectionDBFreshnessAndOmission/actor_disabled`
+- `github.com/porsche/ai-gateway-go/internal/service::TestAuthProjectionDBFreshnessAndOmission/baseline`
+- `github.com/porsche/ai-gateway-go/internal/service::TestAuthProjectionDBFreshnessAndOmission/empty_head`
+- `github.com/porsche/ai-gateway-go/internal/service::TestAuthProjectionDBFreshnessAndOmission/illegal_root_rule`
+- `github.com/porsche/ai-gateway-go/internal/service::TestAuthProjectionDBFreshnessAndOmission/orphan`
+- `github.com/porsche/ai-gateway-go/internal/service::TestAuthProjectionDBFreshnessAndOmission/redis_error`
+- `github.com/porsche/ai-gateway-go/internal/service::TestAuthProjectionDBFreshnessAndOmission/session_deleted`
+- `github.com/porsche/ai-gateway-go/internal/service::TestAuthProjectionDBFreshnessAndOmission/session_expired`
+- `github.com/porsche/ai-gateway-go/internal/service::TestAuthProjectionDBFreshnessAndOmission/session_revoked`
+- `github.com/porsche/ai-gateway-go/internal/service::TestAuthProjectionDBFreshnessAndOmission/session_sv`
+- `github.com/porsche/ai-gateway-go/internal/service::TestAuthProjectionDBFreshnessAndOmission/unknown_status`
+- `github.com/porsche/ai-gateway-go/internal/service::TestAuthRedisGenerationNeverReturnsStaleRotationResult`
+- `github.com/porsche/ai-gateway-go/internal/service::TestAuthRedisPendingRotationCanBeRecoveredAfterPublishFailure`
+- `github.com/porsche/ai-gateway-go/internal/service::TestAuthSessionCreateEvictsOldestAt51`
+- `github.com/porsche/ai-gateway-go/internal/service::TestChangePasswordRehashesCredentialsRevokesSessionsAndAudits`
+- `github.com/porsche/ai-gateway-go/internal/service::TestChangePasswordRejectsIncorrectOldPasswordWithoutMutation`
+- `github.com/porsche/ai-gateway-go/internal/service::TestChangePasswordRejectsRedisDenyFailureWithoutMutation`
+- `github.com/porsche/ai-gateway-go/internal/service::TestChangePasswordRollsBackMySQLWhenPasswordAuditWriteFails`
+- `github.com/porsche/ai-gateway-go/internal/service::TestComparePendingModelErrorWriteFailureStopsFurtherFrames`
+- `github.com/porsche/ai-gateway-go/internal/service::TestCompareWhiteLabelStreamsKeepsOtherModelsRunningAfterOneFails`
+- `github.com/porsche/ai-gateway-go/internal/service::TestCurrentUserWritesRejectAccountsChangedAfterAuthentication/identity_verification/disabled`
+- `github.com/porsche/ai-gateway-go/internal/service::TestCurrentUserWritesRejectAccountsChangedAfterAuthentication/identity_verification/soft_deleted`
+- `github.com/porsche/ai-gateway-go/internal/service::TestCurrentUserWritesRejectAccountsChangedAfterAuthentication/password/disabled`
+- `github.com/porsche/ai-gateway-go/internal/service::TestCurrentUserWritesRejectAccountsChangedAfterAuthentication/password/soft_deleted`
+- `github.com/porsche/ai-gateway-go/internal/service::TestCurrentUserWritesRejectAccountsChangedAfterAuthentication/profile/disabled`
+- `github.com/porsche/ai-gateway-go/internal/service::TestCurrentUserWritesRejectAccountsChangedAfterAuthentication/profile/soft_deleted`
+- `github.com/porsche/ai-gateway-go/internal/service::TestDisableUserRejectsActorDisabledAfterAuthorization`
+- `github.com/porsche/ai-gateway-go/internal/service::TestGatewayTokenAuthenticationStorageFailuresFailClosed/last_used_write`
+- `github.com/porsche/ai-gateway-go/internal/service::TestGatewayTokenAuthenticationStorageFailuresFailClosed/owner_read`
+- `github.com/porsche/ai-gateway-go/internal/service::TestGatewayTokenAuthenticationStorageFailuresFailClosed/token_read`
+- `github.com/porsche/ai-gateway-go/internal/service::TestGatewayTokenCreateAndAuthenticate`
+- `github.com/porsche/ai-gateway-go/internal/service::TestGatewayTokenDeletedOwnerIsDisabled`
+- `github.com/porsche/ai-gateway-go/internal/service::TestGatewayTokenOwnerACLChangeAppliesToNextAuthentication`
+- `github.com/porsche/ai-gateway-go/internal/service::TestGatewayTokenPersistedACLShapesFailClosed`
+- `github.com/porsche/ai-gateway-go/internal/service::TestGatewayTokenRejectsDisabledOwner`
+- `github.com/porsche/ai-gateway-go/internal/service::TestGatewayTokenRejectsExpiredAndRevoked`
+- `github.com/porsche/ai-gateway-go/internal/service::TestLoginRateLimitRejectsFifthLoginFailure`
+- `github.com/porsche/ai-gateway-go/internal/service::TestLoginUsernameRejectsDisabledAndSoftDeletedUser`
+- `github.com/porsche/ai-gateway-go/internal/service::TestPayOrderConcurrentSettlement`
+- `github.com/porsche/ai-gateway-go/internal/service::TestPermissionBaselineAndPersistedSnapshot`
+- `github.com/porsche/ai-gateway-go/internal/service::TestPermissionCommitFailureReturnsNilSnapshot`
+- `github.com/porsche/ai-gateway-go/internal/service::TestPermissionCorruptAndOrphanStatesFailClosed/bad_catalog`
+- `github.com/porsche/ai-gateway-go/internal/service::TestPermissionCorruptAndOrphanStatesFailClosed/bad_count`
+- `github.com/porsche/ai-gateway-go/internal/service::TestPermissionCorruptAndOrphanStatesFailClosed/bad_rule_version`
+- `github.com/porsche/ai-gateway-go/internal/service::TestPermissionCorruptAndOrphanStatesFailClosed/bad_version`
+- `github.com/porsche/ai-gateway-go/internal/service::TestPermissionCorruptAndOrphanStatesFailClosed/deleted_head`
+- `github.com/porsche/ai-gateway-go/internal/service::TestPermissionCorruptAndOrphanStatesFailClosed/root_only`
+- `github.com/porsche/ai-gateway-go/internal/service::TestPermissionCorruptAndOrphanStatesFailClosed/unavailable`
+- `github.com/porsche/ai-gateway-go/internal/service::TestPermissionCorruptAndOrphanStatesFailClosed/unknown_capability`
+- `github.com/porsche/ai-gateway-go/internal/service::TestPermissionCorruptAndOrphanStatesFailClosed/unknown_effect`
+- `github.com/porsche/ai-gateway-go/internal/service::TestPermissionDualRootWriterLockSerializesSnapshot/commit`
+- `github.com/porsche/ai-gateway-go/internal/service::TestPermissionDualRootWriterLockSerializesSnapshot/rollback`
+- `github.com/porsche/ai-gateway-go/internal/service::TestPermissionEmptyHeadAndDeletedHistory`
+- `github.com/porsche/ai-gateway-go/internal/service::TestPermissionRejectsExternalTransaction`
+- `github.com/porsche/ai-gateway-go/internal/service::TestPermissionRejectsInactiveActorsAndCancelledRead/deleted`
+- `github.com/porsche/ai-gateway-go/internal/service::TestPermissionRejectsInactiveActorsAndCancelledRead/disabled`
+- `github.com/porsche/ai-gateway-go/internal/service::TestPermissionRejectsInactiveActorsAndCancelledRead/unknown_role`
+- `github.com/porsche/ai-gateway-go/internal/service::TestPermissionRejectsInactiveActorsAndCancelledRead/zero_auth_version`
+- `github.com/porsche/ai-gateway-go/internal/service::TestPermissionRejectsNilAndClosedRoots`
+- `github.com/porsche/ai-gateway-go/internal/service::TestPermissionWriterLockPreventsMixedSnapshot`
+- `github.com/porsche/ai-gateway-go/internal/service::TestRefreshReplayAuditFailureRollsBackMySQLAndRetainsRedisBarrier`
+- `github.com/porsche/ai-gateway-go/internal/service::TestRefreshRotationConcurrentOldBReturnsC`
+- `github.com/porsche/ai-gateway-go/internal/service::TestRefreshRotationConcurrentRequestsReuseOneResult`
+- `github.com/porsche/ai-gateway-go/internal/service::TestRefreshRotationReplayOutsideWindowRevokesSession`
+- `github.com/porsche/ai-gateway-go/internal/service::TestRootBootstrapCreatesOnlyTheFirstRoot`
+- `github.com/porsche/ai-gateway-go/internal/service::TestRootBootstrapDoesNotReplaceTombstonedRoot`
+- `github.com/porsche/ai-gateway-go/internal/service::TestRootTestMySQLIsolatesFixturesAndPreservesParent`
+- `github.com/porsche/ai-gateway-go/internal/service::TestUpdateManagedUserConcurrentSamePlanCommitsOneSecurityTransition`
+- `github.com/porsche/ai-gateway-go/internal/service::TestUpdateManagedUserPlanChangeRevokesExistingSession`
+- `github.com/porsche/ai-gateway-go/internal/service::TestUpdateManagedUserRejectsActorChangedAfterAuthentication/disabled`
+- `github.com/porsche/ai-gateway-go/internal/service::TestUpdateManagedUserRejectsActorChangedAfterAuthentication/downgraded`
+- `github.com/porsche/ai-gateway-go/internal/service::TestUpdateManagedUserRejectsAuthVersionOverflowBeforeMutation`
+- `github.com/porsche/ai-gateway-go/internal/service::TestUpdateManagedUserRejectsInvalidTypedInputWithoutMutation/empty_ACL_value`
+- `github.com/porsche/ai-gateway-go/internal/service::TestUpdateManagedUserRejectsInvalidTypedInputWithoutMutation/negative_limit`
+- `github.com/porsche/ai-gateway-go/internal/service::TestUpdateManagedUserRejectsInvalidTypedInputWithoutMutation/plan`
+- `github.com/porsche/ai-gateway-go/internal/service::TestUpdateManagedUserRejectsInvalidTypedInputWithoutMutation/status`
+- `github.com/porsche/ai-gateway-go/internal/service::TestUpdateManagedUserRejectsRedisFailureWithoutSQLMutation`
+- `github.com/porsche/ai-gateway-go/internal/service::TestUpdateManagedUserRoleAndAuthVersionGuards/actor_auth_version_zero`
+- `github.com/porsche/ai-gateway-go/internal/service::TestUpdateManagedUserRoleAndAuthVersionGuards/disabled_actor`
+- `github.com/porsche/ai-gateway-go/internal/service::TestUpdateManagedUserRoleAndAuthVersionGuards/equal_role`
+- `github.com/porsche/ai-gateway-go/internal/service::TestUpdateManagedUserRoleAndAuthVersionGuards/ordinary_actor`
+- `github.com/porsche/ai-gateway-go/internal/service::TestUpdateManagedUserRoleAndAuthVersionGuards/root_manages_admin`
+- `github.com/porsche/ai-gateway-go/internal/service::TestUpdateManagedUserRoleAndAuthVersionGuards/root_target`
+- `github.com/porsche/ai-gateway-go/internal/service::TestUpdateManagedUserRoleAndAuthVersionGuards/self`
+- `github.com/porsche/ai-gateway-go/internal/service::TestUpdateManagedUserRoleAndAuthVersionGuards/target_auth_version_zero`
+- `github.com/porsche/ai-gateway-go/internal/service::TestUpdateManagedUserRoleAndAuthVersionGuards/unknown_actor_role`
+- `github.com/porsche/ai-gateway-go/internal/service::TestUpdateManagedUserRoleAndAuthVersionGuards/unknown_target_role`
+- `github.com/porsche/ai-gateway-go/internal/service::TestUpdateManagedUserRollsBackSQLAndAuditWriteFailures/event-insert`
+- `github.com/porsche/ai-gateway-go/internal/service::TestUpdateManagedUserRollsBackSQLAndAuditWriteFailures/user-update`
+- `github.com/porsche/ai-gateway-go/internal/service::TestUpdateManagedUserRollsBackWhenCommitFails`
+- `github.com/porsche/ai-gateway-go/internal/service::TestUpdateManagedUserSecurityChangeWithNoSessionStillAudits`
+- `github.com/porsche/ai-gateway-go/internal/service::TestUpdateManagedUserSemanticACLNoopReturnsStoredRepresentation`
+- `github.com/porsche/ai-gateway-go/internal/service::TestUpdateManagedUserStatusMixedAndDailyLimitTransitions/daily_limit_only`
+- `github.com/porsche/ai-gateway-go/internal/service::TestUpdateManagedUserStatusMixedAndDailyLimitTransitions/mixed`
+- `github.com/porsche/ai-gateway-go/internal/service::TestUpdateManagedUserStatusMixedAndDailyLimitTransitions/status`
+- `github.com/porsche/ai-gateway-go/internal/service::TestUsernameRegistrationPermanentlyReservesTrimmedUsername`
+
+## Sandbox classification
+
+- First failure: environment-only cache permission denial, reported as `operation not permitted`; no product test ran and no tracked file changed.
+- Second failure: environment-only loopback denial, reported as `listen tcp6 [::1]:0: bind: operation not permitted` in existing `httptest` callers.
+- Approved escalation reran the same initialization and full test selections successfully. These failures are sandbox restrictions, not product failures.
+- No service, fixture, container, production operation, model call, or SSE call was started.
+
+## Git status
+
+- Before initialization: empty `git status --short`.
+- After initialization and all gates: empty `git status --short` before creating this report.
