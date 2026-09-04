@@ -7,6 +7,12 @@ import (
 	"testing"
 )
 
+func TestPermissionOverrideIntentFrozenTypeName(t *testing.T) {
+	if got := reflect.TypeOf(PermissionOverrideIntent{}).Name(); got != "PermissionOverrideIntent" {
+		t.Fatalf("permission override DTO type name = %q, want PermissionOverrideIntent", got)
+	}
+}
+
 func descriptorFor(t *testing.T, action Action) Descriptor {
 	t.Helper()
 	for _, descriptor := range InactiveActionDescriptors() {

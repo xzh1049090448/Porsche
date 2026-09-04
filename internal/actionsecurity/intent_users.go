@@ -27,11 +27,10 @@ type RoleIntent struct {
 	ExpectedAuthVersion int
 	Reason              string
 }
-type PermissionOverride struct {
+type PermissionOverrideIntent struct {
 	Capability string
 	Effect     int
 }
-type PermissionOverrideIntent = PermissionOverride
 type PermissionsWriteIntent struct {
 	TargetGUID                 int64
 	ExpectedPermissionsVersion int64
