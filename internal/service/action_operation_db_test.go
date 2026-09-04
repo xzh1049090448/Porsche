@@ -245,7 +245,12 @@ func TestActionSecurityRedisRealWindowsTTLAndTotalFailure(t *testing.T) {
 		}
 	})
 	t.Run("ip_20_per_15m_varied_actor_session_non_sliding", func(t *testing.T) {
-		ip := fmt.Sprintf("2001:db8:%x::20", uint64(base)&0xffff)
+		var nonce [8]byte
+		if _, err := io.ReadFull(cryptorand.Reader, nonce[:]); err != nil {
+			t.Fatal(err)
+		}
+		ip := fmt.Sprintf("2001:db8:%x:%x:%x:%x::20", nonce[0:2], nonce[2:4], nonce[4:6], nonce[6:8])
+		clear(nonce[:])
 		key := keyFor(t, actionsecurity.RateVerificationIP, []byte(ip))
 		var first time.Duration
 		for attempt := int64(1); attempt <= 20; attempt++ {
