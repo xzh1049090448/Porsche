@@ -60,5 +60,23 @@
   ],
   "production_claims": false,
   "frontend_claims": false,
-  "deployment_claims": false
+  "deployment_claims": false,
+  "cleanup": {
+    "status": "CLEANUP_PASS",
+    "public_evidence_path": "docs/superpowers/reports/validation/2026-09-04-b1e-operation-safety-foundation/cleanup.json",
+    "artifact_sha256": "eab9d747025635cc45e24e96732eef2b26f8acf22e7bbeb5a42ad9e8310a2a3e",
+    "producing_commit": "SELF_COMMIT",
+    "producing_commit_subject": "test: record B1-E exact fixture cleanup",
+    "redaction_status": "public_redacted_hashes_and_counts_only",
+    "reviewer_verdict": "CLEANUP_PASS",
+    "review_artifact_file_sha256": "60e60d0e267ca3e52b6f52d76abf100570530efb7e2ced70996bff6f4f12822e",
+    "review_artifact_canonical_self_sha256": "57b01488d7b860adfed99947322ed0724f04eacb74914249cfd7f51ca85d30a4",
+    "transcript_sha256": "2f27f0ef7dabd3f87e3e67f02ace5108ee1aba17cda7bd07699a8dbfa08b03cd",
+    "zero_residual": true,
+    "unrelated_resources_unchanged": true,
+    "initial_aggregate_retry_then_bounded_read_only_pass": true,
+    "resource_mutations_after_retry": 0
+  },
+  "fixture_retained_alive": false,
+  "task15_started": false
 }
