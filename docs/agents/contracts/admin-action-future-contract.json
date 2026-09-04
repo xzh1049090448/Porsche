@@ -1,0 +1,205 @@
+{
+  "status": "inactive_contract",
+  "production_observation": 404,
+  "implementation": {
+    "handler_exists": false,
+    "backend_route_exists": false,
+    "frontend_client_exists": false
+  },
+  "endpoints": {
+    "issue": {
+      "method": "POST",
+      "path": "/admin/v2/action-verifications",
+      "request_headers": {
+        "Idempotency-Key": "forbidden",
+        "X-Action-Ticket": "forbidden"
+      },
+      "response_headers": {
+        "Cache-Control": "no-store",
+        "X-Request-ID": "required_non_empty"
+      },
+      "request_example": {
+        "action": "users.delete",
+        "intent": {
+          "target_guid": "123456789012345678",
+          "expected_auth_version": 7,
+          "reason": "duplicate account"
+        },
+        "current_password": "example-only-not-a-secret"
+      },
+      "response_status": 201,
+      "response_example": {
+        "ticket": "av_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "expires_at": 1790000300000
+      },
+      "post_replay_count": 0
+    },
+    "business_posts": {
+      "method": "POST",
+      "path_rule": "action_specific_prd_route",
+      "generic_execute_route": false,
+      "currently_unregistered_paths": [
+        "/admin/v2/users",
+        "/admin/v2/users/:guid/actions",
+        "/admin/v2/public-content/announcements/publish",
+        "/admin/v2/public-content/announcements/rollback"
+      ],
+      "request_headers": {
+        "Idempotency-Key": "required_unique_original",
+        "X-Action-Ticket": "required"
+      },
+      "response_headers": {
+        "Cache-Control": "no-store",
+        "X-Request-ID": "required_non_empty"
+      },
+      "success_semantics": "committed_terminal_only_with_operation_ref",
+      "post_replay_count": 0
+    },
+    "query": {
+      "method": "GET",
+      "path": "/admin/v2/operations?scope={descriptor_action_name}",
+      "example_path": "/admin/v2/operations?scope=users.delete",
+      "request_headers": {
+        "Idempotency-Key": "required_original"
+      },
+      "response_headers": {
+        "Cache-Control": "no-store",
+        "X-Request-ID": "required_non_empty",
+        "Retry-After": "processing_integer_seconds_1_to_30"
+      },
+      "processing_response": {
+        "operation_ref": "op_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "scope": "users.delete",
+        "status": "processing",
+        "finished_at": null,
+        "failure_code": null
+      },
+      "get_replay_after_refresh": 1,
+      "requires_exact_adapter": true,
+      "requires_original_scope_key": true
+    }
+  },
+  "operation_statuses": [
+    "processing",
+    "succeeded",
+    "failed",
+    "pending_recovery"
+  ],
+  "failure_codes": [
+    "action_rejected",
+    "target_version_conflict",
+    "policy_version_conflict",
+    "target_state_conflict",
+    "consumer_validation_failed"
+  ],
+  "error_contract": {
+    "envelope_example": {
+      "error": {
+        "code": "idempotency_conflict",
+        "message": "请求无法完成",
+        "type": "admin_action_error",
+        "request_id": "req-contract-example-1"
+      }
+    },
+    "commit_unknown_example": {
+      "error": {
+        "code": "operation_commit_unknown",
+        "message": "请求无法完成",
+        "type": "admin_action_error",
+        "request_id": "req-contract-example-2",
+        "operation_ref": "op_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+      }
+    },
+    "required_fields": [
+      "code",
+      "message",
+      "type",
+      "request_id"
+    ],
+    "fixed_message": "请求无法完成",
+    "fixed_type": "admin_action_error",
+    "prohibited_fields": [
+      "target",
+      "ticket",
+      "idempotency_key",
+      "digest",
+      "internal_id",
+      "dependency_raw_text"
+    ],
+    "operation_ref_rule": "only_operation_commit_unknown",
+    "http_statuses": [
+      {
+        "status": 400,
+        "category": "invalid_header_body_or_format",
+        "retry_after_seconds_range": null
+      },
+      {
+        "status": 401,
+        "category": "existing_authentication_failure",
+        "retry_after_seconds_range": null
+      },
+      {
+        "status": 403,
+        "category": "verification_ticket_permission_or_session_rejection",
+        "retry_after_seconds_range": null
+      },
+      {
+        "status": 404,
+        "category": "operation_or_target_not_confirmable_or_hidden",
+        "retry_after_seconds_range": null
+      },
+      {
+        "status": 409,
+        "category": "idempotency_payload_or_cross_session_conflict",
+        "retry_after_seconds_range": null
+      },
+      {
+        "status": 410,
+        "category": "operation_result_query_expired",
+        "retry_after_seconds_range": null
+      },
+      {
+        "status": 422,
+        "category": "action_descriptor_inactive",
+        "retry_after_seconds_range": null
+      },
+      {
+        "status": 429,
+        "category": "redis_rate_limited",
+        "retry_after_header": "required_integer_seconds",
+        "retry_after_seconds_range": {
+          "minimum": 1,
+          "maximum": null
+        }
+      },
+      {
+        "status": 503,
+        "category": "redis_mysql_audit_outbox_unavailable_or_commit_unknown",
+        "retry_after_seconds_range": null
+      }
+    ]
+  },
+  "frontend": {
+    "memory_only": [
+      "ticket",
+      "idempotency_key",
+      "unknown_state"
+    ],
+    "storage_prohibitions": [
+      "localStorage",
+      "sessionStorage",
+      "URL",
+      "analytics",
+      "ordinary_logs"
+    ],
+    "post_replay_count": 0,
+    "query_get_after_refresh_max": 1,
+    "unload_recovery": false
+  },
+  "acceptance": {
+    "internal_foundation_is_http_acceptance": false,
+    "contract_callable": false,
+    "contract_accepted": false,
+    "statement": "The internal foundation does not constitute HTTP acceptance."
+  }
+}
