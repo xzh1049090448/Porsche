@@ -334,12 +334,16 @@ lease owner 每次 claim 使用新的随机值及 lease HMAC。B1-E 不提供自
 ### 9.4 Execute
 
 Execute 以 `Execute(ctx, identity *OperationIdentity, ...)` 接收 Begin 返回的 operation 身份，并自行拥有
-一个新的 `*gorm.DB` 事务。`OperationIdentity` 是一次性的内存能力：调用方把所有权转移给 Execute，
-不得复制、序列化、复用或用公开字段重建。其 JSON 精确只允许 `public_ref`；内部数据库 ID、lease owner
-和 Begin 时绑定的 actor claims 均不可序列化。Execute 在所有非 nil 返回路径（包括参数拒绝、Redis
-失败或撤销、事务失败、已知拒绝、成功和 commit unknown）清零调用方原对象的 `LeaseOwner`，commit
-unknown 也必须先清租约再返回。原值传参只会清除方法内部副本，无法撤销调用方持有的能力，因此本段
-以指针消费语义修正原冻结签名；该修正不增加路由、不激活动作或生产 consumer。
+一个新的 `*gorm.DB` 事务。`OperationIdentity` 公开字段只有内部数据库 ID 和 `PublicRef`，JSON 精确只
+允许 `public_ref`；lease owner 和 Begin 时绑定的 actor claims 均不可序列化。原始 lease owner 只存于
+不导出的共享一次性 capability 容器中，Begin 返回 identity 的所有浅拷贝共享该容器。Execute 在任何
+Redis/MySQL 或 callback 工作之前原子 take：加锁检查 capability 尚未消费且 raw lease 非零，把 lease
+复制到仅本次调用持有的局部数组，立即清零共享 raw 并永久标记 consumed。竞争 Execute 最多一个调用
+取得能力；其余调用 fail closed，不能进入 consumer。取得能力后，无论参数拒绝、Redis 失败或撤销、
+事务失败、已知拒绝、成功或 commit unknown，均不得恢复 capability，并在返回前清零局部 lease。
+因此 identity 可被浅拷贝但能力仍只能消费一次，也不能通过公开字段、JSON 或反序列化重建。此前仅清零
+传入 identity 导出字段的指针语义不能覆盖调用方已产生的浅拷贝，本段以共享 capability 取代该约定；
+该修正不增加路由、不激活动作或生产 consumer。
 
 Execute 重新按锁序锁 actor/session、
 operation、verification，核对 lease owner、state、ticket/intent/session/auth version，并以条件更新
