@@ -204,67 +204,87 @@ func VerifyAdminOperationSafetySchema(ctx context.Context, db *gorm.DB) error {
 }
 
 func verifyAdminOperationTable(ctx context.Context, db *gorm.DB, currentSchema string, contract adminOperationTableContract) bool {
-	var metadata struct {
-		Engine    string `gorm:"column:engine"`
-		Collation string `gorm:"column:table_collation"`
-	}
-	if err := db.WithContext(ctx).Raw(`SELECT engine, table_collation FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name=?`, contract.name).Scan(&metadata).Error; err != nil {
+	var actual adminOperationTableMetadata
+	if err := db.WithContext(ctx).Raw(`SELECT engine, table_collation FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name=?`, contract.name).Row().Scan(&actual.engine, &actual.collation); err != nil {
 		return false
 	}
-	var columnRows []struct {
-		Name       string         `gorm:"column:column_name"`
-		ColumnType string         `gorm:"column:column_type"`
-		Nullable   string         `gorm:"column:is_nullable"`
-		DefaultVal sql.NullString `gorm:"column:column_default"`
-		Extra      string         `gorm:"column:extra"`
-	}
-	if err := db.WithContext(ctx).Raw(`SELECT column_name, column_type, is_nullable, column_default, extra FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name=? ORDER BY ordinal_position`, contract.name).Scan(&columnRows).Error; err != nil {
+	columnRows, err := db.WithContext(ctx).Raw(`SELECT column_name, column_type, is_nullable, column_default, extra FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name=? ORDER BY ordinal_position`, contract.name).Rows()
+	if err != nil {
 		return false
 	}
-	actual := adminOperationTableMetadata{engine: metadata.Engine, collation: metadata.Collation}
-	for _, row := range columnRows {
-		actual.columns = append(actual.columns, adminOperationColumnMetadata{name: row.Name, columnType: row.ColumnType, nullable: row.Nullable, defaultVal: row.DefaultVal, extra: row.Extra})
+	for columnRows.Next() {
+		var row adminOperationColumnMetadata
+		if err := columnRows.Scan(&row.name, &row.columnType, &row.nullable, &row.defaultVal, &row.extra); err != nil {
+			_ = columnRows.Close()
+			return false
+		}
+		actual.columns = append(actual.columns, row)
 	}
-	var indexRows []struct {
-		Name      string `gorm:"column:index_name"`
-		Column    string `gorm:"column:column_name"`
-		Sequence  int    `gorm:"column:seq_in_index"`
-		NonUnique int    `gorm:"column:non_unique"`
-	}
-	if err := db.WithContext(ctx).Raw(`SELECT index_name, column_name, seq_in_index, non_unique FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name=? ORDER BY index_name, seq_in_index`, contract.name).Scan(&indexRows).Error; err != nil {
+	if err := columnRows.Err(); err != nil {
+		_ = columnRows.Close()
 		return false
 	}
-	for _, row := range indexRows {
-		actual.indexes = append(actual.indexes, adminOperationIndexMetadata{name: row.Name, column: row.Column, sequence: row.Sequence, nonUnique: row.NonUnique})
+	if err := columnRows.Close(); err != nil {
+		return false
 	}
-	var foreignKeyRows []struct {
-		Name         string `gorm:"column:constraint_name"`
-		Column       string `gorm:"column:column_name"`
-		Ordinal      int    `gorm:"column:ordinal_position"`
-		TargetSchema string `gorm:"column:referenced_table_schema"`
-		TargetTable  string `gorm:"column:referenced_table_name"`
-		TargetColumn string `gorm:"column:referenced_column_name"`
-		DeleteRule   string `gorm:"column:delete_rule"`
-		UpdateRule   string `gorm:"column:update_rule"`
+	indexRows, err := db.WithContext(ctx).Raw(`SELECT index_name, column_name, seq_in_index, non_unique FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name=? ORDER BY index_name, seq_in_index`, contract.name).Rows()
+	if err != nil {
+		return false
+	}
+	for indexRows.Next() {
+		var row adminOperationIndexMetadata
+		if err := indexRows.Scan(&row.name, &row.column, &row.sequence, &row.nonUnique); err != nil {
+			_ = indexRows.Close()
+			return false
+		}
+		actual.indexes = append(actual.indexes, row)
+	}
+	if err := indexRows.Err(); err != nil {
+		_ = indexRows.Close()
+		return false
+	}
+	if err := indexRows.Close(); err != nil {
+		return false
 	}
 	query := `SELECT k.constraint_name, k.column_name, k.ordinal_position, k.referenced_table_schema, k.referenced_table_name, k.referenced_column_name, r.delete_rule, r.update_rule FROM information_schema.key_column_usage k JOIN information_schema.referential_constraints r ON r.constraint_schema=k.constraint_schema AND r.table_name=k.table_name AND r.constraint_name=k.constraint_name WHERE k.table_schema=DATABASE() AND k.table_name=? AND k.referenced_table_name IS NOT NULL ORDER BY k.constraint_name, k.ordinal_position`
-	if err := db.WithContext(ctx).Raw(query, contract.name).Scan(&foreignKeyRows).Error; err != nil {
+	foreignKeyRows, err := db.WithContext(ctx).Raw(query, contract.name).Rows()
+	if err != nil {
 		return false
 	}
-	for _, row := range foreignKeyRows {
-		actual.foreignKeys = append(actual.foreignKeys, adminOperationForeignKeyMetadata{name: row.Name, column: row.Column, ordinal: row.Ordinal, targetSchema: row.TargetSchema, targetTable: row.TargetTable, targetColumn: row.TargetColumn, deleteRule: row.DeleteRule, updateRule: row.UpdateRule})
+	for foreignKeyRows.Next() {
+		var row adminOperationForeignKeyMetadata
+		if err := foreignKeyRows.Scan(&row.name, &row.column, &row.ordinal, &row.targetSchema, &row.targetTable, &row.targetColumn, &row.deleteRule, &row.updateRule); err != nil {
+			_ = foreignKeyRows.Close()
+			return false
+		}
+		actual.foreignKeys = append(actual.foreignKeys, row)
 	}
-	var checkRows []struct {
-		Name     string `gorm:"column:constraint_name"`
-		Clause   string `gorm:"column:check_clause"`
-		Enforced string `gorm:"column:enforced"`
+	if err := foreignKeyRows.Err(); err != nil {
+		_ = foreignKeyRows.Close()
+		return false
+	}
+	if err := foreignKeyRows.Close(); err != nil {
+		return false
 	}
 	checkQuery := `SELECT tc.constraint_name, cc.check_clause, tc.enforced FROM information_schema.table_constraints tc JOIN information_schema.check_constraints cc ON cc.constraint_schema=tc.constraint_schema AND cc.constraint_name=tc.constraint_name WHERE tc.table_schema=DATABASE() AND tc.table_name=? AND tc.constraint_type='CHECK' ORDER BY tc.constraint_name`
-	if err := db.WithContext(ctx).Raw(checkQuery, contract.name).Scan(&checkRows).Error; err != nil {
+	checkRows, err := db.WithContext(ctx).Raw(checkQuery, contract.name).Rows()
+	if err != nil {
 		return false
 	}
-	for _, row := range checkRows {
-		actual.checks = append(actual.checks, adminOperationCheckMetadata{name: row.Name, clause: row.Clause, enforced: row.Enforced})
+	for checkRows.Next() {
+		var row adminOperationCheckMetadata
+		if err := checkRows.Scan(&row.name, &row.clause, &row.enforced); err != nil {
+			_ = checkRows.Close()
+			return false
+		}
+		actual.checks = append(actual.checks, row)
+	}
+	if err := checkRows.Err(); err != nil {
+		_ = checkRows.Close()
+		return false
+	}
+	if err := checkRows.Close(); err != nil {
+		return false
 	}
 	return matchesAdminOperationTableContract(contract, actual, currentSchema)
 }

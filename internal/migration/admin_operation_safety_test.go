@@ -6,12 +6,100 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
+
+	projectdb "github.com/porsche/ai-gateway-go/internal/db"
+	"gorm.io/gorm"
 )
 
 func nullString(value string) sql.NullString {
 	return sql.NullString{String: value, Valid: true}
+}
+
+func TestAdminOperationSafetyRealMySQLDownUpAndVerifier(t *testing.T) {
+	raw := strings.TrimSpace(os.Getenv("TEST_DATABASE_URL"))
+	if raw == "" {
+		t.Skip("requires isolated TEST_DATABASE_URL MySQL fixture")
+	}
+	if !isTestDatabaseURL(raw) {
+		t.Fatal("TEST_DATABASE_URL must point to a dedicated *_test database")
+	}
+	gdb, err := projectdb.Open(raw, "test")
+	if err != nil {
+		t.Fatalf("open isolated MySQL fixture: %v", err)
+	}
+	migrations, err := All()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(migrations) != 5 || migrations[4].Version != "0005" {
+		t.Fatalf("unexpected migration sequence: %#v", migrations)
+	}
+	reapplied := false
+	t.Cleanup(func() {
+		if reapplied {
+			return
+		}
+		if err := executeAdminOperationSafetyFixtureSQL(gdb, migrations[4].UpSQL); err != nil {
+			t.Errorf("restore 0005 after failed down/up test: %v", err)
+		}
+	})
+	if err := Verify(context.Background(), gdb); err != nil {
+		t.Fatalf("verify fresh 0001..0005 schema: %v", err)
+	}
+	if err := executeAdminOperationSafetyFixtureSQL(gdb, migrations[4].DownSQL); err != nil {
+		t.Fatalf("apply fixture-only 0005 down: %v", err)
+	}
+	for _, table := range []string{"admin_action_verifications", "admin_operations"} {
+		var count int64
+		if err := gdb.Raw(`SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = ?`, table).Scan(&count).Error; err != nil {
+			t.Fatalf("inspect dropped table %s: %v", table, err)
+		}
+		if count != 0 {
+			t.Fatalf("0005 down retained %s", table)
+		}
+	}
+	for _, table := range []string{"schema_migrations", "users", "user_sessions", "user_permission_heads", "user_permission_overrides"} {
+		var count int64
+		if err := gdb.Raw(`SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = ?`, table).Scan(&count).Error; err != nil {
+			t.Fatalf("inspect retained table %s: %v", table, err)
+		}
+		if count != 1 {
+			t.Fatalf("0005 down changed prior migration table %s", table)
+		}
+	}
+	var countIndex int64
+	if err := gdb.Raw(`SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema = DATABASE() AND table_name = 'users' AND index_name = 'idx_users_admin_read_count'`).Scan(&countIndex).Error; err != nil {
+		t.Fatalf("inspect retained 0004 index: %v", err)
+	}
+	if countIndex != 3 {
+		t.Fatalf("0005 down changed 0004 index columns: %d", countIndex)
+	}
+	if err := executeAdminOperationSafetyFixtureSQL(gdb, migrations[4].UpSQL); err != nil {
+		t.Fatalf("reapply fixture-only 0005 up: %v", err)
+	}
+	reapplied = true
+	if err := Verify(context.Background(), gdb); err != nil {
+		t.Fatalf("verify schema after 0005 down/up: %v", err)
+	}
+	var enforcedChecks int64
+	if err := gdb.Raw(`SELECT COUNT(*) FROM information_schema.table_constraints tc JOIN information_schema.check_constraints cc ON cc.constraint_schema = tc.constraint_schema AND cc.constraint_name = tc.constraint_name WHERE tc.table_schema = DATABASE() AND tc.table_name IN ('admin_action_verifications','admin_operations') AND tc.constraint_type = 'CHECK' AND tc.enforced = 'YES' AND cc.check_clause <> ''`).Scan(&enforcedChecks).Error; err != nil {
+		t.Fatalf("read MySQL 8 CHECK metadata: %v", err)
+	}
+	if enforcedChecks != 11 {
+		t.Fatalf("enforced CHECK count = %d, want 11", enforcedChecks)
+	}
+}
+
+func executeAdminOperationSafetyFixtureSQL(gdb *gorm.DB, sqlBytes []byte) error {
+	for _, statement := range splitStatements(string(sqlBytes)) {
+		if err := gdb.Exec(statement).Error; err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func cloneAdminOperationTableMetadata(value adminOperationTableMetadata) adminOperationTableMetadata {
