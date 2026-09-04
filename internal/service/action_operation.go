@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"math"
 	"reflect"
@@ -49,7 +50,17 @@ type OperationIdentity struct {
 	ID         int64
 	PublicRef  string
 	LeaseOwner [32]byte
+	actor      ActionActor
 }
+
+// OperationIdentity is an in-memory handoff from Begin to Execute. It cannot
+// be serialized and reconstructed because Execute must retain the exact actor
+// claims presented to Begin and compare them with freshly locked state.
+func (identity OperationIdentity) String() string {
+	return fmt.Sprintf("OperationIdentity{PublicRef:%q}", identity.PublicRef)
+}
+
+func (identity OperationIdentity) GoString() string { return identity.String() }
 
 type OperationView struct {
 	PublicRef         string
@@ -206,7 +217,7 @@ func (s *ActionOperationService) Begin(ctx context.Context, in OperationBegin) (
 				expiredOutcome = true
 				return nil
 			}
-			identity = &OperationIdentity{ID: existing.ID, PublicRef: existing.PublicRef}
+			identity = &OperationIdentity{ID: existing.ID, PublicRef: existing.PublicRef, actor: in.Actor}
 			view = operationView(descriptor, existing, finalNow)
 			return nil
 		}
@@ -292,7 +303,7 @@ func (s *ActionOperationService) Begin(ctx context.Context, in OperationBegin) (
 		operation.UpdatedAt = finalNow
 		operation.LeaseExpiresAt = &leaseExpires
 		operation.QueryExpiresAt = queryExpires
-		identity = &OperationIdentity{ID: operation.ID, PublicRef: publicRef, LeaseOwner: leaseOwner}
+		identity = &OperationIdentity{ID: operation.ID, PublicRef: publicRef, LeaseOwner: leaseOwner, actor: in.Actor}
 		clear(leaseOwner[:])
 		view = operationView(descriptor, operation, finalNow)
 		return nil

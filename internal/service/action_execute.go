@@ -33,29 +33,10 @@ func (s *ActionOperationService) Execute(ctx context.Context, identity Operation
 func (s *ActionOperationService) executeWithRunner(ctx context.Context, identity OperationIdentity, consumer TransactionalActionConsumer, audit TransactionalAuditWriter, outbox TransactionalOutboxWriter, runner actionExecuteTransactionRunner) (*OperationView, error) {
 	defer clear(identity.LeaseOwner[:])
 	if s == nil || ctx == nil || identity.ID <= 0 || len(identity.PublicRef) != 46 || operationInterfaceNil(consumer) ||
-		operationInterfaceNil(audit) || operationInterfaceNil(outbox) || operationInterfaceNil(runner) {
+		operationInterfaceNil(audit) || operationInterfaceNil(outbox) || operationInterfaceNil(runner) || !validOperationActorClaims(identity.actor) {
 		return nil, ErrActionOperationUnavailable
 	}
-
-	// Resolve the lock keys without retaining a transaction or trusting this
-	// snapshot for authorization. Every value is re-read under locks below.
-	var snapshot models.AdminOperation
-	if err := s.operationDB(ctx).Select("id", "actor_user_id", "session_id", "public_ref").Where("id = ?", identity.ID).First(&snapshot).Error; err != nil ||
-		!constantTimeOperationStringEqual(snapshot.PublicRef, identity.PublicRef) {
-		return nil, ErrActionOperationUnavailable
-	}
-	var sessionSnapshot models.Session
-	if err := s.operationDB(ctx).Select("id", "sid", "user_id", "session_version").Where("id = ?", snapshot.SessionID).First(&sessionSnapshot).Error; err != nil ||
-		sessionSnapshot.UserID != snapshot.ActorUserID || len(sessionSnapshot.SID) != 36 {
-		return nil, ErrActionOperationUnavailable
-	}
-	var actorSnapshot models.User
-	if err := s.operationDB(ctx).Select("id", "guid", "auth_version").Where("id = ?", snapshot.ActorUserID).First(&actorSnapshot).Error; err != nil {
-		return nil, ErrActionOperationUnavailable
-	}
-	actorClaims := ActionActor{UserID: actorSnapshot.ID, UserGUID: actorSnapshot.Guid, AuthVersion: actorSnapshot.AuthVersion,
-		SessionSID: sessionSnapshot.SID, SessionVersion: sessionSnapshot.SessionVersion}
-	revoked, err := s.authRedis.IsSessionRevoked(ctx, sessionSnapshot.SID)
+	revoked, err := s.authRedis.IsSessionRevoked(ctx, identity.actor.SessionSID)
 	if err != nil {
 		return nil, ErrActionOperationUnavailable
 	}
@@ -70,7 +51,7 @@ func (s *ActionOperationService) executeWithRunner(ctx context.Context, identity
 	callbackComplete := false
 	var resultView *OperationView
 	err = runner.Run(ctx, s.operationDB(ctx), func(tx *gorm.DB) error {
-		locked, err := lockOperationActorSession(tx, actorClaims, startedAt)
+		locked, err := lockOperationActorSession(tx, identity.actor, startedAt)
 		if err != nil {
 			return err
 		}

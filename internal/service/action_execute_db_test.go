@@ -17,6 +17,7 @@ import (
 	"github.com/porsche/ai-gateway-go/internal/actionsecurity"
 	"github.com/porsche/ai-gateway-go/internal/authz"
 	"github.com/porsche/ai-gateway-go/internal/models"
+	"github.com/redis/go-redis/v9"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
@@ -147,7 +148,7 @@ func (c *actionExecuteConn) QueryContext(_ context.Context, query string, args [
 	if (kind == "policy" || kind == "rules") && strings.Contains(query, "FOR UPDATE") {
 		sequenceKind += "_lock"
 	}
-	expected := []string{"preflight_operation", "preflight_session", "preflight_actor", "actor", "session", "operation", "verification", "target", "policy_lock", "rules_lock", "policy", "rules"}
+	expected := []string{"actor", "session", "operation", "verification", "target", "policy_lock", "rules_lock", "policy", "rules"}
 	if c.script.queryStep >= len(expected) || sequenceKind != expected[c.script.queryStep] {
 		return nil, fmt.Errorf("execute query order step %d=%s", c.script.queryStep, sequenceKind)
 	}
@@ -716,7 +717,8 @@ func actionExecuteFixture(t *testing.T) (*ActionOperationService, *actionExecute
 	if err != nil {
 		t.Fatal(err)
 	}
-	return service, script, OperationIdentity{ID: operation.ID, PublicRef: publicRef, LeaseOwner: leaseOwner}
+	return service, script, OperationIdentity{ID: operation.ID, PublicRef: publicRef, LeaseOwner: leaseOwner,
+		actor: ActionActor{UserID: actor.ID, UserGUID: actor.Guid, AuthVersion: actor.AuthVersion, SessionSID: session.SID, SessionVersion: session.SessionVersion}}
 }
 
 func TestActionExecuteSucceededAtomicAndLockOrder(t *testing.T) {
@@ -728,6 +730,9 @@ func TestActionExecuteSucceededAtomicAndLockOrder(t *testing.T) {
 	}
 	if consumer.calls != 1 || script.state.effects != 1 || script.state.callbackAudits != 1 || script.state.callbackOutbox != 1 || script.state.officialAudits != 1 || script.state.officialOutbox != 1 || script.state.operation.State != models.OperationSucceeded {
 		t.Fatalf("non-atomic success: %#v", script.state)
+	}
+	if len(script.queries) != 9 || executeQueryKind(script.queries[0]) != "actor" {
+		t.Fatalf("unexpected pre-transaction DB reads or missing locks: %v", script.queries)
 	}
 	locked := make([]string, 0)
 	for _, query := range script.queries {
@@ -870,6 +875,109 @@ func TestActionExecuteCorruptBindingsAndCallbackErrorsFailClosed(t *testing.T) {
 		if view != nil || !errors.Is(err, ErrActionOperationUnavailable) || strings.Contains(err.Error(), "private") || consumer.calls != 1 || !executeStateIsPristine(script.state) {
 			t.Fatalf("callback failure leaked/committed: %#v %v %#v", view, err, script.state)
 		}
+	}
+}
+
+func TestActionExecuteRejectsDatabaseIdentityDriftWithoutConsumer(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*actionExecuteScript)
+	}{
+		{name: "user guid", mutate: func(script *actionExecuteScript) { script.actor.Guid++ }},
+		{name: "auth version", mutate: func(script *actionExecuteScript) { script.actor.AuthVersion++ }},
+		{name: "session version", mutate: func(script *actionExecuteScript) { script.session.SessionVersion++ }},
+		{name: "session sid", mutate: func(script *actionExecuteScript) { script.session.SID = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee" }},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			service, script, identity := actionExecuteFixture(t)
+			tc.mutate(script)
+			consumer := &fixtureActionConsumer{outcome: TerminalOutcome{ResultKind: models.ResultNone, HTTPStatus: 204}}
+			view, err := service.Execute(context.Background(), identity, consumer, &fixtureActionAuditWriter{}, &fixtureActionOutboxWriter{})
+			if view != nil || !errors.Is(err, ErrActionOperationForbidden) || consumer.calls != 0 || !executeStateIsPristine(script.state) || script.rollbackCount != 1 {
+				t.Fatalf("identity drift executed: %#v %v calls=%d state=%#v rollbacks=%d", view, err, consumer.calls, script.state, script.rollbackCount)
+			}
+		})
+	}
+}
+
+func TestActionExecuteRejectsMutatedOrMissingPrivateClaims(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*OperationIdentity)
+		want   error
+	}{
+		{name: "missing", mutate: func(identity *OperationIdentity) { identity.actor = ActionActor{} }, want: ErrActionOperationUnavailable},
+		{name: "user id", mutate: func(identity *OperationIdentity) { identity.actor.UserID = 0 }, want: ErrActionOperationUnavailable},
+		{name: "user guid", mutate: func(identity *OperationIdentity) { identity.actor.UserGUID++ }, want: ErrActionOperationForbidden},
+		{name: "auth version", mutate: func(identity *OperationIdentity) { identity.actor.AuthVersion++ }, want: ErrActionOperationForbidden},
+		{name: "session sid", mutate: func(identity *OperationIdentity) { identity.actor.SessionSID = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee" }, want: ErrActionOperationForbidden},
+		{name: "session version", mutate: func(identity *OperationIdentity) { identity.actor.SessionVersion++ }, want: ErrActionOperationForbidden},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			service, script, identity := actionExecuteFixture(t)
+			tc.mutate(&identity)
+			consumer := &fixtureActionConsumer{outcome: TerminalOutcome{ResultKind: models.ResultNone, HTTPStatus: 204}}
+			view, err := service.Execute(context.Background(), identity, consumer, &fixtureActionAuditWriter{}, &fixtureActionOutboxWriter{})
+			if view != nil || !errors.Is(err, tc.want) || consumer.calls != 0 || !executeStateIsPristine(script.state) {
+				t.Fatalf("private claims accepted: %#v %v want=%v calls=%d state=%#v", view, err, tc.want, consumer.calls, script.state)
+			}
+		})
+	}
+}
+
+type executeRecordingRedis struct {
+	redis.UniversalClient
+	mu      sync.Mutex
+	keys    []string
+	revoked bool
+	err     error
+}
+
+func (client *executeRecordingRedis) Exists(ctx context.Context, keys ...string) *redis.IntCmd {
+	client.mu.Lock()
+	client.keys = append(client.keys, keys...)
+	client.mu.Unlock()
+	cmd := redis.NewIntCmd(ctx)
+	if client.err != nil {
+		cmd.SetErr(client.err)
+	} else if client.revoked {
+		cmd.SetVal(1)
+	}
+	return cmd
+}
+
+func TestActionExecuteRedisRevocationUsesBoundSIDAndFailsClosed(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		revoked        bool
+		err            error
+		want           error
+		wantBeginCount int
+	}{
+		{name: "revoked", revoked: true, want: ErrActionOperationForbidden},
+		{name: "error", err: errors.New("private redis failure"), want: ErrActionOperationUnavailable},
+		{name: "healthy then database sid drift", want: ErrActionOperationForbidden, wantBeginCount: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			service, script, identity := actionExecuteFixture(t)
+			client := &executeRecordingRedis{UniversalClient: service.authRedis.client, revoked: tc.revoked, err: tc.err}
+			service.authRedis.client = client
+			script.session.SID = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+			consumer := &fixtureActionConsumer{outcome: TerminalOutcome{ResultKind: models.ResultNone, HTTPStatus: 204}}
+			view, err := service.Execute(context.Background(), identity, consumer, &fixtureActionAuditWriter{}, &fixtureActionOutboxWriter{})
+			if view != nil || !errors.Is(err, tc.want) || consumer.calls != 0 || script.beginCount != tc.wantBeginCount || !executeStateIsPristine(script.state) {
+				t.Fatalf("Redis case=%#v %v", view, err)
+			}
+			wantKey := service.authRedis.revokedKey(identity.actor.SessionSID)
+			if len(client.keys) != 1 || client.keys[0] != wantKey || strings.Contains(client.keys[0], identity.actor.SessionSID) {
+				t.Fatalf("Redis used wrong/raw SID key: %v", client.keys)
+			}
+			if strings.Contains(err.Error(), identity.actor.SessionSID) || strings.Contains(strings.Join(script.queries, "\n"), identity.actor.SessionSID) {
+				t.Fatal("raw SID leaked to SQL or error")
+			}
+		})
 	}
 }
 
