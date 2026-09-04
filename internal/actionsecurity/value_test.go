@@ -4,13 +4,13 @@ import (
 	"bytes"
 	"encoding/base64"
 	"errors"
-	"io"
 	"testing"
 )
 
 func TestParseRootKey(t *testing.T) {
 	rawBytes := []byte("0123456789abcdef0123456789abcdef")
 	valid := base64.RawURLEncoding.EncodeToString(rawBytes)
+	nonCanonical := nonCanonicalBase64Alias(t, valid)
 	for _, tc := range []struct {
 		name string
 		raw  string
@@ -24,6 +24,7 @@ func TestParseRootKey(t *testing.T) {
 		{name: "trailing whitespace", raw: valid + " ", want: KeyInvalidLength},
 		{name: "unicode", raw: "界" + valid[3:], want: KeyInvalidEncoding},
 		{name: "standard base64 character", raw: valid[:42] + "+", want: KeyInvalidEncoding},
+		{name: "non canonical pad bits", raw: nonCanonical, want: KeyInvalidEncoding},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got, reason := ParseRootKey(tc.raw)
@@ -43,6 +44,7 @@ func TestParseRootKey(t *testing.T) {
 func TestExternalValueParsing(t *testing.T) {
 	raw := bytes.Repeat([]byte{0xa5}, 32)
 	encoded := base64.RawURLEncoding.EncodeToString(raw)
+	nonCanonical := nonCanonicalBase64Alias(t, encoded)
 	for _, tc := range []struct {
 		name   string
 		parse  func() ([32]byte, error)
@@ -60,6 +62,9 @@ func TestExternalValueParsing(t *testing.T) {
 		{name: "wrong prefix", parse: func() ([32]byte, error) { return ParsePublicRef("av_" + encoded) }},
 		{name: "unicode body", parse: func() ([32]byte, error) { return ParseTicket([]string{"av_界" + encoded[3:]}) }},
 		{name: "padded body", parse: func() ([32]byte, error) { return ParsePublicRef("op_" + encoded[:42] + "=") }},
+		{name: "idempotency non canonical pad bits", parse: func() ([32]byte, error) { return ParseIdempotencyKey([]string{"ik_" + nonCanonical}) }},
+		{name: "ticket non canonical pad bits", parse: func() ([32]byte, error) { return ParseTicket([]string{"av_" + nonCanonical}) }},
+		{name: "public ref non canonical pad bits", parse: func() ([32]byte, error) { return ParsePublicRef("op_" + nonCanonical) }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got, err := tc.parse()
@@ -89,10 +94,78 @@ func TestExternalValueGeneration(t *testing.T) {
 	if err != nil || len(publicRef) != 46 || publicRef[:3] != "op_" {
 		t.Fatalf("NewPublicRef() returned invalid result: len=%d prefix_ok=%t err=%v", len(publicRef), len(publicRef) >= 3 && publicRef[:3] == "op_", err)
 	}
-	if _, _, err := NewTicket(bytes.NewReader(source[:31])); !errors.Is(err, io.ErrUnexpectedEOF) {
+	if _, _, err := NewTicket(bytes.NewReader(source[:31])); !errors.Is(err, errRandomSource) {
 		t.Fatalf("NewTicket(short reader) error = %v", err)
 	}
-	if _, err := NewPublicRef(bytes.NewReader(source[:31])); !errors.Is(err, io.ErrUnexpectedEOF) {
+	if _, err := NewPublicRef(bytes.NewReader(source[:31])); !errors.Is(err, errRandomSource) {
 		t.Fatalf("NewPublicRef(short reader) error = %v", err)
 	}
+}
+
+func TestExternalValueGenerationRejectsNilAndClearsPartialRandomness(t *testing.T) {
+	if _, _, err := NewTicket(nil); !errors.Is(err, errRandomSource) {
+		t.Fatalf("NewTicket(nil) error = %v", err)
+	}
+	if _, err := NewPublicRef(nil); !errors.Is(err, errRandomSource) {
+		t.Fatalf("NewPublicRef(nil) error = %v", err)
+	}
+	var typedNil *capturingErrorReader
+	if _, _, err := NewTicket(typedNil); !errors.Is(err, errRandomSource) {
+		t.Fatalf("NewTicket(typed nil) error = %v", err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		call func(*capturingErrorReader) error
+	}{
+		{name: "ticket", call: func(reader *capturingErrorReader) error { _, _, err := NewTicket(reader); return err }},
+		{name: "public ref", call: func(reader *capturingErrorReader) error { _, err := NewPublicRef(reader); return err }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			reader := &capturingErrorReader{}
+			if err := tc.call(reader); !errors.Is(err, errRandomSource) {
+				t.Fatalf("generation error = %v", err)
+			}
+			if len(reader.captured) == 0 {
+				t.Fatal("reader did not capture destination buffer")
+			}
+			if !bytes.Equal(reader.captured, make([]byte, len(reader.captured))) {
+				t.Fatal("partial random bytes were not cleared")
+			}
+		})
+	}
+}
+
+type capturingErrorReader struct {
+	captured []byte
+}
+
+func (r *capturingErrorReader) Read(destination []byte) (int, error) {
+	r.captured = destination
+	copy(destination, []byte{1, 2, 3})
+	return 3, errors.New("reader detail must not escape")
+}
+
+func nonCanonicalBase64Alias(t *testing.T, canonical string) string {
+	t.Helper()
+	want, err := base64.RawURLEncoding.DecodeString(canonical)
+	if err != nil {
+		t.Fatalf("decode canonical fixture: %v", err)
+	}
+	const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+	for i := range alphabet {
+		candidate := canonical[:len(canonical)-1] + string(alphabet[i])
+		if candidate == canonical {
+			continue
+		}
+		decoded, err := base64.RawURLEncoding.DecodeString(candidate)
+		if err == nil && bytes.Equal(decoded, want) {
+			if _, strictErr := base64.RawURLEncoding.Strict().DecodeString(candidate); strictErr == nil {
+				t.Fatal("fixture alias unexpectedly accepted by strict decoder")
+			}
+			return candidate
+		}
+	}
+	t.Fatal("could not construct non-canonical base64 alias")
+	return ""
 }

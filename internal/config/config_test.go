@@ -68,16 +68,16 @@ func TestActionSecurityRootKeyReuseChecksAllSecrets(t *testing.T) {
 		}
 		return 0
 	}
-	if !actionSecurityRootKeyReused([]byte("root"), []byte("auth"), []byte("jwt"), compare) {
+	if !actionSecurityRootKeyReused([]byte("root"), []byte("auth"), []byte("jwt"), []byte("upstream"), compare) {
 		t.Fatal("actionSecurityRootKeyReused() did not retain the first match")
 	}
-	if calls != 2 {
-		t.Fatalf("constant-time comparisons = %d, want 2", calls)
+	if calls != 3 {
+		t.Fatalf("constant-time comparisons = %d, want 3", calls)
 	}
 }
 
 func TestLoadActionSecurityRootKeyRejectsReuse(t *testing.T) {
-	for _, name := range []string{"AUTH_HMAC_KEY", "JWT_SECRET_KEY"} {
+	for _, name := range []string{"AUTH_HMAC_KEY", "JWT_SECRET_KEY", "JIEKOU_API_KEY"} {
 		t.Run(name, func(t *testing.T) {
 			setSafeProductionAuthEnvironment(t)
 			reused := []byte("distinct-auth-key-material-12345")

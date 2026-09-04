@@ -272,6 +272,7 @@ func loadActionSecurityRootKey(s *Settings) error {
 		decoded,
 		[]byte(s.AuthHMACKey),
 		[]byte(s.JWTSecretKey),
+		[]byte(s.WhiteLabel.APIKey),
 		subtle.ConstantTimeCompare,
 	) {
 		return fmt.Errorf("ACTION_SECURITY_HMAC_KEY: %s", actionsecurity.KeyReuse)
@@ -280,10 +281,11 @@ func loadActionSecurityRootKey(s *Settings) error {
 	return nil
 }
 
-func actionSecurityRootKeyReused(decoded, auth, jwt []byte, compare func([]byte, []byte) int) bool {
+func actionSecurityRootKeyReused(decoded, auth, jwt, upstream []byte, compare func([]byte, []byte) int) bool {
 	authReuse := compare(decoded, auth)
 	jwtReuse := compare(decoded, jwt)
-	return authReuse|jwtReuse == 1
+	upstreamReuse := compare(decoded, upstream)
+	return authReuse|jwtReuse|upstreamReuse == 1
 }
 
 // loadAppEnv normalizes the deployment environment before configuration
