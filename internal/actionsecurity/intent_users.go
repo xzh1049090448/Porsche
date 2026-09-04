@@ -49,6 +49,20 @@ func encodeCreateAdminIntent(intent CreateAdminIntent) ([]byte, error) {
 		(intent.Nickname != nil && *intent.Nickname == "") || (intent.GroupGUID != nil && *intent.GroupGUID <= 0) {
 		return nil, errInvalidIntent
 	}
+	if _, err := checkedU32Length(uint64(len(intent.Username))); err != nil {
+		return nil, err
+	}
+	if _, err := checkedU32Length(uint64(len(intent.Password))); err != nil {
+		return nil, err
+	}
+	if intent.Nickname != nil {
+		if _, err := checkedU32Length(uint64(len(*intent.Nickname))); err != nil {
+			return nil, err
+		}
+	}
+	if err := checkedStringArrayPayloadLength(intent.AllowedModels); err != nil {
+		return nil, err
+	}
 	models := append([]string(nil), intent.AllowedModels...)
 	for _, model := range models {
 		if model == "" {
@@ -66,20 +80,34 @@ func encodeCreateAdminIntent(intent CreateAdminIntent) ([]byte, error) {
 	for i := range unique {
 		items[i] = []byte(unique[i])
 	}
-	var w intentWriter
-	w.fieldString(1, intent.Username)
-	w.fieldNullableString(2, intent.Nickname)
-	w.fieldBytes(3, intent.Password)
-	w.fieldString(4, "admin")
-	if intent.GroupGUID == nil {
-		w.field(5, typeNull, nil)
-	} else {
-		w.fieldInt64(5, *intent.GroupGUID)
-	}
-	w.fieldInt32(6, intent.PlanType)
-	w.fieldArray(7, items)
-	w.fieldInt32(8, intent.DailyCallLimit)
-	return w.bytes(), nil
+	return encodeIntent(func(w *intentWriter) error {
+		if err := w.fieldString(1, intent.Username); err != nil {
+			return err
+		}
+		if err := w.fieldNullableString(2, intent.Nickname); err != nil {
+			return err
+		}
+		if err := w.fieldBytes(3, intent.Password); err != nil {
+			return err
+		}
+		if err := w.fieldString(4, "admin"); err != nil {
+			return err
+		}
+		if intent.GroupGUID == nil {
+			if err := w.field(5, typeNull, nil); err != nil {
+				return err
+			}
+		} else if err := w.fieldInt64(5, *intent.GroupGUID); err != nil {
+			return err
+		}
+		if err := w.fieldInt32(6, intent.PlanType); err != nil {
+			return err
+		}
+		if err := w.fieldArray(7, items); err != nil {
+			return err
+		}
+		return w.fieldInt32(8, intent.DailyCallLimit)
+	})
 }
 
 func encodeResetPasswordIntent(intent ResetPasswordIntent) ([]byte, error) {
@@ -87,28 +115,61 @@ func encodeResetPasswordIntent(intent ResetPasswordIntent) ([]byte, error) {
 	if intent.TargetGUID <= 0 || len(intent.NewPassword) == 0 || intent.Reason == "" {
 		return nil, errInvalidIntent
 	}
-	var w intentWriter
-	w.fieldInt64(1, intent.TargetGUID)
-	w.fieldBytes(2, intent.NewPassword)
-	w.fieldString(3, intent.Reason)
-	return w.bytes(), nil
+	if _, err := checkedU32Length(uint64(len(intent.NewPassword))); err != nil {
+		return nil, err
+	}
+	if _, err := checkedU32Length(uint64(len(intent.Reason))); err != nil {
+		return nil, err
+	}
+	return encodeIntent(func(w *intentWriter) error {
+		if err := w.fieldInt64(1, intent.TargetGUID); err != nil {
+			return err
+		}
+		if err := w.fieldBytes(2, intent.NewPassword); err != nil {
+			return err
+		}
+		return w.fieldString(3, intent.Reason)
+	})
 }
 
 func encodeRoleIntent(intent RoleIntent, role string) ([]byte, error) {
 	if intent.TargetGUID <= 0 || intent.ExpectedAuthVersion <= 0 || intent.ExpectedAuthVersion > math.MaxInt32 || intent.Reason == "" {
 		return nil, errInvalidIntent
 	}
-	var w intentWriter
-	w.fieldInt64(1, intent.TargetGUID)
-	w.fieldInt32(2, intent.ExpectedAuthVersion)
-	w.fieldString(3, role)
-	w.fieldString(4, intent.Reason)
-	return w.bytes(), nil
+	if _, err := checkedU32Length(uint64(len(intent.Reason))); err != nil {
+		return nil, err
+	}
+	return encodeIntent(func(w *intentWriter) error {
+		if err := w.fieldInt64(1, intent.TargetGUID); err != nil {
+			return err
+		}
+		if err := w.fieldInt32(2, intent.ExpectedAuthVersion); err != nil {
+			return err
+		}
+		if err := w.fieldString(3, role); err != nil {
+			return err
+		}
+		return w.fieldString(4, intent.Reason)
+	})
 }
 
 func encodePermissionsWriteIntent(intent PermissionsWriteIntent) ([]byte, error) {
 	if intent.TargetGUID <= 0 || intent.ExpectedPermissionsVersion <= 0 || intent.CatalogVersion <= 0 || intent.CatalogVersion > math.MaxInt32 {
 		return nil, errInvalidIntent
+	}
+	if _, err := checkedU32Length(uint64(len(intent.Overrides))); err != nil {
+		return nil, err
+	}
+	arrayLength := uint64(4)
+	for _, override := range intent.Overrides {
+		if _, err := checkedU32Length(uint64(len(override.Capability))); err != nil {
+			return nil, err
+		}
+		var err error
+		arrayLength, err = addArrayItemLength(arrayLength, uint64(len(override.Capability))+16)
+		if err != nil {
+			return nil, err
+		}
 	}
 	overrides := append([]PermissionOverrideIntent(nil), intent.Overrides...)
 	for _, override := range overrides {
@@ -122,26 +183,50 @@ func encodePermissionsWriteIntent(intent PermissionsWriteIntent) ([]byte, error)
 		if i > 0 && overrides[i-1].Capability == override.Capability {
 			return nil, errInvalidIntent
 		}
-		var item intentWriter
-		item.fieldString(1, override.Capability)
-		item.fieldInt32(2, override.Effect)
-		items[i] = item.bytes()
+		item, err := encodeIntent(func(w *intentWriter) error {
+			if err := w.fieldString(1, override.Capability); err != nil {
+				return err
+			}
+			return w.fieldInt32(2, override.Effect)
+		})
+		if err != nil {
+			return nil, err
+		}
+		items[i] = item
 	}
-	var w intentWriter
-	w.fieldInt64(1, intent.TargetGUID)
-	w.fieldInt64(2, intent.ExpectedPermissionsVersion)
-	w.fieldInt32(3, intent.CatalogVersion)
-	w.fieldArray(4, items)
-	return w.bytes(), nil
+	defer func() {
+		for _, item := range items {
+			clear(item)
+		}
+	}()
+	return encodeIntent(func(w *intentWriter) error {
+		if err := w.fieldInt64(1, intent.TargetGUID); err != nil {
+			return err
+		}
+		if err := w.fieldInt64(2, intent.ExpectedPermissionsVersion); err != nil {
+			return err
+		}
+		if err := w.fieldInt32(3, intent.CatalogVersion); err != nil {
+			return err
+		}
+		return w.fieldArray(4, items)
+	})
 }
 
 func encodeDeleteUserIntent(intent DeleteUserIntent) ([]byte, error) {
 	if intent.TargetGUID <= 0 || intent.ExpectedAuthVersion <= 0 || intent.ExpectedAuthVersion > math.MaxInt32 || intent.Reason == "" {
 		return nil, errInvalidIntent
 	}
-	var w intentWriter
-	w.fieldInt64(1, intent.TargetGUID)
-	w.fieldInt32(2, intent.ExpectedAuthVersion)
-	w.fieldString(3, intent.Reason)
-	return w.bytes(), nil
+	if _, err := checkedU32Length(uint64(len(intent.Reason))); err != nil {
+		return nil, err
+	}
+	return encodeIntent(func(w *intentWriter) error {
+		if err := w.fieldInt64(1, intent.TargetGUID); err != nil {
+			return err
+		}
+		if err := w.fieldInt32(2, intent.ExpectedAuthVersion); err != nil {
+			return err
+		}
+		return w.fieldString(3, intent.Reason)
+	})
 }

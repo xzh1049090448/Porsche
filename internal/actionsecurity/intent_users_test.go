@@ -85,6 +85,112 @@ func TestPasswordZeroOnSuccessAndValidationError(t *testing.T) {
 	}
 }
 
+func TestPasswordEncodingIsIndependentAndCallerClearable(t *testing.T) {
+	password := []byte{0x71, 0x52, 0x39, 0x21}
+	wantPassword := append([]byte(nil), password...)
+	encoded, err := descriptorFor(t, ActionUsersCreateAdmin).Encode(CreateAdminIntent{Username: "alice", Password: password, PlanType: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(password, make([]byte, len(password))) {
+		t.Fatal("caller password was not cleared")
+	}
+	if !bytes.Contains(encoded, wantPassword) {
+		t.Fatal("encoded HMAC input does not contain its independent password copy")
+	}
+	clear(encoded)
+	if !bytes.Equal(encoded, make([]byte, len(encoded))) {
+		t.Fatal("caller could not clear encoded HMAC input")
+	}
+}
+
+func TestAllDescriptorsDeterministicAndDoNotMutateInputs(t *testing.T) {
+	nickname := "Nick"
+	group := int64(44)
+	cases := []struct {
+		name   string
+		action Action
+		make   func() any
+	}{
+		{"create", ActionUsersCreateAdmin, func() any {
+			return CreateAdminIntent{Username: "alice", Nickname: &nickname, Password: []byte{1, 2, 3}, GroupGUID: &group, PlanType: 2, AllowedModels: []string{"z", "a", "z"}, DailyCallLimit: 4}
+		}},
+		{"reset", ActionUsersResetPassword, func() any { return ResetPasswordIntent{TargetGUID: 2, NewPassword: []byte{4, 5, 6}, Reason: "case"} }},
+		{"promote", ActionUsersPromote, func() any { return RoleIntent{TargetGUID: 2, ExpectedAuthVersion: 3, Reason: "case"} }},
+		{"demote", ActionUsersDemote, func() any { return RoleIntent{TargetGUID: 2, ExpectedAuthVersion: 3, Reason: "case"} }},
+		{"permissions", ActionUsersPermissionsWrite, func() any {
+			return PermissionsWriteIntent{TargetGUID: 2, ExpectedPermissionsVersion: 3, CatalogVersion: 1, Overrides: []PermissionOverrideIntent{{Capability: "z", Effect: 3}, {Capability: "a", Effect: 2}}}
+		}},
+		{"delete", ActionUsersDelete, func() any { return DeleteUserIntent{TargetGUID: 2, ExpectedAuthVersion: 3, Reason: "case"} }},
+		{"publish", ActionPublicContentPublish, func() any {
+			return PublishIntent{ContentType: "page", VersionGUID: 5, ExpectedBaseVersion: 4, Reason: "case"}
+		}},
+		{"rollback", ActionPublicContentRollback, func() any {
+			return RollbackIntent{ContentType: "page", VersionGUID: 4, ExpectedCurrentVersion: 5, Reason: "case"}
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			firstInput, secondInput := tc.make(), tc.make()
+			firstBefore, secondBefore := cloneIntentForMutationCheck(firstInput), cloneIntentForMutationCheck(secondInput)
+			first, err := descriptorFor(t, tc.action).Encode(firstInput)
+			if err != nil {
+				t.Fatal(err)
+			}
+			second, err := descriptorFor(t, tc.action).Encode(secondInput)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(first, second) {
+				t.Fatal("equal intents encoded differently")
+			}
+			assertIntentMutationContract(t, firstInput, firstBefore)
+			assertIntentMutationContract(t, secondInput, secondBefore)
+			clear(first)
+			clear(second)
+		})
+	}
+}
+
+func cloneIntentForMutationCheck(value any) any {
+	switch in := value.(type) {
+	case CreateAdminIntent:
+		in.Password = append([]byte(nil), in.Password...)
+		in.AllowedModels = append([]string(nil), in.AllowedModels...)
+		return in
+	case ResetPasswordIntent:
+		in.NewPassword = append([]byte(nil), in.NewPassword...)
+		return in
+	case PermissionsWriteIntent:
+		in.Overrides = append([]PermissionOverrideIntent(nil), in.Overrides...)
+		return in
+	default:
+		return value
+	}
+}
+
+func assertIntentMutationContract(t *testing.T, after, before any) {
+	t.Helper()
+	switch got := after.(type) {
+	case CreateAdminIntent:
+		want := before.(CreateAdminIntent)
+		clear(want.Password)
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("create input mutation = %#v, want only password clear", got)
+		}
+	case ResetPasswordIntent:
+		want := before.(ResetPasswordIntent)
+		clear(want.NewPassword)
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("reset input mutation = %#v, want only password clear", got)
+		}
+	default:
+		if !reflect.DeepEqual(after, before) {
+			t.Fatalf("input mutated: after=%#v before=%#v", after, before)
+		}
+	}
+}
+
 func TestUserIntentFixedRolesAndCanonicalValidation(t *testing.T) {
 	tests := []struct {
 		name   string
