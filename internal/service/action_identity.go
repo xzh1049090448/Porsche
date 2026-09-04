@@ -1,6 +1,7 @@
 package service
 
 import (
+	"crypto/subtle"
 	"errors"
 
 	"github.com/porsche/ai-gateway-go/internal/actionsecurity"
@@ -29,7 +30,7 @@ type lockedActionIdentity struct {
 // order. The Redis limiter and revocation barrier must already have succeeded.
 func lockActionIdentity(tx *gorm.DB, actor ActionActor, descriptor actionsecurity.Descriptor, targetGUID *int64, now int64) (lockedActionIdentity, error) {
 	if tx == nil || actor.UserID <= 0 || actor.UserGUID <= 0 || actor.AuthVersion <= 0 ||
-		actor.SessionSID == "" || actor.SessionVersion <= 0 || now <= 0 {
+		len(actor.SessionSID) != 36 || actor.SessionVersion <= 0 || now <= 0 {
 		return lockedActionIdentity{}, ErrActionVerificationUnavailable
 	}
 
@@ -46,17 +47,34 @@ func lockActionIdentity(tx *gorm.DB, actor ActionActor, descriptor actionsecurit
 		return lockedActionIdentity{}, ErrActionVerificationForbidden
 	}
 
-	var session models.Session
+	// SID is a secret selector and must never be a SQL argument or query log.
+	// Lock the actor's bounded active candidate set by non-secret user ID, then
+	// select the exact SID in memory with constant-time comparisons. The normal
+	// session lifecycle caps active rows at 50; 51 candidates fail closed rather
+	// than allowing unbounded work or choosing an ambiguous match.
+	var candidates []models.Session
 	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
 		Select("id", "guid", "sid", "user_id", "session_version", "is_deleted", "revoked_at", "expires_at").
-		Where("sid = ?", actor.SessionSID).First(&session).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return lockedActionIdentity{}, ErrActionVerificationForbidden
-		}
+		Where("user_id = ? AND is_deleted = 0 AND revoked_at IS NULL AND expires_at > ?", storedActor.ID, now).
+		Order("id ASC").Limit(51).Find(&candidates).Error; err != nil {
 		return lockedActionIdentity{}, ErrActionVerificationUnavailable
 	}
+	if len(candidates) > 50 {
+		return lockedActionIdentity{}, ErrActionVerificationUnavailable
+	}
+	var session models.Session
+	matches := 0
+	for i := range candidates {
+		if constantTimeSIDEqual(candidates[i].SID, actor.SessionSID) {
+			session = candidates[i]
+			matches++
+		}
+	}
+	if matches != 1 {
+		return lockedActionIdentity{}, ErrActionVerificationForbidden
+	}
 	if session.ID <= 0 || session.Guid <= 0 || session.UserID != storedActor.ID ||
-		session.SID != actor.SessionSID || session.SessionVersion != actor.SessionVersion ||
+		session.SessionVersion != actor.SessionVersion ||
 		session.IsDeleted != 0 || session.RevokedAt != nil || session.ExpiresAt <= now {
 		return lockedActionIdentity{}, ErrActionVerificationForbidden
 	}
@@ -120,6 +138,19 @@ func lockActionIdentity(tx *gorm.DB, actor ActionActor, descriptor actionsecurit
 		return lockedActionIdentity{}, ErrActionVerificationForbidden
 	}
 	return lockedActionIdentity{actor: storedActor, session: session}, nil
+}
+
+func constantTimeSIDEqual(stored, claimed string) bool {
+	// user_sessions.sid is VARCHAR(36). Fixed buffers plus a constant-time
+	// length equality avoid data-dependent comparison of the secret selector.
+	var left, right [36]byte
+	copy(left[:], stored)
+	copy(right[:], claimed)
+	content := subtle.ConstantTimeCompare(left[:], right[:])
+	length := subtle.ConstantTimeEq(int32(len(stored)), int32(len(claimed)))
+	clear(left[:])
+	clear(right[:])
+	return content&length == 1
 }
 
 func validActionActor(user models.User) bool {

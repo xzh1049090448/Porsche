@@ -96,7 +96,7 @@ func (s *ActionVerificationService) Issue(ctx context.Context, in VerificationIs
 		return nil, ErrActionVerificationInactive
 	}
 	if in.Actor.UserID <= 0 || in.Actor.UserGUID <= 0 || in.Actor.AuthVersion <= 0 ||
-		in.Actor.SessionSID == "" || in.Actor.SessionVersion <= 0 || len(in.CurrentPassword) == 0 {
+		len(in.Actor.SessionSID) != 36 || in.Actor.SessionVersion <= 0 || len(in.CurrentPassword) == 0 {
 		return nil, ErrActionVerificationForbidden
 	}
 
@@ -147,7 +147,9 @@ func (s *ActionVerificationService) Issue(ctx context.Context, in VerificationIs
 		if identity.session.ExpiresAt <= lockedNow {
 			return ErrActionVerificationForbidden
 		}
-		if identity.actor.PasswordHash == nil || !security.VerifyPassword(string(in.CurrentPassword), *identity.actor.PasswordHash) {
+		passwordOK := identity.actor.PasswordHash != nil && security.VerifyPassword(string(in.CurrentPassword), *identity.actor.PasswordHash)
+		clear(in.CurrentPassword)
+		if !passwordOK {
 			return ErrActionVerificationForbidden
 		}
 

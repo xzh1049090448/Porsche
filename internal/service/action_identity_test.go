@@ -6,6 +6,8 @@ import (
 	"database/sql"
 	"errors"
 	"io"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -88,6 +90,16 @@ func TestActionIdentityContractIsTyped(t *testing.T) {
 	issue := VerificationIssue{Action: actionsecurity.Action(1), Actor: actor}
 	if issue.Actor != actor {
 		t.Fatal("verification issue did not retain its typed actor")
+	}
+}
+
+func TestActionIdentityNeverBindsRawSIDAsSQLArgument(t *testing.T) {
+	source, err := os.ReadFile("action_identity.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(source), `Where("sid = ?", actor.SessionSID)`) {
+		t.Fatal("raw authenticated SID is still bound as a SQL argument")
 	}
 }
 
@@ -218,7 +230,7 @@ func TestActionVerificationIssueLimiterThenRevocationFailClosedBeforeMySQL(t *te
 			password := []byte("sensitive-password")
 			_, err := service.Issue(context.Background(), VerificationIssue{
 				Action: testNoopAction,
-				Actor:  ActionActor{UserID: 1, UserGUID: 2, AuthVersion: 3, SessionSID: "sid", SessionVersion: 4},
+				Actor:  ActionActor{UserID: 1, UserGUID: 2, AuthVersion: 3, SessionSID: "11111111-2222-4333-8444-555555555555", SessionVersion: 4},
 				Intent: "intent", CurrentPassword: password, TrustedIP: "203.0.113.10",
 			})
 			if !errors.Is(err, tc.want) {

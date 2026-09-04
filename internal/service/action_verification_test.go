@@ -3,17 +3,429 @@ package service
 import (
 	"bytes"
 	"context"
+	"database/sql"
+	"database/sql/driver"
 	"encoding/hex"
+	"errors"
+	"fmt"
+	"io"
+	"log"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 
+	"github.com/porsche/ai-gateway-go/internal/actionsecurity"
 	"github.com/porsche/ai-gateway-go/internal/models"
+	"github.com/porsche/ai-gateway-go/internal/persistence"
 	"github.com/porsche/ai-gateway-go/internal/security"
+	"gorm.io/driver/mysql"
+	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
+
+const actionIssueScriptDriverName = "porsche_action_issue_script"
+
+var (
+	actionIssueScriptOnce sync.Once
+	actionIssueScriptSeq  atomic.Uint64
+	actionIssueScripts    sync.Map
+)
+
+type actionIssueSQLCall struct {
+	query string
+	args  []driver.NamedValue
+}
+
+type actionIssueSQLScript struct {
+	mu         sync.Mutex
+	actor      models.User
+	sessions   []models.Session
+	target     *models.User
+	queries    []actionIssueSQLCall
+	execs      []actionIssueSQLCall
+	failExecAt int
+	failCommit bool
+	begins     int
+	commits    int
+	rollbacks  int
+}
+
+type actionIssueDriver struct{}
+type actionIssueConn struct{ script *actionIssueSQLScript }
+type actionIssueTx struct{ script *actionIssueSQLScript }
+type actionIssueRows struct {
+	columns []string
+	values  [][]driver.Value
+	index   int
+}
+type actionIssueResult struct{ id int64 }
+
+func (actionIssueDriver) Open(name string) (driver.Conn, error) {
+	value, ok := actionIssueScripts.Load(name)
+	if !ok {
+		return nil, errors.New("unknown action issue script")
+	}
+	return &actionIssueConn{script: value.(*actionIssueSQLScript)}, nil
+}
+func (c *actionIssueConn) Prepare(string) (driver.Stmt, error) {
+	return nil, errors.New("prepare disabled")
+}
+func (c *actionIssueConn) Close() error { return nil }
+func (c *actionIssueConn) Begin() (driver.Tx, error) {
+	return c.BeginTx(context.Background(), driver.TxOptions{})
+}
+func (c *actionIssueConn) BeginTx(context.Context, driver.TxOptions) (driver.Tx, error) {
+	c.script.mu.Lock()
+	c.script.begins++
+	c.script.mu.Unlock()
+	return &actionIssueTx{script: c.script}, nil
+}
+func (c *actionIssueConn) CheckNamedValue(*driver.NamedValue) error { return nil }
+func (c *actionIssueConn) QueryContext(_ context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
+	c.script.mu.Lock()
+	defer c.script.mu.Unlock()
+	c.script.queries = append(c.script.queries, actionIssueSQLCall{query: query, args: copyNamedValues(args)})
+	switch {
+	case strings.Contains(query, "FROM `users`") && strings.Contains(query, "guid = ?"):
+		columns := []string{"id", "guid", "role", "status", "is_deleted", "auth_version"}
+		if c.script.target == nil {
+			return &actionIssueRows{columns: columns}, nil
+		}
+		u := c.script.target
+		return &actionIssueRows{columns: columns, values: [][]driver.Value{{u.ID, u.Guid, int64(u.Role), int64(u.Status), int64(u.IsDeleted), int64(u.AuthVersion)}}}, nil
+	case strings.Contains(query, "FROM `users`"):
+		u := &c.script.actor
+		var password driver.Value
+		if u.PasswordHash != nil {
+			password = *u.PasswordHash
+		}
+		return &actionIssueRows{columns: []string{"id", "guid", "password_hash", "role", "status", "is_deleted", "auth_version"}, values: [][]driver.Value{{u.ID, u.Guid, password, int64(u.Role), int64(u.Status), int64(u.IsDeleted), int64(u.AuthVersion)}}}, nil
+	case strings.Contains(query, "FROM `user_sessions`"):
+		columns := []string{"id", "guid", "sid", "user_id", "session_version", "is_deleted", "revoked_at", "expires_at"}
+		values := make([][]driver.Value, 0, len(c.script.sessions))
+		for i := range c.script.sessions {
+			s := &c.script.sessions[i]
+			var revoked driver.Value
+			if s.RevokedAt != nil {
+				revoked = *s.RevokedAt
+			}
+			values = append(values, []driver.Value{s.ID, s.Guid, s.SID, s.UserID, int64(s.SessionVersion), int64(s.IsDeleted), revoked, s.ExpiresAt})
+		}
+		return &actionIssueRows{columns: columns, values: values}, nil
+	case strings.Contains(query, "FROM `user_permission_heads`"):
+		return &actionIssueRows{columns: []string{"id", "guid", "is_deleted", "policy_version", "catalog_version", "rule_count"}}, nil
+	case strings.Contains(query, "FROM `user_permission_overrides`"):
+		return &actionIssueRows{columns: []string{"id"}}, nil
+	default:
+		return nil, fmt.Errorf("unexpected query: %s", query)
+	}
+}
+func (c *actionIssueConn) ExecContext(_ context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
+	c.script.mu.Lock()
+	defer c.script.mu.Unlock()
+	c.script.execs = append(c.script.execs, actionIssueSQLCall{query: query, args: copyNamedValues(args)})
+	if c.script.failExecAt > 0 && len(c.script.execs) == c.script.failExecAt {
+		return nil, errors.New("scripted write failure")
+	}
+	return actionIssueResult{id: int64(len(c.script.execs))}, nil
+}
+func (tx *actionIssueTx) Commit() error {
+	tx.script.mu.Lock()
+	defer tx.script.mu.Unlock()
+	tx.script.commits++
+	if tx.script.failCommit {
+		return errors.New("scripted commit failure")
+	}
+	return nil
+}
+func (tx *actionIssueTx) Rollback() error {
+	tx.script.mu.Lock()
+	tx.script.rollbacks++
+	tx.script.mu.Unlock()
+	return nil
+}
+func (r *actionIssueRows) Columns() []string { return r.columns }
+func (r *actionIssueRows) Close() error      { return nil }
+func (r *actionIssueRows) Next(dest []driver.Value) error {
+	if r.index >= len(r.values) {
+		return io.EOF
+	}
+	copy(dest, r.values[r.index])
+	r.index++
+	return nil
+}
+func (r actionIssueResult) LastInsertId() (int64, error) { return r.id, nil }
+func (actionIssueResult) RowsAffected() (int64, error)   { return 1, nil }
+
+func copyNamedValues(values []driver.NamedValue) []driver.NamedValue {
+	return append([]driver.NamedValue(nil), values...)
+}
+
+type actionIssueObservingReader struct {
+	password []byte
+	data     []byte
+	err      error
+	cleared  bool
+}
+
+func (r *actionIssueObservingReader) Read(p []byte) (int, error) {
+	r.cleared = bytes.Equal(r.password, make([]byte, len(r.password)))
+	if r.err != nil {
+		return 0, r.err
+	}
+	n := copy(p, r.data)
+	r.data = r.data[n:]
+	return n, nil
+}
+
+type actionIssueSequenceClock struct {
+	values []int64
+	index  int
+}
+
+func (c *actionIssueSequenceClock) NowMillis() int64 {
+	if c.index >= len(c.values) {
+		return c.values[len(c.values)-1]
+	}
+	value := c.values[c.index]
+	c.index++
+	return value
+}
+
+func openActionIssueScriptDB(t *testing.T, script *actionIssueSQLScript, logBuffer *bytes.Buffer) *gorm.DB {
+	t.Helper()
+	actionIssueScriptOnce.Do(func() { sql.Register(actionIssueScriptDriverName, actionIssueDriver{}) })
+	name := fmt.Sprintf("script-%d", actionIssueScriptSeq.Add(1))
+	actionIssueScripts.Store(name, script)
+	t.Cleanup(func() { actionIssueScripts.Delete(name) })
+	sqlDB, err := sql.Open(actionIssueScriptDriverName, name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	gormLogger := logger.Default.LogMode(logger.Silent)
+	if logBuffer != nil {
+		gormLogger = logger.New(log.New(logBuffer, "", 0), logger.Config{LogLevel: logger.Info, ParameterizedQueries: false})
+	}
+	db, err := gorm.Open(mysql.New(mysql.Config{Conn: sqlDB, SkipInitializeWithVersion: true}), &gorm.Config{DisableAutomaticPing: true, Logger: gormLogger})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return db
+}
+
+func actionIssueScriptFixture(t *testing.T, now int64) (*actionIssueSQLScript, ActionActor, string) {
+	t.Helper()
+	password := "Task7-script-password!"
+	hash := actionIssuePasswordHash(t, password)
+	sid := "11111111-2222-4333-8444-555555555555"
+	actor := models.User{ID: 10, AuditFields: models.AuditFields{Guid: 1001}, PasswordHash: &hash, Role: models.UserRoleRoot, Status: models.UserStatusActive, AuthVersion: 7}
+	session := models.Session{ID: 20, AuditFields: models.AuditFields{Guid: 2001}, SID: sid, UserID: actor.ID, SessionVersion: 3, ExpiresAt: now + 60_000}
+	script := &actionIssueSQLScript{actor: actor, sessions: []models.Session{session}}
+	claims := ActionActor{UserID: actor.ID, UserGUID: actor.Guid, AuthVersion: actor.AuthVersion, SessionSID: sid, SessionVersion: session.SessionVersion}
+	return script, claims, password
+}
 
 func TestActionVerificationIssueContractExists(t *testing.T) {
 	var _ *ActionVerificationService
 	var _ *IssuedVerification
+}
+
+func TestActionVerificationIssueScriptedTransactionIsOrderedSecretFreeAndImmediateClear(t *testing.T) {
+	const now int64 = 1_800_000_000_000
+	script, actor, passwordText := actionIssueScriptFixture(t, now)
+	var logs bytes.Buffer
+	db := openActionIssueScriptDB(t, script, &logs)
+	client := &actionIssueRedisClient{actionRateEvalClient: newActionRateEvalClient()}
+	password := []byte(passwordText)
+	reader := &actionIssueObservingReader{password: password, data: bytes.Repeat([]byte{0x5a}, 32)}
+	service := newTestActionVerificationService(t, db, client, &actionIssueClock{now: now}, reader, func() int64 { return 9001 })
+	issued, err := service.Issue(context.Background(), VerificationIssue{Action: testNoopAction, Actor: actor, Intent: "sensitive-intent", CurrentPassword: password, TrustedIP: "203.0.113.20"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reader.cleared || !bytes.Equal(password, make([]byte, len(password))) {
+		t.Fatal("random stage observed uncleared current password")
+	}
+	if issued.ExpiresAt != now+300_000 || len(issued.Ticket) != 46 {
+		t.Fatalf("issued = %#v", issued)
+	}
+	if script.begins != 1 || script.commits != 1 || script.rollbacks != 0 || len(script.execs) != 2 {
+		t.Fatalf("transaction begin/commit/rollback/exec = %d/%d/%d/%d", script.begins, script.commits, script.rollbacks, len(script.execs))
+	}
+	if len(script.queries) < 4 || !strings.Contains(script.queries[0].query, "FROM `users`") || !strings.Contains(script.queries[0].query, "FOR UPDATE") ||
+		!strings.Contains(script.queries[1].query, "FROM `user_sessions`") || !strings.Contains(script.queries[1].query, "FOR UPDATE") {
+		t.Fatalf("actor/session lock order missing: %#v", script.queries)
+	}
+	if strings.Contains(script.queries[1].query, "sid = ?") || !strings.Contains(script.queries[1].query, "user_id = ?") ||
+		!strings.Contains(script.queries[1].query, "is_deleted = 0") || !strings.Contains(script.queries[1].query, "revoked_at IS NULL") ||
+		!strings.Contains(script.queries[1].query, "expires_at > ?") || !strings.Contains(script.queries[1].query, "LIMIT ?") {
+		t.Fatalf("unsafe or unbounded session lookup: %s", script.queries[1].query)
+	}
+	if !strings.HasPrefix(script.execs[0].query, "UPDATE `admin_action_verifications`") || strings.HasPrefix(strings.ToUpper(strings.TrimSpace(script.execs[0].query)), "DELETE ") ||
+		!strings.Contains(script.execs[0].query, "consumed_at IS NULL") || !strings.Contains(script.execs[0].query, "is_deleted = 0") || !strings.Contains(script.execs[0].query, "expires_at > ?") ||
+		strings.Contains(strings.ToUpper(script.execs[0].query), " LIMIT ") ||
+		!strings.HasPrefix(script.execs[1].query, "INSERT INTO `admin_action_verifications`") {
+		t.Fatalf("unexpected reissue writes: %#v", script.execs)
+	}
+	allSQL := logs.String()
+	for _, call := range append(append([]actionIssueSQLCall(nil), script.queries...), script.execs...) {
+		allSQL += call.query
+		for _, arg := range call.args {
+			allSQL += fmt.Sprint(arg.Value)
+		}
+	}
+	for _, secret := range []string{actor.SessionSID, passwordText, "sensitive-intent", issued.Ticket} {
+		if strings.Contains(allSQL, secret) {
+			t.Fatalf("SQL args/logs leaked secret %q", secret)
+		}
+	}
+}
+
+func TestActionVerificationIssueScriptedFailuresRollbackAndClearSecrets(t *testing.T) {
+	const now int64 = 1_800_000_000_000
+	tests := []struct {
+		name       string
+		configure  func(*actionIssueSQLScript, *actionIssueObservingReader, *string, *func() int64)
+		want       error
+		wantExecs  int
+		wantCommit int
+	}{
+		{name: "wrong password", configure: func(_ *actionIssueSQLScript, _ *actionIssueObservingReader, password *string, _ *func() int64) {
+			*password = "wrong-password"
+		}, want: ErrActionVerificationForbidden},
+		{name: "random failure", configure: func(_ *actionIssueSQLScript, reader *actionIssueObservingReader, _ *string, _ *func() int64) {
+			reader.err = errors.New("private random failure")
+		}, want: ErrActionVerificationUnavailable},
+		{name: "guid failure", configure: func(_ *actionIssueSQLScript, _ *actionIssueObservingReader, _ *string, guid *func() int64) {
+			*guid = func() int64 { return 0 }
+		}, want: ErrActionVerificationUnavailable},
+		{name: "update failure", configure: func(script *actionIssueSQLScript, _ *actionIssueObservingReader, _ *string, _ *func() int64) {
+			script.failExecAt = 1
+		}, want: ErrActionVerificationUnavailable, wantExecs: 1},
+		{name: "insert failure", configure: func(script *actionIssueSQLScript, _ *actionIssueObservingReader, _ *string, _ *func() int64) {
+			script.failExecAt = 2
+		}, want: ErrActionVerificationUnavailable, wantExecs: 2},
+		{name: "commit failure", configure: func(script *actionIssueSQLScript, _ *actionIssueObservingReader, _ *string, _ *func() int64) {
+			script.failCommit = true
+		}, want: ErrActionVerificationUnavailable, wantExecs: 2, wantCommit: 1},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			script, actor, correctPassword := actionIssueScriptFixture(t, now)
+			passwordText := correctPassword
+			password := []byte(passwordText)
+			reader := &actionIssueObservingReader{password: password, data: bytes.Repeat([]byte{0x6b}, 32)}
+			guid := func() int64 { return 9002 }
+			tc.configure(script, reader, &passwordText, &guid)
+			password = []byte(passwordText)
+			reader.password = password
+			db := openActionIssueScriptDB(t, script, nil)
+			client := &actionIssueRedisClient{actionRateEvalClient: newActionRateEvalClient()}
+			service := newTestActionVerificationService(t, db, client, &actionIssueClock{now: now}, reader, guid)
+			result, err := service.Issue(context.Background(), VerificationIssue{Action: testNoopAction, Actor: actor, Intent: "failure-intent", CurrentPassword: password, TrustedIP: "203.0.113.21"})
+			if result != nil || !errors.Is(err, tc.want) || err.Error() != tc.want.Error() {
+				t.Fatalf("result/error = %#v/%v, want nil/%v", result, err, tc.want)
+			}
+			if !bytes.Equal(password, make([]byte, len(password))) {
+				t.Fatal("failure did not clear password")
+			}
+			if tc.name != "wrong password" && !reader.cleared {
+				t.Fatal("post-password stage observed uncleared password")
+			}
+			if len(script.execs) != tc.wantExecs || script.commits != tc.wantCommit {
+				t.Fatalf("execs/commits = %d/%d, want %d/%d", len(script.execs), script.commits, tc.wantExecs, tc.wantCommit)
+			}
+			if tc.name != "commit failure" && script.rollbacks != 1 {
+				t.Fatalf("rollbacks = %d, want 1", script.rollbacks)
+			}
+		})
+	}
+}
+
+func TestActionIdentityFreshClaimsCandidateBoundsAndLockWaitExpiry(t *testing.T) {
+	const now int64 = 1_800_000_000_000
+	tests := []struct {
+		name   string
+		mutate func(*actionIssueSQLScript, *ActionActor)
+		clock  persistence.Clock
+		want   error
+	}{
+		{name: "user guid", mutate: func(_ *actionIssueSQLScript, actor *ActionActor) { actor.UserGUID++ }, want: ErrActionVerificationForbidden},
+		{name: "auth version", mutate: func(_ *actionIssueSQLScript, actor *ActionActor) { actor.AuthVersion++ }, want: ErrActionVerificationForbidden},
+		{name: "session version", mutate: func(_ *actionIssueSQLScript, actor *ActionActor) { actor.SessionVersion++ }, want: ErrActionVerificationForbidden},
+		{name: "disabled actor", mutate: func(script *actionIssueSQLScript, _ *ActionActor) { script.actor.Status = models.UserStatusDisabled }, want: ErrActionVerificationForbidden},
+		{name: "wrong role", mutate: func(script *actionIssueSQLScript, _ *ActionActor) { script.actor.Role = models.UserRoleUser }, want: ErrActionVerificationForbidden},
+		{name: "root-only capability", mutate: func(script *actionIssueSQLScript, _ *ActionActor) { script.actor.Role = models.UserRoleAdmin }, want: ErrActionVerificationForbidden},
+		{name: "revoked session", mutate: func(script *actionIssueSQLScript, _ *ActionActor) {
+			revoked := now
+			script.sessions[0].RevokedAt = &revoked
+		}, want: ErrActionVerificationForbidden},
+		{name: "deleted session", mutate: func(script *actionIssueSQLScript, _ *ActionActor) { script.sessions[0].IsDeleted = 1 }, want: ErrActionVerificationForbidden},
+		{name: "expired session", mutate: func(script *actionIssueSQLScript, _ *ActionActor) { script.sessions[0].ExpiresAt = now }, want: ErrActionVerificationForbidden},
+		{name: "duplicate sid", mutate: func(script *actionIssueSQLScript, _ *ActionActor) {
+			script.sessions = append(script.sessions, script.sessions[0])
+		}, want: ErrActionVerificationForbidden},
+		{name: "candidate overflow", mutate: func(script *actionIssueSQLScript, _ *ActionActor) {
+			for len(script.sessions) < 51 {
+				copy := script.sessions[0]
+				copy.ID = int64(100 + len(script.sessions))
+				copy.SID = fmt.Sprintf("%036d", copy.ID)
+				script.sessions = append(script.sessions, copy)
+			}
+		}, want: ErrActionVerificationUnavailable},
+		{name: "expired while waiting", mutate: func(script *actionIssueSQLScript, _ *ActionActor) { script.sessions[0].ExpiresAt = now + 1 }, clock: &actionIssueSequenceClock{values: []int64{now, now + 1}}, want: ErrActionVerificationForbidden},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			script, actor, passwordText := actionIssueScriptFixture(t, now)
+			tc.mutate(script, &actor)
+			clock := tc.clock
+			if clock == nil {
+				clock = &actionIssueClock{now: now}
+			}
+			password := []byte(passwordText)
+			reader := &actionIssueObservingReader{password: password, data: bytes.Repeat([]byte{1}, 32)}
+			service := newTestActionVerificationService(t, openActionIssueScriptDB(t, script, nil), &actionIssueRedisClient{actionRateEvalClient: newActionRateEvalClient()}, clock, reader, func() int64 { return 9003 })
+			result, err := service.Issue(context.Background(), VerificationIssue{Action: testNoopAction, Actor: actor, Intent: "fresh-intent", CurrentPassword: password, TrustedIP: "203.0.113.22"})
+			if result != nil || !errors.Is(err, tc.want) || len(script.execs) != 0 || script.commits != 0 || script.rollbacks != 1 {
+				t.Fatalf("result/error/exec/commit/rollback = %#v/%v/%d/%d/%d", result, err, len(script.execs), script.commits, script.rollbacks)
+			}
+			if !bytes.Equal(password, make([]byte, len(password))) {
+				t.Fatal("freshness failure did not clear password")
+			}
+		})
+	}
+}
+
+func TestActionIdentityTargetUserHiddenAndHierarchy(t *testing.T) {
+	const now int64 = 1_800_000_000_000
+	for _, tc := range []struct {
+		name   string
+		target *models.User
+	}{
+		{name: "missing"},
+		{name: "root hierarchy", target: &models.User{ID: 30, AuditFields: models.AuditFields{Guid: 3001}, Role: models.UserRoleRoot, Status: models.UserStatusActive, AuthVersion: 1}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			script, actor, passwordText := actionIssueScriptFixture(t, now)
+			script.target = tc.target
+			password := []byte(passwordText)
+			service := newTestActionVerificationService(t, openActionIssueScriptDB(t, script, nil), &actionIssueRedisClient{actionRateEvalClient: newActionRateEvalClient()}, &actionIssueClock{now: now}, &actionIssueObservingReader{password: password, data: bytes.Repeat([]byte{1}, 32)}, func() int64 { return 9004 })
+			service.resolve = func(action actionsecurity.Action) (actionsecurity.Descriptor, bool) {
+				if action != testNoopAction {
+					return actionsecurity.Descriptor{}, false
+				}
+				return actionsecurity.Descriptor{Action: action, Name: "test.noop", Capability: "users.delete", RequiresTicket: true, Active: true, TargetKind: actionsecurity.TargetUser, Encode: func(any) ([]byte, error) { return []byte("target"), nil }}, true
+			}
+			targetGUID := int64(3001)
+			result, err := service.Issue(context.Background(), VerificationIssue{Action: testNoopAction, Actor: actor, TargetGUID: &targetGUID, Intent: "target", CurrentPassword: password, TrustedIP: "203.0.113.23"})
+			if result != nil || !errors.Is(err, ErrActionVerificationHidden) || len(script.execs) != 0 {
+				t.Fatalf("result/error/execs = %#v/%v/%d", result, err, len(script.execs))
+			}
+		})
+	}
 }
 
 func TestActionVerificationIssuePersistsOnlyDigestsAndReissueSoftDeletes(t *testing.T) {
