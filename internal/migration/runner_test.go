@@ -156,7 +156,7 @@ func TestAdminUsersReadCountIndexMigrationContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(migrations) != 4 || migrations[3].Version != "0004" {
+	if len(migrations) != 5 || migrations[3].Version != "0004" {
 		t.Fatalf("admin users count migration 0004 is missing: %#v", migrations)
 	}
 	up := strings.ToLower(string(migrations[3].UpSQL))
@@ -181,7 +181,7 @@ func TestAuthCoreMigrationContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(migrations) != 4 || migrations[1].Version != "0002" || migrations[2].Version != "0003" || migrations[3].Version != "0004" {
+	if len(migrations) != 5 || migrations[1].Version != "0002" || migrations[2].Version != "0003" || migrations[3].Version != "0004" {
 		t.Fatalf("auth migration 0002 is missing: %#v", migrations)
 	}
 

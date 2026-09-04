@@ -36,6 +36,12 @@ var adminUsersReadCountUp []byte
 //go:embed sql/0004_admin_users_read_count.down.sql
 var adminUsersReadCountDown []byte
 
+//go:embed sql/0005_admin_operation_safety.up.sql
+var adminOperationSafetyUp []byte
+
+//go:embed sql/0005_admin_operation_safety.down.sql
+var adminOperationSafetyDown []byte
+
 // Migration is an immutable, embedded schema version.
 type Migration struct {
 	Version string
@@ -56,6 +62,7 @@ func All() ([]Migration, error) {
 		{Version: "0002", UpSQL: authCoreUp, DownSQL: authCoreDown},
 		{Version: "0003", UpSQL: permissionPolicyUp, DownSQL: permissionPolicyDown},
 		{Version: "0004", UpSQL: adminUsersReadCountUp, DownSQL: adminUsersReadCountDown},
+		{Version: "0005", UpSQL: adminOperationSafetyUp, DownSQL: adminOperationSafetyDown},
 	}
 	sort.Slice(migrations, func(i, j int) bool { return migrations[i].Version < migrations[j].Version })
 	return migrations, nil
@@ -124,6 +131,11 @@ func Up(ctx context.Context, db *gorm.DB, nextGUID func() int64, nowMillis func(
 						return err
 					}
 				}
+				if migration.Version == "0005" {
+					if err := VerifyAdminOperationSafetySchema(ctx, conn); err != nil {
+						return err
+					}
+				}
 				continue
 			}
 			for _, statement := range splitStatements(string(migration.UpSQL)) {
@@ -138,6 +150,11 @@ func Up(ctx context.Context, db *gorm.DB, nextGUID func() int64, nowMillis func(
 			}
 			if migration.Version == "0004" {
 				if err := VerifyAdminUsersReadCountIndex(ctx, conn); err != nil {
+					return err
+				}
+			}
+			if migration.Version == "0005" {
+				if err := VerifyAdminOperationSafetySchema(ctx, conn); err != nil {
 					return err
 				}
 			}
@@ -186,7 +203,10 @@ func Verify(ctx context.Context, db *gorm.DB) error {
 	if err := VerifyPermissionSchema(ctx, db); err != nil {
 		return err
 	}
-	return VerifyAdminUsersReadCountIndex(ctx, db)
+	if err := VerifyAdminUsersReadCountIndex(ctx, db); err != nil {
+		return err
+	}
+	return VerifyAdminOperationSafetySchema(ctx, db)
 }
 
 // VerifyApplied is the side-effect-free portion of Verify, kept separate so
