@@ -23,3 +23,7 @@ The fixture will remain alive after Task 12 implementation verification for inde
 ## Independent QA remediation retention
 
 After the first independent `QA_FAIL`, the same exact full-ID containers remain retained. Remediation uses fresh task-only MySQL child databases and distinct Redis logical databases or unique canonical key identities. Before the second QA handoff, the executor verifies the private root realpath, owner and exact task marker without following symlinks, then enforces mode `0700` on every directory and `0600` on every regular file. All failed raw attempts remain in the private directory; reports contain only redacted counts and hashes. Cleanup remains forbidden until the fresh second QA verdict.
+
+## Second independent QA
+
+The fresh second independent review returned `QA_PASS` for the retained full-ID fixture and reviewed commit `9dbad0512f5c5fa69d7202ab3a3cc2132f0cdc41`. Its signed private result is represented in repository evidence only by SHA-256, verdict, redacted counts, and public fixture identity. Two non-product QA environment setup failures remain archived with the earlier failure history. The fixture remains alive; cleanup and Task 13 remain outside this evidence update.

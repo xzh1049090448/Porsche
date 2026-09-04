@@ -113,9 +113,11 @@
     },
     "secret_scan": {
       "verdict": "PASS",
-      "target_file_count": 118,
+      "target_file_count": 145,
+      "target_manifest_sha256": "543a3e77784c300994aa7689de495bfdf42630fe6d2d2c9960f262a6badea053",
       "exact_match_count": 0,
-      "generic_match_count": 0
+      "generic_unapproved_match_count": 0,
+      "allowlisted_public_operation_reference_count": 1
     }
   },
   "historical_nonfinal_attempts": [
@@ -178,15 +180,25 @@
       "gate": "qa5_action_race_reused_database",
       "status": "FAIL",
       "reason": "post-fix rerun reused qa5 and collided with deterministic real verification ticket; raw log retained, final race moved to fresh qa7"
+    },
+    {
+      "gate": "second_qa_snowflake_environment",
+      "status": "ERROR",
+      "reason": "first second-QA environment attempt retained an incompatible SNOWFLAKE_NODE_ID; raw log retained and corrected without changing product code"
+    },
+    {
+      "gate": "second_qa_gocache_environment",
+      "status": "ERROR",
+      "reason": "second-QA default GOCACHE was not writable in its isolation context; raw log retained and corrected with the private task cache"
     }
   ],
   "private_permissions": {
     "symlinks": 0,
-    "directories": 258,
+    "directories": 515,
     "regular_files_at_first_repair": 2917,
     "non_0700_directories": 0,
     "non_0600_regular_files": 0,
-    "regular_files": 2955,
+    "regular_files": 5815,
     "nonconforming_directories": 0,
     "nonconforming_regular_files": 0
   },
@@ -204,5 +216,85 @@
     "production active action registry remains empty",
     "no production consumer, HTTP route, frontend adapter, deployment or production migration was activated",
     "fixture remains alive for fresh second independent QA"
-  ]
+  ],
+  "second_independent_qa": {
+    "verdict": "QA_PASS",
+    "signed_result_sha256": "8780e465351ab7a6da33b6a51f40565c892e07d79fa09916f9ea34a90f84bc8c",
+    "reviewed_head": "9dbad0512f5c5fa69d7202ab3a3cc2132f0cdc41",
+    "counts": {
+      "migration": {
+        "pass": 1,
+        "fail": 0
+      },
+      "service_real": {
+        "pass": 26,
+        "fail": 0
+      },
+      "service_concurrency": {
+        "pass": 2,
+        "fail": 0
+      },
+      "task8_focused": {
+        "events": 92,
+        "verdict": "PASS"
+      },
+      "task8_race": {
+        "events": 92,
+        "verdict": "PASS"
+      },
+      "task9_focused": {
+        "events": 75,
+        "verdict": "PASS"
+      },
+      "task9_race": {
+        "events": 75,
+        "verdict": "PASS"
+      },
+      "serial_full": {
+        "pass": 1114,
+        "explicit_performance_skip": 1,
+        "fail": 0
+      },
+      "action_race": {
+        "pass": 261,
+        "skip": 0,
+        "fail": 0
+      },
+      "route_registry": {
+        "pass": 15,
+        "fail": 0
+      },
+      "router": {
+        "pass": 14,
+        "fixture_skip": 10,
+        "fail": 0
+      }
+    },
+    "gates": {
+      "build": "PASS",
+      "vet": "PASS",
+      "diff": "PASS",
+      "source": "PASS"
+    },
+    "secret_scan": {
+      "exact_secret_classes": 6,
+      "exact_matches": 0,
+      "generic_pattern_classes": 7,
+      "unapproved_generic_matches": 0,
+      "allowlisted_public_operation_reference_matches": 1
+    },
+    "private_permissions": {
+      "directories_0700": 515,
+      "regular_files_0600": 5813,
+      "symlinks": 0
+    },
+    "fixture_retained_alive": true
+  },
+  "failure_archive": {
+    "failure_classes": 12,
+    "raw_failure_events": 17,
+    "raw_logs_retained": true,
+    "first_qa_fail_retained": true,
+    "commit_process_deviation_retained": true
+  }
 }

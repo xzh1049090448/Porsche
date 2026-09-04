@@ -106,8 +106,15 @@
     "regular_file_mode": "0600",
     "nonconforming_directories": 0,
     "nonconforming_regular_files": 0,
-    "directories": 258,
-    "regular_files": 2955
+    "directories": 515,
+    "regular_files": 5815
   },
-  "second_independent_qa": "PENDING_RETAINED_FIXTURE_REVIEW"
+  "second_independent_qa": {
+    "verdict": "QA_PASS",
+    "signed_result_sha256": "8780e465351ab7a6da33b6a51f40565c892e07d79fa09916f9ea34a90f84bc8c",
+    "directories_0700": 515,
+    "regular_files_0600": 5813,
+    "symlinks": 0,
+    "retained_alive": true
+  }
 }
