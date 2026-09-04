@@ -82,6 +82,22 @@ func TestAdminOperationSafetyMigrationContract(t *testing.T) {
 			t.Errorf("0005 missing lifecycle coherence %q", fragment)
 		}
 	}
+	for _, support := range []struct {
+		index      string
+		constraint string
+	}{
+		{"\n  KEY fk_admin_action_verifications_session (session_id),", "\n  CONSTRAINT fk_admin_action_verifications_session FOREIGN KEY"},
+		{"\n  KEY fk_admin_operations_session (session_id),", "\n  CONSTRAINT fk_admin_operations_session FOREIGN KEY"},
+	} {
+		if got := strings.Count(string(migrations[4].UpSQL), support.index); got != 1 {
+			t.Errorf("explicit session support index count = %d, want exactly 1 for %q", got, support.index)
+		}
+		indexAt := strings.Index(string(migrations[4].UpSQL), support.index)
+		constraintAt := strings.Index(string(migrations[4].UpSQL), support.constraint)
+		if indexAt < 0 || constraintAt < 0 || indexAt >= constraintAt {
+			t.Errorf("session support index must precede matching FK constraint: index=%d constraint=%d", indexAt, constraintAt)
+		}
+	}
 
 	down := strings.ToLower(strings.TrimSpace(string(migrations[4].DownSQL)))
 	wantDown := "drop table if exists admin_operations;\ndrop table if exists admin_action_verifications;"

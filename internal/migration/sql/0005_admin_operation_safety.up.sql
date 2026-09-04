@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS admin_action_verifications (
   KEY idx_admin_action_verifications_actor_session_active (actor_user_id, session_id, is_deleted, expires_at),
   KEY idx_admin_action_verifications_action_target_active (action, target_kind, target_guid, is_deleted),
   KEY idx_admin_action_verifications_expiry (is_deleted, expires_at),
+  KEY fk_admin_action_verifications_session (session_id),
   CONSTRAINT fk_admin_action_verifications_actor FOREIGN KEY (actor_user_id) REFERENCES users(id),
   CONSTRAINT fk_admin_action_verifications_session FOREIGN KEY (session_id) REFERENCES user_sessions(id),
   CONSTRAINT chk_admin_action_verifications_target CHECK (
@@ -68,6 +69,7 @@ CREATE TABLE IF NOT EXISTS admin_operations (
   KEY idx_admin_operations_state_session (state, session_id, is_deleted, lease_expires_at),
   KEY idx_admin_operations_recovery (state, is_deleted, lease_expires_at),
   KEY idx_admin_operations_expiry (is_deleted, query_expires_at),
+  KEY fk_admin_operations_session (session_id),
   CONSTRAINT fk_admin_operations_actor FOREIGN KEY (actor_user_id) REFERENCES users(id),
   CONSTRAINT fk_admin_operations_session FOREIGN KEY (session_id) REFERENCES user_sessions(id),
   CONSTRAINT fk_admin_operations_verification FOREIGN KEY (verification_id) REFERENCES admin_action_verifications(id),
