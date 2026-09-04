@@ -22,7 +22,7 @@ func TestNewStateDoesNotBootstrapRootFromSettings(t *testing.T) {
 	}
 }
 
-func TestNewStateActionSecurityCryptoLifecycle(t *testing.T) {
+func TestNewStateActionSecurityConstructorLifecycle(t *testing.T) {
 	withoutKey, err := NewState(&config.Settings{}, nil)
 	if err != nil {
 		t.Fatalf("NewState(without key) error = %v", err)
@@ -30,14 +30,13 @@ func TestNewStateActionSecurityCryptoLifecycle(t *testing.T) {
 	if withoutKey.ActionSecurityCrypto != nil {
 		t.Fatal("NewState constructed action-security crypto without a root key")
 	}
+	if withoutKey.ActionVerifications != nil {
+		t.Fatal("NewState constructed action verification service without a root key")
+	}
 
 	root := bytes.Repeat([]byte{0x42}, 32)
-	withKey, err := NewState(&config.Settings{ActionSecurityHMACKey: root}, nil)
-	if err != nil {
-		t.Fatalf("NewState(with key) error = %v", err)
-	}
-	if withKey.ActionSecurityCrypto == nil {
-		t.Fatal("NewState did not construct action-security crypto")
+	if _, err := NewState(&config.Settings{ActionSecurityHMACKey: root}, nil); err == nil {
+		t.Fatal("NewState accepted a root key with partial database/Redis dependencies")
 	}
 	if !bytes.Equal(root, bytes.Repeat([]byte{0x42}, 32)) {
 		t.Fatal("NewState mutated configured root key")

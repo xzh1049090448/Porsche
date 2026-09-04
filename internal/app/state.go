@@ -26,6 +26,7 @@ type State struct {
 	AuthRedis            *service.AuthRedis
 	Sessions             *service.SessionService
 	ActionSecurityCrypto *actionsecurity.Crypto
+	ActionVerifications  *service.ActionVerificationService
 	HTTP                 *http.Client
 }
 
@@ -69,6 +70,16 @@ func NewState(settings *config.Settings, db *gorm.DB) (*State, error) {
 	}
 	s.Sessions = service.NewSessionService(db, s.AuthRedis, settings)
 	s.Auth.SetSessionService(s.Sessions)
+	if s.ActionSecurityCrypto != nil {
+		if db == nil || s.AuthRedis == nil {
+			return nil, service.ErrActionVerificationUnavailable
+		}
+		actionVerifications, err := service.NewActionVerificationServiceFromAuthRedis(db, s.AuthRedis, s.ActionSecurityCrypto)
+		if err != nil {
+			return nil, err
+		}
+		s.ActionVerifications = actionVerifications
+	}
 	s.Platform = service.NewPlatformChatService(service.PlatformDeps{
 		Settings:   settings,
 		DB:         db,
