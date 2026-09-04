@@ -1,0 +1,70 @@
+{
+  "containers": {
+    "mysql": {
+      "auto_remove": true,
+      "container_port": "3306/tcp",
+      "full_id": "188d95b42424ca47a8d9cfddccc929ebe63537adff9a54515e54fd18c1be160a",
+      "host_ip": "127.0.0.1",
+      "host_port": 52104,
+      "image_id": "sha256:7dcddc01f13bab2f15cde676d44d01f61fc9f99fe7785e86196dfc07d358ae2b",
+      "mount_types": [
+        "bind"
+      ],
+      "mounts": [
+        {
+          "destination": "/run/secrets/mysql-root-password",
+          "read_only": true,
+          "source": "REDACTED_PRIVATE_FILE",
+          "type": "bind"
+        }
+      ],
+      "name": "porsche-b1e-260905-t12-a0056a9-c71f-mysql",
+      "read_only_rootfs": true,
+      "tmpfs": {
+        "/tmp": "rw,noexec,nosuid,size=64m",
+        "/var/lib/mysql": "rw,noexec,nosuid,size=768m",
+        "/var/run/mysqld": "rw,noexec,nosuid,size=16m"
+      }
+    },
+    "redis": {
+      "auto_remove": true,
+      "container_port": "6379/tcp",
+      "full_id": "945419ecbc5e6fbe15615acfa7b652acca3d6ae6dc748f9bd863489c5c1258bf",
+      "host_ip": "127.0.0.1",
+      "host_port": 52107,
+      "image_id": "sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf",
+      "mount_types": [],
+      "mounts": [],
+      "name": "porsche-b1e-260905-t12-a0056a9-c71f-redis",
+      "read_only_rootfs": true,
+      "tmpfs": {
+        "/data": "rw,noexec,nosuid,size=128m",
+        "/tmp": "rw,noexec,nosuid,size=16m"
+      }
+    }
+  },
+  "logical_databases": [
+    {
+      "name": "porsche_test",
+      "purpose": "migration and focused real service gates",
+      "retained_until_container_stop": true
+    },
+    {
+      "name": "porsche_b1e_260905_t12_a0056a9_c71f_full2_test",
+      "purpose": "fresh serial full gate",
+      "retained_until_container_stop": true
+    },
+    {
+      "name": "porsche_b1e_260905_t12_a0056a9_c71f_race_test",
+      "purpose": "fresh complete Action race gate",
+      "retained_until_container_stop": true
+    }
+  ],
+  "named_volumes": 0,
+  "preflight": "PASS",
+  "retained_alive": true,
+  "retained_identity": "PASS",
+  "schema_version": 1,
+  "secrets": "REDACTED_PRIVATE_FILES_ONLY",
+  "task_label": "porsche-b1e-260905-t12-a0056a9-c71f"
+}

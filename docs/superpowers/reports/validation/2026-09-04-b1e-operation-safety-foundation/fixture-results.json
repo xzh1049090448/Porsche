@@ -1,0 +1,119 @@
+{
+  "baseline_commit": "a0056a9013b4d2572058c50c356bc492862ae073",
+  "commands": {
+    "action_race": {
+      "sha256": "0bd3feb769ea016e97ae0d174750b162b95276a0b3b6f962a382535037be294d"
+    },
+    "build": {
+      "sha256": "854004a0c269ca4993dad170dc3f7d6e996493547b7c6b5c5c83cf20d113b42a"
+    },
+    "diff_check": {
+      "sha256": "466c2f308b48c7661d646fdd068fbecea974c665fe65dbf8ed508f224180ce0b"
+    },
+    "migration_real": {
+      "sha256": "e7867989d33dc1197efa5d15ee8b8526de4191e3a9ce5ec5b67c28e20e2449d2"
+    },
+    "serial_full": {
+      "sha256": "caea3fe8b7d8ce50267f07e888e56a5c06d104e2dc09f56210b460c8a3fc43c9"
+    },
+    "service_concurrency_race": {
+      "sha256": "073522b52503b8796a6c1022947623b0a57939a6077e79dc1ed7df257ef9153b"
+    },
+    "service_focused": {
+      "sha256": "0b4f94f8c989be86a5db3baa7cea12ebaec7cba4fd3424913bebafd069876e24"
+    },
+    "vet": {
+      "sha256": "3d4b424f6fcd11f530525ddea9a46aeaffec7c883b6c04b6baf7df36bf47800b"
+    }
+  },
+  "covered": [
+    "0001..0005 up/status/Verify and exact checksums",
+    "0005 down removes only two B1-E tables; 0001..0004 remain; 0005 up and Verify pass",
+    "11 MySQL 8 CHECK constraints expose non-empty clauses and ENFORCED=YES",
+    "production Redis Lua actor/IP/session verification windows, Begin 60/minute, non-sliding TTL, and total failure to 503",
+    "300-second ticket equality rejection, 30-second lease, 60-second recovery grace equality and +1, 30-day expiry and permanent tombstone",
+    "same-key two-goroutine MySQL row locking, payload conflict, ticket reuse, cross-session conflict, and refresh on the same logical session",
+    "real transaction success, typed rejection, effect/audit/outbox/terminal failure rollback, commit unknown, zero replay, and concurrent one-shot Execute"
+  ],
+  "environment": {
+    "chat_requests": 0,
+    "model_requests": 0,
+    "mysql_major": 8,
+    "network": "loopback-only",
+    "production_requests": 0,
+    "redis_major": 7,
+    "sse_requests": 0,
+    "upstream_requests": 0
+  },
+  "executed_date": "2026-09-05",
+  "final": {
+    "action_race": {
+      "fail": 0,
+      "leaf_pass": 221,
+      "log_sha256": "7f31b83abe937bc806c3d37e3f79d79da236ec9d11e8814a0d72e93c186cbefd",
+      "package_fail": 0,
+      "package_pass": 2,
+      "skip": 0
+    },
+    "build": "PASS",
+    "diff_check": "PASS",
+    "migration_real": {
+      "fail": 0,
+      "leaf_pass": 1,
+      "log_sha256": "e30b10fdb57e07a29049ca903e434bb3203479001f61af049c233cdf4ff68674",
+      "package_pass": 1,
+      "skip": 0
+    },
+    "serial_full": {
+      "explicit_skip": "TestAdminUsersReadPerformance requires separate 100k authorization",
+      "fail": 0,
+      "leaf_pass": 1000,
+      "log_sha256": "35ff5ef38dcc39c217c53b1a2d66945a5e2d81f56bb63626f80a2633947f68ab",
+      "no_test_package_skip": 4,
+      "package_fail": 0,
+      "package_pass": 16,
+      "skip": 1
+    },
+    "service_concurrency_race": {
+      "fail": 0,
+      "leaf_pass": 2,
+      "log_sha256": "a9aaccef890cdac9911dd453a06ff23f00e54758cfebcc9d2a3bdb369d5dc5ec",
+      "package_pass": 1,
+      "skip": 0
+    },
+    "service_focused": {
+      "fail": 0,
+      "leaf_pass": 11,
+      "log_sha256": "70e39368c543d9ffb13c230d52599fdd77641f231a0491d97a660c438b7fba55",
+      "package_pass": 1,
+      "skip": 0
+    },
+    "vet": "PASS"
+  },
+  "frozen_report_date": "2026-09-04",
+  "historical_nonfinal_attempts": [
+    {
+      "fail": 1,
+      "gate": "serial_full_shared_fixture",
+      "leaf_pass": 999,
+      "reason": "shared Redis DB0 retained focused rate counters; replaced by fresh MySQL subdatabase and Redis DB15",
+      "skip": 1
+    },
+    {
+      "gate": "action_race_reused_full_fixture",
+      "reason": "deterministic existing integration ticket collided with prior full-run state; replaced by fresh MySQL subdatabase and Redis DB14",
+      "status": "FAIL"
+    }
+  ],
+  "implementation_commits": [
+    "763c5f6debcb73ec0c745f7503b7f05e9225c312",
+    "38293033d30634fc73afa16531c333c23ae54e36",
+    "878cf2bc8f50c41c2355ed0d1a35f50a11f2a8d7"
+  ],
+  "independent_qa": "PENDING_RETAINED_FIXTURE_REVIEW",
+  "limitations": [
+    "production active action registry remains empty",
+    "no production consumer, HTTP route, frontend adapter, deployment, or production migration was activated"
+  ],
+  "schema_version": 1
+}
