@@ -1,6 +1,6 @@
 # B1-D 后端实现及验证记录
 
-当前：2026-09-04，实现候选已落地并冻结；`go-016` 唯一 in_progress，`PARTIAL / PERFORMANCE_BLOCKED`。独立真实 fixture QA 确认功能、安全、隔离、focused/race/fresh full/build/vet/diff均PASS，四级安全问题均0、九生产SHA匹配；但三次相同100k warm性能为633.956ms FAIL、466.753ms PASS、504.793ms FAIL，未稳定满足500ms门禁。资源静止保留，等待用户扩展0004索引验证授权或exact cleanup指令。真正disk-cold、FE-BE联合验收及全PRD仍未执行。
+当前最终状态（2026-09-04）：实现候选已落地并冻结，`go-016` 为 `passing / PASS_LIMITED_SCOPE`。H3 writer 三次 fresh 100k warm P95 为77.817/75.512/74.710ms，独立QA三次为113.688/76.997/78.737ms，全部满足500ms门禁；功能、安全、隔离、focused/race/fresh full/build/vet/diff均PASS，四级安全问题均0。用户授权的exact cleanup已完成，精确容器ID/名称、task label和私密目录均无残留。下文633.956/466.753/504.793ms及相关`PERFORMANCE_BLOCKED`、资源保留记录是H3整改前的历史阶段，原样保留用于证据追溯，不代表当前状态。真正disk-cold、FE-BE联合验收、26联合用例及全PRD仍未执行。
 
 原任务为 B1-D 两个 `/admin/v2/users` 只读接口、三个旧只读兼容入口和 login/refresh/self/me 权限投影。按已确认 r1，实现了规范 query/白名单 DTO、单 CTE count+page、严格 policy 和 actor→target→session→Redis 的自有 READ COMMITTED 事务，提交成功后输出；旧写入口保持原样。列表/详情是 B2 提前交付的子集，不代表 B1 全部底座/写链、M1/A04 或 26 联合用例完成。
 

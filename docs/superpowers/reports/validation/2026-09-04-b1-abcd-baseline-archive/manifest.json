@@ -295,8 +295,10 @@
       "path": "docs/superpowers/reports/2026-09-03-b1d-admin-users-read.md",
       "git_status": "??",
       "scope": "B1-D",
-      "size": 21244,
-      "sha256": "1ccad851a1f9e387c79b132034d7423f1b4d6f0efe137181a5dc225c2b2c48b8"
+      "size": 21417,
+      "sha256": "5fe705ba0097beddf75d9bcfe93dc364bab4bae2b383347b549adaaad12b4c90",
+      "archived_original_sha256": "1ccad851a1f9e387c79b132034d7423f1b4d6f0efe137181a5dc225c2b2c48b8",
+      "archived_original_size": 21244
     },
     {
       "path": "docs/superpowers/reports/validation/2026-09-03-b1a-pure-authz/external_authz_test.go.txt",
@@ -2589,6 +2591,16 @@
       "sha256": "67feba718b941cdd9e3a34e62e04f490deb9e6db7867a75e9f8f5be64041f50b",
       "source": "docs/superpowers/reports/validation/joint-acceptance-20260904/manifest.json",
       "kind": "non-executable redacted bootstrap log"
+    }
+  ],
+  "post_archive_corrections": [
+    {
+      "date": "2026-09-04",
+      "path": "docs/superpowers/reports/2026-09-03-b1d-admin-users-read.md",
+      "reason": "opening summary corrected to final H3 PASS_LIMITED_SCOPE and exact-cleanup state; historical blocked evidence retained",
+      "previous_sha256": "1ccad851a1f9e387c79b132034d7423f1b4d6f0efe137181a5dc225c2b2c48b8",
+      "current_sha256": "5fe705ba0097beddf75d9bcfe93dc364bab4bae2b383347b549adaaad12b4c90",
+      "business_code_changed": false
     }
   ]
 }

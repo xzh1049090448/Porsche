@@ -10,7 +10,7 @@ c8cd96f10974d60d468a6bb1716c92a5fca03b51d977c986bfe455c86da53d5d  docs/superpowe
 3c6640354d5d9e39c7cc420543b6ff029d722d3cacee2ec25f1a9c1cadd2c916  docs/superpowers/reports/2026-09-03-b1b2-managed-user-security.md
 76e3af7d36fd0f6c013714d1907ea93c7302f2b033a1c3d89d1165f0816de4fb  docs/superpowers/reports/2026-09-03-b1b3-gateway-owner-acl.md
 2fdd4b8a4ed714f13506414862ce6a339f4297ea63220313ef4814baacfd64cb  docs/superpowers/reports/2026-09-03-b1c-admin-authz-read.md
-1ccad851a1f9e387c79b132034d7423f1b4d6f0efe137181a5dc225c2b2c48b8  docs/superpowers/reports/2026-09-03-b1d-admin-users-read.md
+5fe705ba0097beddf75d9bcfe93dc364bab4bae2b383347b549adaaad12b4c90  docs/superpowers/reports/2026-09-03-b1d-admin-users-read.md
 eec5980c5bbf6336c5bff02c694be83b184b5db8421b330060bc3867954ee153  docs/superpowers/reports/validation/2026-09-03-b1a-pure-authz/external_authz_test.go.txt
 44bb12ef4fb0109ab0159088f1cac4fd8145db4fb0bb7d733b6e65afdd8cfe07  docs/superpowers/reports/validation/2026-09-03-b1a-pure-authz/validation.json
 3a18aeda05db799175bcc2fb38f24366416435ec8f3be8bfdba568574ca6dd62  docs/superpowers/reports/validation/2026-09-03-b1b1-permission-snapshot/full-test.json
@@ -263,7 +263,7 @@ ecde408466ee18ae87170b44ac8e6d0b37553e21e947c7f55f471e23c2b15512  docs/superpowe
 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/vet.log
 86c210b0ef053e888edfe1aa68e39c12aebd68692c6e8e36e4746e5728bf9505  docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/security-review.md
 3f4660e5c4b190d86e819d06de5026126dad100264fb7d49e178b3a4adab1b3b  docs/superpowers/reports/validation/2026-09-04-b1-abcd-baseline-archive/README.md
-103d366b0fd475b5543eebf985254556aa772380cd7d6e61864ba3b39c0dc31d  docs/superpowers/reports/validation/2026-09-04-b1-abcd-baseline-archive/manifest.json
+974cac70cbc65fbd5326d43f2e3cb683e3b44fdbd0c0a4a835fc9153595b959d  docs/superpowers/reports/validation/2026-09-04-b1-abcd-baseline-archive/manifest.json
 0118d64850fca79512ee76275485c887f4a509404f0b8a7656040d881af23cdb  docs/superpowers/reports/validation/joint-acceptance-20260904/README.md
 6a6d521a7c780fbc20a1fd760e352c7b673c497c27ceca7a9dd9b790d041d9a4  docs/superpowers/reports/validation/joint-acceptance-20260904/backend-baseline.txt
 6b466d528521cb302db5cc481906b445b658f6b7f667e4ccfaaf3df4a45caf8e  docs/superpowers/reports/validation/joint-acceptance-20260904/backend-candidate-hashes.sha256
