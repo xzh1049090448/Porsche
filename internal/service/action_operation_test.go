@@ -393,6 +393,9 @@ func TestActionOperationBeginFreshTargetHierarchyIsRecheckedAfterVerification(t 
 	if got := actionOperationQueryKinds(script.queries); strings.Join(got, ",") != "actor,session,operation,verification,target,target_or_policy,target_or_policy" {
 		t.Fatalf("target lock order = %v", got)
 	}
+	if err := validateNewOperationEventOrder(script.events); err != nil {
+		t.Fatalf("target query/write lock order: %v; events=%v", err, script.events)
+	}
 
 	service, script, actor, key, ticket = actionOperationFixture(t, now, nil)
 	intent = configureTargetOperationFixture(service, script, 9001)
@@ -744,6 +747,9 @@ func TestActionOperationBeginAndQueryRecheckClockAfterAllAuthorizationLocks(t *t
 				if identity != nil || view != nil || !errors.Is(err, ErrActionOperationForbidden) {
 					t.Fatalf("post-lock ticket expiry = %#v %#v %v", identity, view, err)
 				}
+				if !tc.existing && (script.operation != nil || script.commitCount != 0 || script.rollbackCount != 1) {
+					t.Fatalf("expired provisional operation persisted: row=%#v commits=%d rollbacks=%d", script.operation, script.commitCount, script.rollbackCount)
+				}
 			}
 			if !clock.finalAfterAll {
 				t.Fatalf("final clock read occurred before all locks; queries=%v", actionOperationQueryKinds(script.queries))
@@ -764,13 +770,28 @@ func TestActionOperationBeginLeaseAndAuditUsePostLockClock(t *testing.T) {
 	}
 	inserted := actionOperationInsertValues(t, script.execs[0], script.execArgs[0])
 	for column, want := range map[string]string{
+		"created_at": fmt.Sprint(now), "updated_at": fmt.Sprint(now),
+		"lease_expires_at": fmt.Sprint(now + actionOperationLeaseMillis),
+		"query_expires_at": fmt.Sprint(now + actionOperationQueryRetentionMS),
+	} {
+		if inserted[column] != want {
+			t.Fatalf("provisional %s=%q, want %q", column, inserted[column], want)
+		}
+	}
+	updated := actionOperationUpdateValues(t, script.execs[1], script.execArgs[1])
+	for column, want := range map[string]string{
 		"created_at": fmt.Sprint(finalNow), "updated_at": fmt.Sprint(finalNow),
 		"lease_expires_at": fmt.Sprint(finalNow + actionOperationLeaseMillis),
 		"query_expires_at": fmt.Sprint(finalNow + actionOperationQueryRetentionMS),
 	} {
-		if inserted[column] != want {
-			t.Fatalf("post-lock %s=%q, want %q", column, inserted[column], want)
+		if updated[column] != want {
+			t.Fatalf("final %s=%q, want %q", column, updated[column], want)
 		}
+	}
+	if script.operation == nil || script.operation.CreatedAt != finalNow || script.operation.UpdatedAt != finalNow ||
+		script.operation.LeaseExpiresAt == nil || *script.operation.LeaseExpiresAt != finalNow+actionOperationLeaseMillis ||
+		script.operation.QueryExpiresAt != finalNow+actionOperationQueryRetentionMS {
+		t.Fatalf("final committed operation timestamps = %#v", script.operation)
 	}
 }
 

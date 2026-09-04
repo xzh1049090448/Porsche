@@ -214,23 +214,6 @@ func (s *ActionOperationService) Begin(ctx context.Context, in OperationBegin) (
 			return ErrActionOperationUnavailable
 		}
 
-		verification, err := lockOperationVerificationByTicket(tx, ticketHex)
-		if err != nil {
-			return err
-		}
-		if !validOperationVerificationBinding(verification, locked, descriptor, requestHex, parsedTarget) {
-			return ErrActionOperationForbidden
-		}
-		if err := authorizeOperationDescriptor(tx, locked.actor, descriptor, parsedTarget); err != nil {
-			return err
-		}
-		finalNow := s.clock.NowMillis()
-		if finalNow < now || !validOperationNow(finalNow) {
-			return ErrActionOperationUnavailable
-		}
-		if locked.session.ExpiresAt <= finalNow || verificationRelationAt(verification, finalNow) != operationVerificationActive {
-			return ErrActionOperationForbidden
-		}
 		publicRef, err := actionsecurity.NewPublicRef(s.random)
 		if err != nil {
 			return ErrActionOperationUnavailable
@@ -249,10 +232,10 @@ func (s *ActionOperationService) Begin(ctx context.Context, in OperationBegin) (
 			return ErrActionOperationUnavailable
 		}
 		actorID := locked.actor.ID
-		leaseExpires := finalNow + actionOperationLeaseMillis
-		queryExpires := finalNow + actionOperationQueryRetentionMS
+		leaseExpires := now + actionOperationLeaseMillis
+		queryExpires := now + actionOperationQueryRetentionMS
 		operation := models.AdminOperation{
-			AuditFields: models.AuditFields{Guid: guid, CreatedAt: finalNow, CreatedBy: &actorID, UpdatedAt: finalNow, UpdatedBy: &actorID},
+			AuditFields: models.AuditFields{Guid: guid, CreatedAt: now, CreatedBy: &actorID, UpdatedAt: now, UpdatedBy: &actorID},
 			ActorUserID: actorID, ActorAuthVersion: locked.actor.AuthVersion, SessionID: locked.session.ID,
 			Action: int(descriptor.Action), IdempotencyKeyHMAC: keyHex, RequestHMAC: requestHex,
 			State: models.OperationProcessing, PublicRef: publicRef, LeaseOwnerHMAC: &leaseHex,
@@ -262,9 +245,36 @@ func (s *ActionOperationService) Begin(ctx context.Context, in OperationBegin) (
 			clear(leaseOwner[:])
 			return ErrActionOperationUnavailable
 		}
+		verification, err := lockOperationVerificationByTicket(tx, ticketHex)
+		if err != nil {
+			clear(leaseOwner[:])
+			return err
+		}
+		if !validOperationVerificationBinding(verification, locked, descriptor, requestHex, parsedTarget) {
+			clear(leaseOwner[:])
+			return ErrActionOperationForbidden
+		}
+		if err := authorizeOperationDescriptor(tx, locked.actor, descriptor, parsedTarget); err != nil {
+			clear(leaseOwner[:])
+			return err
+		}
+		finalNow := s.clock.NowMillis()
+		if finalNow < now || !validOperationNow(finalNow) {
+			clear(leaseOwner[:])
+			return ErrActionOperationUnavailable
+		}
+		if locked.session.ExpiresAt <= finalNow || verificationRelationAt(verification, finalNow) != operationVerificationActive {
+			clear(leaseOwner[:])
+			return ErrActionOperationForbidden
+		}
+		leaseExpires = finalNow + actionOperationLeaseMillis
+		queryExpires = finalNow + actionOperationQueryRetentionMS
 		result := tx.Model(&models.AdminOperation{}).
 			Where("id = ? AND state = ? AND is_deleted = 0 AND verification_id IS NULL", operation.ID, models.OperationProcessing).
-			Updates(map[string]any{"verification_id": verification.ID, "updated_at": finalNow, "updated_by": actorID})
+			Updates(map[string]any{
+				"created_at": finalNow, "lease_expires_at": leaseExpires, "query_expires_at": queryExpires,
+				"updated_at": finalNow, "updated_by": actorID, "verification_id": verification.ID,
+			})
 		if result.Error != nil {
 			clear(leaseOwner[:])
 			var mysqlErr *mysqlDriver.MySQLError
@@ -278,6 +288,10 @@ func (s *ActionOperationService) Begin(ctx context.Context, in OperationBegin) (
 			return ErrActionOperationUnavailable
 		}
 		operation.VerificationID = &verification.ID
+		operation.CreatedAt = finalNow
+		operation.UpdatedAt = finalNow
+		operation.LeaseExpiresAt = &leaseExpires
+		operation.QueryExpiresAt = queryExpires
 		identity = &OperationIdentity{ID: operation.ID, PublicRef: publicRef, LeaseOwner: leaseOwner}
 		clear(leaseOwner[:])
 		view = operationView(descriptor, operation, finalNow)

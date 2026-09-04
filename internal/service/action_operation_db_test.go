@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -42,6 +43,7 @@ type actionOperationScript struct {
 	queryArgs        [][]driver.NamedValue
 	execs            []string
 	execArgs         [][]driver.NamedValue
+	events           []string
 	beginCount       int
 	commitCount      int
 	rollbackCount    int
@@ -116,6 +118,7 @@ func TestActionOperationDBScriptRejectsWrongSelectorsAndIsolation(t *testing.T) 
 		args  []driver.NamedValue
 	}{
 		{query: "UPDATE `admin_operations` SET `verification_id`=? WHERE id = ? AND verification_id IS NULL", args: []driver.NamedValue{{Value: int64(40)}, {Value: int64(30)}}},
+		{query: "UPDATE `admin_operations` SET `created_at`=?,`lease_expires_at`=?,`query_expires_at`=?,`updated_at`=?,`updated_by`=?,`verification_id`=? WHERE id = ? AND state = ? AND is_deleted = 0 AND verification_id IS NULL", args: []driver.NamedValue{{Value: "bad-time"}, {Value: int64(30100)}, {Value: int64(2592000100)}, {Value: int64(100)}, {Value: int64(10)}, {Value: int64(40)}, {Value: int64(30)}, {Value: int64(models.OperationProcessing)}}},
 		{query: "UPDATE `admin_operations` SET `is_deleted`=1,`lease_owner_hmac`=NULL,`error_code`=NULL,`result_http_status`=NULL WHERE id = ? AND state = ? AND is_deleted = 0", args: []driver.NamedValue{{Value: int64(30)}, {Value: int64(models.OperationProcessing)}}},
 		{query: "UPDATE `admin_operations` SET `lease_owner_hmac`=NULL,`lease_expires_at`=NULL WHERE id = ? AND state = ? AND is_deleted = 0 AND lease_expires_at = ?", args: []driver.NamedValue{{Value: int64(30)}, {Value: int64(models.OperationProcessing)}, {Value: lease}}},
 	}
@@ -161,6 +164,7 @@ func (c *actionOperationConn) QueryContext(_ context.Context, query string, args
 	defer s.mu.Unlock()
 	s.queries = append(s.queries, query)
 	s.queryArgs = append(s.queryArgs, append([]driver.NamedValue(nil), args...))
+	s.events = append(s.events, "query:"+query)
 	switch {
 	case strings.Contains(query, "FROM `users`") && strings.Contains(query, "guid = ?"):
 		if !strings.Contains(query, "is_deleted = 0") || !strings.Contains(query, "FOR UPDATE") {
@@ -275,6 +279,7 @@ func (c *actionOperationConn) ExecContext(_ context.Context, query string, args 
 	defer s.mu.Unlock()
 	s.execs = append(s.execs, query)
 	s.execArgs = append(s.execArgs, append([]driver.NamedValue(nil), args...))
+	s.events = append(s.events, "exec:"+query)
 	if err := validateActionOperationExec(s, query, args); err != nil {
 		return nil, err
 	}
@@ -304,6 +309,28 @@ func (c *actionOperationConn) ExecContext(_ context.Context, query string, args 
 			copy.LeaseOwnerHMAC = nil
 			copy.LeaseExpiresAt = nil
 		}
+		s.pendingOperation = &copy
+	}
+	if affected == 1 && strings.HasPrefix(query, "INSERT INTO `admin_operations`") {
+		pending, err := operationFromInsert(query, args)
+		if err != nil {
+			return nil, err
+		}
+		s.pendingOperation = pending
+	}
+	if affected == 1 && strings.HasPrefix(query, "UPDATE `admin_operations`") && strings.Contains(query, "verification_id IS NULL") && s.pendingOperation != nil {
+		values, err := operationUpdateValues(query, args)
+		if err != nil {
+			return nil, err
+		}
+		copy := *s.pendingOperation
+		copy.CreatedAt = mustOperationInt64(values["created_at"])
+		copy.UpdatedAt = mustOperationInt64(values["updated_at"])
+		leaseExpires := mustOperationInt64(values["lease_expires_at"])
+		copy.LeaseExpiresAt = &leaseExpires
+		copy.QueryExpiresAt = mustOperationInt64(values["query_expires_at"])
+		verificationID := mustOperationInt64(values["verification_id"])
+		copy.VerificationID = &verificationID
 		s.pendingOperation = &copy
 	}
 	return actionOperationResult{id: 30, affected: affected}, nil
@@ -345,8 +372,20 @@ func validateActionOperationExec(script *actionOperationScript, query string, ar
 	case strings.HasPrefix(query, "INSERT INTO `admin_operations`"):
 		return requireFragments("`actor_user_id`", "`idempotency_key_hmac`", "`request_hmac`", "`state`", "`lease_owner_hmac`", "`lease_expires_at`", "`query_expires_at`", "`created_by`", "`updated_by`")
 	case strings.HasPrefix(query, "UPDATE `admin_operations`") && strings.Contains(query, "verification_id IS NULL"):
-		if err := requireFragments("SET", "`verification_id`=?", "id = ? AND state = ? AND is_deleted = 0 AND verification_id IS NULL"); err != nil {
+		if err := requireFragments("SET", "`created_at`=?", "`lease_expires_at`=?", "`query_expires_at`=?", "`updated_at`=?", "`updated_by`=?", "`verification_id`=?", "id = ? AND state = ? AND is_deleted = 0 AND verification_id IS NULL"); err != nil {
 			return err
+		}
+		if len(args) != 8 || script.verification == nil {
+			return errors.New("verification reservation has wrong args")
+		}
+		createdAt, createdOK := operationInt64(args[0].Value)
+		leaseExpires, leaseOK := operationInt64(args[1].Value)
+		queryExpires, queryOK := operationInt64(args[2].Value)
+		if !createdOK || !leaseOK || !queryOK ||
+			fmt.Sprint(args[0].Value) != fmt.Sprint(args[3].Value) ||
+			leaseExpires != createdAt+actionOperationLeaseMillis || queryExpires != createdAt+actionOperationQueryRetentionMS ||
+			fmt.Sprint(args[4].Value) != fmt.Sprint(script.actor.ID) || fmt.Sprint(args[5].Value) != fmt.Sprint(script.verification.ID) {
+			return errors.New("verification reservation did not refresh final timestamps and audit")
 		}
 		return requireTail(int64(30), int64(models.OperationProcessing))
 	case strings.HasPrefix(query, "UPDATE `admin_operations`") && strings.Contains(query, "query_expires_at <= ?"):
@@ -379,13 +418,75 @@ func (tx *actionOperationTx) Commit() error {
 		tx.script.mu.Unlock()
 		return errors.New("scripted commit failure")
 	}
-	if tx.script.pendingOperation != nil && tx.script.operation != nil {
-		*tx.script.operation = *tx.script.pendingOperation
+	if tx.script.pendingOperation != nil {
+		if tx.script.operation == nil {
+			copy := *tx.script.pendingOperation
+			tx.script.operation = &copy
+		} else {
+			*tx.script.operation = *tx.script.pendingOperation
+		}
 	}
 	tx.script.pendingOperation = nil
 	tx.script.commitCount++
 	tx.script.mu.Unlock()
 	return nil
+}
+
+func operationFromInsert(query string, args []driver.NamedValue) (*models.AdminOperation, error) {
+	open := strings.Index(query, "(")
+	close := strings.Index(query, ") VALUES")
+	if open < 0 || close <= open {
+		return nil, errors.New("unparseable operation INSERT")
+	}
+	columns := strings.Split(query[open+1:close], ",")
+	if len(columns) != len(args) {
+		return nil, errors.New("operation INSERT columns/args mismatch")
+	}
+	values := make(map[string]any, len(columns))
+	for i, column := range columns {
+		values[strings.Trim(strings.TrimSpace(column), "`")] = args[i].Value
+	}
+	createdBy := mustOperationInt64(values["created_by"])
+	updatedBy := mustOperationInt64(values["updated_by"])
+	leaseHex := fmt.Sprint(values["lease_owner_hmac"])
+	leaseExpires := mustOperationInt64(values["lease_expires_at"])
+	return &models.AdminOperation{
+		ID:          30,
+		AuditFields: models.AuditFields{Guid: mustOperationInt64(values["guid"]), CreatedAt: mustOperationInt64(values["created_at"]), CreatedBy: &createdBy, UpdatedAt: mustOperationInt64(values["updated_at"]), UpdatedBy: &updatedBy},
+		ActorUserID: mustOperationInt64(values["actor_user_id"]), ActorAuthVersion: int(mustOperationInt64(values["actor_auth_version"])),
+		SessionID: mustOperationInt64(values["session_id"]), Action: int(mustOperationInt64(values["action"])),
+		IdempotencyKeyHMAC: fmt.Sprint(values["idempotency_key_hmac"]), RequestHMAC: fmt.Sprint(values["request_hmac"]),
+		State: models.AdminOperationState(mustOperationInt64(values["state"])), PublicRef: fmt.Sprint(values["public_ref"]),
+		LeaseOwnerHMAC: &leaseHex, LeaseExpiresAt: &leaseExpires, QueryExpiresAt: mustOperationInt64(values["query_expires_at"]),
+	}, nil
+}
+
+func operationUpdateValues(query string, args []driver.NamedValue) (map[string]any, error) {
+	setAt := strings.Index(query, " SET ")
+	whereAt := strings.Index(query, " WHERE ")
+	if setAt < 0 || whereAt <= setAt {
+		return nil, errors.New("unparseable operation UPDATE")
+	}
+	assignments := strings.Split(query[setAt+5:whereAt], ",")
+	if len(args) < len(assignments) {
+		return nil, errors.New("operation UPDATE assignments/args mismatch")
+	}
+	values := make(map[string]any, len(assignments))
+	for i, assignment := range assignments {
+		column := strings.Trim(strings.TrimSpace(strings.SplitN(assignment, "=", 2)[0]), "`")
+		values[column] = args[i].Value
+	}
+	return values, nil
+}
+
+func mustOperationInt64(value any) int64 {
+	parsed, _ := operationInt64(value)
+	return parsed
+}
+
+func operationInt64(value any) (int64, bool) {
+	parsed, err := strconv.ParseInt(fmt.Sprint(value), 10, 64)
+	return parsed, err == nil
 }
 func (tx *actionOperationTx) Rollback() error {
 	tx.script.mu.Lock()
@@ -482,6 +583,9 @@ func TestActionOperationBeginDBScriptEnforcesLockOrderAndSecretFreeSQL(t *testin
 	if got := actionOperationQueryKinds(script.queries); strings.Join(got, ",") != "actor,session,operation,verification,target_or_policy,target_or_policy" {
 		t.Fatalf("lock order = %v", got)
 	}
+	if err := validateNewOperationEventOrder(script.events); err != nil {
+		t.Fatalf("query/write lock order: %v; events=%v", err, script.events)
+	}
 	if script.commitCount != 1 || script.rollbackCount != 0 {
 		t.Fatalf("commit/rollback = %d/%d", script.commitCount, script.rollbackCount)
 	}
@@ -517,6 +621,41 @@ func TestActionOperationBeginDBScriptEnforcesLockOrderAndSecretFreeSQL(t *testin
 			t.Fatalf("verification reservation %s=%q, want %q", column, got, want)
 		}
 	}
+}
+
+func TestActionOperationDBScriptRejectsWrongNewOperationEventOrder(t *testing.T) {
+	wrong := []string{
+		"query:SELECT * FROM `admin_operations` FOR UPDATE",
+		"query:SELECT * FROM `admin_action_verifications` FOR UPDATE",
+		"exec:INSERT INTO `admin_operations` VALUES (?)",
+		"query:SELECT * FROM `user_permission_heads` FOR UPDATE",
+	}
+	if err := validateNewOperationEventOrder(wrong); err == nil {
+		t.Fatal("event-order validator accepted verification before INSERT")
+	}
+}
+
+func validateNewOperationEventOrder(events []string) error {
+	index := func(prefix, fragment string) int {
+		for i, event := range events {
+			if strings.HasPrefix(event, prefix) && strings.Contains(event, fragment) {
+				return i
+			}
+		}
+		return -1
+	}
+	operation := index("query:", "FROM `admin_operations`")
+	insert := index("exec:", "INSERT INTO `admin_operations`")
+	verification := index("query:", "FROM `admin_action_verifications`")
+	target := index("query:", "FROM `users` WHERE guid = ?")
+	policy := index("query:", "FROM `user_permission_heads`")
+	if operation < 0 || insert < 0 || verification < 0 || policy < 0 || !(operation < insert && insert < verification && verification < policy) {
+		return fmt.Errorf("want operation SELECT < INSERT < verification SELECT < policy SELECT, got %d < %d < %d < %d", operation, insert, verification, policy)
+	}
+	if target >= 0 && verification >= target {
+		return fmt.Errorf("want verification SELECT < target SELECT, got %d < %d", verification, target)
+	}
+	return nil
 }
 
 func actionOperationInsertValues(t *testing.T, query string, args []driver.NamedValue) map[string]string {
