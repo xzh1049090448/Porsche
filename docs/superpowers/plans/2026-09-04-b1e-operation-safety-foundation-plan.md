@@ -584,7 +584,7 @@ type TransactionalActionConsumer interface { Execute(ctx context.Context, tx *go
 type TransactionalAuditWriter interface { Write(ctx context.Context, tx *gorm.DB, event ActionAuditEvent) error }
 type TransactionalOutboxWriter interface { Write(ctx context.Context, tx *gorm.DB, event ActionOutboxEvent) error }
 type CommitUnknownError struct { PublicRef string; Cause error }
-func (s *ActionOperationService) Execute(ctx context.Context, identity OperationIdentity, consumer TransactionalActionConsumer, audit TransactionalAuditWriter, outbox TransactionalOutboxWriter) (*OperationView, error)
+func (s *ActionOperationService) Execute(ctx context.Context, identity *OperationIdentity, consumer TransactionalActionConsumer, audit TransactionalAuditWriter, outbox TransactionalOutboxWriter) (*OperationView, error)
 ```
 
 Write `_test.go` declarations for action integer `2147483000`, name `test.noop`, a typed test intent encoder, fixture effect/audit/outbox tables, and a callback that writes all three only through the supplied `tx`. Give the test-only descriptor `TargetUser`, capability `users.delete`, `RequiresTicket=true`, and `Active=true` inside the test resolver so real fixture tests can exercise fresh target visibility/permission checks without activating any frozen descriptor or real consumer.
@@ -599,15 +599,15 @@ Expected: FAIL because Execute/primitives are undefined.
 
 - [ ] **Step 3: Implement Execute transaction and terminal outcomes**
 
-Open a new owned GORM transaction. Lock actor, session, operation, verification in order; compare lease owner HMAC constant-time; revalidate state/auth/intent/session; conditionally consume verification with `consumed_at IS NULL AND expires_at > now AND is_deleted=0`, setting `consumed_at=now`, `is_deleted=1`, and update audit fields; invoke consumer, audit, and outbox in that same transaction. Known typed rejection rolls back callback savepoint, then records failed operation + rejection audit/outbox in the same outer transaction. Infrastructure error rolls back everything. Success writes finished/query expiry/result and clears lease.
+Treat the pointer identity as a one-shot ownership transfer from Begin. It cannot be copied, serialized, rebuilt, or reused; its exact JSON is only `public_ref`, while ID, lease owner, and private actor claims are excluded. Install clearing at the earliest safe point so every non-nil return path clears the caller's original `LeaseOwner`, including validation failure, Redis rejection/failure, success, typed failure, infrastructure failure, and commit unknown. Open a new owned GORM transaction. Lock actor, session, operation, verification in order; compare lease owner HMAC constant-time; revalidate state/auth/intent/session; conditionally consume verification with `consumed_at IS NULL AND expires_at > now AND is_deleted=0`, setting `consumed_at=now`, `is_deleted=1`, and update audit fields; invoke consumer, audit, and outbox in that same transaction. Known typed rejection rolls back callback savepoint, then records failed operation + rejection audit/outbox in the same outer transaction. Infrastructure error rolls back everything. Success writes finished/query expiry/result and clears lease.
 
 - [ ] **Step 4: Make commit unknown explicit**
 
-Use an injectable transaction runner in tests so a commit can return an error after the callback. Return `CommitUnknownError{PublicRef: ...}` mapped later to 503; do not open a second transaction, update state outside the transaction, or retry callback. A subsequent Query is the only confirmation route.
+Use an injectable transaction runner in tests so a commit can return an error after the callback. Clear the caller-owned lease capability before returning `CommitUnknownError{PublicRef: ...}` mapped later to 503; do not open a second transaction, update state outside the transaction, or retry callback. A subsequent Query is the only confirmation route.
 
 - [ ] **Step 5: Add the complete fault matrix**
 
-Inject failure at actor lock, session lock, operation lock, verification lock, ticket consume, fixture effect, audit, outbox, terminal update, and commit return. Assert no partial effect, no false terminal success/failure, no callback replay, and no secrets in errors. Add succeeded and typed failed atomic cases.
+Inject failure at actor lock, session lock, operation lock, verification lock, ticket consume, fixture effect, audit, outbox, terminal update, and commit return. Assert no partial effect, no false terminal success/failure, no callback replay, and no secrets in errors. Add succeeded and typed failed atomic cases. For success, known failure, prevalidation rejection, Redis revoked/error, database lock error, terminal update error, and commit unknown, assert the original caller identity lease bytes are all zero after return; a second Execute with the consumed identity must fail without callback replay.
 
 - [ ] **Step 6: Run GREEN, race, and production-source scan**
 

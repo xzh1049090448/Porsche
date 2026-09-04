@@ -333,7 +333,15 @@ lease owner 每次 claim 使用新的随机值及 lease HMAC。B1-E 不提供自
 
 ### 9.4 Execute
 
-Execute 接收 Begin 返回的 operation 身份和一个外层 `*gorm.DB` 事务。它重新按锁序锁 actor/session、
+Execute 以 `Execute(ctx, identity *OperationIdentity, ...)` 接收 Begin 返回的 operation 身份，并自行拥有
+一个新的 `*gorm.DB` 事务。`OperationIdentity` 是一次性的内存能力：调用方把所有权转移给 Execute，
+不得复制、序列化、复用或用公开字段重建。其 JSON 精确只允许 `public_ref`；内部数据库 ID、lease owner
+和 Begin 时绑定的 actor claims 均不可序列化。Execute 在所有非 nil 返回路径（包括参数拒绝、Redis
+失败或撤销、事务失败、已知拒绝、成功和 commit unknown）清零调用方原对象的 `LeaseOwner`，commit
+unknown 也必须先清租约再返回。原值传参只会清除方法内部副本，无法撤销调用方持有的能力，因此本段
+以指针消费语义修正原冻结签名；该修正不增加路由、不激活动作或生产 consumer。
+
+Execute 重新按锁序锁 actor/session、
 operation、verification，核对 lease owner、state、ticket/intent/session/auth version，并以条件更新
 `consumed_at IS NULL AND expires_at > now AND is_deleted=0` 消费 ticket。随后 callback 可写 target
 效果，并调用同事务的脱敏 audit 与 outbox primitive；最后在同一事务把 operation 写为 succeeded
@@ -343,7 +351,8 @@ operation、verification，核对 lease owner、state、ticket/intent/session/au
 拒绝审计及所需 outbox 仍在同一事务提交。基础设施错误使整个事务回滚，不得在事务外伪造 succeeded
 或 failed。
 
-事务 commit 返回错误即 `commit unknown`：返回 503 `operation_commit_unknown` 和已生成的
+事务 commit 返回错误即 `commit unknown`：先清零传入 identity 的 lease owner，再返回 503
+`operation_commit_unknown` 和已生成的
 operation ref，不自动重跑 callback，不另起事务覆盖状态。调用方只能使用原 scope/key Query 确认。
 数据库不可用时保持 unknown；能读到 terminal row 才能确认结果。能读到 processing 时按租约规则
 等待；超过 lease+grace 只转 pending_recovery，不执行副作用。
