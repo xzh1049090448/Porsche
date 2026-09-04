@@ -1,6 +1,6 @@
 {
   "project": "Porsche Go AI Gateway",
-  "last_updated": "2026-09-04",
+  "last_updated": "2026-09-05",
   "rules": {
     "single_active_feature": true,
     "passing_requires_evidence": true,
@@ -13,6 +13,110 @@
     "passing": "验证命令和证据均已记录。"
   },
   "features": [
+    {
+      "id": "go-017",
+      "priority": 1,
+      "area": "admin-operation-safety-foundation",
+      "title": "B1-E 管理动作安全底座内部原语",
+      "status": "passing",
+      "acceptance_status": "limited_subscope",
+      "a14_status": "BLOCKED_NOT_IMPLEMENTED",
+      "active_production_consumers": 0,
+      "joint_acceptance_blocker_count": 18,
+      "joint_acceptance_blockers": [
+        {
+          "id": "A03",
+          "status": "BLOCKED_NOT_IMPLEMENTED"
+        },
+        {
+          "id": "A05",
+          "status": "BLOCKED_NOT_IMPLEMENTED"
+        },
+        {
+          "id": "A06",
+          "status": "BLOCKED_NOT_IMPLEMENTED"
+        },
+        {
+          "id": "A07",
+          "status": "BLOCKED_NOT_IMPLEMENTED"
+        },
+        {
+          "id": "A08",
+          "status": "BLOCKED_NOT_IMPLEMENTED"
+        },
+        {
+          "id": "A09",
+          "status": "BLOCKED_NOT_IMPLEMENTED"
+        },
+        {
+          "id": "A10",
+          "status": "BLOCKED_NOT_IMPLEMENTED"
+        },
+        {
+          "id": "A11",
+          "status": "BLOCKED_NOT_IMPLEMENTED"
+        },
+        {
+          "id": "A12",
+          "status": "BLOCKED_NOT_IMPLEMENTED"
+        },
+        {
+          "id": "A14",
+          "status": "BLOCKED_NOT_IMPLEMENTED"
+        },
+        {
+          "id": "P01",
+          "status": "BLOCKED_NOT_IMPLEMENTED"
+        },
+        {
+          "id": "P03",
+          "status": "BLOCKED_NOT_IMPLEMENTED"
+        },
+        {
+          "id": "P04",
+          "status": "BLOCKED_NOT_IMPLEMENTED"
+        },
+        {
+          "id": "P05",
+          "status": "BLOCKED_NOT_IMPLEMENTED"
+        },
+        {
+          "id": "P06",
+          "status": "BLOCKED_NOT_IMPLEMENTED"
+        },
+        {
+          "id": "P07",
+          "status": "BLOCKED_NOT_IMPLEMENTED"
+        },
+        {
+          "id": "P08",
+          "status": "BLOCKED_PRODUCT"
+        },
+        {
+          "id": "R02",
+          "status": "BLOCKED_ENV"
+        }
+      ],
+      "completion_claims": {
+        "frontend": false,
+        "production": false,
+        "deployment": false,
+        "production_migration": false,
+        "production_acceptance": false
+      },
+      "verification": [
+        "Task 1–11 TDD、静态路由冻结与未来合同检查；生产 ActiveActionRegistry 为空",
+        "隔离 MySQL 8 / Redis 7 migration、真实 service、10点 Execute fault、并发、serial full、Action race、build/vet/diff/source/secret gates",
+        "第三次独立 QA 对 HEAD 2408ee3ace6f1a2ff07645653aed354a0ca245fa 给出 QA_PASS；fixture 保留供后续 exact cleanup"
+      ],
+      "evidence": [
+        "Task 1–11 交付严格 external-value、用途隔离密钥、8个 inactive typed descriptors、canonical intent、0005 schema/verifier、Redis Lua limits、Issue/Begin/Query/Execute/lease/recovery/transaction primitives；冻结生产路由仍404，active consumer为0。",
+        "Task 12 第三次独立复跑：migration leaf1；service pass_events32/leaf27；concurrency2/2；serial full pass_events1120/leaf1017/1显式性能SKIP/0FAIL；Action race pass_events267/leaf237/0FAIL；route registry15/13、router24/22；build/vet/diff/source/secret均PASS。",
+        "历史首次QA_FAIL、第二次QA_PASS_PRE_SPEC_FAIL、随后SPEC_FAIL、5点Execute fault修复、amend过程偏差及14类/19份raw JSON/145个fail action历史均继续保留。",
+        "公开报告 docs/superpowers/reports/2026-09-04-b1e-operation-safety-foundation.md；公开验证目录 manifest.json。"
+      ],
+      "notes": "PASS_LIMITED_SUBSCOPE：仅可复用内部安全原语。A14仍BLOCKED_NOT_IMPLEMENTED，18个联合验收blocker逐项不变。无真实业务动作、审计投递、outbox worker、recovery worker、前端adapter、部署、生产迁移或生产验收。Task12 fixture仍存活，Task14 cleanup未执行。"
+    },
     {
       "id": "go-016",
       "priority": 0,

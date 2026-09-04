@@ -1,5 +1,14 @@
 # Porsche 开发进度
 
+## 2026-09-05：B1-E 管理动作安全底座限定子范围通过，A14仍阻塞
+
+- `go-017` 为 `passing / limited_subscope`。Task 1–11 已交付 strict external-value、用途隔离密钥、8 个 inactive typed descriptor、canonical intent、0005 schema/verifier、Redis Lua 限流、Issue/Begin/Query/Execute/lease/recovery/transaction primitives；生产 `ActiveActionRegistry()` 为空，active production consumer 为 0，冻结路由继续 404。
+- Task 12 第三次独立 QA 对 `2408ee3ace6f1a2ff07645653aed354a0ca245fa` 给出 `QA_PASS`：migration leaf 1；service 32 pass events / 27 leaf；并发 2/2；serial full 1120 pass events / 1017 leaf / 1 显式性能 SKIP / 0 FAIL；Action race 267 pass events / 237 leaf / 0 FAIL；route registry 15/13、router 24/22；build/vet/diff/source/secret 全部 PASS。
+- 历史首次 QA_FAIL、第二次 QA_PASS_PRE_SPEC_FAIL、随后 SPEC_FAIL、5 点 Execute fault 修复、曾报告提交被 amend 替代的过程偏差，以及当前 14 类、19 份含 fail action 的 raw JSON、145 个 fail action 事件均保留。Task 12 fixture 仍存活，Task 14 exact cleanup 尚未执行。
+- 本结论不完成 A14；A14 保持 `BLOCKED_NOT_IMPLEMENTED`。联合验收 18 个 blocker 逐项保持：A03/A05–A12/A14/P01/P03–P07 为 `BLOCKED_NOT_IMPLEMENTED`，P08 为 `BLOCKED_PRODUCT`，R02 为 `BLOCKED_ENV`。
+- 无真实业务动作、真实审计投递、生产 outbox worker、recovery worker、前端 adapter、部署、生产迁移或生产验收；未改 Porsche-Web。报告：`docs/superpowers/reports/2026-09-04-b1e-operation-safety-foundation.md`。
+
+
 ## 2026-09-04：B1-D 0004已在隔离fixture验证，optimizer未选新索引
 
 - `go-016` 唯一 `in_progress / PERFORMANCE_BLOCKED`。两个 v2 用户读接口、三个旧 GET 适配及 login/refresh/self/me 同投影已接线；fresh actor→target→session→Redis、严格 policy、commit 后响应；身份无效与单独 policy 不可用分开处理。

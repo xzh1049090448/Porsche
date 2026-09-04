@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "scope": "public validation evidence files only; manifest self-excluded",
+  "baseline_head": "e41e39decea2afb87b036baf165f24d400ca7aa6",
+  "b1e_status": "limited_subscope",
+  "a14_status": "BLOCKED_NOT_IMPLEMENTED",
+  "active_production_consumers": 0,
+  "joint_acceptance_blockers": 18,
+  "review_verdict": "QA_PASS",
+  "evidence": [
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-04-b1e-operation-safety-foundation/baseline.md",
+      "sha256": "3582ae3ed4daf4c6d662b52c0292593ad907a418da7c6b6deaeac26d236ff727",
+      "producing_commit": "c4b04063fd4ac6acb5eb281953becba57faec87e",
+      "redaction_status": "public_redacted",
+      "reviewer_verdict": "NOT_APPLICABLE_BASELINE"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-04-b1e-operation-safety-foundation/fixture-plan.md",
+      "sha256": "463aa47deaaf82cdb2343a20f98a4c737f30df7377670fe5637ad1e8cdc11173",
+      "producing_commit": "e41e39decea2afb87b036baf165f24d400ca7aa6",
+      "redaction_status": "public_redacted",
+      "reviewer_verdict": "QA_PASS"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-04-b1e-operation-safety-foundation/fixture-identity.json",
+      "sha256": "4a523f44c4def15b64415954ad7cc011c8f99b9fb96b70279b3f838769d122ec",
+      "producing_commit": "e41e39decea2afb87b036baf165f24d400ca7aa6",
+      "redaction_status": "public_redacted",
+      "reviewer_verdict": "QA_PASS"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-04-b1e-operation-safety-foundation/migration-ledger.txt",
+      "sha256": "4ed648e90e5b58c1c77701682be9e97a24ec316dce095dedc4afcdbda7b80857",
+      "producing_commit": "e41e39decea2afb87b036baf165f24d400ca7aa6",
+      "redaction_status": "public_redacted",
+      "reviewer_verdict": "QA_PASS"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-04-b1e-operation-safety-foundation/fixture-results.json",
+      "sha256": "1a80757fee89e2c629c8628e4933c6e479b48a437fa6864c3659e800e66bcbf0",
+      "producing_commit": "e41e39decea2afb87b036baf165f24d400ca7aa6",
+      "redaction_status": "public_redacted_aggregate_counts_and_hashes_only",
+      "reviewer_verdict": "QA_PASS"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-04-b1e-operation-safety-foundation/secret-scan.txt",
+      "sha256": "719335779d3aca54de0f7dce06e380c5f4637d312f27ef61db1a46603f7dda92",
+      "producing_commit": "e41e39decea2afb87b036baf165f24d400ca7aa6",
+      "redaction_status": "public_redacted_counts_only",
+      "reviewer_verdict": "QA_PASS"
+    }
+  ],
+  "manifest_self_excluded": true,
+  "private_artifacts_listed_or_hashed": false,
+  "exclusions": [
+    "private secret files",
+    "private raw test logs",
+    "private independent-review signature files"
+  ],
+  "production_claims": false,
+  "frontend_claims": false,
+  "deployment_claims": false
+}
