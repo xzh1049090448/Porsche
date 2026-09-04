@@ -58,6 +58,36 @@
       "name": "porsche_b1e_260905_t12_a0056a9_c71f_race_test",
       "purpose": "fresh complete Action race gate",
       "retained_until_container_stop": true
+    },
+    {
+      "name": "porsche_b1e_qa2_c71f_test",
+      "purpose": "remediation diagnostics and real focused tests",
+      "retained_until_container_stop": true
+    },
+    {
+      "name": "porsche_b1e_qa3_c71f_test",
+      "purpose": "fresh migration, real service and focused race gates",
+      "retained_until_container_stop": true
+    },
+    {
+      "name": "porsche_b1e_qa4_c71f_test",
+      "purpose": "fresh serial full gate before final IP test-only fixes",
+      "retained_until_container_stop": true
+    },
+    {
+      "name": "porsche_b1e_qa5_c71f_test",
+      "purpose": "fresh complete Action race gate",
+      "retained_until_container_stop": true
+    },
+    {
+      "name": "porsche_b1e_qa6_c71f_test",
+      "purpose": "fresh final-HEAD serial full gate",
+      "retained_until_container_stop": true
+    },
+    {
+      "name": "porsche_b1e_qa7_c71f_test",
+      "purpose": "fresh final complete Action race gate",
+      "retained_until_container_stop": true
     }
   ],
   "named_volumes": 0,
@@ -66,5 +96,18 @@
   "retained_identity": "PASS",
   "schema_version": 1,
   "secrets": "REDACTED_PRIVATE_FILES_ONLY",
-  "task_label": "porsche-b1e-260905-t12-a0056a9-c71f"
+  "task_label": "porsche-b1e-260905-t12-a0056a9-c71f",
+  "private_permissions": {
+    "owner": "current_user",
+    "marker": "PASS",
+    "realpath": "PASS",
+    "symlinks": 0,
+    "directory_mode": "0700",
+    "regular_file_mode": "0600",
+    "nonconforming_directories": 0,
+    "nonconforming_regular_files": 0,
+    "directories": 258,
+    "regular_files": 2955
+  },
+  "second_independent_qa": "PENDING_RETAINED_FIXTURE_REVIEW"
 }

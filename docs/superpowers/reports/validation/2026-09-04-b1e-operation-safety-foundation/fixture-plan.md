@@ -19,3 +19,7 @@ Immediately after creation, the executor stores complete container IDs in a priv
 Only the two full container IDs recorded by this task may be stopped. Cleanup must first repeat the complete identity comparison, then stop those exact IDs and remove the one recorded private directory only after checking ownership, mode, non-symlink status, and its task marker. `docker prune`, globs, named volumes, `docker compose down -v`, `docker volume rm`, parent-directory recursion, partial container IDs, and broad process cleanup are forbidden.
 
 The fixture will remain alive after Task 12 implementation verification for independent QA. It will not be used for production deployment, production migration, application traffic, model/chat/SSE, upstream requests, or frontend changes.
+
+## Independent QA remediation retention
+
+After the first independent `QA_FAIL`, the same exact full-ID containers remain retained. Remediation uses fresh task-only MySQL child databases and distinct Redis logical databases or unique canonical key identities. Before the second QA handoff, the executor verifies the private root realpath, owner and exact task marker without following symlinks, then enforces mode `0700` on every directory and `0600` on every regular file. All failed raw attempts remain in the private directory; reports contain only redacted counts and hashes. Cleanup remains forbidden until the fresh second QA verdict.

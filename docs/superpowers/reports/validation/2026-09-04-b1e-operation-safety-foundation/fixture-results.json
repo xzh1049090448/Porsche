@@ -1,119 +1,208 @@
 {
+  "schema_version": 2,
+  "frozen_report_date": "2026-09-04",
+  "executed_date": "2026-09-05",
   "baseline_commit": "a0056a9013b4d2572058c50c356bc492862ae073",
   "commands": {
+    "migration_real": {
+      "sha256": "bfcfcb3879f73422fdfa0935b2f8414d551bac2fc5a9c8d14803342b7e6d4c1a"
+    },
+    "service_focused": {
+      "sha256": "b2d6bc63c4eb2d12824f1a7896573dffd3eda0807ceba2538931b7c66f171716"
+    },
+    "service_concurrency_race": {
+      "sha256": "74d2342a76e676134f3c217c2be7c1670a77db46686f9b04a51beb281fae6acc"
+    },
+    "serial_full": {
+      "sha256": "caea3fe8b7d8ce50267f07e888e56a5c06d104e2dc09f56210b460c8a3fc43c9"
+    },
     "action_race": {
       "sha256": "0bd3feb769ea016e97ae0d174750b162b95276a0b3b6f962a382535037be294d"
     },
     "build": {
       "sha256": "854004a0c269ca4993dad170dc3f7d6e996493547b7c6b5c5c83cf20d113b42a"
     },
-    "diff_check": {
-      "sha256": "466c2f308b48c7661d646fdd068fbecea974c665fe65dbf8ed508f224180ce0b"
-    },
-    "migration_real": {
-      "sha256": "e7867989d33dc1197efa5d15ee8b8526de4191e3a9ce5ec5b67c28e20e2449d2"
-    },
-    "serial_full": {
-      "sha256": "caea3fe8b7d8ce50267f07e888e56a5c06d104e2dc09f56210b460c8a3fc43c9"
-    },
-    "service_concurrency_race": {
-      "sha256": "073522b52503b8796a6c1022947623b0a57939a6077e79dc1ed7df257ef9153b"
-    },
-    "service_focused": {
-      "sha256": "0b4f94f8c989be86a5db3baa7cea12ebaec7cba4fd3424913bebafd069876e24"
-    },
     "vet": {
       "sha256": "3d4b424f6fcd11f530525ddea9a46aeaffec7c883b6c04b6baf7df36bf47800b"
+    },
+    "diff_check": {
+      "sha256": "dba58bb84e8b01223cda0205ae5e706c8d690acaef5399ca5844bcaf3fd2acf3"
+    },
+    "source_scan": {
+      "sha256": "f37173b5af6231b05a3d16eaf5d1aa5881788006928649d194d22a0ebea073ca"
     }
   },
-  "covered": [
-    "0001..0005 up/status/Verify and exact checksums",
-    "0005 down removes only two B1-E tables; 0001..0004 remain; 0005 up and Verify pass",
-    "11 MySQL 8 CHECK constraints expose non-empty clauses and ENFORCED=YES",
-    "production Redis Lua actor/IP/session verification windows, Begin 60/minute, non-sliding TTL, and total failure to 503",
-    "300-second ticket equality rejection, 30-second lease, 60-second recovery grace equality and +1, 30-day expiry and permanent tombstone",
-    "same-key two-goroutine MySQL row locking, payload conflict, ticket reuse, cross-session conflict, and refresh on the same logical session",
-    "real transaction success, typed rejection, effect/audit/outbox/terminal failure rollback, commit unknown, zero replay, and concurrent one-shot Execute"
-  ],
-  "environment": {
-    "chat_requests": 0,
-    "model_requests": 0,
-    "mysql_major": 8,
-    "network": "loopback-only",
-    "production_requests": 0,
-    "redis_major": 7,
-    "sse_requests": 0,
-    "upstream_requests": 0
-  },
-  "executed_date": "2026-09-05",
-  "final": {
-    "action_race": {
-      "fail": 0,
-      "leaf_pass": 221,
-      "log_sha256": "7f31b83abe937bc806c3d37e3f79d79da236ec9d11e8814a0d72e93c186cbefd",
-      "package_fail": 0,
-      "package_pass": 2,
-      "skip": 0
-    },
-    "build": "PASS",
-    "diff_check": "PASS",
-    "migration_real": {
-      "fail": 0,
-      "leaf_pass": 1,
-      "log_sha256": "e30b10fdb57e07a29049ca903e434bb3203479001f61af049c233cdf4ff68674",
-      "package_pass": 1,
-      "skip": 0
-    },
-    "serial_full": {
-      "explicit_skip": "TestAdminUsersReadPerformance requires separate 100k authorization",
-      "fail": 0,
-      "leaf_pass": 1000,
-      "log_sha256": "35ff5ef38dcc39c217c53b1a2d66945a5e2d81f56bb63626f80a2633947f68ab",
-      "no_test_package_skip": 4,
-      "package_fail": 0,
-      "package_pass": 16,
-      "skip": 1
-    },
-    "service_concurrency_race": {
-      "fail": 0,
-      "leaf_pass": 2,
-      "log_sha256": "a9aaccef890cdac9911dd453a06ff23f00e54758cfebcc9d2a3bdb369d5dc5ec",
-      "package_pass": 1,
-      "skip": 0
-    },
-    "service_focused": {
-      "fail": 0,
-      "leaf_pass": 11,
-      "log_sha256": "70e39368c543d9ffb13c230d52599fdd77641f231a0491d97a660c438b7fba55",
-      "package_pass": 1,
-      "skip": 0
-    },
-    "vet": "PASS"
-  },
-  "frozen_report_date": "2026-09-04",
-  "historical_nonfinal_attempts": [
-    {
-      "fail": 1,
-      "gate": "serial_full_shared_fixture",
-      "leaf_pass": 999,
-      "reason": "shared Redis DB0 retained focused rate counters; replaced by fresh MySQL subdatabase and Redis DB15",
-      "skip": 1
-    },
-    {
-      "gate": "action_race_reused_full_fixture",
-      "reason": "deterministic existing integration ticket collided with prior full-run state; replaced by fresh MySQL subdatabase and Redis DB14",
-      "status": "FAIL"
-    }
-  ],
   "implementation_commits": [
     "763c5f6debcb73ec0c745f7503b7f05e9225c312",
     "38293033d30634fc73afa16531c333c23ae54e36",
-    "878cf2bc8f50c41c2355ed0d1a35f50a11f2a8d7"
+    "878cf2bc8f50c41c2355ed0d1a35f50a11f2a8d7",
+    "a0e75510a4e245af7d416e2b6146c97315c5c19a",
+    "3d63404",
+    "62ea11b"
   ],
-  "independent_qa": "PENDING_RETAINED_FIXTURE_REVIEW",
+  "commit_process_deviation": {
+    "reported_then_replaced": "b54dfc7",
+    "reachable_replacement": "a0e75510a4e245af7d416e2b6146c97315c5c19a",
+    "reason": "executor incorrectly amended after reporting b54dfc7; subsequent commits were additive and no further amend or rebase was used"
+  },
+  "independent_qa": {
+    "verdict": "QA_FAIL",
+    "result_sha256": "656da72a9f0101941da0b41fb3b45d48a6970708260575c26ef051c3b09abc4b",
+    "findings": [
+      "test.noop descriptor and real TargetUser/users.delete coverage incomplete",
+      "IP/session Redis thresholds not independently triggered",
+      "37 of 59 private files were mode 0644",
+      "four raw failed suite attempts were represented as two"
+    ]
+  },
+  "covered": [
+    "0001..0005 up/status/Verify and exact checksums",
+    "0005 down removes only two B1-E tables; 0001..0004 remain; re-up Verify passes",
+    "MySQL 8 CHECK metadata has non-empty clauses and ENFORCED=YES",
+    "single test.noop descriptor is 2147483000, TargetUser, users.delete, ticket-required and active; production registry remains empty",
+    "real actor auth-version, logical-session refresh/version, fresh policy allow-to-deny, target status/version/delete/hierarchy/hidden changes",
+    "consumer, Begin and Query stale-fact rejection with zero business side effects",
+    "production Redis Lua independently proves actor 5/15m, IP 20/15m with varied actor/session, logical session 10/hour with varied actor/IP, issuance SID 10/hour, Begin 60/minute, N+1 rejection and non-sliding TTL",
+    "300-second ticket equality, 30-second lease, 60-second recovery grace, 30-day tombstone, same-key two-goroutine locking, payload conflict, ticket reuse and cross-session",
+    "real success/rejection/fault rollback, commit unknown zero replay and one-shot Execute"
+  ],
+  "final": {
+    "migration_real": {
+      "leaf_pass": 1,
+      "skip": 0,
+      "fail": 0,
+      "log_sha256": "26e196dce33818ad5bfc4848ea813a6590dde0514d641f4a684ebd917ed8ca4a"
+    },
+    "service_focused": {
+      "leaf_pass": 26,
+      "skip": 0,
+      "fail": 0,
+      "leaf_names_sha256": "2b41551467a83dcdcc3ad5b2569b27009c3655a552c3fc796ba7e194494642f3",
+      "log_sha256": "4f1526c5559d4fd53ddb84b3fc40ded6d4e4f3661da8b02dc435a3e636219a99"
+    },
+    "service_concurrency_race": {
+      "leaf_pass": 2,
+      "skip": 0,
+      "fail": 0,
+      "log_sha256": "4474bbf5ba94944bd75841feb0d9066a183951cda2ebd70faa0c3d388cae8e30"
+    },
+    "serial_full": {
+      "leaf_pass": 1114,
+      "skip": 1,
+      "fail": 0,
+      "explicit_skip": "TestAdminUsersReadPerformance requires separate 100k authorization",
+      "package_pass": 16,
+      "no_test_package_skip": 4,
+      "package_fail": 0,
+      "log_sha256": "980777580232c42d904a3ba119ff4711bdc7dfd88a6dc4f4c32dff0a6616873e"
+    },
+    "action_race": {
+      "leaf_pass": 261,
+      "skip": 0,
+      "fail": 0,
+      "package_pass": 2,
+      "package_fail": 0,
+      "log_sha256": "f1961b2deb1f28dbdf51863b3ddd50edece9ec41acd17d0fd782d81e8ee20be1"
+    },
+    "build": "PASS",
+    "vet": "PASS",
+    "diff_check": "PASS",
+    "source_scan": {
+      "production_test_action_refs": 0,
+      "unique_test_action_definitions": 1
+    },
+    "secret_scan": {
+      "verdict": "PASS",
+      "target_file_count": 118,
+      "exact_match_count": 0,
+      "generic_match_count": 0
+    }
+  },
+  "historical_nonfinal_attempts": [
+    {
+      "gate": "initial_serial_full_overbroad_environment",
+      "status": "FAIL",
+      "reason": "two config tests rejected imported environment and permission ledger test hard-coded four migrations; raw log retained"
+    },
+    {
+      "gate": "serial_full_shared_main_database",
+      "status": "FAIL",
+      "reason": "retained real actor rows made a handler expectation return 503; raw log retained"
+    },
+    {
+      "gate": "serial_full_fresh_child_shared_redis_db0",
+      "status": "FAIL",
+      "reason": "ActionVerification rate key collided with prior Redis state; raw log retained"
+    },
+    {
+      "gate": "action_race_reused_full2_fixture",
+      "status": "FAIL",
+      "reason": "deterministic ticket HMAC collided with prior state; raw log retained"
+    },
+    {
+      "gate": "independent_qa_first_environment",
+      "status": "FAIL",
+      "reason": "first QA invocation used an invalid environment variable setup; independent raw result retained"
+    },
+    {
+      "gate": "qa2_harness",
+      "status": "ERROR",
+      "reason": "zsh status is read-only; suite output retained and rerun with rc"
+    },
+    {
+      "gate": "qa2_database_guard",
+      "status": "FAIL",
+      "reason": "DATABASE_URL equaled TEST_DATABASE_URL, then database name lacked _test suffix; both guard failures retained"
+    },
+    {
+      "gate": "qa2_wrong_migration_target",
+      "status": "FAIL",
+      "reason": "migration command reads DATABASE_URL and initially left the new _test child without tables; log retained and corrected"
+    },
+    {
+      "gate": "qa3_target_status_expectation",
+      "status": "FAIL",
+      "reason": "generic authorization intentionally permits disabled user targets; status freshness moved to the typed consumer and failure retained"
+    },
+    {
+      "gate": "qa3_serial_environment_and_legacy_real_test",
+      "status": "FAIL",
+      "reason": "two config failures from imported APP_ENV plus one old real test lacked its TargetUser row; log retained and both corrected"
+    },
+    {
+      "gate": "qa5_action_race_ip_window",
+      "status": "FAIL",
+      "reason": "first reused an old fixed IP key, then queried a non-canonical IPv6-derived key; both logs retained before unique canonical key fix"
+    },
+    {
+      "gate": "qa5_action_race_reused_database",
+      "status": "FAIL",
+      "reason": "post-fix rerun reused qa5 and collided with deterministic real verification ticket; raw log retained, final race moved to fresh qa7"
+    }
+  ],
+  "private_permissions": {
+    "symlinks": 0,
+    "directories": 258,
+    "regular_files_at_first_repair": 2917,
+    "non_0700_directories": 0,
+    "non_0600_regular_files": 0,
+    "regular_files": 2955,
+    "nonconforming_directories": 0,
+    "nonconforming_regular_files": 0
+  },
+  "environment": {
+    "mysql_major": 8,
+    "redis_major": 7,
+    "network": "loopback-only",
+    "production_requests": 0,
+    "model_requests": 0,
+    "chat_requests": 0,
+    "sse_requests": 0,
+    "upstream_requests": 0
+  },
   "limitations": [
     "production active action registry remains empty",
-    "no production consumer, HTTP route, frontend adapter, deployment, or production migration was activated"
-  ],
-  "schema_version": 1
+    "no production consumer, HTTP route, frontend adapter, deployment or production migration was activated",
+    "fixture remains alive for fresh second independent QA"
+  ]
 }
