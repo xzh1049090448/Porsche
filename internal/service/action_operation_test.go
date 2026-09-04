@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
+	"strings"
 	"testing"
 
 	mysqlDriver "github.com/go-sql-driver/mysql"
@@ -75,9 +76,13 @@ func actionOperationFixture(t *testing.T, now int64, existing *models.AdminOpera
 		if existing.QueryExpiresAt == 0 {
 			existing.QueryExpiresAt = now + actionOperationQueryRetentionMS
 		}
+		if existing.VerificationID == nil {
+			verificationID := int64(40)
+			existing.VerificationID = &verificationID
+		}
 	}
 	verification := &models.AdminActionVerification{ID: 40, AuditFields: models.AuditFields{Guid: 4001}, ActorUserID: actorRow.ID, ActorAuthVersion: actorRow.AuthVersion, SessionID: session.ID, Action: int(testNoopAction), TargetKind: int(actionsecurity.TargetNone), IntentHMAC: requestHex, TicketHMAC: ticketHex, ExpiresAt: now + 300_000}
-	script := &actionOperationScript{actor: actorRow, sessions: []models.Session{session}, operation: existing, verification: verification}
+	script := &actionOperationScript{now: now, keyHex: keyHex, actor: actorRow, sessions: []models.Session{session}, operation: existing, verification: verification}
 	random := bytes.NewReader(bytes.Repeat([]byte{0x71}, 64))
 	service, err := newActionOperationService(openActionOperationScriptDB(t, script), limiter, authRedis, crypto, func(action actionsecurity.Action) (actionsecurity.Descriptor, bool) {
 		if action == testNoopAction {
@@ -156,10 +161,128 @@ func TestActionOperationBeginIdempotencyConflictsAndTombstone(t *testing.T) {
 			} else if err != nil || identity == nil || view == nil || view.Status != tc.wantStatus {
 				t.Fatalf("same request = %#v %#v %v", identity, view, err)
 			}
-			if stringsContainAny(script.queries, "admin_action_verifications") {
-				t.Fatal("existing operation re-locked or consumed verification")
+			if tc.want != ErrActionOperationConflict && tc.want != ErrActionOperationCrossSession && !stringsContainAny(script.queries, "admin_action_verifications") {
+				t.Fatal("existing operation did not re-lock its bound verification")
 			}
 		})
+	}
+}
+
+func TestActionOperationBeginExistingRequiresFreshRootAndPresentedTicket(t *testing.T) {
+	now := int64(1_800_000_000_000)
+	for _, tc := range []struct {
+		name   string
+		mutate func(*ActionOperationService, *actionOperationScript, *OperationBegin)
+	}{
+		{name: "root role revoked", mutate: func(_ *ActionOperationService, script *actionOperationScript, _ *OperationBegin) {
+			script.actor.Role = models.UserRoleAdmin
+		}},
+		{name: "different valid ticket", mutate: func(_ *ActionOperationService, _ *actionOperationScript, in *OperationBegin) {
+			in.TicketValues = []string{"av_" + base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{0x22}, 32))}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			op := models.AdminOperation{ID: 30, SessionID: 20, State: models.OperationProcessing}
+			service, script, actor, key, ticket := actionOperationFixture(t, now, &op)
+			verificationID := script.verification.ID
+			op.VerificationID = &verificationID
+			in := OperationBegin{Action: testNoopAction, Actor: actor, IdempotencyKeyValues: []string{key}, TicketValues: []string{ticket}, Intent: "same-intent"}
+			tc.mutate(service, script, &in)
+			identity, view, err := service.Begin(context.Background(), in)
+			if identity != nil || view != nil || !errors.Is(err, ErrActionOperationForbidden) {
+				t.Fatalf("fresh replay guard = %#v %#v %v", identity, view, err)
+			}
+		})
+	}
+}
+
+func TestActionOperationBeginExistingTerminalAcceptsItsConsumedVerificationWithoutReexecution(t *testing.T) {
+	now := int64(1_800_000_000_000)
+	finished := now - 1
+	op := models.AdminOperation{ID: 30, SessionID: 20, State: models.OperationSucceeded, FinishedAt: &finished}
+	service, script, actor, key, ticket := actionOperationFixture(t, now, &op)
+	consumed := now - 100
+	script.verification.ConsumedAt = &consumed
+	script.verification.IsDeleted = 1
+	identity, view, err := service.Begin(context.Background(), OperationBegin{Action: testNoopAction, Actor: actor, IdempotencyKeyValues: []string{key}, TicketValues: []string{ticket}, Intent: "same-intent"})
+	if err != nil || identity == nil || view == nil || view.Status != "succeeded" {
+		t.Fatalf("terminal replay = %#v %#v %v", identity, view, err)
+	}
+	if len(script.execs) != 0 {
+		t.Fatalf("terminal replay wrote %v", script.execs)
+	}
+}
+
+func TestActionOperationBeginRejectsVerificationTargetMismatch(t *testing.T) {
+	now := int64(1_800_000_000_000)
+	service, script, actor, key, ticket := actionOperationFixture(t, now, nil)
+	targetGUID := int64(9001)
+	wrongGUID := targetGUID + 1
+	script.verification.TargetKind = int(actionsecurity.TargetUser)
+	script.verification.TargetGUID = &wrongGUID
+	service.resolve = func(action actionsecurity.Action) (actionsecurity.Descriptor, bool) {
+		if action != testNoopAction {
+			return actionsecurity.Descriptor{}, false
+		}
+		return actionsecurity.Descriptor{Action: action, Name: "test.noop", Capability: "users.delete", RequiresTicket: true, Active: true, TargetKind: actionsecurity.TargetUser, Encode: func(any) ([]byte, error) { return []byte("same-intent"), nil }}, true
+	}
+	intent := actionsecurity.DeleteUserIntent{TargetGUID: targetGUID, ExpectedAuthVersion: 1, Reason: "test"}
+	identity, view, err := service.Begin(context.Background(), OperationBegin{Action: testNoopAction, Actor: actor, IdempotencyKeyValues: []string{key}, TicketValues: []string{ticket}, Intent: intent})
+	if identity != nil || view != nil || !errors.Is(err, ErrActionOperationForbidden) {
+		t.Fatalf("target mismatch = %#v %#v %v", identity, view, err)
+	}
+}
+
+func configureTargetOperationFixture(service *ActionOperationService, script *actionOperationScript, targetGUID int64) actionsecurity.DeleteUserIntent {
+	script.verification.TargetKind = int(actionsecurity.TargetUser)
+	script.verification.TargetGUID = &targetGUID
+	script.target = &models.User{ID: 11, AuditFields: models.AuditFields{Guid: targetGUID}, Role: models.UserRoleUser, Status: models.UserStatusActive, AuthVersion: 1}
+	service.resolve = func(action actionsecurity.Action) (actionsecurity.Descriptor, bool) {
+		if action != testNoopAction {
+			return actionsecurity.Descriptor{}, false
+		}
+		return actionsecurity.Descriptor{Action: action, Name: "test.noop", Capability: "users.delete", RequiresTicket: true, Active: true, TargetKind: actionsecurity.TargetUser, Encode: func(any) ([]byte, error) { return []byte("same-intent"), nil }}, true
+	}
+	return actionsecurity.DeleteUserIntent{TargetGUID: targetGUID, ExpectedAuthVersion: 1, Reason: "test"}
+}
+
+func TestActionOperationBeginFreshTargetHierarchyIsRecheckedAfterVerification(t *testing.T) {
+	now := int64(1_800_000_000_000)
+	service, script, actor, key, ticket := actionOperationFixture(t, now, nil)
+	intent := configureTargetOperationFixture(service, script, 9001)
+	identity, view, err := service.Begin(context.Background(), OperationBegin{Action: testNoopAction, Actor: actor, IdempotencyKeyValues: []string{key}, TicketValues: []string{ticket}, Intent: intent})
+	if err != nil || identity == nil || view == nil {
+		t.Fatalf("allowed target Begin = %#v %#v %v", identity, view, err)
+	}
+	if got := actionOperationQueryKinds(script.queries); strings.Join(got, ",") != "actor,session,operation,verification,target,target_or_policy,target_or_policy" {
+		t.Fatalf("target lock order = %v", got)
+	}
+
+	service, script, actor, key, ticket = actionOperationFixture(t, now, nil)
+	intent = configureTargetOperationFixture(service, script, 9001)
+	script.target.Role = models.UserRoleRoot
+	identity, view, err = service.Begin(context.Background(), OperationBegin{Action: testNoopAction, Actor: actor, IdempotencyKeyValues: []string{key}, TicketValues: []string{ticket}, Intent: intent})
+	if identity != nil || view != nil || !errors.Is(err, ErrActionOperationHidden) {
+		t.Fatalf("hidden hierarchy Begin = %#v %#v %v", identity, view, err)
+	}
+}
+
+func TestActionOperationQueryFreshCapabilityRevocationIsHidden(t *testing.T) {
+	now := int64(1_800_000_000_000)
+	op := models.AdminOperation{ID: 30, SessionID: 20, State: models.OperationProcessing}
+	service, script, actor, key, _ := actionOperationFixture(t, now, &op)
+	_ = configureTargetOperationFixture(service, script, 9001)
+	script.actor.Role = models.UserRoleAdmin
+	script.policyHead = &models.PermissionPolicyHead{ID: 51, AuditFields: models.AuditFields{Guid: 5101}, UserID: script.actor.ID, PolicyVersion: 1, CatalogVersion: models.PermissionCatalogVersion, RuleCount: 1}
+	script.overrides = []models.PermissionOverride{{ID: 52, AuditFields: models.AuditFields{Guid: 5201}, UserID: script.actor.ID, PolicyVersion: 1, Capability: 12, Effect: 2}}
+	view, err := service.Query(context.Background(), testNoopAction, actor, []string{key})
+	if err != nil || view == nil || view.Status != "processing" {
+		t.Fatalf("allowed Query = %#v %v", view, err)
+	}
+	script.overrides[0].Effect = 3
+	view, err = service.Query(context.Background(), testNoopAction, actor, []string{key})
+	if view != nil || !errors.Is(err, ErrActionOperationHidden) {
+		t.Fatalf("revoked Query = %#v %v", view, err)
 	}
 }
 
@@ -282,6 +405,27 @@ func TestActionOperationLeaseGraceBoundary(t *testing.T) {
 				if len(script.execs) != 1 {
 					t.Fatalf("recovery writes = %v", script.execs)
 				}
+			}
+		})
+	}
+}
+
+func TestActionOperationLeaseTerminalAndPendingStatesNeverWrite(t *testing.T) {
+	now := int64(1_800_000_000_000)
+	lease := now - actionOperationRecoveryGraceMS - 1
+	for _, state := range []models.AdminOperationState{models.OperationSucceeded, models.OperationFailed, models.OperationPendingRecovery, models.OperationExpired} {
+		t.Run(state.String(), func(t *testing.T) {
+			op := models.AdminOperation{ID: 30, SessionID: 20, State: state, LeaseExpiresAt: &lease, QueryExpiresAt: now - 1}
+			if state == models.OperationExpired {
+				op.IsDeleted = 1
+			}
+			service, script, _, _, _ := actionOperationFixture(t, now, &op)
+			err := service.MarkPendingRecovery(context.Background(), op.ID)
+			if err == nil {
+				t.Fatalf("state %s unexpectedly transitioned", state)
+			}
+			if len(script.execs) != 0 {
+				t.Fatalf("state %s wrote %v", state, script.execs)
 			}
 		})
 	}

@@ -13,6 +13,7 @@ import (
 
 	mysqlDriver "github.com/go-sql-driver/mysql"
 	"github.com/porsche/ai-gateway-go/internal/actionsecurity"
+	"github.com/porsche/ai-gateway-go/internal/authz"
 	"github.com/porsche/ai-gateway-go/internal/models"
 	"github.com/porsche/ai-gateway-go/internal/persistence"
 	"gorm.io/gorm"
@@ -113,6 +114,13 @@ func (s *ActionOperationService) Begin(ctx context.Context, in OperationBegin) (
 	}
 	requestDigest := s.crypto.IntentDigest(encoded)
 	clear(encoded)
+	parsedTarget, err := operationIntentTargetGUID(descriptor, in.Intent)
+	if err != nil {
+		clear(keyRaw[:])
+		clear(ticketRaw[:])
+		clear(requestDigest[:])
+		return nil, nil, ErrActionOperationForbidden
+	}
 	keyDigest := s.crypto.IdempotencyDigest(keyRaw)
 	ticketDigest := s.crypto.TicketDigest(ticketRaw)
 	clear(keyRaw[:])
@@ -174,6 +182,18 @@ func (s *ActionOperationService) Begin(ctx context.Context, in OperationBegin) (
 			if existing.ActorAuthVersion != locked.actor.AuthVersion || !validOperationState(existing.State) {
 				return ErrActionOperationForbidden
 			}
+			verification, err := lockOperationVerificationByTicket(tx, ticketHex)
+			if err != nil {
+				return err
+			}
+			if existing.VerificationID == nil || *existing.VerificationID != verification.ID ||
+				!validOperationVerificationBinding(verification, locked, descriptor, requestHex, parsedTarget) ||
+				!validExistingBeginVerificationState(verification, existing.State, lockedNow) {
+				return ErrActionOperationForbidden
+			}
+			if err := authorizeOperationDescriptor(tx, locked.actor, descriptor, parsedTarget); err != nil {
+				return err
+			}
 			if existing.State == models.OperationExpired || existing.IsDeleted == 1 || lockedNow >= existing.QueryExpiresAt {
 				if existing.State != models.OperationExpired || existing.IsDeleted != 1 {
 					if err := expireOperation(tx, &existing, locked.actor.ID, lockedNow); err != nil {
@@ -222,20 +242,19 @@ func (s *ActionOperationService) Begin(ctx context.Context, in OperationBegin) (
 			return ErrActionOperationUnavailable
 		}
 
-		var verification models.AdminActionVerification
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("ticket_hmac = ?", ticketHex).First(&verification).Error; err != nil {
+		verification, err := lockOperationVerificationByTicket(tx, ticketHex)
+		if err != nil {
 			clear(leaseOwner[:])
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return ErrActionOperationForbidden
-			}
-			return ErrActionOperationUnavailable
+			return err
 		}
-		if verification.ActorUserID != locked.actor.ID || verification.ActorAuthVersion != locked.actor.AuthVersion ||
-			verification.SessionID != locked.session.ID || verification.Action != int(descriptor.Action) ||
-			verification.TargetKind != int(descriptor.TargetKind) || !constantTimeOperationStringEqual(verification.IntentHMAC, requestHex) ||
+		if !validOperationVerificationBinding(verification, locked, descriptor, requestHex, parsedTarget) ||
 			verification.ConsumedAt != nil || verification.IsDeleted != 0 || verification.ExpiresAt <= lockedNow {
 			clear(leaseOwner[:])
 			return ErrActionOperationForbidden
+		}
+		if err := authorizeOperationDescriptor(tx, locked.actor, descriptor, parsedTarget); err != nil {
+			clear(leaseOwner[:])
+			return err
 		}
 		result := tx.Model(&models.AdminOperation{}).Where("id = ? AND verification_id IS NULL", operation.ID).
 			Updates(map[string]any{"verification_id": verification.ID, "updated_at": lockedNow, "updated_by": actorID})
@@ -323,6 +342,22 @@ func (s *ActionOperationService) Query(ctx context.Context, action actionsecurit
 		if operation.ActorAuthVersion != locked.actor.AuthVersion || !validOperationState(operation.State) {
 			return ErrActionOperationHidden
 		}
+		if operation.VerificationID == nil {
+			return ErrActionOperationHidden
+		}
+		verification, err := lockOperationVerificationByID(tx, *operation.VerificationID)
+		if err != nil || !validOperationVerificationBinding(verification, locked, descriptor, operation.RequestHMAC, verification.TargetGUID) {
+			if errors.Is(err, ErrActionOperationUnavailable) {
+				return err
+			}
+			return ErrActionOperationHidden
+		}
+		if err := authorizeOperationDescriptor(tx, locked.actor, descriptor, verification.TargetGUID); err != nil {
+			if errors.Is(err, ErrActionOperationUnavailable) {
+				return err
+			}
+			return ErrActionOperationHidden
+		}
 		if operation.State == models.OperationExpired || operation.IsDeleted == 1 {
 			return ErrActionOperationExpired
 		}
@@ -363,13 +398,16 @@ func (s *ActionOperationService) MarkPendingRecovery(ctx context.Context, id int
 		if operation.State == models.OperationExpired || operation.IsDeleted == 1 {
 			return ErrActionOperationExpired
 		}
+		if operation.State != models.OperationProcessing {
+			return ErrActionOperationConflict
+		}
 		if now >= operation.QueryExpiresAt {
 			if err := expireOperation(tx, &operation, operation.ActorUserID, now); err != nil {
 				return ErrActionOperationUnavailable
 			}
 			return ErrActionOperationExpired
 		}
-		if operation.State != models.OperationProcessing || operation.LeaseExpiresAt == nil ||
+		if operation.LeaseExpiresAt == nil ||
 			*operation.LeaseExpiresAt > math.MaxInt64-actionOperationRecoveryGraceMS || now <= *operation.LeaseExpiresAt+actionOperationRecoveryGraceMS {
 			return ErrActionOperationConflict
 		}
@@ -437,6 +475,136 @@ func lockOperationActorSession(tx *gorm.DB, actor ActionActor, now int64) (opera
 		return operationLockedIdentity{}, ErrActionOperationForbidden
 	}
 	return operationLockedIdentity{actor: stored, session: session}, nil
+}
+
+func lockOperationVerificationByTicket(tx *gorm.DB, ticketHex string) (models.AdminActionVerification, error) {
+	var verification models.AdminActionVerification
+	if len(ticketHex) != 64 {
+		return verification, ErrActionOperationForbidden
+	}
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("ticket_hmac = ?", ticketHex).First(&verification).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return models.AdminActionVerification{}, ErrActionOperationForbidden
+		}
+		return models.AdminActionVerification{}, ErrActionOperationUnavailable
+	}
+	return verification, nil
+}
+
+func lockOperationVerificationByID(tx *gorm.DB, id int64) (models.AdminActionVerification, error) {
+	var verification models.AdminActionVerification
+	if id <= 0 {
+		return verification, ErrActionOperationHidden
+	}
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", id).First(&verification).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return models.AdminActionVerification{}, ErrActionOperationHidden
+		}
+		return models.AdminActionVerification{}, ErrActionOperationUnavailable
+	}
+	return verification, nil
+}
+
+func validOperationVerificationBinding(verification models.AdminActionVerification, locked operationLockedIdentity, descriptor actionsecurity.Descriptor, requestHex string, targetGUID *int64) bool {
+	return verification.ID > 0 && verification.ActorUserID == locked.actor.ID && verification.ActorAuthVersion == locked.actor.AuthVersion &&
+		verification.SessionID == locked.session.ID && verification.Action == int(descriptor.Action) &&
+		verification.TargetKind == int(descriptor.TargetKind) && sameOptionalInt64(verification.TargetGUID, targetGUID) &&
+		constantTimeOperationStringEqual(verification.IntentHMAC, requestHex)
+}
+
+func validExistingBeginVerificationState(verification models.AdminActionVerification, operationState models.AdminOperationState, now int64) bool {
+	if verification.ConsumedAt != nil {
+		return verification.IsDeleted == 1 && (operationState == models.OperationSucceeded || operationState == models.OperationFailed || operationState == models.OperationExpired)
+	}
+	return verification.IsDeleted == 0 && verification.ExpiresAt > now
+}
+
+func authorizeOperationDescriptor(tx *gorm.DB, actor models.User, descriptor actionsecurity.Descriptor, targetGUID *int64) error {
+	if descriptor.RootOnly && actor.Role != models.UserRoleRoot {
+		return ErrActionOperationForbidden
+	}
+	var target models.User
+	switch descriptor.TargetKind {
+	case actionsecurity.TargetNone:
+		if targetGUID != nil {
+			return ErrActionOperationHidden
+		}
+	case actionsecurity.TargetUser:
+		if targetGUID == nil || *targetGUID <= 0 {
+			return ErrActionOperationHidden
+		}
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Select("id", "guid", "role", "status", "is_deleted", "auth_version").
+			Where("guid = ? AND is_deleted = 0", *targetGUID).First(&target).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrActionOperationHidden
+			}
+			return ErrActionOperationUnavailable
+		}
+	case actionsecurity.TargetPublicContent:
+		return ErrActionOperationUnavailable
+	default:
+		return ErrActionOperationUnavailable
+	}
+	_, rules, err := readPermissionPolicyRows(tx, actor.ID)
+	if err != nil {
+		return ErrActionOperationUnavailable
+	}
+	evaluator, err := authz.NewEvaluator(actionAccount(actor), rules)
+	if err != nil {
+		return ErrActionOperationUnavailable
+	}
+	var decision authz.Decision
+	switch descriptor.TargetKind {
+	case actionsecurity.TargetNone:
+		if descriptor.Capability == "users.create" {
+			decision = evaluator.Create(models.UserRoleAdmin)
+		} else {
+			decision = evaluator.Resource(descriptor.Capability)
+		}
+	case actionsecurity.TargetUser:
+		decision = evaluator.User(descriptor.Capability, actionAccount(target))
+	default:
+		return ErrActionOperationUnavailable
+	}
+	if decision == authz.Hidden {
+		return ErrActionOperationHidden
+	}
+	if decision != authz.Allowed {
+		return ErrActionOperationForbidden
+	}
+	return nil
+}
+
+func operationIntentTargetGUID(descriptor actionsecurity.Descriptor, intent any) (*int64, error) {
+	if descriptor.TargetKind == actionsecurity.TargetNone {
+		return nil, nil
+	}
+	var guid int64
+	switch value := intent.(type) {
+	case actionsecurity.ResetPasswordIntent:
+		guid = value.TargetGUID
+	case actionsecurity.RoleIntent:
+		guid = value.TargetGUID
+	case actionsecurity.PermissionsWriteIntent:
+		guid = value.TargetGUID
+	case actionsecurity.DeleteUserIntent:
+		guid = value.TargetGUID
+	case actionsecurity.PublishIntent:
+		guid = value.VersionGUID
+	case actionsecurity.RollbackIntent:
+		guid = value.VersionGUID
+	default:
+		return nil, ErrActionOperationForbidden
+	}
+	if guid <= 0 {
+		return nil, ErrActionOperationForbidden
+	}
+	return &guid, nil
+}
+
+func sameOptionalInt64(left, right *int64) bool {
+	return (left == nil && right == nil) || (left != nil && right != nil && *left == *right)
 }
 
 func expireOperation(tx *gorm.DB, operation *models.AdminOperation, actorID, now int64) error {

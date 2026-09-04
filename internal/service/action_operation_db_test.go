@@ -28,10 +28,15 @@ var (
 
 type actionOperationScript struct {
 	mu            sync.Mutex
+	now           int64
+	keyHex        string
 	actor         models.User
+	target        *models.User
 	sessions      []models.Session
 	operation     *models.AdminOperation
 	verification  *models.AdminActionVerification
+	policyHead    *models.PermissionPolicyHead
+	overrides     []models.PermissionOverride
 	queries       []string
 	queryArgs     [][]driver.NamedValue
 	execs         []string
@@ -39,6 +44,7 @@ type actionOperationScript struct {
 	beginCount    int
 	commitCount   int
 	rollbackCount int
+	isolations    []driver.IsolationLevel
 	failExec      bool
 	failExecAt    int
 	execError     error
@@ -68,13 +74,67 @@ func (c *actionOperationConn) Close() error { return nil }
 func (c *actionOperationConn) Begin() (driver.Tx, error) {
 	return c.BeginTx(context.Background(), driver.TxOptions{})
 }
-func (c *actionOperationConn) BeginTx(context.Context, driver.TxOptions) (driver.Tx, error) {
+func (c *actionOperationConn) BeginTx(_ context.Context, opts driver.TxOptions) (driver.Tx, error) {
+	if opts.Isolation != driver.IsolationLevel(sql.LevelReadCommitted) {
+		return nil, errors.New("operation transaction is not READ COMMITTED")
+	}
 	c.script.mu.Lock()
 	c.script.beginCount++
+	c.script.isolations = append(c.script.isolations, opts.Isolation)
 	c.script.mu.Unlock()
 	return &actionOperationTx{script: c.script}, nil
 }
-func (c *actionOperationConn) CheckNamedValue(*driver.NamedValue) error { return nil }
+
+func TestActionOperationDBScriptRejectsWrongSelectorsAndIsolation(t *testing.T) {
+	script := &actionOperationScript{actor: models.User{ID: 10}, now: 100, keyHex: strings.Repeat("a", 64), operation: &models.AdminOperation{ID: 30}}
+	conn := &actionOperationConn{script: script}
+	badQueries := []struct {
+		query string
+		args  []driver.NamedValue
+	}{
+		{query: "SELECT * FROM `admin_operations` WHERE actor_user_id = ? AND action = ? AND idempotency_key_hmac = ? AND is_deleted = 0 LIMIT ? FOR UPDATE", args: []driver.NamedValue{{Value: int64(10)}, {Value: int64(testNoopAction)}, {Value: script.keyHex}, {Value: int64(1)}}},
+		{query: "SELECT * FROM `admin_operations` WHERE actor_user_id = ? AND action = ? AND idempotency_key_hmac = ? LIMIT ? FOR UPDATE", args: []driver.NamedValue{{Value: int64(99)}, {Value: int64(testNoopAction)}, {Value: script.keyHex}, {Value: int64(1)}}},
+		{query: "SELECT * FROM `admin_action_verifications` WHERE consumed_at IS NULL FOR UPDATE", args: nil},
+		{query: "SELECT * FROM `user_sessions` WHERE sid = ? FOR UPDATE", args: []driver.NamedValue{{Value: "raw-secret"}}},
+	}
+	for _, tc := range badQueries {
+		if _, err := conn.QueryContext(context.Background(), tc.query, tc.args); err == nil {
+			t.Fatalf("script accepted malformed selector %q", tc.query)
+		}
+	}
+	if _, err := conn.BeginTx(context.Background(), driver.TxOptions{Isolation: driver.IsolationLevel(sql.LevelSerializable)}); err == nil {
+		t.Fatal("script accepted non-READ-COMMITTED transaction")
+	}
+}
+func (c *actionOperationConn) CheckNamedValue(value *driver.NamedValue) error {
+	switch typed := value.Value.(type) {
+	case *int64:
+		if typed == nil {
+			value.Value = nil
+		} else {
+			value.Value = *typed
+		}
+	case *int:
+		if typed == nil {
+			value.Value = nil
+		} else {
+			value.Value = int64(*typed)
+		}
+	case *string:
+		if typed == nil {
+			value.Value = nil
+		} else {
+			value.Value = *typed
+		}
+	case models.AdminOperationState:
+		value.Value = int64(typed)
+	case models.AdminOperationFailure:
+		value.Value = int64(typed)
+	case models.AdminResultKind:
+		value.Value = int64(typed)
+	}
+	return nil
+}
 
 func (c *actionOperationConn) QueryContext(_ context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
 	s := c.script
@@ -83,11 +143,27 @@ func (c *actionOperationConn) QueryContext(_ context.Context, query string, args
 	s.queries = append(s.queries, query)
 	s.queryArgs = append(s.queryArgs, append([]driver.NamedValue(nil), args...))
 	switch {
+	case strings.Contains(query, "FROM `users`") && strings.Contains(query, "guid = ?"):
+		if !strings.Contains(query, "is_deleted = 0") || !strings.Contains(query, "FOR UPDATE") {
+			return nil, errors.New("target not locked by visible guid")
+		}
+		columns := []string{"id", "guid", "role", "status", "is_deleted", "auth_version"}
+		if s.target == nil {
+			return operationRows(columns, nil), nil
+		}
+		u := s.target
+		if len(args) != 2 || fmt.Sprint(args[0].Value) != fmt.Sprint(u.Guid) {
+			return nil, errors.New("wrong target selector vars")
+		}
+		return operationRows(columns, [][]driver.Value{{u.ID, u.Guid, int64(u.Role), int64(u.Status), int64(u.IsDeleted), int64(u.AuthVersion)}}), nil
 	case strings.Contains(query, "FROM `users`"):
 		if !strings.Contains(query, "id = ?") || !strings.Contains(query, "FOR UPDATE") {
 			return nil, errors.New("actor not locked by id")
 		}
 		u := s.actor
+		if len(args) != 2 || fmt.Sprint(args[0].Value) != fmt.Sprint(u.ID) {
+			return nil, errors.New("wrong actor selector vars")
+		}
 		var password driver.Value
 		if u.PasswordHash != nil {
 			password = *u.PasswordHash
@@ -98,6 +174,9 @@ func (c *actionOperationConn) QueryContext(_ context.Context, query string, args
 			return nil, errors.New("unsafe session lock")
 		}
 		values := make([][]driver.Value, 0, len(s.sessions))
+		if len(args) != 2 || fmt.Sprint(args[0].Value) != fmt.Sprint(s.actor.ID) || fmt.Sprint(args[1].Value) != fmt.Sprint(s.now) {
+			return nil, errors.New("wrong session selector vars")
+		}
 		for i := range s.sessions {
 			row := s.sessions[i]
 			var revoked driver.Value
@@ -114,18 +193,58 @@ func (c *actionOperationConn) QueryContext(_ context.Context, query string, args
 		if strings.Contains(query, "is_deleted = 0") && strings.Contains(query, "idempotency_key_hmac") {
 			return nil, errors.New("operation lookup excluded tombstones")
 		}
+		if strings.Contains(query, "idempotency_key_hmac = ?") {
+			if len(args) != 4 || fmt.Sprint(args[0].Value) != fmt.Sprint(s.actor.ID) || fmt.Sprint(args[1].Value) != fmt.Sprint(int(testNoopAction)) || fmt.Sprint(args[2].Value) != s.keyHex {
+				return nil, errors.New("wrong operation selector vars")
+			}
+		} else if strings.Contains(query, "id = ?") && (s.operation == nil || len(args) != 2 || fmt.Sprint(args[0].Value) != fmt.Sprint(s.operation.ID)) {
+			return nil, errors.New("wrong operation id selector vars")
+		}
 		if s.operation == nil {
 			return operationRows(operationColumns(), nil), nil
 		}
 		return operationRows(operationColumns(), [][]driver.Value{operationValues(*s.operation)}), nil
 	case strings.Contains(query, "FROM `admin_action_verifications`"):
-		if !strings.Contains(query, "ticket_hmac = ?") || !strings.Contains(query, "FOR UPDATE") {
+		if (!strings.Contains(query, "ticket_hmac = ?") && !strings.Contains(query, "id = ?")) || !strings.Contains(query, "FOR UPDATE") {
 			return nil, errors.New("verification not locked by digest")
 		}
 		if s.verification == nil {
 			return operationRows(verificationColumns(), nil), nil
 		}
+		if len(args) < 1 {
+			return nil, errors.New("missing verification selector")
+		}
+		if strings.Contains(query, "ticket_hmac = ?") && fmt.Sprint(args[0].Value) != s.verification.TicketHMAC {
+			return operationRows(verificationColumns(), nil), nil
+		}
+		if strings.Contains(query, "id = ?") && fmt.Sprint(args[0].Value) != fmt.Sprint(s.verification.ID) {
+			return operationRows(verificationColumns(), nil), nil
+		}
 		return operationRows(verificationColumns(), [][]driver.Value{verificationValues(*s.verification)}), nil
+	case strings.Contains(query, "FROM `user_permission_heads`"):
+		if len(args) != 2 || fmt.Sprint(args[0].Value) != fmt.Sprint(s.actor.ID) {
+			return nil, errors.New("wrong policy head selector vars")
+		}
+		columns := []string{"id", "guid", "is_deleted", "policy_version", "catalog_version", "rule_count"}
+		if s.policyHead == nil {
+			return operationRows(columns, nil), nil
+		}
+		h := s.policyHead
+		return operationRows(columns, [][]driver.Value{{h.ID, h.Guid, int64(h.IsDeleted), h.PolicyVersion, int64(h.CatalogVersion), int64(h.RuleCount)}}), nil
+	case strings.Contains(query, "FROM `user_permission_overrides`"):
+		if len(args) < 2 || fmt.Sprint(args[0].Value) != fmt.Sprint(s.actor.ID) {
+			return nil, errors.New("wrong policy rule selector vars")
+		}
+		if s.policyHead == nil {
+			return operationRows([]string{"id"}, nil), nil
+		}
+		columns := []string{"id", "guid", "is_deleted", "policy_version", "capability", "effect"}
+		values := make([][]driver.Value, 0, len(s.overrides))
+		for i := range s.overrides {
+			r := s.overrides[i]
+			values = append(values, []driver.Value{r.ID, r.Guid, int64(r.IsDeleted), r.PolicyVersion, int64(r.Capability), int64(r.Effect)})
+		}
+		return operationRows(columns, values), nil
 	default:
 		return nil, fmt.Errorf("unexpected operation query: %s", query)
 	}
@@ -242,11 +361,14 @@ func TestActionOperationBeginDBScriptEnforcesLockOrderAndSecretFreeSQL(t *testin
 	if view == nil || view.Status != "processing" || view.Scope != "test.noop" || view.RetryAfterSeconds != 30 {
 		t.Fatalf("view = %#v", view)
 	}
-	if got := actionOperationQueryKinds(script.queries); strings.Join(got, ",") != "actor,session,operation,verification" {
+	if got := actionOperationQueryKinds(script.queries); strings.Join(got, ",") != "actor,session,operation,verification,target_or_policy,target_or_policy" {
 		t.Fatalf("lock order = %v", got)
 	}
 	if script.commitCount != 1 || script.rollbackCount != 0 {
 		t.Fatalf("commit/rollback = %d/%d", script.commitCount, script.rollbackCount)
+	}
+	if len(script.isolations) != 1 || script.isolations[0] != driver.IsolationLevel(sql.LevelReadCommitted) {
+		t.Fatalf("transaction isolation = %v", script.isolations)
 	}
 	joined := actionOperationSQLValues(script)
 	for _, secret := range []string{actor.SessionSID, key, ticket, "same-intent"} {
@@ -257,12 +379,71 @@ func TestActionOperationBeginDBScriptEnforcesLockOrderAndSecretFreeSQL(t *testin
 	if len(script.execs) != 2 || !strings.Contains(script.execs[0], "INSERT INTO `admin_operations`") || !strings.Contains(script.execs[1], "verification_id") {
 		t.Fatalf("writes = %v", script.execs)
 	}
+	inserted := actionOperationInsertValues(t, script.execs[0], script.execArgs[0])
+	for column, want := range map[string]string{
+		"guid": "3001", "created_at": fmt.Sprint(now), "created_by": "10", "updated_at": fmt.Sprint(now), "updated_by": "10",
+		"is_deleted": "0", "actor_user_id": "10", "actor_auth_version": "7", "session_id": "20", "action": fmt.Sprint(int(testNoopAction)),
+		"idempotency_key_hmac": script.keyHex, "request_hmac": script.verification.IntentHMAC, "state": fmt.Sprint(int(models.OperationProcessing)),
+		"lease_expires_at": fmt.Sprint(now + actionOperationLeaseMillis), "query_expires_at": fmt.Sprint(now + actionOperationQueryRetentionMS),
+	} {
+		if got := inserted[column]; got != want {
+			t.Fatalf("INSERT %s=%q, want %q", column, got, want)
+		}
+	}
+	if len(inserted["public_ref"]) != 46 || len(inserted["lease_owner_hmac"]) != 64 {
+		t.Fatalf("public ref / lease HMAC shapes = %d/%d", len(inserted["public_ref"]), len(inserted["lease_owner_hmac"]))
+	}
+	updated := actionOperationUpdateValues(t, script.execs[1], script.execArgs[1])
+	for column, want := range map[string]string{"verification_id": "40", "updated_at": fmt.Sprint(now), "updated_by": "10"} {
+		if got := updated[column]; got != want {
+			t.Fatalf("verification reservation %s=%q, want %q", column, got, want)
+		}
+	}
+}
+
+func actionOperationInsertValues(t *testing.T, query string, args []driver.NamedValue) map[string]string {
+	t.Helper()
+	open := strings.Index(query, "(")
+	close := strings.Index(query, ") VALUES")
+	if open < 0 || close <= open {
+		t.Fatalf("unparseable INSERT: %s", query)
+	}
+	columns := strings.Split(query[open+1:close], ",")
+	if len(columns) != len(args) {
+		t.Fatalf("INSERT columns/args = %d/%d", len(columns), len(args))
+	}
+	out := make(map[string]string, len(columns))
+	for i, column := range columns {
+		out[strings.Trim(strings.TrimSpace(column), "`")] = fmt.Sprint(args[i].Value)
+	}
+	return out
+}
+
+func actionOperationUpdateValues(t *testing.T, query string, args []driver.NamedValue) map[string]string {
+	t.Helper()
+	setAt := strings.Index(query, " SET ")
+	whereAt := strings.Index(query, " WHERE ")
+	if setAt < 0 || whereAt <= setAt {
+		t.Fatalf("unparseable UPDATE: %s", query)
+	}
+	assignments := strings.Split(query[setAt+5:whereAt], ",")
+	if len(args) < len(assignments) {
+		t.Fatalf("UPDATE assignments/args = %d/%d", len(assignments), len(args))
+	}
+	out := make(map[string]string, len(assignments))
+	for i, assignment := range assignments {
+		column := strings.Trim(strings.TrimSpace(strings.SplitN(assignment, "=", 2)[0]), "`")
+		out[column] = fmt.Sprint(args[i].Value)
+	}
+	return out
 }
 
 func actionOperationQueryKinds(queries []string) []string {
 	out := make([]string, 0, len(queries))
 	for _, query := range queries {
 		switch {
+		case strings.Contains(query, "FROM `users`") && strings.Contains(query, "guid = ?"):
+			out = append(out, "target")
 		case strings.Contains(query, "FROM `users`"):
 			out = append(out, "actor")
 		case strings.Contains(query, "FROM `user_sessions`"):
@@ -271,6 +452,8 @@ func actionOperationQueryKinds(queries []string) []string {
 			out = append(out, "operation")
 		case strings.Contains(query, "FROM `admin_action_verifications`"):
 			out = append(out, "verification")
+		case strings.Contains(query, "FROM `user_permission_"):
+			out = append(out, "target_or_policy")
 		}
 	}
 	return out
