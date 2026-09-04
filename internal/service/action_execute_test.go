@@ -119,7 +119,7 @@ func TestActionOperationBeginBindsExactActorClaimsForExecute(t *testing.T) {
 				operation = &models.AdminOperation{ID: 30, SessionID: 20, State: models.OperationProcessing}
 			}
 			service, _, actor, key, ticket := actionOperationFixture(t, 1_800_000_000_000, operation)
-			identity, _, err := service.Begin(context.Background(), OperationBegin{Action: testNoopAction, Actor: actor, IdempotencyKeyValues: []string{key}, TicketValues: []string{ticket}, Intent: "same-intent"})
+			identity, _, err := service.Begin(context.Background(), OperationBegin{Action: testNoopAction, Actor: actor, IdempotencyKeyValues: []string{key}, TicketValues: []string{ticket}, Intent: testNoopIntent(testNoopTargetGUID, "same-intent")})
 			if err != nil || identity == nil {
 				t.Fatalf("Begin identity = %#v, %v", identity, err)
 			}

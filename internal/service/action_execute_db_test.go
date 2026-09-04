@@ -57,12 +57,13 @@ func setupRealActionPrimitiveTables(t *testing.T, db *gorm.DB) {
 
 func prepareRealActionOperation(t *testing.T, fixture *realActionFixture, intent, ip string) (*OperationIdentity, string) {
 	t.Helper()
-	issued, err := fixture.verification.Issue(context.Background(), VerificationIssue{Action: testNoopAction, Actor: fixture.actor, Intent: intent, CurrentPassword: []byte(fixture.password), TrustedIP: ip})
+	typedIntent := testNoopIntent(fixture.targetRow.Guid, intent)
+	issued, err := fixture.verification.Issue(context.Background(), VerificationIssue{Action: testNoopAction, TargetGUID: &fixture.targetRow.Guid, Actor: fixture.actor, Intent: typedIntent, CurrentPassword: []byte(fixture.password), TrustedIP: ip})
 	if err != nil {
 		t.Fatal(err)
 	}
 	key := newRealIdempotencyKey(t)
-	identity, view, err := fixture.operation.Begin(context.Background(), OperationBegin{Action: testNoopAction, Actor: fixture.actor, IdempotencyKeyValues: []string{key}, TicketValues: []string{issued.Ticket}, Intent: intent})
+	identity, view, err := fixture.operation.Begin(context.Background(), OperationBegin{Action: testNoopAction, Actor: fixture.actor, IdempotencyKeyValues: []string{key}, TicketValues: []string{issued.Ticket}, Intent: typedIntent})
 	if err != nil || identity == nil || view == nil || view.Status != "processing" {
 		t.Fatalf("prepare Begin identity=%v view=%v err=%v", identity, view, err)
 	}
@@ -95,6 +96,26 @@ func (writer realCancelOutboxWriter) Write(ctx context.Context, tx *gorm.DB, eve
 }
 
 type realCommitUnknownRunner struct{ calls atomic.Int64 }
+
+type realTargetFactsConsumer struct {
+	targetGUID  int64
+	wantStatus  models.UserStatus
+	wantVersion int
+	calls       int
+}
+
+func (consumer *realTargetFactsConsumer) Execute(ctx context.Context, tx *gorm.DB, _ models.AdminOperation) (TerminalOutcome, error) {
+	consumer.calls++
+	var target models.User
+	if err := tx.WithContext(ctx).Select("id", "guid", "status", "auth_version").Where("guid = ? AND is_deleted = 0", consumer.targetGUID).First(&target).Error; err != nil {
+		return TerminalOutcome{}, err
+	}
+	if target.Status != consumer.wantStatus || target.AuthVersion != consumer.wantVersion {
+		failure := models.FailureActionRejected
+		return TerminalOutcome{Failure: &failure, HTTPStatus: 409}, nil
+	}
+	return TerminalOutcome{ResultKind: models.ResultNone, HTTPStatus: 204}, nil
+}
 
 func (runner *realCommitUnknownRunner) Run(ctx context.Context, db *gorm.DB, callback func(*gorm.DB) error) error {
 	runner.calls.Add(1)
@@ -1378,4 +1399,104 @@ func TestActionExecuteConcurrencyRealMySQLOneShotCapability(t *testing.T) {
 		t.Fatalf("concurrent Execute succeeded=%d rejected=%d consumer=%d", succeeded, rejected, consumer.calls)
 	}
 	assertRealPrimitiveCounts(t, fixture.db, 1, 1, 1)
+}
+
+func TestActionExecuteRealFreshIdentityPolicyAndTargetChangesRejectBeforeConsumer(t *testing.T) {
+	type mutationCase struct {
+		name    string
+		prepare func(*testing.T, *realActionFixture)
+		mutate  func(*testing.T, *realActionFixture)
+	}
+	cases := []mutationCase{
+		{name: "actor_auth_version_changed", mutate: func(t *testing.T, fixture *realActionFixture) {
+			if err := fixture.db.Model(&models.User{}).Where("id = ?", fixture.actorRow.ID).Update("auth_version", fixture.actorRow.AuthVersion+1).Error; err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "session_version_changed", mutate: func(t *testing.T, fixture *realActionFixture) {
+			if err := fixture.db.Model(&models.Session{}).Where("id = ?", fixture.sessionRow.ID).Update("session_version", fixture.sessionRow.SessionVersion+1).Error; err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "policy_allow_to_deny", prepare: func(t *testing.T, fixture *realActionFixture) {
+			if err := fixture.db.Model(&models.User{}).Where("id = ?", fixture.actorRow.ID).Update("role", models.UserRoleAdmin).Error; err != nil {
+				t.Fatal(err)
+			}
+			head := models.PermissionPolicyHead{AuditFields: models.AuditFields{Guid: testSnowflake.Next(), CreatedAt: fixture.clock.NowMillis(), UpdatedAt: fixture.clock.NowMillis()}, UserID: fixture.actorRow.ID, PolicyVersion: 1, CatalogVersion: models.PermissionCatalogVersion, RuleCount: 1}
+			if err := fixture.db.Create(&head).Error; err != nil {
+				t.Fatal(err)
+			}
+			rule := models.PermissionOverride{AuditFields: models.AuditFields{Guid: testSnowflake.Next(), CreatedAt: fixture.clock.NowMillis(), UpdatedAt: fixture.clock.NowMillis()}, UserID: fixture.actorRow.ID, PolicyVersion: 1, Capability: 12, Effect: 2}
+			if err := fixture.db.Create(&rule).Error; err != nil {
+				t.Fatal(err)
+			}
+		}, mutate: func(t *testing.T, fixture *realActionFixture) {
+			if err := fixture.db.Model(&models.PermissionOverride{}).Where("user_id = ? AND capability = ?", fixture.actorRow.ID, 12).Update("effect", 3).Error; err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "target_hierarchy_changed", mutate: func(t *testing.T, fixture *realActionFixture) {
+			if err := fixture.db.Model(&models.User{}).Where("id = ?", fixture.targetRow.ID).Update("role", models.UserRoleRoot).Error; err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "target_soft_deleted_hidden", mutate: func(t *testing.T, fixture *realActionFixture) {
+			if err := fixture.db.Model(&models.User{}).Where("id = ?", fixture.targetRow.ID).Update("is_deleted", 1).Error; err != nil {
+				t.Fatal(err)
+			}
+		}},
+	}
+	for index, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := openRealActionFixture(t, 1_800_330_000_000+int64(index)*1_000_000)
+			setupRealActionPrimitiveTables(t, fixture.db)
+			if tc.prepare != nil {
+				tc.prepare(t, fixture)
+			}
+			identity, key := prepareRealActionOperation(t, fixture, "fresh-"+tc.name, fmt.Sprintf("198.18.10.%d", index+1))
+			tc.mutate(t, fixture)
+			intent := testNoopIntent(fixture.targetRow.Guid, "fresh-"+tc.name)
+			if replayIdentity, replayView, err := fixture.operation.Begin(context.Background(), OperationBegin{Action: testNoopAction, Actor: fixture.actor, IdempotencyKeyValues: []string{key}, TicketValues: []string{"av_" + strings.Repeat("A", 43)}, Intent: intent}); replayIdentity != nil || replayView != nil || err == nil {
+				t.Fatalf("Begin accepted stale facts: identity=%v view=%v err=%v", replayIdentity, replayView, err)
+			}
+			if view, err := fixture.operation.Query(context.Background(), testNoopAction, fixture.actor, []string{key}); view != nil || err == nil {
+				t.Fatalf("Query accepted stale facts: view=%v err=%v", view, err)
+			}
+			consumer := &fixtureActionConsumer{outcome: TerminalOutcome{ResultKind: models.ResultNone, HTTPStatus: 204}}
+			if view, err := fixture.operation.Execute(context.Background(), identity, consumer, &fixtureActionAuditWriter{}, &fixtureActionOutboxWriter{}); view != nil || err == nil {
+				t.Fatalf("Execute accepted stale facts: view=%v err=%v", view, err)
+			}
+			if consumer.calls != 0 {
+				t.Fatalf("consumer calls=%d", consumer.calls)
+			}
+			assertRealPrimitiveCounts(t, fixture.db, 0, 0, 0)
+			var operation models.AdminOperation
+			if err := fixture.db.First(&operation, identity.ID).Error; err != nil || operation.State != models.OperationProcessing {
+				t.Fatalf("operation side effect state=%v err=%v", operation.State, err)
+			}
+		})
+	}
+}
+
+func TestActionExecuteRealTargetStatusAndVersionChangesAreConsumerRejectionsWithoutBusinessEffect(t *testing.T) {
+	for index, fact := range []string{"status", "version"} {
+		t.Run(fact, func(t *testing.T) {
+			fixture := openRealActionFixture(t, 1_800_340_000_000+int64(index)*1_000_000)
+			setupRealActionPrimitiveTables(t, fixture.db)
+			identity, _ := prepareRealActionOperation(t, fixture, "target-"+fact, fmt.Sprintf("198.18.11.%d", index+1))
+			if fact == "status" {
+				if err := fixture.db.Model(&models.User{}).Where("id = ?", fixture.targetRow.ID).Update("status", models.UserStatusDisabled).Error; err != nil {
+					t.Fatal(err)
+				}
+			} else if err := fixture.db.Model(&models.User{}).Where("id = ?", fixture.targetRow.ID).Update("auth_version", fixture.targetRow.AuthVersion+1).Error; err != nil {
+				t.Fatal(err)
+			}
+			consumer := &realTargetFactsConsumer{targetGUID: fixture.targetRow.Guid, wantStatus: fixture.targetRow.Status, wantVersion: fixture.targetRow.AuthVersion}
+			view, err := fixture.operation.Execute(context.Background(), identity, consumer, &fixtureActionAuditWriter{}, &fixtureActionOutboxWriter{})
+			if err != nil || view == nil || view.Status != "failed" || consumer.calls != 1 {
+				t.Fatalf("target %s rejection view=%v err=%v calls=%d", fact, view, err, consumer.calls)
+			}
+			assertRealPrimitiveCounts(t, fixture.db, 0, 0, 1)
+		})
+	}
 }

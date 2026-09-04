@@ -55,7 +55,11 @@ func actionOperationFixture(t *testing.T, now int64, existing *models.AdminOpera
 	ticket := "av_" + base64.RawURLEncoding.EncodeToString(ticketRaw[:])
 	keyDigest := crypto.IdempotencyDigest(keyRaw)
 	ticketDigest := crypto.TicketDigest(ticketRaw)
-	requestDigest := crypto.IntentDigest([]byte("same-intent"))
+	encodedIntent, err := testNoopDescriptor().Encode(testNoopIntent(testNoopTargetGUID, "same-intent"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	requestDigest := crypto.IntentDigest(encodedIntent)
 	keyHex := hex.EncodeToString(keyDigest[:])
 	ticketHex := hex.EncodeToString(ticketDigest[:])
 	requestHex := hex.EncodeToString(requestDigest[:])
@@ -83,8 +87,9 @@ func actionOperationFixture(t *testing.T, now int64, existing *models.AdminOpera
 			existing.VerificationID = &verificationID
 		}
 	}
-	verification := &models.AdminActionVerification{ID: 40, AuditFields: models.AuditFields{Guid: 4001}, ActorUserID: actorRow.ID, ActorAuthVersion: actorRow.AuthVersion, SessionID: session.ID, Action: int(testNoopAction), TargetKind: int(actionsecurity.TargetNone), IntentHMAC: requestHex, TicketHMAC: ticketHex, ExpiresAt: now + 300_000}
-	script := &actionOperationScript{now: now, keyHex: keyHex, actor: actorRow, sessions: []models.Session{session}, operation: existing, verification: verification}
+	target := &models.User{ID: 11, AuditFields: models.AuditFields{Guid: testNoopTargetGUID}, Role: models.UserRoleUser, Status: models.UserStatusActive, AuthVersion: 4}
+	verification := &models.AdminActionVerification{ID: 40, AuditFields: models.AuditFields{Guid: 4001}, ActorUserID: actorRow.ID, ActorAuthVersion: actorRow.AuthVersion, SessionID: session.ID, Action: int(testNoopAction), TargetKind: int(actionsecurity.TargetUser), TargetGUID: &target.Guid, IntentHMAC: requestHex, TicketHMAC: ticketHex, ExpiresAt: now + 300_000}
+	script := &actionOperationScript{now: now, keyHex: keyHex, actor: actorRow, target: target, sessions: []models.Session{session}, operation: existing, verification: verification}
 	random := bytes.NewReader(bytes.Repeat([]byte{0x71}, 64))
 	service, err := newActionOperationService(openActionOperationScriptDB(t, script), limiter, authRedis, crypto, func(action actionsecurity.Action) (actionsecurity.Descriptor, bool) {
 		if action == testNoopAction {
@@ -101,7 +106,7 @@ func actionOperationFixture(t *testing.T, now int64, existing *models.AdminOpera
 func TestActionOperationBeginStrictParsingPrecedesRedisAndMySQL(t *testing.T) {
 	service, script, actor, _, ticket := actionOperationFixture(t, 1_800_000_000_000, nil)
 	client := service.limiter.client.(*actionIssueRedisClient)
-	result, view, err := service.Begin(context.Background(), OperationBegin{Action: testNoopAction, Actor: actor, IdempotencyKeyValues: []string{"bad"}, TicketValues: []string{ticket}, Intent: "same-intent"})
+	result, view, err := service.Begin(context.Background(), OperationBegin{Action: testNoopAction, Actor: actor, IdempotencyKeyValues: []string{"bad"}, TicketValues: []string{ticket}, Intent: testNoopIntent(testNoopTargetGUID, "same-intent")})
 	if result != nil || view != nil || !errors.Is(err, ErrActionOperationForbidden) {
 		t.Fatalf("invalid parse = %#v %#v %v", result, view, err)
 	}
@@ -115,7 +120,7 @@ func TestActionOperationBeginLimiterPrecedesOperationLookupAndProductionRegistry
 	service, script, actor, key, ticket := actionOperationFixture(t, now, nil)
 	client := service.limiter.client.(*actionIssueRedisClient)
 	client.actionRateEvalClient.err = errors.New("private redis failure")
-	identity, view, err := service.Begin(context.Background(), OperationBegin{Action: testNoopAction, Actor: actor, IdempotencyKeyValues: []string{key}, TicketValues: []string{ticket}, Intent: "same-intent"})
+	identity, view, err := service.Begin(context.Background(), OperationBegin{Action: testNoopAction, Actor: actor, IdempotencyKeyValues: []string{key}, TicketValues: []string{ticket}, Intent: testNoopIntent(testNoopTargetGUID, "same-intent")})
 	if identity != nil || view != nil || !errors.Is(err, ErrActionOperationUnavailable) {
 		t.Fatalf("limiter failure = %#v %#v %v", identity, view, err)
 	}
@@ -124,7 +129,7 @@ func TestActionOperationBeginLimiterPrecedesOperationLookupAndProductionRegistry
 	}
 	client.actionRateEvalClient.err = nil
 	service.resolve = actionsecurity.ResolveActiveAction
-	identity, view, err = service.Begin(context.Background(), OperationBegin{Action: testNoopAction, Actor: actor, IdempotencyKeyValues: []string{key}, TicketValues: []string{ticket}, Intent: "same-intent"})
+	identity, view, err = service.Begin(context.Background(), OperationBegin{Action: testNoopAction, Actor: actor, IdempotencyKeyValues: []string{key}, TicketValues: []string{ticket}, Intent: testNoopIntent(testNoopTargetGUID, "same-intent")})
 	if identity != nil || view != nil || !errors.Is(err, ErrActionOperationInactive) {
 		t.Fatalf("production registry = %#v %#v %v", identity, view, err)
 	}
@@ -144,7 +149,7 @@ func TestActionOperationBeginIdempotencyConflictsAndTombstone(t *testing.T) {
 		expiredVerification bool
 	}{
 		{name: "same request", operation: models.AdminOperation{ID: 30, SessionID: 20, State: models.OperationProcessing}, wantStatus: "processing"},
-		{name: "payload conflict", operation: models.AdminOperation{ID: 30, SessionID: 20, State: models.OperationProcessing}, mutate: func(in *OperationBegin) { in.Intent = "other-intent" }, want: ErrActionOperationConflict},
+		{name: "payload conflict", operation: models.AdminOperation{ID: 30, SessionID: 20, State: models.OperationProcessing}, mutate: func(in *OperationBegin) { in.Intent = testNoopIntent(testNoopTargetGUID, "other-intent") }, want: ErrActionOperationConflict},
 		{name: "cross session", operation: models.AdminOperation{ID: 30, SessionID: 99, State: models.OperationProcessing}, want: ErrActionOperationCrossSession},
 		{name: "tombstone", operation: models.AdminOperation{ID: 30, SessionID: 20, State: models.OperationExpired, QueryExpiresAt: now, AuditFields: models.AuditFields{IsDeleted: 1}}, want: ErrActionOperationExpired, expiredVerification: true},
 	}
@@ -155,7 +160,7 @@ func TestActionOperationBeginIdempotencyConflictsAndTombstone(t *testing.T) {
 			if tc.expiredVerification {
 				script.verification.ExpiresAt = now
 			}
-			in := OperationBegin{Action: testNoopAction, Actor: actor, IdempotencyKeyValues: []string{key}, TicketValues: []string{ticket}, Intent: "same-intent"}
+			in := OperationBegin{Action: testNoopAction, Actor: actor, IdempotencyKeyValues: []string{key}, TicketValues: []string{ticket}, Intent: testNoopIntent(testNoopTargetGUID, "same-intent")}
 			if tc.mutate != nil {
 				tc.mutate(&in)
 			}
@@ -192,7 +197,7 @@ func TestActionOperationBeginExistingRequiresFreshRootAndPresentedTicket(t *test
 			service, script, actor, key, ticket := actionOperationFixture(t, now, &op)
 			verificationID := script.verification.ID
 			op.VerificationID = &verificationID
-			in := OperationBegin{Action: testNoopAction, Actor: actor, IdempotencyKeyValues: []string{key}, TicketValues: []string{ticket}, Intent: "same-intent"}
+			in := OperationBegin{Action: testNoopAction, Actor: actor, IdempotencyKeyValues: []string{key}, TicketValues: []string{ticket}, Intent: testNoopIntent(testNoopTargetGUID, "same-intent")}
 			tc.mutate(service, script, &in)
 			identity, view, err := service.Begin(context.Background(), in)
 			if identity != nil || view != nil || !errors.Is(err, ErrActionOperationForbidden) {
@@ -210,7 +215,7 @@ func TestActionOperationBeginExistingTerminalAcceptsItsConsumedVerificationWitho
 	consumed := now - 100
 	script.verification.ConsumedAt = &consumed
 	script.verification.IsDeleted = 1
-	identity, view, err := service.Begin(context.Background(), OperationBegin{Action: testNoopAction, Actor: actor, IdempotencyKeyValues: []string{key}, TicketValues: []string{ticket}, Intent: "same-intent"})
+	identity, view, err := service.Begin(context.Background(), OperationBegin{Action: testNoopAction, Actor: actor, IdempotencyKeyValues: []string{key}, TicketValues: []string{ticket}, Intent: testNoopIntent(testNoopTargetGUID, "same-intent")})
 	if err != nil || identity == nil || view == nil || view.Status != "succeeded" {
 		t.Fatalf("terminal replay = %#v %#v %v", identity, view, err)
 	}
@@ -294,7 +299,7 @@ func TestActionOperationStateVerificationMatrixDrivesBeginAndQuery(t *testing.T)
 				op := matrixOperation(now, state)
 				service, script, actor, key, ticket := actionOperationFixture(t, now, &op)
 				applyVerification(script, kind)
-				identity, view, err := service.Begin(context.Background(), OperationBegin{Action: testNoopAction, Actor: actor, IdempotencyKeyValues: []string{key}, TicketValues: []string{ticket}, Intent: "same-intent"})
+				identity, view, err := service.Begin(context.Background(), OperationBegin{Action: testNoopAction, Actor: actor, IdempotencyKeyValues: []string{key}, TicketValues: []string{ticket}, Intent: testNoopIntent(testNoopTargetGUID, "same-intent")})
 				if !beginAllowed(state, kind) {
 					if identity != nil || view != nil || !errors.Is(err, ErrActionOperationForbidden) || len(script.execs) != 0 {
 						t.Fatalf("invalid Begin = %#v %#v %v writes=%v", identity, view, err, script.execs)
@@ -335,7 +340,7 @@ func TestActionOperationExpiryWithFutureQueryExpiryIsCorruptBeforeGone(t *testin
 			script.verification.ConsumedAt = &consumed
 			script.verification.IsDeleted = 1
 			if call == "Begin" {
-				identity, view, err := service.Begin(context.Background(), OperationBegin{Action: testNoopAction, Actor: actor, IdempotencyKeyValues: []string{key}, TicketValues: []string{ticket}, Intent: "same-intent"})
+				identity, view, err := service.Begin(context.Background(), OperationBegin{Action: testNoopAction, Actor: actor, IdempotencyKeyValues: []string{key}, TicketValues: []string{ticket}, Intent: testNoopIntent(testNoopTargetGUID, "same-intent")})
 				if identity != nil || view != nil || !errors.Is(err, ErrActionOperationForbidden) || len(script.execs) != 0 {
 					t.Fatalf("corrupt expired Begin = %#v %#v %v writes=%v", identity, view, err, script.execs)
 				}
@@ -373,13 +378,19 @@ func configureTargetOperationFixture(service *ActionOperationService, script *ac
 	script.verification.TargetKind = int(actionsecurity.TargetUser)
 	script.verification.TargetGUID = &targetGUID
 	script.target = &models.User{ID: 11, AuditFields: models.AuditFields{Guid: targetGUID}, Role: models.UserRoleUser, Status: models.UserStatusActive, AuthVersion: 1}
-	service.resolve = func(action actionsecurity.Action) (actionsecurity.Descriptor, bool) {
-		if action != testNoopAction {
-			return actionsecurity.Descriptor{}, false
-		}
-		return actionsecurity.Descriptor{Action: action, Name: "test.noop", Capability: "users.delete", RequiresTicket: true, Active: true, TargetKind: actionsecurity.TargetUser, Encode: func(any) ([]byte, error) { return []byte("same-intent"), nil }}, true
+	intent := actionsecurity.DeleteUserIntent{TargetGUID: targetGUID, ExpectedAuthVersion: 1, Reason: "test"}
+	descriptor := testNoopDescriptor()
+	encoded, err := descriptor.Encode(intent)
+	if err != nil {
+		panic(err)
 	}
-	return actionsecurity.DeleteUserIntent{TargetGUID: targetGUID, ExpectedAuthVersion: 1, Reason: "test"}
+	digest := service.crypto.IntentDigest(encoded)
+	script.verification.IntentHMAC = hex.EncodeToString(digest[:])
+	if script.operation != nil {
+		script.operation.RequestHMAC = script.verification.IntentHMAC
+	}
+	clear(digest[:])
+	return intent
 }
 
 func TestActionOperationBeginFreshTargetHierarchyIsRecheckedAfterVerification(t *testing.T) {
@@ -429,7 +440,7 @@ func TestActionOperationBeginTicketExpiryBoundaryRollsBack(t *testing.T) {
 	now := int64(1_800_000_000_000)
 	service, script, actor, key, ticket := actionOperationFixture(t, now, nil)
 	script.verification.ExpiresAt = now
-	identity, view, err := service.Begin(context.Background(), OperationBegin{Action: testNoopAction, Actor: actor, IdempotencyKeyValues: []string{key}, TicketValues: []string{ticket}, Intent: "same-intent"})
+	identity, view, err := service.Begin(context.Background(), OperationBegin{Action: testNoopAction, Actor: actor, IdempotencyKeyValues: []string{key}, TicketValues: []string{ticket}, Intent: testNoopIntent(testNoopTargetGUID, "same-intent")})
 	if identity != nil || view != nil || !errors.Is(err, ErrActionOperationForbidden) {
 		t.Fatalf("ticket expiry boundary = %#v %#v %v", identity, view, err)
 	}
@@ -453,7 +464,7 @@ func TestActionOperationBeginTicketMismatchAndReuseAreFixedForbidden(t *testing.
 		t.Run(tc.name, func(t *testing.T) {
 			service, script, actor, key, ticket := actionOperationFixture(t, now, nil)
 			tc.mutate(script)
-			identity, view, err := service.Begin(context.Background(), OperationBegin{Action: testNoopAction, Actor: actor, IdempotencyKeyValues: []string{key}, TicketValues: []string{ticket}, Intent: "same-intent"})
+			identity, view, err := service.Begin(context.Background(), OperationBegin{Action: testNoopAction, Actor: actor, IdempotencyKeyValues: []string{key}, TicketValues: []string{ticket}, Intent: testNoopIntent(testNoopTargetGUID, "same-intent")})
 			if identity != nil || view != nil || !errors.Is(err, ErrActionOperationForbidden) || err.Error() != ErrActionOperationForbidden.Error() {
 				t.Fatalf("fixed forbidden = %#v %#v %v", identity, view, err)
 			}
@@ -591,7 +602,7 @@ func TestActionOperationBeginExpiryCommitsBeforeGone(t *testing.T) {
 	consumed := now - 1
 	script.verification.ConsumedAt = &consumed
 	script.verification.IsDeleted = 1
-	identity, view, err := service.Begin(context.Background(), OperationBegin{Action: testNoopAction, Actor: actor, IdempotencyKeyValues: []string{key}, TicketValues: []string{ticket}, Intent: "same-intent"})
+	identity, view, err := service.Begin(context.Background(), OperationBegin{Action: testNoopAction, Actor: actor, IdempotencyKeyValues: []string{key}, TicketValues: []string{ticket}, Intent: testNoopIntent(testNoopTargetGUID, "same-intent")})
 	if identity != nil || view != nil || !errors.Is(err, ErrActionOperationExpired) || script.commitCount != 1 || script.rollbackCount != 0 {
 		t.Fatalf("Begin expiry = %#v %#v %v commits=%d rollbacks=%d", identity, view, err, script.commitCount, script.rollbackCount)
 	}
@@ -743,7 +754,7 @@ func TestActionOperationBeginAndQueryRecheckClockAfterAllAuthorizationLocks(t *t
 				}
 			} else {
 				script.verification.ExpiresAt = now + 1
-				identity, view, err := service.Begin(context.Background(), OperationBegin{Action: testNoopAction, Actor: actor, IdempotencyKeyValues: []string{key}, TicketValues: []string{ticket}, Intent: "same-intent"})
+				identity, view, err := service.Begin(context.Background(), OperationBegin{Action: testNoopAction, Actor: actor, IdempotencyKeyValues: []string{key}, TicketValues: []string{ticket}, Intent: testNoopIntent(testNoopTargetGUID, "same-intent")})
 				if identity != nil || view != nil || !errors.Is(err, ErrActionOperationForbidden) {
 					t.Fatalf("post-lock ticket expiry = %#v %#v %v", identity, view, err)
 				}
@@ -764,7 +775,7 @@ func TestActionOperationBeginLeaseAndAuditUsePostLockClock(t *testing.T) {
 	service, script, actor, key, ticket := actionOperationFixture(t, now, nil)
 	clock := &actionOperationLockClock{script: script, now: now, after: finalNow}
 	service.clock = clock
-	identity, view, err := service.Begin(context.Background(), OperationBegin{Action: testNoopAction, Actor: actor, IdempotencyKeyValues: []string{key}, TicketValues: []string{ticket}, Intent: "same-intent"})
+	identity, view, err := service.Begin(context.Background(), OperationBegin{Action: testNoopAction, Actor: actor, IdempotencyKeyValues: []string{key}, TicketValues: []string{ticket}, Intent: testNoopIntent(testNoopTargetGUID, "same-intent")})
 	if err != nil || identity == nil || view == nil || !clock.finalAfterAll {
 		t.Fatalf("post-lock Begin = %#v %#v %v finalAfter=%v", identity, view, err, clock.finalAfterAll)
 	}
@@ -799,7 +810,7 @@ func TestActionOperationBeginCommitFailureReturnsNoLeaseIdentity(t *testing.T) {
 	now := int64(1_800_000_000_000)
 	service, script, actor, key, ticket := actionOperationFixture(t, now, nil)
 	script.failCommit = true
-	identity, view, err := service.Begin(context.Background(), OperationBegin{Action: testNoopAction, Actor: actor, IdempotencyKeyValues: []string{key}, TicketValues: []string{ticket}, Intent: "same-intent"})
+	identity, view, err := service.Begin(context.Background(), OperationBegin{Action: testNoopAction, Actor: actor, IdempotencyKeyValues: []string{key}, TicketValues: []string{ticket}, Intent: testNoopIntent(testNoopTargetGUID, "same-intent")})
 	if identity != nil || view != nil || !errors.Is(err, ErrActionOperationUnavailable) {
 		t.Fatalf("commit failure = %#v %#v %v", identity, view, err)
 	}

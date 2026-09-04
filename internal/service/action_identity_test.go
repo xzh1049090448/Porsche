@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/binary"
 	"errors"
 	"io"
 	"os"
@@ -20,6 +21,16 @@ import (
 )
 
 const testNoopAction actionsecurity.Action = 2147483000
+const testNoopTargetGUID int64 = 3001
+
+func testNoopIntent(targetGUID int64, reason string) actionsecurity.DeleteUserIntent {
+	return actionsecurity.DeleteUserIntent{TargetGUID: targetGUID, ExpectedAuthVersion: 4, Reason: reason}
+}
+
+func testNoopTargetGUIDValue() *int64 {
+	value := testNoopTargetGUID
+	return &value
+}
 
 type actionIssueClock struct{ now int64 }
 
@@ -45,14 +56,18 @@ func (c *actionIssueRedisClient) Exists(ctx context.Context, keys ...string) *re
 
 func testNoopDescriptor() actionsecurity.Descriptor {
 	return actionsecurity.Descriptor{
-		Action: testNoopAction, Name: "test.noop", Capability: "users.create", RootOnly: true,
-		RequiresTicket: true, Active: true, TargetKind: actionsecurity.TargetNone,
+		Action: testNoopAction, Name: "test.noop", Capability: "users.delete",
+		RequiresTicket: true, Active: true, TargetKind: actionsecurity.TargetUser,
 		Encode: func(value any) ([]byte, error) {
-			text, ok := value.(string)
-			if !ok || text == "" {
+			intent, ok := value.(actionsecurity.DeleteUserIntent)
+			if !ok || intent.TargetGUID <= 0 || intent.Reason == "" {
 				return nil, errors.New("invalid test intent")
 			}
-			return []byte(text), nil
+			encoded := make([]byte, 12+len(intent.Reason))
+			binary.BigEndian.PutUint64(encoded[:8], uint64(intent.TargetGUID))
+			binary.BigEndian.PutUint32(encoded[8:12], uint32(intent.ExpectedAuthVersion))
+			copy(encoded[12:], intent.Reason)
+			return encoded, nil
 		},
 	}
 }
@@ -90,6 +105,20 @@ func TestActionIdentityContractIsTyped(t *testing.T) {
 	issue := VerificationIssue{Action: actionsecurity.Action(1), Actor: actor}
 	if issue.Actor != actor {
 		t.Fatal("verification issue did not retain its typed actor")
+	}
+}
+
+func TestTestNoopDescriptorMatchesTask9Contract(t *testing.T) {
+	descriptor := testNoopDescriptor()
+	if descriptor.Action != actionsecurity.Action(2147483000) || descriptor.Name != "test.noop" || descriptor.Capability != "users.delete" ||
+		descriptor.TargetKind != actionsecurity.TargetUser || !descriptor.RequiresTicket || !descriptor.Active || descriptor.RootOnly {
+		t.Fatalf("test descriptor does not match Task 9: %#v", descriptor)
+	}
+	if _, err := descriptor.Encode(testNoopIntent(testNoopTargetGUID, "contract")); err != nil {
+		t.Fatalf("typed target intent rejected: %v", err)
+	}
+	if _, err := descriptor.Encode("contract"); err == nil {
+		t.Fatal("untyped test intent accepted")
 	}
 }
 
@@ -234,7 +263,7 @@ func TestActionVerificationIssueLimiterThenRevocationFailClosedBeforeMySQL(t *te
 			_, err := service.Issue(context.Background(), VerificationIssue{
 				Action: testNoopAction,
 				Actor:  ActionActor{UserID: 1, UserGUID: 2, AuthVersion: 3, SessionSID: "11111111-2222-4333-8444-555555555555", SessionVersion: 4},
-				Intent: "intent", CurrentPassword: password, TrustedIP: "203.0.113.10",
+				Intent: testNoopIntent(testNoopTargetGUID, "intent"), CurrentPassword: password, TrustedIP: "203.0.113.10",
 			})
 			if !errors.Is(err, tc.want) {
 				t.Fatalf("Issue error = %v, want %v", err, tc.want)

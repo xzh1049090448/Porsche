@@ -48,6 +48,7 @@ type realActionFixture struct {
 	operation    *ActionOperationService
 	clock        *realActionClock
 	actorRow     models.User
+	targetRow    models.User
 	sessionRow   models.Session
 	actor        ActionActor
 	password     string
@@ -100,6 +101,15 @@ func openRealActionFixture(t *testing.T, now int64) *realActionFixture {
 	if err := db.Create(&actorRow).Error; err != nil {
 		t.Fatal(err)
 	}
+	targetUsername := fixtureUsername(testSnowflake.Next())
+	targetRow := models.User{
+		AuditFields: models.AuditFields{Guid: testSnowflake.Next(), CreatedAt: now, UpdatedAt: now},
+		Username:    &targetUsername, Role: models.UserRoleUser, Status: models.UserStatusActive, AuthVersion: 4,
+		PlanType: models.PlanFree, AllowedModels: models.JSONSlice{},
+	}
+	if err := db.Create(&targetRow).Error; err != nil {
+		t.Fatal(err)
+	}
 	sid, err := security.NewSessionSID()
 	if err != nil {
 		t.Fatal(err)
@@ -128,7 +138,7 @@ func openRealActionFixture(t *testing.T, now int64) *realActionFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &realActionFixture{db: db, redis: client, crypto: crypto, limiter: limiter, authRedis: authRedis, verification: verification, operation: operation, clock: clock, actorRow: actorRow, sessionRow: sessionRow, actor: actor, password: password}
+	return &realActionFixture{db: db, redis: client, crypto: crypto, limiter: limiter, authRedis: authRedis, verification: verification, operation: operation, clock: clock, actorRow: actorRow, targetRow: targetRow, sessionRow: sessionRow, actor: actor, password: password}
 }
 
 func newRealIdempotencyKey(t *testing.T) string {
@@ -149,7 +159,7 @@ func TestActionVerificationRealMySQLRedisTicketBoundaryAndLimits(t *testing.T) {
 	for attempt := 1; attempt <= 5; attempt++ {
 		password := []byte(fixture.password)
 		issued, err := fixture.verification.Issue(context.Background(), VerificationIssue{
-			Action: testNoopAction, Actor: fixture.actor, Intent: "real-ticket-intent",
+			Action: testNoopAction, TargetGUID: &fixture.targetRow.Guid, Actor: fixture.actor, Intent: testNoopIntent(fixture.targetRow.Guid, "real-ticket-intent"),
 			CurrentPassword: password, TrustedIP: "203.0.113.121",
 		})
 		if err != nil {
@@ -165,7 +175,7 @@ func TestActionVerificationRealMySQLRedisTicketBoundaryAndLimits(t *testing.T) {
 	}
 	password := []byte(fixture.password)
 	if issued, err := fixture.verification.Issue(context.Background(), VerificationIssue{
-		Action: testNoopAction, Actor: fixture.actor, Intent: "real-ticket-intent",
+		Action: testNoopAction, TargetGUID: &fixture.targetRow.Guid, Actor: fixture.actor, Intent: testNoopIntent(fixture.targetRow.Guid, "real-ticket-intent"),
 		CurrentPassword: password, TrustedIP: "203.0.113.121",
 	}); issued != nil {
 		t.Fatal("sixth Issue returned a ticket")
@@ -178,7 +188,7 @@ func TestActionVerificationRealMySQLRedisTicketBoundaryAndLimits(t *testing.T) {
 	fixture.clock.Set(latest.ExpiresAt)
 	if identity, view, err := fixture.operation.Begin(context.Background(), OperationBegin{
 		Action: testNoopAction, Actor: fixture.actor, IdempotencyKeyValues: []string{newRealIdempotencyKey(t)},
-		TicketValues: []string{latest.Ticket}, Intent: "real-ticket-intent",
+		TicketValues: []string{latest.Ticket}, Intent: testNoopIntent(fixture.targetRow.Guid, "real-ticket-intent"),
 	}); identity != nil || view != nil || !errors.Is(err, ErrActionOperationForbidden) {
 		t.Fatalf("expires_at equality accepted: identity=%v view=%v err=%v", identity, view, err)
 	}
@@ -199,51 +209,118 @@ func TestActionVerificationRealMySQLRedisTicketBoundaryAndLimits(t *testing.T) {
 func TestActionSecurityRedisRealWindowsTTLAndTotalFailure(t *testing.T) {
 	fixture := openRealActionFixture(t, 1_800_100_000_000)
 	ctx := context.Background()
-	actorID := fixture.actor.UserID + 100_000
-	sessionID := fixture.sessionRow.ID + 100_000
-	ip := "203.0.113.122"
-	actorPayload, sessionPayload := encodeActionRateID(actorID), encodeActionRateID(sessionID)
-	keys, err := fixture.limiter.rateKeys([]actionRateIdentity{
-		{purpose: actionsecurity.RateVerificationActor, payload: actorPayload[:]},
-		{purpose: actionsecurity.RateVerificationIP, payload: []byte(ip)},
-		{purpose: actionsecurity.RateVerificationSession, payload: sessionPayload[:]},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := fixture.redis.Del(ctx, keys...).Err(); err != nil {
-		t.Fatal(err)
-	}
-	if err := fixture.limiter.ReserveVerification(ctx, actorID, sessionID, ip); err != nil {
-		t.Fatal(err)
-	}
-	firstTTL, err := fixture.redis.PTTL(ctx, keys[0]).Result()
-	if err != nil || firstTTL <= 0 {
-		t.Fatalf("initial TTL=%v err=%v", firstTTL, err)
-	}
-	time.Sleep(20 * time.Millisecond)
-	for attempt := 2; attempt <= 5; attempt++ {
-		if err := fixture.limiter.ReserveVerification(ctx, actorID, sessionID, ip); err != nil {
-			t.Fatalf("verification attempt %d: %v", attempt, err)
-		}
-	}
-	afterTTL, err := fixture.redis.PTTL(ctx, keys[0]).Result()
-	if err != nil || afterTTL <= 0 || afterTTL >= firstTTL {
-		t.Fatalf("verification TTL slid: %v -> %v err=%v", firstTTL, afterTTL, err)
-	}
 	var retry *RetryAfterError
-	if err := fixture.limiter.ReserveVerification(ctx, actorID, sessionID, ip); !errors.As(err, &retry) || retry.Seconds < 899 || retry.Seconds > 900 {
-		t.Fatalf("actor window did not reject sixth attempt: %#v", err)
-	}
-	beginSession := fixture.sessionRow.ID + 200_000
-	for attempt := 1; attempt <= 60; attempt++ {
-		if err := fixture.limiter.ReserveBegin(ctx, beginSession); err != nil {
-			t.Fatalf("Begin rate attempt %d: %v", attempt, err)
+	assertTTL := func(t *testing.T, key string, first time.Duration) {
+		t.Helper()
+		after, err := fixture.redis.PTTL(ctx, key).Result()
+		if err != nil || after <= 0 || after >= first {
+			t.Fatalf("fixed window TTL slid: %v -> %v err=%v", first, after, err)
 		}
 	}
-	if err := fixture.limiter.ReserveBegin(ctx, beginSession); !errors.As(err, &retry) || retry.Seconds < 59 || retry.Seconds > 60 {
-		t.Fatalf("Begin window did not reject 61st attempt: %#v", err)
+	keyFor := func(t *testing.T, purpose string, payload []byte) string {
+		t.Helper()
+		keys, err := fixture.limiter.rateKeys([]actionRateIdentity{{purpose: purpose, payload: payload}})
+		if err != nil || len(keys) != 1 {
+			t.Fatalf("rate key: %v", err)
+		}
+		return keys[0]
 	}
+	base := testSnowflake.Next()
+	t.Run("actor_5_per_15m_non_sliding", func(t *testing.T) {
+		actorID := base + 100
+		actorPayload := encodeActionRateID(actorID)
+		key := keyFor(t, actionsecurity.RateVerificationActor, actorPayload[:])
+		for attempt := int64(1); attempt <= 5; attempt++ {
+			if err := fixture.limiter.ReserveVerification(ctx, actorID, base+1000+attempt, fmt.Sprintf("198.18.1.%d", attempt)); err != nil {
+				t.Fatalf("actor attempt %d: %v", attempt, err)
+			}
+			if attempt == 1 {
+				first, _ := fixture.redis.PTTL(ctx, key).Result()
+				time.Sleep(20 * time.Millisecond)
+				defer assertTTL(t, key, first)
+			}
+		}
+		if err := fixture.limiter.ReserveVerification(ctx, actorID, base+1006, "198.18.1.6"); !errors.As(err, &retry) || retry.Seconds < 899 || retry.Seconds > 900 {
+			t.Fatalf("actor N+1 = %#v", err)
+		}
+	})
+	t.Run("ip_20_per_15m_varied_actor_session_non_sliding", func(t *testing.T) {
+		ip := fmt.Sprintf("2001:db8:%x::20", uint64(base)&0xffff)
+		key := keyFor(t, actionsecurity.RateVerificationIP, []byte(ip))
+		var first time.Duration
+		for attempt := int64(1); attempt <= 20; attempt++ {
+			if err := fixture.limiter.ReserveVerification(ctx, base+2000+attempt, base+3000+attempt, ip); err != nil {
+				t.Fatalf("IP attempt %d: %v", attempt, err)
+			}
+			if attempt == 1 {
+				first, _ = fixture.redis.PTTL(ctx, key).Result()
+				time.Sleep(20 * time.Millisecond)
+			}
+		}
+		assertTTL(t, key, first)
+		if err := fixture.limiter.ReserveVerification(ctx, base+2021, base+3021, ip); !errors.As(err, &retry) || retry.Seconds < 899 || retry.Seconds > 900 {
+			t.Fatalf("IP N+1 = %#v", err)
+		}
+	})
+	t.Run("logical_session_10_per_hour_varied_actor_ip_non_sliding", func(t *testing.T) {
+		sessionID := base + 4000
+		payload := encodeActionRateID(sessionID)
+		key := keyFor(t, actionsecurity.RateVerificationSession, payload[:])
+		var first time.Duration
+		for attempt := int64(1); attempt <= 10; attempt++ {
+			if err := fixture.limiter.ReserveVerification(ctx, base+5000+attempt, sessionID, fmt.Sprintf("198.18.3.%d", attempt)); err != nil {
+				t.Fatalf("session attempt %d: %v", attempt, err)
+			}
+			if attempt == 1 {
+				first, _ = fixture.redis.PTTL(ctx, key).Result()
+				time.Sleep(20 * time.Millisecond)
+			}
+		}
+		assertTTL(t, key, first)
+		if err := fixture.limiter.ReserveVerification(ctx, base+5011, sessionID, "198.18.3.11"); !errors.As(err, &retry) || retry.Seconds < 3599 || retry.Seconds > 3600 {
+			t.Fatalf("session N+1 = %#v", err)
+		}
+	})
+	t.Run("issuance_session_10_per_hour_varied_actor_ip_non_sliding", func(t *testing.T) {
+		sid, err := security.NewSessionSID()
+		if err != nil {
+			t.Fatal(err)
+		}
+		key := keyFor(t, actionsecurity.RateVerificationSession, []byte(sid))
+		var first time.Duration
+		for attempt := int64(1); attempt <= 10; attempt++ {
+			if err := fixture.verification.reserveVerification(ctx, base+6000+attempt, sid, fmt.Sprintf("198.18.4.%d", attempt)); err != nil {
+				t.Fatalf("issuance attempt %d: %v", attempt, err)
+			}
+			if attempt == 1 {
+				first, _ = fixture.redis.PTTL(ctx, key).Result()
+				time.Sleep(20 * time.Millisecond)
+			}
+		}
+		assertTTL(t, key, first)
+		if err := fixture.verification.reserveVerification(ctx, base+6011, sid, "198.18.4.11"); !errors.As(err, &retry) || retry.Seconds < 3599 || retry.Seconds > 3600 {
+			t.Fatalf("issuance session N+1 = %#v", err)
+		}
+	})
+	t.Run("begin_60_per_minute_non_sliding", func(t *testing.T) {
+		beginSession := base + 7000
+		payload := encodeActionRateID(beginSession)
+		key := keyFor(t, actionsecurity.RateBeginSession, payload[:])
+		var first time.Duration
+		for attempt := 1; attempt <= 60; attempt++ {
+			if err := fixture.limiter.ReserveBegin(ctx, beginSession); err != nil {
+				t.Fatalf("Begin attempt %d: %v", attempt, err)
+			}
+			if attempt == 1 {
+				first, _ = fixture.redis.PTTL(ctx, key).Result()
+				time.Sleep(20 * time.Millisecond)
+			}
+		}
+		assertTTL(t, key, first)
+		if err := fixture.limiter.ReserveBegin(ctx, beginSession); !errors.As(err, &retry) || retry.Seconds < 59 || retry.Seconds > 60 {
+			t.Fatalf("Begin N+1 = %#v", err)
+		}
+	})
 	brokenClient := redis.NewClient(&redis.Options{Addr: "127.0.0.1:1", DialTimeout: 20 * time.Millisecond, ReadTimeout: 20 * time.Millisecond, WriteTimeout: 20 * time.Millisecond, MaxRetries: 0})
 	t.Cleanup(func() { _ = brokenClient.Close() })
 	brokenLimiter, err := NewActionSecurityRedis(brokenClient, fixture.crypto)
@@ -257,7 +334,7 @@ func TestActionSecurityRedisRealWindowsTTLAndTotalFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	fixture.clock.Set(1_800_100_000_000)
-	if identity, view, err := brokenService.Begin(ctx, OperationBegin{Action: testNoopAction, Actor: fixture.actor, IdempotencyKeyValues: []string{newRealIdempotencyKey(t)}, TicketValues: []string{"av_" + strings.Repeat("A", 43)}, Intent: "redis-down"}); identity != nil || view != nil || !errors.Is(err, ErrActionOperationUnavailable) || ErrActionOperationUnavailable.Status != 503 {
+	if identity, view, err := brokenService.Begin(ctx, OperationBegin{Action: testNoopAction, Actor: fixture.actor, IdempotencyKeyValues: []string{newRealIdempotencyKey(t)}, TicketValues: []string{"av_" + strings.Repeat("A", 43)}, Intent: testNoopIntent(fixture.targetRow.Guid, "redis-down")}); identity != nil || view != nil || !errors.Is(err, ErrActionOperationUnavailable) || ErrActionOperationUnavailable.Status != 503 {
 		t.Fatalf("Redis total failure did not map to fixed 503: identity=%v view=%v err=%v", identity, view, err)
 	}
 }
@@ -265,12 +342,12 @@ func TestActionSecurityRedisRealWindowsTTLAndTotalFailure(t *testing.T) {
 func TestActionOperationConcurrencyRealMySQLLocksBindingsAndClockEdges(t *testing.T) {
 	now := int64(1_800_200_000_000)
 	fixture := openRealActionFixture(t, now)
-	issued, err := fixture.verification.Issue(context.Background(), VerificationIssue{Action: testNoopAction, Actor: fixture.actor, Intent: "real-operation-intent", CurrentPassword: []byte(fixture.password), TrustedIP: "203.0.113.123"})
+	issued, err := fixture.verification.Issue(context.Background(), VerificationIssue{Action: testNoopAction, TargetGUID: &fixture.targetRow.Guid, Actor: fixture.actor, Intent: testNoopIntent(fixture.targetRow.Guid, "real-operation-intent"), CurrentPassword: []byte(fixture.password), TrustedIP: "203.0.113.123"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	key := newRealIdempotencyKey(t)
-	input := OperationBegin{Action: testNoopAction, Actor: fixture.actor, IdempotencyKeyValues: []string{key}, TicketValues: []string{issued.Ticket}, Intent: "real-operation-intent"}
+	input := OperationBegin{Action: testNoopAction, Actor: fixture.actor, IdempotencyKeyValues: []string{key}, TicketValues: []string{issued.Ticket}, Intent: testNoopIntent(fixture.targetRow.Guid, "real-operation-intent")}
 	identity, view, err := fixture.operation.Begin(context.Background(), input)
 	if err != nil || identity == nil || view == nil || view.Status != "processing" {
 		t.Fatalf("initial Begin identity=%v view=%v err=%v", identity, view, err)
@@ -307,7 +384,7 @@ func TestActionOperationConcurrencyRealMySQLLocksBindingsAndClockEdges(t *testin
 		t.Fatalf("concurrent Begin operations=%d err=%v", operationCount, err)
 	}
 	conflict := input
-	conflict.Intent = "different-payload"
+	conflict.Intent = testNoopIntent(fixture.targetRow.Guid, "different-payload")
 	if gotIdentity, gotView, err := fixture.operation.Begin(context.Background(), conflict); gotIdentity != nil || gotView != nil || !errors.Is(err, ErrActionOperationConflict) {
 		t.Fatalf("payload conflict identity=%v view=%v err=%v", gotIdentity, gotView, err)
 	}
@@ -518,11 +595,16 @@ func (c *actionOperationConn) QueryContext(_ context.Context, query string, args
 		}
 		return operationRows(columns, [][]driver.Value{{u.ID, u.Guid, int64(u.Role), int64(u.Status), int64(u.IsDeleted), int64(u.AuthVersion)}}), nil
 	case strings.Contains(query, "FROM `users`"):
-		if !strings.Contains(query, "id = ?") || !strings.Contains(query, "FOR UPDATE") {
-			return nil, errors.New("actor not locked by id")
+		if !strings.Contains(query, "FOR UPDATE") {
+			return nil, errors.New("user not locked")
 		}
 		u := s.actor
-		if len(args) != 2 || fmt.Sprint(args[0].Value) != fmt.Sprint(u.ID) {
+		if strings.Contains(query, "guid = ?") {
+			if s.target == nil || len(args) != 2 || fmt.Sprint(args[0].Value) != fmt.Sprint(s.target.Guid) {
+				return operationRows([]string{"id", "guid", "password_hash", "role", "status", "is_deleted", "auth_version"}, nil), nil
+			}
+			u = *s.target
+		} else if !strings.Contains(query, "id = ?") || len(args) != 2 || fmt.Sprint(args[0].Value) != fmt.Sprint(u.ID) {
 			return nil, errors.New("wrong actor selector vars")
 		}
 		var password driver.Value
@@ -908,7 +990,7 @@ func openActionOperationScriptDB(t *testing.T, script *actionOperationScript) *g
 func TestActionOperationBeginDBScriptEnforcesLockOrderAndSecretFreeSQL(t *testing.T) {
 	now := int64(1_800_000_000_000)
 	service, script, actor, key, ticket := actionOperationFixture(t, now, nil)
-	identity, view, err := service.Begin(context.Background(), OperationBegin{Action: testNoopAction, Actor: actor, IdempotencyKeyValues: []string{key}, TicketValues: []string{ticket}, Intent: "same-intent"})
+	identity, view, err := service.Begin(context.Background(), OperationBegin{Action: testNoopAction, Actor: actor, IdempotencyKeyValues: []string{key}, TicketValues: []string{ticket}, Intent: testNoopIntent(testNoopTargetGUID, "same-intent")})
 	if err != nil {
 		t.Fatalf("Begin: %v", err)
 	}
@@ -924,7 +1006,7 @@ func TestActionOperationBeginDBScriptEnforcesLockOrderAndSecretFreeSQL(t *testin
 	if view == nil || view.Status != "processing" || view.Scope != "test.noop" || view.RetryAfterSeconds != 30 {
 		t.Fatalf("view = %#v", view)
 	}
-	if got := actionOperationQueryKinds(script.queries); strings.Join(got, ",") != "actor,session,operation,verification,target_or_policy,target_or_policy" {
+	if got := actionOperationQueryKinds(script.queries); strings.Join(got, ",") != "actor,session,operation,verification,target,target_or_policy,target_or_policy" {
 		t.Fatalf("lock order = %v", got)
 	}
 	if err := validateNewOperationEventOrder(script.events); err != nil {
