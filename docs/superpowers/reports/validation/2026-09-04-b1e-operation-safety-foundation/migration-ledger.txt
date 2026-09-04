@@ -45,3 +45,12 @@ second independent QA migration:
 0005 4fc34da357e155c4a04548838153796803f618f0c7199adda17098ef5190cd68
 second independent QA down/up verifier: 1 PASS / 0 FAIL
 signed result sha256: 8780e465351ab7a6da33b6a51f40565c892e07d79fa09916f9ea34a90f84bc8c
+
+post-SPEC fresh databases (specverify service, specserial full, specrace Action race):
+0001 2da41ffd07c44d45cb05a705f867db2f2b8f01defb519000197dedce9998aedd
+0002 58712428ca668fb1fea0943d71a2209b2e7faf26de043d870195a033ac0f413c
+0003 31c49d9bb1f171d9ea6caab49714d9de05552b8f6e9cb73f2989760efd0a015c
+0004 44b5caba0473162c239e6b3035e6d9067e3af0b35e998a79c827a1424621494e
+0005 4fc34da357e155c4a04548838153796803f618f0c7199adda17098ef5190cd68
+specverify/specserial/specrace up/status ledger: PASS
+post-SPEC production verifier and 0005 schema checks: PASS

@@ -88,6 +88,26 @@
       "name": "porsche_b1e_qa7_c71f_test",
       "purpose": "fresh final complete Action race gate",
       "retained_until_container_stop": true
+    },
+    {
+      "name": "porsche_b1e_specfix_c71f_test",
+      "purpose": "SPEC remediation development and RED/GREEN diagnostics",
+      "retained_until_container_stop": true
+    },
+    {
+      "name": "porsche_b1e_specverify_c71f_test",
+      "purpose": "fresh 10-point Execute fault matrix and real service verification",
+      "retained_until_container_stop": true
+    },
+    {
+      "name": "porsche_b1e_specserial_c71f_test",
+      "purpose": "fresh post-SPEC serial full gate",
+      "retained_until_container_stop": true
+    },
+    {
+      "name": "porsche_b1e_specrace_c71f_test",
+      "purpose": "fresh post-SPEC Action race gate",
+      "retained_until_container_stop": true
     }
   ],
   "named_volumes": 0,
@@ -107,7 +127,9 @@
     "nonconforming_directories": 0,
     "nonconforming_regular_files": 0,
     "directories": 515,
-    "regular_files": 5815
+    "regular_files": 5835,
+    "non_0700_directories": 0,
+    "non_0600_regular_files": 0
   },
   "second_independent_qa": {
     "verdict": "QA_PASS",
@@ -115,6 +137,12 @@
     "directories_0700": 515,
     "regular_files_0600": 5813,
     "symlinks": 0,
-    "retained_alive": true
+    "retained_alive": true,
+    "temporal_scope": "PASS before later SPEC_FAIL"
+  },
+  "post_spec_remediation": {
+    "test_commit": "479915c6a2c224bfd1c25ab7054503e19bc05663",
+    "ten_point_execute_fault_matrix": "PASS",
+    "retained_alive_for_fresh_qa": true
   }
 }

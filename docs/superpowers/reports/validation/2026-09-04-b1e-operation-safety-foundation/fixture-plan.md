@@ -27,3 +27,9 @@ After the first independent `QA_FAIL`, the same exact full-ID containers remain 
 ## Second independent QA
 
 The fresh second independent review returned `QA_PASS` for the retained full-ID fixture and reviewed commit `9dbad0512f5c5fa69d7202ab3a3cc2132f0cdc41`. Its signed private result is represented in repository evidence only by SHA-256, verdict, redacted counts, and public fixture identity. Two non-product QA environment setup failures remain archived with the earlier failure history. The fixture remains alive; cleanup and Task 13 remain outside this evidence update.
+
+## Post-QA specification remediation
+
+The second independent `QA_PASS` predates a later `SPEC_FAIL`: five required production `Execute` fault points did not yet have real-MySQL subtests. The remediation adds actor-lock, session-lock, operation-lock, verification-lock and ticket-consume-UPDATE failures as test-only exact-stage injected errors. Every case invokes production `Execute` with fresh identity, operation and ticket rows, proves all preceding locks completed, the injected failure occurred once, later consumer/audit/outbox/terminal SQL did not execute, the outer transaction rolled back, the operation lease stayed unchanged, the verification stayed unconsumed, and fixture effect/audit/outbox tables stayed empty. Together with the five existing real fault points this is a ten-point matrix.
+
+The remediation validation uses fresh task-only MySQL databases and unused Redis logical databases on the retained exact full-ID containers. Failed RED and first-GREEN raw JSON remain private and are represented here only by hashes and aggregate action counts. The five evidence files use explicit `pass_events`, `leaf_pass`, `top_level_pass`, and package counts so Go JSON event counts are not mislabeled as leaf-test counts. The fixture remains alive for fresh remediation QA; Task 13 and cleanup remain forbidden.

@@ -1,5 +1,5 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "frozen_report_date": "2026-09-04",
   "executed_date": "2026-09-05",
   "baseline_commit": "a0056a9013b4d2572058c50c356bc492862ae073",
@@ -38,7 +38,8 @@
     "878cf2bc8f50c41c2355ed0d1a35f50a11f2a8d7",
     "a0e75510a4e245af7d416e2b6146c97315c5c19a",
     "3d63404",
-    "62ea11b"
+    "62ea11b",
+    "479915c6a2c224bfd1c25ab7054503e19bc05663"
   ],
   "commit_process_deviation": {
     "reported_then_replaced": "b54dfc7",
@@ -68,39 +69,59 @@
   ],
   "final": {
     "migration_real": {
+      "pass_events": 1,
       "leaf_pass": 1,
-      "skip": 0,
-      "fail": 0,
+      "top_level_pass": 1,
+      "skip_events": 0,
+      "fail_events": 0,
+      "package_pass": 1,
+      "package_skip": 0,
+      "package_fail": 0,
       "log_sha256": "26e196dce33818ad5bfc4848ea813a6590dde0514d641f4a684ebd917ed8ca4a"
     },
     "service_focused": {
-      "leaf_pass": 26,
-      "skip": 0,
-      "fail": 0,
+      "pass_events": 26,
+      "leaf_pass": 22,
+      "top_level_pass": 7,
+      "skip_events": 0,
+      "fail_events": 0,
+      "package_pass": 1,
+      "package_skip": 0,
+      "package_fail": 0,
       "leaf_names_sha256": "2b41551467a83dcdcc3ad5b2569b27009c3655a552c3fc796ba7e194494642f3",
       "log_sha256": "4f1526c5559d4fd53ddb84b3fc40ded6d4e4f3661da8b02dc435a3e636219a99"
     },
     "service_concurrency_race": {
+      "pass_events": 2,
       "leaf_pass": 2,
-      "skip": 0,
-      "fail": 0,
+      "top_level_pass": 2,
+      "skip_events": 0,
+      "fail_events": 0,
+      "package_pass": 1,
+      "package_skip": 0,
+      "package_fail": 0,
       "log_sha256": "4474bbf5ba94944bd75841feb0d9066a183951cda2ebd70faa0c3d388cae8e30"
     },
     "serial_full": {
-      "leaf_pass": 1114,
-      "skip": 1,
-      "fail": 0,
+      "pass_events": 1114,
+      "leaf_pass": 1012,
+      "top_level_pass": 410,
+      "skip_events": 1,
+      "fail_events": 0,
       "explicit_skip": "TestAdminUsersReadPerformance requires separate 100k authorization",
       "package_pass": 16,
-      "no_test_package_skip": 4,
+      "package_skip": 4,
       "package_fail": 0,
       "log_sha256": "980777580232c42d904a3ba119ff4711bdc7dfd88a6dc4f4c32dff0a6616873e"
     },
     "action_race": {
-      "leaf_pass": 261,
-      "skip": 0,
-      "fail": 0,
+      "pass_events": 261,
+      "leaf_pass": 232,
+      "top_level_pass": 81,
+      "skip_events": 0,
+      "fail_events": 0,
       "package_pass": 2,
+      "package_skip": 0,
       "package_fail": 0,
       "log_sha256": "f1961b2deb1f28dbdf51863b3ddd50edece9ec41acd17d0fd782d81e8ee20be1"
     },
@@ -113,11 +134,17 @@
     },
     "secret_scan": {
       "verdict": "PASS",
-      "target_file_count": 145,
-      "target_manifest_sha256": "543a3e77784c300994aa7689de495bfdf42630fe6d2d2c9960f262a6badea053",
+      "target_file_count": 157,
+      "target_manifest_sha256": "3a17a107eaec9ff4153f7e8ff14e699a2981bec4943e3e0dc103a5b77a900cdf",
       "exact_match_count": 0,
       "generic_unapproved_match_count": 0,
-      "allowlisted_public_operation_reference_count": 1
+      "allowlisted_public_operation_reference_count": 1,
+      "target_manifest_kind": "relative_path_list",
+      "exact_secret_classes": 6,
+      "generic_pattern_classes": 7,
+      "allowlisted_public_operation_reference_unique_count": 1,
+      "matched_lines_stored": 0,
+      "searched_values_stored": 0
     }
   },
   "historical_nonfinal_attempts": [
@@ -190,6 +217,16 @@
       "gate": "second_qa_gocache_environment",
       "status": "ERROR",
       "reason": "second-QA default GOCACHE was not writable in its isolation context; raw log retained and corrected with the private task cache"
+    },
+    {
+      "gate": "spec_fault_matrix_red",
+      "status": "FAIL",
+      "reason": "five required real-MySQL Execute fault subtests were intentionally RED before implementation; raw log retained"
+    },
+    {
+      "gate": "spec_fault_matrix_first_green",
+      "status": "FAIL",
+      "reason": "ticket consume callback tracker did not count allowed record-not-found policy reads as completed prior locks; raw log retained and corrected without relaxing assertions"
     }
   ],
   "private_permissions": {
@@ -198,7 +235,7 @@
     "regular_files_at_first_repair": 2917,
     "non_0700_directories": 0,
     "non_0600_regular_files": 0,
-    "regular_files": 5815,
+    "regular_files": 5835,
     "nonconforming_directories": 0,
     "nonconforming_regular_files": 0
   },
@@ -215,7 +252,7 @@
   "limitations": [
     "production active action registry remains empty",
     "no production consumer, HTTP route, frontend adapter, deployment or production migration was activated",
-    "fixture remains alive for fresh second independent QA"
+    "fixture remains alive for fresh remediation QA"
   ],
   "second_independent_qa": {
     "verdict": "QA_PASS",
@@ -223,16 +260,25 @@
     "reviewed_head": "9dbad0512f5c5fa69d7202ab3a3cc2132f0cdc41",
     "counts": {
       "migration": {
-        "pass": 1,
-        "fail": 0
+        "fail": 0,
+        "pass_events": 1,
+        "leaf_pass": 1,
+        "top_level_pass": 1,
+        "package_pass": 1
       },
       "service_real": {
-        "pass": 26,
-        "fail": 0
+        "fail": 0,
+        "pass_events": 26,
+        "leaf_pass": 22,
+        "top_level_pass": 7,
+        "package_pass": 1
       },
       "service_concurrency": {
-        "pass": 2,
-        "fail": 0
+        "fail": 0,
+        "pass_events": 2,
+        "leaf_pass": 2,
+        "top_level_pass": 2,
+        "package_pass": 1
       },
       "task8_focused": {
         "events": 92,
@@ -251,14 +297,21 @@
         "verdict": "PASS"
       },
       "serial_full": {
-        "pass": 1114,
         "explicit_performance_skip": 1,
-        "fail": 0
+        "fail": 0,
+        "pass_events": 1114,
+        "leaf_pass": 1012,
+        "top_level_pass": 410,
+        "package_pass": 16,
+        "package_skip": 4
       },
       "action_race": {
-        "pass": 261,
         "skip": 0,
-        "fail": 0
+        "fail": 0,
+        "pass_events": 261,
+        "leaf_pass": 232,
+        "top_level_pass": 81,
+        "package_pass": 2
       },
       "route_registry": {
         "pass": 15,
@@ -288,13 +341,146 @@
       "regular_files_0600": 5813,
       "symlinks": 0
     },
-    "fixture_retained_alive": true
+    "fixture_retained_alive": true,
+    "count_semantics": "pass_events count test pass actions and exclude package actions; leaf_pass excludes parent tests; top_level_pass counts passing tests without a slash; signed source values are preserved",
+    "temporal_scope": "QA_PASS was issued before the later SPEC_FAIL identified five missing Execute real-MySQL fault subtests"
   },
   "failure_archive": {
-    "failure_classes": 12,
-    "raw_failure_events": 17,
+    "pre_spec_snapshot": {
+      "failure_classes": 12,
+      "raw_json_files_with_fail_actions": 17,
+      "fail_action_events": 135
+    },
+    "current": {
+      "failure_classes": 14,
+      "raw_json_files_with_fail_actions": 19,
+      "fail_action_events": 145
+    },
     "raw_logs_retained": true,
     "first_qa_fail_retained": true,
-    "commit_process_deviation_retained": true
+    "commit_process_deviation_retained": true,
+    "second_qa_pre_spec_pass_retained": true,
+    "later_spec_fail_retained": true
+  },
+  "spec_fail_after_second_qa": {
+    "verdict": "SPEC_FAIL",
+    "finding": "five real MySQL Execute fault points were absent: actor lock, session lock, operation lock, verification lock and ticket consume UPDATE",
+    "red_proof": {
+      "pass_events": 0,
+      "leaf_pass": 0,
+      "top_level_pass": 0,
+      "fail_action_events": 6,
+      "package_fail_actions": 1,
+      "log_sha256": "f618202e9b7278804dc7af6287f4955c083c519923fb7f8873885912803dc084"
+    },
+    "green_attempt": {
+      "pass_events": 4,
+      "leaf_pass": 4,
+      "top_level_pass": 0,
+      "fail_action_events": 2,
+      "package_fail_actions": 1,
+      "log_sha256": "e798036625440deb13554d121a5091580979335afc93f13c93dbafd5225daa2f"
+    },
+    "remediation_commit": "479915c6a2c224bfd1c25ab7054503e19bc05663",
+    "remediation": "each case invokes production Execute with a fresh operation, ticket and identity; a test-only exact-stage SQL callback injects one fixed sentinel and proves prior locks, no later consumer/audit/outbox/terminal SQL, outer rollback, unchanged processing lease, unconsumed verification and zero fixture effects",
+    "ten_point_matrix": "PASS"
+  },
+  "post_spec_remediation": {
+    "fresh_mysql_databases": [
+      "porsche_b1e_specverify_c71f_test",
+      "porsche_b1e_specserial_c71f_test",
+      "porsche_b1e_specrace_c71f_test"
+    ],
+    "redis_logical_databases": [
+      2,
+      3
+    ],
+    "migration": {
+      "verdict": "PASS",
+      "log_sha256": "e05301ef97b1692a8fa131fc2ddc7334b4a73c5670fcb2822cdcfd158aeee4cf"
+    },
+    "fault_matrix": {
+      "pass_events": 6,
+      "leaf_pass": 5,
+      "top_level_pass": 1,
+      "skip_events": 0,
+      "fail_events": 0,
+      "package_pass": 1,
+      "package_skip": 0,
+      "package_fail": 0,
+      "log_sha256": "feed83c4c03086c069029c38979817bf63d3f3ff226c2256ec0d10253d6bdb44"
+    },
+    "service_real": {
+      "pass_events": 32,
+      "leaf_pass": 27,
+      "top_level_pass": 8,
+      "skip_events": 0,
+      "fail_events": 0,
+      "package_pass": 1,
+      "package_skip": 0,
+      "package_fail": 0,
+      "log_sha256": "0ca46c56223f67f7c761300c0dfe4e77aaba312d2b44dde1adf68b07c5cd20e6"
+    },
+    "service_concurrency_race": {
+      "pass_events": 2,
+      "leaf_pass": 2,
+      "top_level_pass": 2,
+      "skip_events": 0,
+      "fail_events": 0,
+      "package_pass": 1,
+      "package_skip": 0,
+      "package_fail": 0,
+      "log_sha256": "e9436b7a1c901606755b1694db9f4702564df269be3f41a56481f56902518e02"
+    },
+    "serial_full": {
+      "pass_events": 1120,
+      "leaf_pass": 1017,
+      "top_level_pass": 411,
+      "skip_events": 1,
+      "fail_events": 0,
+      "package_pass": 16,
+      "package_skip": 4,
+      "package_fail": 0,
+      "explicit_skip": "TestAdminUsersReadPerformance requires separate 100k authorization",
+      "log_sha256": "67d0fb61f2eed03fec27e3814ffa10efcac8cb95fbdcfa56c14f26944e0f34df"
+    },
+    "action_race": {
+      "pass_events": 267,
+      "leaf_pass": 237,
+      "top_level_pass": 82,
+      "skip_events": 0,
+      "fail_events": 0,
+      "package_pass": 2,
+      "package_skip": 0,
+      "package_fail": 0,
+      "log_sha256": "c903ed05be9e6420b83f44c414a00964ac2a0b76f6ddc3865dff56fab5730f07"
+    },
+    "build": "PASS",
+    "vet": "PASS",
+    "diff_check": "PASS",
+    "source_scan": {
+      "production_test_action_refs": 0,
+      "unique_test_action_definitions": 1
+    },
+    "private_permissions": {
+      "directories_0700": 515,
+      "regular_files_0600": 5835,
+      "symlinks": 0,
+      "nonconforming_directories": 0,
+      "nonconforming_regular_files": 0
+    },
+    "secret_scan": {
+      "verdict": "PASS",
+      "target_file_count": 157,
+      "target_manifest_kind": "relative_path_list",
+      "target_manifest_sha256": "3a17a107eaec9ff4153f7e8ff14e699a2981bec4943e3e0dc103a5b77a900cdf",
+      "exact_secret_classes": 6,
+      "exact_match_count": 0,
+      "generic_pattern_classes": 7,
+      "generic_unapproved_match_count": 0,
+      "allowlisted_public_operation_reference_unique_count": 1,
+      "matched_lines_stored": 0,
+      "searched_values_stored": 0
+    }
   }
 }
