@@ -13,6 +13,9 @@
 B1-E 对 A14 的验收贡献只能标记为 `limited_subscope`。A14 仍是
 `BLOCKED_NOT_IMPLEMENTED`，联合验收的 18 个 blocker 数量不变。
 
+设计勘误（2026-09-04）：迁移必须显式声明两个以 `session_id` 为首列的非唯一外键支撑索引；该修订
+只补全 MySQL 8 DDL 与 verifier 合同，不增加业务查询语义或改变其他已批准设计。
+
 ## 2. 范围
 
 ### 2.1 本切片包含
@@ -171,10 +174,12 @@ production build、冻结目录或权限 catalog。构建与静态扫描必须�
 - `idx_admin_action_verifications_actor_session_active (actor_user_id, session_id, is_deleted, expires_at)`
 - `idx_admin_action_verifications_action_target_active (action, target_kind, target_guid, is_deleted)`
 - `idx_admin_action_verifications_expiry (is_deleted, expires_at)`
+- `fk_admin_action_verifications_session (session_id)`，非唯一外键支撑索引
 
 外键固定为 `fk_admin_action_verifications_actor` 和
 `fk_admin_action_verifications_session`。应用必须另外验证 session 属于 actor；两个独立 FK 不能证明
-二者匹配。
+二者匹配。`fk_admin_action_verifications_session` 作为索引名和外键 constraint symbol 分属 MySQL
+索引与 constraint 命名空间；SQL 必须显式声明两者，不能依赖 MySQL 隐式生成索引。
 
 ### 6.2 `admin_operations`
 
@@ -210,10 +215,14 @@ production build、冻结目录或权限 catalog。构建与静态扫描必须�
 - `idx_admin_operations_state_session (state, session_id, is_deleted, lease_expires_at)`
 - `idx_admin_operations_recovery (state, is_deleted, lease_expires_at)`
 - `idx_admin_operations_expiry (is_deleted, query_expires_at)`
+- `fk_admin_operations_session (session_id)`，非唯一外键支撑索引
 
 外键固定为 `fk_admin_operations_actor`、`fk_admin_operations_session`、
 `fk_admin_operations_verification`。唯一键按 actor/action/key 而不是 session 建立，专门用于检出跨会话
-复用。down 先 drop `admin_operations` 再 drop `admin_action_verifications`；生产回滚不得自动执行 down。
+复用。`fk_admin_operations_session` 作为索引名和外键 constraint symbol 分属 MySQL 索引与 constraint
+命名空间；SQL 必须显式声明两者，不能依赖 MySQL 隐式生成索引。两个 session 支撑索引只满足
+MySQL 8 外键前缀索引要求，不增加业务查询语义。down 先 drop `admin_operations` 再 drop
+`admin_action_verifications`；生产回滚不得自动执行 down。
 
 基础失败枚举固定为 1 `action_rejected`、2 `target_version_conflict`、3
 `policy_version_conflict`、4 `target_state_conflict`、5 `consumer_validation_failed`。整数 1..999 仅由
@@ -468,7 +477,8 @@ POST；只有结果 Query 在 exact action adapter、原 scope 和原 key 都仍
 
 必须验证：
 
-- `0001..0005 up`、`0005 down/up`、schema/FK/index/列类型与数据库规范一致。
+- `0001..0005 up`、`0005 down/up`、schema/FK/index/列类型与数据库规范一致；verifier 必须按第 6 节
+  穷举清单精确核对两个显式 session 支撑索引和两个同名外键 constraint，不能接受隐式索引替代。
 - ticket 300 秒边界、`expires_at == now` 拒绝；lease 30 秒、grace 60 秒的三个时钟边界；30 天结果
   到期及永久 key/ticket 防重用墓碑。
 - 相同 key 并发、不同 payload、相同 ticket 不同 key、跨 session、Refresh 同 session、actor auth
