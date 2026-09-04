@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/porsche/ai-gateway-go/internal/actionsecurity"
+	"github.com/porsche/ai-gateway-go/internal/authz"
 	"github.com/porsche/ai-gateway-go/internal/models"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
@@ -30,11 +31,13 @@ var (
 )
 
 type actionExecuteState struct {
-	operation    models.AdminOperation
-	verification models.AdminActionVerification
-	effects      int
-	audits       int
-	outbox       int
+	operation      models.AdminOperation
+	verification   models.AdminActionVerification
+	effects        int
+	callbackAudits int
+	callbackOutbox int
+	officialAudits int
+	officialOutbox int
 }
 type actionExecuteScript struct {
 	mu            sync.Mutex
@@ -51,6 +54,8 @@ type actionExecuteScript struct {
 	rollbackCount int
 	failAt        string
 	commitUnknown bool
+	lastError     string
+	queryStep     int
 }
 type actionExecuteDriver struct{}
 type actionExecuteConn struct {
@@ -61,6 +66,7 @@ type actionExecuteTx struct {
 	conn      *actionExecuteConn
 	state     actionExecuteState
 	savepoint actionExecuteState
+	lockStep  int
 }
 type actionExecuteRows struct {
 	columns []string
@@ -129,11 +135,23 @@ func (c *actionExecuteConn) CheckNamedValue(value *driver.NamedValue) error {
 	return nil
 }
 
-func (c *actionExecuteConn) QueryContext(_ context.Context, query string, _ []driver.NamedValue) (driver.Rows, error) {
+func (c *actionExecuteConn) QueryContext(_ context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
 	c.script.mu.Lock()
 	defer c.script.mu.Unlock()
 	c.script.queries = append(c.script.queries, query)
 	kind := executeQueryKind(query)
+	if err := validateExecuteQuery(c.script, c.tx, kind, query, args); err != nil {
+		return nil, err
+	}
+	sequenceKind := kind
+	if (kind == "policy" || kind == "rules") && strings.Contains(query, "FOR UPDATE") {
+		sequenceKind += "_lock"
+	}
+	expected := []string{"preflight_operation", "preflight_session", "preflight_actor", "actor", "session", "operation", "verification", "target", "policy_lock", "rules_lock", "policy", "rules"}
+	if c.script.queryStep >= len(expected) || sequenceKind != expected[c.script.queryStep] {
+		return nil, fmt.Errorf("execute query order step %d=%s", c.script.queryStep, sequenceKind)
+	}
+	c.script.queryStep++
 	if c.script.failAt == kind {
 		return nil, errors.New("private scripted query failure")
 	}
@@ -172,6 +190,181 @@ func (c *actionExecuteConn) QueryContext(_ context.Context, query string, _ []dr
 	default:
 		return nil, fmt.Errorf("unexpected execute query: %s", query)
 	}
+}
+
+func validateExecuteQuery(script *actionExecuteScript, tx *actionExecuteTx, kind, query string, args []driver.NamedValue) error {
+	exactSQL := func(want string) error {
+		if query != want {
+			return fmt.Errorf("%s SQL shape mismatch: %s", kind, query)
+		}
+		return nil
+	}
+	require := func(parts ...string) error {
+		for _, part := range parts {
+			if !strings.Contains(query, part) {
+				return fmt.Errorf("%s query missing %q", kind, part)
+			}
+		}
+		return nil
+	}
+	exactArgs := func(want ...any) error {
+		if len(args) != len(want) {
+			return fmt.Errorf("%s args=%d want=%d", kind, len(args), len(want))
+		}
+		for i := range want {
+			if fmt.Sprint(args[i].Value) != fmt.Sprint(want[i]) {
+				return fmt.Errorf("%s arg %d=%v want=%v", kind, i, args[i].Value, want[i])
+			}
+		}
+		return nil
+	}
+	locked := false
+	switch kind {
+	case "preflight_operation":
+		if err := exactSQL("SELECT `id`,`actor_user_id`,`session_id`,`public_ref` FROM `admin_operations` WHERE id = ? ORDER BY `admin_operations`.`id` LIMIT ?"); err != nil {
+			return err
+		}
+		if err := require("SELECT `id`,`actor_user_id`,`session_id`,`public_ref`", "FROM `admin_operations`", "WHERE id = ?", "LIMIT ?"); err != nil {
+			return err
+		}
+		if err := exactArgs(script.state.operation.ID, int64(1)); err != nil {
+			return err
+		}
+	case "preflight_session":
+		if err := exactSQL("SELECT `id`,`sid`,`user_id`,`session_version` FROM `user_sessions` WHERE id = ? ORDER BY `user_sessions`.`id` LIMIT ?"); err != nil {
+			return err
+		}
+		if err := require("SELECT `id`,`sid`,`user_id`,`session_version`", "FROM `user_sessions`", "WHERE id = ?", "LIMIT ?"); err != nil {
+			return err
+		}
+		if err := exactArgs(script.session.ID, int64(1)); err != nil {
+			return err
+		}
+	case "preflight_actor":
+		if err := exactSQL("SELECT `id`,`guid`,`auth_version` FROM `users` WHERE id = ? ORDER BY `users`.`id` LIMIT ?"); err != nil {
+			return err
+		}
+		if err := require("SELECT `id`,`guid`,`auth_version`", "FROM `users`", "WHERE id = ?", "LIMIT ?"); err != nil {
+			return err
+		}
+		if err := exactArgs(script.actor.ID, int64(1)); err != nil {
+			return err
+		}
+	case "actor":
+		locked = true
+		if err := exactSQL("SELECT `id`,`guid`,`password_hash`,`role`,`status`,`is_deleted`,`auth_version` FROM `users` WHERE id = ? ORDER BY `users`.`id` LIMIT ? FOR UPDATE"); err != nil {
+			return err
+		}
+		if err := require("SELECT `id`,`guid`,`password_hash`,`role`,`status`,`is_deleted`,`auth_version`", "FROM `users`", "WHERE id = ?", "LIMIT ?", "FOR UPDATE"); err != nil {
+			return err
+		}
+		if err := exactArgs(script.actor.ID, int64(1)); err != nil {
+			return err
+		}
+	case "session":
+		locked = true
+		if err := exactSQL("SELECT `id`,`guid`,`sid`,`user_id`,`session_version`,`is_deleted`,`revoked_at`,`expires_at` FROM `user_sessions` WHERE user_id = ? AND is_deleted = 0 AND revoked_at IS NULL AND expires_at > ? ORDER BY id ASC FOR UPDATE"); err != nil {
+			return err
+		}
+		if err := require("SELECT `id`,`guid`,`sid`,`user_id`,`session_version`,`is_deleted`,`revoked_at`,`expires_at`", "FROM `user_sessions`", "user_id = ?", "is_deleted = 0", "revoked_at IS NULL", "expires_at > ?", "ORDER BY id ASC", "FOR UPDATE"); err != nil {
+			return err
+		}
+		if err := exactArgs(script.actor.ID, script.now); err != nil {
+			return err
+		}
+	case "operation":
+		locked = true
+		if err := exactSQL("SELECT * FROM `admin_operations` WHERE id = ? ORDER BY `admin_operations`.`id` LIMIT ? FOR UPDATE"); err != nil {
+			return err
+		}
+		if err := require("SELECT * FROM `admin_operations`", "WHERE id = ?", "LIMIT ?", "FOR UPDATE"); err != nil {
+			return err
+		}
+		if err := exactArgs(script.state.operation.ID, int64(1)); err != nil {
+			return err
+		}
+	case "verification":
+		locked = true
+		if err := exactSQL("SELECT * FROM `admin_action_verifications` WHERE id = ? ORDER BY `admin_action_verifications`.`id` LIMIT ? FOR UPDATE"); err != nil {
+			return err
+		}
+		if err := require("SELECT * FROM `admin_action_verifications`", "WHERE id = ?", "LIMIT ?", "FOR UPDATE"); err != nil {
+			return err
+		}
+		if err := exactArgs(script.state.verification.ID, int64(1)); err != nil {
+			return err
+		}
+	case "target":
+		locked = true
+		if err := exactSQL("SELECT `id`,`guid`,`role`,`status`,`is_deleted`,`auth_version` FROM `users` WHERE guid = ? AND is_deleted = 0 ORDER BY `users`.`id` LIMIT ? FOR UPDATE"); err != nil {
+			return err
+		}
+		if err := require("SELECT `id`,`guid`,`role`,`status`,`is_deleted`,`auth_version`", "FROM `users`", "guid = ?", "is_deleted = 0", "LIMIT ?", "FOR UPDATE"); err != nil {
+			return err
+		}
+		if err := exactArgs(script.target.Guid, int64(1)); err != nil {
+			return err
+		}
+	case "policy":
+		if strings.Contains(query, "FOR UPDATE") {
+			locked = true
+			if err := exactSQL("SELECT `id` FROM `user_permission_heads` WHERE user_id = ? ORDER BY `user_permission_heads`.`id` LIMIT ? FOR UPDATE"); err != nil {
+				return err
+			}
+			if err := require("SELECT `id`", "WHERE user_id = ?", "LIMIT ?", "FOR UPDATE"); err != nil {
+				return err
+			}
+			if err := exactArgs(script.actor.ID, int64(1)); err != nil {
+				return err
+			}
+		} else {
+			if err := exactSQL("SELECT `id`,`guid`,`is_deleted`,`policy_version`,`catalog_version`,`rule_count` FROM `user_permission_heads` WHERE user_id = ? ORDER BY `user_permission_heads`.`id` LIMIT ?"); err != nil {
+				return err
+			}
+			if err := require("WHERE user_id = ?", "LIMIT ?"); err != nil {
+				return err
+			}
+			if err := exactArgs(script.actor.ID, int64(1)); err != nil {
+				return err
+			}
+		}
+	case "rules":
+		if strings.Contains(query, "FOR UPDATE") {
+			locked = true
+			if err := exactSQL("SELECT `id` FROM `user_permission_overrides` WHERE user_id = ? ORDER BY id ASC FOR UPDATE"); err != nil {
+				return err
+			}
+			if err := require("SELECT `id`", "WHERE user_id = ?", "ORDER BY id ASC", "FOR UPDATE"); err != nil {
+				return err
+			}
+			if err := exactArgs(script.actor.ID); err != nil {
+				return err
+			}
+		} else {
+			if err := exactSQL("SELECT `id`,`guid`,`is_deleted`,`policy_version`,`capability`,`effect` FROM `user_permission_overrides` WHERE user_id = ? AND is_deleted <> 1 ORDER BY capability LIMIT ?"); err != nil {
+				return err
+			}
+			if err := require("WHERE user_id = ? AND is_deleted <> 1", "ORDER BY capability", "LIMIT ?"); err != nil {
+				return err
+			}
+			if err := exactArgs(script.actor.ID, int64(len(authz.Catalog())+1)); err != nil {
+				return err
+			}
+		}
+	default:
+		return errors.New("unrecognized execute query")
+	}
+	if locked {
+		if tx == nil {
+			return fmt.Errorf("%s lock outside transaction", kind)
+		}
+		order := []string{"actor", "session", "operation", "verification", "target", "policy", "rules"}
+		if tx.lockStep >= len(order) || kind != order[tx.lockStep] {
+			return fmt.Errorf("lock order step %d=%s", tx.lockStep, kind)
+		}
+		tx.lockStep++
+	}
+	return nil
 }
 
 func executeQueryKind(query string) string {
@@ -218,6 +411,10 @@ func (c *actionExecuteConn) ExecContext(_ context.Context, query string, args []
 			kind = "terminal_failed"
 		}
 	}
+	if err := validateExecuteExec(c.script, c.tx, kind, query, args); err != nil {
+		c.script.lastError = err.Error()
+		return nil, err
+	}
 	if c.script.failAt == kind {
 		return nil, errors.New("private scripted write failure")
 	}
@@ -226,7 +423,7 @@ func (c *actionExecuteConn) ExecContext(_ context.Context, query string, args []
 	}
 	switch kind {
 	case "consume":
-		if c.tx.state.verification.ConsumedAt != nil || c.tx.state.verification.IsDeleted != 0 {
+		if c.tx.state.verification.ConsumedAt != nil || c.tx.state.verification.IsDeleted != 0 || c.tx.state.verification.ExpiresAt <= c.script.now {
 			return actionExecuteResult(0), nil
 		}
 		consumed := c.script.now
@@ -237,10 +434,14 @@ func (c *actionExecuteConn) ExecContext(_ context.Context, query string, args []
 		c.tx.state = c.tx.savepoint
 	case "effect":
 		c.tx.state.effects++
-	case "audit":
-		c.tx.state.audits++
-	case "outbox":
-		c.tx.state.outbox++
+	case "callback_audit":
+		c.tx.state.callbackAudits++
+	case "callback_outbox":
+		c.tx.state.callbackOutbox++
+	case "official_audit":
+		c.tx.state.officialAudits++
+	case "official_outbox":
+		c.tx.state.officialOutbox++
 	case "terminal_success", "terminal_failed":
 		if c.tx.state.operation.State != models.OperationProcessing {
 			return actionExecuteResult(0), nil
@@ -264,6 +465,132 @@ func (c *actionExecuteConn) ExecContext(_ context.Context, query string, args []
 	return actionExecuteResult(1), nil
 }
 
+func validateExecuteExec(script *actionExecuteScript, tx *actionExecuteTx, kind, query string, args []driver.NamedValue) error {
+	if tx == nil {
+		return errors.New("execute write outside owned transaction")
+	}
+	require := func(parts ...string) error {
+		for _, part := range parts {
+			if !strings.Contains(query, part) {
+				return fmt.Errorf("%s write missing %q", kind, part)
+			}
+		}
+		return nil
+	}
+	exactArgs := func(want ...any) error {
+		if len(args) != len(want) {
+			return fmt.Errorf("%s args=%d want=%d", kind, len(args), len(want))
+		}
+		for i := range want {
+			if fmt.Sprint(args[i].Value) != fmt.Sprint(want[i]) {
+				return fmt.Errorf("%s arg %d=%v want=%v", kind, i, args[i].Value, want[i])
+			}
+		}
+		return nil
+	}
+	exactSQL := func(want string) error {
+		if query != want {
+			return fmt.Errorf("%s SQL shape mismatch: %s", kind, query)
+		}
+		return nil
+	}
+	switch kind {
+	case "consume":
+		if err := exactSQL("UPDATE `admin_action_verifications` SET `consumed_at`=?,`is_deleted`=?,`updated_at`=?,`updated_by`=? WHERE id = ? AND consumed_at IS NULL AND expires_at > ? AND is_deleted = 0"); err != nil {
+			return err
+		}
+		if err := require("UPDATE `admin_action_verifications`", "`consumed_at`=?", "`is_deleted`=?", "`updated_at`=?", "`updated_by`=?", "id = ? AND consumed_at IS NULL AND expires_at > ? AND is_deleted = 0"); err != nil {
+			return err
+		}
+		return exactArgs(script.now, int64(1), script.now, script.actor.ID, script.state.verification.ID, script.now)
+	case "savepoint":
+		if query != "SAVEPOINT "+actionExecuteSavepoint {
+			return errors.New("wrong callback savepoint")
+		}
+		return exactArgs()
+	case "rollback_to":
+		if query != "ROLLBACK TO SAVEPOINT "+actionExecuteSavepoint {
+			return errors.New("wrong callback rollback-to")
+		}
+		return exactArgs()
+	case "effect", "callback_audit", "callback_outbox":
+		wantSQL := map[string]string{
+			"effect":          "INSERT INTO fixture_action_effects (operation_ref) VALUES (?)",
+			"callback_audit":  "INSERT INTO fixture_action_callback_audits (operation_ref) VALUES (?)",
+			"callback_outbox": "INSERT INTO fixture_action_callback_outbox (operation_ref) VALUES (?)",
+		}
+		if err := exactSQL(wantSQL[kind]); err != nil {
+			return err
+		}
+		return exactArgs(script.state.operation.PublicRef)
+	case "official_audit", "official_outbox":
+		wantSQL := map[string]string{
+			"official_audit":  "INSERT INTO fixture_action_official_audits (operation_ref, state) VALUES (?, ?)",
+			"official_outbox": "INSERT INTO fixture_action_official_outbox (operation_ref, state) VALUES (?, ?)",
+		}
+		if err := exactSQL(wantSQL[kind]); err != nil {
+			return err
+		}
+		if len(args) != 2 || fmt.Sprint(args[0].Value) != script.state.operation.PublicRef {
+			return fmt.Errorf("%s redacted args invalid", kind)
+		}
+		return nil
+	case "terminal_success", "terminal_failed":
+		if err := exactSQL("UPDATE `admin_operations` SET `error_code`=?,`finished_at`=?,`lease_expires_at`=?,`lease_owner_hmac`=?,`query_expires_at`=?,`result_guid`=?,`result_http_status`=?,`result_kind`=?,`state`=?,`updated_at`=?,`updated_by`=? WHERE id = ? AND state = ? AND is_deleted = 0 AND lease_owner_hmac = ? AND verification_id = ?"); err != nil {
+			return err
+		}
+		if err := require("UPDATE `admin_operations`", "id = ? AND state = ? AND is_deleted = 0 AND lease_owner_hmac = ? AND verification_id = ?"); err != nil {
+			return err
+		}
+		values, err := operationUpdateValues(query, args)
+		if err != nil {
+			return err
+		}
+		if len(values) != 11 {
+			return fmt.Errorf("terminal assignments=%d", len(values))
+		}
+		for _, key := range []string{"state", "finished_at", "query_expires_at", "lease_owner_hmac", "lease_expires_at", "error_code", "result_kind", "result_guid", "result_http_status", "updated_at", "updated_by"} {
+			if _, ok := values[key]; !ok {
+				return fmt.Errorf("terminal write missing assignment %s", key)
+			}
+		}
+		wantState := models.OperationSucceeded
+		wantFailure, wantKind, wantStatus := any(nil), any(int64(models.ResultNone)), any(int64(204))
+		if kind == "terminal_failed" {
+			wantState, wantFailure, wantKind, wantStatus = models.OperationFailed, int64(models.FailureActionRejected), nil, int64(409)
+		}
+		want := map[string]any{"state": int64(wantState), "finished_at": script.now, "query_expires_at": script.now + actionOperationQueryRetentionMS,
+			"lease_owner_hmac": nil, "lease_expires_at": nil, "error_code": wantFailure, "result_kind": wantKind, "result_guid": nil,
+			"result_http_status": wantStatus, "updated_at": script.now, "updated_by": script.actor.ID}
+		for key, expected := range want {
+			if fmt.Sprint(values[key]) != fmt.Sprint(expected) {
+				return fmt.Errorf("terminal %s=%v want=%v", key, values[key], expected)
+			}
+		}
+		assignments := len(values)
+		if len(args) != assignments+4 {
+			return fmt.Errorf("terminal tail args=%d", len(args)-assignments)
+		}
+		tail := args[assignments:]
+		lease := script.state.operation.LeaseOwnerHMAC
+		if lease == nil {
+			return errors.New("terminal expected lease missing")
+		}
+		wantTail := []any{script.state.operation.ID, int64(models.OperationProcessing), *lease, script.state.verification.ID}
+		if len(tail) != len(wantTail) {
+			return fmt.Errorf("terminal selector tail=%v", tail)
+		}
+		for i := range tail {
+			if fmt.Sprint(tail[i].Value) != fmt.Sprint(wantTail[i]) {
+				return fmt.Errorf("terminal selector %d=%v want=%v", i, tail[i].Value, wantTail[i])
+			}
+		}
+		return nil
+	default:
+		return fmt.Errorf("unknown execute write kind %s", kind)
+	}
+}
+
 func executeExecKind(query string) string {
 	switch {
 	case strings.HasPrefix(query, "UPDATE `admin_action_verifications`"):
@@ -274,10 +601,14 @@ func executeExecKind(query string) string {
 		return "rollback_to"
 	case strings.Contains(query, "fixture_action_effects"):
 		return "effect"
-	case strings.Contains(query, "fixture_action_audits"):
-		return "audit"
-	case strings.Contains(query, "fixture_action_outbox"):
-		return "outbox"
+	case strings.Contains(query, "fixture_action_callback_audits"):
+		return "callback_audit"
+	case strings.Contains(query, "fixture_action_callback_outbox"):
+		return "callback_outbox"
+	case strings.Contains(query, "fixture_action_official_audits"):
+		return "official_audit"
+	case strings.Contains(query, "fixture_action_official_outbox"):
+		return "official_outbox"
 	case strings.HasPrefix(query, "UPDATE `admin_operations`"):
 		return "terminal"
 	default:
@@ -393,9 +724,9 @@ func TestActionExecuteSucceededAtomicAndLockOrder(t *testing.T) {
 	consumer := &fixtureActionConsumer{outcome: TerminalOutcome{ResultKind: models.ResultNone, HTTPStatus: 204}}
 	view, err := service.Execute(context.Background(), identity, consumer, &fixtureActionAuditWriter{}, &fixtureActionOutboxWriter{})
 	if err != nil || view == nil || view.Status != "succeeded" {
-		t.Fatalf("Execute = %#v, %v queries=%v execs=%v", view, err, script.queries, script.execs)
+		t.Fatalf("Execute = %#v, %v validation=%s queries=%v execs=%v", view, err, script.lastError, script.queries, script.execs)
 	}
-	if consumer.calls != 1 || script.state.effects != 1 || script.state.audits != 1 || script.state.outbox != 1 || script.state.operation.State != models.OperationSucceeded {
+	if consumer.calls != 1 || script.state.effects != 1 || script.state.callbackAudits != 1 || script.state.callbackOutbox != 1 || script.state.officialAudits != 1 || script.state.officialOutbox != 1 || script.state.operation.State != models.OperationSucceeded {
 		t.Fatalf("non-atomic success: %#v", script.state)
 	}
 	locked := make([]string, 0)
@@ -417,7 +748,7 @@ func TestActionExecuteKnownRejectionRollsBackCallbackSavepoint(t *testing.T) {
 	if err != nil || view == nil || view.Status != "failed" {
 		t.Fatalf("rejection = %#v, %v", view, err)
 	}
-	if script.state.effects != 0 || script.state.audits != 1 || script.state.outbox != 1 || script.state.operation.State != models.OperationFailed || script.state.verification.ConsumedAt == nil {
+	if script.state.effects != 0 || script.state.callbackAudits != 0 || script.state.callbackOutbox != 0 || script.state.officialAudits != 1 || script.state.officialOutbox != 1 || script.state.operation.State != models.OperationFailed || script.state.verification.ConsumedAt == nil {
 		t.Fatalf("rejection atomicity=%#v", script.state)
 	}
 	if !containsExecuteKind(script.execs, "savepoint") || !containsExecuteKind(script.execs, "rollback_to") {
@@ -426,7 +757,7 @@ func TestActionExecuteKnownRejectionRollsBackCallbackSavepoint(t *testing.T) {
 }
 
 func TestActionExecuteFaultMatrixRollsBackWithoutFalseTerminal(t *testing.T) {
-	for _, point := range []string{"actor", "session", "operation", "verification", "target", "policy", "rules", "consume", "savepoint", "effect", "audit", "outbox", "terminal_success"} {
+	for _, point := range []string{"actor", "session", "operation", "verification", "target", "policy", "rules", "consume", "savepoint", "effect", "callback_audit", "callback_outbox", "official_audit", "official_outbox", "terminal_success"} {
 		t.Run(point, func(t *testing.T) {
 			service, script, identity := actionExecuteFixture(t)
 			script.failAt = point
@@ -434,7 +765,7 @@ func TestActionExecuteFaultMatrixRollsBackWithoutFalseTerminal(t *testing.T) {
 			if view != nil || !errors.Is(err, ErrActionOperationUnavailable) {
 				t.Fatalf("fault %s=%#v,%v", point, view, err)
 			}
-			if script.state.operation.State != models.OperationProcessing || script.state.verification.ConsumedAt != nil || script.state.effects != 0 || script.state.audits != 0 || script.state.outbox != 0 {
+			if !executeStateIsPristine(script.state) {
 				t.Fatalf("fault %s committed %#v", point, script.state)
 			}
 		})
@@ -444,8 +775,18 @@ func TestActionExecuteFaultMatrixRollsBackWithoutFalseTerminal(t *testing.T) {
 		script.failAt = "terminal_failed"
 		failure := models.FailureActionRejected
 		view, err := service.Execute(context.Background(), identity, &fixtureActionConsumer{outcome: TerminalOutcome{Failure: &failure, HTTPStatus: 409}}, &fixtureActionAuditWriter{}, &fixtureActionOutboxWriter{})
-		if view != nil || !errors.Is(err, ErrActionOperationUnavailable) || script.state.operation.State != models.OperationProcessing || script.state.verification.ConsumedAt != nil || script.state.effects != 0 || script.state.audits != 0 || script.state.outbox != 0 {
+		if view != nil || !errors.Is(err, ErrActionOperationUnavailable) || !executeStateIsPristine(script.state) {
 			t.Fatalf("failed-terminal fault=%#v %v %#v", view, err, script.state)
+		}
+	})
+	t.Run("rollback_to", func(t *testing.T) {
+		service, script, identity := actionExecuteFixture(t)
+		script.failAt = "rollback_to"
+		failure := models.FailureActionRejected
+		consumer := &fixtureActionConsumer{outcome: TerminalOutcome{Failure: &failure, HTTPStatus: 409}}
+		view, err := service.Execute(context.Background(), identity, consumer, &fixtureActionAuditWriter{}, &fixtureActionOutboxWriter{})
+		if view != nil || !errors.Is(err, ErrActionOperationUnavailable) || consumer.calls != 1 || !executeStateIsPristine(script.state) || script.rollbackCount != 1 {
+			t.Fatalf("rollback-to fault=%#v %v calls=%d state=%#v rollbacks=%d", view, err, consumer.calls, script.state, script.rollbackCount)
 		}
 	})
 }
@@ -462,6 +803,11 @@ func TestActionExecuteCommitUnknownDoesNotReplayCallback(t *testing.T) {
 	if strings.Contains(err.Error(), "private") || script.beginCount != 1 || script.state.operation.State != models.OperationSucceeded {
 		t.Fatalf("commit unknown leaked/replayed: %v %#v", err, script.state)
 	}
+}
+
+func executeStateIsPristine(state actionExecuteState) bool {
+	return state.operation.State == models.OperationProcessing && state.verification.ConsumedAt == nil && state.verification.IsDeleted == 0 &&
+		state.effects == 0 && state.callbackAudits == 0 && state.callbackOutbox == 0 && state.officialAudits == 0 && state.officialOutbox == 0
 }
 
 func TestActionExecuteRejectsWrongLeaseExpiredAndNonProcessing(t *testing.T) {
@@ -521,9 +867,65 @@ func TestActionExecuteCorruptBindingsAndCallbackErrorsFailClosed(t *testing.T) {
 	} {
 		service, script, identity := actionExecuteFixture(t)
 		view, err := service.Execute(context.Background(), identity, consumer, &fixtureActionAuditWriter{}, &fixtureActionOutboxWriter{})
-		if view != nil || !errors.Is(err, ErrActionOperationUnavailable) || strings.Contains(err.Error(), "private") || consumer.calls != 1 || script.state.effects != 0 || script.state.verification.ConsumedAt != nil || script.state.operation.State != models.OperationProcessing {
+		if view != nil || !errors.Is(err, ErrActionOperationUnavailable) || strings.Contains(err.Error(), "private") || consumer.calls != 1 || !executeStateIsPristine(script.state) {
 			t.Fatalf("callback failure leaked/committed: %#v %v %#v", view, err, script.state)
 		}
+	}
+}
+
+func TestActionExecuteScriptRejectsWeakSelectorsWrongArgsAndLockOrder(t *testing.T) {
+	_, script, _ := actionExecuteFixture(t)
+	named := func(values ...any) []driver.NamedValue {
+		result := make([]driver.NamedValue, len(values))
+		for i := range values {
+			result[i] = driver.NamedValue{Ordinal: i + 1, Value: values[i]}
+		}
+		return result
+	}
+	queryCases := []struct {
+		name  string
+		kind  string
+		step  int
+		query string
+		args  []driver.NamedValue
+	}{
+		{name: "actor lacks lock", kind: "actor", query: "SELECT * FROM `users` WHERE id = ? LIMIT ?", args: named(script.actor.ID, int64(1))},
+		{name: "session raw sid", kind: "session", step: 1, query: "SELECT * FROM `user_sessions` WHERE sid = ? FOR UPDATE", args: named(script.session.SID)},
+		{name: "operation wrong id", kind: "operation", step: 2, query: "SELECT * FROM `admin_operations` WHERE id = ? LIMIT ? FOR UPDATE", args: named(int64(99), int64(1))},
+		{name: "verification lacks lock", kind: "verification", step: 3, query: "SELECT * FROM `admin_action_verifications` WHERE id = ? LIMIT ?", args: named(script.state.verification.ID, int64(1))},
+		{name: "target wrong guid", kind: "target", step: 4, query: "SELECT * FROM `users` WHERE guid = ? AND is_deleted = 0 LIMIT ? FOR UPDATE", args: named(int64(99), int64(1))},
+		{name: "policy wrong actor", kind: "policy", step: 5, query: "SELECT `id` FROM `user_permission_heads` WHERE user_id = ? LIMIT ? FOR UPDATE", args: named(int64(99), int64(1))},
+	}
+	for _, tc := range queryCases {
+		t.Run(tc.name, func(t *testing.T) {
+			tx := &actionExecuteTx{state: script.state, lockStep: tc.step}
+			if err := validateExecuteQuery(script, tx, tc.kind, tc.query, tc.args); err == nil {
+				t.Fatal("weak selector accepted")
+			}
+		})
+	}
+	tx := &actionExecuteTx{state: script.state}
+	actorQuery := "SELECT `id`,`guid`,`password_hash`,`role`,`status`,`is_deleted`,`auth_version` FROM `users` WHERE id = ? ORDER BY `users`.`id` LIMIT ? FOR UPDATE"
+	if err := validateExecuteQuery(script, tx, "actor", actorQuery, named(script.actor.ID, int64(1))); err != nil {
+		t.Fatal(err)
+	}
+	operationQuery := "SELECT * FROM `admin_operations` WHERE id = ? ORDER BY `admin_operations`.`id` LIMIT ? FOR UPDATE"
+	if err := validateExecuteQuery(script, tx, "operation", operationQuery, named(script.state.operation.ID, int64(1))); err == nil {
+		t.Fatal("out-of-order lock accepted")
+	}
+
+	execTx := &actionExecuteTx{state: script.state}
+	badConsume := "UPDATE `admin_action_verifications` SET `consumed_at`=?,`is_deleted`=?,`updated_at`=?,`updated_by`=? WHERE id = ? AND is_deleted = 0"
+	if err := validateExecuteExec(script, execTx, "consume", badConsume, named(script.now, int64(1), script.now, script.actor.ID, script.state.verification.ID)); err == nil {
+		t.Fatal("weakened consume accepted")
+	}
+	goodConsume := "UPDATE `admin_action_verifications` SET `consumed_at`=?,`is_deleted`=?,`updated_at`=?,`updated_by`=? WHERE id = ? AND consumed_at IS NULL AND expires_at > ? AND is_deleted = 0"
+	if err := validateExecuteExec(script, execTx, "consume", goodConsume, named(script.now, int64(1), script.now, script.actor.ID, script.state.verification.ID, script.now+1)); err == nil {
+		t.Fatal("wrong consume finalNow accepted")
+	}
+	badTerminal := "UPDATE `admin_operations` SET `state`=? WHERE id = ? AND state = ?"
+	if err := validateExecuteExec(script, execTx, "terminal_success", badTerminal, named(int64(models.OperationSucceeded), script.state.operation.ID, int64(models.OperationProcessing))); err == nil {
+		t.Fatal("weakened terminal selector accepted")
 	}
 }
 

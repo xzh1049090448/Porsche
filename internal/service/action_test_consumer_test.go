@@ -19,6 +19,12 @@ func (consumer *fixtureActionConsumer) Execute(ctx context.Context, tx *gorm.DB,
 	if err := tx.WithContext(ctx).Exec("INSERT INTO fixture_action_effects (operation_ref) VALUES (?)", operation.PublicRef).Error; err != nil {
 		return TerminalOutcome{}, err
 	}
+	if err := tx.WithContext(ctx).Exec("INSERT INTO fixture_action_callback_audits (operation_ref) VALUES (?)", operation.PublicRef).Error; err != nil {
+		return TerminalOutcome{}, err
+	}
+	if err := tx.WithContext(ctx).Exec("INSERT INTO fixture_action_callback_outbox (operation_ref) VALUES (?)", operation.PublicRef).Error; err != nil {
+		return TerminalOutcome{}, err
+	}
 	if consumer.err != nil {
 		return TerminalOutcome{}, consumer.err
 	}
@@ -32,7 +38,7 @@ func (writer *fixtureActionAuditWriter) Write(ctx context.Context, tx *gorm.DB, 
 	if event.PublicRef == "" || event.ActorGUID <= 0 || event.SessionGUID <= 0 || event.OccurredAt <= 0 {
 		return errors.New("invalid redacted audit event")
 	}
-	return tx.WithContext(ctx).Exec("INSERT INTO fixture_action_audits (operation_ref, state) VALUES (?, ?)", event.PublicRef, event.State).Error
+	return tx.WithContext(ctx).Exec("INSERT INTO fixture_action_official_audits (operation_ref, state) VALUES (?, ?)", event.PublicRef, event.State).Error
 }
 
 type fixtureActionOutboxWriter struct{ calls int }
@@ -42,5 +48,5 @@ func (writer *fixtureActionOutboxWriter) Write(ctx context.Context, tx *gorm.DB,
 	if event.PublicRef == "" || event.ActorGUID <= 0 || event.SessionGUID <= 0 || event.OccurredAt <= 0 {
 		return errors.New("invalid redacted outbox event")
 	}
-	return tx.WithContext(ctx).Exec("INSERT INTO fixture_action_outbox (operation_ref, state) VALUES (?, ?)", event.PublicRef, event.State).Error
+	return tx.WithContext(ctx).Exec("INSERT INTO fixture_action_official_outbox (operation_ref, state) VALUES (?, ?)", event.PublicRef, event.State).Error
 }
