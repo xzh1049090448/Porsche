@@ -34,7 +34,11 @@ func (s *ActionOperationService) executeWithRunner(ctx context.Context, identity
 	if identity == nil {
 		return nil, ErrActionOperationUnavailable
 	}
-	defer clear(identity.LeaseOwner[:])
+	leaseOwner, ok := identity.capability.take()
+	if !ok {
+		return nil, ErrActionOperationUnavailable
+	}
+	defer clear(leaseOwner[:])
 	if s == nil || ctx == nil || identity.ID <= 0 || len(identity.PublicRef) != 46 || operationInterfaceNil(consumer) ||
 		operationInterfaceNil(audit) || operationInterfaceNil(outbox) || operationInterfaceNil(runner) || !validOperationActorClaims(identity.actor) {
 		return nil, ErrActionOperationUnavailable
@@ -67,8 +71,8 @@ func (s *ActionOperationService) executeWithRunner(ctx context.Context, identity
 			operation.LeaseOwnerHMAC == nil || operation.LeaseExpiresAt == nil || !constantTimeOperationStringEqual(operation.PublicRef, identity.PublicRef) {
 			return ErrActionOperationForbidden
 		}
-		leaseDigest := s.crypto.LeaseOwnerDigest(identity.LeaseOwner)
-		clear(identity.LeaseOwner[:])
+		leaseDigest := s.crypto.LeaseOwnerDigest(leaseOwner)
+		clear(leaseOwner[:])
 		leaseHex := hex.EncodeToString(leaseDigest[:])
 		clear(leaseDigest[:])
 		if !constantTimeOperationStringEqual(*operation.LeaseOwnerHMAC, leaseHex) {

@@ -622,10 +622,11 @@ func (tx *actionExecuteTx) Commit() error {
 	s := tx.conn.script
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.state, tx.conn.tx = tx.state, nil
 	if s.commitUnknown {
+		tx.conn.tx = nil
 		return errors.New("private commit acknowledgement failure")
 	}
+	s.state, tx.conn.tx = tx.state, nil
 	s.commitCount++
 	return nil
 }
@@ -718,8 +719,13 @@ func actionExecuteFixture(t *testing.T) (*ActionOperationService, *actionExecute
 	if err != nil {
 		t.Fatal(err)
 	}
-	return service, script, &OperationIdentity{ID: operation.ID, PublicRef: publicRef, LeaseOwner: leaseOwner,
-		actor: ActionActor{UserID: actor.ID, UserGUID: actor.Guid, AuthVersion: actor.AuthVersion, SessionSID: session.SID, SessionVersion: session.SessionVersion}}
+	identity := &OperationIdentity{ID: operation.ID, PublicRef: publicRef,
+		actor:      ActionActor{UserID: actor.ID, UserGUID: actor.Guid, AuthVersion: actor.AuthVersion, SessionSID: session.SID, SessionVersion: session.SessionVersion},
+		capability: newOperationLeaseCapability(&leaseOwner)}
+	if identity.capability == nil {
+		t.Fatal("fixture lease capability is nil")
+	}
+	return service, script, identity
 }
 
 func TestActionExecuteSucceededAtomicAndLockOrder(t *testing.T) {
@@ -814,18 +820,24 @@ func TestActionExecuteFaultMatrixRollsBackWithoutFalseTerminal(t *testing.T) {
 
 func TestActionExecuteCommitUnknownDoesNotReplayCallback(t *testing.T) {
 	service, script, identity := actionExecuteFixture(t)
+	copyOne, copyTwo := *identity, *identity
 	script.commitUnknown = true
 	consumer := &fixtureActionConsumer{outcome: TerminalOutcome{ResultKind: models.ResultNone, HTTPStatus: 204}}
-	view, err := service.Execute(context.Background(), identity, consumer, &fixtureActionAuditWriter{}, &fixtureActionOutboxWriter{})
+	view, err := service.Execute(context.Background(), &copyOne, consumer, &fixtureActionAuditWriter{}, &fixtureActionOutboxWriter{})
 	var unknown *CommitUnknownError
 	if view != nil || !errors.As(err, &unknown) || unknown.PublicRef != identity.PublicRef || consumer.calls != 1 {
 		t.Fatalf("commit unknown=%#v %#v calls=%d", view, err, consumer.calls)
 	}
-	if strings.Contains(err.Error(), "private") || script.beginCount != 1 || script.state.operation.State != models.OperationSucceeded {
+	if strings.Contains(err.Error(), "private") || script.beginCount != 1 || !executeStateIsPristine(script.state) {
 		t.Fatalf("commit unknown leaked/replayed: %v %#v", err, script.state)
 	}
 	if !operationLeaseCleared(identity) {
 		t.Fatal("commit unknown retained caller lease")
+	}
+	for name, retry := range map[string]*OperationIdentity{"original": identity, "copy": &copyTwo} {
+		if retryView, retryErr := service.Execute(context.Background(), retry, consumer, &fixtureActionAuditWriter{}, &fixtureActionOutboxWriter{}); retryView != nil || !errors.Is(retryErr, ErrActionOperationUnavailable) || consumer.calls != 1 {
+			t.Fatalf("%s replay = %#v %v calls=%d", name, retryView, retryErr, consumer.calls)
+		}
 	}
 }
 
@@ -836,7 +848,11 @@ func executeStateIsPristine(state actionExecuteState) bool {
 
 func TestActionExecuteRejectsWrongLeaseExpiredAndNonProcessing(t *testing.T) {
 	mutations := []func(*actionExecuteScript, *OperationIdentity){
-		func(_ *actionExecuteScript, identity *OperationIdentity) { identity.LeaseOwner[0] ^= 0xff },
+		func(_ *actionExecuteScript, identity *OperationIdentity) {
+			identity.capability.mu.Lock()
+			identity.capability.raw[0] ^= 0xff
+			identity.capability.mu.Unlock()
+		},
 		func(script *actionExecuteScript, _ *OperationIdentity) {
 			expiry := script.now
 			script.state.operation.LeaseExpiresAt = &expiry
@@ -1023,24 +1039,66 @@ func TestActionExecuteNilPrevalidationAndConsumedIdentityCannotReplay(t *testing
 	if view, err := invalidService.Execute(context.Background(), invalid, consumer, &fixtureActionAuditWriter{}, &fixtureActionOutboxWriter{}); view != nil || !errors.Is(err, ErrActionOperationUnavailable) || !operationLeaseCleared(invalid) || consumer.calls != 0 || invalidScript.beginCount != 0 {
 		t.Fatalf("prevalidation = %#v %v", view, err)
 	}
-	if view, err := service.Execute(context.Background(), identity, consumer, &fixtureActionAuditWriter{}, &fixtureActionOutboxWriter{}); err != nil || view == nil || consumer.calls != 1 || !operationLeaseCleared(identity) {
+	manual := &OperationIdentity{ID: identity.ID, PublicRef: identity.PublicRef, actor: identity.actor}
+	if view, err := service.Execute(context.Background(), manual, consumer, &fixtureActionAuditWriter{}, &fixtureActionOutboxWriter{}); view != nil || !errors.Is(err, ErrActionOperationUnavailable) || consumer.calls != 0 || script.beginCount != 0 {
+		t.Fatalf("manual identity = %#v %v", view, err)
+	}
+	zeroCapability := &OperationIdentity{ID: identity.ID, PublicRef: identity.PublicRef, actor: identity.actor, capability: &operationLeaseCapability{}}
+	if view, err := service.Execute(context.Background(), zeroCapability, consumer, &fixtureActionAuditWriter{}, &fixtureActionOutboxWriter{}); view != nil || !errors.Is(err, ErrActionOperationUnavailable) || !operationLeaseCleared(zeroCapability) || consumer.calls != 0 || script.beginCount != 0 {
+		t.Fatalf("zero identity = %#v %v", view, err)
+	}
+	firstCopy, secondCopy, thirdCopy := *identity, *identity, *identity
+	if view, err := service.Execute(context.Background(), &firstCopy, consumer, &fixtureActionAuditWriter{}, &fixtureActionOutboxWriter{}); err != nil || view == nil || consumer.calls != 1 || !operationLeaseCleared(identity) {
 		t.Fatalf("first Execute = %#v %v", view, err)
 	}
-	if view, err := service.Execute(context.Background(), identity, consumer, &fixtureActionAuditWriter{}, &fixtureActionOutboxWriter{}); view != nil || err == nil || consumer.calls != 1 || !operationLeaseCleared(identity) {
-		t.Fatalf("consumed identity replay = %#v %v calls=%d", view, err, consumer.calls)
+	for name, retry := range map[string]*OperationIdentity{"original": identity, "copy": &secondCopy, "more_copy": &thirdCopy} {
+		if view, err := service.Execute(context.Background(), retry, consumer, &fixtureActionAuditWriter{}, &fixtureActionOutboxWriter{}); view != nil || !errors.Is(err, ErrActionOperationUnavailable) || consumer.calls != 1 || !operationLeaseCleared(retry) {
+			t.Fatalf("%s consumed identity replay = %#v %v calls=%d", name, view, err, consumer.calls)
+		}
+	}
+}
+
+func TestActionExecuteConcurrentShallowCopiesEnterConsumerOnce(t *testing.T) {
+	service, script, identity := actionExecuteFixture(t)
+	copyOne, copyTwo := *identity, *identity
+	consumer := &fixtureActionConsumer{outcome: TerminalOutcome{ResultKind: models.ResultNone, HTTPStatus: 204}}
+	type executeResult struct {
+		view *OperationView
+		err  error
+	}
+	start := make(chan struct{})
+	results := make(chan executeResult, 2)
+	for _, candidate := range []*OperationIdentity{&copyOne, &copyTwo} {
+		go func(candidate *OperationIdentity) {
+			<-start
+			view, err := service.Execute(context.Background(), candidate, consumer, &fixtureActionAuditWriter{}, &fixtureActionOutboxWriter{})
+			results <- executeResult{view: view, err: err}
+		}(candidate)
+	}
+	close(start)
+	succeeded, rejected := 0, 0
+	for range 2 {
+		result := <-results
+		if result.err == nil && result.view != nil && result.view.Status == "succeeded" {
+			succeeded++
+		} else if result.view == nil && errors.Is(result.err, ErrActionOperationUnavailable) {
+			rejected++
+		} else {
+			t.Fatalf("unexpected concurrent result: %#v %v", result.view, result.err)
+		}
+	}
+	if succeeded != 1 || rejected != 1 || consumer.calls != 1 || script.beginCount != 1 || !operationLeaseCleared(identity) {
+		t.Fatalf("concurrent Execute succeeded=%d rejected=%d calls=%d begins=%d", succeeded, rejected, consumer.calls, script.beginCount)
 	}
 }
 
 func operationLeaseCleared(identity *OperationIdentity) bool {
-	if identity == nil {
+	if identity == nil || identity.capability == nil {
 		return true
 	}
-	for _, value := range identity.LeaseOwner {
-		if value != 0 {
-			return false
-		}
-	}
-	return true
+	identity.capability.mu.Lock()
+	defer identity.capability.mu.Unlock()
+	return identity.capability.consumed && operationLeaseIsZero(&identity.capability.raw)
 }
 
 func TestActionExecuteScriptRejectsWeakSelectorsWrongArgsAndLockOrder(t *testing.T) {

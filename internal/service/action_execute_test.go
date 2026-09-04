@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -55,28 +57,57 @@ func TestCommitUnknownErrorRedactsCause(t *testing.T) {
 }
 
 func TestActionExecuteIdentityKeepsClaimsPrivateAndRedacted(t *testing.T) {
-	identity := &OperationIdentity{ID: 1, PublicRef: "op_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", actor: ActionActor{UserID: 2, UserGUID: 3, AuthVersion: 4, SessionSID: "11111111-2222-4333-8444-555555555555", SessionVersion: 5}}
-	for i := range identity.LeaseOwner {
-		identity.LeaseOwner[i] = byte(i + 1)
+	raw := [32]byte{}
+	for i := range raw {
+		raw[i] = byte(i + 1)
+	}
+	identity := &OperationIdentity{ID: 1, PublicRef: "op_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", actor: ActionActor{UserID: 2, UserGUID: 3, AuthVersion: 4, SessionSID: "11111111-2222-4333-8444-555555555555", SessionVersion: 5}, capability: newOperationLeaseCapability(&raw)}
+	if !operationLeaseIsZero(&raw) || identity.capability == nil {
+		t.Fatal("lease capability constructor did not move and clear raw input")
 	}
 	if !validOperationActorClaims(identity.actor) {
 		t.Fatal("private actor binding lost")
 	}
-	formatted := identity.String() + identity.GoString()
-	if strings.Contains(formatted, identity.actor.SessionSID) || strings.Contains(formatted, "LeaseOwner") || strings.Contains(formatted, "actor") || strings.Contains(formatted, "ID:") {
-		t.Fatalf("identity formatting leaked private claims: %s", formatted)
+	canonical := `OperationIdentity{PublicRef:"op_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}`
+	for _, subject := range []any{*identity, identity} {
+		for _, format := range []string{"%v", "%+v", "%#v", "%s", "%q"} {
+			got := fmt.Sprintf(format, subject)
+			want := canonical
+			if format == "%q" {
+				want = strconv.Quote(canonical)
+			}
+			if got != want || strings.Contains(got, identity.actor.SessionSID) || strings.Contains(got, "actor") || strings.Contains(got, "capability") || strings.Contains(got, "ID:") || strings.Contains(got, "[1 2") {
+				t.Fatalf("fmt.Sprintf(%q) = %q, want safe %q", format, got, want)
+			}
+		}
 	}
-	encoded, err := json.Marshal(identity)
-	if err != nil {
-		t.Fatal(err)
+	if identity.String() != canonical || identity.GoString() != canonical || (*identity).String() != canonical || (*identity).GoString() != canonical {
+		t.Fatalf("identity formatting = %q / %q", identity.String(), identity.GoString())
 	}
 	expectedJSON := `{"public_ref":"op_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}`
-	if string(encoded) != expectedJSON || strings.Contains(string(encoded), identity.actor.SessionSID) || strings.Contains(string(encoded), "actor") || strings.Contains(string(encoded), "LeaseOwner") || strings.Contains(string(encoded), "ID") || strings.Contains(string(encoded), "[") {
-		t.Fatalf("identity JSON is not exact public_ref only: %s", encoded)
+	for _, subject := range []any{*identity, identity} {
+		encoded, err := json.Marshal(subject)
+		if err != nil || string(encoded) != expectedJSON {
+			t.Fatalf("identity JSON = %s, %v", encoded, err)
+		}
 	}
-	expectedString := `OperationIdentity{PublicRef:"op_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}`
-	if identity.String() != expectedString || identity.GoString() != expectedString {
-		t.Fatalf("identity formatting = %q / %q", identity.String(), identity.GoString())
+	valueNested, err := json.Marshal(struct {
+		Identity OperationIdentity `json:"identity"`
+	}{Identity: *identity})
+	if err != nil || string(valueNested) != `{"identity":`+expectedJSON+`}` {
+		t.Fatalf("nested value JSON = %s, %v", valueNested, err)
+	}
+	pointerNested, err := json.Marshal(struct {
+		Identity *OperationIdentity `json:"identity"`
+	}{Identity: identity})
+	if err != nil || string(pointerNested) != `{"identity":`+expectedJSON+`}` {
+		t.Fatalf("nested pointer JSON = %s, %v", pointerNested, err)
+	}
+	identity.capability.mu.Lock()
+	stillReady := !identity.capability.consumed && !operationLeaseIsZero(&identity.capability.raw)
+	identity.capability.mu.Unlock()
+	if !stillReady {
+		t.Fatal("formatting or JSON consumed the lease capability")
 	}
 }
 
@@ -94,6 +125,12 @@ func TestActionOperationBeginBindsExactActorClaimsForExecute(t *testing.T) {
 			}
 			if identity.actor != actor {
 				t.Fatalf("Begin actor binding = %#v, want exact claims", identity.actor)
+			}
+			if existing && identity.capability != nil {
+				t.Fatal("existing Begin unexpectedly returned an executable capability")
+			}
+			if !existing && identity.capability == nil {
+				t.Fatal("new Begin omitted executable capability")
 			}
 			if strings.Contains(identity.String()+identity.GoString(), actor.SessionSID) {
 				t.Fatal("Begin identity formatting leaked SID")

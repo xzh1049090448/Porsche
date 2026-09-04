@@ -574,8 +574,14 @@ func TestActionOperationBeginDBScriptEnforcesLockOrderAndSecretFreeSQL(t *testin
 	if err != nil {
 		t.Fatalf("Begin: %v", err)
 	}
-	if identity == nil || identity.ID != 30 || identity.PublicRef == "" || identity.LeaseOwner == [32]byte{} {
+	if identity == nil || identity.ID != 30 || identity.PublicRef == "" || identity.capability == nil {
 		t.Fatalf("identity = %#v", identity)
+	}
+	identity.capability.mu.Lock()
+	capabilityReady := !identity.capability.consumed && !operationLeaseIsZero(&identity.capability.raw)
+	identity.capability.mu.Unlock()
+	if !capabilityReady {
+		t.Fatal("Begin did not return a ready one-shot lease capability")
 	}
 	if view == nil || view.Status != "processing" || view.Scope != "test.noop" || view.RetryAfterSeconds != 30 {
 		t.Fatalf("view = %#v", view)

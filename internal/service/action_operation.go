@@ -12,6 +12,8 @@ import (
 	"io"
 	"math"
 	"reflect"
+	"strconv"
+	"sync"
 
 	mysqlDriver "github.com/go-sql-driver/mysql"
 	"github.com/porsche/ai-gateway-go/internal/actionsecurity"
@@ -48,29 +50,81 @@ type OperationBegin struct {
 }
 
 type OperationIdentity struct {
-	ID         int64    `json:"-"`
-	PublicRef  string   `json:"public_ref"`
-	LeaseOwner [32]byte `json:"-"`
+	ID         int64  `json:"-"`
+	PublicRef  string `json:"public_ref"`
 	actor      ActionActor
+	capability *operationLeaseCapability
 }
 
 // OperationIdentity is an in-memory handoff from Begin to Execute. It cannot
 // be serialized and reconstructed because Execute must retain the exact actor
-// claims presented to Begin and compare them with freshly locked state.
+// claims presented to Begin and a shared, one-shot lease capability. Shallow
+// copies share that capability, so at most one Execute call can consume it.
 
-func (identity *OperationIdentity) String() string {
-	if identity == nil {
-		return "OperationIdentity{PublicRef:\"\"}"
-	}
-	return fmt.Sprintf("OperationIdentity{PublicRef:%q}", identity.PublicRef)
+type operationLeaseCapability struct {
+	mu       sync.Mutex
+	raw      [32]byte
+	consumed bool
 }
 
-func (identity *OperationIdentity) GoString() string { return identity.String() }
-
-func (identity *OperationIdentity) MarshalJSON() ([]byte, error) {
-	if identity == nil {
-		return []byte("null"), nil
+func newOperationLeaseCapability(raw *[32]byte) *operationLeaseCapability {
+	if raw == nil || operationLeaseIsZero(raw) {
+		return nil
 	}
+	capability := &operationLeaseCapability{raw: *raw}
+	clear(raw[:])
+	return capability
+}
+
+func (capability *operationLeaseCapability) take() ([32]byte, bool) {
+	if capability == nil {
+		return [32]byte{}, false
+	}
+	capability.mu.Lock()
+	defer capability.mu.Unlock()
+	if capability.consumed || operationLeaseIsZero(&capability.raw) {
+		capability.consumed = true
+		clear(capability.raw[:])
+		return [32]byte{}, false
+	}
+	leaseOwner := capability.raw
+	clear(capability.raw[:])
+	capability.consumed = true
+	return leaseOwner, true
+}
+
+func (capability *operationLeaseCapability) discard() {
+	if capability == nil {
+		return
+	}
+	capability.mu.Lock()
+	clear(capability.raw[:])
+	capability.consumed = true
+	capability.mu.Unlock()
+}
+
+func operationLeaseIsZero(raw *[32]byte) bool {
+	var zero [32]byte
+	return raw == nil || subtle.ConstantTimeCompare(raw[:], zero[:]) == 1
+}
+
+func (identity OperationIdentity) safeString() string {
+	return "OperationIdentity{PublicRef:" + strconv.Quote(identity.PublicRef) + "}"
+}
+
+func (identity OperationIdentity) String() string { return identity.safeString() }
+
+func (identity OperationIdentity) GoString() string { return identity.safeString() }
+
+func (identity OperationIdentity) Format(state fmt.State, verb rune) {
+	formatted := identity.safeString()
+	if verb == 'q' {
+		formatted = strconv.Quote(formatted)
+	}
+	_, _ = io.WriteString(state, formatted)
+}
+
+func (identity OperationIdentity) MarshalJSON() ([]byte, error) {
 	return json.Marshal(struct {
 		PublicRef string `json:"public_ref"`
 	}{PublicRef: identity.PublicRef})
@@ -317,14 +371,16 @@ func (s *ActionOperationService) Begin(ctx context.Context, in OperationBegin) (
 		operation.UpdatedAt = finalNow
 		operation.LeaseExpiresAt = &leaseExpires
 		operation.QueryExpiresAt = queryExpires
-		identity = &OperationIdentity{ID: operation.ID, PublicRef: publicRef, LeaseOwner: leaseOwner, actor: in.Actor}
-		clear(leaseOwner[:])
+		identity = &OperationIdentity{ID: operation.ID, PublicRef: publicRef, actor: in.Actor, capability: newOperationLeaseCapability(&leaseOwner)}
+		if identity.capability == nil {
+			return ErrActionOperationUnavailable
+		}
 		view = operationView(descriptor, operation, finalNow)
 		return nil
 	}, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		if identity != nil {
-			clear(identity.LeaseOwner[:])
+			identity.capability.discard()
 			identity = nil
 		}
 		return nil, nil, mapOperationError(err)

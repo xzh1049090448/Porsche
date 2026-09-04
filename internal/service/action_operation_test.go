@@ -807,7 +807,7 @@ func TestActionOperationBeginCommitFailureReturnsNoLeaseIdentity(t *testing.T) {
 	if readErr != nil {
 		t.Fatal(readErr)
 	}
-	if !bytes.Contains(source, []byte("clear(identity.LeaseOwner[:])")) || !bytes.Contains(source, []byte("clear(leaseOwner[:])")) {
+	if !bytes.Contains(source, []byte("identity.capability.discard()")) || !bytes.Contains(source, []byte("clear(raw[:])")) || !bytes.Contains(source, []byte("clear(leaseOwner[:])")) {
 		t.Fatal("lease owner cleanup is not explicit on success and transaction error")
 	}
 }
