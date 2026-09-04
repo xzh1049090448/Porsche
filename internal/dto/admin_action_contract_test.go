@@ -213,6 +213,9 @@ func TestAdminActionFutureContractDocumentMatchesFrozenFixtures(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := validateFutureContractRawTokens(documentBytes); err != nil {
+		t.Fatalf("validate raw contract token stream: %v", err)
+	}
 	var document futureContractDocument
 	decoder := json.NewDecoder(bytes.NewReader(documentBytes))
 	decoder.DisallowUnknownFields()
@@ -365,6 +368,153 @@ func TestAdminActionFutureContractRawShapeRejectsSchemaMutations(t *testing.T) {
 				t.Fatal("mutated contract shape was accepted")
 			}
 		})
+	}
+}
+
+func TestAdminActionFutureContractRawTokensRejectDuplicateKeysAndInvalidRoots(t *testing.T) {
+	original, err := os.ReadFile(adminActionContractPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validateFutureContractRawTokens(original); err != nil {
+		t.Fatalf("original contract token stream rejected: %v", err)
+	}
+
+	mutations := []struct {
+		name        string
+		oldFragment string
+		newFragment string
+	}{
+		{
+			name:        "duplicate root status with same value",
+			oldFragment: "  \"status\": \"inactive_contract\",",
+			newFragment: "  \"status\": \"inactive_contract\",\n  \"status\": \"inactive_contract\",",
+		},
+		{
+			name:        "duplicate root status with conflicting value",
+			oldFragment: "  \"status\": \"inactive_contract\",",
+			newFragment: "  \"status\": \"inactive_contract\",\n  \"status\": \"active\",",
+		},
+		{
+			name:        "duplicate nested implementation boolean",
+			oldFragment: "    \"handler_exists\": false,",
+			newFragment: "    \"handler_exists\": false,\n    \"handler_exists\": false,",
+		},
+		{
+			name:        "duplicate nested nullable field",
+			oldFragment: "        \"finished_at\": null,",
+			newFragment: "        \"finished_at\": null,\n        \"finished_at\": 1790000000000,",
+		},
+		{
+			name:        "duplicate object key inside array item",
+			oldFragment: "        \"status\": 400,",
+			newFragment: "        \"status\": 400,\n        \"status\": 401,",
+		},
+	}
+	for _, mutation := range mutations {
+		t.Run(mutation.name, func(t *testing.T) {
+			if bytes.Count(original, []byte(mutation.oldFragment)) != 1 {
+				t.Fatalf("test mutation fragment is not unique: %q", mutation.oldFragment)
+			}
+			candidate := bytes.Replace(original, []byte(mutation.oldFragment), []byte(mutation.newFragment), 1)
+			if err := validateFutureContractRawTokens(candidate); err == nil {
+				t.Fatal("duplicate-key token stream was accepted")
+			}
+		})
+	}
+
+	invalidRoots := []struct {
+		name      string
+		candidate []byte
+	}{
+		{name: "trailing second root", candidate: append(append([]byte(nil), original...), []byte("\n{}")...)},
+		{name: "truncated root", candidate: append([]byte(nil), original[:len(original)-2]...)},
+		{name: "object key without value", candidate: []byte(`{"status":}`)},
+	}
+	for _, mutation := range invalidRoots {
+		t.Run(mutation.name, func(t *testing.T) {
+			if err := validateFutureContractRawTokens(mutation.candidate); err == nil {
+				t.Fatal("invalid token stream was accepted")
+			}
+		})
+	}
+}
+
+func validateFutureContractRawTokens(contents []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(contents))
+	decoder.UseNumber()
+	if err := validateFutureJSONTokenValue(decoder, "$"); err != nil {
+		return err
+	}
+	if _, err := decoder.Token(); err == nil {
+		return fmt.Errorf("$ has a trailing root value")
+	} else if err != io.EOF {
+		return fmt.Errorf("$ has invalid trailing token: %w", err)
+	}
+	return nil
+}
+
+func validateFutureJSONTokenValue(decoder *json.Decoder, path string) error {
+	token, err := decoder.Token()
+	if err != nil {
+		return fmt.Errorf("%s is missing or invalid: %w", path, err)
+	}
+	delimiter, isDelimiter := token.(json.Delim)
+	if !isDelimiter {
+		switch token.(type) {
+		case nil, bool, string, json.Number:
+			return nil
+		default:
+			return fmt.Errorf("%s has unsupported primitive type %T", path, token)
+		}
+	}
+
+	switch delimiter {
+	case '{':
+		seen := make(map[string]struct{})
+		for decoder.More() {
+			keyToken, err := decoder.Token()
+			if err != nil {
+				return fmt.Errorf("%s has invalid object key: %w", path, err)
+			}
+			key, ok := keyToken.(string)
+			if !ok {
+				return fmt.Errorf("%s has non-string object key", path)
+			}
+			if _, duplicate := seen[key]; duplicate {
+				return fmt.Errorf("%s has duplicate key %q", path, key)
+			}
+			seen[key] = struct{}{}
+			if err := validateFutureJSONTokenValue(decoder, path+"."+key); err != nil {
+				return err
+			}
+		}
+		closing, err := decoder.Token()
+		if err != nil {
+			return fmt.Errorf("%s object is not closed: %w", path, err)
+		}
+		if closing != json.Delim('}') {
+			return fmt.Errorf("%s object has mismatched closing delimiter", path)
+		}
+		return nil
+	case '[':
+		index := 0
+		for decoder.More() {
+			if err := validateFutureJSONTokenValue(decoder, fmt.Sprintf("%s[%d]", path, index)); err != nil {
+				return err
+			}
+			index++
+		}
+		closing, err := decoder.Token()
+		if err != nil {
+			return fmt.Errorf("%s array is not closed: %w", path, err)
+		}
+		if closing != json.Delim(']') {
+			return fmt.Errorf("%s array has mismatched closing delimiter", path)
+		}
+		return nil
+	default:
+		return fmt.Errorf("%s starts with unexpected closing delimiter", path)
 	}
 }
 
@@ -647,6 +797,9 @@ func cloneFutureContractTree(t *testing.T, original map[string]any) map[string]a
 
 func decodeFutureContractTree(t *testing.T, contents []byte) map[string]any {
 	t.Helper()
+	if err := validateFutureContractRawTokens(contents); err != nil {
+		t.Fatal(err)
+	}
 	var document map[string]any
 	decoder := json.NewDecoder(bytes.NewReader(contents))
 	decoder.UseNumber()
