@@ -182,35 +182,28 @@ func TestDeleteUserExecutionKnownConflictsHaveZeroWrites(t *testing.T) {
 	}
 }
 
-func TestDeleteUserExecutionAcceptsDisabledAdminAndStillGuardsEmptyRelations(t *testing.T) {
+func TestDeleteUserExecutionRejectsDisabledStateDriftBeforeMutations(t *testing.T) {
 	db, script := newDeleteConsumerDB(t)
 	script.target.Role = models.UserRoleAdmin
 	script.target.Status = models.UserStatusDisabled
-	script.sessions = nil
-	script.tokens = nil
-	script.heads = nil
-	script.overrides = nil
-	execution := newDeleteConsumerExecution(t, deleteWriterIntent(), &deleteConsumerClock{now: 8_001}, func() int64 { return 7_001 })
+	execution := newDeleteConsumerExecution(t, deleteWriterIntent(), &deleteConsumerClock{now: 8_001}, func() int64 {
+		t.Fatal("GUID generator called after state drift")
+		return 0
+	})
 	tx := db.Begin()
 	outcome, err := execution.Execute(context.Background(), tx, validDeleteConsumerOperation())
-	if err != nil || outcome.Failure != nil || outcome.ResultGUID == nil || *outcome.ResultGUID != 6_001 {
+	if err != nil || outcome.Failure == nil || *outcome.Failure != models.FailureTargetStateConflict || outcome.HTTPStatus != 409 ||
+		outcome.ResultKind != 0 || outcome.ResultGUID != nil {
 		t.Fatalf("outcome/error = %#v/%v", outcome, err)
 	}
-	if err := tx.Commit().Error; err != nil {
+	if err := tx.Rollback().Error; err != nil {
 		t.Fatal(err)
 	}
-	wantKinds := []string{
-		"query:users", "query:user_sessions", "query:gateway_api_tokens", "query:user_permission_heads", "query:user_permission_overrides",
-		"exec:user_sessions", "exec:gateway_api_tokens", "exec:user_permission_heads", "exec:user_permission_overrides", "exec:users", "exec:auth_audit_events",
+	if got := script.queryCount(); got != 1 {
+		t.Fatalf("queries = %d, want target lock only", got)
 	}
-	if got := deleteConsumerCallKinds(script.committedCalls()); fmt.Sprint(got) != fmt.Sprint(wantKinds) {
-		t.Fatalf("empty relation guards = %v, want %v", got, wantKinds)
-	}
-	execution.state.mu.Lock()
-	facts := execution.state.facts
-	execution.state.mu.Unlock()
-	if facts.beforeStatus != models.UserStatusDisabled {
-		t.Fatalf("before status = %v, want disabled", facts.beforeStatus)
+	if got := script.execCount(); got != 0 {
+		t.Fatalf("state drift issued %d mutations: %v", got, script.allCalls())
 	}
 }
 

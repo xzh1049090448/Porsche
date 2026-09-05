@@ -151,7 +151,7 @@ func deleteConsumerOperationValid(operation models.AdminOperation) bool {
 
 func deleteConsumerTargetStateAllowed(target models.User) bool {
 	return (target.Role == models.UserRoleUser || target.Role == models.UserRoleAdmin) &&
-		(target.Status == models.UserStatusActive || target.Status == models.UserStatusDisabled)
+		target.Status == models.UserStatusActive
 }
 
 func deleteConsumerFailure(value models.AdminOperationFailure) TerminalOutcome {
