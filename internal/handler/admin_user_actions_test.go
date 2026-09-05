@@ -1,9 +1,12 @@
 package handler
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -12,9 +15,22 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/porsche/ai-gateway-go/internal/actionsecurity"
 	"github.com/porsche/ai-gateway-go/internal/config"
+	"github.com/porsche/ai-gateway-go/internal/dto"
 	"github.com/porsche/ai-gateway-go/internal/models"
 	"github.com/porsche/ai-gateway-go/internal/service"
 )
+
+type actionTestErrorBody struct {
+	Code         string `json:"code"`
+	Message      string `json:"message"`
+	Type         string `json:"type"`
+	RequestID    string `json:"request_id"`
+	OperationRef string `json:"operation_ref,omitempty"`
+}
+
+type actionTestErrorEnvelope struct {
+	Error actionTestErrorBody `json:"error"`
+}
 
 const (
 	testActionKey    = "ik_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
@@ -109,6 +125,35 @@ func performActionRequest(engine http.Handler, method, path, body string, header
 	return rec
 }
 
+func decodeActionTestResponse[T any](t *testing.T, rec *httptest.ResponseRecorder) T {
+	t.Helper()
+	var value T
+	decoder := json.NewDecoder(bytes.NewReader(rec.Body.Bytes()))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&value); err != nil {
+		t.Fatalf("response decode failed: body_length=%d", rec.Body.Len())
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		t.Fatalf("response had trailing data: body_length=%d", rec.Body.Len())
+	}
+	return value
+}
+
+func assertActionTestExactBody(t *testing.T, rec *httptest.ResponseRecorder, want string) {
+	t.Helper()
+	if !bytes.Equal(rec.Body.Bytes(), []byte(want)) {
+		t.Fatalf("response bytes differed: body_length=%d", rec.Body.Len())
+	}
+}
+
+func assertActionTestNoMarker(t *testing.T, rec *httptest.ResponseRecorder, marker string) {
+	t.Helper()
+	if bytes.Contains(rec.Body.Bytes(), []byte(marker)) {
+		t.Fatal("response contained prohibited marker")
+	}
+}
+
 func TestAdminUserActionIssueBuildsTrustedInputAndExactSuccess(t *testing.T) {
 	backend := &scriptedUserDeleteBackend{issued: &service.IssuedVerification{Ticket: testActionTicket, ExpiresAt: 1790000300000}}
 	settings := &config.Settings{TrustProxyHeaders: true, TrustedProxyCIDRs: "192.0.2.0/24"}
@@ -116,11 +161,16 @@ func TestAdminUserActionIssueBuildsTrustedInputAndExactSuccess(t *testing.T) {
 	body := `{"action":"users.delete","intent":{"target_guid":"123","expected_auth_version":7,"reason":"  duplicate account  "},"current_password":"actor-secret"}`
 	headers := http.Header{"X-Request-ID": {"request-1"}, "X-Forwarded-For": {"203.0.113.8"}}
 	rec := performActionRequest(engine, http.MethodPost, "/admin/v2/action-verifications", body, headers)
-	if rec.Code != http.StatusCreated || rec.Body.String() != `{"ticket":"`+testActionTicket+`","expires_at":1790000300000}` {
-		t.Fatalf("status/body=%d %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("issue status=%d body_length=%d", rec.Code, rec.Body.Len())
 	}
+	response := decodeActionTestResponse[dto.UserDeleteIssueResponse](t, rec)
+	if response.Ticket != testActionTicket || response.ExpiresAt != 1790000300000 {
+		t.Fatal("issue response safe fields differed")
+	}
+	assertActionTestExactBody(t, rec, `{"ticket":"`+testActionTicket+`","expires_at":1790000300000}`)
 	if rec.Header().Get("Cache-Control") != "no-store" || rec.Header().Get("X-Request-ID") != "request-1" {
-		t.Fatalf("security headers differ: cache=%q request_id=%q", rec.Header().Get("Cache-Control"), rec.Header().Get("X-Request-ID"))
+		t.Fatalf("security header match: cache=%t request_id=%t", rec.Header().Get("Cache-Control") == "no-store", rec.Header().Get("X-Request-ID") == "request-1")
 	}
 	wantPasswordDigest := sha256.Sum256([]byte("actor-secret"))
 	if backend.issueCalls != 1 || !backend.issueInputMatches || backend.issuePasswordLength != len("actor-secret") || backend.issuePasswordDigest != wantPasswordDigest {
@@ -135,8 +185,12 @@ func TestAdminUserActionIssueRejectsAnySensitiveHeadersBeforeService(t *testing.
 		backend := &scriptedUserDeleteBackend{}
 		engine := newScriptedUserDeleteEngine(t, backend, &config.Settings{})
 		rec := performActionRequest(engine, http.MethodPost, "/admin/v2/action-verifications", `{}`, headers)
-		if rec.Code != 400 || backend.issueCalls != 0 || !strings.Contains(rec.Body.String(), `"code":"invalid_admin_action_request"`) {
-			t.Fatalf("sensitive header shape result: status=%d calls=%d body=%s", rec.Code, backend.issueCalls, rec.Body.String())
+		if rec.Code != 400 || backend.issueCalls != 0 {
+			t.Fatalf("sensitive header shape result: status=%d calls=%d body_length=%d", rec.Code, backend.issueCalls, rec.Body.Len())
+		}
+		response := decodeActionTestResponse[actionTestErrorEnvelope](t, rec)
+		if response.Error.Code != "invalid_admin_action_request" {
+			t.Fatalf("error code=%q want=%q", response.Error.Code, "invalid_admin_action_request")
 		}
 	}
 }
@@ -152,9 +206,14 @@ func TestAdminUserActionExecuteUsesRawHeadersOnceAndDoesNotReplay(t *testing.T) 
 	body := `{"action":"delete","expected_auth_version":7,"reason":" duplicate account "}`
 	headers := http.Header{"Idempotency-Key": {testActionKey}, "X-Action-Ticket": {testActionTicket}, "X-Request-ID": {"request-2"}}
 	rec := performActionRequest(engine, http.MethodPost, "/admin/v2/users/123/actions", body, headers)
-	if rec.Code != 200 || rec.Body.String() != `{"operation_ref":"`+testOperationRef+`","user":{"guid":"123","status":"deleted"}}` {
-		t.Fatalf("status/body=%d %s", rec.Code, rec.Body.String())
+	if rec.Code != 200 {
+		t.Fatalf("execute status=%d body_length=%d", rec.Code, rec.Body.Len())
 	}
+	response := decodeActionTestResponse[dto.DeleteUserResponse](t, rec)
+	if response.OperationRef != testOperationRef || response.User.GUID != "123" || response.User.Status != "deleted" {
+		t.Fatal("execute response safe fields differed")
+	}
+	assertActionTestExactBody(t, rec, `{"operation_ref":"`+testOperationRef+`","user":{"guid":"123","status":"deleted"}}`)
 	if backend.beginCalls != 1 || backend.executeCalls != 1 || !backend.beginInputMatches {
 		t.Fatalf("execute observation mismatch: begin_calls=%d execute_calls=%d input_match=%t", backend.beginCalls, backend.executeCalls, backend.beginInputMatches)
 	}
@@ -179,8 +238,14 @@ func TestAdminUserActionExecuteExistingViewsNeverExecute(t *testing.T) {
 			backend := &scriptedUserDeleteBackend{identity: &service.OperationIdentity{PublicRef: testOperationRef}, beginView: test.view}
 			engine := newScriptedUserDeleteEngine(t, backend, &config.Settings{})
 			rec := performActionRequest(engine, http.MethodPost, "/admin/v2/users/123/actions", `{"action":"delete","expected_auth_version":7,"reason":"reason"}`, http.Header{"Idempotency-Key": {testActionKey}, "X-Action-Ticket": {testActionTicket}})
-			if rec.Code != test.wantStatus || backend.executeCalls != 0 || (test.wantCode != "" && !strings.Contains(rec.Body.String(), `"code":"`+test.wantCode+`"`)) {
-				t.Fatalf("status/body/execute=%d %s %d", rec.Code, rec.Body.String(), backend.executeCalls)
+			if rec.Code != test.wantStatus || backend.executeCalls != 0 {
+				t.Fatalf("existing view result: status=%d want_status=%d execute_calls=%d body_length=%d", rec.Code, test.wantStatus, backend.executeCalls, rec.Body.Len())
+			}
+			if test.wantCode != "" {
+				response := decodeActionTestResponse[actionTestErrorEnvelope](t, rec)
+				if response.Error.Code != test.wantCode {
+					t.Fatalf("error code=%q want=%q", response.Error.Code, test.wantCode)
+				}
 			}
 		})
 	}
@@ -190,26 +255,36 @@ func TestAdminUserActionQueryIsExactAndSetsRetryAfterOnlyForProcessing(t *testin
 	backend := &scriptedUserDeleteBackend{queryView: &service.OperationView{PublicRef: testOperationRef, Scope: "users.delete", Status: "processing", RetryAfterSeconds: 7}}
 	engine := newScriptedUserDeleteEngine(t, backend, &config.Settings{})
 	rec := performActionRequest(engine, http.MethodGet, "/admin/v2/operations?scope=users.delete", "", http.Header{"Idempotency-Key": {testActionKey}})
-	if rec.Code != 200 || rec.Header().Get("Retry-After") != "7" || rec.Body.String() != `{"operation_ref":"`+testOperationRef+`","scope":"users.delete","status":"processing","finished_at":null,"failure_code":null}` || backend.queryCalls != 1 {
-		t.Fatalf("query result mismatch: status=%d retry_after=%q calls=%d body=%s", rec.Code, rec.Header().Get("Retry-After"), backend.queryCalls, rec.Body.String())
+	if rec.Code != 200 || rec.Header().Get("Retry-After") != "7" || backend.queryCalls != 1 {
+		t.Fatalf("query result mismatch: status=%d retry_after=%q calls=%d body_length=%d", rec.Code, rec.Header().Get("Retry-After"), backend.queryCalls, rec.Body.Len())
 	}
+	response := decodeActionTestResponse[dto.UserDeleteQueryResponse](t, rec)
+	if response.OperationRef != testOperationRef || response.Scope != "users.delete" || response.Status != "processing" || response.FinishedAt != nil || response.FailureCode != nil {
+		t.Fatal("processing query response safe fields differed")
+	}
+	assertActionTestExactBody(t, rec, `{"operation_ref":"`+testOperationRef+`","scope":"users.delete","status":"processing","finished_at":null,"failure_code":null}`)
 	if !backend.queryInputMatches {
 		t.Fatal("query input observation mismatch")
 	}
-	for _, path := range []string{"/admin/v2/operations", "/admin/v2/operations?scope=", "/admin/v2/operations?scope=%75sers.delete", "/admin/v2/operations?scope=users.delete&scope=users.delete", "/admin/v2/operations?scope=users.delete&x=1"} {
+	for caseIndex, path := range []string{"/admin/v2/operations", "/admin/v2/operations?scope=", "/admin/v2/operations?scope=%75sers.delete", "/admin/v2/operations?scope=users.delete&scope=users.delete", "/admin/v2/operations?scope=users.delete&x=1"} {
 		before := backend.queryCalls
 		rec := performActionRequest(engine, http.MethodGet, path, "", http.Header{"Idempotency-Key": {testActionKey}})
 		if rec.Code != 400 || backend.queryCalls != before {
-			t.Fatalf("path=%s status/body/calls=%d %s %d", path, rec.Code, rec.Body.String(), backend.queryCalls)
+			t.Fatalf("invalid query case=%d status=%d calls=%d body_length=%d", caseIndex, rec.Code, backend.queryCalls, rec.Body.Len())
 		}
 	}
 	finished := int64(1790000000000)
 	backend.queryView = &service.OperationView{PublicRef: testOperationRef, Scope: "users.delete", Status: "succeeded", FinishedAt: &finished}
 	rec = performActionRequest(engine, http.MethodGet, "/admin/v2/operations?scope=users.delete", "", http.Header{"Idempotency-Key": {testActionKey}})
 	_, retryPresent := rec.Header()["Retry-After"]
-	if rec.Code != 200 || retryPresent || rec.Body.String() != `{"operation_ref":"`+testOperationRef+`","scope":"users.delete","status":"succeeded","finished_at":1790000000000,"failure_code":null}` {
-		t.Fatalf("terminal query mismatch: status=%d retry_header_present=%t body=%s", rec.Code, retryPresent, rec.Body.String())
+	if rec.Code != 200 || retryPresent {
+		t.Fatalf("terminal query mismatch: status=%d retry_header_present=%t body_length=%d", rec.Code, retryPresent, rec.Body.Len())
 	}
+	response = decodeActionTestResponse[dto.UserDeleteQueryResponse](t, rec)
+	if response.OperationRef != testOperationRef || response.Scope != "users.delete" || response.Status != "succeeded" || response.FinishedAt == nil || *response.FinishedAt != finished || response.FailureCode != nil {
+		t.Fatal("terminal query response safe fields differed")
+	}
+	assertActionTestExactBody(t, rec, `{"operation_ref":"`+testOperationRef+`","scope":"users.delete","status":"succeeded","finished_at":1790000000000,"failure_code":null}`)
 }
 
 func TestAdminUserActionRejectsMalformedPathHeadersBodiesAndWrongAction(t *testing.T) {
@@ -226,12 +301,13 @@ func TestAdminUserActionRejectsMalformedPathHeadersBodiesAndWrongAction(t *testi
 		{http.MethodPost, "/admin/v2/users/123/actions", `{"action":"delete","expected_auth_version":7,"reason":"reason"}`, http.Header{"Idempotency-Key": {testActionKey + "," + testActionKey}, "X-Action-Ticket": {testActionTicket}}, 400},
 		{http.MethodGet, "/admin/v2/operations?scope=users.delete", "", http.Header{"Idempotency-Key": {testActionKey}, "X-Action-Ticket": {""}}, 400},
 	}
-	for _, test := range tests {
+	for caseIndex, test := range tests {
 		backend := &scriptedUserDeleteBackend{}
 		engine := newScriptedUserDeleteEngine(t, backend, &config.Settings{})
 		rec := performActionRequest(engine, test.method, test.path, test.body, test.headers)
-		if rec.Code != test.status || backend.issueCalls+backend.beginCalls+backend.queryCalls != 0 {
-			t.Fatalf("%s %s status/body/calls=%d %s %d", test.method, test.path, rec.Code, rec.Body.String(), backend.issueCalls+backend.beginCalls+backend.queryCalls)
+		calls := backend.issueCalls + backend.beginCalls + backend.queryCalls
+		if rec.Code != test.status || calls != 0 {
+			t.Fatalf("malformed request case=%d status=%d want_status=%d calls=%d body_length=%d", caseIndex, rec.Code, test.status, calls, rec.Body.Len())
 		}
 	}
 }
@@ -248,12 +324,12 @@ func TestAdminUserActionExecuteRejectsEveryMalformedHeaderShapeBeforeBegin(t *te
 		{"Idempotency-Key": {"IK_" + strings.TrimPrefix(testActionKey, "ik_")}, "X-Action-Ticket": {testActionTicket}},
 		{"Idempotency-Key": {testActionKey}, "X-Action-Ticket": {"AV_" + strings.TrimPrefix(testActionTicket, "av_")}},
 	}
-	for _, headers := range tests {
+	for caseIndex, headers := range tests {
 		backend := &scriptedUserDeleteBackend{}
 		engine := newScriptedUserDeleteEngine(t, backend, &config.Settings{})
 		rec := performActionRequest(engine, http.MethodPost, "/admin/v2/users/123/actions", `{"action":"delete","expected_auth_version":7,"reason":"reason"}`, headers)
 		if rec.Code != 400 || backend.beginCalls != 0 {
-			t.Fatalf("malformed header result: status=%d begin_calls=%d body=%s", rec.Code, backend.beginCalls, rec.Body.String())
+			t.Fatalf("malformed header case=%d status=%d begin_calls=%d body_length=%d", caseIndex, rec.Code, backend.beginCalls, rec.Body.Len())
 		}
 	}
 }
@@ -284,9 +360,18 @@ func TestAdminUserActionErrorMappingIsExhaustiveAndRedacted(t *testing.T) {
 		c.Header("X-Request-ID", "request-errors")
 		adminUserActionError(c, test.err, "")
 		want := `{"error":{"code":"` + test.code + `","message":"请求无法完成","type":"admin_action_error","request_id":"request-errors"}}`
-		if r.Code != test.status || r.Body.String() != want || strings.Contains(r.Body.String(), "private") {
-			t.Fatalf("error mapping mismatch: code=%q status=%d want_status=%d body=%s", test.code, r.Code, test.status, r.Body.String())
+		if r.Code != test.status {
+			t.Fatalf("error mapping status=%d want_status=%d body_length=%d", r.Code, test.status, r.Body.Len())
 		}
+		response := decodeActionTestResponse[actionTestErrorEnvelope](t, r)
+		if response.Error.Code != test.code {
+			t.Fatalf("error code=%q want=%q", response.Error.Code, test.code)
+		}
+		if response.Error.Message != "请求无法完成" || response.Error.Type != "admin_action_error" || response.Error.RequestID != "request-errors" || response.Error.OperationRef != "" {
+			t.Fatal("error envelope safe fields differed")
+		}
+		assertActionTestExactBody(t, r, want)
+		assertActionTestNoMarker(t, r, "private")
 	}
 }
 
@@ -294,9 +379,14 @@ func TestAdminUserActionRateLimitAndCommitUnknownExposeOnlySafeMetadata(t *testi
 	backend := &scriptedUserDeleteBackend{issueErr: &service.RetryAfterError{Seconds: 13}}
 	engine := newScriptedUserDeleteEngine(t, backend, &config.Settings{})
 	issue := performActionRequest(engine, http.MethodPost, "/admin/v2/action-verifications", `{"action":"users.delete","intent":{"target_guid":"123","expected_auth_version":7,"reason":"reason"},"current_password":"secret"}`, nil)
-	if issue.Code != 429 || issue.Header().Get("Retry-After") != "13" || !strings.Contains(issue.Body.String(), `"code":"action_rate_limited"`) || strings.Contains(issue.Body.String(), "secret") {
-		t.Fatalf("rate response mismatch: status=%d retry_after=%q body=%s", issue.Code, issue.Header().Get("Retry-After"), issue.Body.String())
+	if issue.Code != 429 || issue.Header().Get("Retry-After") != "13" {
+		t.Fatalf("rate response mismatch: status=%d retry_after=%q body_length=%d", issue.Code, issue.Header().Get("Retry-After"), issue.Body.Len())
 	}
+	issueResponse := decodeActionTestResponse[actionTestErrorEnvelope](t, issue)
+	if issueResponse.Error.Code != "action_rate_limited" {
+		t.Fatalf("error code=%q want=%q", issueResponse.Error.Code, "action_rate_limited")
+	}
+	assertActionTestNoMarker(t, issue, "secret")
 
 	backend = &scriptedUserDeleteBackend{
 		identity: &service.OperationIdentity{PublicRef: testOperationRef}, ready: true,
@@ -306,7 +396,13 @@ func TestAdminUserActionRateLimitAndCommitUnknownExposeOnlySafeMetadata(t *testi
 	engine = newScriptedUserDeleteEngine(t, backend, &config.Settings{})
 	execute := performActionRequest(engine, http.MethodPost, "/admin/v2/users/123/actions", `{"action":"delete","expected_auth_version":7,"reason":"private reason"}`, http.Header{"Idempotency-Key": {testActionKey}, "X-Action-Ticket": {testActionTicket}})
 	want := `{"error":{"code":"operation_commit_unknown","message":"请求无法完成","type":"admin_action_error","request_id":"` + execute.Header().Get("X-Request-ID") + `","operation_ref":"` + testOperationRef + `"}}`
-	if execute.Code != 503 || execute.Body.String() != want || backend.executeCalls != 1 || strings.Contains(execute.Body.String(), "private") {
-		t.Fatalf("unknown response=%d %s execute=%d", execute.Code, execute.Body.String(), backend.executeCalls)
+	if execute.Code != 503 || backend.executeCalls != 1 {
+		t.Fatalf("commit unknown result: status=%d execute_calls=%d body_length=%d", execute.Code, backend.executeCalls, execute.Body.Len())
 	}
+	executeResponse := decodeActionTestResponse[actionTestErrorEnvelope](t, execute)
+	if executeResponse.Error.Code != "operation_commit_unknown" || executeResponse.Error.Message != "请求无法完成" || executeResponse.Error.Type != "admin_action_error" || executeResponse.Error.RequestID == "" || executeResponse.Error.OperationRef != testOperationRef {
+		t.Fatal("commit unknown envelope safe fields differed")
+	}
+	assertActionTestExactBody(t, execute, want)
+	assertActionTestNoMarker(t, execute, "private")
 }

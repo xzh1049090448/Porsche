@@ -64,13 +64,13 @@ func TestDecodeUserDeleteExecute(t *testing.T) {
 func TestDecodeUserDeleteClassifiesWellFormedOtherActionsAsInactive(t *testing.T) {
 	if got, err := DecodeUserDeleteIssue(strings.NewReader(strings.Replace(validUserDeleteIssueJSON, "users.delete", "users.promote", 1))); !errors.Is(err, ErrUserDeleteInactiveAction) {
 		clear(got.Password)
-		t.Fatalf("issue action error=%v", err)
+		t.Fatal("issue action classification differed")
 	}
 	if _, err := DecodeUserDeleteExecute(strings.NewReader(`{"action":"promote","expected_auth_version":7,"reason":"reason"}`)); !errors.Is(err, ErrUserDeleteInactiveAction) {
-		t.Fatalf("execute action error=%v", err)
+		t.Fatal("execute action classification differed")
 	}
 	if _, err := DecodeUserDeleteExecute(strings.NewReader(`{"action":7,"expected_auth_version":7,"reason":"reason"}`)); !errors.Is(err, ErrUserDeleteInvalidBody) {
-		t.Fatalf("malformed action error=%v", err)
+		t.Fatal("malformed action classification differed")
 	}
 }
 

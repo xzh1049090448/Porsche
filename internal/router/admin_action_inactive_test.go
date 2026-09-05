@@ -1,6 +1,7 @@
 package router_test
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -84,12 +85,12 @@ func TestUserDeleteActionRoutesKeepAuthenticationAndSecurityHeaders(t *testing.T
 		NewExecution: func(actionsecurity.DeleteUserIntent) (*service.DeleteUserExecution, error) { return nil, nil },
 	}}
 	engine := router.New(state)
-	for _, route := range []routeContract{{http.MethodPost, "/admin/v2/action-verifications"}, {http.MethodPost, "/admin/v2/users/123/actions"}, {http.MethodGet, "/admin/v2/operations?scope=users.delete"}} {
+	for caseIndex, route := range []routeContract{{http.MethodPost, "/admin/v2/action-verifications"}, {http.MethodPost, "/admin/v2/users/123/actions"}, {http.MethodGet, "/admin/v2/operations?scope=users.delete"}} {
 		req := httptest.NewRequest(route.Method, route.Path, strings.NewReader(`{}`))
 		rec := httptest.NewRecorder()
 		engine.ServeHTTP(rec, req)
 		if rec.Code != http.StatusUnauthorized || rec.Header().Get("Cache-Control") != "no-store" || rec.Header().Get("X-Request-ID") == "" {
-			t.Fatalf("%s %s status=%d cache=%q request_id_present=%t", route.Method, route.Path, rec.Code, rec.Header().Get("Cache-Control"), rec.Header().Get("X-Request-ID") != "")
+			t.Fatalf("authenticated route case=%d status=%d cache_match=%t request_id_present=%t body_length=%d", caseIndex, rec.Code, rec.Header().Get("Cache-Control") == "no-store", rec.Header().Get("X-Request-ID") != "", rec.Body.Len())
 		}
 	}
 }
@@ -100,7 +101,7 @@ func TestCompleteUserDeleteBundleLeavesGenericAndOtherActionPaths404(t *testing.
 		NewExecution: func(actionsecurity.DeleteUserIntent) (*service.DeleteUserExecution, error) { return nil, nil },
 	}}
 	engine := router.New(state)
-	for _, route := range []routeContract{
+	for caseIndex, route := range []routeContract{
 		{http.MethodPost, "/admin/v2/actions"},
 		{http.MethodPost, "/admin/v2/actions/users.delete"},
 		{http.MethodPost, "/admin/v2/users"},
@@ -113,7 +114,7 @@ func TestCompleteUserDeleteBundleLeavesGenericAndOtherActionPaths404(t *testing.
 		rec := httptest.NewRecorder()
 		engine.ServeHTTP(rec, req)
 		if rec.Code != http.StatusNotFound {
-			t.Fatalf("%s %s status=%d body=%s", route.Method, route.Path, rec.Code, rec.Body.String())
+			t.Fatalf("generic route case=%d status=%d body_length=%d", caseIndex, rec.Code, rec.Body.Len())
 		}
 	}
 }
@@ -128,13 +129,9 @@ func TestAdminActionInactiveRoutesReturn404BeforeAuthentication(t *testing.T) {
 		{http.MethodPost, "/admin/v2/public-content/announcements/publish"},
 		{http.MethodPost, "/admin/v2/public-content/announcements/rollback"},
 	}
-	for _, test := range tests {
-		for _, authorization := range []string{"", "Bearer syntactically-valid-test-token"} {
-			name := test.Method + " " + test.Path
-			if authorization != "" {
-				name += " with Authorization"
-			}
-			t.Run(name, func(t *testing.T) {
+	for caseIndex, test := range tests {
+		for authIndex, authorization := range []string{"", "Bearer syntactically-valid-test-token"} {
+			t.Run(fmt.Sprintf("case-%d-auth-%d", caseIndex, authIndex), func(t *testing.T) {
 				req := httptest.NewRequest(test.Method, test.Path, strings.NewReader(`{}`))
 				if authorization != "" {
 					req.Header.Set("Authorization", authorization)
@@ -142,7 +139,7 @@ func TestAdminActionInactiveRoutesReturn404BeforeAuthentication(t *testing.T) {
 				rec := httptest.NewRecorder()
 				engine.ServeHTTP(rec, req)
 				if rec.Code != http.StatusNotFound {
-					t.Fatalf("status=%d body=%s, want 404 for unregistered route", rec.Code, rec.Body.String())
+					t.Fatalf("unregistered route status=%d want_status=%d body_length=%d", rec.Code, http.StatusNotFound, rec.Body.Len())
 				}
 			})
 		}
