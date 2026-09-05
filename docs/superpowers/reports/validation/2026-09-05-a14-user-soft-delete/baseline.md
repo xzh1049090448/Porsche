@@ -24,4 +24,4 @@ All commands completed with exit code 0 after the frontend checkpoint.
 - Frontend diff check: `git diff --check` — exit 0.
 
 ## Final state
-Frontend reviewed candidate was checkpointed unchanged as `9d301c1349b6252318798a8e97ea94a6f20b6385`. Backend report creation is the only subsequent change. Both worktrees were verified clean after the report commit.
+Frontend reviewed candidate was checkpointed unchanged as `9d301c1349b6252318798a8e97ea94a6f20b6385`; documentation-only evidence normalization commit `6f5b1bd010934dfe1db3f7149de82451a5173fac` subsequently changed only `manifest.json` and `npm-build.log`, with no source or A14 implementation changes. Current frontend HEAD is `6f5b1bd010934dfe1db3f7149de82451a5173fac` and clean. Backend evidence commits are the baseline report followed by report-only normalization. Both worktrees were verified clean after the evidence commits.
