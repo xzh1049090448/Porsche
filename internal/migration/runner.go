@@ -42,6 +42,12 @@ var adminOperationSafetyUp []byte
 //go:embed sql/0005_admin_operation_safety.down.sql
 var adminOperationSafetyDown []byte
 
+//go:embed sql/0006_admin_action_outbox.up.sql
+var adminActionOutboxUp []byte
+
+//go:embed sql/0006_admin_action_outbox.down.sql
+var adminActionOutboxDown []byte
+
 // Migration is an immutable, embedded schema version.
 type Migration struct {
 	Version string
@@ -63,6 +69,7 @@ func All() ([]Migration, error) {
 		{Version: "0003", UpSQL: permissionPolicyUp, DownSQL: permissionPolicyDown},
 		{Version: "0004", UpSQL: adminUsersReadCountUp, DownSQL: adminUsersReadCountDown},
 		{Version: "0005", UpSQL: adminOperationSafetyUp, DownSQL: adminOperationSafetyDown},
+		{Version: "0006", UpSQL: adminActionOutboxUp, DownSQL: adminActionOutboxDown},
 	}
 	sort.Slice(migrations, func(i, j int) bool { return migrations[i].Version < migrations[j].Version })
 	return migrations, nil
@@ -136,6 +143,11 @@ func Up(ctx context.Context, db *gorm.DB, nextGUID func() int64, nowMillis func(
 						return err
 					}
 				}
+				if migration.Version == "0006" {
+					if err := VerifyAdminActionOutboxSchema(ctx, conn); err != nil {
+						return err
+					}
+				}
 				continue
 			}
 			for _, statement := range splitStatements(string(migration.UpSQL)) {
@@ -155,6 +167,11 @@ func Up(ctx context.Context, db *gorm.DB, nextGUID func() int64, nowMillis func(
 			}
 			if migration.Version == "0005" {
 				if err := VerifyAdminOperationSafetySchema(ctx, conn); err != nil {
+					return err
+				}
+			}
+			if migration.Version == "0006" {
+				if err := VerifyAdminActionOutboxSchema(ctx, conn); err != nil {
 					return err
 				}
 			}
@@ -206,7 +223,10 @@ func Verify(ctx context.Context, db *gorm.DB) error {
 	if err := VerifyAdminUsersReadCountIndex(ctx, db); err != nil {
 		return err
 	}
-	return VerifyAdminOperationSafetySchema(ctx, db)
+	if err := VerifyAdminOperationSafetySchema(ctx, db); err != nil {
+		return err
+	}
+	return VerifyAdminActionOutboxSchema(ctx, db)
 }
 
 // VerifyApplied is the side-effect-free portion of Verify, kept separate so

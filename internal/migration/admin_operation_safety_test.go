@@ -34,7 +34,7 @@ func TestAdminOperationSafetyRealMySQLDownUpAndVerifier(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(migrations) != 5 || migrations[4].Version != "0005" {
+	if len(migrations) != 6 || migrations[4].Version != "0005" || migrations[5].Version != "0006" {
 		t.Fatalf("unexpected migration sequence: %#v", migrations)
 	}
 	reapplied := false
@@ -115,7 +115,7 @@ func TestAdminOperationSafetyMigrationContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(migrations) != 5 || migrations[4].Version != "0005" {
+	if len(migrations) != 6 || migrations[4].Version != "0005" || migrations[5].Version != "0006" {
 		t.Fatalf("admin operation safety migration 0005 is missing: %#v", migrations)
 	}
 
@@ -323,9 +323,10 @@ func TestMigrationSequencePreservesPublishedChecksums(t *testing.T) {
 		{"0002", "58712428ca668fb1fea0943d71a2209b2e7faf26de043d870195a033ac0f413c"},
 		{"0003", "31c49d9bb1f171d9ea6caab49714d9de05552b8f6e9cb73f2989760efd0a015c"},
 		{"0004", "44b5caba0473162c239e6b3035e6d9067e3af0b35e998a79c827a1424621494e"},
+		{"0005", "4fc34da357e155c4a04548838153796803f618f0c7199adda17098ef5190cd68"},
 	}
-	if len(migrations) != 5 {
-		t.Fatalf("migration count = %d, want 5", len(migrations))
+	if len(migrations) != 6 {
+		t.Fatalf("migration count = %d, want 6", len(migrations))
 	}
 	for i, published := range want {
 		if migrations[i].Version != published.version {
