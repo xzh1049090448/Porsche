@@ -14,8 +14,8 @@ Date: 2026-09-05
 
 All commands completed with exit code 0 after the frontend checkpoint.
 
-- Backend initializer: `env -u TEST_DATABASE_URL -u TEST_REDIS_URL -u DATABASE_URL -u REDIS_URL -u APP_ENV -u RUN_START_COMMAND ./init.sh` — exit 0. The first sandboxed attempt failed because Go build-cache access was denied; the identical command was rerun with minimum permission and passed. No environment values were recorded.
-- Backend tests: `env -u TEST_DATABASE_URL -u TEST_REDIS_URL go test -p 1 ./... -count=1` — exit 0; 18 packages reported, including 15 `ok` packages and 3 packages with no test files.
+- Backend initializer: `env -u TEST_DATABASE_URL -u TEST_REDIS_URL -u DATABASE_URL -u REDIS_URL -u APP_ENV -u RUN_START_COMMAND ./init.sh` — exit 0. The first sandboxed attempt failed because Go build-cache access was denied; this is classified as `SANDBOX_INFRASTRUCTURE`, not a product failure. The exact unchanged command was rerun with minimum permission and passed. No environment values were recorded.
+- Backend tests: `env -u TEST_DATABASE_URL -u TEST_REDIS_URL go test -p 1 ./... -count=1` — exit 0; 18 packages reported, including 15 `ok` packages and 3 packages with no test files. The required JSON rerun `env -u TEST_DATABASE_URL -u TEST_REDIS_URL go test -json -p 1 ./... -count=1` exited 0 with leaf Action events: 780 pass, 0 fail, 285 skip.
 - Backend build: `go build ./...` — exit 0.
 - Backend vet: `go vet ./...` — exit 0.
 - Backend diff check: `git diff --check` — exit 0.
@@ -26,4 +26,3 @@ All commands completed with exit code 0 after the frontend checkpoint.
 ## Final state
 
 Frontend reviewed candidate was checkpointed unchanged as `9d301c1349b6252318798a8e97ea94a6f20b6385`. Backend report creation is the only subsequent change. Both worktrees were verified clean after the report commit.
-
