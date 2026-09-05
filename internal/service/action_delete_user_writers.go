@@ -26,10 +26,11 @@ type DeleteUserExecution struct {
 }
 
 type deleteUserExecutionState struct {
-	mu            sync.Mutex
-	facts         deleteUserAuditFacts
-	factsRecorded bool
-	auditStarted  bool
+	mu              sync.Mutex
+	facts           deleteUserAuditFacts
+	factsRecorded   bool
+	consumerStarted bool
+	auditStarted    bool
 }
 
 var _ TransactionalAuditWriter = (*DeleteUserExecution)(nil)
