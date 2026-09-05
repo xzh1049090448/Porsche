@@ -20,7 +20,7 @@ var (
 	ErrUserDeleteBodyTooLarge = errors.New("user delete request body too large")
 )
 
-type UserDeleteIssue struct {
+type IssueUserDeleteRequest struct {
 	Action          string `json:"action"`
 	TargetGUID      int64  `json:"target_guid"`
 	ExpectedVersion int    `json:"expected_auth_version"`
@@ -28,11 +28,11 @@ type UserDeleteIssue struct {
 	Password        []byte `json:"-"`
 }
 
-func (request UserDeleteIssue) String() string {
-	return fmt.Sprintf("UserDeleteIssue{Action:%q TargetGUID:%d ExpectedVersion:%d Reason:%q Password:<redacted>}", request.Action, request.TargetGUID, request.ExpectedVersion, request.Reason)
+func (request IssueUserDeleteRequest) String() string {
+	return fmt.Sprintf("IssueUserDeleteRequest{Action:%q TargetGUID:%d ExpectedVersion:%d Reason:%q Password:<redacted>}", request.Action, request.TargetGUID, request.ExpectedVersion, request.Reason)
 }
 
-type UserDeleteExecute struct {
+type ExecuteUserDeleteRequest struct {
 	ExpectedVersion int    `json:"expected_auth_version"`
 	Reason          string `json:"reason"`
 }
@@ -47,7 +47,7 @@ type UserDeleteResponseUser struct {
 	Status string `json:"status"`
 }
 
-type UserDeleteExecuteResponse struct {
+type DeleteUserResponse struct {
 	OperationRef string                 `json:"operation_ref"`
 	User         UserDeleteResponseUser `json:"user"`
 }
@@ -78,58 +78,58 @@ type userDeleteExecuteWire struct {
 	Reason          string          `json:"reason"`
 }
 
-func DecodeUserDeleteIssue(body io.Reader) (UserDeleteIssue, error) {
+func DecodeUserDeleteIssue(body io.Reader) (IssueUserDeleteRequest, error) {
 	raw, err := readUserDeleteBody(body)
 	if err != nil {
-		return UserDeleteIssue{}, err
+		return IssueUserDeleteRequest{}, err
 	}
 	defer clear(raw)
 	if err := validateUserDeleteJSON(raw); err != nil {
-		return UserDeleteIssue{}, err
+		return IssueUserDeleteRequest{}, err
 	}
 	var wire userDeleteIssueWire
 	if err := decodeUserDeleteWire(raw, &wire); err != nil || wire.Action != "users.delete" || wire.Intent == nil || wire.Password == nil || *wire.Password == "" {
-		return UserDeleteIssue{}, ErrUserDeleteInvalidBody
+		return IssueUserDeleteRequest{}, ErrUserDeleteInvalidBody
 	}
 	targetGUID, ok := parseCanonicalPositiveInt64(wire.Intent.TargetGUID)
 	if !ok {
-		return UserDeleteIssue{}, ErrUserDeleteInvalidBody
+		return IssueUserDeleteRequest{}, ErrUserDeleteInvalidBody
 	}
 	version, ok := parseUserDeleteVersion(wire.Intent.ExpectedVersion)
 	if !ok {
-		return UserDeleteIssue{}, ErrUserDeleteInvalidBody
+		return IssueUserDeleteRequest{}, ErrUserDeleteInvalidBody
 	}
 	reason, ok := normalizeUserDeleteReason(wire.Intent.Reason)
 	if !ok {
-		return UserDeleteIssue{}, ErrUserDeleteInvalidBody
+		return IssueUserDeleteRequest{}, ErrUserDeleteInvalidBody
 	}
 	password := append([]byte(nil), []byte(*wire.Password)...)
 	wire.Password = nil
-	return UserDeleteIssue{Action: wire.Action, TargetGUID: targetGUID, ExpectedVersion: version, Reason: reason, Password: password}, nil
+	return IssueUserDeleteRequest{Action: wire.Action, TargetGUID: targetGUID, ExpectedVersion: version, Reason: reason, Password: password}, nil
 }
 
-func DecodeUserDeleteExecute(body io.Reader) (UserDeleteExecute, error) {
+func DecodeUserDeleteExecute(body io.Reader) (ExecuteUserDeleteRequest, error) {
 	raw, err := readUserDeleteBody(body)
 	if err != nil {
-		return UserDeleteExecute{}, err
+		return ExecuteUserDeleteRequest{}, err
 	}
 	defer clear(raw)
 	if err := validateUserDeleteJSON(raw); err != nil {
-		return UserDeleteExecute{}, err
+		return ExecuteUserDeleteRequest{}, err
 	}
 	var wire userDeleteExecuteWire
 	if err := decodeUserDeleteWire(raw, &wire); err != nil || wire.Action != "delete" {
-		return UserDeleteExecute{}, ErrUserDeleteInvalidBody
+		return ExecuteUserDeleteRequest{}, ErrUserDeleteInvalidBody
 	}
 	version, ok := parseUserDeleteVersion(wire.ExpectedVersion)
 	if !ok {
-		return UserDeleteExecute{}, ErrUserDeleteInvalidBody
+		return ExecuteUserDeleteRequest{}, ErrUserDeleteInvalidBody
 	}
 	reason, ok := normalizeUserDeleteReason(wire.Reason)
 	if !ok {
-		return UserDeleteExecute{}, ErrUserDeleteInvalidBody
+		return ExecuteUserDeleteRequest{}, ErrUserDeleteInvalidBody
 	}
-	return UserDeleteExecute{ExpectedVersion: version, Reason: reason}, nil
+	return ExecuteUserDeleteRequest{ExpectedVersion: version, Reason: reason}, nil
 }
 
 func readUserDeleteBody(body io.Reader) ([]byte, error) {

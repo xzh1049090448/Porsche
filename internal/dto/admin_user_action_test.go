@@ -18,6 +18,8 @@ func TestDecodeUserDeleteIssue(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	var normalized IssueUserDeleteRequest = got
+	got = normalized
 	if got.Action != "users.delete" || got.TargetGUID != 123456789012345678 || got.ExpectedVersion != 7 || got.Reason != "duplicate account" || string(got.Password) != "example-only-not-a-secret" {
 		t.Fatalf("decoded issue differs: action=%q guid=%d version=%d reason=%q password_length=%d", got.Action, got.TargetGUID, got.ExpectedVersion, got.Reason, len(got.Password))
 	}
@@ -49,6 +51,8 @@ func TestDecodeUserDeleteExecute(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	var normalized ExecuteUserDeleteRequest = got
+	got = normalized
 	if got.ExpectedVersion != 7 || got.Reason != "duplicate account" {
 		t.Fatalf("decoded execute differs: %+v", got)
 	}
@@ -141,7 +145,7 @@ func TestUserDeleteResponseDTOExactJSON(t *testing.T) {
 		want  string
 	}{
 		{UserDeleteIssueResponse{Ticket: "ticket", ExpiresAt: 1790000300000}, `{"ticket":"ticket","expires_at":1790000300000}`},
-		{UserDeleteExecuteResponse{OperationRef: "operation", User: UserDeleteResponseUser{GUID: "123", Status: "deleted"}}, `{"operation_ref":"operation","user":{"guid":"123","status":"deleted"}}`},
+		{DeleteUserResponse{OperationRef: "operation", User: UserDeleteResponseUser{GUID: "123", Status: "deleted"}}, `{"operation_ref":"operation","user":{"guid":"123","status":"deleted"}}`},
 		{UserDeleteQueryResponse{OperationRef: "operation", Scope: "users.delete", Status: "processing"}, `{"operation_ref":"operation","scope":"users.delete","status":"processing","finished_at":null,"failure_code":null}`},
 		{UserDeleteQueryResponse{OperationRef: "operation", Scope: "users.delete", Status: "failed", FinishedAt: &finishedAt, FailureCode: &failureCode}, `{"operation_ref":"operation","scope":"users.delete","status":"failed","finished_at":1790000000000,"failure_code":"operation_failed"}`},
 	}
