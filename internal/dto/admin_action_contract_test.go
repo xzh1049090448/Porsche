@@ -34,6 +34,7 @@ func TestUserDeleteActiveContractMatchesRuntimeFixtures(t *testing.T) {
 	assertContractValue(t, document, true, "implementation", "backend_route_exists")
 	assertContractValue(t, document, false, "implementation", "frontend_client_exists")
 	assertContractValue(t, document, true, "production_observation", "only_users_delete_active")
+	assertContractValue(t, document, "unregistered", "production_observation", "other_action_routes")
 	assertContractValue(t, document, []any{
 		map[string]any{"method": "POST", "path": "/admin/v2/action-verifications"},
 		map[string]any{"method": "POST", "path": "/admin/v2/users/:guid/actions"},
@@ -42,6 +43,7 @@ func TestUserDeleteActiveContractMatchesRuntimeFixtures(t *testing.T) {
 	assertContractValue(t, document, []any{"admin_users_list.items[].auth_version", "admin_user_detail.auth_version"}, "v2_user_read", "locations")
 	assertContractValue(t, document, "integer_1_to_2147483647", "v2_user_read", "auth_version")
 	assertContractValue(t, document, false, "v2_user_read", "legacy_shapes_changed")
+	assertContractValue(t, document, false, "v2_user_read", "client_writable")
 	assertContractKeys(t, contractAt(t, document, "production_observation").(map[string]any), "registered_routes", "only_users_delete_active", "other_action_routes")
 	assertContractKeys(t, contractAt(t, document, "implementation").(map[string]any), "handler_exists", "backend_route_exists", "frontend_client_exists")
 	assertContractKeys(t, contractAt(t, document, "v2_user_read").(map[string]any), "locations", "auth_version", "client_writable", "legacy_shapes_changed")
@@ -127,6 +129,13 @@ func TestUserDeleteActiveContractMatchesRuntimeFixtures(t *testing.T) {
 	assertContractValue(t, document, json.Number("300"), "endpoints", "issue", "ticket_ttl_seconds")
 	assertContractValue(t, document, json.Number("200"), "endpoints", "execute", "response_status")
 	assertContractValue(t, document, json.Number("200"), "endpoints", "query", "response_status")
+	assertContractValue(t, document, "committed_terminal_only_with_operation_ref", "endpoints", "execute", "success_semantics")
+	assertContractValue(t, document, false, "endpoints", "execute", "processing_response_allowed")
+	assertContractValue(t, document, "exact_literal_scope_users.delete_no_other_query_parameters", "endpoints", "query", "query_rule")
+	assertContractValue(t, document, true, "endpoints", "query", "requires_exact_adapter")
+	assertContractValue(t, document, true, "endpoints", "query", "requires_original_scope_key")
+	assertContractValue(t, document, false, "endpoints", "query", "triggers_callback")
+	assertContractValue(t, document, false, "endpoints", "query", "consumes_begin_rate_limit")
 	assertContractValue(t, document, []any{"processing", "succeeded", "failed", "pending_recovery"}, "operation_statuses")
 	assertContractValue(t, document, []any{"action_rejected", "target_version_conflict", "policy_version_conflict", "target_state_conflict", "consumer_validation_failed"}, "failure_codes")
 	assertContractValue(t, document, json.Number("0"), "endpoints", "issue", "post_replay_count")
@@ -142,6 +151,9 @@ func TestUserDeleteActiveContractMatchesRuntimeFixtures(t *testing.T) {
 	}, "security_properties")
 	assertContractValue(t, document, true, "acceptance", "contract_callable")
 	assertContractValue(t, document, false, "acceptance", "frontend_connected")
+	assertContractValue(t, document, false, "acceptance", "internal_foundation_is_http_acceptance")
+	assertContractValue(t, document, true, "acceptance", "contract_accepted")
+	assertContractValue(t, document, "The users.delete backend HTTP contract is active and frozen; frontend implementation remains pending.", "acceptance", "statement")
 	assertContractKeys(t, contractAt(t, document, "error_contract").(map[string]any), "envelope_example", "commit_unknown_example", "required_fields", "fixed_message", "fixed_type", "prohibited_fields", "operation_ref_rule", "http_statuses")
 	assertContractKeys(t, contractAt(t, document, "frontend").(map[string]any), "memory_only", "storage_prohibitions", "post_replay_count", "query_get_after_refresh_max", "unload_recovery")
 	assertContractKeys(t, contractAt(t, document, "security_properties").(map[string]any), "scope", "sensitivePostAutoReplay", "clientPersistence", "reasonPersistence", "legacyDeleteStatus")
@@ -157,7 +169,7 @@ func TestUserDeleteActiveContractStatusAndErrorMatrix(t *testing.T) {
 	document := readContractTree(t)
 	wantStatuses := []any{
 		map[string]any{"status": json.Number("400"), "codes": []any{"invalid_admin_action_request"}, "envelope": "admin_action_error", "retry_after": "forbidden"},
-		map[string]any{"status": json.Number("401"), "codes": []any{"existing_authentication_failure"}, "envelope": "existing_authentication_middleware", "retry_after": "forbidden"},
+		map[string]any{"status": json.Number("401"), "codes": []any{}, "envelope": "legacy_detail", "retry_after": "forbidden", "category": "existing_authentication_failure", "body_shape": map[string]any{"required_fields": []any{"detail"}, "additional_fields": false}, "details": []any{"未登录", "Token无效或已过期"}},
 		map[string]any{"status": json.Number("403"), "codes": []any{"action_verification_rejected", "action_operation_rejected"}, "envelope": "admin_action_error", "retry_after": "forbidden"},
 		map[string]any{"status": json.Number("404"), "codes": []any{"action_target_not_found", "action_operation_not_found"}, "envelope": "admin_action_error", "retry_after": "forbidden"},
 		map[string]any{"status": json.Number("409"), "codes": []any{"action_verification_conflict", "idempotency_conflict", "idempotency_cross_session", "action_rejected", "target_version_conflict", "policy_version_conflict", "target_state_conflict", "consumer_validation_failed"}, "envelope": "admin_action_error", "retry_after": "forbidden"},

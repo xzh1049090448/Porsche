@@ -238,11 +238,20 @@
       },
       {
         "status": 401,
-        "codes": [
-          "existing_authentication_failure"
-        ],
-        "envelope": "existing_authentication_middleware",
-        "retry_after": "forbidden"
+        "codes": [],
+        "envelope": "legacy_detail",
+        "retry_after": "forbidden",
+        "category": "existing_authentication_failure",
+        "body_shape": {
+          "required_fields": [
+            "detail"
+          ],
+          "additional_fields": false
+        },
+        "details": [
+          "未登录",
+          "Token无效或已过期"
+        ]
       },
       {
         "status": 403,
