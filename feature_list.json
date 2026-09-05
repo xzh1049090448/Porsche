@@ -107,15 +107,18 @@
       "verification": [
         "Task 1–11 TDD、静态路由冻结与未来合同检查；生产 ActiveActionRegistry 为空",
         "隔离 MySQL 8 / Redis 7 migration、真实 service、10点 Execute fault、并发、serial full、Action race、build/vet/diff/source/secret gates",
-        "第三次独立 QA 对 HEAD 2408ee3ace6f1a2ff07645653aed354a0ca245fa 给出 QA_PASS；fixture 保留供后续 exact cleanup"
+        "第三次独立 QA 对 HEAD 2408ee3ace6f1a2ff07645653aed354a0ca245fa 给出 QA_PASS；Task14 exact cleanup 已由 b18d22ef8d6683bdf6ef55a7369180b72cb75479 记录为 CLEANUP_PASS 和零残留",
+        "Task15 clean-tree full/race/build/vet/diff/invariant gates通过；SPEC_PASS、IMPLEMENTATION_PASS、SECURITY_PASS由42d3487d018a174bbcb85aa1b71947d35e968a93归档"
       ],
       "evidence": [
         "Task 1–11 交付严格 external-value、用途隔离密钥、8个 inactive typed descriptors、canonical intent、0005 schema/verifier、Redis Lua limits、Issue/Begin/Query/Execute/lease/recovery/transaction primitives；冻结生产路由仍404，active consumer为0。",
         "Task 12 第三次独立复跑：migration leaf1；service pass_events32/leaf27；concurrency2/2；serial full pass_events1120/leaf1017/1显式性能SKIP/0FAIL；Action race pass_events267/leaf237/0FAIL；route registry15/13、router24/22；build/vet/diff/source/secret均PASS。",
         "历史首次QA_FAIL、第二次QA_PASS_PRE_SPEC_FAIL、随后SPEC_FAIL、5点Execute fault修复、amend过程偏差及14类/19份raw JSON/145个fail action历史均继续保留。",
-        "公开报告 docs/superpowers/reports/2026-09-04-b1e-operation-safety-foundation.md；公开验证目录 manifest.json。"
+        "公开报告 docs/superpowers/reports/2026-09-04-b1e-operation-safety-foundation.md；公开验证目录 manifest.json。",
+        "Task14：exact cleanup提交b18d22ef8d6683bdf6ef55a7369180b72cb75479；容器ID/名称/label/端口/listener/进程/私有路径/任务卷残留均0，无关容器与卷不变，独立结论CLEANUP_PASS。",
+        "Task15：无fixture全量780 pass events/695 leaf/285 skip events/0 fail，Action race232/204/26 skip/0 fail，build/vet/diff/invariant通过；三份最终评审与manifest由42d3487d018a174bbcb85aa1b71947d35e968a93归档。"
       ],
-      "notes": "PASS_LIMITED_SUBSCOPE：仅可复用内部安全原语。A14仍BLOCKED_NOT_IMPLEMENTED，18个联合验收blocker逐项不变。无真实业务动作、审计投递、outbox worker、recovery worker、前端adapter、部署、生产迁移或生产验收。Task12 fixture仍存活，Task14 cleanup未执行。"
+      "notes": "PASS_LIMITED_SUBSCOPE：仅可复用内部安全原语。Task14 exact cleanup已CLEANUP_PASS且零残留，无关资源不变；Task15 SPEC_PASS、IMPLEMENTATION_PASS、SECURITY_PASS及最终门禁已由42d3487d018a174bbcb85aa1b71947d35e968a93归档。A14仍BLOCKED_NOT_IMPLEMENTED，active production consumers仍为0，18个联合验收blocker逐项不变。无真实业务动作、审计投递、outbox worker、recovery worker、前端adapter、部署、生产迁移或生产验收。"
     },
     {
       "id": "go-016",

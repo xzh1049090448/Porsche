@@ -1,12 +1,12 @@
-# 2026-09-05 B1-E Task 13 限定状态交接
+# 2026-09-05 B1-E 最终限定状态交接
 
-工作树 `feature/admin-public-260903`，Task 13 基线 HEAD `e41e39decea2afb87b036baf165f24d400ca7aa6`。B1-E 的 Task 1–12 已完成内部原语实现、真实隔离 fixture 验证及第三次独立 QA；当前只记录 `limited_subscope`，A14 仍为 `BLOCKED_NOT_IMPLEMENTED`，18 个联合验收 blocker 不变。
+工作树 `feature/admin-public-260903`。B1-E Task 1–15 的内部实现、隔离验证、exact cleanup 和最终评审均已归档；Task15 三评审与最终manifest提交为 `42d3487d018a174bbcb85aa1b71947d35e968a93`。当前结论仍严格为 `passing / limited_subscope`。
 
-生产 `ActiveActionRegistry()` 与 active consumer 数均为 0。两个冻结 HTTP 路径及未来管理写路由仍未激活。无真实业务 effect、审计投递、outbox/recovery worker、前端 adapter、部署、生产迁移或生产验收。Porsche-Web 未改。
+Task14 exact cleanup提交 `b18d22ef8d6683bdf6ef55a7369180b72cb75479`，独立结论 `CLEANUP_PASS`。原 Task12 MySQL/Redis fixture、名称、label、端口映射、listener、测试进程、私有路径和任务卷残留均为0；无关容器与卷清单不变。无需再执行 Task14，也不得复用已删除的 fixture 或凭据。
 
-第三次独立 QA 复跑统计：migration leaf1；service 32 pass events/27 leaf；concurrency 2/2；serial full 1120 pass events/1017 leaf/1 explicit performance SKIP/0 FAIL；Action race 267 pass events/237 leaf/0 FAIL；route-registry 15/13、router 24/22；build/vet/diff/source/secret PASS。首次 QA_FAIL、第二次 QA_PASS_PRE_SPEC_FAIL、随后 SPEC_FAIL、补齐 5 个 Execute fault、amend 过程偏差与全部失败历史均保留。
+Task15 clean-tree gates：无fixture full为780 pass events/695 leaf、285 skip events/283 leaf、0 fail，其中284个fixture缺失skip和1个显式100k性能skip；Action race为232 pass events/204 leaf、26 fixture skip、0 fail；build/vet/diff/JSON/invariant/status均PASS。最终评审为 `SPEC_PASS`、`IMPLEMENTATION_PASS`、`SECURITY_PASS`。
 
-Task 12 的精确 MySQL/Redis full-ID fixture 继续存活。下一步只能执行计划 Task 14 的 exact cleanup 和独立 cleanup review；不得提前清理、prune、操作命名卷或将本限定结论解释为 A14/前端/生产完成。
+生产 `ActiveActionRegistry()` 与 active production consumers 均为0，八个业务descriptor及冻结HTTP路径仍未激活。A14保持 `BLOCKED_NOT_IMPLEMENTED`，18个联合验收blocker逐项不变。没有真实业务effect、审计投递、outbox/recovery worker、前端adapter、push、部署、生产迁移或生产验收；Porsche-Web未改。
 
 ---
 

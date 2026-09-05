@@ -53,6 +53,14 @@ Redis DB 10、7、13 是 `DBSIZE=0` 后复用的历史逻辑库，不宣称从�
 - 曾报告的 `b54dfc7` 被错误 amend 后由 reachable `a0e75510a4e245af7d416e2b6146c97315c5c19a` 替代；偏差持续记录，之后没有再 amend/rebase。
 - 修复前历史为 12 类、17 份含 fail action 的 raw JSON、135 个 fail action 事件；当前保留为 14 类、19 份、145 个事件。失败原始证据没有删除或覆盖。
 
+## Task 13–15 最终化
+
+Task 13 将状态写为 `passing / limited_subscope`，同时保持 A14 `BLOCKED_NOT_IMPLEMENTED`、active production consumers 0 和18个联合验收blocker不变。
+
+Task 14 的 `b18d22ef8d6683bdf6ef55a7369180b72cb75479` 记录 exact cleanup 与独立 `CLEANUP_PASS`。Task12容器完整ID、名称、label、端口映射、listener、测试进程、私有路径及任务卷当前残留均为0；无关容器和卷清单保持不变。初次aggregate检查只进行了bounded read-only复查，此后没有资源mutation。
+
+Task 15 的clean-tree full最终为780 pass events/695 leaf、285 skip events/283 leaf、0 fail，其中284个fixture缺失skip和1个显式100k性能skip；Action race为232 pass events/204 leaf、26 fixture skip、0 fail。Build、vet、diff、JSON、cleanup hash、production引用、冻结路由及registry invariant均通过。`42d3487d018a174bbcb85aa1b71947d35e968a93` 归档最终manifest与三份评审，结论分别为 `SPEC_PASS`、`IMPLEMENTATION_PASS`、`SECURITY_PASS`。
+
 ## 联合验收状态与排除项
 
 18 个 blocker 逐项保持原状态：
@@ -61,4 +69,4 @@ Redis DB 10、7、13 是 `DBSIZE=0` 后复用的历史逻辑库，不宣称从�
 - `BLOCKED_PRODUCT`：P08。
 - `BLOCKED_ENV`：R02。
 
-本报告不声称完成真实业务 action、真实管理 audit delivery、生产 outbox worker、recovery worker、前端 adapter、部署、生产 migration 或 production acceptance。Task 12 fixture 保持运行，Task 14 exact cleanup 尚未执行。
+本报告不声称完成真实业务 action、真实管理 audit delivery、生产 outbox worker、recovery worker、前端 adapter、部署、生产 migration 或 production acceptance。Task 12 fixture 在第三次 QA 归档时仍存活；其后的 Task 14 已完成 exact cleanup，当前任务残留为0。
