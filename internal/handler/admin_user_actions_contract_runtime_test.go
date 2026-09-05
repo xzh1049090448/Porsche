@@ -116,7 +116,7 @@ func assertContractJSONBody(t *testing.T, recorder *httptest.ResponseRecorder, w
 	}
 }
 
-func TestAdminUserActionRoutesRuntimeMatchFrozenContract(t *testing.T) {
+func TestUserDeleteActionRoutesRuntimeMatchFrozenContract(t *testing.T) {
 	document := readAdminActionContract(t)
 	endpoints := actionContractAt(t, document, "endpoints").(map[string]any)
 
@@ -154,7 +154,7 @@ func TestAdminUserActionRoutesRuntimeMatchFrozenContract(t *testing.T) {
 	assertContractJSONBody(t, queryRecorder, queryExample)
 }
 
-func TestAdminUserActionUnauthenticatedRuntimeMatches401Contract(t *testing.T) {
+func TestUserDeleteActionUnauthenticatedRuntimeMatches401Contract(t *testing.T) {
 	document := readAdminActionContract(t)
 	statuses := actionContractAt(t, document, "error_contract", "http_statuses").([]any)
 	var contract401 map[string]any

@@ -29,8 +29,10 @@
 
 - `python3 -m json.tool docs/agents/contracts/admin-action-future-contract.json >/dev/null`：PASS。
 - `GOCACHE=/private/tmp/porsche-go-build-cache go test ./internal/dto ./internal/handler ./internal/router -run 'UserDelete|AuthVersion|LegacyAdminDeleteGone' -count=1`：3 个 package PASS，0 FAIL。
+- 同一正式 regex 的 `-v` fresh run 明确选中并通过 `TestUserDeleteActionRoutesRuntimeMatchFrozenContract` 与 `TestUserDeleteActionUnauthenticatedRuntimeMatches401Contract`。
 - 前端 `python3 -m json.tool docs/agents/contracts/prd-260903-interface-draft.json >/dev/null`：PASS。
-- 前端显式设置 `A14_BACKEND_CONTRACT` 后运行 `node --test src/api/admin-user-actions-contract.test.js src/api/admin-users.test.js`：136 PASS，0 FAIL，0 SKIP。
+- 前端显式设置 `A14_BACKEND_CONTRACT` 后运行 `node --test src/api/admin-user-actions-contract.test.js src/api/admin-users.test.js`：13 PASS，0 FAIL，0 SKIP。
+- 前端显式设置 `A14_BACKEND_CONTRACT` 后运行 `npm test`：136 PASS，0 FAIL，0 SKIP。
 - 未设置 `A14_BACKEND_CONTRACT` 时合同测试按设计失败，错误固定包含 `missing_A14_BACKEND_CONTRACT`；测试不猜测 checkout 路径。
 - 前端 `npm run build`：PASS；Vite 保留既有 chunk/dynamic-import warning，无构建失败。
 - 两仓 `git diff --check`：PASS。
