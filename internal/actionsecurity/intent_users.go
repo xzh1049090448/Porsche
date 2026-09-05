@@ -4,6 +4,8 @@ import (
 	"errors"
 	"math"
 	"sort"
+	"strings"
+	"unicode/utf8"
 )
 
 var errInvalidIntent = errors.New("invalid action intent")
@@ -214,10 +216,11 @@ func encodePermissionsWriteIntent(intent PermissionsWriteIntent) ([]byte, error)
 }
 
 func encodeDeleteUserIntent(intent DeleteUserIntent) ([]byte, error) {
-	if intent.TargetGUID <= 0 || intent.ExpectedAuthVersion <= 0 || intent.ExpectedAuthVersion > math.MaxInt32 || intent.Reason == "" {
+	reason, ok := normalizeDeleteUserReason(intent.Reason)
+	if intent.TargetGUID <= 0 || intent.ExpectedAuthVersion <= 0 || intent.ExpectedAuthVersion > math.MaxInt32 || !ok {
 		return nil, errInvalidIntent
 	}
-	if _, err := checkedU32Length(uint64(len(intent.Reason))); err != nil {
+	if _, err := checkedU32Length(uint64(len(reason))); err != nil {
 		return nil, err
 	}
 	return encodeIntent(func(w *intentWriter) error {
@@ -227,6 +230,12 @@ func encodeDeleteUserIntent(intent DeleteUserIntent) ([]byte, error) {
 		if err := w.fieldInt32(2, intent.ExpectedAuthVersion); err != nil {
 			return err
 		}
-		return w.fieldString(3, intent.Reason)
+		return w.fieldString(3, reason)
 	})
+}
+
+func normalizeDeleteUserReason(raw string) (string, bool) {
+	normalized := strings.TrimSpace(raw)
+	count := utf8.RuneCountInString(normalized)
+	return normalized, utf8.ValidString(normalized) && count >= 1 && count <= 200
 }

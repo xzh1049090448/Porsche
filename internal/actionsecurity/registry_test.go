@@ -35,29 +35,40 @@ func TestInactiveActionDescriptorsExactContract(t *testing.T) {
 	}
 }
 
-func TestRegistryReturnsCopiesAndProductionRegistryIsEmpty(t *testing.T) {
+func TestRegistryReturnsCopiesAndActivatesOnlyUsersDelete(t *testing.T) {
 	first := InactiveActionDescriptors()
 	first[0].Name = "mutated"
 	if got := InactiveActionDescriptors()[0].Name; got != "users.create_admin" {
 		t.Fatalf("inactive registry was mutated through returned slice: %q", got)
 	}
 	active := ActiveActionRegistry()
-	if len(active) != 0 {
-		t.Fatalf("active registry length = %d, want 0", len(active))
+	if len(active) != 1 {
+		t.Fatalf("active registry length = %d, want 1", len(active))
 	}
+	want := Descriptor{ActionUsersDelete, "users.delete", "users.delete", false, true, true, TargetUser, nil}
+	got := active[0]
+	if got.Action != want.Action || got.Name != want.Name || got.Capability != want.Capability || got.RootOnly != want.RootOnly ||
+		got.RequiresTicket != want.RequiresTicket || got.Active != want.Active || got.TargetKind != want.TargetKind || got.Encode == nil {
+		t.Fatalf("active descriptor = %+v, want metadata %+v and non-nil encoder", got, want)
+	}
+	active[0].Name = "mutated"
 	active = append(active, Descriptor{Name: "mutated"})
-	if len(ActiveActionRegistry()) != 0 {
+	if got := ActiveActionRegistry(); len(got) != 1 || got[0].Name != "users.delete" {
 		t.Fatal("active registry was mutated through returned slice")
 	}
-	for _, action := range []Action{ActionUsersCreateAdmin, ActionUsersResetPassword, ActionUsersPromote, ActionUsersDemote, ActionUsersPermissionsWrite, ActionUsersDelete, ActionPublicContentPublish, ActionPublicContentRollback} {
+	for _, action := range []Action{ActionUsersCreateAdmin, ActionUsersResetPassword, ActionUsersPromote, ActionUsersDemote, ActionUsersPermissionsWrite, ActionPublicContentPublish, ActionPublicContentRollback} {
 		if _, ok := ResolveActiveAction(action); ok {
 			t.Fatalf("inactive action %d resolved from production registry", action)
 		}
 	}
+	if got, ok := ResolveActiveAction(ActionUsersDelete); !ok || got.Action != ActionUsersDelete || !got.Active {
+		t.Fatalf("users.delete did not resolve as active: %+v, ok=%v", got, ok)
+	}
 }
 
 func TestDescriptorRejectsWrongDTOType(t *testing.T) {
-	for _, descriptor := range InactiveActionDescriptors() {
+	descriptors := append(InactiveActionDescriptors(), ActiveActionRegistry()...)
+	for _, descriptor := range descriptors {
 		if _, err := descriptor.Encode(struct{}{}); err == nil {
 			t.Fatalf("descriptor %q accepted wrong DTO", descriptor.Name)
 		}

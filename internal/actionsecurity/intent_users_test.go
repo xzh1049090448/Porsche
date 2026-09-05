@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -222,6 +223,9 @@ func TestUserIntentFixedRolesAndCanonicalValidation(t *testing.T) {
 		{ActionUsersCreateAdmin, CreateAdminIntent{Username: "alice", Password: []byte{1}, PlanType: 1, DailyCallLimit: -1}},
 		{ActionUsersResetPassword, ResetPasswordIntent{TargetGUID: 0, NewPassword: []byte{1}, Reason: "case"}},
 		{ActionUsersPromote, RoleIntent{TargetGUID: 1, ExpectedAuthVersion: 0, Reason: "case"}},
+		{ActionUsersDelete, DeleteUserIntent{TargetGUID: 0, ExpectedAuthVersion: 1, Reason: "case"}},
+		{ActionUsersDelete, DeleteUserIntent{TargetGUID: 1, ExpectedAuthVersion: 0, Reason: "case"}},
+		{ActionUsersDelete, DeleteUserIntent{TargetGUID: 1, ExpectedAuthVersion: 2147483648, Reason: "case"}},
 		{ActionUsersDelete, DeleteUserIntent{TargetGUID: 1, ExpectedAuthVersion: 1, Reason: ""}},
 		{ActionUsersPermissionsWrite, PermissionsWriteIntent{TargetGUID: 1, ExpectedPermissionsVersion: 1, CatalogVersion: 1, Overrides: []PermissionOverrideIntent{{Capability: "users.read", Effect: 4}}}},
 		{ActionUsersPermissionsWrite, PermissionsWriteIntent{TargetGUID: 1, ExpectedPermissionsVersion: 1, CatalogVersion: 1, Overrides: []PermissionOverrideIntent{{Capability: "users.read", Effect: 2}, {Capability: "users.read", Effect: 3}}}},
@@ -230,6 +234,41 @@ func TestUserIntentFixedRolesAndCanonicalValidation(t *testing.T) {
 		if _, err := descriptorFor(t, tc.action).Encode(tc.intent); err == nil {
 			t.Errorf("invalid case %d accepted", i)
 		}
+	}
+}
+
+func TestDeleteUserIntentNormalizesReasonAndUsesUnicodeCodePointLimit(t *testing.T) {
+	const middle = "keep  internal\ttext"
+	encoded, err := descriptorFor(t, ActionUsersDelete).Encode(DeleteUserIntent{
+		TargetGUID: 2, ExpectedAuthVersion: 2147483647, Reason: "\u2003" + middle + "\u00a0",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fields := decodeFields(t, encoded)
+	if len(fields) != 3 || string(fields[2].value) != middle {
+		t.Fatalf("normalized delete reason = %#v, want %q", fields, middle)
+	}
+
+	for _, reason := range []string{"", "\u2003\u00a0", strings.Repeat("界", 201)} {
+		if _, err := descriptorFor(t, ActionUsersDelete).Encode(DeleteUserIntent{TargetGUID: 1, ExpectedAuthVersion: 1, Reason: reason}); err == nil {
+			t.Fatalf("invalid delete reason %q accepted", reason)
+		}
+	}
+}
+
+func TestDeleteUserIntentCanonicalEncodingIgnoresOnlyEdgeWhitespace(t *testing.T) {
+	base := DeleteUserIntent{TargetGUID: 9, ExpectedAuthVersion: 3, Reason: "reason"}
+	trimmed, err := descriptorFor(t, ActionUsersDelete).Encode(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spaced, err := descriptorFor(t, ActionUsersDelete).Encode(DeleteUserIntent{TargetGUID: 9, ExpectedAuthVersion: 3, Reason: "\t reason \n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(trimmed, spaced) {
+		t.Fatalf("equivalent delete intents encoded differently: %x vs %x", trimmed, spaced)
 	}
 }
 

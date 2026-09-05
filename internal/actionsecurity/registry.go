@@ -22,7 +22,15 @@ func InactiveActionDescriptors() []Descriptor {
 }
 
 func ActiveActionRegistry() []Descriptor {
-	return []Descriptor{}
+	out := make([]Descriptor, 0, 1)
+	for _, descriptor := range inactiveActionDescriptors {
+		if descriptor.Action == ActionUsersDelete {
+			descriptor.Active = true
+			out = append(out, descriptor)
+			break
+		}
+	}
+	return out
 }
 
 func ResolveActiveAction(action Action) (Descriptor, bool) {
