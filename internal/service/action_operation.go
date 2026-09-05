@@ -275,8 +275,13 @@ func (s *ActionOperationService) Begin(ctx context.Context, in OperationBegin) (
 				!validOperationVerificationBinding(verification, locked, descriptor, requestHex, parsedTarget) {
 				return ErrActionOperationForbidden
 			}
-			if err := authorizeOperationDescriptor(tx, locked.actor, descriptor, parsedTarget); err != nil {
-				return err
+			// Terminal replays return the already authorized and request-bound
+			// result. A successful action may have changed the target so it no
+			// longer satisfies the pre-action authorization predicate.
+			if existing.State == models.OperationProcessing || existing.State == models.OperationPendingRecovery {
+				if err := authorizeOperationDescriptor(tx, locked.actor, descriptor, parsedTarget); err != nil {
+					return err
+				}
 			}
 			finalNow := s.clock.NowMillis()
 			if finalNow < now || !validOperationNow(finalNow) {
@@ -468,11 +473,16 @@ func (s *ActionOperationService) Query(ctx context.Context, action actionsecurit
 			}
 			return ErrActionOperationHidden
 		}
-		if err := authorizeOperationDescriptor(tx, locked.actor, descriptor, verification.TargetGUID); err != nil {
-			if errors.Is(err, ErrActionOperationUnavailable) {
-				return err
+		// Terminal operations are already bound to this exact actor, session,
+		// action and verification. The action may have changed its target state,
+		// so reauthorizing that target would hide a committed-but-unknown result.
+		if operation.State == models.OperationProcessing || operation.State == models.OperationPendingRecovery {
+			if err := authorizeOperationDescriptor(tx, locked.actor, descriptor, verification.TargetGUID); err != nil {
+				if errors.Is(err, ErrActionOperationUnavailable) {
+					return err
+				}
+				return ErrActionOperationHidden
 			}
-			return ErrActionOperationHidden
 		}
 		finalNow := s.clock.NowMillis()
 		if finalNow < now || !validOperationNow(finalNow) {
