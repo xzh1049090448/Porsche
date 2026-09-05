@@ -46,12 +46,53 @@ Any mismatch stops the task before migrations or tests.
 Post-test inspection matched both full IDs, names, immutable image IDs, labels,
 tmpfs mounts, loopback bindings, `AutoRemove`, read-only roots, and healthy
 state. MySQL contains exactly the planned namespace database and its `_test`
-child among databases with this task prefix. The final focused gate used Redis logical database 10 only after `DBSIZE=0`;
-the final race gate used logical database 9 only after `DBSIZE=0`. Earlier
-task-local diagnostic runs used databases 15 through 11; every switch was
-preceded by `DBSIZE=0`, and no unrelated workload used this new container. No `FLUSH`, named volume, remote endpoint, or
+child among databases with this task prefix. The final focused and race gates
+used only Redis logical database 8. No named volume, remote endpoint, or
 unrelated fixture was used. Wrong MySQL and Redis credentials were both
 rejected, and the private env file remained mode `0600`.
+
+## Retained-fixture reset and reviewer rerun
+
+The private, executable reset helper is
+`/tmp/a14-user-delete-20260905125101-20c53025-reset.sh`, mode `0700`, SHA-256
+`85e931a2f833f54bb2507e1d39b675bb2f87b56ba3e2bc1fcc6fe50198bce8f7`.
+It contains no credential. It reads credentials only from the mode-`0600`
+fixture env file and never prints them or either URL.
+
+The helper is idempotent and fail-closed. Before any mutation it verifies both
+full container IDs, exact names, fixed image IDs, task and retention labels,
+`AutoRemove=true`, read-only roots, required tmpfs paths, healthy state, exact
+loopback ports, env-file mode, suffix marker, and the namespace database. It
+then drops and recreates only
+`a14_user_delete_20260905125101-20c53025_test`, clears only Redis logical DB 8,
+and rewrites only the private `TEST_REDIS_URL` selector to DB 8. Its postcheck
+requires the namespace database to remain, the child to contain zero tables,
+exactly the two suffix databases to exist, Redis DB 8 to contain zero keys, and
+both container identities and health to remain unchanged. Every test URL is
+checked to address the `_test` child; the namespace database is never used by
+tests.
+
+An independent reviewer can reproduce the exact clean-start gate with:
+
+```sh
+test "$(stat -f '%Lp' /tmp/a14-user-delete-20260905125101-20c53025.env)" = 600
+test "$(stat -f '%Lp' /tmp/a14-user-delete-20260905125101-20c53025-reset.sh)" = 700
+test "$(shasum -a 256 /tmp/a14-user-delete-20260905125101-20c53025-reset.sh | awk '{print $1}')" = 85e931a2f833f54bb2507e1d39b675bb2f87b56ba3e2bc1fcc6fe50198bce8f7
+/tmp/a14-user-delete-20260905125101-20c53025-reset.sh
+set -a
+source /tmp/a14-user-delete-20260905125101-20c53025.env
+set +a
+go test -p 1 ./internal/migration ./internal/service ./internal/handler -run 'AdminActionOutbox|DeleteUser|ActionVerification|ActionOperation' -count=1
+go test -race ./internal/service ./internal/handler -run 'DeleteUser.*Concurrent|Action.*Concurrent' -count=1
+```
+
+Run the reset once before the focused-plus-race sequence, rather than between
+those two commands. The final Task 12 proof reset observed 16 child tables and
+106 task-local Redis DB-8 keys before reset, then zero child tables and zero
+DB-8 keys.
+An immediate second reset observed zero and zero before reset and again ended
+at zero and zero, proving the retained clean start is recoverable and
+idempotent. The fixture was left at that clean rerun starting point.
 
 The healthy exact fixture is retained exclusively for Task 18 and must not be
 removed or reused for unrelated work. Exact cleanup commands to execute only
@@ -60,7 +101,7 @@ after Task 18 authorizes cleanup:
 ```sh
 docker stop a14-user-delete-mysql-20260905125101-20c53025
 docker stop a14-user-delete-redis-20260905125101-20c53025
-rm -f /tmp/a14-user-delete-20260905125101-20c53025.env /tmp/a14-user-delete-20260905125101-20c53025.ids /tmp/a14-user-delete-20260905125101-20c53025.public
+rm -f /tmp/a14-user-delete-20260905125101-20c53025.env /tmp/a14-user-delete-20260905125101-20c53025.ids /tmp/a14-user-delete-20260905125101-20c53025.public /tmp/a14-user-delete-20260905125101-20c53025-reset.sh /tmp/a14-user-delete-20260905125101-20c53025-focused-final.json /tmp/a14-user-delete-20260905125101-20c53025-race-final.json
 test "$(cat /tmp/a14-user-delete-current-suffix)" != "20260905125101-20c53025" || rm -f /tmp/a14-user-delete-current-suffix
 ```
 

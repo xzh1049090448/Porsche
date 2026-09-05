@@ -60,26 +60,52 @@ the tombstoned username conflicts.
 
 The real fault matrix injects one failure at each session, gateway-token,
 policy-head, policy-override, user, auth-audit, management-audit, outbox, and
-terminal-operation write. Each case proves the transaction leaves no partial
-delete facts, no consumed verification, and a still-processing operation.
+terminal-operation write. Each case directly reloads the seeded active Gateway
+token and unchanged policy head and override in addition to the target,
+sessions, audits, outbox, operation, and verification. Every case proves zero
+partial delete facts, no consumed verification, and a still-processing
+operation.
 Commit-return uncertainty returns the sanitized `CommitUnknownError` with the
 operation public reference, does not replay Execute, and resolves the committed
 success only through `Query`. Existing handler tests in the same focused gate
 prove the corresponding fixed 503 response carries the operation reference.
 
+The successful path directly reloads and requires exactly one row for the auth
+audit, management audit, outbox, operation, and consumed verification. It
+asserts the management audit contains the trimmed canonical reason, while the
+auth-audit schema has no reason column and the outbox schema has neither reason
+nor payload columns. It also proves the exact action, actor, actor auth version,
+logical session, verification, idempotency HMAC, request/intent HMAC, ticket
+HMAC, target, succeeded state, result kind/GUID/status, lease clearance, and
+query-retention bindings. Assertion failures expose none of the payload,
+reason, ticket, refresh material, gateway secret, or stored credential hashes.
+
+The prior test commit was a review RED: it did not directly assert the token
+and policy rollback facts or the complete terminal persistence bindings, so it
+failed the Task 12 specification even though its bounded runtime gate passed.
+The added assertions required no production change and passed against the
+retained real fixture. This report treats that missing evidence as a structural
+SPEC failure rather than inventing a runtime product failure.
+
 ## Final gates
 
-- Serial real fixture command from the plan: 251 terminal test PASS events,
-  228 leaf PASS, 0 FAIL, 0 SKIP; 3 package PASS. Private JSON SHA-256:
-  `953369a7493508c3b8ec248e0459cc2cbc2851af85bebd62aaa2627bd5abdfd3`.
+- Serial real fixture command from the plan, after the documented reset: 251
+  terminal test PASS events, 228 leaf PASS, 0 FAIL, 0 SKIP; 3 package PASS.
+  Private JSON SHA-256:
+  `7bb3f7b69b96dc37344f944dd42a3d1fafb3b8630980c9e942620e737a0b47de`.
 - Race command from the plan: 1 terminal/leaf test PASS, 0 FAIL, 0 SKIP; 2
   package PASS. Private JSON SHA-256:
-  `bee0f76309b55919a6b0ae6e297a0b0e5def88ad1862e4de09c0e5f9d638261f`.
+  `3a469d29f1ec49d4fe21668760a88d2b8c399e715707e12e2b176339acb4394c`.
 - Fresh no-fixture `go test ./...`, `go build ./...`, `go vet ./...`,
   `git diff --check`, and the repository `./init.sh` gate all passed.
 - Private env mode was `0600`; deliberately wrong MySQL and Redis credentials
   were rejected. No credential, connection URL, ticket, password, SID, refresh
   material, or gateway secret is present in this report.
+
+The reset flow and exact reviewer commands are in `fixture-lifecycle.md`. The
+final reset plus an immediate second reset restored and confirmed the empty,
+independently repeatable starting point without changing either fixture
+identity or the namespace database.
 
 The exact two containers remain healthy and labeled for Task 18. Cleanup
 commands are recorded in `fixture-lifecycle.md` and were not executed.
