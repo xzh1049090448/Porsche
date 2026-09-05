@@ -16,6 +16,7 @@ type UserReadDTO struct {
 	PlanType    string  `json:"plan_type"`
 	Role        string  `json:"role"`
 	Status      string  `json:"status"`
+	AuthVersion int     `json:"auth_version"`
 	CreatedAt   string  `json:"created_at"`
 	LastLoginAt *string `json:"last_login_at"`
 }
@@ -28,7 +29,7 @@ func ProjectUserRead(user models.User) (*UserReadDTO, error) {
 	if user.IsDeleted == 1 {
 		status = "deleted"
 	}
-	out := &UserReadDTO{GUID: strconv.FormatInt(user.Guid, 10), Username: user.Username, Nickname: user.Nickname, PlanType: user.PlanType.String(), Role: user.Role.String(), Status: status, CreatedAt: time.UnixMilli(user.CreatedAt).UTC().Format(time.RFC3339Nano)}
+	out := &UserReadDTO{GUID: strconv.FormatInt(user.Guid, 10), Username: user.Username, Nickname: user.Nickname, PlanType: user.PlanType.String(), Role: user.Role.String(), Status: status, AuthVersion: user.AuthVersion, CreatedAt: time.UnixMilli(user.CreatedAt).UTC().Format(time.RFC3339Nano)}
 	if user.LastLoginAt != nil {
 		s := time.UnixMilli(*user.LastLoginAt).UTC().Format(time.RFC3339Nano)
 		out.LastLoginAt = &s

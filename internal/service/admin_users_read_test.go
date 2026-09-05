@@ -40,7 +40,7 @@ func TestAdminUsersReadQuery(t *testing.T) {
 		t.Fatal(q)
 	}
 }
-func TestAdminUsersReadProjection(t *testing.T) {
+func TestAdminUsersReadAuthVersionProjection(t *testing.T) {
 	last := int64(1700000000123)
 	u := models.User{ID: 33, AuditFields: models.AuditFields{Guid: 9223372036854775807, CreatedAt: 0, IsDeleted: 1}, Role: models.UserRoleUser, Status: models.UserStatusDisabled, PlanType: models.PlanFree, LastLoginAt: &last, AuthVersion: 1}
 	v, err := ProjectUserRead(u)
@@ -50,7 +50,7 @@ func TestAdminUsersReadProjection(t *testing.T) {
 	b, _ := json.Marshal(v)
 	var m map[string]interface{}
 	json.Unmarshal(b, &m)
-	if len(m) != 10 || m["guid"] != "9223372036854775807" || m["status"] != "deleted" || m["created_at"] != "1970-01-01T00:00:00Z" || m["last_login_at"] != "2023-11-14T22:13:20.123Z" || m["email"] != nil || m["group"] != nil {
+	if len(m) != 11 || m["guid"] != "9223372036854775807" || m["auth_version"] != float64(1) || m["status"] != "deleted" || m["created_at"] != "1970-01-01T00:00:00Z" || m["last_login_at"] != "2023-11-14T22:13:20.123Z" || m["email"] != nil || m["group"] != nil {
 		t.Fatal(string(b))
 	}
 	u.LastLoginAt = nil
@@ -61,6 +61,11 @@ func TestAdminUsersReadProjection(t *testing.T) {
 	u.PlanType = 99
 	if _, err = ProjectUserRead(u); err == nil {
 		t.Fatal("unknown plan")
+	}
+	u.PlanType = models.PlanFree
+	u.AuthVersion = 0
+	if _, err = ProjectUserRead(u); err == nil {
+		t.Fatal("non-positive auth version")
 	}
 }
 

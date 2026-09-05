@@ -45,7 +45,7 @@ func TestAuthProjectionIssuedResponseFailureNoCredentials(t *testing.T) {
 	}
 }
 
-func TestAdminUsersReadHTTPQueryAndVisibility(t *testing.T) {
+func TestAdminUsersReadHTTPAuthVersionQueryAndVisibility(t *testing.T) {
 	state := adminAuthzHTTPState(t)
 	r := gin.New()
 	RegisterAdminUsersRead(r, state)
@@ -62,9 +62,20 @@ func TestAdminUsersReadHTTPQueryAndVisibility(t *testing.T) {
 		adminAuthzAssertError(t, adminAuthzRequest(r, path, access), 404, "用户不存在")
 	}
 	rec := adminAuthzRequest(r, "/admin/v2/users/"+guid, access)
-	body := adminAuthzObject(t, rec, "guid", "username", "nickname", "email", "group", "plan_type", "role", "status", "created_at", "last_login_at")
-	if body["guid"] != guid || body["email"] != nil || body["group"] != nil {
+	body := adminAuthzObject(t, rec, "guid", "username", "nickname", "email", "group", "plan_type", "role", "status", "auth_version", "created_at", "last_login_at")
+	if body["guid"] != guid || body["auth_version"] != float64(target.AuthVersion) || body["email"] != nil || body["group"] != nil {
 		t.Fatal("DTO")
+	}
+	rec = adminAuthzRequest(r, "/admin/v2/users?q="+guid, access)
+	body = adminAuthzObject(t, rec, "items", "total", "page", "page_size")
+	items := body["items"].([]any)
+	if len(items) != 1 {
+		t.Fatalf("v2 list items=%v", items)
+	}
+	item := items[0].(map[string]any)
+	adminAuthzKeys(t, item, "guid", "username", "nickname", "email", "group", "plan_type", "role", "status", "auth_version", "created_at", "last_login_at")
+	if item["guid"] != guid || item["auth_version"] != float64(target.AuthVersion) {
+		t.Fatalf("v2 list auth version differs: %v", item)
 	}
 	rec = adminAuthzRequest(r, "/admin/v2/users?q="+guid+"&page=2", access)
 	body = adminAuthzObject(t, rec, "items", "total", "page", "page_size")
@@ -75,6 +86,31 @@ func TestAdminUsersReadHTTPQueryAndVisibility(t *testing.T) {
 	if rec.Code != 200 || strings.TrimSpace(rec.Body.String()) != "[]" {
 		t.Fatal("legacy zero")
 	}
+	rec = adminAuthzRequest(r, "/admin/users/"+guid, access)
+	body = adminAuthzObject(t, rec, "guid", "nickname", "plan_type", "status", "is_verified", "total_tokens_used", "created_at")
+	if body["guid"] != guid {
+		t.Fatalf("legacy detail differs: %v", body)
+	}
+	rec = adminAuthzRequest(r, "/admin/users?limit=100", access)
+	adminAuthzAssertHeaders(t, rec)
+	if rec.Code != 200 {
+		t.Fatalf("legacy list status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var legacyItems []map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &legacyItems); err != nil {
+		t.Fatal("invalid legacy list JSON")
+	}
+	var legacyTarget map[string]any
+	for _, candidate := range legacyItems {
+		if candidate["guid"] == guid {
+			legacyTarget = candidate
+			break
+		}
+	}
+	if legacyTarget == nil {
+		t.Fatal("target missing from legacy list")
+	}
+	adminAuthzKeys(t, legacyTarget, "guid", "nickname", "plan_type", "status", "is_verified", "total_tokens_used", "created_at")
 	admin := adminAuthzHTTPUser(t, state, models.UserRoleAdmin)
 	ordinary := adminAuthzHTTPUser(t, state, models.UserRoleUser)
 	for _, actor := range []*models.User{admin, ordinary} {
@@ -84,7 +120,8 @@ func TestAdminUsersReadHTTPQueryAndVisibility(t *testing.T) {
 				adminAuthzAssertError(t, adminAuthzRequest(r, path, token), 403, "无权限访问")
 			}
 		} else {
-			if rec := adminAuthzRequest(r, "/admin/users/"+guid+"/behavior", token); rec.Code != 200 || !strings.Contains(rec.Body.String(), "model_preferences") {
+			body := adminAuthzObject(t, adminAuthzRequest(r, "/admin/users/"+guid+"/behavior", token), "model_preferences")
+			if _, ok := body["model_preferences"].([]any); !ok {
 				t.Fatal("behavior adapter")
 			}
 		}
