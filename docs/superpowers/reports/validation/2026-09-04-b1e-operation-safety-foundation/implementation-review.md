@@ -1,12 +1,20 @@
 # B1-E Task15 Final Implementation Review
 
-- Reviewed HEAD: `b18d22ef8d6683bdf6ef55a7369180b72cb75479`
+- Reviewed HEAD: `440d6b54aa3179c920d333c86b477c41c61c253b`
 - Review mode: final implementation review, repository read-only except for this report
 - Verdict: **IMPLEMENTATION_PASS**
 
 ## Findings
 
-No material correctness, security, concurrency, migration, evidence-integrity, or maintainability findings were identified.
+No material correctness, security, concurrency, migration, evidence-integrity, documentation-consistency, or maintainability findings remain at the corrected reviewed HEAD.
+
+## Prior review omission and closure
+
+The earlier implementation review at `b18d22ef8d6683bdf6ef55a7369180b72cb75479` missed stale current-status statements in the public report, feature list, progress record, and session handoff. Those statements still described Task 14 as unexecuted and the Task 12 fixture as alive after exact cleanup had already completed. This was a review omission.
+
+Commit `440d6b54aa3179c920d333c86b477c41c61c253b` closes the omission in all four documents. They now distinguish the historical fact that the fixture was alive when the third QA evidence was archived from the current fact that Task 14 completed exact cleanup with zero task residuals and unchanged unrelated resource inventories. Their current status consistently remains `passing / limited_subscope`, A14 remains `BLOCKED_NOT_IMPLEMENTED`, active production consumers remain 0, all 18 joint-acceptance blockers remain open in their recorded categories, and all production/frontend/deployment/production-migration/production-acceptance completion claims remain false. The feature list and public manifest parse as valid JSON.
+
+The two commits after the implementation gate HEAD contain documentation and evidence records only; no production or test implementation changed. The complete implementation conclusions below therefore remain applicable at the corrected reviewed HEAD.
 
 ## Review evidence
 
@@ -36,7 +44,7 @@ No material correctness, security, concurrency, migration, evidence-integrity, o
 - The final race gate passed the action-security and service packages with 232 pass events, 204 leaf passes, 26 fixture-dependent skips, and zero failures. The final serial full gate passed with 780 pass events, 695 leaf passes, 283 leaf skips, one explicitly classified performance skip, zero failures, 16 passing packages, and four packages without tests.
 - Recorded event totals were independently recomputed from the structured stream and matched. Recorded evidence hashes were recomputed and matched. The third independent QA signature and its reviewed evidence set had already been verified before authorized fixture cleanup.
 - Cleanup evidence shows the isolated fixture was removed with zero residual fixture resources and unchanged unrelated inventories. The post-cleanup skips are explicit and do not replace the retained real-fixture pass evidence.
-- Build, vet, diff-integrity, JSON parsing, cleanup-integrity, repository-status, production-reference, and frozen-route gates all passed at the reviewed HEAD.
+- Build, vet, diff-integrity, JSON parsing, cleanup-integrity, repository-status, production-reference, and frozen-route gates passed on the immutable implementation gate HEAD. The subsequent documentation-only finalization and status-correction diffs were separately checked for JSON validity, whitespace errors, scope consistency, and production/test-code absence.
 
 ## Acceptance boundary
 

@@ -1,7 +1,7 @@
 # B1-E PM specification final review
 
-- Reviewed HEAD: `b18d22ef8d6683bdf6ef55a7369180b72cb75479`
-- Review scope: approved B1-E design and implementation plan, Tasks 1–14 code/history, public validation evidence, exact cleanup evidence, and the Task 15 final gate summary
+- Reviewed HEAD: `440d6b54aa3179c920d333c86b477c41c61c253b`
+- Review scope: approved B1-E design and implementation plan, Tasks 1–15 code/history, public validation evidence, exact cleanup evidence, Task 15 final gates and reviews, and the corrected current-status documents
 - Review role: PM specification reviewer
 - Verdict: `SPEC_PASS`
 
@@ -29,4 +29,8 @@ Build, vet, diff check, JSON parsing, clean status, and invariant scans pass. Pr
 
 ## Findings
 
-No specification-blocking findings remain. This `SPEC_PASS` is the PM specification verdict for the immutable reviewed HEAD. Final B1-E closure still requires the separate Task 15 implementation and security verdicts and the final four-file review/manifest commit required by the plan.
+The earlier PM review at `b18d22ef8d6683bdf6ef55a7369180b72cb75479` missed stale current-status statements in the public report, `feature_list.json`, `progress.md`, and `session-handoff.md`. Those statements still described Task 14 as unexecuted or the Task 12 fixture as currently alive after exact cleanup had completed. This was a specification-review omission.
+
+Commit `440d6b54aa3179c920d333c86b477c41c61c253b`, recorded after the original Task 15 review commit, closes that omission in all four documents. They now preserve the historical Task 12 snapshot that the fixture was alive at third-QA archival while stating the current Task 14 result as `CLEANUP_PASS`, zero task residuals, and unchanged unrelated resources. They also consistently retain `passing / limited_subscope`, A14 `BLOCKED_NOT_IMPLEMENTED`, zero active production consumers, the exact 18 blocker entries and statuses, and all production, frontend, deployment, production-migration, and production-acceptance exclusions.
+
+No specification-blocking findings remain at the corrected immutable reviewed HEAD. This updated PM review records `SPEC_PASS`; the refreshed review artifacts and manifest will be archived together in the next exact review-only commit.

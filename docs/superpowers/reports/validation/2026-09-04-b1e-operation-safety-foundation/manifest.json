@@ -52,30 +52,30 @@
     },
     {
       "path": "docs/superpowers/reports/validation/2026-09-04-b1e-operation-safety-foundation/pm-spec-review.md",
-      "sha256": "bf8fb1209dc3f337f178dcfdaf162e2ef19061307650c7ad013d5464b505737f",
+      "sha256": "524ce180c7de60692abf12324f21084db86d9b3685c082b70103c5f759ddb470",
       "producing_commit": "SELF_COMMIT",
-      "producing_commit_subject": "docs: finalize B1-E operation safety evidence",
-      "reviewed_head": "b18d22ef8d6683bdf6ef55a7369180b72cb75479",
+      "producing_commit_subject": "docs: refresh B1-E final reviews after status correction",
+      "reviewed_head": "440d6b54aa3179c920d333c86b477c41c61c253b",
       "redaction_status": "public_redacted",
       "review_type": "pm_spec",
       "reviewer_verdict": "SPEC_PASS"
     },
     {
       "path": "docs/superpowers/reports/validation/2026-09-04-b1e-operation-safety-foundation/implementation-review.md",
-      "sha256": "14096698ddcb8d887568d8a1ea636ed285f03ce556ab00268ed31298cb1ae0ab",
+      "sha256": "8a7d63be71a7f716930a26c16d550866653b64a5a72669f8b9e14b739f9d610a",
       "producing_commit": "SELF_COMMIT",
-      "producing_commit_subject": "docs: finalize B1-E operation safety evidence",
-      "reviewed_head": "b18d22ef8d6683bdf6ef55a7369180b72cb75479",
+      "producing_commit_subject": "docs: refresh B1-E final reviews after status correction",
+      "reviewed_head": "440d6b54aa3179c920d333c86b477c41c61c253b",
       "redaction_status": "public_redacted",
       "review_type": "implementation",
       "reviewer_verdict": "IMPLEMENTATION_PASS"
     },
     {
       "path": "docs/superpowers/reports/validation/2026-09-04-b1e-operation-safety-foundation/security-review.md",
-      "sha256": "ec6542dcd371116f3a75905ceb0bed6f993e801fcd77f30c3ccca7499dc77aec",
+      "sha256": "272d99da1cbeda5ab8a561e145f349491511f5e905ea8e4edcb827fdae84cd36",
       "producing_commit": "SELF_COMMIT",
-      "producing_commit_subject": "docs: finalize B1-E operation safety evidence",
-      "reviewed_head": "b18d22ef8d6683bdf6ef55a7369180b72cb75479",
+      "producing_commit_subject": "docs: refresh B1-E final reviews after status correction",
+      "reviewed_head": "440d6b54aa3179c920d333c86b477c41c61c253b",
       "redaction_status": "public_redacted",
       "review_type": "security",
       "reviewer_verdict": "SECURITY_PASS"
@@ -109,7 +109,7 @@
   },
   "fixture_retained_alive": false,
   "task15_started": true,
-  "final_reviewed_head": "b18d22ef8d6683bdf6ef55a7369180b72cb75479",
+  "final_reviewed_head": "440d6b54aa3179c920d333c86b477c41c61c253b",
   "review_verdicts": {
     "pm_spec": "SPEC_PASS",
     "implementation": "IMPLEMENTATION_PASS",
@@ -201,5 +201,17 @@
       "unrelated_resources_unchanged": true
     }
   },
-  "task15_completed": true
+  "task15_completed": true,
+  "review_history": {
+    "initial_review_artifact_commit": "42d3487d018a174bbcb85aa1b71947d35e968a93",
+    "omission": "the initial three reviews did not detect stale current-status claims that still described the Task12 fixture as alive or Task14 cleanup as pending",
+    "detected_by": "root final self-audit",
+    "status_correction_commit": "440d6b54aa3179c920d333c86b477c41c61c253b",
+    "correction": "four current status documents now distinguish the historical Task12 retained snapshot from current Task14 CLEANUP_PASS and zero residuals",
+    "current_rereview": {
+      "pm_spec": "SPEC_PASS",
+      "implementation": "IMPLEMENTATION_PASS",
+      "security": "SECURITY_PASS"
+    }
+  }
 }
