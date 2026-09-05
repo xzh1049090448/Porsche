@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -27,14 +28,10 @@ func TestDecodeUserDeleteIssue(t *testing.T) {
 	if string(got.Password) != "example-only-not-a-secret" {
 		t.Fatal("password aliases caller source")
 	}
-	rendered := fmt.Sprint(got)
-	if strings.Contains(rendered, "example-only-not-a-secret") || strings.Contains(rendered, "101 120 97 109 112 108 101") {
-		t.Fatalf("normalized issue string exposed password material: %s", rendered)
-	}
-	clear(got.Password)
-	for _, value := range got.Password {
-		if value != 0 {
-			t.Fatal("caller cannot clear password")
+	for _, verb := range []string{"%v", "%+v", "%#v", "%s", "%q"} {
+		rendered := fmt.Sprintf(verb, got)
+		if !strings.Contains(rendered, "<redacted>") || strings.Contains(rendered, "example-only-not-a-secret") || strings.Contains(rendered, "101 120 97 109 112 108 101") || strings.Contains(rendered, "0x65, 0x78, 0x61, 0x6d, 0x70, 0x6c, 0x65") {
+			t.Fatalf("format %s exposed password material: %s", verb, rendered)
 		}
 	}
 	encoded, err := json.Marshal(got)
@@ -43,6 +40,12 @@ func TestDecodeUserDeleteIssue(t *testing.T) {
 	}
 	if bytes.Contains(encoded, []byte("example-only-not-a-secret")) {
 		t.Fatal("normalized issue JSON exposed password")
+	}
+	clear(got.Password)
+	for _, value := range got.Password {
+		if value != 0 {
+			t.Fatal("caller cannot clear password")
+		}
 	}
 }
 
@@ -58,12 +61,31 @@ func TestDecodeUserDeleteExecute(t *testing.T) {
 	}
 }
 
+func TestDecodeUserDeleteIssuePasswordJSONEscapes(t *testing.T) {
+	got, err := DecodeUserDeleteIssue(strings.NewReader(`{"action":"users.delete","intent":{"target_guid":"1","expected_auth_version":1,"reason":"x"},"current_password":"a\"b\\c\/d\b\f\n\r\t\u4e16\ud83d\ude00"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []byte("a\"b\\c/d\b\f\n\r\t世😀")
+	if !bytes.Equal(got.Password, want) {
+		t.Fatalf("decoded password bytes differ: got_length=%d want_length=%d", len(got.Password), len(want))
+	}
+	clear(got.Password)
+}
+
 func TestUserDeleteStrictJSON(t *testing.T) {
 	issueCases := map[string]string{
 		"empty":                     ``,
 		"array":                     `[]`,
 		"unknown top":               `{"action":"users.delete","intent":{"target_guid":"1","expected_auth_version":1,"reason":"x"},"current_password":"p","extra":1}`,
 		"unknown nested":            `{"action":"users.delete","intent":{"target_guid":"1","expected_auth_version":1,"reason":"x","extra":1},"current_password":"p"}`,
+		"case Action":               strings.Replace(validUserDeleteIssueJSON, `"action"`, `"Action"`, 1),
+		"case ACTION":               strings.Replace(validUserDeleteIssueJSON, `"action"`, `"ACTION"`, 1),
+		"case Current_Password":     strings.Replace(validUserDeleteIssueJSON, `"current_password"`, `"Current_Password"`, 1),
+		"case Target_GUID":          strings.Replace(validUserDeleteIssueJSON, `"target_guid"`, `"Target_GUID"`, 1),
+		"colliding Action":          strings.Replace(validUserDeleteIssueJSON, `"action":"users.delete"`, `"action":"users.delete","Action":"users.delete"`, 1),
+		"colliding password":        strings.Replace(validUserDeleteIssueJSON, `"current_password":"example-only-not-a-secret"`, `"current_password":"example-only-not-a-secret","Current_Password":"example-only-not-a-secret"`, 1),
+		"colliding target GUID":     strings.Replace(validUserDeleteIssueJSON, `"target_guid":"123456789012345678"`, `"target_guid":"123456789012345678","Target_GUID":"123456789012345678"`, 1),
 		"duplicate top":             `{"action":"users.delete","action":"users.delete","intent":{"target_guid":"1","expected_auth_version":1,"reason":"x"},"current_password":"p"}`,
 		"duplicate nested":          `{"action":"users.delete","intent":{"target_guid":"1","target_guid":"2","expected_auth_version":1,"reason":"x"},"current_password":"p"}`,
 		"trailing JSON":             validUserDeleteIssueJSON + `{}`,
@@ -102,6 +124,9 @@ func TestUserDeleteStrictJSON(t *testing.T) {
 	executeCases := map[string]string{
 		"unknown":           `{"action":"delete","expected_auth_version":7,"reason":"x","extra":1}`,
 		"duplicate":         `{"action":"delete","action":"delete","expected_auth_version":7,"reason":"x"}`,
+		"case Action":       `{"Action":"delete","expected_auth_version":7,"reason":"x"}`,
+		"case ACTION":       `{"ACTION":"delete","expected_auth_version":7,"reason":"x"}`,
+		"colliding Action":  `{"action":"delete","Action":"delete","expected_auth_version":7,"reason":"x"}`,
 		"trailing":          `{"action":"delete","expected_auth_version":7,"reason":"x"}{}`,
 		"wrong action":      `{"action":"users.delete","expected_auth_version":7,"reason":"x"}`,
 		"version string":    `{"action":"delete","expected_auth_version":"7","reason":"x"}`,
@@ -114,6 +139,14 @@ func TestUserDeleteStrictJSON(t *testing.T) {
 				t.Fatal("accepted invalid execute")
 			}
 		})
+	}
+}
+
+func TestUserDeletePasswordWireUsesRawMessage(t *testing.T) {
+	got := reflect.TypeOf(userDeleteIssueWire{}.Password)
+	want := reflect.TypeOf(json.RawMessage(nil))
+	if got != want {
+		t.Fatalf("password wire type=%v want=%v", got, want)
 	}
 }
 

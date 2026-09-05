@@ -29,6 +29,14 @@ type IssueUserDeleteRequest struct {
 }
 
 func (request IssueUserDeleteRequest) String() string {
+	return request.redactedString()
+}
+
+func (request IssueUserDeleteRequest) Format(state fmt.State, _ rune) {
+	_, _ = io.WriteString(state, request.redactedString())
+}
+
+func (request IssueUserDeleteRequest) redactedString() string {
 	return fmt.Sprintf("IssueUserDeleteRequest{Action:%q TargetGUID:%d ExpectedVersion:%d Reason:%q Password:<redacted>}", request.Action, request.TargetGUID, request.ExpectedVersion, request.Reason)
 }
 
@@ -61,21 +69,21 @@ type UserDeleteQueryResponse struct {
 }
 
 type userDeleteIssueWire struct {
-	Action   string                `json:"action"`
-	Intent   *userDeleteIntentWire `json:"intent"`
-	Password *string               `json:"current_password"`
+	Action   json.RawMessage
+	Intent   json.RawMessage
+	Password json.RawMessage
 }
 
 type userDeleteIntentWire struct {
-	TargetGUID      string          `json:"target_guid"`
-	ExpectedVersion json.RawMessage `json:"expected_auth_version"`
-	Reason          string          `json:"reason"`
+	TargetGUID      json.RawMessage
+	ExpectedVersion json.RawMessage
+	Reason          json.RawMessage
 }
 
 type userDeleteExecuteWire struct {
-	Action          string          `json:"action"`
-	ExpectedVersion json.RawMessage `json:"expected_auth_version"`
-	Reason          string          `json:"reason"`
+	Action          json.RawMessage
+	ExpectedVersion json.RawMessage
+	Reason          json.RawMessage
 }
 
 func DecodeUserDeleteIssue(body io.Reader) (IssueUserDeleteRequest, error) {
@@ -87,25 +95,48 @@ func DecodeUserDeleteIssue(body io.Reader) (IssueUserDeleteRequest, error) {
 	if err := validateUserDeleteJSON(raw); err != nil {
 		return IssueUserDeleteRequest{}, err
 	}
-	var wire userDeleteIssueWire
-	if err := decodeUserDeleteWire(raw, &wire); err != nil || wire.Action != "users.delete" || wire.Intent == nil || wire.Password == nil || *wire.Password == "" {
+	top, err := decodeExactUserDeleteObject(raw, "action", "intent", "current_password")
+	if err != nil {
 		return IssueUserDeleteRequest{}, ErrUserDeleteInvalidBody
 	}
-	targetGUID, ok := parseCanonicalPositiveInt64(wire.Intent.TargetGUID)
+	defer clearUserDeleteRawMap(top)
+	intentFields, err := decodeExactUserDeleteObject(top["intent"], "target_guid", "expected_auth_version", "reason")
+	if err != nil {
+		return IssueUserDeleteRequest{}, ErrUserDeleteInvalidBody
+	}
+	defer clearUserDeleteRawMap(intentFields)
+	wire := userDeleteIssueWire{Action: top["action"], Intent: top["intent"], Password: top["current_password"]}
+	intent := userDeleteIntentWire{TargetGUID: intentFields["target_guid"], ExpectedVersion: intentFields["expected_auth_version"], Reason: intentFields["reason"]}
+	action, ok := decodeUserDeleteString(wire.Action)
+	if !ok || action != "users.delete" {
+		return IssueUserDeleteRequest{}, ErrUserDeleteInvalidBody
+	}
+	targetRaw, ok := decodeUserDeleteString(intent.TargetGUID)
 	if !ok {
 		return IssueUserDeleteRequest{}, ErrUserDeleteInvalidBody
 	}
-	version, ok := parseUserDeleteVersion(wire.Intent.ExpectedVersion)
+	targetGUID, ok := parseCanonicalPositiveInt64(targetRaw)
 	if !ok {
 		return IssueUserDeleteRequest{}, ErrUserDeleteInvalidBody
 	}
-	reason, ok := normalizeUserDeleteReason(wire.Intent.Reason)
+	version, ok := parseUserDeleteVersion(intent.ExpectedVersion)
 	if !ok {
 		return IssueUserDeleteRequest{}, ErrUserDeleteInvalidBody
 	}
-	password := append([]byte(nil), []byte(*wire.Password)...)
-	wire.Password = nil
-	return IssueUserDeleteRequest{Action: wire.Action, TargetGUID: targetGUID, ExpectedVersion: version, Reason: reason, Password: password}, nil
+	reasonRaw, ok := decodeUserDeleteString(intent.Reason)
+	if !ok {
+		return IssueUserDeleteRequest{}, ErrUserDeleteInvalidBody
+	}
+	reason, ok := normalizeUserDeleteReason(reasonRaw)
+	if !ok {
+		return IssueUserDeleteRequest{}, ErrUserDeleteInvalidBody
+	}
+	password, ok := decodeOwnedUserDeleteJSONString(wire.Password)
+	if !ok || len(password) == 0 {
+		clear(password)
+		return IssueUserDeleteRequest{}, ErrUserDeleteInvalidBody
+	}
+	return IssueUserDeleteRequest{Action: action, TargetGUID: targetGUID, ExpectedVersion: version, Reason: reason, Password: password}, nil
 }
 
 func DecodeUserDeleteExecute(body io.Reader) (ExecuteUserDeleteRequest, error) {
@@ -117,15 +148,25 @@ func DecodeUserDeleteExecute(body io.Reader) (ExecuteUserDeleteRequest, error) {
 	if err := validateUserDeleteJSON(raw); err != nil {
 		return ExecuteUserDeleteRequest{}, err
 	}
-	var wire userDeleteExecuteWire
-	if err := decodeUserDeleteWire(raw, &wire); err != nil || wire.Action != "delete" {
+	top, err := decodeExactUserDeleteObject(raw, "action", "expected_auth_version", "reason")
+	if err != nil {
+		return ExecuteUserDeleteRequest{}, ErrUserDeleteInvalidBody
+	}
+	defer clearUserDeleteRawMap(top)
+	wire := userDeleteExecuteWire{Action: top["action"], ExpectedVersion: top["expected_auth_version"], Reason: top["reason"]}
+	action, ok := decodeUserDeleteString(wire.Action)
+	if !ok || action != "delete" {
 		return ExecuteUserDeleteRequest{}, ErrUserDeleteInvalidBody
 	}
 	version, ok := parseUserDeleteVersion(wire.ExpectedVersion)
 	if !ok {
 		return ExecuteUserDeleteRequest{}, ErrUserDeleteInvalidBody
 	}
-	reason, ok := normalizeUserDeleteReason(wire.Reason)
+	reasonRaw, ok := decodeUserDeleteString(wire.Reason)
+	if !ok {
+		return ExecuteUserDeleteRequest{}, ErrUserDeleteInvalidBody
+	}
+	reason, ok := normalizeUserDeleteReason(reasonRaw)
 	if !ok {
 		return ExecuteUserDeleteRequest{}, ErrUserDeleteInvalidBody
 	}
@@ -153,17 +194,117 @@ func readUserDeleteBody(body io.Reader) ([]byte, error) {
 	return raw, nil
 }
 
-func decodeUserDeleteWire(raw []byte, dst any) error {
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.DisallowUnknownFields()
-	decoder.UseNumber()
-	if err := decoder.Decode(dst); err != nil {
-		return ErrUserDeleteInvalidBody
+func decodeExactUserDeleteObject(raw []byte, keys ...string) (map[string]json.RawMessage, error) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil || len(fields) != len(keys) {
+		clearUserDeleteRawMap(fields)
+		return nil, ErrUserDeleteInvalidBody
 	}
-	if err := decoder.Decode(&struct{}{}); err != io.EOF {
-		return ErrUserDeleteInvalidBody
+	allowed := make(map[string]struct{}, len(keys))
+	for _, key := range keys {
+		allowed[key] = struct{}{}
+		if _, ok := fields[key]; !ok {
+			clearUserDeleteRawMap(fields)
+			return nil, ErrUserDeleteInvalidBody
+		}
 	}
-	return nil
+	for key := range fields {
+		if _, ok := allowed[key]; !ok {
+			clearUserDeleteRawMap(fields)
+			return nil, ErrUserDeleteInvalidBody
+		}
+	}
+	return fields, nil
+}
+
+func clearUserDeleteRawMap(fields map[string]json.RawMessage) {
+	for key, value := range fields {
+		clear(value)
+		delete(fields, key)
+	}
+}
+
+func decodeUserDeleteString(raw json.RawMessage) (string, bool) {
+	var value string
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return "", false
+	}
+	return value, true
+}
+
+func decodeOwnedUserDeleteJSONString(raw json.RawMessage) ([]byte, bool) {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) < 2 || raw[0] != '"' || raw[len(raw)-1] != '"' || !utf8.Valid(raw) {
+		return nil, false
+	}
+	decoded := make([]byte, 0, len(raw)-2)
+	for i := 1; i < len(raw)-1; i++ {
+		value := raw[i]
+		switch {
+		case value == '"' || value < 0x20:
+			clear(decoded)
+			return nil, false
+		case value == '\\':
+			i++
+			if i >= len(raw)-1 {
+				clear(decoded)
+				return nil, false
+			}
+			switch raw[i] {
+			case '"', '\\', '/':
+				decoded = append(decoded, raw[i])
+			case 'b':
+				decoded = append(decoded, '\b')
+			case 'f':
+				decoded = append(decoded, '\f')
+			case 'n':
+				decoded = append(decoded, '\n')
+			case 'r':
+				decoded = append(decoded, '\r')
+			case 't':
+				decoded = append(decoded, '\t')
+			case 'u':
+				codePoint, ok := parseUserDeleteHex4(raw, i+1)
+				if !ok {
+					clear(decoded)
+					return nil, false
+				}
+				i += 4
+				r := rune(codePoint)
+				if codePoint >= 0xd800 && codePoint <= 0xdbff {
+					if i+6 >= len(raw) || raw[i+1] != '\\' || raw[i+2] != 'u' {
+						clear(decoded)
+						return nil, false
+					}
+					low, ok := parseUserDeleteHex4(raw, i+3)
+					if !ok || low < 0xdc00 || low > 0xdfff {
+						clear(decoded)
+						return nil, false
+					}
+					r = utf16.DecodeRune(r, rune(low))
+					i += 6
+				} else if codePoint >= 0xdc00 && codePoint <= 0xdfff {
+					clear(decoded)
+					return nil, false
+				}
+				decoded = utf8.AppendRune(decoded, r)
+			default:
+				clear(decoded)
+				return nil, false
+			}
+		case value < utf8.RuneSelf:
+			decoded = append(decoded, value)
+		default:
+			_, size := utf8.DecodeRune(raw[i : len(raw)-1])
+			if size == 1 {
+				clear(decoded)
+				return nil, false
+			}
+			decoded = append(decoded, raw[i:i+size]...)
+			i += size - 1
+		}
+	}
+	return decoded, true
 }
 
 func validateUserDeleteJSON(raw []byte) error {
