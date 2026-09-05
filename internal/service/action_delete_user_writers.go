@@ -111,7 +111,7 @@ func (execution *DeleteUserExecution) Write(ctx context.Context, tx *gorm.DB, ev
 	execution.state.mu.Unlock()
 
 	db := deleteWriterDB(ctx, tx)
-	binding, err := loadDeleteWriterBinding(db, event.PublicRef, event.ActorGUID, intent.TargetGUID)
+	binding, err := loadDeleteWriterBinding(db, event.PublicRef, event.ActorGUID, event.SessionGUID, intent.TargetGUID)
 	if err != nil {
 		return ErrActionOperationUnavailable
 	}
@@ -172,7 +172,7 @@ func (writer *AdminActionOutboxWriter) Write(ctx context.Context, tx *gorm.DB, e
 		return ErrActionOperationUnavailable
 	}
 	db := deleteWriterDB(ctx, tx)
-	binding, err := loadDeleteWriterBinding(db, event.PublicRef, event.ActorGUID, *event.TargetGUID)
+	binding, err := loadDeleteWriterBinding(db, event.PublicRef, event.ActorGUID, event.SessionGUID, *event.TargetGUID)
 	if err != nil {
 		return ErrActionOperationUnavailable
 	}
@@ -200,11 +200,12 @@ type deleteWriterBinding struct {
 	actorUserID int64
 }
 
-func loadDeleteWriterBinding(db *gorm.DB, publicRef string, actorGUID, targetGUID int64) (deleteWriterBinding, error) {
+func loadDeleteWriterBinding(db *gorm.DB, publicRef string, actorGUID, sessionGUID, targetGUID int64) (deleteWriterBinding, error) {
 	var operation models.AdminOperation
-	if err := db.Select("id", "actor_user_id", "action", "verification_id", "state", "public_ref").
+	if err := db.Select("id", "actor_user_id", "actor_auth_version", "session_id", "action", "verification_id", "state", "public_ref").
 		Where("public_ref = ? AND is_deleted = 0", publicRef).First(&operation).Error; err != nil ||
-		operation.ID <= 0 || operation.ActorUserID <= 0 || operation.Action != int(actionsecurity.ActionUsersDelete) ||
+		operation.ID <= 0 || operation.ActorUserID <= 0 || operation.ActorAuthVersion <= 0 || operation.SessionID <= 0 ||
+		operation.Action != int(actionsecurity.ActionUsersDelete) ||
 		operation.VerificationID == nil || *operation.VerificationID <= 0 || operation.State != models.OperationProcessing ||
 		!constantTimeOperationStringEqual(operation.PublicRef, publicRef) {
 		return deleteWriterBinding{}, ErrActionOperationUnavailable
@@ -215,9 +216,18 @@ func loadDeleteWriterBinding(db *gorm.DB, publicRef string, actorGUID, targetGUI
 		return deleteWriterBinding{}, ErrActionOperationUnavailable
 	}
 	var verification models.AdminActionVerification
-	if err := db.Select("id", "action", "target_kind", "target_guid").Where("id = ?", *operation.VerificationID).First(&verification).Error; err != nil ||
-		verification.ID != *operation.VerificationID || verification.Action != int(actionsecurity.ActionUsersDelete) ||
-		verification.TargetKind != int(actionsecurity.TargetUser) || verification.TargetGUID == nil || *verification.TargetGUID != targetGUID {
+	if err := db.Select("id", "actor_user_id", "actor_auth_version", "session_id", "action", "target_kind", "target_guid", "consumed_at", "is_deleted").
+		Where("id = ?", *operation.VerificationID).First(&verification).Error; err != nil ||
+		verification.ID != *operation.VerificationID || verification.ActorUserID != operation.ActorUserID ||
+		verification.ActorAuthVersion != operation.ActorAuthVersion || verification.SessionID != operation.SessionID ||
+		verification.Action != int(actionsecurity.ActionUsersDelete) || verification.TargetKind != int(actionsecurity.TargetUser) ||
+		verification.TargetGUID == nil || *verification.TargetGUID != targetGUID || verification.ConsumedAt == nil ||
+		*verification.ConsumedAt <= 0 || verification.IsDeleted != 1 {
+		return deleteWriterBinding{}, ErrActionOperationUnavailable
+	}
+	var session models.Session
+	if err := db.Select("id", "guid", "user_id").Where("id = ?", operation.SessionID).First(&session).Error; err != nil ||
+		session.ID != operation.SessionID || session.Guid <= 0 || session.Guid != sessionGUID || session.UserID != operation.ActorUserID {
 		return deleteWriterBinding{}, ErrActionOperationUnavailable
 	}
 	return deleteWriterBinding{operationID: operation.ID, actorUserID: operation.ActorUserID}, nil

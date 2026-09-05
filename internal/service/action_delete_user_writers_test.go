@@ -212,6 +212,15 @@ func TestDeleteUserAuditWriterRejectsInvalidContextTransactionEventAndBinding(t 
 			value := int64(6002)
 			script.verification.TargetGUID = &value
 		}},
+		{"verification session mismatch", func(_ *ActionAuditEvent, script *deleteWriterScript) {
+			script.verification.SessionID++
+		}},
+		{"verification not consumed", func(_ *ActionAuditEvent, script *deleteWriterScript) {
+			script.verification.ConsumedAt = nil
+		}},
+		{"session actor mismatch", func(_ *ActionAuditEvent, script *deleteWriterScript) {
+			script.session.UserID++
+		}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -444,6 +453,49 @@ func TestDeleteUserWritersReturnFixedErrorAndAllowCallerRollback(t *testing.T) {
 	}
 }
 
+func TestDeleteUserWritersRejectForgedPositiveSessionGUID(t *testing.T) {
+	tests := []struct {
+		name string
+		call func(*testing.T, *gorm.DB) error
+	}{
+		{"audit", func(t *testing.T, tx *gorm.DB) error {
+			execution := newDeleteWriterExecution(t, func() int64 { return 7006 })
+			if err := execution.recordAuditFacts(61, 6001, models.UserStatusActive); err != nil {
+				t.Fatal(err)
+			}
+			event := deleteAuditEvent()
+			event.SessionGUID = 5002
+			return execution.Write(context.Background(), tx, event)
+		}},
+		{"outbox", func(t *testing.T, tx *gorm.DB) error {
+			writer, err := NewAdminActionOutboxWriter(func() int64 { return 7007 }, deleteWriterClock(8001))
+			if err != nil {
+				t.Fatal(err)
+			}
+			event := deleteOutboxEvent()
+			event.SessionGUID = 5002
+			return writer.Write(context.Background(), tx, event)
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			db, script := newDeleteWriterDB(t)
+			tx := db.Begin()
+			err := tc.call(t, tx)
+			if !errors.Is(err, ErrActionOperationUnavailable) || err.Error() != ErrActionOperationUnavailable.Error() {
+				t.Fatalf("forged session error = %v", err)
+			}
+			if rollbackErr := tx.Rollback().Error; rollbackErr != nil {
+				t.Fatal(rollbackErr)
+			}
+			if script.committedCount() != 0 {
+				t.Fatal("forged session persisted a row")
+			}
+			script.assertSafeSessionLookup(t, 45, 5002)
+		})
+	}
+}
+
 func newDeleteWriterExecution(t *testing.T, nextGUID func() int64) *DeleteUserExecution {
 	t.Helper()
 	execution, err := NewDeleteUserExecution(deleteWriterIntent(), nextGUID, deleteWriterClock(8001))
@@ -499,6 +551,11 @@ type deleteWriterInsert struct {
 	args  []driver.NamedValue
 }
 
+type deleteWriterQuery struct {
+	query string
+	args  []driver.NamedValue
+}
+
 func (insert deleteWriterInsert) columnValues(t *testing.T) map[string]any {
 	t.Helper()
 	open := strings.Index(insert.query, "(")
@@ -521,9 +578,39 @@ type deleteWriterScript struct {
 	mu           sync.Mutex
 	operation    models.AdminOperation
 	actor        models.User
+	session      models.Session
 	verification models.AdminActionVerification
+	queries      []deleteWriterQuery
 	committed    []deleteWriterInsert
 	failInsert   string
+}
+
+func (script *deleteWriterScript) assertSafeSessionLookup(t *testing.T, internalID, forgedGUID int64) {
+	t.Helper()
+	script.mu.Lock()
+	defer script.mu.Unlock()
+	var matched []deleteWriterQuery
+	for _, query := range script.queries {
+		if strings.Contains(query.query, "FROM `user_sessions`") {
+			matched = append(matched, query)
+		}
+	}
+	if len(matched) != 1 {
+		t.Fatalf("session queries = %d, want 1: %v", len(matched), script.queries)
+	}
+	query := matched[0]
+	if !strings.HasPrefix(query.query, "SELECT `id`,`guid`,`user_id` FROM `user_sessions` WHERE id = ?") ||
+		strings.Contains(query.query, "`sid`") || strings.Contains(query.query, "session_guid") {
+		t.Fatalf("unsafe session query: %s", query.query)
+	}
+	if len(query.args) == 0 || fmt.Sprint(query.args[0].Value) != fmt.Sprint(internalID) {
+		t.Fatalf("session selector args = %v, want internal id %d", query.args, internalID)
+	}
+	for _, arg := range query.args {
+		if fmt.Sprint(arg.Value) == fmt.Sprint(forgedGUID) {
+			t.Fatalf("session lookup used public GUID: %v", query.args)
+		}
+	}
 }
 
 func (script *deleteWriterScript) committedCount() int {
@@ -624,24 +711,31 @@ func (conn *deleteWriterConn) CheckNamedValue(value *driver.NamedValue) error {
 	return nil
 }
 
-func (conn *deleteWriterConn) QueryContext(_ context.Context, query string, _ []driver.NamedValue) (driver.Rows, error) {
+func (conn *deleteWriterConn) QueryContext(_ context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
 	conn.script.mu.Lock()
 	defer conn.script.mu.Unlock()
 	if conn.tx == nil {
 		return nil, errors.New("private query outside transaction")
 	}
+	conn.script.queries = append(conn.script.queries, deleteWriterQuery{query: query, args: append([]driver.NamedValue(nil), args...)})
 	switch {
 	case strings.Contains(query, "FROM `admin_operations`"):
 		op := conn.script.operation
-		return deleteWriterRow([]string{"id", "actor_user_id", "action", "verification_id", "state", "public_ref"},
-			[]driver.Value{op.ID, op.ActorUserID, int64(op.Action), pointerDriverValue(op.VerificationID), int64(op.State), op.PublicRef}), nil
+		return deleteWriterRow([]string{"id", "actor_user_id", "actor_auth_version", "session_id", "action", "verification_id", "state", "public_ref"},
+			[]driver.Value{op.ID, op.ActorUserID, int64(op.ActorAuthVersion), op.SessionID, int64(op.Action),
+				pointerDriverValue(op.VerificationID), int64(op.State), op.PublicRef}), nil
 	case strings.Contains(query, "FROM `users`"):
 		actor := conn.script.actor
 		return deleteWriterRow([]string{"id", "guid"}, []driver.Value{actor.ID, actor.Guid}), nil
+	case strings.Contains(query, "FROM `user_sessions`"):
+		session := conn.script.session
+		return deleteWriterRow([]string{"id", "guid", "user_id"}, []driver.Value{session.ID, session.Guid, session.UserID}), nil
 	case strings.Contains(query, "FROM `admin_action_verifications`"):
 		verification := conn.script.verification
-		return deleteWriterRow([]string{"id", "action", "target_kind", "target_guid"},
-			[]driver.Value{verification.ID, int64(verification.Action), int64(verification.TargetKind), pointerDriverValue(verification.TargetGUID)}), nil
+		return deleteWriterRow([]string{"id", "actor_user_id", "actor_auth_version", "session_id", "action", "target_kind", "target_guid", "consumed_at", "is_deleted"},
+			[]driver.Value{verification.ID, verification.ActorUserID, int64(verification.ActorAuthVersion), verification.SessionID,
+				int64(verification.Action), int64(verification.TargetKind), pointerDriverValue(verification.TargetGUID),
+				pointerDriverValue(verification.ConsumedAt), int64(verification.IsDeleted)}), nil
 	default:
 		return nil, fmt.Errorf("private unexpected query: %s", query)
 	}
@@ -720,12 +814,16 @@ func newDeleteWriterDB(t *testing.T) (*gorm.DB, *deleteWriterScript) {
 	deleteWriterDriverOnce.Do(func() { sql.Register(deleteWriterDriverName, deleteWriterDriver{}) })
 	verificationID := int64(51)
 	targetGUID := int64(6001)
+	sessionID := int64(45)
+	consumedAt := int64(8001)
 	script := &deleteWriterScript{
-		operation: models.AdminOperation{ID: 31, ActorUserID: 41, Action: int(actionsecurity.ActionUsersDelete), VerificationID: &verificationID,
-			State: models.OperationProcessing, PublicRef: deleteWriterPublicRef},
-		actor: models.User{ID: 41, AuditFields: models.AuditFields{Guid: 4001}},
-		verification: models.AdminActionVerification{ID: verificationID, Action: int(actionsecurity.ActionUsersDelete),
-			TargetKind: int(actionsecurity.TargetUser), TargetGUID: &targetGUID},
+		operation: models.AdminOperation{ID: 31, ActorUserID: 41, ActorAuthVersion: 3, SessionID: sessionID,
+			Action: int(actionsecurity.ActionUsersDelete), VerificationID: &verificationID, State: models.OperationProcessing, PublicRef: deleteWriterPublicRef},
+		actor:   models.User{ID: 41, AuditFields: models.AuditFields{Guid: 4001}},
+		session: models.Session{ID: sessionID, AuditFields: models.AuditFields{Guid: 5001}, UserID: 41},
+		verification: models.AdminActionVerification{ID: verificationID, ActorUserID: 41, ActorAuthVersion: 3, SessionID: sessionID,
+			Action: int(actionsecurity.ActionUsersDelete), TargetKind: int(actionsecurity.TargetUser), TargetGUID: &targetGUID,
+			ConsumedAt: &consumedAt, AuditFields: models.AuditFields{IsDeleted: 1}},
 	}
 	dsn := fmt.Sprintf("delete-writer-%d", deleteWriterDriverSeq.Add(1))
 	deleteWriterScripts.Store(dsn, script)
