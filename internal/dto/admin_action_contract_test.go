@@ -87,14 +87,46 @@ func TestUserDeleteActiveContractMatchesRuntimeFixtures(t *testing.T) {
 
 	assertJSONFixture(t, contractAt(t, document, "endpoints", "issue", "response_example"), UserDeleteIssueResponse{Ticket: "av_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", ExpiresAt: 1790000300000})
 	assertJSONFixture(t, contractAt(t, document, "endpoints", "execute", "response_example"), DeleteUserResponse{OperationRef: "op_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", User: UserDeleteResponseUser{GUID: "123456789012345678", Status: "deleted"}})
-	assertJSONFixture(t, contractAt(t, document, "endpoints", "query", "response_examples", "processing"), UserDeleteQueryResponse{OperationRef: "op_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", Scope: "users.delete", Status: "processing"})
+	finishedAt := int64(1790000000000)
+	failureCode := "target_version_conflict"
+	queryFixtures := map[string]UserDeleteQueryResponse{
+		"processing":       {OperationRef: "op_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", Scope: "users.delete", Status: "processing"},
+		"succeeded":        {OperationRef: "op_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", Scope: "users.delete", Status: "succeeded", FinishedAt: &finishedAt},
+		"failed":           {OperationRef: "op_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", Scope: "users.delete", Status: "failed", FinishedAt: &finishedAt, FailureCode: &failureCode},
+		"pending_recovery": {OperationRef: "op_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", Scope: "users.delete", Status: "pending_recovery"},
+	}
+	for name, fixture := range queryFixtures {
+		assertJSONFixture(t, contractAt(t, document, "endpoints", "query", "response_examples", name), fixture)
+	}
+	assertContractValue(t, document, map[string]any{"error": map[string]any{
+		"code": "legacy_user_delete_gone", "message": "Use the verified v2 user delete action flow.",
+		"type": "admin_action_error", "request_id": "req-contract-example-legacy",
+	}}, "endpoints", "legacy_delete", "response_example")
 
-	assertContractValue(t, document, "forbidden", "endpoints", "issue", "request_headers", "Idempotency-Key")
-	assertContractValue(t, document, "forbidden", "endpoints", "issue", "request_headers", "X-Action-Ticket")
-	assertContractValue(t, document, "required_exactly_one_unique_original", "endpoints", "execute", "request_headers", "Idempotency-Key")
-	assertContractValue(t, document, "required_exactly_one", "endpoints", "execute", "request_headers", "X-Action-Ticket")
-	assertContractValue(t, document, "required_exactly_one_original", "endpoints", "query", "request_headers", "Idempotency-Key")
-	assertContractValue(t, document, "forbidden", "endpoints", "query", "request_headers", "X-Action-Ticket")
+	assertContractValue(t, document, map[string]any{"Idempotency-Key": "forbidden", "X-Action-Ticket": "forbidden"}, "endpoints", "issue", "request_headers")
+	assertContractValue(t, document, map[string]any{"Cache-Control": "no-store", "X-Request-ID": "required_non_empty"}, "endpoints", "issue", "response_headers")
+	assertContractValue(t, document, map[string]any{"Idempotency-Key": "required_exactly_one_unique_original", "X-Action-Ticket": "required_exactly_one"}, "endpoints", "execute", "request_headers")
+	assertContractValue(t, document, map[string]any{"Cache-Control": "no-store", "X-Request-ID": "required_non_empty"}, "endpoints", "execute", "response_headers")
+	assertContractValue(t, document, map[string]any{"Idempotency-Key": "required_exactly_one_original", "X-Action-Ticket": "forbidden"}, "endpoints", "query", "request_headers")
+	assertContractValue(t, document, map[string]any{"Cache-Control": "no-store", "X-Request-ID": "required_non_empty", "Retry-After": "processing_only_integer_seconds_1_to_30"}, "endpoints", "query", "response_headers")
+	assertContractValue(t, document, map[string]any{"Idempotency-Key": "ignored_no_effect", "X-Action-Ticket": "ignored_no_effect"}, "endpoints", "legacy_delete", "request_headers")
+	assertContractValue(t, document, map[string]any{"Cache-Control": "no-store", "X-Request-ID": "required_non_empty"}, "endpoints", "legacy_delete", "response_headers")
+	assertContractValue(t, document, json.Number("4096"), "endpoints", "issue", "body_limit_bytes")
+	assertContractValue(t, document, json.Number("4096"), "endpoints", "execute", "body_limit_bytes")
+	assertContractValue(t, document, "one_exact_json_object_no_unknown_duplicate_or_trailing_fields", "endpoints", "issue", "body_rule")
+	assertContractValue(t, document, "one_exact_json_object_no_unknown_duplicate_or_trailing_fields", "endpoints", "execute", "body_rule")
+	assertContractValue(t, document, map[string]any{
+		"target_guid": "canonical_positive_signed_int64_decimal_string", "expected_auth_version": "integer_1_to_2147483647",
+		"reason": "unicode_trimmed_1_to_200_code_points", "current_password": "required_owned_bytes_cleared_after_use",
+	}, "endpoints", "issue", "field_rules")
+	assertContractValue(t, document, map[string]any{
+		"path_guid": "canonical_positive_signed_int64_decimal_string", "action": "exact_lowercase_delete",
+		"expected_auth_version": "integer_1_to_2147483647", "reason": "unicode_trimmed_1_to_200_code_points",
+	}, "endpoints", "execute", "field_rules")
+	assertContractValue(t, document, json.Number("201"), "endpoints", "issue", "response_status")
+	assertContractValue(t, document, json.Number("300"), "endpoints", "issue", "ticket_ttl_seconds")
+	assertContractValue(t, document, json.Number("200"), "endpoints", "execute", "response_status")
+	assertContractValue(t, document, json.Number("200"), "endpoints", "query", "response_status")
 	assertContractValue(t, document, []any{"processing", "succeeded", "failed", "pending_recovery"}, "operation_statuses")
 	assertContractValue(t, document, []any{"action_rejected", "target_version_conflict", "policy_version_conflict", "target_state_conflict", "consumer_validation_failed"}, "failure_codes")
 	assertContractValue(t, document, json.Number("0"), "endpoints", "issue", "post_replay_count")
@@ -102,7 +134,8 @@ func TestUserDeleteActiveContractMatchesRuntimeFixtures(t *testing.T) {
 	assertContractValue(t, document, json.Number("1"), "endpoints", "query", "get_replay_after_refresh")
 	assertContractValue(t, document, "processing_only_integer_seconds_1_to_30", "endpoints", "query", "response_headers", "Retry-After")
 	assertContractValue(t, document, json.Number("410"), "endpoints", "legacy_delete", "response_status")
-	assertContractValue(t, document, "legacy_user_delete_gone", "endpoints", "legacy_delete", "response_example", "error", "code")
+	assertContractValue(t, document, false, "endpoints", "legacy_delete", "target_lookup")
+	assertContractValue(t, document, false, "endpoints", "legacy_delete", "database_or_redis_write")
 	assertContractValue(t, document, map[string]any{
 		"scope": "users.delete", "sensitivePostAutoReplay": false, "clientPersistence": "memory_only",
 		"reasonPersistence": []any{"audit_logs.detail"}, "legacyDeleteStatus": json.Number("410"),
@@ -113,27 +146,39 @@ func TestUserDeleteActiveContractMatchesRuntimeFixtures(t *testing.T) {
 	assertContractKeys(t, contractAt(t, document, "frontend").(map[string]any), "memory_only", "storage_prohibitions", "post_replay_count", "query_get_after_refresh_max", "unload_recovery")
 	assertContractKeys(t, contractAt(t, document, "security_properties").(map[string]any), "scope", "sensitivePostAutoReplay", "clientPersistence", "reasonPersistence", "legacyDeleteStatus")
 	assertContractKeys(t, contractAt(t, document, "acceptance").(map[string]any), "internal_foundation_is_http_acceptance", "contract_callable", "frontend_connected", "contract_accepted", "statement")
+	assertContractValue(t, document, []any{"ticket", "idempotency_key", "unknown_state"}, "frontend", "memory_only")
+	assertContractValue(t, document, []any{"localStorage", "sessionStorage", "URL", "analytics", "ordinary_logs"}, "frontend", "storage_prohibitions")
+	assertContractValue(t, document, json.Number("0"), "frontend", "post_replay_count")
+	assertContractValue(t, document, json.Number("1"), "frontend", "query_get_after_refresh_max")
+	assertContractValue(t, document, false, "frontend", "unload_recovery")
 }
 
 func TestUserDeleteActiveContractStatusAndErrorMatrix(t *testing.T) {
 	document := readContractTree(t)
-	statuses := contractAt(t, document, "error_contract", "http_statuses").([]any)
-	want := []json.Number{"400", "401", "403", "404", "409", "410", "422", "429", "503"}
-	got := make([]json.Number, 0, len(statuses))
-	for _, item := range statuses {
-		row := item.(map[string]any)
-		assertContractKeys(t, row, "status", "codes", "envelope", "retry_after")
-		got = append(got, row["status"].(json.Number))
+	wantStatuses := []any{
+		map[string]any{"status": json.Number("400"), "codes": []any{"invalid_admin_action_request"}, "envelope": "admin_action_error", "retry_after": "forbidden"},
+		map[string]any{"status": json.Number("401"), "codes": []any{"existing_authentication_failure"}, "envelope": "existing_authentication_middleware", "retry_after": "forbidden"},
+		map[string]any{"status": json.Number("403"), "codes": []any{"action_verification_rejected", "action_operation_rejected"}, "envelope": "admin_action_error", "retry_after": "forbidden"},
+		map[string]any{"status": json.Number("404"), "codes": []any{"action_target_not_found", "action_operation_not_found"}, "envelope": "admin_action_error", "retry_after": "forbidden"},
+		map[string]any{"status": json.Number("409"), "codes": []any{"action_verification_conflict", "idempotency_conflict", "idempotency_cross_session", "action_rejected", "target_version_conflict", "policy_version_conflict", "target_state_conflict", "consumer_validation_failed"}, "envelope": "admin_action_error", "retry_after": "forbidden"},
+		map[string]any{"status": json.Number("410"), "codes": []any{"operation_expired"}, "envelope": "admin_action_error", "retry_after": "forbidden"},
+		map[string]any{"status": json.Number("422"), "codes": []any{"action_inactive"}, "envelope": "admin_action_error", "retry_after": "forbidden"},
+		map[string]any{"status": json.Number("429"), "codes": []any{"action_rate_limited"}, "envelope": "admin_action_error", "retry_after": "required_integer_seconds_minimum_1"},
+		map[string]any{"status": json.Number("503"), "codes": []any{"action_dependency_unavailable", "operation_commit_unknown"}, "envelope": "admin_action_error", "retry_after": "forbidden"},
 	}
-	if !slices.Equal(got, want) {
-		t.Fatalf("HTTP status set=%v, want %v", got, want)
-	}
+	assertContractValue(t, document, wantStatuses, "error_contract", "http_statuses")
+	assertContractValue(t, document, map[string]any{"error": map[string]any{
+		"code": "idempotency_conflict", "message": "请求无法完成", "type": "admin_action_error", "request_id": "req-contract-example-1",
+	}}, "error_contract", "envelope_example")
+	assertContractValue(t, document, map[string]any{"error": map[string]any{
+		"code": "operation_commit_unknown", "message": "请求无法完成", "type": "admin_action_error",
+		"request_id": "req-contract-example-2", "operation_ref": "op_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+	}}, "error_contract", "commit_unknown_example")
+	assertContractValue(t, document, []any{"code", "message", "type", "request_id"}, "error_contract", "required_fields")
+	assertContractValue(t, document, []any{"target", "ticket", "idempotency_key", "digest", "internal_id", "dependency_raw_text"}, "error_contract", "prohibited_fields")
 	assertContractValue(t, document, "admin_action_error", "error_contract", "fixed_type")
 	assertContractValue(t, document, "请求无法完成", "error_contract", "fixed_message")
 	assertContractValue(t, document, "only_operation_commit_unknown", "error_contract", "operation_ref_rule")
-	assertContractValue(t, document, []any{"action_rate_limited"}, "error_contract", "http_statuses", 7, "codes")
-	assertContractValue(t, document, "required_integer_seconds_minimum_1", "error_contract", "http_statuses", 7, "retry_after")
-	assertContractValue(t, document, []any{"action_dependency_unavailable", "operation_commit_unknown"}, "error_contract", "http_statuses", 8, "codes")
 }
 
 func TestUserDeleteActiveContractRejectsDuplicateKeys(t *testing.T) {
