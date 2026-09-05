@@ -26,11 +26,28 @@ type State struct {
 	AuthRedis            *service.AuthRedis
 	Sessions             *service.SessionService
 	ActionSecurityCrypto *actionsecurity.Crypto
+	UserDeleteActions    *service.UserDeleteActions
 	ActionVerifications  *service.ActionVerificationService
 	HTTP                 *http.Client
 }
 
 func NewState(settings *config.Settings, db *gorm.DB) (*State, error) {
+	return newState(settings, db, defaultStateConstructors())
+}
+
+type stateConstructors struct {
+	newAuthRedisFromURL  func(context.Context, string, string) (*service.AuthRedis, error)
+	newUserDeleteActions func(*gorm.DB, *service.AuthRedis, *actionsecurity.Crypto) (*service.UserDeleteActions, error)
+}
+
+func defaultStateConstructors() stateConstructors {
+	return stateConstructors{
+		newAuthRedisFromURL:  service.NewAuthRedisFromURL,
+		newUserDeleteActions: service.NewUserDeleteActions,
+	}
+}
+
+func newState(settings *config.Settings, db *gorm.DB, constructors stateConstructors) (*State, error) {
 	persistence.ConfigureSnowflake(settings.SnowflakeNodeID)
 	s := &State{
 		Settings: settings,
@@ -62,7 +79,10 @@ func NewState(settings *config.Settings, db *gorm.DB) (*State, error) {
 	// dependency here ensures a configured Redis failure prevents future auth
 	// operations from silently falling back to non-revocable JWT behavior.
 	if strings.TrimSpace(settings.RedisURL) != "" {
-		authRedis, err := service.NewAuthRedisFromURL(context.Background(), settings.RedisURL, settings.AuthHMACKey)
+		if constructors.newAuthRedisFromURL == nil {
+			return nil, service.ErrActionVerificationUnavailable
+		}
+		authRedis, err := constructors.newAuthRedisFromURL(context.Background(), settings.RedisURL, settings.AuthHMACKey)
 		if err != nil {
 			return nil, err
 		}
@@ -71,14 +91,16 @@ func NewState(settings *config.Settings, db *gorm.DB) (*State, error) {
 	s.Sessions = service.NewSessionService(db, s.AuthRedis, settings)
 	s.Auth.SetSessionService(s.Sessions)
 	if s.ActionSecurityCrypto != nil {
-		if db == nil || s.AuthRedis == nil {
+		if db == nil || s.AuthRedis == nil || constructors.newUserDeleteActions == nil {
 			return nil, service.ErrActionVerificationUnavailable
 		}
-		actionVerifications, err := service.NewActionVerificationServiceFromAuthRedis(db, s.AuthRedis, s.ActionSecurityCrypto)
-		if err != nil {
-			return nil, err
+		userDeleteActions, err := constructors.newUserDeleteActions(db, s.AuthRedis, s.ActionSecurityCrypto)
+		if err != nil || userDeleteActions == nil || userDeleteActions.Verifications == nil ||
+			userDeleteActions.Operations == nil || userDeleteActions.Outbox == nil || userDeleteActions.NewExecution == nil {
+			return nil, service.ErrActionVerificationUnavailable
 		}
-		s.ActionVerifications = actionVerifications
+		s.UserDeleteActions = userDeleteActions
+		s.ActionVerifications = userDeleteActions.Verifications
 	}
 	s.Platform = service.NewPlatformChatService(service.PlatformDeps{
 		Settings:   settings,
