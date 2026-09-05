@@ -92,7 +92,7 @@ func newTestActionVerificationService(t *testing.T, db *gorm.DB, client *actionI
 		if action == testNoopAction {
 			return testNoopDescriptor(), true
 		}
-		return actionsecurity.Descriptor{}, false
+		return actionsecurity.ResolveActiveAction(action)
 	}, clock, random, nextGUID)
 	if err != nil {
 		t.Fatal(err)
@@ -176,6 +176,62 @@ func TestActionSecurityConstructorRejectsPartialAndTypedNilDependencies(t *testi
 	if _, err := newActionVerificationService(db, limiter, authRedis, crypto, resolver, clock, nilReader, guid); !errors.Is(err, ErrActionVerificationUnavailable) {
 		t.Fatalf("typed nil reader error = %v", err)
 	}
+}
+
+func TestLockActionIdentityReturnsDefensiveTargetCopyAndNilForTargetNone(t *testing.T) {
+	const now int64 = 1_800_000_000_000
+	t.Run("target user", func(t *testing.T) {
+		script, actor, _ := actionIssueScriptFixture(t, now)
+		original := script.target
+		db := openActionIssueScriptDB(t, script, nil)
+		var identity lockedActionIdentity
+		err := db.Transaction(func(tx *gorm.DB) error {
+			var err error
+			identity, err = lockActionIdentity(tx, actor, activeDeleteDescriptor(t), &original.Guid, now)
+			return err
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if identity.target == nil || identity.target == original || identity.target.ID != original.ID ||
+			identity.target.Guid != original.Guid || identity.target.Role != original.Role || identity.target.Status != original.Status ||
+			identity.target.IsDeleted != original.IsDeleted || identity.target.AuthVersion != original.AuthVersion {
+			t.Fatalf("locked target is not a defensive copy: got=%#v original=%#v", identity.target, original)
+		}
+		identity.target.AuthVersion++
+		if original.AuthVersion != 4 {
+			t.Fatal("mutating returned target changed scripted locked row")
+		}
+		if len(script.queries) < 5 || !strings.Contains(script.queries[0].query, "FROM `users`") ||
+			!strings.Contains(script.queries[1].query, "FROM `user_sessions`") ||
+			!strings.Contains(script.queries[2].query, "guid = ?") ||
+			!strings.Contains(script.queries[3].query, "FROM `user_permission_heads`") ||
+			!strings.Contains(script.queries[4].query, "FROM `user_permission_overrides`") {
+			t.Fatalf("actor/session/target/policy lock order changed: %#v", script.queries)
+		}
+	})
+
+	t.Run("target none", func(t *testing.T) {
+		script, actor, _ := actionIssueScriptFixture(t, now)
+		descriptor := actionsecurity.Descriptor{
+			Action: actionsecurity.ActionUsersCreateAdmin, Name: "users.create_admin", Capability: "users.create",
+			RootOnly: true, RequiresTicket: true, Active: true, TargetKind: actionsecurity.TargetNone,
+			Encode: func(any) ([]byte, error) { return []byte("unused"), nil },
+		}
+		db := openActionIssueScriptDB(t, script, nil)
+		var identity lockedActionIdentity
+		err := db.Transaction(func(tx *gorm.DB) error {
+			var err error
+			identity, err = lockActionIdentity(tx, actor, descriptor, nil, now)
+			return err
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if identity.target != nil {
+			t.Fatalf("TargetNone retained target: %#v", identity.target)
+		}
+	})
 }
 
 func valueLimiter(value any) *ActionSecurityRedis {

@@ -26,6 +26,7 @@ var (
 	ErrActionVerificationInactive    = &HTTPError{Status: 422, Message: "admin action unavailable"}
 	ErrActionVerificationForbidden   = &HTTPError{Status: 403, Message: "admin action verification rejected"}
 	ErrActionVerificationHidden      = &HTTPError{Status: 404, Message: "admin action target unavailable"}
+	ErrActionVerificationConflict    = &HTTPError{Status: 409, Message: "admin action verification conflict"}
 	ErrActionVerificationUnavailable = &HTTPError{Status: 503, Message: "admin action verification unavailable"}
 )
 
@@ -54,8 +55,8 @@ type ActionVerificationService struct {
 	nextGUID  func() int64
 }
 
-// NewActionVerificationService constructs the production service. Its active
-// resolver is deliberately the empty production registry in B1-E.
+// NewActionVerificationService constructs the production service with the
+// reviewed active action registry.
 func NewActionVerificationService(db *gorm.DB, limiter *ActionSecurityRedis, authRedis *AuthRedis, crypto *actionsecurity.Crypto) (*ActionVerificationService, error) {
 	return newActionVerificationService(db, limiter, authRedis, crypto, actionsecurity.ResolveActiveAction, persistence.SystemClock(), cryptorand.Reader, persistence.NextGUID)
 }
@@ -147,6 +148,14 @@ func (s *ActionVerificationService) Issue(ctx context.Context, in VerificationIs
 		if identity.session.ExpiresAt <= lockedNow {
 			return ErrActionVerificationForbidden
 		}
+		switch descriptor.Action {
+		case actionsecurity.ActionUsersDelete:
+			if err := validateLockedDeleteIntent(descriptor, in.Intent, identity.target); err != nil {
+				return err
+			}
+		default:
+			return ErrActionVerificationUnavailable
+		}
 		passwordOK := identity.actor.PasswordHash != nil && security.VerifyPassword(string(in.CurrentPassword), *identity.actor.PasswordHash)
 		clear(in.CurrentPassword)
 		if !passwordOK {
@@ -194,7 +203,7 @@ func (s *ActionVerificationService) Issue(ctx context.Context, in VerificationIs
 		return nil
 	}, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
-		if errors.Is(err, ErrActionVerificationForbidden) || errors.Is(err, ErrActionVerificationHidden) {
+		if errors.Is(err, ErrActionVerificationForbidden) || errors.Is(err, ErrActionVerificationHidden) || errors.Is(err, ErrActionVerificationConflict) {
 			return nil, err
 		}
 		return nil, ErrActionVerificationUnavailable

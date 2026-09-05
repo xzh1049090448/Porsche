@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -104,7 +105,7 @@ func (c *actionIssueConn) QueryContext(_ context.Context, query string, args []d
 			return nil, errors.New("private target query failure")
 		}
 		columns := []string{"id", "guid", "role", "status", "is_deleted", "auth_version"}
-		if c.script.target == nil {
+		if c.script.target == nil || c.script.target.IsDeleted != 0 {
 			return scriptedActionIssueRows(kind, c.script, columns, nil), nil
 		}
 		u := c.script.target
@@ -325,10 +326,6 @@ func actionIssueScriptFixture(t *testing.T, now int64) (*actionIssueSQLScript, A
 	return script, claims, password
 }
 
-func testTargetUserDescriptor(action actionsecurity.Action) actionsecurity.Descriptor {
-	return actionsecurity.Descriptor{Action: action, Name: "test.noop", Capability: "users.delete", RequiresTicket: true, Active: true, TargetKind: actionsecurity.TargetUser, Encode: func(any) ([]byte, error) { return []byte("target-intent"), nil }}
-}
-
 func TestActionIssueScriptDriverRejectsWrongShapeAndVars(t *testing.T) {
 	script, _, _ := actionIssueScriptFixture(t, 1_800_000_000_000)
 	conn := &actionIssueConn{script: script}
@@ -349,6 +346,104 @@ func TestActionIssueScriptDriverRejectsWrongShapeAndVars(t *testing.T) {
 	}
 }
 
+func TestDeleteVerificationIssueAuthorizationMatrix(t *testing.T) {
+	const now int64 = 1_800_000_000_000
+	for _, tc := range []struct {
+		name       string
+		actorRole  models.UserRole
+		targetRole models.UserRole
+		allow      bool
+	}{
+		{name: "root to user", actorRole: models.UserRoleRoot, targetRole: models.UserRoleUser},
+		{name: "root to admin", actorRole: models.UserRoleRoot, targetRole: models.UserRoleAdmin},
+		{name: "authorized admin to user", actorRole: models.UserRoleAdmin, targetRole: models.UserRoleUser, allow: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			script, actor, passwordText := actionIssueScriptFixture(t, now)
+			script.actor.Role = tc.actorRole
+			script.target.Role = tc.targetRole
+			if tc.allow {
+				script.policyHead = &models.PermissionPolicyHead{ID: 40, AuditFields: models.AuditFields{Guid: 4001}, UserID: script.actor.ID, PolicyVersion: 2, CatalogVersion: models.PermissionCatalogVersion, RuleCount: 1}
+				script.overrides = []models.PermissionOverride{{ID: 41, AuditFields: models.AuditFields{Guid: 4101}, UserID: script.actor.ID, PolicyVersion: 2, Capability: 12, Effect: 2}}
+			}
+			password := []byte(passwordText)
+			service := newTestActionVerificationService(t, openActionIssueScriptDB(t, script, nil), &actionIssueRedisClient{actionRateEvalClient: newActionRateEvalClient()}, &actionIssueClock{now: now}, bytes.NewReader(bytes.Repeat([]byte{1}, 32)), func() int64 { return 9400 })
+			result, err := service.Issue(context.Background(), VerificationIssue{
+				Action: actionsecurity.ActionUsersDelete, Actor: actor, TargetGUID: &script.target.Guid,
+				Intent:          actionsecurity.DeleteUserIntent{TargetGUID: script.target.Guid, ExpectedAuthVersion: script.target.AuthVersion, Reason: "matrix"},
+				CurrentPassword: password, TrustedIP: "203.0.113.27",
+			})
+			if err != nil || result == nil || len(script.execs) != 2 || script.commits != 1 {
+				t.Fatalf("result/error/writes/commits = %#v/%v/%d/%d", result, err, len(script.execs), script.commits)
+			}
+		})
+	}
+}
+
+func TestDeleteVerificationIssueRejectsLockedIntentBeforePasswordAndWrites(t *testing.T) {
+	const now int64 = 1_800_000_000_000
+	for _, tc := range []struct {
+		name   string
+		mutate func(*actionIssueSQLScript, *actionsecurity.DeleteUserIntent)
+	}{
+		{name: "target binding", mutate: func(_ *actionIssueSQLScript, intent *actionsecurity.DeleteUserIntent) { intent.TargetGUID++ }},
+		{name: "stale version", mutate: func(_ *actionIssueSQLScript, intent *actionsecurity.DeleteUserIntent) { intent.ExpectedAuthVersion-- }},
+		{name: "disabled target", mutate: func(script *actionIssueSQLScript, _ *actionsecurity.DeleteUserIntent) {
+			script.target.Status = models.UserStatusDisabled
+		}},
+		{name: "max version", mutate: func(script *actionIssueSQLScript, intent *actionsecurity.DeleteUserIntent) {
+			script.target.AuthVersion = math.MaxInt32
+			intent.ExpectedAuthVersion = math.MaxInt32
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			script, actor, _ := actionIssueScriptFixture(t, now)
+			invalidHash := "password-verifier-must-not-run"
+			script.actor.PasswordHash = &invalidHash
+			intent := actionsecurity.DeleteUserIntent{TargetGUID: script.target.Guid, ExpectedAuthVersion: script.target.AuthVersion, Reason: "conflict"}
+			tc.mutate(script, &intent)
+			password := []byte("private-current-password")
+			reader := &actionIssueObservingReader{password: password, data: bytes.Repeat([]byte{1}, 32)}
+			service := newTestActionVerificationService(t, openActionIssueScriptDB(t, script, nil), &actionIssueRedisClient{actionRateEvalClient: newActionRateEvalClient()}, &actionIssueClock{now: now}, reader, func() int64 { return 9500 })
+			result, err := service.Issue(context.Background(), VerificationIssue{
+				Action: actionsecurity.ActionUsersDelete, Actor: actor, TargetGUID: &script.target.Guid, Intent: intent,
+				CurrentPassword: password, TrustedIP: "203.0.113.28",
+			})
+			if result != nil || !errors.Is(err, ErrActionVerificationConflict) || err.Error() != ErrActionVerificationConflict.Error() {
+				t.Fatalf("result/error = %#v/%v, want fixed conflict", result, err)
+			}
+			if len(script.execs) != 0 || script.commits != 0 || script.rollbacks != 1 || reader.cleared || len(reader.data) != 32 {
+				t.Fatalf("policy rejection side effects writes/commits/rollbacks/random = %d/%d/%d/%t/%d", len(script.execs), script.commits, script.rollbacks, reader.cleared, len(reader.data))
+			}
+			if !bytes.Equal(password, make([]byte, len(password))) {
+				t.Fatal("policy rejection did not clear caller password")
+			}
+			for _, private := range []string{fmt.Sprint(script.target.Guid), fmt.Sprint(script.target.AuthVersion), script.target.Role.String(), "private-current-password"} {
+				if strings.Contains(err.Error(), private) {
+					t.Fatalf("policy conflict leaked %q", private)
+				}
+			}
+		})
+	}
+}
+
+func TestActionVerificationIssueFailsClosedForUnreviewedFutureActiveAction(t *testing.T) {
+	const now int64 = 1_800_000_000_000
+	script, actor, _ := actionIssueScriptFixture(t, now)
+	invalidHash := "password-verifier-must-not-run"
+	script.actor.PasswordHash = &invalidHash
+	password := []byte("private-current-password")
+	reader := &actionIssueObservingReader{password: password, data: bytes.Repeat([]byte{1}, 32)}
+	service := newTestActionVerificationService(t, openActionIssueScriptDB(t, script, nil), &actionIssueRedisClient{actionRateEvalClient: newActionRateEvalClient()}, &actionIssueClock{now: now}, reader, func() int64 { return 9600 })
+	result, err := service.Issue(context.Background(), VerificationIssue{
+		Action: testNoopAction, Actor: actor, TargetGUID: testNoopTargetGUIDValue(), Intent: testNoopIntent(testNoopTargetGUID, "future"),
+		CurrentPassword: password, TrustedIP: "203.0.113.29",
+	})
+	if result != nil || !errors.Is(err, ErrActionVerificationUnavailable) || len(script.execs) != 0 || reader.cleared || len(reader.data) != 32 {
+		t.Fatalf("future action result/error/writes/random = %#v/%v/%d/%t/%d", result, err, len(script.execs), reader.cleared, len(reader.data))
+	}
+}
+
 func TestActionVerificationIssueContractExists(t *testing.T) {
 	var _ *ActionVerificationService
 	var _ *IssuedVerification
@@ -363,7 +458,7 @@ func TestActionVerificationIssueScriptedTransactionIsOrderedSecretFreeAndImmedia
 	password := []byte(passwordText)
 	reader := &actionIssueObservingReader{password: password, data: bytes.Repeat([]byte{0x5a}, 32)}
 	service := newTestActionVerificationService(t, db, client, &actionIssueClock{now: now}, reader, func() int64 { return 9001 })
-	issued, err := service.Issue(context.Background(), VerificationIssue{Action: testNoopAction, TargetGUID: testNoopTargetGUIDValue(), Actor: actor, Intent: testNoopIntent(testNoopTargetGUID, "sensitive-intent"), CurrentPassword: password, TrustedIP: "203.0.113.20"})
+	issued, err := service.Issue(context.Background(), VerificationIssue{Action: actionsecurity.ActionUsersDelete, TargetGUID: testNoopTargetGUIDValue(), Actor: actor, Intent: testNoopIntent(testNoopTargetGUID, "sensitive-intent"), CurrentPassword: password, TrustedIP: "203.0.113.20"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -446,7 +541,7 @@ func TestActionVerificationIssueScriptedFailuresRollbackAndClearSecrets(t *testi
 			db := openActionIssueScriptDB(t, script, nil)
 			client := &actionIssueRedisClient{actionRateEvalClient: newActionRateEvalClient()}
 			service := newTestActionVerificationService(t, db, client, &actionIssueClock{now: now}, reader, guid)
-			result, err := service.Issue(context.Background(), VerificationIssue{Action: testNoopAction, TargetGUID: testNoopTargetGUIDValue(), Actor: actor, Intent: testNoopIntent(testNoopTargetGUID, "failure-intent"), CurrentPassword: password, TrustedIP: "203.0.113.21"})
+			result, err := service.Issue(context.Background(), VerificationIssue{Action: actionsecurity.ActionUsersDelete, TargetGUID: testNoopTargetGUIDValue(), Actor: actor, Intent: testNoopIntent(testNoopTargetGUID, "failure-intent"), CurrentPassword: password, TrustedIP: "203.0.113.21"})
 			if result != nil || !errors.Is(err, tc.want) || err.Error() != tc.want.Error() {
 				t.Fatalf("result/error = %#v/%v, want nil/%v", result, err, tc.want)
 			}
@@ -479,7 +574,7 @@ func TestActionIdentityFreshClaimsCandidateBoundsAndLockWaitExpiry(t *testing.T)
 		{name: "session version", mutate: func(_ *actionIssueSQLScript, actor *ActionActor) { actor.SessionVersion++ }, want: ErrActionVerificationForbidden},
 		{name: "disabled actor", mutate: func(script *actionIssueSQLScript, _ *ActionActor) { script.actor.Status = models.UserStatusDisabled }, want: ErrActionVerificationForbidden},
 		{name: "wrong role", mutate: func(script *actionIssueSQLScript, _ *ActionActor) { script.actor.Role = models.UserRoleUser }, want: ErrActionVerificationForbidden},
-		{name: "root-only capability", mutate: func(script *actionIssueSQLScript, _ *ActionActor) { script.actor.Role = models.UserRoleAdmin }, want: ErrActionVerificationForbidden},
+		{name: "admin without delete permission", mutate: func(script *actionIssueSQLScript, _ *ActionActor) { script.actor.Role = models.UserRoleAdmin }, want: ErrActionVerificationForbidden},
 		{name: "revoked session", mutate: func(script *actionIssueSQLScript, _ *ActionActor) {
 			revoked := now
 			script.sessions[0].RevokedAt = &revoked
@@ -502,7 +597,7 @@ func TestActionIdentityFreshClaimsCandidateBoundsAndLockWaitExpiry(t *testing.T)
 			password := []byte(passwordText)
 			reader := &actionIssueObservingReader{password: password, data: bytes.Repeat([]byte{1}, 32)}
 			service := newTestActionVerificationService(t, openActionIssueScriptDB(t, script, nil), &actionIssueRedisClient{actionRateEvalClient: newActionRateEvalClient()}, clock, reader, func() int64 { return 9003 })
-			result, err := service.Issue(context.Background(), VerificationIssue{Action: testNoopAction, TargetGUID: testNoopTargetGUIDValue(), Actor: actor, Intent: testNoopIntent(testNoopTargetGUID, "fresh-intent"), CurrentPassword: password, TrustedIP: "203.0.113.22"})
+			result, err := service.Issue(context.Background(), VerificationIssue{Action: actionsecurity.ActionUsersDelete, TargetGUID: testNoopTargetGUIDValue(), Actor: actor, Intent: testNoopIntent(testNoopTargetGUID, "fresh-intent"), CurrentPassword: password, TrustedIP: "203.0.113.22"})
 			if result != nil || !errors.Is(err, tc.want) || len(script.execs) != 0 || script.commits != 0 || script.rollbacks != 1 {
 				t.Fatalf("result/error/exec/commit/rollback = %#v/%v/%d/%d/%d", result, err, len(script.execs), script.commits, script.rollbacks)
 			}
@@ -516,27 +611,34 @@ func TestActionIdentityFreshClaimsCandidateBoundsAndLockWaitExpiry(t *testing.T)
 func TestActionIdentityTargetUserHiddenAndHierarchy(t *testing.T) {
 	const now int64 = 1_800_000_000_000
 	for _, tc := range []struct {
-		name   string
-		target *models.User
+		name      string
+		actorRole models.UserRole
+		target    *models.User
+		want      error
 	}{
-		{name: "missing"},
-		{name: "root hierarchy", target: &models.User{ID: 30, AuditFields: models.AuditFields{Guid: 3001}, Role: models.UserRoleRoot, Status: models.UserStatusActive, AuthVersion: 1}},
+		{name: "missing", want: ErrActionVerificationHidden},
+		{name: "deleted is filtered as missing", target: &models.User{ID: 30, AuditFields: models.AuditFields{Guid: 3001, IsDeleted: 1}, Role: models.UserRoleUser, Status: models.UserStatusActive, AuthVersion: 1}, want: ErrActionVerificationHidden},
+		{name: "self", target: &models.User{ID: 10, AuditFields: models.AuditFields{Guid: 1001}, Role: models.UserRoleUser, Status: models.UserStatusActive, AuthVersion: 7}, want: ErrActionVerificationHidden},
+		{name: "root target", target: &models.User{ID: 30, AuditFields: models.AuditFields{Guid: 3001}, Role: models.UserRoleRoot, Status: models.UserStatusActive, AuthVersion: 1}, want: ErrActionVerificationHidden},
+		{name: "admin equal role", actorRole: models.UserRoleAdmin, target: &models.User{ID: 30, AuditFields: models.AuditFields{Guid: 3001}, Role: models.UserRoleAdmin, Status: models.UserStatusActive, AuthVersion: 1}, want: ErrActionVerificationHidden},
+		{name: "admin higher role", actorRole: models.UserRoleAdmin, target: &models.User{ID: 30, AuditFields: models.AuditFields{Guid: 3001}, Role: models.UserRoleRoot, Status: models.UserStatusActive, AuthVersion: 1}, want: ErrActionVerificationHidden},
+		{name: "admin without delete permission", actorRole: models.UserRoleAdmin, target: &models.User{ID: 30, AuditFields: models.AuditFields{Guid: 3001}, Role: models.UserRoleUser, Status: models.UserStatusActive, AuthVersion: 1}, want: ErrActionVerificationForbidden},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			script, actor, passwordText := actionIssueScriptFixture(t, now)
 			script.target = tc.target
-			script.targetGUID = 3001
-			password := []byte(passwordText)
-			service := newTestActionVerificationService(t, openActionIssueScriptDB(t, script, nil), &actionIssueRedisClient{actionRateEvalClient: newActionRateEvalClient()}, &actionIssueClock{now: now}, &actionIssueObservingReader{password: password, data: bytes.Repeat([]byte{1}, 32)}, func() int64 { return 9004 })
-			service.resolve = func(action actionsecurity.Action) (actionsecurity.Descriptor, bool) {
-				if action != testNoopAction {
-					return actionsecurity.Descriptor{}, false
-				}
-				return testTargetUserDescriptor(action), true
+			if tc.actorRole != 0 {
+				script.actor.Role = tc.actorRole
 			}
 			targetGUID := int64(3001)
-			result, err := service.Issue(context.Background(), VerificationIssue{Action: testNoopAction, Actor: actor, TargetGUID: &targetGUID, Intent: testNoopIntent(testNoopTargetGUID, "target"), CurrentPassword: password, TrustedIP: "203.0.113.23"})
-			if result != nil || !errors.Is(err, ErrActionVerificationHidden) || len(script.execs) != 0 {
+			if tc.target != nil {
+				targetGUID = tc.target.Guid
+			}
+			script.targetGUID = targetGUID
+			password := []byte(passwordText)
+			service := newTestActionVerificationService(t, openActionIssueScriptDB(t, script, nil), &actionIssueRedisClient{actionRateEvalClient: newActionRateEvalClient()}, &actionIssueClock{now: now}, &actionIssueObservingReader{password: password, data: bytes.Repeat([]byte{1}, 32)}, func() int64 { return 9004 })
+			result, err := service.Issue(context.Background(), VerificationIssue{Action: actionsecurity.ActionUsersDelete, Actor: actor, TargetGUID: &targetGUID, Intent: testNoopIntent(testNoopTargetGUID, "target"), CurrentPassword: password, TrustedIP: "203.0.113.23"})
+			if result != nil || !errors.Is(err, tc.want) || len(script.execs) != 0 {
 				t.Fatalf("result/error/execs = %#v/%v/%d", result, err, len(script.execs))
 			}
 		})
@@ -560,7 +662,7 @@ func TestActionIdentityAllConfiguredSessionCandidatesRemainEligible(t *testing.T
 	script.sessions = append(script.sessions, match)
 	password := []byte(passwordText)
 	service := newTestActionVerificationService(t, openActionIssueScriptDB(t, script, nil), &actionIssueRedisClient{actionRateEvalClient: newActionRateEvalClient()}, &actionIssueClock{now: now}, &actionIssueObservingReader{password: password, data: bytes.Repeat([]byte{1}, 32)}, func() int64 { return 9100 })
-	if _, err := service.Issue(context.Background(), VerificationIssue{Action: testNoopAction, TargetGUID: testNoopTargetGUIDValue(), Actor: actor, Intent: testNoopIntent(testNoopTargetGUID, "many-sessions"), CurrentPassword: password, TrustedIP: "203.0.113.24"}); err != nil {
+	if _, err := service.Issue(context.Background(), VerificationIssue{Action: actionsecurity.ActionUsersDelete, TargetGUID: testNoopTargetGUIDValue(), Actor: actor, Intent: testNoopIntent(testNoopTargetGUID, "many-sessions"), CurrentPassword: password, TrustedIP: "203.0.113.24"}); err != nil {
 		t.Fatal(err)
 	}
 	if script.commits != 1 || len(script.execs) != 2 || strings.Contains(strings.ToUpper(script.queries[1].query), " LIMIT ") {
@@ -579,14 +681,8 @@ func TestActionIdentityTargetUserAllowedAndFreshPolicyAllowDeny(t *testing.T) {
 	db := openActionIssueScriptDB(t, script, nil)
 	client := &actionIssueRedisClient{actionRateEvalClient: newActionRateEvalClient()}
 	service := newTestActionVerificationService(t, db, client, &actionIssueClock{now: now}, bytes.NewReader(bytes.Repeat([]byte{0x31}, 64)), func() int64 { return 9200 })
-	service.resolve = func(action actionsecurity.Action) (actionsecurity.Descriptor, bool) {
-		if action != testNoopAction {
-			return actionsecurity.Descriptor{}, false
-		}
-		return testTargetUserDescriptor(action), true
-	}
 	password := []byte(passwordText)
-	result, err := service.Issue(context.Background(), VerificationIssue{Action: testNoopAction, Actor: actor, TargetGUID: &target.Guid, Intent: testNoopIntent(testNoopTargetGUID, "allowed"), CurrentPassword: password, TrustedIP: "203.0.113.25"})
+	result, err := service.Issue(context.Background(), VerificationIssue{Action: actionsecurity.ActionUsersDelete, Actor: actor, TargetGUID: &target.Guid, Intent: testNoopIntent(testNoopTargetGUID, "allowed"), CurrentPassword: password, TrustedIP: "203.0.113.25"})
 	if err != nil || result == nil {
 		t.Fatalf("allowed policy result/error = %#v/%v", result, err)
 	}
@@ -603,7 +699,7 @@ func TestActionIdentityTargetUserAllowedAndFreshPolicyAllowDeny(t *testing.T) {
 	// additional mutation, even though the same service instance previously saw allow.
 	script.overrides[0].Effect = 3
 	password = []byte(passwordText)
-	result, err = service.Issue(context.Background(), VerificationIssue{Action: testNoopAction, Actor: actor, TargetGUID: &target.Guid, Intent: testNoopIntent(testNoopTargetGUID, "denied"), CurrentPassword: password, TrustedIP: "203.0.113.25"})
+	result, err = service.Issue(context.Background(), VerificationIssue{Action: actionsecurity.ActionUsersDelete, Actor: actor, TargetGUID: &target.Guid, Intent: testNoopIntent(testNoopTargetGUID, "denied"), CurrentPassword: password, TrustedIP: "203.0.113.25"})
 	if result != nil || !errors.Is(err, ErrActionVerificationForbidden) || len(script.execs) != 2 || script.rollbacks != 1 {
 		t.Fatalf("fresh deny result/error/writes/rollbacks = %#v/%v/%d/%d", result, err, len(script.execs), script.rollbacks)
 	}
@@ -646,11 +742,8 @@ func TestActionIdentityQueryFailuresAreFixedRollbackAndStop(t *testing.T) {
 				target := models.User{ID: 30, AuditFields: models.AuditFields{Guid: 3001}, Role: models.UserRoleUser, Status: models.UserStatusActive, AuthVersion: 1}
 				script.target, script.targetGUID = &target, target.Guid
 				targetGUID = &target.Guid
-				service.resolve = func(action actionsecurity.Action) (actionsecurity.Descriptor, bool) {
-					return testTargetUserDescriptor(action), true
-				}
 			}
-			result, err := service.Issue(context.Background(), VerificationIssue{Action: testNoopAction, Actor: actor, TargetGUID: targetGUID, Intent: testNoopIntent(testNoopTargetGUID, "query-failure"), CurrentPassword: password, TrustedIP: "203.0.113.26"})
+			result, err := service.Issue(context.Background(), VerificationIssue{Action: actionsecurity.ActionUsersDelete, Actor: actor, TargetGUID: targetGUID, Intent: testNoopIntent(testNoopTargetGUID, "query-failure"), CurrentPassword: password, TrustedIP: "203.0.113.26"})
 			if result != nil || !errors.Is(err, ErrActionVerificationUnavailable) || err.Error() != ErrActionVerificationUnavailable.Error() ||
 				len(script.queries) != tc.wantQueries || len(script.execs) != 0 || script.begins != 1 || script.rollbacks != 1 || script.commits != 0 {
 				t.Fatalf("result/error/q/e/b/r/c = %#v/%v/%d/%d/%d/%d/%d", result, err, len(script.queries), len(script.execs), script.begins, script.rollbacks, script.commits)
@@ -700,7 +793,7 @@ func TestActionVerificationIssuePersistsOnlyDigestsAndReissueSoftDeletes(t *test
 	issue := func() (*IssuedVerification, []byte) {
 		password := []byte(passwordText)
 		result, err := service.Issue(context.Background(), VerificationIssue{
-			Action: testNoopAction, TargetGUID: &target.Guid, Actor: ActionActor{UserID: actor.ID, UserGUID: actor.Guid, AuthVersion: 7, SessionSID: sid, SessionVersion: 3},
+			Action: actionsecurity.ActionUsersDelete, TargetGUID: &target.Guid, Actor: ActionActor{UserID: actor.ID, UserGUID: actor.Guid, AuthVersion: 7, SessionSID: sid, SessionVersion: 3},
 			Intent: testNoopIntent(target.Guid, "opaque-intent-value"), CurrentPassword: password, TrustedIP: "203.0.113.9",
 		})
 		if err != nil {
@@ -721,7 +814,7 @@ func TestActionVerificationIssuePersistsOnlyDigestsAndReissueSoftDeletes(t *test
 	}
 
 	var rows []models.AdminActionVerification
-	if err := db.Unscoped().Where("actor_user_id = ? AND action = ?", actor.ID, int(testNoopAction)).Order("id").Find(&rows).Error; err != nil {
+	if err := db.Unscoped().Where("actor_user_id = ? AND action = ?", actor.ID, int(actionsecurity.ActionUsersDelete)).Order("id").Find(&rows).Error; err != nil {
 		t.Fatal(err)
 	}
 	if len(rows) != 2 || rows[0].IsDeleted != 1 || rows[0].ConsumedAt != nil || rows[1].IsDeleted != 0 {

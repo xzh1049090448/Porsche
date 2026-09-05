@@ -24,6 +24,7 @@ type ActionActor struct {
 type lockedActionIdentity struct {
 	actor   models.User
 	session models.Session
+	target  *models.User
 }
 
 // lockActionIdentity owns the common actor -> session -> target -> policy lock
@@ -133,7 +134,12 @@ func lockActionIdentity(tx *gorm.DB, actor ActionActor, descriptor actionsecurit
 	if decision != authz.Allowed {
 		return lockedActionIdentity{}, ErrActionVerificationForbidden
 	}
-	return lockedActionIdentity{actor: storedActor, session: session}, nil
+	var lockedTarget *models.User
+	if descriptor.TargetKind == actionsecurity.TargetUser {
+		targetCopy := target
+		lockedTarget = &targetCopy
+	}
+	return lockedActionIdentity{actor: storedActor, session: session, target: lockedTarget}, nil
 }
 
 func constantTimeSIDEqual(stored, claimed string) bool {
