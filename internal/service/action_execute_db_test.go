@@ -59,12 +59,12 @@ func setupRealActionPrimitiveTables(t *testing.T, db *gorm.DB) {
 func prepareRealActionOperation(t *testing.T, fixture *realActionFixture, intent, ip string) (*OperationIdentity, string) {
 	t.Helper()
 	typedIntent := testNoopIntent(fixture.targetRow.Guid, intent)
-	issued, err := fixture.verification.Issue(context.Background(), VerificationIssue{Action: testNoopAction, TargetGUID: &fixture.targetRow.Guid, Actor: fixture.actor, Intent: typedIntent, CurrentPassword: []byte(fixture.password), TrustedIP: ip})
+	issued, err := fixture.verification.Issue(context.Background(), VerificationIssue{Action: realFixtureAction, TargetGUID: &fixture.targetRow.Guid, Actor: fixture.actor, Intent: typedIntent, CurrentPassword: []byte(fixture.password), TrustedIP: ip})
 	if err != nil {
 		t.Fatal(err)
 	}
 	key := newRealIdempotencyKey(t)
-	identity, view, err := fixture.operation.Begin(context.Background(), OperationBegin{Action: testNoopAction, Actor: fixture.actor, IdempotencyKeyValues: []string{key}, TicketValues: []string{issued.Ticket}, Intent: typedIntent})
+	identity, view, err := fixture.operation.Begin(context.Background(), OperationBegin{Action: realFixtureAction, Actor: fixture.actor, IdempotencyKeyValues: []string{key}, TicketValues: []string{issued.Ticket}, Intent: typedIntent})
 	if err != nil || identity == nil || view == nil || view.Status != "processing" {
 		t.Fatalf("prepare Begin identity=%v view=%v err=%v", identity, view, err)
 	}
@@ -1599,10 +1599,10 @@ func TestActionExecuteRealFreshIdentityPolicyAndTargetChangesRejectBeforeConsume
 			identity, key := prepareRealActionOperation(t, fixture, "fresh-"+tc.name, fmt.Sprintf("198.18.10.%d", index+1))
 			tc.mutate(t, fixture)
 			intent := testNoopIntent(fixture.targetRow.Guid, "fresh-"+tc.name)
-			if replayIdentity, replayView, err := fixture.operation.Begin(context.Background(), OperationBegin{Action: testNoopAction, Actor: fixture.actor, IdempotencyKeyValues: []string{key}, TicketValues: []string{"av_" + strings.Repeat("A", 43)}, Intent: intent}); replayIdentity != nil || replayView != nil || err == nil {
+			if replayIdentity, replayView, err := fixture.operation.Begin(context.Background(), OperationBegin{Action: realFixtureAction, Actor: fixture.actor, IdempotencyKeyValues: []string{key}, TicketValues: []string{"av_" + strings.Repeat("A", 43)}, Intent: intent}); replayIdentity != nil || replayView != nil || err == nil {
 				t.Fatalf("Begin accepted stale facts: identity=%v view=%v err=%v", replayIdentity, replayView, err)
 			}
-			if view, err := fixture.operation.Query(context.Background(), testNoopAction, fixture.actor, []string{key}); view != nil || err == nil {
+			if view, err := fixture.operation.Query(context.Background(), realFixtureAction, fixture.actor, []string{key}); view != nil || err == nil {
 				t.Fatalf("Query accepted stale facts: view=%v err=%v", view, err)
 			}
 			consumer := &fixtureActionConsumer{outcome: TerminalOutcome{ResultKind: models.ResultNone, HTTPStatus: 204}}

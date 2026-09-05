@@ -30,6 +30,16 @@ import (
 
 type realActionClock struct{ now atomic.Int64 }
 
+const realFixtureAction actionsecurity.Action = actionsecurity.ActionUsersDelete
+
+func realFixtureDescriptor() actionsecurity.Descriptor {
+	descriptor, ok := actionsecurity.ResolveActiveAction(realFixtureAction)
+	if !ok {
+		panic("users.delete real fixture descriptor is not active")
+	}
+	return descriptor
+}
+
 func newRealActionClock(now int64) *realActionClock {
 	clock := &realActionClock{}
 	clock.now.Store(now)
@@ -126,8 +136,8 @@ func openRealActionFixture(t *testing.T, now int64) *realActionFixture {
 	actor := ActionActor{UserID: actorRow.ID, UserGUID: actorRow.Guid, AuthVersion: actorRow.AuthVersion, SessionSID: sid, SessionVersion: sessionRow.SessionVersion}
 	clock := newRealActionClock(now)
 	resolver := func(action actionsecurity.Action) (actionsecurity.Descriptor, bool) {
-		if action == testNoopAction {
-			return testNoopDescriptor(), true
+		if action == realFixtureAction {
+			return realFixtureDescriptor(), true
 		}
 		return actionsecurity.Descriptor{}, false
 	}
@@ -160,7 +170,7 @@ func TestActionVerificationRealMySQLRedisTicketBoundaryAndLimits(t *testing.T) {
 	for attempt := 1; attempt <= 5; attempt++ {
 		password := []byte(fixture.password)
 		issued, err := fixture.verification.Issue(context.Background(), VerificationIssue{
-			Action: testNoopAction, TargetGUID: &fixture.targetRow.Guid, Actor: fixture.actor, Intent: testNoopIntent(fixture.targetRow.Guid, "real-ticket-intent"),
+			Action: realFixtureAction, TargetGUID: &fixture.targetRow.Guid, Actor: fixture.actor, Intent: testNoopIntent(fixture.targetRow.Guid, "real-ticket-intent"),
 			CurrentPassword: password, TrustedIP: "203.0.113.121",
 		})
 		if err != nil {
@@ -176,7 +186,7 @@ func TestActionVerificationRealMySQLRedisTicketBoundaryAndLimits(t *testing.T) {
 	}
 	password := []byte(fixture.password)
 	if issued, err := fixture.verification.Issue(context.Background(), VerificationIssue{
-		Action: testNoopAction, TargetGUID: &fixture.targetRow.Guid, Actor: fixture.actor, Intent: testNoopIntent(fixture.targetRow.Guid, "real-ticket-intent"),
+		Action: realFixtureAction, TargetGUID: &fixture.targetRow.Guid, Actor: fixture.actor, Intent: testNoopIntent(fixture.targetRow.Guid, "real-ticket-intent"),
 		CurrentPassword: password, TrustedIP: "203.0.113.121",
 	}); issued != nil {
 		t.Fatal("sixth Issue returned a ticket")
@@ -188,13 +198,13 @@ func TestActionVerificationRealMySQLRedisTicketBoundaryAndLimits(t *testing.T) {
 	}
 	fixture.clock.Set(latest.ExpiresAt)
 	if identity, view, err := fixture.operation.Begin(context.Background(), OperationBegin{
-		Action: testNoopAction, Actor: fixture.actor, IdempotencyKeyValues: []string{newRealIdempotencyKey(t)},
+		Action: realFixtureAction, Actor: fixture.actor, IdempotencyKeyValues: []string{newRealIdempotencyKey(t)},
 		TicketValues: []string{latest.Ticket}, Intent: testNoopIntent(fixture.targetRow.Guid, "real-ticket-intent"),
 	}); identity != nil || view != nil || !errors.Is(err, ErrActionOperationForbidden) {
 		t.Fatalf("expires_at equality accepted: identity=%v view=%v err=%v", identity, view, err)
 	}
 	var rows []models.AdminActionVerification
-	if err := fixture.db.Unscoped().Where("actor_user_id = ? AND action = ?", fixture.actor.UserID, int(testNoopAction)).Order("id").Find(&rows).Error; err != nil {
+	if err := fixture.db.Unscoped().Where("actor_user_id = ? AND action = ?", fixture.actor.UserID, int(realFixtureAction)).Order("id").Find(&rows).Error; err != nil {
 		t.Fatal(err)
 	}
 	if len(rows) != 5 || rows[4].IsDeleted != 0 {
@@ -334,13 +344,13 @@ func TestActionSecurityRedisRealWindowsTTLAndTotalFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	brokenService, err := newActionOperationService(fixture.db, brokenLimiter, fixture.authRedis, fixture.crypto, func(action actionsecurity.Action) (actionsecurity.Descriptor, bool) {
-		return testNoopDescriptor(), action == testNoopAction
+		return realFixtureDescriptor(), action == realFixtureAction
 	}, fixture.clock, cryptorand.Reader, func() int64 { return testSnowflake.Next() })
 	if err != nil {
 		t.Fatal(err)
 	}
 	fixture.clock.Set(1_800_100_000_000)
-	if identity, view, err := brokenService.Begin(ctx, OperationBegin{Action: testNoopAction, Actor: fixture.actor, IdempotencyKeyValues: []string{newRealIdempotencyKey(t)}, TicketValues: []string{"av_" + strings.Repeat("A", 43)}, Intent: testNoopIntent(fixture.targetRow.Guid, "redis-down")}); identity != nil || view != nil || !errors.Is(err, ErrActionOperationUnavailable) || ErrActionOperationUnavailable.Status != 503 {
+	if identity, view, err := brokenService.Begin(ctx, OperationBegin{Action: realFixtureAction, Actor: fixture.actor, IdempotencyKeyValues: []string{newRealIdempotencyKey(t)}, TicketValues: []string{"av_" + strings.Repeat("A", 43)}, Intent: testNoopIntent(fixture.targetRow.Guid, "redis-down")}); identity != nil || view != nil || !errors.Is(err, ErrActionOperationUnavailable) || ErrActionOperationUnavailable.Status != 503 {
 		t.Fatalf("Redis total failure did not map to fixed 503: identity=%v view=%v err=%v", identity, view, err)
 	}
 }
@@ -348,12 +358,12 @@ func TestActionSecurityRedisRealWindowsTTLAndTotalFailure(t *testing.T) {
 func TestActionOperationConcurrencyRealMySQLLocksBindingsAndClockEdges(t *testing.T) {
 	now := int64(1_800_200_000_000)
 	fixture := openRealActionFixture(t, now)
-	issued, err := fixture.verification.Issue(context.Background(), VerificationIssue{Action: testNoopAction, TargetGUID: &fixture.targetRow.Guid, Actor: fixture.actor, Intent: testNoopIntent(fixture.targetRow.Guid, "real-operation-intent"), CurrentPassword: []byte(fixture.password), TrustedIP: "203.0.113.123"})
+	issued, err := fixture.verification.Issue(context.Background(), VerificationIssue{Action: realFixtureAction, TargetGUID: &fixture.targetRow.Guid, Actor: fixture.actor, Intent: testNoopIntent(fixture.targetRow.Guid, "real-operation-intent"), CurrentPassword: []byte(fixture.password), TrustedIP: "203.0.113.123"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	key := newRealIdempotencyKey(t)
-	input := OperationBegin{Action: testNoopAction, Actor: fixture.actor, IdempotencyKeyValues: []string{key}, TicketValues: []string{issued.Ticket}, Intent: testNoopIntent(fixture.targetRow.Guid, "real-operation-intent")}
+	input := OperationBegin{Action: realFixtureAction, Actor: fixture.actor, IdempotencyKeyValues: []string{key}, TicketValues: []string{issued.Ticket}, Intent: testNoopIntent(fixture.targetRow.Guid, "real-operation-intent")}
 	identity, view, err := fixture.operation.Begin(context.Background(), input)
 	if err != nil || identity == nil || view == nil || view.Status != "processing" {
 		t.Fatalf("initial Begin identity=%v view=%v err=%v", identity, view, err)
@@ -386,7 +396,7 @@ func TestActionOperationConcurrencyRealMySQLLocksBindingsAndClockEdges(t *testin
 		}
 	}
 	var operationCount int64
-	if err := fixture.db.Model(&models.AdminOperation{}).Where("actor_user_id = ? AND action = ?", fixture.actor.UserID, int(testNoopAction)).Count(&operationCount).Error; err != nil || operationCount != 1 {
+	if err := fixture.db.Model(&models.AdminOperation{}).Where("actor_user_id = ? AND action = ?", fixture.actor.UserID, int(realFixtureAction)).Count(&operationCount).Error; err != nil || operationCount != 1 {
 		t.Fatalf("concurrent Begin operations=%d err=%v", operationCount, err)
 	}
 	conflict := input
@@ -429,7 +439,7 @@ func TestActionOperationConcurrencyRealMySQLLocksBindingsAndClockEdges(t *testin
 		t.Fatalf("60s grace +1 = %v", err)
 	}
 	fixture.clock.Set(stored.QueryExpiresAt)
-	if got, err := fixture.operation.Query(context.Background(), testNoopAction, refreshed.Actor, []string{key}); got != nil || !errors.Is(err, ErrActionOperationExpired) {
+	if got, err := fixture.operation.Query(context.Background(), realFixtureAction, refreshed.Actor, []string{key}); got != nil || !errors.Is(err, ErrActionOperationExpired) {
 		t.Fatalf("30d equality query=%v err=%v", got, err)
 	}
 	if err := fixture.db.Unscoped().First(&stored, stored.ID).Error; err != nil || stored.State != models.OperationExpired || stored.IsDeleted != 1 {
