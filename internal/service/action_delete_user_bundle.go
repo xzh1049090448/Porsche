@@ -44,11 +44,12 @@ func newUserDeleteActions(
 		return nil, ErrActionVerificationUnavailable
 	}
 	descriptor := descriptors[0]
+	resolverDescriptor := descriptor
 	resolve := func(action actionsecurity.Action) (actionsecurity.Descriptor, bool) {
 		if action != actionsecurity.ActionUsersDelete {
 			return actionsecurity.Descriptor{}, false
 		}
-		return descriptor, true
+		return resolverDescriptor, true
 	}
 
 	limiter, err := NewActionSecurityRedis(authRedis.client, crypto)
@@ -67,12 +68,13 @@ func newUserDeleteActions(
 	if err != nil {
 		return nil, ErrActionVerificationUnavailable
 	}
+	executionDescriptor := descriptor
 	return &UserDeleteActions{
 		Verifications: verifications,
 		Operations:    operations,
 		Outbox:        outbox,
 		NewExecution: func(intent actionsecurity.DeleteUserIntent) (*DeleteUserExecution, error) {
-			return NewDeleteUserExecution(intent, nextGUID, clock)
+			return newDeleteUserExecution(executionDescriptor, intent, nextGUID, clock)
 		},
 	}, nil
 }

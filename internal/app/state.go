@@ -56,6 +56,12 @@ func newState(settings *config.Settings, db *gorm.DB, constructors stateConstruc
 		Audit:    service.NewAuditService(),
 		HTTP:     &http.Client{},
 	}
+	authRedisTransferred := false
+	defer func() {
+		if !authRedisTransferred && s.AuthRedis != nil {
+			_ = s.AuthRedis.Close()
+		}
+	}()
 	if len(settings.ActionSecurityHMACKey) > 0 {
 		actionCrypto, err := actionsecurity.NewCrypto(settings.ActionSecurityHMACKey)
 		if err != nil {
@@ -109,5 +115,6 @@ func newState(settings *config.Settings, db *gorm.DB, constructors stateConstruc
 		WhiteLabel: s.WhiteLabel,
 	})
 
+	authRedisTransferred = true
 	return s, nil
 }

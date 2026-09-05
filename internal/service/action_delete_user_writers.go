@@ -45,7 +45,14 @@ type deleteUserAuditFacts struct {
 // the active users.delete intent. The returned value is bound to one request.
 func NewDeleteUserExecution(intent actionsecurity.DeleteUserIntent, nextGUID func() int64, clock persistence.Clock) (*DeleteUserExecution, error) {
 	descriptor, ok := actionsecurity.ResolveActiveAction(actionsecurity.ActionUsersDelete)
-	if !ok || descriptor.Action != actionsecurity.ActionUsersDelete || descriptor.Name != "users.delete" ||
+	if !ok {
+		return nil, ErrActionOperationUnavailable
+	}
+	return newDeleteUserExecution(descriptor, intent, nextGUID, clock)
+}
+
+func newDeleteUserExecution(descriptor actionsecurity.Descriptor, intent actionsecurity.DeleteUserIntent, nextGUID func() int64, clock persistence.Clock) (*DeleteUserExecution, error) {
+	if descriptor.Action != actionsecurity.ActionUsersDelete || descriptor.Name != "users.delete" ||
 		descriptor.Capability != "users.delete" || descriptor.RootOnly || !descriptor.RequiresTicket || !descriptor.Active ||
 		descriptor.TargetKind != actionsecurity.TargetUser || descriptor.Encode == nil || nextGUID == nil || operationInterfaceNil(clock) {
 		return nil, ErrActionOperationUnavailable

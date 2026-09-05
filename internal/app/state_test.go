@@ -65,11 +65,10 @@ func TestNewStateAssignsCompleteUserDeleteBundleAndCompatibilityAlias(t *testing
 	var gotDB *gorm.DB
 	var gotAuthRedis *service.AuthRedis
 	var gotCrypto *actionsecurity.Crypto
+	client := newStateCloseTrackingRedisClient()
 	constructors := defaultStateConstructors()
 	constructors.newAuthRedisFromURL = func(context.Context, string, string) (*service.AuthRedis, error) {
-		store, err := service.NewAuthRedis(redis.NewClient(&redis.Options{Addr: "127.0.0.1:1"}), "state-test-auth-hmac-key")
-		t.Cleanup(func() { _ = store.Close() })
-		return store, err
+		return service.NewAuthRedis(client, "state-test-auth-hmac-key")
 	}
 	constructors.newUserDeleteActions = func(db *gorm.DB, authRedis *service.AuthRedis, crypto *actionsecurity.Crypto) (*service.UserDeleteActions, error) {
 		gotDB, gotAuthRedis, gotCrypto = db, authRedis, crypto
@@ -83,17 +82,22 @@ func TestNewStateAssignsCompleteUserDeleteBundleAndCompatibilityAlias(t *testing
 	if state.UserDeleteActions != want || state.ActionVerifications != want.Verifications || gotDB != db || gotAuthRedis != state.AuthRedis || gotCrypto != state.ActionSecurityCrypto {
 		t.Fatalf("incoherent state/bundle wiring: state=%#v", state)
 	}
+	if client.closes != 0 {
+		t.Fatalf("successful state construction closed owned Redis %d times", client.closes)
+	}
+	if err := state.AuthRedis.Close(); err != nil || client.closes != 1 {
+		t.Fatalf("existing state Redis cleanup error/closes = %v/%d, want nil/1", err, client.closes)
+	}
 	if !bytes.Equal(root, bytes.Repeat([]byte{0x43}, 32)) {
 		t.Fatal("NewState mutated configured root key")
 	}
 }
 
 func TestNewStateUserDeleteBundleFailureExposesNoPartialActionServices(t *testing.T) {
+	client := newStateCloseTrackingRedisClient()
 	constructors := defaultStateConstructors()
 	constructors.newAuthRedisFromURL = func(context.Context, string, string) (*service.AuthRedis, error) {
-		store, err := service.NewAuthRedis(redis.NewClient(&redis.Options{Addr: "127.0.0.1:1"}), "state-test-auth-hmac-key")
-		t.Cleanup(func() { _ = store.Close() })
-		return store, err
+		return service.NewAuthRedis(client, "state-test-auth-hmac-key")
 	}
 	constructors.newUserDeleteActions = func(*gorm.DB, *service.AuthRedis, *actionsecurity.Crypto) (*service.UserDeleteActions, error) {
 		return &service.UserDeleteActions{Verifications: &service.ActionVerificationService{}}, service.ErrActionVerificationUnavailable
@@ -102,4 +106,21 @@ func TestNewStateUserDeleteBundleFailureExposesNoPartialActionServices(t *testin
 	if state != nil || !errors.Is(err, service.ErrActionVerificationUnavailable) || err.Error() != service.ErrActionVerificationUnavailable.Error() {
 		t.Fatalf("state/error = %#v/%v, want nil/fixed sanitized unavailable", state, err)
 	}
+	if client.closes != 1 {
+		t.Fatalf("failed state construction closed owned Redis %d times, want 1", client.closes)
+	}
+}
+
+type stateCloseTrackingRedisClient struct {
+	*redis.Client
+	closes int
+}
+
+func newStateCloseTrackingRedisClient() *stateCloseTrackingRedisClient {
+	return &stateCloseTrackingRedisClient{Client: redis.NewClient(&redis.Options{Addr: "127.0.0.1:1"})}
+}
+
+func (client *stateCloseTrackingRedisClient) Close() error {
+	client.closes++
+	return nil
 }

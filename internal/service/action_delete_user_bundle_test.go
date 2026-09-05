@@ -89,6 +89,35 @@ func TestUserDeleteActionsNewExecutionOwnsOneRequest(t *testing.T) {
 	}
 }
 
+func TestUserDeleteActionsNewExecutionStaysBoundToReviewedDescriptor(t *testing.T) {
+	db := actionIssueDryDB(t)
+	client := &actionIssueRedisClient{actionRateEvalClient: newActionRateEvalClient()}
+	authRedis, crypto := userDeleteBundleSecurity(t, client)
+	descriptor := actionsecurity.ActiveActionRegistry()[0]
+	productionEncode := descriptor.Encode
+	encodeCalls := 0
+	descriptor.Encode = func(value any) ([]byte, error) {
+		encodeCalls++
+		return productionEncode(value)
+	}
+	bundle, err := newUserDeleteActions(db, authRedis, crypto, func() []actionsecurity.Descriptor {
+		return []actionsecurity.Descriptor{descriptor}
+	}, &actionIssueClock{now: 1_800_000_000_000}, bytes.NewReader(make([]byte, 128)), func() int64 { return 9251 })
+	if err != nil {
+		t.Fatal(err)
+	}
+	encodeCalls = 0
+	descriptor.Encode = func(any) ([]byte, error) { return nil, errors.New("injected registry drift") }
+
+	execution, err := bundle.NewExecution(actionsecurity.DeleteUserIntent{TargetGUID: 6001, ExpectedAuthVersion: 7, Reason: "reviewed deletion"})
+	if err != nil || execution == nil || encodeCalls != 1 {
+		t.Fatalf("execution/error/reviewed encode calls = %#v/%v/%d, want execution/nil/1", execution, err, encodeCalls)
+	}
+	if invalid, err := bundle.NewExecution(actionsecurity.DeleteUserIntent{TargetGUID: 6001, Reason: "reviewed deletion"}); invalid != nil || !errors.Is(err, ErrActionOperationUnavailable) {
+		t.Fatalf("mismatched intent execution/error = %#v/%v", invalid, err)
+	}
+}
+
 func TestNewUserDeleteActionsRejectsMissingOrInvalidDependencies(t *testing.T) {
 	db := actionIssueDryDB(t)
 	client := &actionIssueRedisClient{actionRateEvalClient: newActionRateEvalClient()}
