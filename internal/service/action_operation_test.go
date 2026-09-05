@@ -27,7 +27,7 @@ func TestOperationIdentityReadyForExecutionOnlyForFreshLease(t *testing.T) {
 	service, _, actor, key, ticket := actionOperationFixture(t, 1_800_000_000_000, nil)
 	identity, view, err := service.Begin(context.Background(), OperationBegin{Action: testNoopAction, Actor: actor, IdempotencyKeyValues: []string{key}, TicketValues: []string{ticket}, Intent: testNoopIntent(testNoopTargetGUID, "same-intent")})
 	if err != nil || identity == nil || view == nil || !identity.ReadyForExecution() {
-		t.Fatalf("fresh Begin readiness = %#v %#v %v", identity, view, err)
+		t.Fatalf("fresh Begin readiness mismatch: identity_present=%t view_present=%t error_present=%t ready=%t", identity != nil, view != nil, err != nil, identity != nil && identity.ReadyForExecution())
 	}
 	identity.capability.discard()
 	if identity.ReadyForExecution() {

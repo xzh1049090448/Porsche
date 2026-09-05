@@ -89,7 +89,7 @@ func TestUserDeleteActionRoutesKeepAuthenticationAndSecurityHeaders(t *testing.T
 		rec := httptest.NewRecorder()
 		engine.ServeHTTP(rec, req)
 		if rec.Code != http.StatusUnauthorized || rec.Header().Get("Cache-Control") != "no-store" || rec.Header().Get("X-Request-ID") == "" {
-			t.Fatalf("%s %s status/headers=%d %v", route.Method, route.Path, rec.Code, rec.Header())
+			t.Fatalf("%s %s status=%d cache=%q request_id_present=%t", route.Method, route.Path, rec.Code, rec.Header().Get("Cache-Control"), rec.Header().Get("X-Request-ID") != "")
 		}
 	}
 }
