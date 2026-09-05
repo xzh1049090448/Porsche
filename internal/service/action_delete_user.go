@@ -50,7 +50,7 @@ func (execution *DeleteUserExecution) Execute(ctx context.Context, tx *gorm.DB, 
 
 	var sessions []models.Session
 	if err := db.Clauses(clause.Locking{Strength: "UPDATE"}).Select("id", "session_version").
-		Where("user_id = ? AND is_deleted = 0 AND revoked_at IS NULL AND expires_at > ?", target.ID, now).
+		Where("user_id = ? AND is_deleted = 0 AND revoked_at IS NULL", target.ID).
 		Order("id ASC").Find(&sessions).Error; err != nil {
 		return TerminalOutcome{}, ErrActionOperationUnavailable
 	}
@@ -80,7 +80,7 @@ func (execution *DeleteUserExecution) Execute(ctx context.Context, tx *gorm.DB, 
 		return TerminalOutcome{}, ErrActionOperationUnavailable
 	}
 	result := db.Model(&models.Session{}).
-		Where("user_id = ? AND is_deleted = 0 AND revoked_at IS NULL AND expires_at > ? AND session_version < ?", target.ID, now, math.MaxInt32).
+		Where("user_id = ? AND is_deleted = 0 AND revoked_at IS NULL AND session_version < ?", target.ID, math.MaxInt32).
 		Updates(map[string]any{"revoked_at": now, "session_version": gorm.Expr("session_version + 1"), "updated_at": now, "updated_by": operation.ActorUserID})
 	if result.Error != nil || result.RowsAffected != int64(len(sessions)) {
 		return TerminalOutcome{}, ErrActionOperationUnavailable

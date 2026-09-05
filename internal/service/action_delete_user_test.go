@@ -59,18 +59,18 @@ func TestDeleteUserExecutionPersistsExactAtomicSoftDelete(t *testing.T) {
 	}
 
 	assertDeleteConsumerQuery(t, calls[0], "SELECT `id`,`guid`,`role`,`status`,`is_deleted`,`auth_version` FROM `users` WHERE guid = ? AND is_deleted = 0", "FOR UPDATE")
-	assertDeleteConsumerQuery(t, calls[1], "SELECT `id`,`session_version` FROM `user_sessions` WHERE user_id = ? AND is_deleted = 0 AND revoked_at IS NULL AND expires_at > ? ORDER BY id ASC", "FOR UPDATE")
+	assertDeleteConsumerQuery(t, calls[1], "SELECT `id`,`session_version` FROM `user_sessions` WHERE user_id = ? AND is_deleted = 0 AND revoked_at IS NULL ORDER BY id ASC", "FOR UPDATE")
 	assertDeleteConsumerQuery(t, calls[2], "SELECT `id` FROM `gateway_api_tokens` WHERE user_id = ? AND is_deleted = 0 AND status = ? AND (expires_at IS NULL OR expires_at > ?) ORDER BY id ASC", "FOR UPDATE")
 	assertDeleteConsumerQuery(t, calls[3], "SELECT `id` FROM `user_permission_heads` WHERE user_id = ? AND is_deleted = 0 ORDER BY id ASC", "FOR UPDATE")
 	assertDeleteConsumerQuery(t, calls[4], "SELECT `id` FROM `user_permission_overrides` WHERE user_id = ? AND is_deleted = 0 ORDER BY id ASC", "FOR UPDATE")
 	assertDeleteConsumerArgs(t, calls[0], int64(6_001), int64(1))
-	assertDeleteConsumerArgs(t, calls[1], int64(61), int64(8_001))
+	assertDeleteConsumerArgs(t, calls[1], int64(61))
 	assertDeleteConsumerArgs(t, calls[2], int64(61), int64(models.GatewayTokenActive), int64(8_001))
 	assertDeleteConsumerArgs(t, calls[3], int64(61))
 	assertDeleteConsumerArgs(t, calls[4], int64(61))
 
 	assertDeleteConsumerUpdate(t, calls[5], []string{"revoked_at", "session_version", "updated_at", "updated_by"},
-		"WHERE user_id = ? AND is_deleted = 0 AND revoked_at IS NULL AND expires_at > ? AND session_version < ?")
+		"WHERE user_id = ? AND is_deleted = 0 AND revoked_at IS NULL AND session_version < ?")
 	assertDeleteConsumerUpdate(t, calls[6], []string{"status", "updated_at", "updated_by"},
 		"WHERE user_id = ? AND is_deleted = 0 AND status = ? AND (expires_at IS NULL OR expires_at > ?)")
 	assertDeleteConsumerUpdate(t, calls[7], []string{"is_deleted", "updated_at", "updated_by"}, "WHERE user_id = ? AND is_deleted = 0")
@@ -78,7 +78,7 @@ func TestDeleteUserExecutionPersistsExactAtomicSoftDelete(t *testing.T) {
 	assertDeleteConsumerUpdate(t, calls[9], []string{
 		"auth_version", "id_card_hash", "is_deleted", "is_verified", "nickname", "password_hash", "phone", "real_name", "status", "updated_at", "updated_by",
 	}, "WHERE id = ? AND guid = ? AND is_deleted = 0 AND auth_version = ? AND role = ? AND status = ?")
-	assertDeleteConsumerArgs(t, calls[5], int64(8_001), int64(8_001), int64(41), int64(61), int64(8_001), int64(math.MaxInt32))
+	assertDeleteConsumerArgs(t, calls[5], int64(8_001), int64(8_001), int64(41), int64(61), int64(math.MaxInt32))
 	assertDeleteConsumerArgs(t, calls[6], int64(models.GatewayTokenRevoked), int64(8_001), int64(41), int64(61), int64(models.GatewayTokenActive), int64(8_001))
 	assertDeleteConsumerArgs(t, calls[7], int64(1), int64(8_001), int64(41), int64(61))
 	assertDeleteConsumerArgs(t, calls[8], int64(1), int64(8_001), int64(41), int64(61))
@@ -121,6 +121,9 @@ func TestDeleteUserExecutionPersistsExactAtomicSoftDelete(t *testing.T) {
 	if script.nestedBegins.Load() != 0 {
 		t.Fatalf("nested transactions = %d", script.nestedBegins.Load())
 	}
+	if got := script.lockedSessions(); fmt.Sprint(got) != fmt.Sprint([]int64{71, 72, 73}) {
+		t.Fatalf("locked sessions = %v, want active and expired unrevoked rows", got)
+	}
 	execution.state.mu.Lock()
 	facts := execution.state.facts
 	recorded := execution.state.factsRecorded
@@ -153,6 +156,9 @@ func TestDeleteUserExecutionKnownConflictsHaveZeroWrites(t *testing.T) {
 		}, models.FailureTargetVersionConflict, 1},
 		{"session version overflow", func(script *deleteConsumerScript, _ *actionsecurity.DeleteUserIntent) {
 			script.sessions[1].SessionVersion = math.MaxInt32
+		}, models.FailureConsumerValidation, 2},
+		{"expired session version overflow", func(script *deleteConsumerScript, _ *actionsecurity.DeleteUserIntent) {
+			script.sessions[2].SessionVersion = math.MaxInt32
 		}, models.FailureConsumerValidation, 2},
 	}
 	for _, tc := range tests {
@@ -419,18 +425,20 @@ type deleteConsumerCall struct {
 }
 
 type deleteConsumerScript struct {
-	mu           sync.Mutex
-	target       *models.User
-	sessions     []models.Session
-	tokens       []models.GatewayAPIToken
-	heads        []models.PermissionPolicyHead
-	overrides    []models.PermissionOverride
-	failQuery    string
-	failExec     string
-	rowsAffected map[string]int64
-	observed     []deleteConsumerCall
-	committed    []deleteConsumerCall
-	nestedBegins atomic.Int32
+	mu               sync.Mutex
+	now              int64
+	target           *models.User
+	sessions         []models.Session
+	tokens           []models.GatewayAPIToken
+	heads            []models.PermissionPolicyHead
+	overrides        []models.PermissionOverride
+	failQuery        string
+	failExec         string
+	rowsAffected     map[string]int64
+	observed         []deleteConsumerCall
+	committed        []deleteConsumerCall
+	lockedSessionIDs []int64
+	nestedBegins     atomic.Int32
 }
 
 type deleteConsumerDriver struct{}
@@ -520,8 +528,13 @@ func (conn *deleteConsumerConn) QueryContext(_ context.Context, query string, ar
 		conn.script.mu.Lock()
 		defer conn.script.mu.Unlock()
 		values := make([][]driver.Value, 0, len(conn.script.sessions))
+		conn.script.lockedSessionIDs = nil
 		for _, row := range conn.script.sessions {
+			if strings.Contains(query, "expires_at > ?") && row.ExpiresAt <= conn.script.now {
+				continue
+			}
 			values = append(values, []driver.Value{row.ID, int64(row.SessionVersion)})
+			conn.script.lockedSessionIDs = append(conn.script.lockedSessionIDs, row.ID)
 		}
 		return &deleteConsumerRows{columns: []string{"id", "session_version"}, values: values}, nil
 	case "gateway_api_tokens", "user_permission_heads", "user_permission_overrides":
@@ -544,7 +557,11 @@ func (conn *deleteConsumerConn) ExecContext(_ context.Context, query string, arg
 	if !overridden {
 		switch table {
 		case "user_sessions":
-			affected = int64(len(conn.script.sessions))
+			for _, row := range conn.script.sessions {
+				if !strings.Contains(query, "expires_at > ?") || row.ExpiresAt > conn.script.now {
+					affected++
+				}
+			}
 		case "gateway_api_tokens":
 			affected = int64(len(conn.script.tokens))
 		case "user_permission_heads":
@@ -630,10 +647,11 @@ func newDeleteConsumerDB(t *testing.T) (*gorm.DB, *deleteConsumerScript) {
 	realName, idCard := "Sensitive", "card hash"
 	expires := int64(10_000)
 	script := &deleteConsumerScript{
+		now: 8_001,
 		target: &models.User{ID: 61, AuditFields: models.AuditFields{Guid: 6_001}, Phone: &phone, Username: &username, PasswordHash: &password,
 			Nickname: &nickname, RealName: &realName, IDCardHash: &idCard, IsVerified: true, PlanType: models.PlanProfessional,
 			Status: models.UserStatusActive, Role: models.UserRoleUser, AuthVersion: 7, AllowedModels: models.JSONSlice{"retained"}, DailyCallLimit: 50},
-		sessions:     []models.Session{{ID: 71, SessionVersion: 2}, {ID: 72, SessionVersion: 3}},
+		sessions:     []models.Session{{ID: 71, SessionVersion: 2, ExpiresAt: 9_000}, {ID: 72, SessionVersion: 3, ExpiresAt: 10_000}, {ID: 73, SessionVersion: 4, ExpiresAt: 7_000}},
 		tokens:       []models.GatewayAPIToken{{ID: 81, Status: models.GatewayTokenActive}, {ID: 82, Status: models.GatewayTokenActive, ExpiresAt: &expires}},
 		heads:        []models.PermissionPolicyHead{{ID: 91}},
 		overrides:    []models.PermissionOverride{{ID: 101}, {ID: 102}},
@@ -660,6 +678,13 @@ func (script *deleteConsumerScript) allCalls() []deleteConsumerCall {
 	defer script.mu.Unlock()
 	return append([]deleteConsumerCall(nil), script.observed...)
 }
+
+func (script *deleteConsumerScript) lockedSessions() []int64 {
+	script.mu.Lock()
+	defer script.mu.Unlock()
+	return append([]int64(nil), script.lockedSessionIDs...)
+}
+
 func (script *deleteConsumerScript) committedCalls() []deleteConsumerCall {
 	script.mu.Lock()
 	defer script.mu.Unlock()
