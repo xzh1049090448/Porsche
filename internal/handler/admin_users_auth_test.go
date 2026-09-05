@@ -1,9 +1,12 @@
 package handler
 
 import (
+	"bytes"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -12,31 +15,47 @@ import (
 	"github.com/porsche/ai-gateway-go/internal/models"
 )
 
-func TestLegacyAdminUserDeleteIsGoneWithoutTargetOrBusinessDependencies(t *testing.T) {
+func TestLegacyAdminDeleteGoneRouteIsIsolatedAfterAuthentication(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	var logs bytes.Buffer
+	previousLogWriter := log.Writer()
+	previousGinWriter := gin.DefaultWriter
+	log.SetOutput(&logs)
+	gin.DefaultWriter = &logs
+	t.Cleanup(func() {
+		log.SetOutput(previousLogWriter)
+		gin.DefaultWriter = previousGinWriter
+	})
+
+	engine := gin.New()
+	admin := engine.Group("/admin/users", func(c *gin.Context) {
+		// This middleware models successful RequireAdmin context injection while
+		// deliberately providing nil business dependencies as panic guards.
+		c.Set(middleware.ContextUser, &models.User{ID: 7, Role: models.UserRoleAdmin})
+		c.Set(middleware.ContextUserID, int64(7))
+		c.Set("app_state", &app.State{})
+		c.Next()
+	})
+	admin.DELETE("/:guid", gatewayRequestID(), adminUserActionNoStore, legacyAdminUserDeleteGone)
+
 	for _, testCase := range []struct {
 		name      string
 		path      string
 		requestID string
 	}{
-		{name: "canonical", path: "/admin/users/123", requestID: "legacy-delete-request"},
+		{name: "canonical", path: "/admin/users/123456789012345678", requestID: "legacy-delete-request"},
 		{name: "missing", path: "/admin/users/9223372036854775807"},
 		{name: "malformed", path: "/admin/users/not-a-guid"},
-		{name: "query-variant", path: "/admin/users/123?guid=secret-target"},
+		{name: "already-deleted", path: "/admin/users/987654321"},
+		{name: "query-variant", path: "/admin/users/123456789012345678?reason=reason-secret&password=password-secret&target=target-secret"},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			rec := httptest.NewRecorder()
-			c, _ := gin.CreateTestContext(rec)
-			c.Request = httptest.NewRequest(http.MethodDelete, testCase.path, nil)
+			req := httptest.NewRequest(http.MethodDelete, testCase.path, nil)
 			if testCase.requestID != "" {
-				c.Request.Header.Set("X-Request-ID", testCase.requestID)
-				c.Header("X-Request-ID", testCase.requestID)
+				req.Header.Set("X-Request-ID", testCase.requestID)
 			}
-			c.Set(middleware.ContextUser, &models.User{ID: 7, Role: models.UserRoleAdmin})
-			c.Set(middleware.ContextUserID, int64(7))
-			c.Set("app_state", &app.State{})
-
-			legacyAdminUserDeleteGone(c)
+			engine.ServeHTTP(rec, req)
 
 			if rec.Code != http.StatusGone || rec.Header().Get("Cache-Control") != "no-store" || rec.Header().Get("X-Request-ID") == "" || (testCase.requestID != "" && rec.Header().Get("X-Request-ID") != testCase.requestID) {
 				t.Fatalf("status=%d cache_control=%q request_id_present=%t body_length=%d", rec.Code, rec.Header().Get("Cache-Control"), rec.Header().Get("X-Request-ID") != "", rec.Body.Len())
@@ -45,11 +64,16 @@ func TestLegacyAdminUserDeleteIsGoneWithoutTargetOrBusinessDependencies(t *testi
 			if rec.Body.String() != want {
 				t.Fatalf("response body mismatch body_length=%d", rec.Body.Len())
 			}
+			for _, forbidden := range []string{"reason-secret", "password-secret", "target-secret", "123456789012345678"} {
+				if strings.Contains(logs.String(), forbidden) {
+					t.Fatalf("handler log leaked a forbidden value log_length=%d", logs.Len())
+				}
+			}
 		})
 	}
 }
 
-func TestLegacyAdminUserDeleteRetainsAuthenticationBoundary(t *testing.T) {
+func TestLegacyAdminDeleteGoneRetainsAuthenticationBoundary(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	engine := gin.New()
 	RegisterAdminUsers(engine, &app.State{})
