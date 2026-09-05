@@ -23,6 +23,21 @@ func TestActionOperationStateContractIsTyped(t *testing.T) {
 	}
 }
 
+func TestOperationIdentityReadyForExecutionOnlyForFreshLease(t *testing.T) {
+	service, _, actor, key, ticket := actionOperationFixture(t, 1_800_000_000_000, nil)
+	identity, view, err := service.Begin(context.Background(), OperationBegin{Action: testNoopAction, Actor: actor, IdempotencyKeyValues: []string{key}, TicketValues: []string{ticket}, Intent: testNoopIntent(testNoopTargetGUID, "same-intent")})
+	if err != nil || identity == nil || view == nil || !identity.ReadyForExecution() {
+		t.Fatalf("fresh Begin readiness = %#v %#v %v", identity, view, err)
+	}
+	identity.capability.discard()
+	if identity.ReadyForExecution() {
+		t.Fatal("consumed execution lease remained ready")
+	}
+	if (&OperationIdentity{PublicRef: identity.PublicRef}).ReadyForExecution() || (*OperationIdentity)(nil).ReadyForExecution() {
+		t.Fatal("existing or nil identity reported an execution lease")
+	}
+}
+
 func actionOperationFixture(t *testing.T, now int64, existing *models.AdminOperation) (*ActionOperationService, *actionOperationScript, ActionActor, string, string) {
 	t.Helper()
 	root := bytes.Repeat([]byte{0x63}, 32)

@@ -56,6 +56,18 @@ type OperationIdentity struct {
 	capability *operationLeaseCapability
 }
 
+// ReadyForExecution reports whether Begin returned a fresh one-shot execution
+// lease. Existing operation views never carry this capability and must be
+// handled without replaying Execute.
+func (identity *OperationIdentity) ReadyForExecution() bool {
+	if identity == nil || identity.capability == nil {
+		return false
+	}
+	identity.capability.mu.Lock()
+	defer identity.capability.mu.Unlock()
+	return !identity.capability.consumed && !operationLeaseIsZero(&identity.capability.raw)
+}
+
 // OperationIdentity is an in-memory handoff from Begin to Execute. It cannot
 // be serialized and reconstructed because Execute must retain the exact actor
 // claims presented to Begin and a shared, one-shot lease capability. Shallow

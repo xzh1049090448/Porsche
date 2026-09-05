@@ -16,8 +16,9 @@ import (
 const UserDeleteBodyLimit int64 = 4 * 1024
 
 var (
-	ErrUserDeleteInvalidBody  = errors.New("invalid user delete request")
-	ErrUserDeleteBodyTooLarge = errors.New("user delete request body too large")
+	ErrUserDeleteInvalidBody    = errors.New("invalid user delete request")
+	ErrUserDeleteBodyTooLarge   = errors.New("user delete request body too large")
+	ErrUserDeleteInactiveAction = errors.New("inactive user delete action")
 )
 
 type IssueUserDeleteRequest struct {
@@ -103,8 +104,11 @@ func DecodeUserDeleteIssue(body io.Reader) (IssueUserDeleteRequest, error) {
 	wire := userDeleteIssueWire{Action: top[0], Intent: top[1], Password: top[2]}
 	intent := userDeleteIntentWire{TargetGUID: intentFields[0], ExpectedVersion: intentFields[1], Reason: intentFields[2]}
 	action, ok := decodeUserDeleteString(wire.Action)
-	if !ok || action != "users.delete" {
+	if !ok {
 		return IssueUserDeleteRequest{}, ErrUserDeleteInvalidBody
+	}
+	if action != "users.delete" {
+		return IssueUserDeleteRequest{}, ErrUserDeleteInactiveAction
 	}
 	targetRaw, ok := decodeUserDeleteString(intent.TargetGUID)
 	if !ok {
@@ -146,8 +150,11 @@ func DecodeUserDeleteExecute(body io.Reader) (ExecuteUserDeleteRequest, error) {
 	}
 	wire := userDeleteExecuteWire{Action: top[0], ExpectedVersion: top[1], Reason: top[2]}
 	action, ok := decodeUserDeleteString(wire.Action)
-	if !ok || action != "delete" {
+	if !ok {
 		return ExecuteUserDeleteRequest{}, ErrUserDeleteInvalidBody
+	}
+	if action != "delete" {
+		return ExecuteUserDeleteRequest{}, ErrUserDeleteInactiveAction
 	}
 	version, ok := parseUserDeleteVersion(wire.ExpectedVersion)
 	if !ok {

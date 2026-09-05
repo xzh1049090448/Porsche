@@ -61,6 +61,19 @@ func TestDecodeUserDeleteExecute(t *testing.T) {
 	}
 }
 
+func TestDecodeUserDeleteClassifiesWellFormedOtherActionsAsInactive(t *testing.T) {
+	if got, err := DecodeUserDeleteIssue(strings.NewReader(strings.Replace(validUserDeleteIssueJSON, "users.delete", "users.promote", 1))); !errors.Is(err, ErrUserDeleteInactiveAction) {
+		clear(got.Password)
+		t.Fatalf("issue action error=%v", err)
+	}
+	if _, err := DecodeUserDeleteExecute(strings.NewReader(`{"action":"promote","expected_auth_version":7,"reason":"reason"}`)); !errors.Is(err, ErrUserDeleteInactiveAction) {
+		t.Fatalf("execute action error=%v", err)
+	}
+	if _, err := DecodeUserDeleteExecute(strings.NewReader(`{"action":7,"expected_auth_version":7,"reason":"reason"}`)); !errors.Is(err, ErrUserDeleteInvalidBody) {
+		t.Fatalf("malformed action error=%v", err)
+	}
+}
+
 func TestDecodeUserDeleteIssuePasswordJSONEscapes(t *testing.T) {
 	got, err := DecodeUserDeleteIssue(strings.NewReader(`{"action":"users.delete","intent":{"target_guid":"1","expected_auth_version":1,"reason":"x"},"current_password":"a\"b\\c\/d\b\f\n\r\t\u4e16\ud83d\ude00"}`))
 	if err != nil {
