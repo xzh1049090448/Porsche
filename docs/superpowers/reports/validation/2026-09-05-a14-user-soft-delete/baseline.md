@@ -24,5 +24,4 @@ All commands completed with exit code 0 after the frontend checkpoint.
 - Frontend diff check: `git diff --check` — exit 0.
 
 ## Final state
-
 Frontend reviewed candidate was checkpointed unchanged as `9d301c1349b6252318798a8e97ea94a6f20b6385`. Backend report creation is the only subsequent change. Both worktrees were verified clean after the report commit.
