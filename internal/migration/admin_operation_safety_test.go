@@ -47,6 +47,13 @@ func TestAdminOperationSafetyRealMySQLDownUpAndVerifier(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open isolated MySQL fixture: %v", err)
 	}
+	nextGUID := int64(9_050_000_000_000_000)
+	if err := Up(context.Background(), gdb, func() int64 {
+		nextGUID++
+		return nextGUID
+	}, func() int64 { return 1_900_000_000_000 }); err != nil {
+		t.Fatal("initialize isolated MySQL fixture migrations failed")
+	}
 	migrations, err := All()
 	if err != nil {
 		t.Fatal(err)

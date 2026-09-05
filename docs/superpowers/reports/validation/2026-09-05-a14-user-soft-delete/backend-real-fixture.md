@@ -62,7 +62,11 @@ The real fault matrix injects one failure at each session, gateway-token,
 policy-head, policy-override, user, auth-audit, management-audit, outbox, and
 terminal-operation write. Each case directly reloads the seeded active Gateway
 token and unchanged policy head and override in addition to the target,
-sessions, audits, outbox, operation, and verification. Every case proves zero
+sessions, audits, outbox, operation, and verification. The seeded session is
+reloaded unscoped by its exact identity and compared with its deletion-before
+snapshot for session version, revocation, logical deletion, timestamps, and
+created/updated audit actors rather than inferred from an aggregate count.
+Every case proves zero
 partial delete facts, no consumed verification, and a still-processing
 operation.
 Commit-return uncertainty returns the sanitized `CommitUnknownError` with the
@@ -87,15 +91,35 @@ The added assertions required no production change and passed against the
 retained real fixture. This report treats that missing evidence as a structural
 SPEC failure rather than inventing a runtime product failure.
 
+The race gate now selects a real user-delete concurrency case. Two independent
+Root actors and logical sessions each Issue and Begin their own ticket/key/
+operation against the same real MySQL target, then cross a goroutine barrier
+before Execute. MySQL commits exactly one soft deletion; the competing request
+is target-hidden. Its operation retains a processing lease, so the test advances
+the controlled clock past lease expiry plus recovery grace and calls the
+existing recovery primitive. The loser converges to `pending_recovery`, clears
+its lease, remains hidden to Query because the target is deleted, and cannot
+reuse its consumed in-memory identity to Execute again. This proves bounded
+recovery without changing the production state machine; the planned slice
+still contains no automatic recovery worker.
+
 ## Final gates
 
-- Serial real fixture command from the plan, after the documented reset: 251
-  terminal test PASS events, 228 leaf PASS, 0 FAIL, 0 SKIP; 3 package PASS.
+- Serial real fixture command from the plan, after the documented reset and
+  with `AdminOperationSafety` added to the selection regex: 280 terminal test
+  PASS events, 256 leaf PASS, 0 FAIL, 0 SKIP; 3 package PASS.
   Private JSON SHA-256:
-  `7bb3f7b69b96dc37344f944dd42a3d1fafb3b8630980c9e942620e737a0b47de`.
-- Race command from the plan: 1 terminal/leaf test PASS, 0 FAIL, 0 SKIP; 2
+  `7a197de4ddd7e8666e4e1afb312834024ad2a282770dc0884453a7f8348bc0b8`.
+  The required real down/up selection was
+  `TestAdminOperationSafetyRealMySQLDownUpAndVerifier`; the self-contained test
+  initializes migrations `0001..0006` from the reset empty child before its
+  dependency-safe `0006/0005` down/up and verifier sequence.
+- Race command from the plan: 2 terminal/leaf test PASS, 0 FAIL, 0 SKIP; 2
   package PASS. Private JSON SHA-256:
-  `3a469d29f1ec49d4fe21668760a88d2b8c399e715707e12e2b176339acb4394c`.
+  `bb7c43b276d88b287015307a645f0fd20c8ea04ec24efdbdab9697d656d5e121`.
+  Selected leaf tests were
+  `TestActionExecuteConcurrentShallowCopiesEnterConsumerOnce` and the real
+  MySQL case `TestDeleteUserRealConcurrentExecuteCommitsOnce`.
 - Fresh no-fixture `go test ./...`, `go build ./...`, `go vet ./...`,
   `git diff --check`, and the repository `./init.sh` gate all passed.
 - Private env mode was `0600`; deliberately wrong MySQL and Redis credentials

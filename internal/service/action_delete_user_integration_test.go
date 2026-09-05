@@ -9,6 +9,7 @@ import (
 	"math"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -481,10 +482,140 @@ func TestDeleteUserRealWriteFaultsRollbackAndCommitUnknownQueries(t *testing.T) 
 	})
 }
 
+func TestDeleteUserRealConcurrentExecuteCommitsOnce(t *testing.T) {
+	f := openA14DeleteFixture(t, 1_900_230_000_000, models.UserRoleRoot, false)
+	competitor := openA14DeleteFixture(t, 1_900_230_000_000, models.UserRoleRoot, false)
+	target := f.createTarget(t, models.UserRoleUser, models.UserStatusActive, 4)
+	seedA14DeleteDependencies(t, f, target)
+
+	type candidate struct {
+		owner     *a14DeleteFixture
+		identity  *OperationIdentity
+		execution *DeleteUserExecution
+		key       string
+	}
+	candidates := make([]candidate, 2)
+	for index, owner := range []*a14DeleteFixture{f, competitor} {
+		key := newRealIdempotencyKey(t)
+		identity, intent, _ := owner.prepare(t, target, key)
+		execution, err := owner.bundle.NewExecution(intent)
+		if err != nil {
+			t.Fatal("concurrent delete execution setup failed")
+		}
+		candidates[index] = candidate{owner: owner, identity: identity, execution: execution, key: key}
+	}
+
+	type result struct {
+		identity *OperationIdentity
+		view     *OperationView
+		err      error
+	}
+	start := make(chan struct{})
+	results := make(chan result, len(candidates))
+	var ready sync.WaitGroup
+	ready.Add(len(candidates))
+	for _, item := range candidates {
+		item := item
+		go func() {
+			ready.Done()
+			<-start
+			view, err := item.owner.bundle.Operations.Execute(context.Background(), item.identity, item.execution, item.execution, item.owner.bundle.Outbox)
+			results <- result{identity: item.identity, view: view, err: err}
+		}()
+	}
+	ready.Wait()
+	close(start)
+
+	var succeeded, hidden int
+	var hiddenCandidate *candidate
+	for range candidates {
+		outcome := <-results
+		switch {
+		case outcome.err == nil && outcome.view != nil && outcome.view.Status == "succeeded" && outcome.view.PublicRef == outcome.identity.PublicRef:
+			succeeded++
+		case outcome.view == nil && errors.Is(outcome.err, ErrActionOperationHidden):
+			hidden++
+			for index := range candidates {
+				if candidates[index].identity == outcome.identity {
+					hiddenCandidate = &candidates[index]
+					break
+				}
+			}
+		default:
+			status := "nil"
+			if outcome.view != nil {
+				status = outcome.view.Status
+			}
+			t.Fatalf("concurrent real delete unexpected outcome: view_status=%s unavailable=%t", status, errors.Is(outcome.err, ErrActionOperationUnavailable))
+		}
+	}
+	if succeeded != 1 || hidden != 1 || hiddenCandidate == nil {
+		t.Fatalf("concurrent real delete result counts succeeded/hidden=%d/%d", succeeded, hidden)
+	}
+	if view, err := hiddenCandidate.owner.bundle.Operations.Query(context.Background(), actionsecurity.ActionUsersDelete, hiddenCandidate.owner.actorAPI,
+		[]string{hiddenCandidate.key}); view != nil || !errors.Is(err, ErrActionOperationHidden) {
+		t.Fatal("concurrent loser query did not remain target-hidden")
+	}
+	var losingOperation models.AdminOperation
+	if err := f.db.First(&losingOperation, hiddenCandidate.identity.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if losingOperation.State != models.OperationProcessing || losingOperation.LeaseExpiresAt == nil {
+		t.Fatal("concurrent loser did not retain a recoverable processing lease")
+	}
+	hiddenCandidate.owner.clock.Set(*losingOperation.LeaseExpiresAt + actionOperationRecoveryGraceMS + 1)
+	if err := hiddenCandidate.owner.bundle.Operations.MarkPendingRecovery(context.Background(), losingOperation.ID); err != nil {
+		t.Fatal("concurrent loser did not converge through pending recovery")
+	}
+	if replay, err := hiddenCandidate.owner.bundle.Operations.Execute(context.Background(), hiddenCandidate.identity, hiddenCandidate.execution, hiddenCandidate.execution, hiddenCandidate.owner.bundle.Outbox); replay != nil || !errors.Is(err, ErrActionOperationUnavailable) {
+		t.Fatal("concurrent loser regained delete execution capability")
+	}
+	if err := f.db.First(&losingOperation, losingOperation.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if losingOperation.State != models.OperationPendingRecovery || losingOperation.LeaseOwnerHMAC != nil || losingOperation.LeaseExpiresAt != nil {
+		t.Fatal("concurrent loser pending-recovery state mismatch")
+	}
+	if view, err := hiddenCandidate.owner.bundle.Operations.Query(context.Background(), actionsecurity.ActionUsersDelete, hiddenCandidate.owner.actorAPI,
+		[]string{hiddenCandidate.key}); view != nil || !errors.Is(err, ErrActionOperationHidden) {
+		t.Fatal("recovered concurrent loser exposed a deleted target")
+	}
+
+	var stored models.User
+	if err := f.db.Unscoped().First(&stored, target.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if stored.IsDeleted != 1 || stored.Status != models.UserStatusDisabled || stored.AuthVersion != target.AuthVersion+1 {
+		t.Fatal("concurrent real delete target terminal fact mismatch")
+	}
+	var succeededOperations, recoveryOperations, authAudits, managementAudits, outboxRows int64
+	operationIDs := []int64{candidates[0].identity.ID, candidates[1].identity.ID}
+	if err := f.db.Model(&models.AdminOperation{}).Where("id IN ? AND state = ?", operationIDs, models.OperationSucceeded).Count(&succeededOperations).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.Model(&models.AdminOperation{}).Where("id IN ? AND state = ?", operationIDs, models.OperationPendingRecovery).Count(&recoveryOperations).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.Model(&models.AuthAuditEvent{}).Where("user_id = ? AND event_type = ?", target.ID, models.AuthAuditEventUserDeleted).Count(&authAudits).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.Model(&models.AuditLog{}).Where("user_id = ? AND action = ?", target.ID, "users.delete").Count(&managementAudits).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.Model(&models.AdminActionOutbox{}).Where("operation_id IN ?", operationIDs).Count(&outboxRows).Error; err != nil {
+		t.Fatal(err)
+	}
+	if succeededOperations != 1 || recoveryOperations != 1 || authAudits != 1 || managementAudits != 1 || outboxRows != 1 {
+		t.Fatalf("concurrent real delete persisted counts succeeded/recovery/auth/management/outbox=%d/%d/%d/%d/%d",
+			succeededOperations, recoveryOperations, authAudits, managementAudits, outboxRows)
+	}
+}
+
 type a14SeededDeleteDependencies struct {
-	token models.GatewayAPIToken
-	head  models.PermissionPolicyHead
-	rule  models.PermissionOverride
+	session models.Session
+	token   models.GatewayAPIToken
+	head    models.PermissionPolicyHead
+	rule    models.PermissionOverride
 }
 
 func seedA14DeleteDependencies(t *testing.T, f *a14DeleteFixture, target models.User) a14SeededDeleteDependencies {
@@ -510,7 +641,7 @@ func seedA14DeleteDependencies(t *testing.T, f *a14DeleteFixture, target models.
 	if err := f.db.Create(&rule).Error; err != nil {
 		t.Fatal(err)
 	}
-	return a14SeededDeleteDependencies{token: token, head: head, rule: rule}
+	return a14SeededDeleteDependencies{session: session, token: token, head: head, rule: rule}
 }
 
 func assertA14TerminalFacts(t *testing.T, f *a14DeleteFixture, identity *OperationIdentity, target models.User,
@@ -654,6 +785,16 @@ func assertA14RolledBack(t *testing.T, db *gorm.DB, identity *OperationIdentity,
 	}
 	if stored.IsDeleted != 0 || stored.Status != models.UserStatusActive || stored.AuthVersion != target.AuthVersion {
 		t.Fatal("partial user mutation persisted")
+	}
+	var session models.Session
+	if err := db.Unscoped().First(&session, dependencies.session.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if session.ID != dependencies.session.ID || session.Guid != dependencies.session.Guid || session.UserID != dependencies.session.UserID ||
+		session.SessionVersion != dependencies.session.SessionVersion || !equalA14OptionalInt64(session.RevokedAt, dependencies.session.RevokedAt) ||
+		session.IsDeleted != dependencies.session.IsDeleted || session.CreatedAt != dependencies.session.CreatedAt || session.UpdatedAt != dependencies.session.UpdatedAt ||
+		!equalA14OptionalInt64(session.CreatedBy, dependencies.session.CreatedBy) || !equalA14OptionalInt64(session.UpdatedBy, dependencies.session.UpdatedBy) {
+		t.Fatal("partial session revocation or audit mutation persisted")
 	}
 	var token models.GatewayAPIToken
 	if err := db.Unscoped().First(&token, dependencies.token.ID).Error; err != nil {

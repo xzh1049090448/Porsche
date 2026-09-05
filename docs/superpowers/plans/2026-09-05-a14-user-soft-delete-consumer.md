@@ -758,7 +758,7 @@ Add fault injection at every user/session/token/policy/auth-audit/management-aud
 set -a
 source "/tmp/a14-user-delete-${A14_FIXTURE_SUFFIX}.env"
 set +a
-go test -p 1 ./internal/migration ./internal/service ./internal/handler -run 'AdminActionOutbox|DeleteUser|ActionVerification|ActionOperation' -count=1
+go test -p 1 ./internal/migration ./internal/service ./internal/handler -run 'AdminActionOutbox|AdminOperationSafety|DeleteUser|ActionVerification|ActionOperation' -count=1
 go test -race ./internal/service ./internal/handler -run 'DeleteUser.*Concurrent|Action.*Concurrent' -count=1
 ```
 

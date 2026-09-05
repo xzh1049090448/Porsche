@@ -55,7 +55,7 @@ rejected, and the private env file remained mode `0600`.
 
 The private, executable reset helper is
 `/tmp/a14-user-delete-20260905125101-20c53025-reset.sh`, mode `0700`, SHA-256
-`85e931a2f833f54bb2507e1d39b675bb2f87b56ba3e2bc1fcc6fe50198bce8f7`.
+`b8e59e3ade30afaa6c1090f059127afa98e83a681892bbed845ca208c0d28b04`.
 It contains no credential. It reads credentials only from the mode-`0600`
 fixture env file and never prints them or either URL.
 
@@ -66,8 +66,11 @@ loopback ports, env-file mode, suffix marker, and the namespace database. It
 then drops and recreates only
 `a14_user_delete_20260905125101-20c53025_test`, clears only Redis logical DB 8,
 and rewrites only the private `TEST_REDIS_URL` selector to DB 8. Its postcheck
-requires the namespace database to remain, the child to contain zero tables,
-exactly the two suffix databases to exist, Redis DB 8 to contain zero keys, and
+requires the two exact database names to exist, the child to contain zero
+tables, and a `LEFT(schema_name, CHAR_LENGTH(exact_namespace)) = exact_namespace`
+set check to return exactly those two databases. This avoids wildcard `LIKE`
+identity checks and rejects any unexpected same-suffix database. It also
+requires Redis DB 8 to contain zero keys and
 both container identities and health to remain unchanged. Every test URL is
 checked to address the `_test` child; the namespace database is never used by
 tests.
@@ -77,18 +80,18 @@ An independent reviewer can reproduce the exact clean-start gate with:
 ```sh
 test "$(stat -f '%Lp' /tmp/a14-user-delete-20260905125101-20c53025.env)" = 600
 test "$(stat -f '%Lp' /tmp/a14-user-delete-20260905125101-20c53025-reset.sh)" = 700
-test "$(shasum -a 256 /tmp/a14-user-delete-20260905125101-20c53025-reset.sh | awk '{print $1}')" = 85e931a2f833f54bb2507e1d39b675bb2f87b56ba3e2bc1fcc6fe50198bce8f7
+test "$(shasum -a 256 /tmp/a14-user-delete-20260905125101-20c53025-reset.sh | awk '{print $1}')" = b8e59e3ade30afaa6c1090f059127afa98e83a681892bbed845ca208c0d28b04
 /tmp/a14-user-delete-20260905125101-20c53025-reset.sh
 set -a
 source /tmp/a14-user-delete-20260905125101-20c53025.env
 set +a
-go test -p 1 ./internal/migration ./internal/service ./internal/handler -run 'AdminActionOutbox|DeleteUser|ActionVerification|ActionOperation' -count=1
+go test -p 1 ./internal/migration ./internal/service ./internal/handler -run 'AdminActionOutbox|AdminOperationSafety|DeleteUser|ActionVerification|ActionOperation' -count=1
 go test -race ./internal/service ./internal/handler -run 'DeleteUser.*Concurrent|Action.*Concurrent' -count=1
 ```
 
 Run the reset once before the focused-plus-race sequence, rather than between
 those two commands. The final Task 12 proof reset observed 16 child tables and
-106 task-local Redis DB-8 keys before reset, then zero child tables and zero
+103 task-local Redis DB-8 keys before reset, then zero child tables and zero
 DB-8 keys.
 An immediate second reset observed zero and zero before reset and again ended
 at zero and zero, proving the retained clean start is recoverable and
