@@ -18,6 +18,23 @@ func nullString(value string) sql.NullString {
 	return sql.NullString{String: value, Valid: true}
 }
 
+func TestAdminOperationSafetyFixturePreservesDependentRollbackOrder(t *testing.T) {
+	migrations, err := All()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rollback, restore, err := adminOperationSafetyFixtureDependencyOrder(migrations)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := []string{rollback[0].Version, rollback[1].Version}; got[0] != "0006" || got[1] != "0005" {
+		t.Fatalf("rollback order = %v, want [0006 0005]", got)
+	}
+	if got := []string{restore[0].Version, restore[1].Version}; got[0] != "0005" || got[1] != "0006" {
+		t.Fatalf("restore order = %v, want [0005 0006]", got)
+	}
+}
+
 func TestAdminOperationSafetyRealMySQLDownUpAndVerifier(t *testing.T) {
 	raw := strings.TrimSpace(os.Getenv("TEST_DATABASE_URL"))
 	if raw == "" {
@@ -37,19 +54,39 @@ func TestAdminOperationSafetyRealMySQLDownUpAndVerifier(t *testing.T) {
 	if len(migrations) != 6 || migrations[4].Version != "0005" || migrations[5].Version != "0006" {
 		t.Fatalf("unexpected migration sequence: %#v", migrations)
 	}
-	reapplied := false
+	rollback, restore, err := adminOperationSafetyFixtureDependencyOrder(migrations)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeLedger, err := Status(context.Background(), gdb)
+	if err != nil {
+		t.Fatalf("read migration ledger before rollback: %v", err)
+	}
+	restored := false
 	t.Cleanup(func() {
-		if reapplied {
+		if restored {
 			return
 		}
-		if err := executeAdminOperationSafetyFixtureSQL(gdb, migrations[4].UpSQL); err != nil {
-			t.Errorf("restore 0005 after failed down/up test: %v", err)
+		for _, migration := range restore {
+			if err := executeAdminOperationSafetyFixtureSQL(gdb, migration.UpSQL); err != nil {
+				t.Errorf("restore %s after failed down/up test: %v", migration.Version, err)
+				return
+			}
+		}
+		if err := setFixtureMigrationActive(gdb, "0006", true); err != nil {
+			t.Errorf("restore 0006 migration ledger after failed down/up test: %v", err)
 		}
 	})
 	if err := Verify(context.Background(), gdb); err != nil {
-		t.Fatalf("verify fresh 0001..0005 schema: %v", err)
+		t.Fatalf("verify fresh 0001..0006 schema: %v", err)
 	}
-	if err := executeAdminOperationSafetyFixtureSQL(gdb, migrations[4].DownSQL); err != nil {
+	if err := executeAdminOperationSafetyFixtureSQL(gdb, rollback[0].DownSQL); err != nil {
+		t.Fatalf("apply fixture-only 0006 down before 0005: %v", err)
+	}
+	if err := setFixtureMigrationActive(gdb, rollback[0].Version, false); err != nil {
+		t.Fatalf("deactivate 0006 fixture migration ledger: %v", err)
+	}
+	if err := executeAdminOperationSafetyFixtureSQL(gdb, rollback[1].DownSQL); err != nil {
 		t.Fatalf("apply fixture-only 0005 down: %v", err)
 	}
 	for _, table := range []string{"admin_action_verifications", "admin_operations"} {
@@ -77,13 +114,30 @@ func TestAdminOperationSafetyRealMySQLDownUpAndVerifier(t *testing.T) {
 	if countIndex != 3 {
 		t.Fatalf("0005 down changed 0004 index columns: %d", countIndex)
 	}
-	if err := executeAdminOperationSafetyFixtureSQL(gdb, migrations[4].UpSQL); err != nil {
-		t.Fatalf("reapply fixture-only 0005 up: %v", err)
+	for _, migration := range restore {
+		if err := executeAdminOperationSafetyFixtureSQL(gdb, migration.UpSQL); err != nil {
+			t.Fatalf("reapply fixture-only %s up: %v", migration.Version, err)
+		}
 	}
-	reapplied = true
+	if err := setFixtureMigrationActive(gdb, "0006", true); err != nil {
+		t.Fatalf("reactivate 0006 fixture migration ledger: %v", err)
+	}
+	afterLedger, err := Status(context.Background(), gdb)
+	if err != nil {
+		t.Fatalf("read migration ledger after restore: %v", err)
+	}
+	if len(afterLedger) != len(beforeLedger) {
+		t.Fatalf("restored migration ledger count = %d, want %d", len(afterLedger), len(beforeLedger))
+	}
+	for i := range beforeLedger {
+		if afterLedger[i] != beforeLedger[i] {
+			t.Fatalf("restored migration ledger[%d] = %#v, want %#v", i, afterLedger[i], beforeLedger[i])
+		}
+	}
 	if err := Verify(context.Background(), gdb); err != nil {
-		t.Fatalf("verify schema after 0005 down/up: %v", err)
+		t.Fatalf("verify schema after dependency-safe 0006/0005 down/up: %v", err)
 	}
+	restored = true
 	var enforcedChecks int64
 	if err := gdb.Raw(`SELECT COUNT(*) FROM information_schema.table_constraints tc JOIN information_schema.check_constraints cc ON cc.constraint_schema = tc.constraint_schema AND cc.constraint_name = tc.constraint_name WHERE tc.table_schema = DATABASE() AND tc.table_name IN ('admin_action_verifications','admin_operations') AND tc.constraint_type = 'CHECK' AND tc.enforced = 'YES' AND cc.check_clause <> ''`).Scan(&enforcedChecks).Error; err != nil {
 		t.Fatalf("read MySQL 8 CHECK metadata: %v", err)
@@ -98,6 +152,44 @@ func executeAdminOperationSafetyFixtureSQL(gdb *gorm.DB, sqlBytes []byte) error 
 		if err := gdb.Exec(statement).Error; err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func adminOperationSafetyFixtureDependencyOrder(migrations []Migration) ([]Migration, []Migration, error) {
+	byVersion := make(map[string]Migration, len(migrations))
+	for _, migration := range migrations {
+		if migration.Version == "" {
+			return nil, nil, fmt.Errorf("fixture migration has empty version")
+		}
+		if _, exists := byVersion[migration.Version]; exists {
+			return nil, nil, fmt.Errorf("fixture migration %s is duplicated", migration.Version)
+		}
+		byVersion[migration.Version] = migration
+	}
+	operationSafety, operationSafetyOK := byVersion["0005"]
+	outbox, outboxOK := byVersion["0006"]
+	if !operationSafetyOK || !outboxOK {
+		return nil, nil, fmt.Errorf("fixture requires migrations 0005 and 0006")
+	}
+	return []Migration{outbox, operationSafety}, []Migration{operationSafety, outbox}, nil
+}
+
+func setFixtureMigrationActive(gdb *gorm.DB, version string, active bool) error {
+	isDeleted := 1
+	if active {
+		isDeleted = 0
+	}
+	result := gdb.Exec("UPDATE schema_migrations SET is_deleted=? WHERE version=?", isDeleted, version)
+	if result.Error != nil {
+		return result.Error
+	}
+	var count int64
+	if err := gdb.Raw("SELECT COUNT(*) FROM schema_migrations WHERE version=? AND is_deleted=?", version, isDeleted).Scan(&count).Error; err != nil {
+		return err
+	}
+	if count != 1 {
+		return fmt.Errorf("migration ledger state matched %d rows, want 1", count)
 	}
 	return nil
 }
