@@ -185,7 +185,7 @@ func DecodeAdminUserCreateVerification(body io.Reader) (AdminUserCreateVerificat
 		return AdminUserCreateVerificationRequest{}, ErrAdminUserCreateInvalidBody
 	}
 	action, ok := decodeUserDeleteString(values[0])
-	if !ok {
+	if !ok || bytes.Equal(bytes.TrimSpace(values[0]), []byte("null")) {
 		return AdminUserCreateVerificationRequest{}, ErrAdminUserCreateInvalidBody
 	}
 	if action != "users.create_admin" {

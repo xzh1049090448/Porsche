@@ -107,6 +107,75 @@ func TestDecodeAdminUserCreateDefaultsAndPasswordEscapes(t *testing.T) {
 	}
 }
 
+func TestDecodeAdminUserCreateUsesUnicodePasswordRuneBoundaries(t *testing.T) {
+	tests := []struct {
+		name     string
+		password string
+		wantErr  bool
+	}{
+		{name: "eight runes", password: "A1!" + strings.Repeat("界", 5)},
+		{name: "twenty runes", password: "A1!" + strings.Repeat("界", 17)},
+		{name: "seven runes", password: "A1!" + strings.Repeat("界", 4), wantErr: true},
+		{name: "twenty one runes", password: "A1!" + strings.Repeat("界", 18), wantErr: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := utf8.RuneCountInString(test.password); (got < 8 || got > 20) != test.wantErr {
+				t.Fatalf("fixture rune count=%d wantErr=%t", got, test.wantErr)
+			}
+			body, err := json.Marshal(map[string]string{"username": "alice", "password": test.password, "role": "user"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			request, err := DecodeAdminUserCreate(bytes.NewReader(body))
+			defer request.ClearSecrets()
+			if test.wantErr {
+				if !errors.Is(err, ErrAdminUserCreateInvalidBody) {
+					t.Fatalf("error=%v", err)
+				}
+				return
+			}
+			if err != nil || string(request.Password) != test.password {
+				t.Fatalf("password=%q err=%v", request.Password, err)
+			}
+		})
+	}
+}
+
+func TestDecodeAdminUserCreateNicknameAndEnterpriseBoundaries(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		nickname string
+		wantErr  bool
+	}{
+		{name: "sixty four runes", nickname: strings.Repeat("界", 64)},
+		{name: "sixty five runes", nickname: strings.Repeat("界", 65), wantErr: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			body, err := json.Marshal(map[string]string{"username": "alice", "nickname": test.nickname, "password": "Ex4mple!Pass1", "role": "user"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			request, err := DecodeAdminUserCreate(bytes.NewReader(body))
+			defer request.ClearSecrets()
+			if test.wantErr {
+				if !errors.Is(err, ErrAdminUserCreateInvalidBody) {
+					t.Fatalf("error=%v", err)
+				}
+				return
+			}
+			if err != nil || request.Nickname == nil || *request.Nickname != test.nickname {
+				t.Fatalf("nickname=%v err=%v", request.Nickname, err)
+			}
+		})
+	}
+	request, err := DecodeAdminUserCreate(strings.NewReader(`{"username":"alice","password":"Ex4mple!Pass1","role":"user","plan_type":"enterprise"}`))
+	defer request.ClearSecrets()
+	if err != nil || request.PlanType != models.PlanEnterprise {
+		t.Fatalf("enterprise plan=%v err=%v", request.PlanType, err)
+	}
+}
+
 func TestDecodeAdminUserCreateValidatesFields(t *testing.T) {
 	cases := map[string]string{
 		"missing username":       `{"password":"Ex4mple!Pass1","role":"user"}`,
@@ -175,6 +244,57 @@ func TestDecodeAdminUserCreateVerificationLifecycle(t *testing.T) {
 		got.ClearSecrets()
 		if err == nil {
 			t.Fatal("accepted invalid verification")
+		}
+	}
+}
+
+func TestDecodeAdminUserCreateVerificationUsesExactTopLevelObject(t *testing.T) {
+	valid := `{"action":"users.create_admin","intent":{"username":"alice","password":"Ex4mple!Pass1","role":"admin"},"current_password":"Current!Pass1"}`
+	cases := []struct {
+		name string
+		body string
+		want error
+	}{
+		{name: "unknown", body: valid[:len(valid)-1] + `,"extra":1}`, want: ErrAdminUserCreateInvalidBody},
+		{name: "duplicate", body: strings.Replace(valid, `"action":"users.create_admin"`, `"action":"users.create_admin","action":"users.create_admin"`, 1), want: ErrAdminUserCreateInvalidBody},
+		{name: "case varied", body: strings.Replace(valid, `"action"`, `"Action"`, 1), want: ErrAdminUserCreateInvalidBody},
+		{name: "escaped key", body: strings.Replace(valid, `"action"`, `"\u0061ction"`, 1), want: ErrAdminUserCreateInvalidBody},
+		{name: "escaped collision", body: strings.Replace(valid, `"action":"users.create_admin"`, `"action":"users.create_admin","\u0061ction":"users.create_admin"`, 1), want: ErrAdminUserCreateInvalidBody},
+		{name: "missing action", body: `{"intent":{"username":"alice","password":"Ex4mple!Pass1","role":"admin"},"current_password":"Current!Pass1"}`, want: ErrAdminUserCreateInvalidBody},
+		{name: "missing intent", body: `{"action":"users.create_admin","current_password":"Current!Pass1"}`, want: ErrAdminUserCreateInvalidBody},
+		{name: "missing current password", body: `{"action":"users.create_admin","intent":{"username":"alice","password":"Ex4mple!Pass1","role":"admin"}}`, want: ErrAdminUserCreateInvalidBody},
+		{name: "action wrong type", body: strings.Replace(valid, `"users.create_admin"`, `1`, 1), want: ErrAdminUserCreateInvalidBody},
+		{name: "action null", body: strings.Replace(valid, `"users.create_admin"`, `null`, 1), want: ErrAdminUserCreateInvalidBody},
+		{name: "intent null", body: strings.Replace(valid, `"intent":{"username":"alice","password":"Ex4mple!Pass1","role":"admin"}`, `"intent":null`, 1), want: ErrAdminUserCreateInvalidBody},
+		{name: "intent wrong type", body: strings.Replace(valid, `"intent":{"username":"alice","password":"Ex4mple!Pass1","role":"admin"}`, `"intent":[]`, 1), want: ErrAdminUserCreateInvalidBody},
+		{name: "current password null", body: strings.Replace(valid, `"current_password":"Current!Pass1"`, `"current_password":null`, 1), want: ErrAdminUserCreateInvalidBody},
+		{name: "current password wrong type", body: strings.Replace(valid, `"current_password":"Current!Pass1"`, `"current_password":1`, 1), want: ErrAdminUserCreateInvalidBody},
+		{name: "trailing", body: valid + `{}`, want: ErrAdminUserCreateInvalidBody},
+		{name: "ordinary create inactive", body: strings.Replace(valid, `users.create_admin`, `users.create`, 1), want: ErrAdminUserCreateInactiveAction},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			request, err := DecodeAdminUserCreateVerification(strings.NewReader(test.body))
+			request.ClearSecrets()
+			if !errors.Is(err, test.want) {
+				t.Fatalf("error=%v want=%v", err, test.want)
+			}
+		})
+	}
+}
+
+func TestDecodeAdminUserCreateVerificationInheritsIntentStrictness(t *testing.T) {
+	valid := `{"action":"users.create_admin","intent":{"username":"alice","password":"Ex4mple!Pass1","role":"admin"},"current_password":"Current!Pass1"}`
+	for _, body := range []string{
+		strings.Replace(valid, `"username":"alice"`, `"username":"alice","username":"other"`, 1),
+		strings.Replace(valid, `"role":"admin"`, `"role":"admin","amount":1`, 1),
+		strings.Replace(valid, `"password":"Ex4mple!Pass1"`, `"password":"Ex4mple!Pass1","unknown":true`, 1),
+		strings.Replace(valid, `"role":"admin"`, `"Role":"admin"`, 1),
+	} {
+		request, err := DecodeAdminUserCreateVerification(strings.NewReader(body))
+		request.ClearSecrets()
+		if !errors.Is(err, ErrAdminUserCreateInvalidBody) {
+			t.Fatalf("error=%v", err)
 		}
 	}
 }
