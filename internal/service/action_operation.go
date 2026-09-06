@@ -825,19 +825,7 @@ func authorizeOperationDescriptor(tx *gorm.DB, actor models.User, descriptor act
 	if err != nil {
 		return ErrActionOperationUnavailable
 	}
-	var decision authz.Decision
-	switch descriptor.TargetKind {
-	case actionsecurity.TargetNone:
-		if descriptor.Capability == "users.create" {
-			decision = evaluator.Create(models.UserRoleAdmin)
-		} else {
-			decision = evaluator.Resource(descriptor.Capability)
-		}
-	case actionsecurity.TargetUser:
-		decision = evaluator.User(descriptor.Capability, actionAccount(target))
-	default:
-		return ErrActionOperationUnavailable
-	}
+	decision := operationDescriptorAuthorizationDecision(evaluator, descriptor, target)
 	if decision == authz.Hidden {
 		return ErrActionOperationHidden
 	}
@@ -845,6 +833,34 @@ func authorizeOperationDescriptor(tx *gorm.DB, actor models.User, descriptor act
 		return ErrActionOperationForbidden
 	}
 	return nil
+}
+
+func operationDescriptorAuthorizationDecision(evaluator *authz.Evaluator, descriptor actionsecurity.Descriptor, target models.User) authz.Decision {
+	if evaluator == nil {
+		return authz.Denied
+	}
+	createDescriptor := descriptor.Action == actionsecurity.ActionUsersCreate || descriptor.Action == actionsecurity.ActionUsersCreateAdmin ||
+		descriptor.Name == "users.create" || descriptor.Name == "users.create_admin" || descriptor.Capability == "users.create"
+	if createDescriptor {
+		switch {
+		case descriptor.Action == actionsecurity.ActionUsersCreate && descriptor.Name == "users.create" &&
+			descriptor.Capability == "users.create" && descriptor.TargetKind == actionsecurity.TargetNone && !descriptor.RootOnly && !descriptor.RequiresTicket:
+			return evaluator.Create(models.UserRoleUser)
+		case descriptor.Action == actionsecurity.ActionUsersCreateAdmin && descriptor.Name == "users.create_admin" &&
+			descriptor.Capability == "users.create" && descriptor.TargetKind == actionsecurity.TargetNone && descriptor.RootOnly && descriptor.RequiresTicket:
+			return evaluator.Create(models.UserRoleAdmin)
+		default:
+			return authz.Denied
+		}
+	}
+	switch descriptor.TargetKind {
+	case actionsecurity.TargetNone:
+		return evaluator.Resource(descriptor.Capability)
+	case actionsecurity.TargetUser:
+		return evaluator.User(descriptor.Capability, actionAccount(target))
+	default:
+		return authz.Denied
+	}
 }
 
 func operationIntentTargetGUID(descriptor actionsecurity.Descriptor, intent any) (*int64, error) {

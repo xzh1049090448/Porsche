@@ -24,9 +24,27 @@ func ticketlessCreateDescriptor(t *testing.T) actionsecurity.Descriptor {
 	return actionsecurity.Descriptor{}
 }
 
+func adminCreateDescriptor(t *testing.T) actionsecurity.Descriptor {
+	t.Helper()
+	for _, descriptor := range actionsecurity.FutureActionDescriptors() {
+		if descriptor.Action == actionsecurity.ActionUsersCreateAdmin {
+			descriptor.Active = true
+			return descriptor
+		}
+	}
+	t.Fatal("users.create_admin descriptor missing")
+	return actionsecurity.Descriptor{}
+}
+
 func ticketlessCreateIntent(username string) actionsecurity.CreateAccountIntent {
 	return actionsecurity.CreateAccountIntent{
 		Username: username, Password: []byte("Task4-test-password"), Role: "user", PlanType: int(models.PlanFree), DailyCallLimit: 100,
+	}
+}
+
+func adminCreateIntent(username string) actionsecurity.CreateAccountIntent {
+	return actionsecurity.CreateAccountIntent{
+		Username: username, Password: []byte("Task4-admin-password"), Role: "admin", PlanType: int(models.PlanFree), DailyCallLimit: 100,
 	}
 }
 
@@ -196,6 +214,99 @@ func TestActionOperationTicketlessBeginReplayConflictAndCrossSession(t *testing.
 	assertNoVerificationAccess(t, script.queries, script.execs)
 }
 
+func TestActionOperationTicketlessAdminUserCreateBeginReplayAndQuery(t *testing.T) {
+	now := int64(1_800_000_000_000)
+	service, script, actor, key := ticketlessOperationFixture(t, now, nil)
+	script.actor.Role = models.UserRoleAdmin
+	descriptor := ticketlessCreateDescriptor(t)
+	identity, view, err := service.Begin(context.Background(), OperationBegin{
+		Action: descriptor.Action, Actor: actor, IdempotencyKeyValues: []string{key}, Intent: ticketlessCreateIntent("admin-created-user"),
+	})
+	if err != nil || identity == nil || view == nil || view.Status != "processing" || !identity.ReadyForExecution() {
+		t.Fatalf("Admin ticketless Begin = %#v %#v %v", identity, view, err)
+	}
+	replay, replayView, err := service.Begin(context.Background(), OperationBegin{
+		Action: descriptor.Action, Actor: actor, IdempotencyKeyValues: []string{key}, Intent: ticketlessCreateIntent("admin-created-user"),
+	})
+	if err != nil || replay == nil || replayView == nil || replay.ID != identity.ID || replay.ReadyForExecution() {
+		t.Fatalf("Admin ticketless replay = %#v %#v %v", replay, replayView, err)
+	}
+	if queried, err := service.Query(context.Background(), descriptor.Action, actor, []string{key}); err != nil || queried == nil || queried.Status != "processing" {
+		t.Fatalf("Admin ticketless Query = %#v %v", queried, err)
+	}
+	assertNoVerificationAccess(t, script.queries, script.execs)
+}
+
+func TestActionOperationTicketlessAdminCreateCapabilityRevocationBlocksProcessingAndRecovery(t *testing.T) {
+	now := int64(1_800_000_000_000)
+	for _, state := range []models.AdminOperationState{models.OperationProcessing, models.OperationPendingRecovery} {
+		t.Run(state.String(), func(t *testing.T) {
+			operation := models.AdminOperation{ID: 30, SessionID: 20, State: state, QueryExpiresAt: now + actionOperationQueryRetentionMS}
+			service, script, actor, key := ticketlessOperationFixture(t, now, &operation)
+			script.actor.Role = models.UserRoleAdmin
+			if view, err := service.Query(context.Background(), actionsecurity.ActionUsersCreate, actor, []string{key}); err != nil || view == nil || view.Status != state.String() {
+				t.Fatalf("pre-revocation Query = %#v %v", view, err)
+			}
+			script.policyHead = &models.PermissionPolicyHead{ID: 51, AuditFields: models.AuditFields{Guid: 5101}, UserID: script.actor.ID, PolicyVersion: 2, CatalogVersion: models.PermissionCatalogVersion, RuleCount: 1}
+			script.overrides = []models.PermissionOverride{{ID: 52, AuditFields: models.AuditFields{Guid: 5201}, UserID: script.actor.ID, PolicyVersion: 2, Capability: 2, Effect: 3}}
+			if identity, view, err := service.Begin(context.Background(), OperationBegin{
+				Action: actionsecurity.ActionUsersCreate, Actor: actor, IdempotencyKeyValues: []string{key}, Intent: ticketlessCreateIntent("alice"),
+			}); identity != nil || view != nil || !errors.Is(err, ErrActionOperationForbidden) {
+				t.Fatalf("revoked %s Begin = %#v %#v %v", state, identity, view, err)
+			}
+			if view, err := service.Query(context.Background(), actionsecurity.ActionUsersCreate, actor, []string{key}); view != nil || !errors.Is(err, ErrActionOperationHidden) {
+				t.Fatalf("revoked %s Query = %#v %v", state, view, err)
+			}
+			assertNoVerificationAccess(t, script.queries, script.execs)
+		})
+	}
+}
+
+func TestActionOperationTicketlessUnknownCreateDescriptorCombinationFailsClosed(t *testing.T) {
+	now := int64(1_800_000_000_000)
+	service, script, actor, key := ticketlessOperationFixture(t, now, nil)
+	descriptor := ticketlessCreateDescriptor(t)
+	descriptor.Name = "users.create_admin"
+	service.resolve = func(action actionsecurity.Action) (actionsecurity.Descriptor, bool) {
+		return descriptor, action == descriptor.Action
+	}
+	identity, view, err := service.Begin(context.Background(), OperationBegin{
+		Action: descriptor.Action, Actor: actor, IdempotencyKeyValues: []string{key}, Intent: ticketlessCreateIntent("alice"),
+	})
+	if identity != nil || view != nil || !errors.Is(err, ErrActionOperationForbidden) || script.rollbackCount != 1 {
+		t.Fatalf("unknown create descriptor combination = %#v %#v %v rollbacks=%d", identity, view, err, script.rollbackCount)
+	}
+	assertNoVerificationAccess(t, script.queries, script.execs)
+}
+
+func TestActionOperationTicketlessChangeRetainsRootAdminCreateTicketedAuthorization(t *testing.T) {
+	now := int64(1_800_000_000_000)
+	service, script, actor, key, ticket := actionOperationFixture(t, now, nil)
+	descriptor := adminCreateDescriptor(t)
+	service.resolve = func(action actionsecurity.Action) (actionsecurity.Descriptor, bool) {
+		return descriptor, action == descriptor.Action
+	}
+	script.action = descriptor.Action
+	script.target = nil
+	script.verification.Action = int(descriptor.Action)
+	script.verification.TargetKind = int(actionsecurity.TargetNone)
+	script.verification.TargetGUID = nil
+	encoded, err := descriptor.Encode(adminCreateIntent("new-admin"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := service.crypto.IntentDigest(encoded)
+	clear(encoded)
+	script.verification.IntentHMAC = hex.EncodeToString(digest[:])
+	clear(digest[:])
+	identity, view, err := service.Begin(context.Background(), OperationBegin{
+		Action: descriptor.Action, Actor: actor, IdempotencyKeyValues: []string{key}, TicketValues: []string{ticket}, Intent: adminCreateIntent("new-admin"),
+	})
+	if err != nil || identity == nil || view == nil || !identity.ReadyForExecution() || script.operation.VerificationID == nil {
+		t.Fatalf("Root admin-create ticketed Begin = %#v %#v %v", identity, view, err)
+	}
+}
+
 func TestActionOperationTicketlessQueryExpiryAuthorizationAndRecovery(t *testing.T) {
 	now := int64(1_800_000_000_000)
 	processing := models.AdminOperation{ID: 30, SessionID: 20, State: models.OperationProcessing, QueryExpiresAt: now + actionOperationQueryRetentionMS}
@@ -283,6 +394,44 @@ func TestActionExecuteTicketlessCompletesWithoutVerificationAccessOrConsumption(
 		t.Fatalf("ticketless Execute mutated verification state: operation=%#v verification=%#v", script.state.operation, script.state.verification)
 	}
 	assertNoVerificationAccess(t, script.queries, script.execs)
+}
+
+func TestActionExecuteTicketlessAdminUserCreateSucceedsAndFreshDenyRejects(t *testing.T) {
+	t.Run("Admin default allow", func(t *testing.T) {
+		service, script, identity := actionExecuteFixture(t)
+		descriptor := ticketlessCreateDescriptor(t)
+		script.ticketless = true
+		script.actor.Role = models.UserRoleAdmin
+		script.state.operation.Action = int(descriptor.Action)
+		script.state.operation.VerificationID = nil
+		service.resolve = func(action actionsecurity.Action) (actionsecurity.Descriptor, bool) {
+			return descriptor, action == descriptor.Action
+		}
+		consumer := &fixtureActionConsumer{outcome: TerminalOutcome{ResultKind: models.ResultNone, HTTPStatus: 204}}
+		if view, err := service.Execute(context.Background(), identity, consumer, &fixtureActionAuditWriter{}, &fixtureActionOutboxWriter{}); err != nil || view == nil || view.Status != "succeeded" || consumer.calls != 1 {
+			t.Fatalf("Admin ticketless Execute = %#v %v calls=%d", view, err, consumer.calls)
+		}
+		assertNoVerificationAccess(t, script.queries, script.execs)
+	})
+
+	t.Run("Admin explicit deny", func(t *testing.T) {
+		service, script, identity := actionExecuteFixture(t)
+		descriptor := ticketlessCreateDescriptor(t)
+		script.ticketless = true
+		script.actor.Role = models.UserRoleAdmin
+		script.policy.RuleCount = 1
+		script.overrides = []models.PermissionOverride{{ID: 51, AuditFields: models.AuditFields{Guid: 5101}, UserID: script.actor.ID, PolicyVersion: script.policy.PolicyVersion, Capability: 2, Effect: 3}}
+		script.state.operation.Action = int(descriptor.Action)
+		script.state.operation.VerificationID = nil
+		service.resolve = func(action actionsecurity.Action) (actionsecurity.Descriptor, bool) {
+			return descriptor, action == descriptor.Action
+		}
+		consumer := &fixtureActionConsumer{outcome: TerminalOutcome{ResultKind: models.ResultNone, HTTPStatus: 204}}
+		if view, err := service.Execute(context.Background(), identity, consumer, &fixtureActionAuditWriter{}, &fixtureActionOutboxWriter{}); view != nil || !errors.Is(err, ErrActionOperationForbidden) || consumer.calls != 0 {
+			t.Fatalf("Admin denied ticketless Execute = %#v %v calls=%d", view, err, consumer.calls)
+		}
+		assertNoVerificationAccess(t, script.queries, script.execs)
+	})
 }
 
 func TestActionExecuteTicketlessFreshAuthorizationAndTicketedOneShotRemainEnforced(t *testing.T) {

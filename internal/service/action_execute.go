@@ -234,19 +234,7 @@ func authorizeExecuteDescriptor(tx *gorm.DB, actor models.User, descriptor actio
 	if err != nil {
 		return ErrActionOperationUnavailable
 	}
-	var decision authz.Decision
-	switch descriptor.TargetKind {
-	case actionsecurity.TargetNone:
-		if descriptor.Capability == "users.create" {
-			decision = evaluator.Create(models.UserRoleAdmin)
-		} else {
-			decision = evaluator.Resource(descriptor.Capability)
-		}
-	case actionsecurity.TargetUser:
-		decision = evaluator.User(descriptor.Capability, actionAccount(target))
-	default:
-		return ErrActionOperationUnavailable
-	}
+	decision := operationDescriptorAuthorizationDecision(evaluator, descriptor, target)
 	if decision == authz.Hidden {
 		return ErrActionOperationHidden
 	}

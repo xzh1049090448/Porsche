@@ -164,6 +164,7 @@ type actionExecuteScript struct {
 	session       models.Session
 	target        models.User
 	policy        models.PermissionPolicyHead
+	overrides     []models.PermissionOverride
 	state         actionExecuteState
 	queries       []string
 	execs         []string
@@ -312,7 +313,19 @@ func (c *actionExecuteConn) QueryContext(_ context.Context, query string, args [
 		p := c.script.policy
 		return executeRows([]string{"id", "guid", "is_deleted", "policy_version", "catalog_version", "rule_count"}, [][]driver.Value{{p.ID, p.Guid, int64(p.IsDeleted), p.PolicyVersion, int64(p.CatalogVersion), int64(p.RuleCount)}}), nil
 	case "rules":
-		return executeRows([]string{"id", "guid", "is_deleted", "policy_version", "capability", "effect"}, nil), nil
+		if strings.Contains(query, "FOR UPDATE") {
+			values := make([][]driver.Value, 0, len(c.script.overrides))
+			for i := range c.script.overrides {
+				values = append(values, []driver.Value{c.script.overrides[i].ID})
+			}
+			return executeRows([]string{"id"}, values), nil
+		}
+		values := make([][]driver.Value, 0, len(c.script.overrides))
+		for i := range c.script.overrides {
+			rule := c.script.overrides[i]
+			values = append(values, []driver.Value{rule.ID, rule.Guid, int64(rule.IsDeleted), rule.PolicyVersion, int64(rule.Capability), int64(rule.Effect)})
+		}
+		return executeRows([]string{"id", "guid", "is_deleted", "policy_version", "capability", "effect"}, values), nil
 	default:
 		return nil, fmt.Errorf("unexpected execute query: %s", query)
 	}
