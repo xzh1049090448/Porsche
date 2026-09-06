@@ -556,17 +556,25 @@ func applyBusinessGroupsMigration(conn *gorm.DB, upSQL []byte, nextGUID func() i
 }
 
 func loadBusinessGroupIDColumn(conn *gorm.DB) (businessGroupColumnMetadata, bool, error) {
-	var columns []struct {
-		Name         string         `gorm:"column:column_name"`
-		ColumnType   string         `gorm:"column:column_type"`
-		Nullable     string         `gorm:"column:is_nullable"`
-		DefaultVal   sql.NullString `gorm:"column:column_default"`
-		Extra        string         `gorm:"column:extra"`
-		CharacterSet string         `gorm:"column:character_set_name"`
-		Collation    string         `gorm:"column:collation_name"`
-	}
 	query := `SELECT column_name,column_type,is_nullable,column_default,extra,COALESCE(character_set_name, '') AS character_set_name,COALESCE(collation_name, '') AS collation_name FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='users' AND column_name='group_id'`
-	if err := conn.Raw(query).Scan(&columns).Error; err != nil {
+	rows, err := conn.Raw(query).Rows()
+	if err != nil {
+		return businessGroupColumnMetadata{}, false, fmt.Errorf("read users group relation: %w", err)
+	}
+	var columns []businessGroupColumnMetadata
+	for rows.Next() {
+		var column businessGroupColumnMetadata
+		if err := rows.Scan(&column.name, &column.columnType, &column.nullable, &column.defaultVal, &column.extra, &column.characterSet, &column.collation); err != nil {
+			_ = rows.Close()
+			return businessGroupColumnMetadata{}, false, fmt.Errorf("read users group relation: %w", err)
+		}
+		columns = append(columns, column)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return businessGroupColumnMetadata{}, false, fmt.Errorf("read users group relation: %w", err)
+	}
+	if err := rows.Close(); err != nil {
 		return businessGroupColumnMetadata{}, false, fmt.Errorf("read users group relation: %w", err)
 	}
 	if len(columns) == 0 {
@@ -575,11 +583,7 @@ func loadBusinessGroupIDColumn(conn *gorm.DB) (businessGroupColumnMetadata, bool
 	if len(columns) != 1 {
 		return businessGroupColumnMetadata{}, false, fmt.Errorf("users group relation metadata is ambiguous")
 	}
-	column := columns[0]
-	return businessGroupColumnMetadata{
-		name: column.Name, columnType: column.ColumnType, nullable: column.Nullable, defaultVal: column.DefaultVal,
-		extra: column.Extra, characterSet: column.CharacterSet, collation: column.Collation,
-	}, true, nil
+	return columns[0], true, nil
 }
 
 func ensureDefaultBusinessGroup(conn *gorm.DB, nextGUID func() int64, nowMillis func() int64) (int64, error) {
@@ -626,17 +630,6 @@ func ensureDefaultBusinessGroup(conn *gorm.DB, nextGUID func() int64, nowMillis 
 }
 
 func namedBusinessGroupUserIndex(conn *gorm.DB) (bool, bool, error) {
-	var rows []struct {
-		Name       string         `gorm:"column:index_name"`
-		Column     string         `gorm:"column:column_name"`
-		Sequence   int            `gorm:"column:seq_in_index"`
-		NonUnique  int            `gorm:"column:non_unique"`
-		SubPart    sql.NullInt64  `gorm:"column:sub_part"`
-		Collation  sql.NullString `gorm:"column:collation"`
-		IndexType  string         `gorm:"column:index_type"`
-		Visible    string         `gorm:"column:is_visible"`
-		Expression sql.NullString `gorm:"column:expression"`
-	}
 	ctx := conn.Statement.Context
 	if ctx == nil {
 		ctx = context.Background()
@@ -646,7 +639,24 @@ func namedBusinessGroupUserIndex(conn *gorm.DB) (bool, bool, error) {
 		return false, false, fmt.Errorf("read index metadata capabilities")
 	}
 	indexQuery := "SELECT " + businessGroupIndexMetadataProjection(hasVisibility, hasExpression) + " FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='users' AND index_name='idx_users_group_id' ORDER BY seq_in_index"
-	if err := conn.Raw(indexQuery).Scan(&rows).Error; err != nil {
+	result, err := conn.Raw(indexQuery).Rows()
+	if err != nil {
+		return false, false, fmt.Errorf("read users group index: %w", err)
+	}
+	var rows []businessGroupIndexMetadata
+	for result.Next() {
+		var row businessGroupIndexMetadata
+		if err := result.Scan(&row.name, &row.column, &row.sequence, &row.nonUnique, &row.subPart, &row.collation, &row.indexType, &row.visible, &row.expression); err != nil {
+			_ = result.Close()
+			return false, false, fmt.Errorf("read users group index: %w", err)
+		}
+		rows = append(rows, row)
+	}
+	if err := result.Err(); err != nil {
+		_ = result.Close()
+		return false, false, fmt.Errorf("read users group index: %w", err)
+	}
+	if err := result.Close(); err != nil {
 		return false, false, fmt.Errorf("read users group index: %w", err)
 	}
 	if len(rows) == 0 {
@@ -656,8 +666,7 @@ func namedBusinessGroupUserIndex(conn *gorm.DB) (bool, bool, error) {
 		return true, false, nil
 	}
 	row := rows[0]
-	metadata := businessGroupIndexMetadata{name: row.Name, column: row.Column, sequence: row.Sequence, nonUnique: row.NonUnique, subPart: row.SubPart, collation: row.Collation, indexType: row.IndexType, visible: row.Visible, expression: row.Expression}
-	return true, row.Column == "group_id" && row.Sequence == 1 && row.NonUnique == 1 && validRequiredBusinessGroupIndexMetadata(metadata), nil
+	return true, row.column == "group_id" && row.sequence == 1 && row.nonUnique == 1 && validRequiredBusinessGroupIndexMetadata(row), nil
 }
 
 func namedBusinessGroupUserForeignKey(conn *gorm.DB) (bool, bool, error) {
@@ -668,23 +677,31 @@ func namedBusinessGroupUserForeignKey(conn *gorm.DB) (bool, bool, error) {
 	if currentSchema == "" {
 		return false, false, fmt.Errorf("current schema is empty")
 	}
-	var rows []struct {
-		Column       string `gorm:"column:column_name"`
-		Ordinal      int    `gorm:"column:ordinal_position"`
-		TargetSchema string `gorm:"column:referenced_table_schema"`
-		TargetTable  string `gorm:"column:referenced_table_name"`
-		TargetColumn string `gorm:"column:referenced_column_name"`
-		DeleteRule   string `gorm:"column:delete_rule"`
-		UpdateRule   string `gorm:"column:update_rule"`
-	}
 	query := `SELECT k.column_name,k.ordinal_position,k.referenced_table_schema,k.referenced_table_name,k.referenced_column_name,r.delete_rule,r.update_rule FROM information_schema.key_column_usage k JOIN information_schema.referential_constraints r ON r.constraint_schema=k.constraint_schema AND r.table_name=k.table_name AND r.constraint_name=k.constraint_name WHERE k.table_schema=DATABASE() AND k.table_name='users' AND k.constraint_name='fk_users_business_group' ORDER BY k.ordinal_position`
-	if err := conn.Raw(query).Scan(&rows).Error; err != nil {
+	result, err := conn.Raw(query).Rows()
+	if err != nil {
+		return false, false, fmt.Errorf("read users group foreign key: %w", err)
+	}
+	var rows []businessGroupForeignKeyMetadata
+	for result.Next() {
+		var row businessGroupForeignKeyMetadata
+		if err := result.Scan(&row.column, &row.ordinal, &row.targetSchema, &row.targetTable, &row.targetColumn, &row.deleteRule, &row.updateRule); err != nil {
+			_ = result.Close()
+			return false, false, fmt.Errorf("read users group foreign key: %w", err)
+		}
+		rows = append(rows, row)
+	}
+	if err := result.Err(); err != nil {
+		_ = result.Close()
+		return false, false, fmt.Errorf("read users group foreign key: %w", err)
+	}
+	if err := result.Close(); err != nil {
 		return false, false, fmt.Errorf("read users group foreign key: %w", err)
 	}
 	if len(rows) == 0 {
 		return false, false, nil
 	}
 	row := rows[0]
-	valid := len(rows) == 1 && row.Column == "group_id" && row.Ordinal == 1 && row.TargetSchema == currentSchema && row.TargetTable == "business_groups" && row.TargetColumn == "id" && restrictRule(row.DeleteRule) && restrictRule(row.UpdateRule)
+	valid := len(rows) == 1 && row.column == "group_id" && row.ordinal == 1 && row.targetSchema == currentSchema && row.targetTable == "business_groups" && row.targetColumn == "id" && restrictRule(row.deleteRule) && restrictRule(row.updateRule)
 	return true, valid, nil
 }

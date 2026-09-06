@@ -344,11 +344,35 @@ func TestBusinessGroupMigrationOnIsolatedMySQL(t *testing.T) {
 	if strings.TrimSpace(os.Getenv("TEST_DATABASE_URL")) == "" {
 		t.Skip("TEST_DATABASE_URL is not set; isolated MySQL business group migration test skipped")
 	}
+	t.Run("loads_nullable_users_group_column_metadata", func(t *testing.T) {
+		gdb := permissionSchemaDB(t)
+		applyThroughAdminActionOutbox(t, gdb)
+		migrations, err := All()
+		if err != nil {
+			t.Fatal(err)
+		}
+		pre, _, err := splitBusinessGroupsMigration(migrations[6].UpSQL)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i := 0; i < 2; i++ {
+			if err := gdb.Exec(pre[i]).Error; err != nil {
+				t.Fatalf("simulate pre phase %d: %v", i, err)
+			}
+		}
+		column, exists, err := loadBusinessGroupIDColumn(gdb)
+		if err != nil {
+			t.Fatalf("load nullable users.group_id: %v", err)
+		}
+		if !exists || !matchesBusinessGroupColumn(businessGroupUserRelationContractDefinition().column, column, true) || column.nullable != "YES" {
+			t.Fatalf("nullable users.group_id metadata = %#v exists=%v", column, exists)
+		}
+	})
 	t.Run("backfills_active_and_tombstoned_users", func(t *testing.T) {
 		gdb := permissionSchemaDB(t)
 		applyThroughAdminActionOutbox(t, gdb)
-		insertMigrationUser(t, gdb, 7101, "business-group-active", 0)
-		insertMigrationUser(t, gdb, 7102, "business-group-tombstone", 1)
+		insertMigrationUser(t, gdb, 7101, "biz-group-active", 0)
+		insertMigrationUser(t, gdb, 7102, "biz-group-tombstone", 1)
 
 		allocated := []int64{7201, 7202}
 		calls := 0
@@ -513,7 +537,7 @@ func TestBusinessGroupVerifierRejectsRealSchemaAndDataDrift(t *testing.T) {
 			}
 			inserted := false
 			if tc.name == "orphaned_user_group" {
-				insertMigrationUserWithDefaultGroup(t, gdb, 7999, "business-group-orphan")
+				insertMigrationUserWithDefaultGroup(t, gdb, 7999, "biz-group-orphan")
 				inserted = true
 			}
 			for _, statement := range tc.ddl {
