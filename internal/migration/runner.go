@@ -48,6 +48,12 @@ var adminActionOutboxUp []byte
 //go:embed sql/0006_admin_action_outbox.down.sql
 var adminActionOutboxDown []byte
 
+//go:embed sql/0007_business_groups.up.sql
+var businessGroupsUp []byte
+
+//go:embed sql/0007_business_groups.down.sql
+var businessGroupsDown []byte
+
 // Migration is an immutable, embedded schema version.
 type Migration struct {
 	Version string
@@ -70,6 +76,7 @@ func All() ([]Migration, error) {
 		{Version: "0004", UpSQL: adminUsersReadCountUp, DownSQL: adminUsersReadCountDown},
 		{Version: "0005", UpSQL: adminOperationSafetyUp, DownSQL: adminOperationSafetyDown},
 		{Version: "0006", UpSQL: adminActionOutboxUp, DownSQL: adminActionOutboxDown},
+		{Version: "0007", UpSQL: businessGroupsUp, DownSQL: businessGroupsDown},
 	}
 	sort.Slice(migrations, func(i, j int) bool { return migrations[i].Version < migrations[j].Version })
 	return migrations, nil
@@ -148,11 +155,22 @@ func Up(ctx context.Context, db *gorm.DB, nextGUID func() int64, nowMillis func(
 						return err
 					}
 				}
+				if migration.Version == "0007" {
+					if err := VerifyBusinessGroupsSchema(ctx, conn); err != nil {
+						return err
+					}
+				}
 				continue
 			}
-			for _, statement := range splitStatements(string(migration.UpSQL)) {
-				if err := conn.Exec(statement).Error; err != nil {
+			if migration.Version == "0007" {
+				if err := applyBusinessGroupsMigration(conn, migration.UpSQL, nextGUID, nowMillis); err != nil {
 					return fmt.Errorf("apply migration %s: %w", migration.Version, err)
+				}
+			} else {
+				for _, statement := range splitStatements(string(migration.UpSQL)) {
+					if err := conn.Exec(statement).Error; err != nil {
+						return fmt.Errorf("apply migration %s: %w", migration.Version, err)
+					}
 				}
 			}
 			if migration.Version == "0003" {
@@ -172,6 +190,11 @@ func Up(ctx context.Context, db *gorm.DB, nextGUID func() int64, nowMillis func(
 			}
 			if migration.Version == "0006" {
 				if err := VerifyAdminActionOutboxSchema(ctx, conn); err != nil {
+					return err
+				}
+			}
+			if migration.Version == "0007" {
+				if err := VerifyBusinessGroupsSchema(ctx, conn); err != nil {
 					return err
 				}
 			}
@@ -226,7 +249,10 @@ func Verify(ctx context.Context, db *gorm.DB) error {
 	if err := VerifyAdminOperationSafetySchema(ctx, db); err != nil {
 		return err
 	}
-	return VerifyAdminActionOutboxSchema(ctx, db)
+	if err := VerifyAdminActionOutboxSchema(ctx, db); err != nil {
+		return err
+	}
+	return VerifyBusinessGroupsSchema(ctx, db)
 }
 
 // VerifyApplied is the side-effect-free portion of Verify, kept separate so

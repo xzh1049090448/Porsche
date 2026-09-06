@@ -287,6 +287,7 @@ type AuditFields struct {
 type User struct {
 	ID int64 `gorm:"primaryKey;type:bigint" json:"-"`
 	AuditFields
+	GroupID           int64      `gorm:"column:group_id;type:bigint;not null;index:idx_users_group_id" json:"-"`
 	Phone             *string    `gorm:"size:20;uniqueIndex" json:"-"`
 	Username          *string    `gorm:"size:20;uniqueIndex" json:"username,omitempty"`
 	PasswordHash      *string    `gorm:"size:255" json:"-"`
