@@ -392,3 +392,22 @@ func TestPasswordUsesArgon2idAndRejectsWeakPassword(t *testing.T) {
 		t.Fatal("Argon2id password verification contract failed")
 	}
 }
+
+func TestNormalizeManagedUserNicknameAndHashPassword(t *testing.T) {
+	nickname, err := NormalizeManagedUserNickname("  管理用户  ")
+	if err != nil || nickname != "管理用户" {
+		t.Fatalf("nickname=%q err=%v", nickname, err)
+	}
+	for _, invalid := range []string{"   ", strings.Repeat("界", 65)} {
+		if _, err := NormalizeManagedUserNickname(invalid); err == nil {
+			t.Fatalf("NormalizeManagedUserNickname(%q) unexpectedly succeeded", invalid)
+		}
+	}
+	hash, err := HashManagedCreationPassword("Str0ng!pw")
+	if err != nil || !security.VerifyPassword("Str0ng!pw", hash) {
+		t.Fatalf("managed password hash err=%v", err)
+	}
+	if _, err := HashManagedCreationPassword("password"); err == nil {
+		t.Fatal("managed password hash accepted weak password")
+	}
+}

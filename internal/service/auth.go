@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/porsche/ai-gateway-go/internal/config"
 	"github.com/porsche/ai-gateway-go/internal/models"
@@ -64,6 +65,26 @@ func ValidatePassword(password string) error {
 		return errBadRequest("密码过于简单")
 	}
 	return nil
+}
+
+// NormalizeManagedUserNickname applies the stricter public managed-creation
+// nickname contract without changing self-registration's legacy display-name
+// fallback behavior.
+func NormalizeManagedUserNickname(raw string) (string, error) {
+	nickname := strings.TrimSpace(raw)
+	if nickname == "" || !utf8.ValidString(nickname) || utf8.RuneCountInString(nickname) > 64 {
+		return "", errBadRequest("昵称不能为空且最多64个字符")
+	}
+	return nickname, nil
+}
+
+// HashManagedCreationPassword validates a managed account's initial password
+// before calculating its Argon2id hash. HTTP DTO decoders must only validate.
+func HashManagedCreationPassword(password string) (string, error) {
+	if err := ValidatePassword(password); err != nil {
+		return "", err
+	}
+	return security.HashPassword(password)
 }
 
 // RegisterUsername creates one ordinary username user. Username uniqueness is

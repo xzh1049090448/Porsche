@@ -140,6 +140,36 @@ func TestAdminUserCreateContractExamples(t *testing.T) {
 	adminUserCreateRawExactKeys(t, adminUserCreateRawObject(t, groupItemSchema, "properties"), "guid", "key", "display_name")
 }
 
+func TestAdminUserCreateFrozenRequestExamplesDecode(t *testing.T) {
+	var document map[string]json.RawMessage
+	if err := json.Unmarshal(contracts.AdminUserCreateV1, &document); err != nil {
+		t.Fatal(err)
+	}
+	examples := adminUserCreateRawObject(t, adminUserCreateRawObject(t, adminUserCreateRawObject(t, document, "create"), "request", "body"), "examples")
+	for _, name := range []string{"user", "admin"} {
+		t.Run(name, func(t *testing.T) {
+			request, err := DecodeAdminUserCreate(bytes.NewReader(examples[name]))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer request.ClearSecrets()
+			if request.Password == nil {
+				t.Fatal("frozen example lost password")
+			}
+			if name == "admin" {
+				verificationBody := append([]byte(`{"action":"users.create_admin","intent":`), examples[name]...)
+				verificationBody = append(verificationBody, []byte(`,"current_password":"Current!Pass1"}`)...)
+				verification, err := DecodeAdminUserCreateVerification(bytes.NewReader(verificationBody))
+				if err != nil {
+					t.Fatal(err)
+				}
+				verification.ClearSecrets()
+				clear(verificationBody)
+			}
+		})
+	}
+}
+
 func TestAdminUserCreateContractRejectsDuplicateAndTrailingJSON(t *testing.T) {
 	contents := contracts.AdminUserCreateV1
 	mutations := []struct {
