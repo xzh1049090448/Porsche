@@ -109,3 +109,80 @@ test "$(cat /tmp/a14-user-delete-current-suffix)" != "20260905125101-20c53025" |
 ```
 
 These commands are recorded for Task 18 and were not executed in Task 12.
+
+## 2026-09-06 host-restart replacement fixture addendum
+
+The host restarted before independent Task 18 re-review. The two retained
+`AutoRemove=true` containers, every `/tmp` private fixture/browser artifact,
+and both application processes were absent after restart; Docker Desktop was
+also stopped. Their absence is unexpected historical state and is not Step 6
+cleanup evidence. Docker Desktop was started only as a local fixture
+prerequisite; no production or remote service was accessed.
+
+Before creating a replacement, the executor generated and validated the new
+suffix `20260906031001-95b2aeb3` against the required format and wrote the
+credential-free private plan
+`/tmp/a14-user-delete-20260906031001-95b2aeb3-plan.txt` with mode `0600`.
+The replacement must not reuse any old name, port, credential, database, or
+Redis selector.
+
+- MySQL container: `a14-user-delete-mysql-20260906031001-95b2aeb3`
+- Redis container: `a14-user-delete-redis-20260906031001-95b2aeb3`
+- Namespace database: `a14_user_delete_20260906031001-95b2aeb3`
+- Disposable child: `a14_user_delete_20260906031001-95b2aeb3_test`
+- Loopback bindings: MySQL `127.0.0.1:56060`; Redis `127.0.0.1:56065`
+- Immutable local images: MySQL
+  `mysql@sha256:7dcddc01f13bab2f15cde676d44d01f61fc9f99fe7785e86196dfc07d358ae2b`;
+  Redis
+  `redis@sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf`
+- Required labels: `codex.task=a14-user-delete-20260906031001-95b2aeb3`
+  and `codex.retention=task-18-rerun`
+- Required runtime: `AutoRemove=true`, read-only root filesystems, MySQL
+  tmpfs at `/var/lib/mysql`, `/var/run/mysqld`, `/var/lib/mysql-files`, `/tmp`,
+  Redis tmpfs at `/data`, `/tmp`, and health checks before any migration/test.
+
+Credentials and URLs must exist only in
+`/tmp/a14-user-delete-20260906031001-95b2aeb3.env` mode `0600`. The exact reset
+helper must be mode `0700`, operate only on the exact `_test` child and Redis
+DB 8, and fail before mutation on any container ID/name/image/label/port,
+rootfs/tmpfs, health, namespace, suffix or file-mode mismatch. The new full
+container IDs, creation times, helper digest, and health result are appended
+only after successful exact inspection.
+
+Creation completed after all fail-closed checks:
+
+- MySQL full ID
+  `d1e96a2f780a4c604168c320e690f4685e467ace39edd9d701974903ebd807a3`,
+  created `2026-09-06T03:13:42.430947303Z`.
+- Redis full ID
+  `365aa2d572c00f438db7c234273d82388b70d8de186d60b724174e7fa526596d`,
+  created `2026-09-06T03:13:42.573491928Z`.
+- Both health checks passed at creation and again after the final re-review
+  reset; exact name/ID/image/label/port/AutoRemove/read-only checks matched.
+- Private plan SHA-256:
+  `bb26d5f7f8acea18a1b7a605257aee8fccc32ccf2ed75e6928d98267a8bd5895`.
+- Reset helper
+  `/tmp/a14-user-delete-20260906031001-95b2aeb3-reset.sh`, mode `0700`,
+  SHA-256
+  `7cac435442a35ba88a0789c38b0ca882fed271531718c287f08be14c01249873`.
+
+The final mutable-gate sequence reset separately before the full and race
+commands, migrated `0001..0006`, and used container-root authority only for
+tests that create disposable databases inside this exact isolated container.
+The application continues to use its restricted child-database credential.
+After all gates, a final helper run observed 16 child tables and 168 Redis DB-8
+keys, reset them to zero, reapplied `0001..0006`, and created a new private
+local Root test account. At that validation stop, the resources were backend PID `4020` on
+`127.0.0.1:57181`, API-only route bridge PID `4045` on `127.0.0.1:8000`, and
+frontend PID `4084` on `127.0.0.1:55795`. Backend health and frontend root are
+both `200`; a visible-Chrome `/users` smoke passed with zero external requests.
+
+Those three first replacement application holders ended with their agent
+lifetime. PIDs `4020`/`4045`/`4084` are a second unexpected absence and are not
+Step 6 cleanup evidence. Root-held exec sessions now preserve the same exact
+application commits and ports: backend PID `10318` (started 2026-09-06
+12:34:28 +08:00), route-bridge PID `10331` (started 12:34:45), and frontend PID
+`10376` (started 12:35:04). Read-only inspection matched all three listener
+owners, backend health `200`, frontend root `200`, and both unchanged healthy
+container identities. These root-held identities are the accepted re-review
+and cleanup targets.

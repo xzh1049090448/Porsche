@@ -1,5 +1,13 @@
 # Porsche 开发进度
 
+## 2026-09-06：A12/A14 users.delete 本地联合切片验收通过
+
+- 仅 `users.delete` 切片在后端 `811213d557eea7b6b9523a584245252ba4dd7d80`、前端 `bace6d167b94b693abd6be4c720152dc0eb905bb` 获得三项独立复审 PASS 与本地联合验收 `PASS_LIMITED_SCOPE`；A12 只覆盖软删除、重复删除、用户名不可复用及凭据失效，不覆盖恢复写链；A14 只覆盖该动作的 ticket/idempotency/operation Query 与依赖失败关闭。
+- 证据位于 `docs/superpowers/reports/validation/2026-09-05-a14-user-soft-delete/`：可见真实 UI 三种成功角色路径、UI eligibility、真实 API-context denial/replay、敏感状态生命周期、删除后 15 项凭据拒绝及三组脱敏数据库终态均通过；spec/quality/security re-review 均为 `PASS`。
+- 生产 `ActiveActionRegistry()` 仅激活 `users.delete`；其余 7 个管理动作继续 inactive。通用 outbox delivery/recovery worker 仍在切片外，其他联合验收 blocker、P08 产品阻塞、R02 环境阻塞及旧历史均不变。本结论不代表完整 A12、完整 A14、完整 PRD 或 release 验收通过。
+- 本批仅在隔离 loopback MySQL/Redis fixture 执行现有迁移与验证。生产迁移、部署、push、真实业务数据操作均未获授权，也未执行。
+- 更新前基线：后端 `progress.md` SHA-256 `fbbbd89bcd1283a73261e7e7948a0307b9e44f07ed9e4973c8962c836459785f`；前端 acceptance matrix SHA-256 `6925173b045e77362b8fc096d68727d602cd261545b24e8f38d60e991f93a241`；前端 `progress.md` SHA-256 `21eeb06bc3608554c3bf1ba595897a98c26e4e26b964d6cf2fdd4d66577605cb`。最终 bounded diff 只允许 A12/A14、对应汇总/时间线、两份 progress 和本验证目录发生变化。
+
 ## 2026-09-05：B1-E 管理动作安全底座限定子范围通过，A14仍阻塞
 
 - `go-017` 为 `passing / limited_subscope`。Task 1–11 已交付 strict external-value、用途隔离密钥、8 个 inactive typed descriptor、canonical intent、0005 schema/verifier、Redis Lua 限流、Issue/Begin/Query/Execute/lease/recovery/transaction primitives；生产 `ActiveActionRegistry()` 为空，active production consumer 为 0，冻结路由继续 404。
