@@ -154,7 +154,7 @@
         "properties": {"scope": {"type": "string", "enum": ["users.create", "users.create_admin"]}}
       },
       "query_rule": "exactly one scope query parameter and no other query parameters",
-      "headers": {"Idempotency-Key": "forbidden", "X-Action-Ticket": "forbidden"}
+      "headers": {"Idempotency-Key": "required exactly once; unique original value", "X-Action-Ticket": "forbidden"}
     },
     "response": {
       "status": 200,
