@@ -98,6 +98,12 @@
 - 成功提交后响应丢失：客户端用现有 operation query 查询；不得自动生成新 key 重做。
 - 失败前未提交业务事务：返回稳定错误；票据消费和 operation 状态遵守现有恢复语义。
 
+### 2.4 创建表单分组选项
+
+`GET /admin/v2/groups?status=active` 返回当前操作者可读的启用、未删除业务分组，只包含字符串 GUID、稳定 key 和显示名；要求 `groups.read`，使用 `Cache-Control: no-store` 和 `X-Request-ID`。请求只接受唯一的固定 `status=active`，结果按 key 升序且 `default` 必须存在。依赖不可用、重复 default 或用户可见分组数据损坏时返回 503，不用硬编码选项掩盖问题。
+
+该接口只服务 A03 选择器和后续管理页面，不提供创建、改名、停用或删除分组的写能力。若操作者有 `users.create` 但没有 `groups.read`，前端仍可提交省略 `group_guid` 的默认分组创建；选择器只显示只读的“默认分组”说明，不请求或猜测其他分组。
+
 ## 3. 数据模型与迁移
 
 A03 新增前向迁移，遵守 `docs/conventions/database-standards.md`，不使用 AutoMigrate，不修改已发布 migration checksum。
@@ -125,7 +131,7 @@ A03 新增前向迁移，遵守 `docs/conventions/database-standards.md`，不�
 4. 在事务外预先完成密码强度校验与 Argon2/bcrypt hash 计算；事务内只持有必要 hash，不延长数据库锁。
 5. 创建 user，写 group/plan/模型范围/每日限制和安全默认值。
 6. 若为 admin，创建 permission head 与 canonical overrides。
-7. 写注册安全事实和管理创建审计；审计只记录字段类别和脱敏前后值，密码只记录“已设置”。
+7. 写目标账户的注册安全事实，并写管理创建审计：操作者使用内部 user ID 关联，resource/detail 记录目标 GUID、角色、分组、套餐、权限覆盖类别、原始 HTTP request ID 和 operation ref；密码只记录“已设置”，不记录内容、摘要或长度。
 8. 写 outbox、operation result GUID/status，并消费票据。
 9. 一次 commit；commit 后才构造响应。
 
@@ -152,7 +158,7 @@ A03 复用 A14 固定 `admin_action_error` envelope 和安全消息，不返回�
 `/users` 在具备 `users.create` 展示能力时显示创建入口。表单规则与后端一致，但前端校验只改善交互，后端仍独立核验。
 
 - Admin 的角色固定为普通用户；Root 可选普通用户或管理员。
-- 选管理员时加载权限目录并显示三态编辑器；提交时只发送显式 allow/deny，inherit 不发送。
+- 有 `groups.read` 时加载启用分组目录；没有时固定使用省略 `group_guid` 的默认分组。选管理员时加载权限目录并显示三态编辑器；提交时只发送显式 allow/deny，inherit 不发送。
 - 生产表单没有初始金额字段，不读取 query/localStorage 开启 Mock。
 - 点击提交时生成一次 idempotency key，并在同一逻辑尝试和 operation query 中复用。
 - 普通用户直接创建；管理员先弹出当前密码复核，取得 ticket 后立即提交创建。ticket、密码和 idempotency key 仅在组件内存中短暂持有，关闭、成功、明确失败和卸载时清零。
