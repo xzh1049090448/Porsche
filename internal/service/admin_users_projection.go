@@ -1,10 +1,15 @@
 package service
 
 import (
-	"github.com/porsche/ai-gateway-go/internal/models"
+	"regexp"
 	"strconv"
 	"time"
+	"unicode/utf8"
+
+	"github.com/porsche/ai-gateway-go/internal/models"
 )
+
+var businessGroupKeyPattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,63}$`)
 
 // UserReadDTO contains only the approved public user-list fields.
 type UserReadDTO struct {
@@ -37,6 +42,19 @@ func ProjectUserRead(user models.User) (*UserReadDTO, error) {
 	return out, nil
 }
 
+func projectUserReadWithGroup(user models.User, groupKey string) (*UserReadDTO, error) {
+	if !businessGroupKeyPattern.MatchString(groupKey) {
+		return nil, ErrAdminPermissionUnavailable
+	}
+	out, err := ProjectUserRead(user)
+	if err != nil {
+		return nil, err
+	}
+	key := groupKey
+	out.Group = &key
+	return out, nil
+}
+
 // ProjectCreatedUserRead binds the normal user projection to the exact group
 // row locked by the create transaction.
 func ProjectCreatedUserRead(user models.User, group models.BusinessGroup) (*UserReadDTO, error) {
@@ -44,13 +62,42 @@ func ProjectCreatedUserRead(user models.User, group models.BusinessGroup) (*User
 		group.Status != models.BusinessGroupStatusActive || group.IsDeleted != 0 {
 		return nil, ErrAdminPermissionUnavailable
 	}
-	out, err := ProjectUserRead(user)
-	if err != nil {
-		return nil, err
+	return projectUserReadWithGroup(user, group.Key)
+}
+
+type AdminGroupReadDTO struct {
+	GUID        string `json:"guid"`
+	Key         string `json:"key"`
+	DisplayName string `json:"display_name"`
+}
+
+type AdminGroupsReadDTO struct {
+	Items []AdminGroupReadDTO `json:"items"`
+}
+
+func projectAdminGroupsRead(groups []models.BusinessGroup) (*AdminGroupsReadDTO, error) {
+	items := make([]AdminGroupReadDTO, 0, len(groups))
+	seenGUIDs := make(map[int64]struct{}, len(groups))
+	defaultCount := 0
+	previousKey := ""
+	for _, group := range groups {
+		_, duplicateGUID := seenGUIDs[group.Guid]
+		if group.ID <= 0 || group.Guid <= 0 || duplicateGUID || group.Status != models.BusinessGroupStatusActive || group.IsDeleted != 0 ||
+			!businessGroupKeyPattern.MatchString(group.Key) || group.DisplayName == "" || !utf8.ValidString(group.DisplayName) || utf8.RuneCountInString(group.DisplayName) > 64 ||
+			(previousKey != "" && group.Key <= previousKey) {
+			return nil, ErrAdminPermissionUnavailable
+		}
+		seenGUIDs[group.Guid] = struct{}{}
+		previousKey = group.Key
+		if group.Key == "default" {
+			defaultCount++
+		}
+		items = append(items, AdminGroupReadDTO{GUID: strconv.FormatInt(group.Guid, 10), Key: group.Key, DisplayName: group.DisplayName})
 	}
-	key := group.Key
-	out.Group = &key
-	return out, nil
+	if defaultCount != 1 {
+		return nil, ErrAdminPermissionUnavailable
+	}
+	return &AdminGroupsReadDTO{Items: items}, nil
 }
 
 type AdminUsersReadPage struct {

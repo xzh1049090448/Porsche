@@ -85,6 +85,7 @@ type readIntent struct {
 	legacy     bool
 	deleted    bool
 	projection bool
+	resource   string
 	issued     *IssuedSession
 }
 type freshReadResult func(*gorm.DB, models.User, models.User, *authz.Evaluator, int64, error) error
@@ -115,7 +116,14 @@ func (s *AdminUsersReadService) freshRead(ctx context.Context, actor AdminPermis
 		if policyErr == nil {
 			evaluator, policyErr = authz.NewEvaluator(accountForRead(user), rules)
 		}
-		denied := !intent.projection && policyErr == nil && evaluator.Collection("users.read", intent.deleted) != authz.Allowed
+		denied := false
+		if !intent.projection && policyErr == nil {
+			if intent.resource != "" {
+				denied = evaluator.Resource(intent.resource) != authz.Allowed
+			} else {
+				denied = evaluator.Collection("users.read", intent.deleted) != authz.Allowed
+			}
+		}
 		var target models.User
 		var targetErr error
 		if intent.guid != 0 && policyErr == nil && !denied {
@@ -188,8 +196,46 @@ func (s *AdminUsersReadService) Detail(ctx context.Context, actor AdminPermissio
 	}
 	var result *UserReadDTO
 	err := s.freshRead(ctx, actor, readIntent{guid: guid}, func(tx *gorm.DB, user, target models.User, e *authz.Evaluator, version int64, policyErr error) error {
+		groupKey, err := readAdminUserGroupKey(tx, target.ID)
+		if err != nil {
+			return err
+		}
+		result, err = projectUserReadWithGroup(target, groupKey)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func readAdminUserGroupKey(tx *gorm.DB, userID int64) (string, error) {
+	if tx == nil || userID <= 0 {
+		return "", ErrAdminPermissionUnavailable
+	}
+	var groupKey sql.NullString
+	err := tx.Table("users").Clauses(clause.Locking{Strength: "SHARE"}).
+		Select("business_groups.group_key").
+		Joins("LEFT JOIN business_groups ON business_groups.id = users.group_id AND business_groups.status = ? AND business_groups.is_deleted = 0", models.BusinessGroupStatusActive).
+		Where("users.id = ?", userID).Row().Scan(&groupKey)
+	if err != nil || !groupKey.Valid {
+		return "", ErrAdminPermissionUnavailable
+	}
+	return groupKey.String, nil
+}
+
+func (s *AdminUsersReadService) ActiveGroups(ctx context.Context, actor AdminPermissionReadActor) (*AdminGroupsReadDTO, error) {
+	var result *AdminGroupsReadDTO
+	err := s.freshRead(ctx, actor, readIntent{resource: "groups.read"}, func(tx *gorm.DB, user, target models.User, e *authz.Evaluator, version int64, policyErr error) error {
+		var groups []models.BusinessGroup
+		if err := tx.Clauses(clause.Locking{Strength: "SHARE"}).
+			Select("id", "guid", "group_key", "display_name", "status", "is_deleted").
+			Where("status = ? AND is_deleted = 0", models.BusinessGroupStatusActive).
+			Order("BINARY group_key ASC").Find(&groups).Error; err != nil {
+			return err
+		}
 		var err error
-		result, err = ProjectUserRead(target)
+		result, err = projectAdminGroupsRead(groups)
 		return err
 	})
 	if err != nil {
@@ -278,11 +324,12 @@ func adminUsersListStatement(user models.User, q AdminUsersReadQuery) (string, [
 	if q.Sort != "guid" {
 		order += ", guid " + q.Order
 	}
-	columns := strings.Join(userReadColumns, ",")
+	columns := strings.Join(userReadColumns, ",") + ",active_business_groups.group_key AS group_key"
+	activeGroupsJoin := " LEFT JOIN (SELECT id AS business_group_id,group_key FROM business_groups WHERE status = 1 AND is_deleted = 0) AS active_business_groups ON active_business_groups.business_group_id = users.group_id"
 	// Both reads remain in one statement snapshot. The count uses the exact
 	// predicate generated for filtered while avoiding the low-selectivity
 	// active/updated index; paged keeps the optimizer-selected ordering index.
-	query := "WITH filtered AS (SELECT " + columns + " FROM users WHERE " + where + "), counted AS (SELECT COUNT(*) AS total FROM users IGNORE INDEX FOR JOIN (idx_users_active_updated) WHERE " + where + "), paged AS (SELECT * FROM filtered ORDER BY " + order + " LIMIT ? OFFSET ?) SELECT counted.total, paged.* FROM counted LEFT JOIN paged ON TRUE ORDER BY " + strings.ReplaceAll(order, ", ", ", paged.")
+	query := "WITH filtered AS (SELECT " + columns + " FROM users" + activeGroupsJoin + " WHERE " + where + "), counted AS (SELECT COUNT(*) AS total FROM users IGNORE INDEX FOR JOIN (idx_users_active_updated) WHERE " + where + "), paged AS (SELECT * FROM filtered ORDER BY " + order + " LIMIT ? OFFSET ?) SELECT counted.total, paged.* FROM counted LEFT JOIN paged ON TRUE ORDER BY " + strings.ReplaceAll(order, ", ", ", paged.")
 	// Qualify the first ordering term as well; identifiers are a fixed allowlist.
 	query = strings.Replace(query, "ON TRUE ORDER BY ", "ON TRUE ORDER BY paged.", 1)
 	args := make([]interface{}, 0, len(whereArgs)*2+2)
@@ -309,8 +356,8 @@ func (s *AdminUsersReadService) List(ctx context.Context, actor AdminPermissionR
 			// Scan into nullable columns because an empty page still yields the count.
 			var total int64
 			var id, guid, plan, role, status, deleted, av, created, last, verified, tokens, calls, limit sql.NullInt64
-			var username, nickname sql.NullString
-			if err := rows.Scan(&total, &id, &guid, &username, &nickname, &plan, &role, &status, &deleted, &av, &created, &last, &verified, &tokens, &calls, &limit); err != nil {
+			var username, nickname, groupKey sql.NullString
+			if err := rows.Scan(&total, &id, &guid, &username, &nickname, &plan, &role, &status, &deleted, &av, &created, &last, &verified, &tokens, &calls, &limit, &groupKey); err != nil {
 				return err
 			}
 			result.Total = total
@@ -327,7 +374,10 @@ func (s *AdminUsersReadService) List(ctx context.Context, actor AdminPermissionR
 			if last.Valid {
 				u.LastLoginAt = &last.Int64
 			}
-			dto, err := ProjectUserRead(u)
+			if !groupKey.Valid {
+				return ErrAdminPermissionUnavailable
+			}
+			dto, err := projectUserReadWithGroup(u, groupKey.String)
 			if err != nil {
 				return err
 			}

@@ -63,7 +63,7 @@ func TestAdminUsersReadHTTPAuthVersionQueryAndVisibility(t *testing.T) {
 	}
 	rec := adminAuthzRequest(r, "/admin/v2/users/"+guid, access)
 	body := adminAuthzObject(t, rec, "guid", "username", "nickname", "email", "group", "plan_type", "role", "status", "auth_version", "created_at", "last_login_at")
-	if body["guid"] != guid || body["auth_version"] != float64(target.AuthVersion) || body["email"] != nil || body["group"] != nil {
+	if body["guid"] != guid || body["auth_version"] != float64(target.AuthVersion) || body["email"] != nil || body["group"] != "default" {
 		t.Fatal("DTO")
 	}
 	rec = adminAuthzRequest(r, "/admin/v2/users?q="+guid, access)
@@ -74,7 +74,7 @@ func TestAdminUsersReadHTTPAuthVersionQueryAndVisibility(t *testing.T) {
 	}
 	item := items[0].(map[string]any)
 	adminAuthzKeys(t, item, "guid", "username", "nickname", "email", "group", "plan_type", "role", "status", "auth_version", "created_at", "last_login_at")
-	if item["guid"] != guid || item["auth_version"] != float64(target.AuthVersion) {
+	if item["guid"] != guid || item["auth_version"] != float64(target.AuthVersion) || item["group"] != "default" {
 		t.Fatalf("v2 list auth version differs: %v", item)
 	}
 	rec = adminAuthzRequest(r, "/admin/v2/users?q="+guid+"&page=2", access)
@@ -148,6 +148,49 @@ func TestAdminUsersReadHTTPExplicitDenyAllAdapters(t *testing.T) {
 	for _, path := range []string{"/admin/v2/users", "/admin/v2/users/" + guid, "/admin/users", "/admin/users/" + guid, "/admin/users/" + guid + "/behavior"} {
 		t.Run(path, func(t *testing.T) {
 			adminAuthzAssertError(t, adminAuthzRequest(r, path, access), 403, "无权限访问")
+		})
+	}
+}
+
+func TestAdminUsersReadHTTPGroupProjectionFailsClosed(t *testing.T) {
+	state := adminAuthzHTTPState(t)
+	router := gin.New()
+	RegisterAdminUsersRead(router, state)
+	root := adminAuthzHTTPUser(t, state, models.UserRoleRoot)
+	target := adminAuthzHTTPUser(t, state, models.UserRoleUser)
+	access := platformJWT(t, state, root)
+	guid := strconv.FormatInt(target.Guid, 10)
+	defaultGroupID := platformTestDefaultBusinessGroupID(t, state)
+
+	for _, test := range []struct {
+		name  string
+		group models.BusinessGroup
+	}{
+		{name: "deleted", group: models.BusinessGroup{AuditFields: adminAuthzAudit(), Key: "deleted-http-group", DisplayName: "Deleted", Status: models.BusinessGroupStatusActive}},
+		{name: "inactive", group: models.BusinessGroup{AuditFields: adminAuthzAudit(), Key: "inactive-http-group", DisplayName: "Inactive", Status: models.BusinessGroupStatusInactive}},
+		{name: "corrupt", group: models.BusinessGroup{AuditFields: adminAuthzAudit(), Key: "INVALID", DisplayName: "Corrupt", Status: models.BusinessGroupStatusActive}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if test.name == "deleted" {
+				test.group.IsDeleted = 1
+			}
+			if err := state.DB.Create(&test.group).Error; err != nil {
+				t.Fatal("create group fixture")
+			}
+			if err := state.DB.Model(target).Update("group_id", test.group.ID).Error; err != nil {
+				t.Fatal("assign group fixture")
+			}
+			defer func() {
+				if err := state.DB.Model(target).Update("group_id", defaultGroupID).Error; err != nil {
+					t.Errorf("restore default group: %v", err)
+				}
+				if err := state.DB.Delete(&test.group).Error; err != nil {
+					t.Errorf("delete group fixture: %v", err)
+				}
+			}()
+			for _, path := range []string{"/admin/v2/users/" + guid, "/admin/v2/users?q=" + guid} {
+				adminAuthzAssertError(t, adminAuthzRequest(router, path, access), http.StatusServiceUnavailable, "用户信息暂不可用")
+			}
 		})
 	}
 }

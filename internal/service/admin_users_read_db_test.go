@@ -3,10 +3,12 @@ package service
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -15,6 +17,155 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
+
+func TestAdminUsersReadGroupDirectoryProjection(t *testing.T) {
+	statement, _ := adminUsersListStatement(models.User{ID: 10, AuditFields: models.AuditFields{Guid: 11}, Role: models.UserRoleRoot}, AdminUsersReadQuery{Page: 1, PageSize: 20, Sort: "guid", Order: "asc"})
+	for _, fragment := range []string{"active_business_groups.group_key AS group_key", "LEFT JOIN (SELECT id AS business_group_id,group_key FROM business_groups WHERE status = 1 AND is_deleted = 0)", "active_business_groups.business_group_id = users.group_id"} {
+		if !strings.Contains(statement, fragment) {
+			t.Fatalf("active group join missing %q: %s", fragment, statement)
+		}
+	}
+
+	valid := []models.BusinessGroup{
+		{ID: 1, AuditFields: models.AuditFields{Guid: 101}, Key: "alpha", DisplayName: "Alpha", Status: models.BusinessGroupStatusActive},
+		{ID: 2, AuditFields: models.AuditFields{Guid: 102}, Key: "default", DisplayName: "Default", Status: models.BusinessGroupStatusActive},
+	}
+	directory, err := projectAdminGroupsRead(valid)
+	if err != nil || directory == nil || len(directory.Items) != 2 {
+		t.Fatalf("valid directory=%#v err=%v", directory, err)
+	}
+	raw, err := json.Marshal(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(raw, &body); err != nil || len(body) != 1 {
+		t.Fatalf("directory envelope differs: %s", raw)
+	}
+	items, ok := body["items"].([]any)
+	if !ok || len(items) != 2 {
+		t.Fatalf("directory items differ: %s", raw)
+	}
+	for i, item := range items {
+		object, ok := item.(map[string]any)
+		if !ok || len(object) != 3 || object["guid"] != strconv.FormatInt(valid[i].Guid, 10) || object["key"] != valid[i].Key || object["display_name"] != valid[i].DisplayName {
+			t.Fatalf("directory DTO exposes invalid fields: %s", raw)
+		}
+	}
+
+	invalid := [][]models.BusinessGroup{
+		nil,
+		{valid[0]},
+		{valid[1], valid[1]},
+		{{ID: 1, AuditFields: models.AuditFields{Guid: 0}, Key: "default", DisplayName: "Default", Status: models.BusinessGroupStatusActive}},
+		{{ID: 1, AuditFields: models.AuditFields{Guid: 101}, Key: "Default", DisplayName: "Default", Status: models.BusinessGroupStatusActive}},
+		{{ID: 1, AuditFields: models.AuditFields{Guid: 101}, Key: "default", DisplayName: "", Status: models.BusinessGroupStatusActive}},
+		{{ID: 1, AuditFields: models.AuditFields{Guid: 101, IsDeleted: 1}, Key: "default", DisplayName: "Default", Status: models.BusinessGroupStatusActive}},
+		{{ID: 1, AuditFields: models.AuditFields{Guid: 101}, Key: "default", DisplayName: "Default", Status: models.BusinessGroupStatusInactive}},
+		{valid[1], valid[0]},
+	}
+	for index, groups := range invalid {
+		if got, err := projectAdminGroupsRead(groups); got != nil || !errors.Is(err, ErrAdminPermissionUnavailable) {
+			t.Fatalf("invalid directory %d accepted: %#v %v", index, got, err)
+		}
+	}
+}
+
+func TestAdminUsersReadDBGroupProjectionFailsClosed(t *testing.T) {
+	db, redisStore, _, target, actor := adminReadFixture(t)
+	service := NewAdminUsersReadService(db, redisStore)
+	ctx := context.Background()
+	var defaultGroup models.BusinessGroup
+	if err := db.Where("BINARY group_key = BINARY ? AND status = ? AND is_deleted = 0", "default", models.BusinessGroupStatusActive).First(&defaultGroup).Error; err != nil {
+		t.Fatal("load default group")
+	}
+	assertGroup := func(want string) {
+		t.Helper()
+		detail, err := service.Detail(ctx, actor, target.Guid)
+		if err != nil || detail == nil || detail.Group == nil || *detail.Group != want {
+			t.Fatalf("detail group=%#v err=%v", detail, err)
+		}
+		query, _ := ParseAdminUsersReadQuery("q=" + strconv.FormatInt(target.Guid, 10))
+		page, err := service.List(ctx, actor, query)
+		if err != nil || page == nil || len(page.Items) != 1 || page.Items[0].Group == nil || *page.Items[0].Group != want {
+			t.Fatalf("list group=%#v err=%v", page, err)
+		}
+	}
+	assertUnavailable := func(label string) {
+		t.Helper()
+		if detail, err := service.Detail(ctx, actor, target.Guid); detail != nil || !errors.Is(err, ErrAdminPermissionUnavailable) {
+			t.Fatalf("%s detail did not fail closed: %#v %v", label, detail, err)
+		}
+		query, _ := ParseAdminUsersReadQuery("q=" + strconv.FormatInt(target.Guid, 10))
+		if page, err := service.List(ctx, actor, query); page != nil || !errors.Is(err, ErrAdminPermissionUnavailable) {
+			t.Fatalf("%s list did not fail closed: %#v %v", label, page, err)
+		}
+	}
+
+	assertGroup("default")
+	for _, test := range []struct {
+		name    string
+		group   models.BusinessGroup
+		missing bool
+	}{
+		{name: "deleted", group: models.BusinessGroup{AuditFields: testAuditFields(), Key: "deleted-group", DisplayName: "Deleted", Status: models.BusinessGroupStatusActive}},
+		{name: "inactive", group: models.BusinessGroup{AuditFields: testAuditFields(), Key: "inactive-group", DisplayName: "Inactive", Status: models.BusinessGroupStatusInactive}},
+		{name: "corrupt", group: models.BusinessGroup{AuditFields: testAuditFields(), Key: "INVALID", DisplayName: "Corrupt", Status: models.BusinessGroupStatusActive}},
+		{name: "missing", missing: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var createdGroup *models.BusinessGroup
+			defer func() {
+				if err := db.Model(target).Update("group_id", defaultGroup.ID).Error; err != nil {
+					t.Errorf("restore default group: %v", err)
+				}
+				if createdGroup != nil {
+					if err := db.Delete(createdGroup).Error; err != nil {
+						t.Errorf("delete group fixture: %v", err)
+					}
+				}
+			}()
+			if test.missing {
+				pool, err := db.DB()
+				if err != nil {
+					t.Fatal(err)
+				}
+				conn, err := pool.Conn(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer conn.Close()
+				var missingID int64
+				if err := conn.QueryRowContext(ctx, "SELECT COALESCE(MAX(id), 0) + 1000 FROM business_groups").Scan(&missingID); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := conn.ExecContext(ctx, "SET FOREIGN_KEY_CHECKS=0"); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := conn.ExecContext(ctx, "UPDATE users SET group_id=? WHERE id=?", missingID, target.ID); err != nil {
+					_, _ = conn.ExecContext(ctx, "SET FOREIGN_KEY_CHECKS=1")
+					t.Fatal(err)
+				}
+				if _, err := conn.ExecContext(ctx, "SET FOREIGN_KEY_CHECKS=1"); err != nil {
+					t.Fatal(err)
+				}
+				assertUnavailable(test.name)
+			} else {
+				if test.name == "deleted" {
+					test.group.IsDeleted = 1
+				}
+				if err := db.Create(&test.group).Error; err != nil {
+					t.Fatal(err)
+				}
+				createdGroup = &test.group
+				if err := db.Model(target).Update("group_id", test.group.ID).Error; err != nil {
+					t.Fatal(err)
+				}
+				assertUnavailable(test.name)
+			}
+		})
+	}
+}
 
 func TestAdminUsersReadDBListAndDetail(t *testing.T) {
 	db, r, root, target, actor := adminReadFixture(t)

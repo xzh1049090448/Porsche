@@ -66,6 +66,18 @@ func TestHealthOK(t *testing.T) {
 	}
 }
 
+func TestAdminUsersGroupDirectoryRouteIsRegistered(t *testing.T) {
+	settings := &config.Settings{AppEnv: "test", AllowedHosts: "example.com"}
+	engine := router.New(&app.State{Settings: settings})
+	request := httptest.NewRequest(http.MethodGet, "/admin/v2/groups?status=active", nil)
+	request.Host = "example.com"
+	recorder := httptest.NewRecorder()
+	engine.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("registered group directory status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestHostAllowlistAcceptsDomainAndRejectsDirectIPAddress(t *testing.T) {
 	state := newGatewayTestState(t)
 	state.Settings.AllowedHosts = "aiportcloud.com"
@@ -489,6 +501,7 @@ var preB1ERouteInventory = []routeContract{
 	{http.MethodPut, "/admin/users/:guid"},
 	{http.MethodGet, "/admin/users/:guid/behavior"},
 	{http.MethodGet, "/admin/v2/authz/catalog"},
+	{http.MethodGet, "/admin/v2/groups"},
 	{http.MethodGet, "/admin/v2/users"},
 	{http.MethodGet, "/admin/v2/users/:guid"},
 	{http.MethodGet, "/admin/v2/users/:guid/permissions"},
