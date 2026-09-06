@@ -16,27 +16,30 @@ func TestPermissionOverrideIntentFrozenTypeName(t *testing.T) {
 
 func descriptorFor(t *testing.T, action Action) Descriptor {
 	t.Helper()
-	for _, descriptor := range InactiveActionDescriptors() {
-		if descriptor.Action == action {
-			return descriptor
+	for _, descriptors := range [][]Descriptor{InactiveActionDescriptors(), ActiveActionRegistry()} {
+		for _, descriptor := range descriptors {
+			if descriptor.Action == action {
+				return descriptor
+			}
 		}
 	}
 	t.Fatalf("descriptor %d missing", action)
 	return Descriptor{}
 }
 
-func TestCreateAdminIntentCanonicalOrderNullRoleAndSortedModels(t *testing.T) {
+func TestCreateAccountIntentCanonicalOrderNullRoleSortedModelsAndOverrides(t *testing.T) {
 	password := []byte{0x53, 0x33, 0x63, 0x72, 0x65, 0x74}
 	models := []string{"model-z", "model-a", "model-z"}
-	encoded, err := descriptorFor(t, ActionUsersCreateAdmin).Encode(CreateAdminIntent{
-		Username: " Alice ", Password: password, PlanType: 1, AllowedModels: models, DailyCallLimit: 7,
+	overrides := []PermissionOverrideIntent{{Capability: "users.read", Effect: 2}, {Capability: "users.write", Effect: 3}}
+	encoded, err := descriptorFor(t, ActionUsersCreateAdmin).Encode(CreateAccountIntent{
+		Username: " Alice ", Password: password, Role: "admin", PlanType: 1, AllowedModels: models, DailyCallLimit: 7, Overrides: overrides,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	fields := decodeFields(t, encoded)
-	if len(fields) != 8 {
-		t.Fatalf("field count=%d, want 8", len(fields))
+	if len(fields) != 9 {
+		t.Fatalf("field count=%d, want 9", len(fields))
 	}
 	for i, field := range fields {
 		if field.tag != byte(i+1) {
@@ -57,6 +60,70 @@ func TestCreateAdminIntentCanonicalOrderNullRoleAndSortedModels(t *testing.T) {
 	if binary.BigEndian.Uint32(array[:4]) != 2 || !bytes.Equal(array, wantArray) {
 		t.Fatalf("models array not sorted/deduplicated: %x", array)
 	}
+	if bytes.Index(fields[8].value, []byte("users.read")) > bytes.Index(fields[8].value, []byte("users.write")) {
+		t.Fatalf("overrides not capability sorted: %x", fields[8].value)
+	}
+	if !reflect.DeepEqual(overrides, []PermissionOverrideIntent{{Capability: "users.read", Effect: 2}, {Capability: "users.write", Effect: 3}}) {
+		t.Fatalf("caller overrides mutated: %#v", overrides)
+	}
+}
+
+func TestCreateAccountIntentBindsAllFieldsAndCanonicalizesEquivalentPermutations(t *testing.T) {
+	nickname := "Nick"
+	group := int64(44)
+	makeIntent := func(models []string, overrides []PermissionOverrideIntent) CreateAccountIntent {
+		return CreateAccountIntent{
+			Username: "alice", Nickname: &nickname, Password: []byte{1, 2, 3}, Role: "user", GroupGUID: &group,
+			PlanType: 2, AllowedModels: models, DailyCallLimit: 4, Overrides: overrides,
+		}
+	}
+	first := makeIntent([]string{"z", "a", "z"}, []PermissionOverrideIntent{{Capability: "users.write", Effect: 3}, {Capability: "users.read", Effect: 2}})
+	second := makeIntent([]string{"a", "z"}, []PermissionOverrideIntent{{Capability: "users.read", Effect: 2}, {Capability: "users.write", Effect: 3}})
+	firstEncoded, err := descriptorFor(t, ActionUsersCreate).Encode(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondEncoded, err := descriptorFor(t, ActionUsersCreate).Encode(second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(firstEncoded, secondEncoded) {
+		t.Fatalf("equivalent create intents encoded differently: %x vs %x", firstEncoded, secondEncoded)
+	}
+	admin := makeIntent([]string{"a", "z"}, []PermissionOverrideIntent{{Capability: "users.read", Effect: 2}, {Capability: "users.write", Effect: 3}})
+	admin.Role = "admin"
+	adminEncoded, err := descriptorFor(t, ActionUsersCreateAdmin).Encode(admin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(firstEncoded, adminEncoded) {
+		t.Fatal("role did not affect canonical encoding")
+	}
+	for _, tc := range []struct {
+		name   string
+		mutate func(*CreateAccountIntent)
+	}{
+		{"nickname", func(in *CreateAccountIntent) { value := "Other"; in.Nickname = &value }},
+		{"group", func(in *CreateAccountIntent) { value := int64(45); in.GroupGUID = &value }},
+		{"plan", func(in *CreateAccountIntent) { in.PlanType = 3 }},
+		{"models", func(in *CreateAccountIntent) { in.AllowedModels = []string{"other"} }},
+		{"daily limit", func(in *CreateAccountIntent) { in.DailyCallLimit = 5 }},
+		{"overrides", func(in *CreateAccountIntent) {
+			in.Overrides = []PermissionOverrideIntent{{Capability: "users.read", Effect: 3}}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			candidate := makeIntent([]string{"a", "z"}, []PermissionOverrideIntent{{Capability: "users.read", Effect: 2}, {Capability: "users.write", Effect: 3}})
+			tc.mutate(&candidate)
+			got, err := descriptorFor(t, ActionUsersCreate).Encode(candidate)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if bytes.Equal(firstEncoded, got) {
+				t.Fatal("approved field did not affect canonical encoding")
+			}
+		})
+	}
 }
 
 func TestPasswordZeroOnSuccessAndValidationError(t *testing.T) {
@@ -65,15 +132,15 @@ func TestPasswordZeroOnSuccessAndValidationError(t *testing.T) {
 		action Action
 		intent any
 	}{
-		{"create success", ActionUsersCreateAdmin, CreateAdminIntent{Username: "alice", Password: []byte{1, 2, 3}, PlanType: 1}},
-		{"create error", ActionUsersCreateAdmin, CreateAdminIntent{Password: []byte{1, 2, 3}, PlanType: 1}},
+		{"create success", ActionUsersCreateAdmin, CreateAccountIntent{Username: "alice", Password: []byte{1, 2, 3}, Role: "admin", PlanType: 1}},
+		{"create error", ActionUsersCreateAdmin, CreateAccountIntent{Password: []byte{1, 2, 3}, Role: "admin", PlanType: 1}},
 		{"reset success", ActionUsersResetPassword, ResetPasswordIntent{TargetGUID: 1, NewPassword: []byte{4, 5, 6}, Reason: "requested"}},
 		{"reset error", ActionUsersResetPassword, ResetPasswordIntent{NewPassword: []byte{4, 5, 6}, Reason: "requested"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var secret []byte
 			switch in := tc.intent.(type) {
-			case CreateAdminIntent:
+			case CreateAccountIntent:
 				secret = in.Password
 			case ResetPasswordIntent:
 				secret = in.NewPassword
@@ -89,7 +156,7 @@ func TestPasswordZeroOnSuccessAndValidationError(t *testing.T) {
 func TestPasswordEncodingIsIndependentAndCallerClearable(t *testing.T) {
 	password := []byte{0x71, 0x52, 0x39, 0x21}
 	wantPassword := append([]byte(nil), password...)
-	encoded, err := descriptorFor(t, ActionUsersCreateAdmin).Encode(CreateAdminIntent{Username: "alice", Password: password, PlanType: 1})
+	encoded, err := descriptorFor(t, ActionUsersCreateAdmin).Encode(CreateAccountIntent{Username: "alice", Password: password, Role: "admin", PlanType: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,6 +172,34 @@ func TestPasswordEncodingIsIndependentAndCallerClearable(t *testing.T) {
 	}
 }
 
+func TestCreateAccountIntentOnlyClearsItsPasswordOnSuccessAndError(t *testing.T) {
+	nickname := "Nick"
+	group := int64(44)
+	for _, tc := range []struct {
+		name   string
+		action Action
+		role   string
+	}{
+		{"success", ActionUsersCreate, "user"},
+		{"rejected role", ActionUsersCreate, "admin"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			models := []string{"z", "a", "z"}
+			overrides := []PermissionOverrideIntent{{Capability: "users.write", Effect: 3}, {Capability: "users.read", Effect: 2}}
+			intent := CreateAccountIntent{
+				Username: "alice", Nickname: &nickname, Password: []byte{1, 2, 3}, Role: tc.role, GroupGUID: &group,
+				PlanType: 2, AllowedModels: models, DailyCallLimit: 4, Overrides: overrides,
+			}
+			want := cloneIntentForMutationCheck(intent).(CreateAccountIntent)
+			_, _ = descriptorFor(t, tc.action).Encode(intent)
+			clear(want.Password)
+			if !reflect.DeepEqual(intent, want) {
+				t.Fatalf("create input mutation = %#v, want only password clear", intent)
+			}
+		})
+	}
+}
+
 func TestAllDescriptorsDeterministicAndDoNotMutateInputs(t *testing.T) {
 	nickname := "Nick"
 	group := int64(44)
@@ -114,7 +209,7 @@ func TestAllDescriptorsDeterministicAndDoNotMutateInputs(t *testing.T) {
 		make   func() any
 	}{
 		{"create", ActionUsersCreateAdmin, func() any {
-			return CreateAdminIntent{Username: "alice", Nickname: &nickname, Password: []byte{1, 2, 3}, GroupGUID: &group, PlanType: 2, AllowedModels: []string{"z", "a", "z"}, DailyCallLimit: 4}
+			return CreateAccountIntent{Username: "alice", Nickname: &nickname, Password: []byte{1, 2, 3}, Role: "admin", GroupGUID: &group, PlanType: 2, AllowedModels: []string{"z", "a", "z"}, DailyCallLimit: 4, Overrides: []PermissionOverrideIntent{{Capability: "users.write", Effect: 3}, {Capability: "users.read", Effect: 2}}}
 		}},
 		{"reset", ActionUsersResetPassword, func() any { return ResetPasswordIntent{TargetGUID: 2, NewPassword: []byte{4, 5, 6}, Reason: "case"} }},
 		{"promote", ActionUsersPromote, func() any { return RoleIntent{TargetGUID: 2, ExpectedAuthVersion: 3, Reason: "case"} }},
@@ -155,9 +250,10 @@ func TestAllDescriptorsDeterministicAndDoNotMutateInputs(t *testing.T) {
 
 func cloneIntentForMutationCheck(value any) any {
 	switch in := value.(type) {
-	case CreateAdminIntent:
+	case CreateAccountIntent:
 		in.Password = append([]byte(nil), in.Password...)
 		in.AllowedModels = append([]string(nil), in.AllowedModels...)
+		in.Overrides = append([]PermissionOverrideIntent(nil), in.Overrides...)
 		return in
 	case ResetPasswordIntent:
 		in.NewPassword = append([]byte(nil), in.NewPassword...)
@@ -173,8 +269,8 @@ func cloneIntentForMutationCheck(value any) any {
 func assertIntentMutationContract(t *testing.T, after, before any) {
 	t.Helper()
 	switch got := after.(type) {
-	case CreateAdminIntent:
-		want := before.(CreateAdminIntent)
+	case CreateAccountIntent:
+		want := before.(CreateAccountIntent)
 		clear(want.Password)
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("create input mutation = %#v, want only password clear", got)
@@ -217,10 +313,17 @@ func TestUserIntentFixedRolesAndCanonicalValidation(t *testing.T) {
 		action Action
 		intent any
 	}{
-		{ActionUsersCreateAdmin, CreateAdminIntent{Username: "", Password: []byte{1}, PlanType: 1}},
-		{ActionUsersCreateAdmin, CreateAdminIntent{Username: "alice", Password: []byte{1}, PlanType: 0}},
-		{ActionUsersCreateAdmin, CreateAdminIntent{Username: "alice", Password: []byte{1}, PlanType: 1, AllowedModels: []string{""}}},
-		{ActionUsersCreateAdmin, CreateAdminIntent{Username: "alice", Password: []byte{1}, PlanType: 1, DailyCallLimit: -1}},
+		{ActionUsersCreateAdmin, CreateAccountIntent{Username: "", Password: []byte{1}, Role: "admin", PlanType: 1}},
+		{ActionUsersCreateAdmin, CreateAccountIntent{Username: "alice", Password: []byte{1}, Role: "admin", PlanType: 0}},
+		{ActionUsersCreateAdmin, CreateAccountIntent{Username: "alice", Password: []byte{1}, Role: "admin", PlanType: 1, AllowedModels: []string{""}}},
+		{ActionUsersCreateAdmin, CreateAccountIntent{Username: "alice", Password: []byte{1}, Role: "admin", PlanType: 1, DailyCallLimit: -1}},
+		{ActionUsersCreate, CreateAccountIntent{Username: "alice", Password: []byte{1}, Role: "admin", PlanType: 1}},
+		{ActionUsersCreateAdmin, CreateAccountIntent{Username: "alice", Password: []byte{1}, Role: "user", PlanType: 1}},
+		{ActionUsersCreateAdmin, CreateAccountIntent{Username: "alice", Password: []byte{1}, Role: "admin", PlanType: 1, Overrides: []PermissionOverrideIntent{{Capability: "", Effect: 2}}}},
+		{ActionUsersCreateAdmin, CreateAccountIntent{Username: "alice", Password: []byte{1}, Role: "admin", PlanType: 1, Overrides: []PermissionOverrideIntent{{Capability: "users.read", Effect: 1}}}},
+		{ActionUsersCreateAdmin, CreateAccountIntent{Username: "alice", Password: []byte{1}, Role: "admin", PlanType: 1, Overrides: []PermissionOverrideIntent{{Capability: "users.read", Effect: 2}, {Capability: "users.read", Effect: 3}}}},
+		{ActionUsersCreateAdmin, CreateAccountIntent{Username: "alice", Password: []byte{1}, Role: "admin", PlanType: 1, AllowedModels: []string{"\xff"}}},
+		{ActionUsersCreateAdmin, CreateAccountIntent{Username: "\xff", Password: []byte{1}, Role: "admin", PlanType: 1}},
 		{ActionUsersResetPassword, ResetPasswordIntent{TargetGUID: 0, NewPassword: []byte{1}, Reason: "case"}},
 		{ActionUsersPromote, RoleIntent{TargetGUID: 1, ExpectedAuthVersion: 0, Reason: "case"}},
 		{ActionUsersDelete, DeleteUserIntent{TargetGUID: 0, ExpectedAuthVersion: 1, Reason: "case"}},

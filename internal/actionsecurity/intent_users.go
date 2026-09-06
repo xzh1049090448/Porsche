@@ -10,14 +10,16 @@ import (
 
 var errInvalidIntent = errors.New("invalid action intent")
 
-type CreateAdminIntent struct {
+type CreateAccountIntent struct {
 	Username       string
 	Nickname       *string
 	Password       []byte
+	Role           string
 	GroupGUID      *int64
 	PlanType       int
 	AllowedModels  []string
 	DailyCallLimit int
+	Overrides      []PermissionOverrideIntent
 }
 type ResetPasswordIntent struct {
 	TargetGUID  int64
@@ -45,10 +47,10 @@ type DeleteUserIntent struct {
 	Reason              string
 }
 
-func encodeCreateAdminIntent(intent CreateAdminIntent) ([]byte, error) {
+func encodeCreateAccountIntent(intent CreateAccountIntent, role string) ([]byte, error) {
 	defer clear(intent.Password)
-	if intent.Username == "" || len(intent.Password) == 0 || intent.PlanType < 1 || intent.PlanType > 3 || intent.DailyCallLimit < 0 || intent.DailyCallLimit > math.MaxInt32 ||
-		(intent.Nickname != nil && *intent.Nickname == "") || (intent.GroupGUID != nil && *intent.GroupGUID <= 0) {
+	if intent.Username == "" || !utf8.ValidString(intent.Username) || len(intent.Password) == 0 || intent.Role != role || intent.PlanType < 1 || intent.PlanType > 3 || intent.DailyCallLimit < 0 || intent.DailyCallLimit > math.MaxInt32 ||
+		(intent.Nickname != nil && (*intent.Nickname == "" || !utf8.ValidString(*intent.Nickname))) || (intent.GroupGUID != nil && *intent.GroupGUID <= 0) {
 		return nil, errInvalidIntent
 	}
 	if _, err := checkedU32Length(uint64(len(intent.Username))); err != nil {
@@ -67,7 +69,7 @@ func encodeCreateAdminIntent(intent CreateAdminIntent) ([]byte, error) {
 	}
 	models := append([]string(nil), intent.AllowedModels...)
 	for _, model := range models {
-		if model == "" {
+		if model == "" || !utf8.ValidString(model) {
 			return nil, errInvalidIntent
 		}
 	}
@@ -82,6 +84,48 @@ func encodeCreateAdminIntent(intent CreateAdminIntent) ([]byte, error) {
 	for i := range unique {
 		items[i] = []byte(unique[i])
 	}
+	if _, err := checkedU32Length(uint64(len(intent.Overrides))); err != nil {
+		return nil, err
+	}
+	arrayLength := uint64(4)
+	for _, override := range intent.Overrides {
+		if _, err := checkedU32Length(uint64(len(override.Capability))); err != nil {
+			return nil, err
+		}
+		var err error
+		arrayLength, err = addArrayItemLength(arrayLength, uint64(len(override.Capability))+16)
+		if err != nil {
+			return nil, err
+		}
+	}
+	overrides := append([]PermissionOverrideIntent(nil), intent.Overrides...)
+	for _, override := range overrides {
+		if override.Capability == "" || !utf8.ValidString(override.Capability) || (override.Effect != 2 && override.Effect != 3) {
+			return nil, errInvalidIntent
+		}
+	}
+	sort.Slice(overrides, func(i, j int) bool { return overrides[i].Capability < overrides[j].Capability })
+	overrideItems := make([][]byte, len(overrides))
+	for i, override := range overrides {
+		if i > 0 && overrides[i-1].Capability == override.Capability {
+			return nil, errInvalidIntent
+		}
+		item, err := encodeIntent(func(w *intentWriter) error {
+			if err := w.fieldString(1, override.Capability); err != nil {
+				return err
+			}
+			return w.fieldInt32(2, override.Effect)
+		})
+		if err != nil {
+			return nil, err
+		}
+		overrideItems[i] = item
+	}
+	defer func() {
+		for _, item := range overrideItems {
+			clear(item)
+		}
+	}()
 	return encodeIntent(func(w *intentWriter) error {
 		if err := w.fieldString(1, intent.Username); err != nil {
 			return err
@@ -92,7 +136,7 @@ func encodeCreateAdminIntent(intent CreateAdminIntent) ([]byte, error) {
 		if err := w.fieldBytes(3, intent.Password); err != nil {
 			return err
 		}
-		if err := w.fieldString(4, "admin"); err != nil {
+		if err := w.fieldString(4, intent.Role); err != nil {
 			return err
 		}
 		if intent.GroupGUID == nil {
@@ -108,7 +152,10 @@ func encodeCreateAdminIntent(intent CreateAdminIntent) ([]byte, error) {
 		if err := w.fieldArray(7, items); err != nil {
 			return err
 		}
-		return w.fieldInt32(8, intent.DailyCallLimit)
+		if err := w.fieldInt32(8, intent.DailyCallLimit); err != nil {
+			return err
+		}
+		return w.fieldArray(9, overrideItems)
 	})
 }
 

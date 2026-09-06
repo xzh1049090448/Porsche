@@ -35,34 +35,41 @@ func TestInactiveActionDescriptorsExactContract(t *testing.T) {
 	}
 }
 
-func TestRegistryReturnsCopiesAndActivatesOnlyUsersDelete(t *testing.T) {
+func TestRegistryReturnsCopiesAndActivatesOnlyCreateActionsAndUsersDelete(t *testing.T) {
 	first := InactiveActionDescriptors()
 	first[0].Name = "mutated"
 	if got := InactiveActionDescriptors()[0].Name; got != "users.create_admin" {
 		t.Fatalf("inactive registry was mutated through returned slice: %q", got)
 	}
 	active := ActiveActionRegistry()
-	if len(active) != 1 {
-		t.Fatalf("active registry length = %d, want 1", len(active))
+	if len(active) != 3 {
+		t.Fatalf("active registry length = %d, want 3", len(active))
 	}
-	want := Descriptor{ActionUsersDelete, "users.delete", "users.delete", false, true, true, TargetUser, nil}
-	got := active[0]
-	if got.Action != want.Action || got.Name != want.Name || got.Capability != want.Capability || got.RootOnly != want.RootOnly ||
-		got.RequiresTicket != want.RequiresTicket || got.Active != want.Active || got.TargetKind != want.TargetKind || got.Encode == nil {
-		t.Fatalf("active descriptor = %+v, want metadata %+v and non-nil encoder", got, want)
+	want := []Descriptor{
+		{ActionUsersDelete, "users.delete", "users.delete", false, true, true, TargetUser, nil},
+		{ActionUsersCreate, "users.create", "users.create", false, false, true, TargetNone, nil},
+		{ActionUsersCreateAdmin, "users.create_admin", "users.create", true, true, true, TargetNone, nil},
+	}
+	for i, got := range active {
+		if got.Action != want[i].Action || got.Name != want[i].Name || got.Capability != want[i].Capability || got.RootOnly != want[i].RootOnly ||
+			got.RequiresTicket != want[i].RequiresTicket || got.Active != want[i].Active || got.TargetKind != want[i].TargetKind || got.Encode == nil {
+			t.Fatalf("active descriptor[%d] = %+v, want metadata %+v and non-nil encoder", i, got, want[i])
+		}
 	}
 	active[0].Name = "mutated"
 	active = append(active, Descriptor{Name: "mutated"})
-	if got := ActiveActionRegistry(); len(got) != 1 || got[0].Name != "users.delete" {
+	if got := ActiveActionRegistry(); len(got) != 3 || got[0].Name != "users.delete" {
 		t.Fatal("active registry was mutated through returned slice")
 	}
-	for _, action := range []Action{ActionUsersCreateAdmin, ActionUsersResetPassword, ActionUsersPromote, ActionUsersDemote, ActionUsersPermissionsWrite, ActionPublicContentPublish, ActionPublicContentRollback} {
+	for _, action := range []Action{ActionUsersResetPassword, ActionUsersPromote, ActionUsersDemote, ActionUsersPermissionsWrite, ActionPublicContentPublish, ActionPublicContentRollback} {
 		if _, ok := ResolveActiveAction(action); ok {
 			t.Fatalf("inactive action %d resolved from production registry", action)
 		}
 	}
-	if got, ok := ResolveActiveAction(ActionUsersDelete); !ok || got.Action != ActionUsersDelete || !got.Active {
-		t.Fatalf("users.delete did not resolve as active: %+v, ok=%v", got, ok)
+	for _, action := range []Action{ActionUsersCreate, ActionUsersCreateAdmin, ActionUsersDelete} {
+		if got, ok := ResolveActiveAction(action); !ok || got.Action != action || !got.Active {
+			t.Fatalf("action %d did not resolve as active: %+v, ok=%v", action, got, ok)
+		}
 	}
 }
 
@@ -71,6 +78,14 @@ func TestDescriptorRejectsWrongDTOType(t *testing.T) {
 	for _, descriptor := range descriptors {
 		if _, err := descriptor.Encode(struct{}{}); err == nil {
 			t.Fatalf("descriptor %q accepted wrong DTO", descriptor.Name)
+		}
+	}
+}
+
+func TestCreateEncodersRejectWrongDTOType(t *testing.T) {
+	for _, action := range []Action{ActionUsersCreate, ActionUsersCreateAdmin} {
+		if _, err := descriptorFor(t, action).Encode(DeleteUserIntent{}); err != errWrongIntentType {
+			t.Fatalf("create action %d wrong DTO error = %v, want %v", action, err, errWrongIntentType)
 		}
 	}
 }

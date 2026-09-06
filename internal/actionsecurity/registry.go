@@ -22,13 +22,10 @@ func InactiveActionDescriptors() []Descriptor {
 }
 
 func ActiveActionRegistry() []Descriptor {
-	out := make([]Descriptor, 0, 1)
-	for _, descriptor := range inactiveActionDescriptors {
-		if descriptor.Action == ActionUsersDelete {
-			descriptor.Active = true
-			out = append(out, descriptor)
-			break
-		}
+	out := []Descriptor{
+		{ActionUsersDelete, "users.delete", "users.delete", false, true, true, TargetUser, encodeDeleteUserAny},
+		{ActionUsersCreate, "users.create", "users.create", false, false, true, TargetNone, encodeCreateAny},
+		{ActionUsersCreateAdmin, "users.create_admin", "users.create", true, true, true, TargetNone, encodeCreateAdminAny},
 	}
 	return out
 }
@@ -42,12 +39,20 @@ func ResolveActiveAction(action Action) (Descriptor, bool) {
 	return Descriptor{}, false
 }
 
-func encodeCreateAdminAny(value any) ([]byte, error) {
-	intent, ok := value.(CreateAdminIntent)
+func encodeCreateAny(value any) ([]byte, error) {
+	intent, ok := value.(CreateAccountIntent)
 	if !ok {
 		return nil, errWrongIntentType
 	}
-	return encodeCreateAdminIntent(intent)
+	return encodeCreateAccountIntent(intent, "user")
+}
+
+func encodeCreateAdminAny(value any) ([]byte, error) {
+	intent, ok := value.(CreateAccountIntent)
+	if !ok {
+		return nil, errWrongIntentType
+	}
+	return encodeCreateAccountIntent(intent, "admin")
 }
 func encodeResetPasswordAny(value any) ([]byte, error) {
 	intent, ok := value.(ResetPasswordIntent)
