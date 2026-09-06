@@ -12,6 +12,9 @@ import (
 
 func TestAdminUserCreateContractExamples(t *testing.T) {
 	contents := contracts.AdminUserCreateV1
+	if err := validateContractTokens(contents); err != nil {
+		t.Fatalf("contract token stream: %v", err)
+	}
 
 	var document map[string]json.RawMessage
 	decoder := json.NewDecoder(bytes.NewReader(contents))
@@ -19,11 +22,13 @@ func TestAdminUserCreateContractExamples(t *testing.T) {
 	if err := decoder.Decode(&document); err != nil {
 		t.Fatal(err)
 	}
+	adminUserCreateRawExactKeys(t, document, "contract", "revision", "status", "design_source", "create", "action_ticket", "idempotency", "operation_query", "active_group_directory", "transaction", "errors", "frontend_security")
 
 	create := adminUserCreateRawObject(t, document, "create")
 	adminUserCreateRawValue(t, create, "POST", "method")
 	adminUserCreateRawValue(t, create, "/admin/v2/users", "path")
 	response := adminUserCreateRawObject(t, create, "response")
+	adminUserCreateRawExactKeys(t, response, "status", "headers", "schema", "examples", "never_return")
 	adminUserCreateRawValue(t, response, json.Number("201"), "status")
 	adminUserCreateRawValue(t, adminUserCreateRawObject(t, create, "request", "headers"), "required exactly once; unique original value; format and secret handling follow the admin action foundation", "Idempotency-Key")
 	adminUserCreateRawValue(t, adminUserCreateRawObject(t, create, "request", "headers", "X-Action-Ticket"), "forbidden", "role=user")
@@ -39,7 +44,7 @@ func TestAdminUserCreateContractExamples(t *testing.T) {
 	if !reflect.DeepEqual(ordinary, map[string]any{
 		"username":             "alice",
 		"nickname":             "Alice",
-		"password":             "example-only-not-a-secret",
+		"password":             "Ex4mple!Pass1",
 		"role":                 "user",
 		"group_guid":           nil,
 		"plan_type":            "free",
@@ -53,7 +58,7 @@ func TestAdminUserCreateContractExamples(t *testing.T) {
 	if !reflect.DeepEqual(administrator, map[string]any{
 		"username":   "admin-alice",
 		"nickname":   "Admin Alice",
-		"password":   "example-only-not-a-secret",
+		"password":   "Ex4mple!Pass1",
 		"role":       "admin",
 		"group_guid": nil,
 		"plan_type":  "free",
@@ -90,6 +95,75 @@ func TestAdminUserCreateContractExamples(t *testing.T) {
 		map[string]any{"status": json.Number("429"), "codes": []any{"action_rate_limited"}, "rule": "include Retry-After as integer seconds"},
 		map[string]any{"status": json.Number("503"), "codes": []any{"action_dependency_unavailable", "operation_commit_unknown"}, "rule": "database, Redis, permission, or commit state cannot be safely determined"},
 	}, "matrix")
+	adminUserCreateRawValue(t, body, []any{"allowed_models", "daily_call_limit", "status", "auth_version", "amount", "balance", "internal_id"}, "prohibited_public_fields")
+	adminUserCreateRawValue(t, adminUserCreateRawObject(t, response, "schema"), "object", "type")
+	adminUserCreateRawValue(t, adminUserCreateRawObject(t, response, "schema"), false, "additionalProperties")
+	adminUserCreateRawValue(t, adminUserCreateRawObject(t, response, "schema"), []any{"operation_ref", "user", "permissions_version"}, "required")
+	adminUserCreateRawExactKeys(t, adminUserCreateRawObject(t, response, "schema", "properties"), "operation_ref", "user", "permissions_version")
+	userSchema := adminUserCreateRawObject(t, response, "schema", "properties", "user")
+	adminUserCreateRawValue(t, userSchema, "object", "type")
+	adminUserCreateRawValue(t, userSchema, false, "additionalProperties")
+	adminUserCreateRawValue(t, userSchema, []any{"guid", "username", "nickname", "email", "group", "plan_type", "role", "status", "auth_version", "created_at", "last_login_at"}, "required")
+	adminUserCreateRawExactKeys(t, adminUserCreateRawObject(t, userSchema, "properties"), "guid", "username", "nickname", "email", "group", "plan_type", "role", "status", "auth_version", "created_at", "last_login_at")
+	adminUserCreateRawValue(t, response, []any{"password", "password_hash", "internal_user_id", "action_ticket", "idempotency_key", "permission_override_primary_key"}, "never_return")
+
+	responseExamples := adminUserCreateRawObject(t, response, "examples")
+	adminUserCreateExactKeys(t, adminUserCreateExample(t, responseExamples, "user"), "operation_ref", "user", "permissions_version")
+	adminUserCreateExactKeys(t, adminUserCreateExample(t, responseExamples, "admin"), "operation_ref", "user", "permissions_version")
+	adminUserCreateResponseExample(t, adminUserCreateExample(t, responseExamples, "user"), "op_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "123456789012345678", "alice", "Alice", "user", nil)
+	adminUserCreateResponseExample(t, adminUserCreateExample(t, responseExamples, "admin"), "op_BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB", "123456789012345679", "admin-alice", "Admin Alice", "admin", "1")
+
+	errors := adminUserCreateRawObject(t, document, "errors")
+	adminUserCreateRawExactKeys(t, errors, "headers", "envelope", "matrix", "prohibited_disclosures")
+	adminUserCreateRawValue(t, errors, []any{"password", "ticket", "idempotency key", "dependency raw text", "existing username owner's GUID", "existing username owner's status", "existing username owner's role", "existing username owner's deletion state"}, "prohibited_disclosures")
+	errorEnvelope := adminUserCreateRawObject(t, errors, "envelope")
+	adminUserCreateRawValue(t, errorEnvelope, "object", "type")
+	adminUserCreateRawValue(t, errorEnvelope, false, "additionalProperties")
+	adminUserCreateRawValue(t, errorEnvelope, []any{"error"}, "required")
+	errorBody := adminUserCreateRawObject(t, errorEnvelope, "properties", "error")
+	adminUserCreateRawValue(t, errorBody, false, "additionalProperties")
+	adminUserCreateRawValue(t, errorBody, []any{"code", "message", "type", "request_id"}, "required")
+	adminUserCreateRawExactKeys(t, adminUserCreateRawObject(t, errorBody, "properties"), "code", "message", "type", "request_id", "operation_ref")
+
+	operationResponseSchema := adminUserCreateRawObject(t, operationQuery, "response", "schema")
+	adminUserCreateRawExactKeys(t, adminUserCreateRawObject(t, operationQuery, "response"), "status", "headers", "schema")
+	adminUserCreateRawValue(t, operationResponseSchema, false, "additionalProperties")
+	adminUserCreateRawValue(t, operationResponseSchema, []any{"operation_ref", "scope", "status", "finished_at", "failure_code"}, "required")
+	adminUserCreateRawExactKeys(t, adminUserCreateRawObject(t, operationResponseSchema, "properties"), "operation_ref", "scope", "status", "finished_at", "failure_code")
+	groupResponseSchema := adminUserCreateRawObject(t, groups, "response", "schema")
+	adminUserCreateRawExactKeys(t, adminUserCreateRawObject(t, groups, "response"), "status", "headers", "schema", "result_rule")
+	adminUserCreateRawValue(t, groupResponseSchema, false, "additionalProperties")
+	adminUserCreateRawValue(t, groupResponseSchema, []any{"items"}, "required")
+	groupItemSchema := adminUserCreateRawObject(t, groupResponseSchema, "properties", "items", "items")
+	adminUserCreateRawValue(t, groupItemSchema, false, "additionalProperties")
+	adminUserCreateRawValue(t, groupItemSchema, []any{"guid", "key", "display_name"}, "required")
+	adminUserCreateRawExactKeys(t, adminUserCreateRawObject(t, groupItemSchema, "properties"), "guid", "key", "display_name")
+}
+
+func TestAdminUserCreateContractRejectsDuplicateAndTrailingJSON(t *testing.T) {
+	contents := contracts.AdminUserCreateV1
+	mutations := []struct {
+		name        string
+		old         string
+		replacement string
+	}{
+		{"duplicate root key", `  "contract": "admin-user-create-v1",`, "  \"contract\": \"admin-user-create-v1\",\n  \"contract\": \"admin-user-create-v1\","},
+		{"duplicate nested key", `      "status": 201,`, "      \"status\": 201,\n      \"status\": 201,"},
+	}
+	for _, mutation := range mutations {
+		t.Run(mutation.name, func(t *testing.T) {
+			candidate := bytes.Replace(contents, []byte(mutation.old), []byte(mutation.replacement), 1)
+			if bytes.Equal(candidate, contents) {
+				t.Fatal("mutation did not match the frozen contract")
+			}
+			if err := validateContractTokens(candidate); err == nil {
+				t.Fatal("malformed contract was accepted")
+			}
+		})
+	}
+	if err := validateContractTokens(append(append([]byte{}, contents...), []byte("\n{}")...)); err == nil {
+		t.Fatal("trailing root JSON value was accepted")
+	}
 }
 
 func adminUserCreateRawObject(t *testing.T, source map[string]json.RawMessage, keys ...string) map[string]json.RawMessage {
@@ -141,6 +215,34 @@ func adminUserCreateExample(t *testing.T, examples map[string]json.RawMessage, k
 		t.Fatalf("decode request example %q: %v", key, err)
 	}
 	return example
+}
+
+func adminUserCreateResponseExample(t *testing.T, example map[string]any, operationRef, guid, username, nickname, role string, permissionsVersion any) {
+	t.Helper()
+	if example["operation_ref"] != operationRef || example["permissions_version"] != permissionsVersion {
+		t.Fatal("response example has the wrong operation or permissions version")
+	}
+	user, ok := example["user"].(map[string]any)
+	if !ok {
+		t.Fatal("response example user is not an object")
+	}
+	adminUserCreateExactKeys(t, user, "guid", "username", "nickname", "email", "group", "plan_type", "role", "status", "auth_version", "created_at", "last_login_at")
+	if user["guid"] != guid || user["username"] != username || user["nickname"] != nickname || user["role"] != role || user["group"] != "default" || user["plan_type"] != "free" || user["status"] != "active" || user["auth_version"] != json.Number("1") || user["created_at"] != "2026-09-06T00:00:00.000Z" || user["email"] != nil || user["last_login_at"] != nil {
+		t.Fatal("response example user fields differ from the frozen contract")
+	}
+}
+
+func adminUserCreateRawExactKeys(t *testing.T, object map[string]json.RawMessage, want ...string) {
+	t.Helper()
+	got := make([]string, 0, len(object))
+	for key := range object {
+		got = append(got, key)
+	}
+	slices.Sort(got)
+	slices.Sort(want)
+	if !slices.Equal(got, want) {
+		t.Fatalf("raw object keys=%v, want %v", got, want)
+	}
 }
 
 func adminUserCreateExactKeys(t *testing.T, object map[string]any, want ...string) {

@@ -65,7 +65,7 @@
           "user": {
             "username": "alice",
             "nickname": "Alice",
-            "password": "example-only-not-a-secret",
+            "password": "Ex4mple!Pass1",
             "role": "user",
             "group_guid": null,
             "plan_type": "free",
@@ -74,7 +74,7 @@
           "admin": {
             "username": "admin-alice",
             "nickname": "Admin Alice",
-            "password": "example-only-not-a-secret",
+            "password": "Ex4mple!Pass1",
             "role": "admin",
             "group_guid": null,
             "plan_type": "free",
