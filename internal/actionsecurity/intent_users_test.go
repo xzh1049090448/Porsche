@@ -3,10 +3,37 @@ package actionsecurity
 import (
 	"bytes"
 	"encoding/binary"
+	"math"
 	"reflect"
 	"strings"
 	"testing"
 )
+
+func decodeArrayItems(t *testing.T, encoded []byte) [][]byte {
+	t.Helper()
+	if len(encoded) < 4 {
+		t.Fatalf("truncated array count: %x", encoded)
+	}
+	count := int(binary.BigEndian.Uint32(encoded[:4]))
+	encoded = encoded[4:]
+	items := make([][]byte, count)
+	for i := range items {
+		if len(encoded) < 4 {
+			t.Fatalf("truncated array item length at %d: %x", i, encoded)
+		}
+		length := int(binary.BigEndian.Uint32(encoded[:4]))
+		encoded = encoded[4:]
+		if len(encoded) < length {
+			t.Fatalf("truncated array item %d: length=%d available=%d", i, length, len(encoded))
+		}
+		items[i] = append([]byte(nil), encoded[:length]...)
+		encoded = encoded[length:]
+	}
+	if len(encoded) != 0 {
+		t.Fatalf("trailing array bytes: %x", encoded)
+	}
+	return items
+}
 
 func TestPermissionOverrideIntentFrozenTypeName(t *testing.T) {
 	if got := reflect.TypeOf(PermissionOverrideIntent{}).Name(); got != "PermissionOverrideIntent" {
@@ -16,7 +43,7 @@ func TestPermissionOverrideIntentFrozenTypeName(t *testing.T) {
 
 func descriptorFor(t *testing.T, action Action) Descriptor {
 	t.Helper()
-	for _, descriptors := range [][]Descriptor{InactiveActionDescriptors(), ActiveActionRegistry()} {
+	for _, descriptors := range [][]Descriptor{InactiveActionDescriptors(), FutureActionDescriptors(), ActiveActionRegistry()} {
 		for _, descriptor := range descriptors {
 			if descriptor.Action == action {
 				return descriptor
@@ -46,6 +73,12 @@ func TestCreateAccountIntentCanonicalOrderNullRoleSortedModelsAndOverrides(t *te
 			t.Fatalf("field[%d] tag=%d, want %d", i, field.tag, i+1)
 		}
 	}
+	wantTypes := []byte{typeString, typeNull, typeBytes, typeString, typeNull, typeInt32, typeArray, typeInt32, typeArray}
+	for i, wantType := range wantTypes {
+		if fields[i].typ != wantType {
+			t.Fatalf("field[%d] type=%d, want %d", i, fields[i].typ, wantType)
+		}
+	}
 	if string(fields[0].value) != " Alice " || fields[1].typ != typeNull || string(fields[3].value) != "admin" || fields[4].typ != typeNull {
 		t.Fatalf("non-canonical identity/null/fixed role fields: %#v", fields)
 	}
@@ -60,8 +93,19 @@ func TestCreateAccountIntentCanonicalOrderNullRoleSortedModelsAndOverrides(t *te
 	if binary.BigEndian.Uint32(array[:4]) != 2 || !bytes.Equal(array, wantArray) {
 		t.Fatalf("models array not sorted/deduplicated: %x", array)
 	}
-	if bytes.Index(fields[8].value, []byte("users.read")) > bytes.Index(fields[8].value, []byte("users.write")) {
-		t.Fatalf("overrides not capability sorted: %x", fields[8].value)
+	overrideItems := decodeArrayItems(t, fields[8].value)
+	if len(overrideItems) != 2 {
+		t.Fatalf("override count=%d, want 2", len(overrideItems))
+	}
+	for i, want := range []struct {
+		capability string
+		effect     int
+	}{{"users.read", 2}, {"users.write", 3}} {
+		itemFields := decodeFields(t, overrideItems[i])
+		if len(itemFields) != 2 || itemFields[0].tag != 1 || itemFields[0].typ != typeString || string(itemFields[0].value) != want.capability ||
+			itemFields[1].tag != 2 || itemFields[1].typ != typeInt32 || int(binary.BigEndian.Uint32(itemFields[1].value)) != want.effect {
+			t.Fatalf("override[%d] fields=%#v, want capability/effect %q/%d", i, itemFields, want.capability, want.effect)
+		}
 	}
 	if !reflect.DeepEqual(overrides, []PermissionOverrideIntent{{Capability: "users.read", Effect: 2}, {Capability: "users.write", Effect: 3}}) {
 		t.Fatalf("caller overrides mutated: %#v", overrides)
@@ -104,6 +148,8 @@ func TestCreateAccountIntentBindsAllFieldsAndCanonicalizesEquivalentPermutations
 		mutate func(*CreateAccountIntent)
 	}{
 		{"nickname", func(in *CreateAccountIntent) { value := "Other"; in.Nickname = &value }},
+		{"username", func(in *CreateAccountIntent) { in.Username = "other" }},
+		{"password", func(in *CreateAccountIntent) { in.Password = []byte{4, 5, 6} }},
 		{"group", func(in *CreateAccountIntent) { value := int64(45); in.GroupGUID = &value }},
 		{"plan", func(in *CreateAccountIntent) { in.PlanType = 3 }},
 		{"models", func(in *CreateAccountIntent) { in.AllowedModels = []string{"other"} }},
@@ -121,6 +167,28 @@ func TestCreateAccountIntentBindsAllFieldsAndCanonicalizesEquivalentPermutations
 			}
 			if bytes.Equal(firstEncoded, got) {
 				t.Fatal("approved field did not affect canonical encoding")
+			}
+		})
+	}
+}
+
+func TestCreateAccountOverridePayloadBounds(t *testing.T) {
+	if err := checkedCreateOverrideArrayPayloadLength(1, []uint64{uint64(math.MaxUint32) - 24}); err != nil {
+		t.Fatalf("exact maximum override payload rejected: %v", err)
+	}
+	for _, tc := range []struct {
+		name              string
+		count             uint64
+		capabilityLengths []uint64
+	}{
+		{"payload max plus one", 1, []uint64{uint64(math.MaxUint32) - 23}},
+		{"capability item overflow", 1, []uint64{math.MaxUint64}},
+		{"count overflow", uint64(math.MaxUint32) + 1, nil},
+		{"count mismatch", 2, []uint64{1}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := checkedCreateOverrideArrayPayloadLength(tc.count, tc.capabilityLengths); err == nil {
+				t.Fatal("invalid create override payload accepted")
 			}
 		})
 	}
@@ -320,6 +388,7 @@ func TestUserIntentFixedRolesAndCanonicalValidation(t *testing.T) {
 		{ActionUsersCreate, CreateAccountIntent{Username: "alice", Password: []byte{1}, Role: "admin", PlanType: 1}},
 		{ActionUsersCreateAdmin, CreateAccountIntent{Username: "alice", Password: []byte{1}, Role: "user", PlanType: 1}},
 		{ActionUsersCreateAdmin, CreateAccountIntent{Username: "alice", Password: []byte{1}, Role: "admin", PlanType: 1, Overrides: []PermissionOverrideIntent{{Capability: "", Effect: 2}}}},
+		{ActionUsersCreateAdmin, CreateAccountIntent{Username: "alice", Password: []byte{1}, Role: "admin", PlanType: 1, Overrides: []PermissionOverrideIntent{{Capability: "\xff", Effect: 2}}}},
 		{ActionUsersCreateAdmin, CreateAccountIntent{Username: "alice", Password: []byte{1}, Role: "admin", PlanType: 1, Overrides: []PermissionOverrideIntent{{Capability: "users.read", Effect: 1}}}},
 		{ActionUsersCreateAdmin, CreateAccountIntent{Username: "alice", Password: []byte{1}, Role: "admin", PlanType: 1, Overrides: []PermissionOverrideIntent{{Capability: "users.read", Effect: 2}, {Capability: "users.read", Effect: 3}}}},
 		{ActionUsersCreateAdmin, CreateAccountIntent{Username: "alice", Password: []byte{1}, Role: "admin", PlanType: 1, AllowedModels: []string{"\xff"}}},

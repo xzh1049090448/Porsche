@@ -15,6 +15,12 @@ var inactiveActionDescriptors = [...]Descriptor{
 	{ActionPublicContentRollback, "public_content.rollback", "public_content.rollback", false, true, false, TargetPublicContent, encodeRollbackAny},
 }
 
+var futureActionDescriptors = [...]Descriptor{
+	{ActionUsersCreate, "users.create", "users.create", false, false, false, TargetNone, encodeCreateAny},
+	{ActionUsersCreateAdmin, "users.create_admin", "users.create", true, true, false, TargetNone, encodeCreateAdminAny},
+	{ActionUsersDelete, "users.delete", "users.delete", false, true, true, TargetUser, encodeDeleteUserAny},
+}
+
 func InactiveActionDescriptors() []Descriptor {
 	out := make([]Descriptor, len(inactiveActionDescriptors))
 	copy(out, inactiveActionDescriptors[:])
@@ -22,11 +28,16 @@ func InactiveActionDescriptors() []Descriptor {
 }
 
 func ActiveActionRegistry() []Descriptor {
-	out := []Descriptor{
-		{ActionUsersDelete, "users.delete", "users.delete", false, true, true, TargetUser, encodeDeleteUserAny},
-		{ActionUsersCreate, "users.create", "users.create", false, false, true, TargetNone, encodeCreateAny},
-		{ActionUsersCreateAdmin, "users.create_admin", "users.create", true, true, true, TargetNone, encodeCreateAdminAny},
-	}
+	out := make([]Descriptor, 1)
+	out[0] = futureActionDescriptors[2]
+	return out
+}
+
+// FutureActionDescriptors returns the ordered activation candidate for the
+// complete user-management bundle. It is not used for production resolution.
+func FutureActionDescriptors() []Descriptor {
+	out := make([]Descriptor, len(futureActionDescriptors))
+	copy(out, futureActionDescriptors[:])
 	return out
 }
 

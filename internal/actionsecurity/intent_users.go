@@ -84,19 +84,12 @@ func encodeCreateAccountIntent(intent CreateAccountIntent, role string) ([]byte,
 	for i := range unique {
 		items[i] = []byte(unique[i])
 	}
-	if _, err := checkedU32Length(uint64(len(intent.Overrides))); err != nil {
-		return nil, err
+	capabilityLengths := make([]uint64, len(intent.Overrides))
+	for i, override := range intent.Overrides {
+		capabilityLengths[i] = uint64(len(override.Capability))
 	}
-	arrayLength := uint64(4)
-	for _, override := range intent.Overrides {
-		if _, err := checkedU32Length(uint64(len(override.Capability))); err != nil {
-			return nil, err
-		}
-		var err error
-		arrayLength, err = addArrayItemLength(arrayLength, uint64(len(override.Capability))+16)
-		if err != nil {
-			return nil, err
-		}
+	if err := checkedCreateOverrideArrayPayloadLength(uint64(len(intent.Overrides)), capabilityLengths); err != nil {
+		return nil, err
 	}
 	overrides := append([]PermissionOverrideIntent(nil), intent.Overrides...)
 	for _, override := range overrides {
@@ -157,6 +150,21 @@ func encodeCreateAccountIntent(intent CreateAccountIntent, role string) ([]byte,
 		}
 		return w.fieldArray(9, overrideItems)
 	})
+}
+
+func checkedCreateOverrideArrayPayloadLength(count uint64, capabilityLengths []uint64) error {
+	if count != uint64(len(capabilityLengths)) {
+		return errIntentEncodingTooLarge
+	}
+	itemLengths := make([]uint64, len(capabilityLengths))
+	for i, capabilityLength := range capabilityLengths {
+		if capabilityLength > math.MaxUint64-16 {
+			return errIntentEncodingTooLarge
+		}
+		itemLengths[i] = capabilityLength + 16 // capability field plus fixed effect field
+	}
+	_, err := checkedArrayPayloadLength(count, itemLengths)
+	return err
 }
 
 func encodeResetPasswordIntent(intent ResetPasswordIntent) ([]byte, error) {
