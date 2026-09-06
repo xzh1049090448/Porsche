@@ -70,7 +70,7 @@ func TestCreateAccountExecutionCreatesOrdinaryUserAndRegistrationAudit(t *testin
 	db, script := newCreateAccountTestDB(t)
 	execution := newCreateAccountTestExecution(t, actionsecurity.ActionUsersCreate, actionsecurity.CreateAccountIntent{
 		Username: "alice", Role: "user", PlanType: int(models.PlanFree), AllowedModels: []string{}, DailyCallLimit: 100,
-	}, createAccountTestGUIDs(9001, 9002))
+	}, createAccountTestGUIDs(9001, 9002, 9003))
 
 	tx := db.Begin()
 	outcome, err := execution.Execute(context.Background(), tx, validCreateAccountTestOperation(actionsecurity.ActionUsersCreate))
@@ -109,7 +109,7 @@ func TestCreateAccountExecutionCreatesOrdinaryUserAndRegistrationAudit(t *testin
 		t.Fatalf("registration audit = %#v", audit)
 	}
 	response := createAccountInsertValues(t, script.committedTableCall("admin_operation_responses", 0))
-	if fmt.Sprint(response["guid"]) != "3001" || fmt.Sprint(response["operation_id"]) != "31" || fmt.Sprint(response["http_status"]) != "201" ||
+	if fmt.Sprint(response["guid"]) != "9003" || fmt.Sprint(response["operation_id"]) != "31" || fmt.Sprint(response["http_status"]) != "201" ||
 		response["media_type"] != createAccountResponseMediaType || !validCreateAccountResponseBody(response["response_body"].([]byte), deleteWriterPublicRef, actionsecurity.ActionUsersCreate, 9001) {
 		t.Fatalf("operation response = %#v", response)
 	}
@@ -131,7 +131,7 @@ func TestCreateAccountExecutionCreatesAdminPolicyAndCanonicalOverrides(t *testin
 		Username: "managed_admin", Role: "admin", GroupGUID: &groupGUID, PlanType: int(models.PlanEnterprise), AllowedModels: []string{}, DailyCallLimit: 100,
 		Overrides: []actionsecurity.PermissionOverrideIntent{{Capability: "users.sessions.read", Effect: 2}, {Capability: "users.read", Effect: 3}},
 	}
-	execution := newCreateAccountTestExecution(t, actionsecurity.ActionUsersCreateAdmin, intent, createAccountTestGUIDs(9101, 9102, 9103, 9104, 9105))
+	execution := newCreateAccountTestExecution(t, actionsecurity.ActionUsersCreateAdmin, intent, createAccountTestGUIDs(9101, 9102, 9103, 9104, 9105, 9106))
 	tx := db.Begin()
 	outcome, err := execution.Execute(context.Background(), tx, validCreateAccountTestOperation(actionsecurity.ActionUsersCreateAdmin))
 	if err != nil {
@@ -174,7 +174,7 @@ func TestCreateAccountExecutionCreatesAdminPolicyAndCanonicalOverrides(t *testin
 	if auth := createAccountInsertValues(t, script.committedTableCall("auth_audit_events", 0)); auth["guid"] != int64(9105) {
 		t.Fatalf("auth audit GUID ordering = %#v", auth)
 	}
-	if response := createAccountInsertValues(t, script.committedTableCall("admin_operation_responses", 0)); response["guid"] != int64(3001) || response["operation_id"] != int64(31) {
+	if response := createAccountInsertValues(t, script.committedTableCall("admin_operation_responses", 0)); response["guid"] != int64(9106) || response["operation_id"] != int64(31) {
 		t.Fatalf("admin operation response = %#v", response)
 	}
 }
@@ -183,7 +183,7 @@ func TestCreateAccountAdminWithoutOverridesStillCreatesVersionOneHead(t *testing
 	db, script := newCreateAccountTestDB(t)
 	execution := newCreateAccountTestExecution(t, actionsecurity.ActionUsersCreateAdmin, actionsecurity.CreateAccountIntent{
 		Username: "managed_admin", Role: "admin", PlanType: int(models.PlanFree), AllowedModels: []string{}, DailyCallLimit: 100,
-	}, createAccountTestGUIDs(9151, 9152, 9153))
+	}, createAccountTestGUIDs(9151, 9152, 9153, 9154))
 	tx := db.Begin()
 	if outcome, err := execution.Execute(context.Background(), tx, validCreateAccountTestOperation(actionsecurity.ActionUsersCreateAdmin)); err != nil || outcome.Failure != nil {
 		t.Fatalf("consume = %#v/%v", outcome, err)
@@ -201,7 +201,7 @@ func TestCreateAccountWritersPersistRedactedManagementAuditAndResultOutbox(t *te
 	db, script := newCreateAccountTestDB(t)
 	execution := newCreateAccountTestExecution(t, actionsecurity.ActionUsersCreate, actionsecurity.CreateAccountIntent{
 		Username: "alice", Role: "user", PlanType: int(models.PlanFree), AllowedModels: []string{}, DailyCallLimit: 100,
-	}, createAccountTestGUIDs(9201, 9202, 9203))
+	}, createAccountTestGUIDs(9201, 9202, 9203, 9204))
 	operation := validCreateAccountTestOperation(actionsecurity.ActionUsersCreate)
 	tx := db.Begin()
 	outcome, err := execution.Execute(context.Background(), tx, operation)
@@ -215,7 +215,7 @@ func TestCreateAccountWritersPersistRedactedManagementAuditAndResultOutbox(t *te
 	if err := execution.Write(context.Background(), tx, event); err != nil {
 		t.Fatal(err)
 	}
-	outbox, err := NewCreateAccountOutboxWriter(createAccountTestGUIDs(9204), &createAccountTestClock{now: 8001})
+	outbox, err := NewCreateAccountOutboxWriter(createAccountTestGUIDs(9205), &createAccountTestClock{now: 8001})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -229,7 +229,7 @@ func TestCreateAccountWritersPersistRedactedManagementAuditAndResultOutbox(t *te
 		t.Fatal(err)
 	}
 	audit := createAccountInsertValues(t, script.committedTableCall("audit_logs", 0))
-	if audit["guid"] != int64(9203) || audit["user_id"] != int64(41) || audit["action"] != "users.create" ||
+	if audit["guid"] != int64(9204) || audit["user_id"] != int64(41) || audit["action"] != "users.create" ||
 		audit["resource"] != "users/9201" || audit["ip"] != "203.0.113.7" {
 		t.Fatalf("management audit = %#v", audit)
 	}
@@ -248,7 +248,7 @@ func TestCreateAccountWritersPersistRedactedManagementAuditAndResultOutbox(t *te
 		}
 	}
 	outboxRow := createAccountInsertValues(t, script.committedTableCall("admin_action_outbox", 0))
-	if outboxRow["guid"] != int64(9204) || outboxRow["operation_id"] != int64(31) || fmt.Sprint(outboxRow["action"]) != fmt.Sprint(actionsecurity.ActionUsersCreate) ||
+	if outboxRow["guid"] != int64(9205) || outboxRow["operation_id"] != int64(31) || fmt.Sprint(outboxRow["action"]) != fmt.Sprint(actionsecurity.ActionUsersCreate) ||
 		fmt.Sprint(outboxRow["target_kind"]) != fmt.Sprint(actionsecurity.TargetNone) || outboxRow["target_guid"] != nil || outboxRow["result_guid"] != int64(9201) ||
 		fmt.Sprint(outboxRow["delivery_state"]) != fmt.Sprint(models.DeliveryPending) {
 		t.Fatalf("create outbox = %#v", outboxRow)
@@ -260,7 +260,7 @@ func TestCreateAccountResultUserIsOwnedAndUnavailableBeforeCommit(t *testing.T) 
 	nickname := "Alice"
 	execution := newCreateAccountTestExecution(t, actionsecurity.ActionUsersCreate, actionsecurity.CreateAccountIntent{
 		Username: "alice", Nickname: &nickname, Role: "user", PlanType: int(models.PlanFree), AllowedModels: []string{}, DailyCallLimit: 100,
-	}, createAccountTestGUIDs(9301, 9302))
+	}, createAccountTestGUIDs(9301, 9302, 9303))
 	if result, ok := execution.ResultUser(); ok || result != nil {
 		t.Fatal("result was visible before consumer success")
 	}
@@ -489,7 +489,7 @@ func TestCreateAccountAdditionalGroupAndPlanCapabilitiesUseLockedPolicy(t *testi
 			}
 			execution := newCreateAccountTestExecution(t, actionsecurity.ActionUsersCreate, actionsecurity.CreateAccountIntent{
 				Username: "alice", Role: "user", GroupGUID: groupGUID, PlanType: int(test.plan), AllowedModels: []string{}, DailyCallLimit: 100,
-			}, createAccountTestGUIDs(9401, 9402))
+			}, createAccountTestGUIDs(9401, 9402, 9403))
 			tx := db.Begin()
 			outcome, err := execution.Execute(context.Background(), tx, validCreateAccountTestOperation(actionsecurity.ActionUsersCreate))
 			if err != nil {
@@ -561,6 +561,7 @@ func TestCreateAccountAdminSnowflakeFailuresAfterUserRollback(t *testing.T) {
 		{"first override", []int64{9751, 9752, 0}},
 		{"second override", []int64{9751, 9752, 9753, 0}},
 		{"auth audit", []int64{9751, 9752, 9753, 9754, 0}},
+		{"response", []int64{9751, 9752, 9753, 9754, 9755, 0}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -596,6 +597,9 @@ func TestCreateAccountClockGUIDStorageAndOperationFailuresClearHashAndRollback(t
 		{"auth guid", func(_ *createAccountScript, e *CreateAccountExecution, _ *models.AdminOperation) {
 			e.nextGUID = createAccountTestGUIDs(9501, 0)
 		}},
+		{"response guid", func(_ *createAccountScript, e *CreateAccountExecution, _ *models.AdminOperation) {
+			e.nextGUID = createAccountTestGUIDs(9501, 9502, 0)
+		}},
 		{"actor query", func(s *createAccountScript, _ *CreateAccountExecution, _ *models.AdminOperation) {
 			s.failQuery = "users"
 		}},
@@ -621,7 +625,7 @@ func TestCreateAccountClockGUIDStorageAndOperationFailuresClearHashAndRollback(t
 			db, script := newCreateAccountTestDB(t)
 			execution := newCreateAccountTestExecution(t, actionsecurity.ActionUsersCreate, actionsecurity.CreateAccountIntent{
 				Username: "alice", Role: "user", PlanType: int(models.PlanFree), AllowedModels: []string{}, DailyCallLimit: 100,
-			}, createAccountTestGUIDs(9501, 9502))
+			}, createAccountTestGUIDs(9501, 9502, 9503))
 			op := validCreateAccountTestOperation(actionsecurity.ActionUsersCreate)
 			test.mutate(script, execution, &op)
 			tx := db.Begin()
@@ -632,6 +636,9 @@ func TestCreateAccountClockGUIDStorageAndOperationFailuresClearHashAndRollback(t
 			_ = tx.Rollback().Error
 			if len(script.committed) != 0 {
 				t.Fatalf("failure committed writes: %v", script.committedKinds())
+			}
+			if result, ok := execution.ResultUser(); ok || result != nil {
+				t.Fatalf("failure exposed uncommitted result: %#v", result)
 			}
 			assertCreateHashCleared(t, execution)
 		})
@@ -811,7 +818,7 @@ func TestCreateAccountExecutionIsOneShotAcrossCopiesAndConcurrency(t *testing.T)
 	db, script := newCreateAccountTestDB(t)
 	execution := newCreateAccountTestExecution(t, actionsecurity.ActionUsersCreate, actionsecurity.CreateAccountIntent{
 		Username: "alice", Role: "user", PlanType: int(models.PlanFree), AllowedModels: []string{}, DailyCallLimit: 100,
-	}, createAccountTestGUIDs(9801, 9802))
+	}, createAccountTestGUIDs(9801, 9802, 9803))
 	var successes, failures atomic.Int32
 	start := make(chan struct{})
 	var wait sync.WaitGroup

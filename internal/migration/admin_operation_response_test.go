@@ -3,6 +3,7 @@ package migration
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"fmt"
 	"os"
 	"strings"
@@ -65,12 +66,81 @@ func TestAdminOperationResponseModelIsInternalAndImmutable(t *testing.T) {
 	}
 }
 
-func TestAdminOperationResponseCheckNormalizationAcceptsMySQLStringEscaping(t *testing.T) {
-	want := normalizeAdminOperationResponseCheck("http_status = 201 AND media_type = 'application/json'")
-	got := normalizeAdminOperationResponseCheck("((`http_status` = 201) and (`media_type` = _utf8mb4\\'application/json\\'))")
-	if got != want {
-		t.Fatalf("normalized MySQL clause = %q, want %q", got, want)
+func TestAdminOperationResponseCheckCanonicalizationAcceptsMySQLStringEscaping(t *testing.T) {
+	want, wantOK := canonicalizeAdminOperationResponseCheck("http_status = 201 AND media_type = 'application/json'")
+	got, gotOK := canonicalizeAdminOperationResponseCheck("((`HTTP_STATUS` = 0201) AnD (`MEDIA_TYPE` = _UTF8MB4\\'application/json\\'))")
+	if !wantOK || !gotOK || got != want {
+		t.Fatalf("canonical MySQL clause = %q/%v, want %q/%v", got, gotOK, want, wantOK)
 	}
+}
+
+func TestAdminOperationResponseCheckCanonicalizationPreservesActorBooleanGrouping(t *testing.T) {
+	want, wantOK := canonicalizeAdminOperationResponseCheck("created_at >= 0 AND updated_at = created_at AND is_deleted = 0 AND ((created_by IS NULL AND updated_by IS NULL) OR (created_by IS NOT NULL AND updated_by = created_by))")
+	drifted, driftedOK := canonicalizeAdminOperationResponseCheck("(created_at >= 0 AND updated_at = created_at AND is_deleted = 0 AND created_by IS NULL AND updated_by IS NULL) OR (created_by IS NOT NULL AND updated_by = created_by)")
+	if !wantOK || !driftedOK || drifted == want {
+		t.Fatalf("actor OR moved outside immutable conjunction was accepted: %q", drifted)
+	}
+	notGroup, notGroupOK := canonicalizeAdminOperationResponseCheck("NOT (created_by IS NULL OR updated_by IS NULL)")
+	notDrift, notDriftOK := canonicalizeAdminOperationResponseCheck("(NOT created_by IS NULL) OR updated_by IS NULL")
+	if !notGroupOK || !notDriftOK || notGroup == notDrift {
+		t.Fatalf("NOT grouping drift was accepted: %q", notDrift)
+	}
+}
+
+func TestAdminOperationResponseCheckCanonicalizationAcceptsFunctionFormatting(t *testing.T) {
+	want, wantOK := canonicalizeAdminOperationResponseCheck("OCTET_LENGTH(response_body) BETWEEN 2 AND 4096 AND OCTET_LENGTH(body_sha256) = 64")
+	got, gotOK := canonicalizeAdminOperationResponseCheck("(( LENGTH ( `RESPONSE_BODY` ) BETWEEN (0002) AND 04096) aNd (length(`BODY_SHA256`) = 0064))")
+	if !wantOK || !gotOK || got != want {
+		t.Fatalf("canonical function clause = %q/%v, want %q/%v", got, gotOK, want, wantOK)
+	}
+}
+
+func TestAdminOperationResponseContractRejectsActorOROutsideImmutableConjunction(t *testing.T) {
+	want := adminOperationResponseTableContract()
+	got := matchingAdminOperationResponseMetadata(want, "fixture_test")
+	if !matchesAdminOperationResponseContract(want, got, "fixture_test") {
+		t.Fatal("equivalent MySQL formatting was rejected")
+	}
+	for index := range got.checks {
+		if got.checks[index].name == "chk_admin_operation_responses_immutable" {
+			got.checks[index].clause = "(created_at >= 0 AND updated_at = created_at AND is_deleted = 0 AND created_by IS NULL AND updated_by IS NULL) OR (created_by IS NOT NULL AND updated_by = created_by)"
+		}
+	}
+	if matchesAdminOperationResponseContract(want, got, "fixture_test") {
+		t.Fatal("verifier accepted actor OR outside the immutable conjunction")
+	}
+}
+
+func matchingAdminOperationResponseMetadata(contract businessGroupTableContract, schemaName string) businessGroupTableMetadata {
+	metadata := businessGroupTableMetadata{engine: "InnoDB", characterSet: "utf8mb4", collation: "utf8mb4_unicode_ci"}
+	for _, column := range contract.columns {
+		metadata.columns = append(metadata.columns, businessGroupColumnMetadata{
+			name: column.name, columnType: column.columnType, nullable: column.nullable, defaultVal: column.defaultVal,
+			extra: column.extra, characterSet: column.characterSet, collation: column.collation,
+		})
+	}
+	for _, index := range contract.indexes {
+		for position, column := range index.columns {
+			nonUnique := 1
+			if index.unique {
+				nonUnique = 0
+			}
+			metadata.indexes = append(metadata.indexes, businessGroupIndexMetadata{
+				name: index.name, column: column, sequence: position + 1, nonUnique: nonUnique,
+				collation: sql.NullString{String: "A", Valid: true}, indexType: "BTREE", visible: "YES",
+			})
+		}
+	}
+	metadata.foreignKeys = []businessGroupForeignKeyMetadata{{
+		name: "fk_admin_operation_responses_operation", column: "operation_id", ordinal: 1, targetSchema: schemaName,
+		targetTable: "admin_operations", targetColumn: "id", deleteRule: "RESTRICT", updateRule: "RESTRICT",
+	}}
+	metadata.checks = []businessGroupCheckMetadata{
+		{name: "chk_admin_operation_responses_body", clause: "((LENGTH(`response_body`) BETWEEN (0002) AND 04096) AND (length(`body_sha256`) = 0064))", enforced: "YES"},
+		{name: "chk_admin_operation_responses_http", clause: "((`HTTP_STATUS` = 0201) AND (`MEDIA_TYPE` = _UTF8MB4\\'application/json\\'))", enforced: "YES"},
+		{name: "chk_admin_operation_responses_immutable", clause: "((`CREATED_AT` >= 0) AND (`UPDATED_AT` = `CREATED_AT`) AND (`IS_DELETED` = 0) AND (((`CREATED_BY` IS NULL) AND (`UPDATED_BY` IS NULL)) OR ((`CREATED_BY` IS NOT NULL) AND (`UPDATED_BY` = `CREATED_BY`))))", enforced: "YES"},
+	}
+	return metadata
 }
 
 func TestAdminOperationResponseMigrationOnIsolatedMySQLIsRerunnable(t *testing.T) {

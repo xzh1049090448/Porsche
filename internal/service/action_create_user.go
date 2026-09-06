@@ -327,9 +327,11 @@ func (execution *CreateAccountExecution) Execute(ctx context.Context, tx *gorm.D
 	if created.Error != nil || created.RowsAffected != 1 {
 		return TerminalOutcome{}, ErrActionOperationUnavailable
 	}
-	// The response is a one-to-one child of the operation and reuses its
-	// snowflake GUID as the stable internal snapshot identity.
-	if persistCreateAccountResponse(ctx, tx, operation, actorID, operation.Guid, now, user, group) != nil {
+	responseGUID := execution.nextGUID()
+	if responseGUID <= 0 {
+		return TerminalOutcome{}, ErrActionOperationUnavailable
+	}
+	if persistCreateAccountResponse(ctx, tx, operation, actorID, responseGUID, now, user, group) != nil {
 		return TerminalOutcome{}, ErrActionOperationUnavailable
 	}
 	execution.state.mu.Lock()

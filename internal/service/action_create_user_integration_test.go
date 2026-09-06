@@ -193,6 +193,10 @@ func TestCreateAccountRealOrdinaryAndAdminPersistAtomicState(t *testing.T) {
 				*operation.ResultKind != models.ResultUser || operation.ResultGUID == nil || *operation.ResultGUID != user.Guid || operation.ResultHTTPStatus == nil || *operation.ResultHTTPStatus != 201 {
 				t.Fatalf("terminal operation = %#v/%v", operation, err)
 			}
+			var snapshot models.AdminOperationResponse
+			if err := f.db.Where("operation_id = ?", operation.ID).First(&snapshot).Error; err != nil || snapshot.Guid <= 0 || snapshot.Guid == operation.Guid {
+				t.Fatalf("independent response identity = %#v/%v operation_guid=%d", snapshot, err, operation.Guid)
+			}
 			response, err := services.operations.CreateAccountResponse(context.Background(), services.descriptorsForRole(base.Role).Action, f.actorAPI, identity.PublicRef)
 			if err != nil || response == nil || response.HTTPStatus != 201 || response.MediaType != createAccountResponseMediaType || !validCreateAccountResponseBody(response.Body, identity.PublicRef, services.descriptorsForRole(base.Role).Action, user.Guid) {
 				t.Fatalf("persisted operation response = %#v/%v", response, err)
@@ -334,6 +338,49 @@ func restartA03CreateOperationService(t *testing.T, f *a14DeleteFixture) *Action
 		t.Fatal(err)
 	}
 	return service
+}
+
+func TestCreateAccountRealResponseGUIDFailureRollsBackEntireOperation(t *testing.T) {
+	requireDefaultMySQLAffectedRows(t)
+	f, services := openA03CreateServices(t, 1_910_075_000_000)
+	username := fixtureUsername(testSnowflake.Next())
+	base := actionsecurity.CreateAccountIntent{Username: username, Role: models.UserRoleUser.String(), PlanType: int(models.PlanFree), AllowedModels: []string{}, DailyCallLimit: 100}
+	identity, execution := services.prepare(t, f, base, "A03-Strong-Password!", newRealIdempotencyKey(t))
+	userGUID, authAuditGUID := testSnowflake.Next(), testSnowflake.Next()
+	execution.nextGUID = createAccountTestGUIDs(userGUID, authAuditGUID, 0)
+
+	view, err := services.operations.Execute(context.Background(), identity, execution, execution, services.outbox)
+	if view != nil || !errors.Is(err, ErrActionOperationUnavailable) {
+		t.Fatalf("response GUID failure = %#v/%v", view, err)
+	}
+	if result, ok := execution.ResultUser(); ok || result != nil {
+		t.Fatalf("response GUID failure exposed result = %#v", result)
+	}
+	var userCount, authCount, responseCount, managementCount, outboxCount int64
+	if err := f.db.Model(&models.User{}).Where("guid = ? OR username = ?", userGUID, username).Count(&userCount).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.Model(&models.AuthAuditEvent{}).Where("guid = ?", authAuditGUID).Count(&authCount).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.Model(&models.AdminOperationResponse{}).Where("operation_id = ?", identity.ID).Count(&responseCount).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.Model(&models.AuditLog{}).Where("detail->>'$.operation_ref' = ?", identity.PublicRef).Count(&managementCount).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.Model(&models.AdminActionOutbox{}).Where("public_ref = ?", identity.PublicRef).Count(&outboxCount).Error; err != nil {
+		t.Fatal(err)
+	}
+	var operation models.AdminOperation
+	if err := f.db.Where("id = ? AND public_ref = ?", identity.ID, identity.PublicRef).First(&operation).Error; err != nil {
+		t.Fatal(err)
+	}
+	if userCount != 0 || authCount != 0 || responseCount != 0 || managementCount != 0 || outboxCount != 0 || operation.State != models.OperationProcessing ||
+		operation.FinishedAt != nil || operation.ErrorCode != nil || operation.ResultKind != nil || operation.ResultGUID != nil || operation.ResultHTTPStatus != nil {
+		t.Fatalf("partial response-GUID state user/auth/response/audit/outbox/op = %d/%d/%d/%d/%d/%#v", userCount, authCount, responseCount, managementCount, outboxCount, operation)
+	}
+	assertCreateHashCleared(t, execution)
 }
 
 func TestCreateAccountRealConcurrentUsernameRaceCommitsOneUser(t *testing.T) {
