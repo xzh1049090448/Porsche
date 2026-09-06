@@ -378,10 +378,6 @@ func (s *ActionOperationService) Begin(ctx context.Context, in OperationBegin) (
 			}
 			return ErrActionOperationUnavailable
 		}
-		if result.RowsAffected != 1 {
-			clear(leaseOwner[:])
-			return ErrActionOperationUnavailable
-		}
 		if descriptor.RequiresTicket {
 			operation.VerificationID = &verification.ID
 		}
@@ -389,6 +385,15 @@ func (s *ActionOperationService) Begin(ctx context.Context, in OperationBegin) (
 		operation.UpdatedAt = finalNow
 		operation.LeaseExpiresAt = &leaseExpires
 		operation.QueryExpiresAt = queryExpires
+		if result.RowsAffected == 0 {
+			if descriptor.RequiresTicket || !lockedTicketlessBeginNoopMatches(tx, operation) {
+				clear(leaseOwner[:])
+				return ErrActionOperationUnavailable
+			}
+		} else if result.RowsAffected != 1 {
+			clear(leaseOwner[:])
+			return ErrActionOperationUnavailable
+		}
 		identity = &OperationIdentity{ID: operation.ID, PublicRef: publicRef, actor: in.Actor, capability: newOperationLeaseCapability(&leaseOwner)}
 		if identity.capability == nil {
 			return ErrActionOperationUnavailable
@@ -410,6 +415,15 @@ func (s *ActionOperationService) Begin(ctx context.Context, in OperationBegin) (
 		return nil, nil, ErrActionOperationUnavailable
 	}
 	return identity, view, nil
+}
+
+func lockedTicketlessBeginNoopMatches(tx *gorm.DB, expected models.AdminOperation) bool {
+	if tx == nil || expected.ID <= 0 || expected.VerificationID != nil {
+		return false
+	}
+	var stored models.AdminOperation
+	result := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", expected.ID).Take(&stored)
+	return result.Error == nil && result.RowsAffected == 1 && reflect.DeepEqual(stored, expected)
 }
 
 func (s *ActionOperationService) Query(ctx context.Context, action actionsecurity.Action, actor ActionActor, keyValues []string) (*OperationView, error) {

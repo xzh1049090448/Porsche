@@ -486,9 +486,12 @@ type actionOperationScript struct {
 	failExecAt                int
 	execError                 error
 	zeroAffected              bool
+	zeroAffectedAt            int
 	failCommit                bool
 	ticketless                bool
 	rejectVerificationQueries bool
+	hidePendingOperation      bool
+	corruptPendingAfterNoop   bool
 }
 
 type actionOperationDriver struct{}
@@ -665,8 +668,18 @@ func (c *actionOperationConn) QueryContext(_ context.Context, query string, args
 			if len(args) != 4 || fmt.Sprint(args[0].Value) != fmt.Sprint(s.actor.ID) || fmt.Sprint(args[1].Value) != fmt.Sprint(int(action)) || fmt.Sprint(args[2].Value) != s.keyHex {
 				return nil, errors.New("wrong operation selector vars")
 			}
-		} else if strings.Contains(query, "id = ?") && (s.operation == nil || len(args) != 2 || fmt.Sprint(args[0].Value) != fmt.Sprint(s.operation.ID)) {
-			return nil, errors.New("wrong operation id selector vars")
+		} else if strings.Contains(query, "id = ?") {
+			candidate := s.operation
+			if candidate == nil && !s.hidePendingOperation {
+				candidate = s.pendingOperation
+			}
+			if candidate == nil {
+				return operationRows(operationColumns(), nil), nil
+			}
+			if len(args) != 2 || fmt.Sprint(args[0].Value) != fmt.Sprint(candidate.ID) {
+				return nil, errors.New("wrong operation id selector vars")
+			}
+			return operationRows(operationColumns(), [][]driver.Value{operationValues(*candidate)}), nil
 		}
 		if s.operation == nil {
 			return operationRows(operationColumns(), nil), nil
@@ -738,8 +751,13 @@ func (c *actionOperationConn) ExecContext(_ context.Context, query string, args 
 		return nil, errors.New("scripted operation write failure")
 	}
 	affected := int64(1)
-	if s.zeroAffected {
+	if s.zeroAffected || (s.zeroAffectedAt > 0 && len(s.execs) == s.zeroAffectedAt) {
 		affected = 0
+	}
+	if affected == 0 && s.corruptPendingAfterNoop && s.pendingOperation != nil && strings.HasPrefix(query, "UPDATE `admin_operations`") {
+		copy := *s.pendingOperation
+		copy.State = models.OperationPendingRecovery
+		s.pendingOperation = &copy
 	}
 	if affected == 1 && s.operation != nil && strings.HasPrefix(query, "UPDATE `admin_operations`") {
 		copy := *s.operation

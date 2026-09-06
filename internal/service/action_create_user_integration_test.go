@@ -5,6 +5,7 @@ import (
 	cryptorand "crypto/rand"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -22,6 +23,20 @@ type a03CreateServices struct {
 	verifications *ActionVerificationService
 	outbox        *CreateAccountOutboxWriter
 	descriptors   map[actionsecurity.Action]actionsecurity.Descriptor
+}
+
+func requireDefaultMySQLAffectedRows(t *testing.T) {
+	t.Helper()
+	raw := strings.TrimSpace(os.Getenv("TEST_DATABASE_URL"))
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		t.Fatalf("parse TEST_DATABASE_URL: %v", err)
+	}
+	for key := range parsed.Query() {
+		if strings.EqualFold(key, "clientFoundRows") {
+			t.Fatalf("TEST_DATABASE_URL must exercise default MySQL changed-row semantics without %s", key)
+		}
+	}
 }
 
 func openA03CreateServices(t *testing.T, now int64) (*a14DeleteFixture, *a03CreateServices) {
@@ -120,6 +135,7 @@ func (services *a03CreateServices) descriptorsForRole(role string) actionsecurit
 }
 
 func TestCreateAccountRealOrdinaryAndAdminPersistAtomicState(t *testing.T) {
+	requireDefaultMySQLAffectedRows(t)
 	cases := []struct {
 		name      string
 		role      models.UserRole
@@ -199,6 +215,7 @@ func TestCreateAccountRealOrdinaryAndAdminPersistAtomicState(t *testing.T) {
 }
 
 func TestCreateAccountRealConcurrentUsernameRaceCommitsOneUser(t *testing.T) {
+	requireDefaultMySQLAffectedRows(t)
 	f, services := openA03CreateServices(t, 1_910_100_000_000)
 	username := fixtureUsername(testSnowflake.Next())
 	base := actionsecurity.CreateAccountIntent{Username: username, Role: "user", PlanType: int(models.PlanFree), AllowedModels: []string{}, DailyCallLimit: 100}
@@ -326,6 +343,7 @@ func TestCreateAccountRealWriteFaultsRollbackEveryStage(t *testing.T) {
 }
 
 func TestCreateAccountRealCommitUnknownDoesNotPublishResult(t *testing.T) {
+	requireDefaultMySQLAffectedRows(t)
 	f, services := openA03CreateServices(t, 1_910_300_000_000)
 	username := fixtureUsername(testSnowflake.Next())
 	key := newRealIdempotencyKey(t)

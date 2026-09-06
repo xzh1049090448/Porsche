@@ -214,6 +214,50 @@ func TestActionOperationTicketlessBeginReplayConflictAndCrossSession(t *testing.
 	assertNoVerificationAccess(t, script.queries, script.execs)
 }
 
+func TestActionOperationTicketlessBeginDistinguishesNoopUpdateFromCASMiss(t *testing.T) {
+	now := int64(1_800_000_000_000)
+	t.Run("exact locked row", func(t *testing.T) {
+		service, script, actor, key := ticketlessOperationFixture(t, now, nil)
+		script.zeroAffectedAt = 2
+		identity, view, err := service.Begin(context.Background(), OperationBegin{
+			Action: actionsecurity.ActionUsersCreate, Actor: actor, IdempotencyKeyValues: []string{key}, Intent: ticketlessCreateIntent("alice"),
+		})
+		if err != nil || identity == nil || view == nil || !identity.ReadyForExecution() || script.commitCount != 1 || script.rollbackCount != 0 {
+			t.Fatalf("confirmed no-op = %#v %#v %v commits=%d rollbacks=%d", identity, view, err, script.commitCount, script.rollbackCount)
+		}
+		if len(script.execs) != 2 || len(script.queries) == 0 || !strings.Contains(script.queries[len(script.queries)-1], "FROM `admin_operations`") || !strings.Contains(script.queries[len(script.queries)-1], "FOR UPDATE") {
+			t.Fatalf("confirmed no-op writes/queries = %v/%v", script.execs, script.queries)
+		}
+		assertNoVerificationAccess(t, script.queries, script.execs)
+	})
+
+	t.Run("missing locked row", func(t *testing.T) {
+		service, script, actor, key := ticketlessOperationFixture(t, now, nil)
+		script.zeroAffectedAt = 2
+		script.hidePendingOperation = true
+		identity, view, err := service.Begin(context.Background(), OperationBegin{
+			Action: actionsecurity.ActionUsersCreate, Actor: actor, IdempotencyKeyValues: []string{key}, Intent: ticketlessCreateIntent("alice"),
+		})
+		if identity != nil || view != nil || !errors.Is(err, ErrActionOperationUnavailable) || script.commitCount != 0 || script.rollbackCount != 1 {
+			t.Fatalf("CAS miss = %#v %#v %v commits=%d rollbacks=%d", identity, view, err, script.commitCount, script.rollbackCount)
+		}
+		assertNoVerificationAccess(t, script.queries, script.execs)
+	})
+
+	t.Run("mismatched locked row", func(t *testing.T) {
+		service, script, actor, key := ticketlessOperationFixture(t, now, nil)
+		script.zeroAffectedAt = 2
+		script.corruptPendingAfterNoop = true
+		identity, view, err := service.Begin(context.Background(), OperationBegin{
+			Action: actionsecurity.ActionUsersCreate, Actor: actor, IdempotencyKeyValues: []string{key}, Intent: ticketlessCreateIntent("alice"),
+		})
+		if identity != nil || view != nil || !errors.Is(err, ErrActionOperationUnavailable) || script.commitCount != 0 || script.rollbackCount != 1 {
+			t.Fatalf("CAS mismatch = %#v %#v %v commits=%d rollbacks=%d", identity, view, err, script.commitCount, script.rollbackCount)
+		}
+		assertNoVerificationAccess(t, script.queries, script.execs)
+	})
+}
+
 func TestActionOperationTicketlessAdminUserCreateBeginReplayAndQuery(t *testing.T) {
 	now := int64(1_800_000_000_000)
 	service, script, actor, key := ticketlessOperationFixture(t, now, nil)
