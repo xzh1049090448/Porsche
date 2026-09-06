@@ -37,6 +37,22 @@ func ProjectUserRead(user models.User) (*UserReadDTO, error) {
 	return out, nil
 }
 
+// ProjectCreatedUserRead binds the normal user projection to the exact group
+// row locked by the create transaction.
+func ProjectCreatedUserRead(user models.User, group models.BusinessGroup) (*UserReadDTO, error) {
+	if group.ID <= 0 || group.Guid <= 0 || group.ID != user.GroupID || group.Key == "" ||
+		group.Status != models.BusinessGroupStatusActive || group.IsDeleted != 0 {
+		return nil, ErrAdminPermissionUnavailable
+	}
+	out, err := ProjectUserRead(user)
+	if err != nil {
+		return nil, err
+	}
+	key := group.Key
+	out.Group = &key
+	return out, nil
+}
+
 type AdminUsersReadPage struct {
 	Items    []UserReadDTO `json:"items"`
 	Total    int64         `json:"total"`
