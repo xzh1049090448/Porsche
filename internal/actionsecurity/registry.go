@@ -4,7 +4,7 @@ import "errors"
 
 var errWrongIntentType = errors.New("wrong intent type")
 
-var inactiveActionDescriptors = [...]Descriptor{
+var canonicalActionDescriptors = [...]Descriptor{
 	{ActionUsersCreateAdmin, "users.create_admin", "users.create", true, true, false, TargetNone, encodeCreateAdminAny},
 	{ActionUsersResetPassword, "users.reset_password", "users.reset_password", false, true, false, TargetUser, encodeResetPasswordAny},
 	{ActionUsersPromote, "users.promote", "users.promote", true, true, false, TargetUser, encodePromoteAny},
@@ -13,32 +13,67 @@ var inactiveActionDescriptors = [...]Descriptor{
 	{ActionUsersDelete, "users.delete", "users.delete", false, true, false, TargetUser, encodeDeleteUserAny},
 	{ActionPublicContentPublish, "public_content.publish", "public_content.publish", false, true, false, TargetPublicContent, encodePublishAny},
 	{ActionPublicContentRollback, "public_content.rollback", "public_content.rollback", false, true, false, TargetPublicContent, encodeRollbackAny},
+	{ActionUsersCreate, "users.create", "users.create", false, false, false, TargetNone, encodeCreateAny},
 }
 
-var futureActionDescriptors = [...]Descriptor{
-	{ActionUsersCreate, "users.create", "users.create", false, false, false, TargetNone, encodeCreateAny},
-	{ActionUsersCreateAdmin, "users.create_admin", "users.create", true, true, false, TargetNone, encodeCreateAdminAny},
-	{ActionUsersDelete, "users.delete", "users.delete", false, true, true, TargetUser, encodeDeleteUserAny},
+var inactiveActionOrder = [...]Action{
+	ActionUsersCreateAdmin,
+	ActionUsersResetPassword,
+	ActionUsersPromote,
+	ActionUsersDemote,
+	ActionUsersPermissionsWrite,
+	ActionUsersDelete,
+	ActionPublicContentPublish,
+	ActionPublicContentRollback,
+	ActionUsersCreate,
 }
+
+var futureActionOrder = [...]Action{ActionUsersCreate, ActionUsersCreateAdmin, ActionUsersDelete}
+var activeActionOrder = [...]Action{ActionUsersDelete}
 
 func InactiveActionDescriptors() []Descriptor {
-	out := make([]Descriptor, len(inactiveActionDescriptors))
-	copy(out, inactiveActionDescriptors[:])
-	return out
+	return projectActionDescriptors(inactiveActionOrder[:], nil)
 }
 
 func ActiveActionRegistry() []Descriptor {
-	out := make([]Descriptor, 1)
-	out[0] = futureActionDescriptors[2]
-	return out
+	return projectActionDescriptors(activeActionOrder[:], activeActionOrder[:])
 }
 
 // FutureActionDescriptors returns the ordered activation candidate for the
 // complete user-management bundle. It is not used for production resolution.
 func FutureActionDescriptors() []Descriptor {
-	out := make([]Descriptor, len(futureActionDescriptors))
-	copy(out, futureActionDescriptors[:])
+	return projectActionDescriptors(futureActionOrder[:], activeActionOrder[:])
+}
+
+func canonicalActionDescriptor(action Action) (Descriptor, bool) {
+	for _, descriptor := range canonicalActionDescriptors {
+		if descriptor.Action == action {
+			return descriptor, true
+		}
+	}
+	return Descriptor{}, false
+}
+
+func projectActionDescriptors(order []Action, activeActions []Action) []Descriptor {
+	out := make([]Descriptor, 0, len(order))
+	for _, action := range order {
+		descriptor, ok := canonicalActionDescriptor(action)
+		if !ok {
+			continue
+		}
+		descriptor.Active = actionIn(activeActions, action)
+		out = append(out, descriptor)
+	}
 	return out
+}
+
+func actionIn(actions []Action, action Action) bool {
+	for _, candidate := range actions {
+		if candidate == action {
+			return true
+		}
+	}
+	return false
 }
 
 func ResolveActiveAction(action Action) (Descriptor, bool) {

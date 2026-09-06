@@ -43,7 +43,7 @@ func TestPermissionOverrideIntentFrozenTypeName(t *testing.T) {
 
 func descriptorFor(t *testing.T, action Action) Descriptor {
 	t.Helper()
-	for _, descriptors := range [][]Descriptor{InactiveActionDescriptors(), FutureActionDescriptors(), ActiveActionRegistry()} {
+	for _, descriptors := range [][]Descriptor{FutureActionDescriptors(), ActiveActionRegistry(), InactiveActionDescriptors()} {
 		for _, descriptor := range descriptors {
 			if descriptor.Action == action {
 				return descriptor

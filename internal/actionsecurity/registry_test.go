@@ -1,6 +1,20 @@
 package actionsecurity
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+)
+
+func descriptorByAction(t *testing.T, descriptors []Descriptor, action Action) Descriptor {
+	t.Helper()
+	for _, descriptor := range descriptors {
+		if descriptor.Action == action {
+			return descriptor
+		}
+	}
+	t.Fatalf("action %d missing", action)
+	return Descriptor{}
+}
 
 func TestInactiveActionDescriptorsExactContract(t *testing.T) {
 	want := []Descriptor{
@@ -12,6 +26,7 @@ func TestInactiveActionDescriptorsExactContract(t *testing.T) {
 		{ActionUsersDelete, "users.delete", "users.delete", false, true, false, TargetUser, nil},
 		{ActionPublicContentPublish, "public_content.publish", "public_content.publish", false, true, false, TargetPublicContent, nil},
 		{ActionPublicContentRollback, "public_content.rollback", "public_content.rollback", false, true, false, TargetPublicContent, nil},
+		{ActionUsersCreate, "users.create", "users.create", false, false, false, TargetNone, nil},
 	}
 	got := InactiveActionDescriptors()
 	if len(got) != len(want) {
@@ -94,6 +109,81 @@ func TestFutureCreateActionDescriptorsExactCanonicalOrder(t *testing.T) {
 	got[0].Name = "mutated"
 	if got := FutureActionDescriptors()[0].Name; got != "users.create" {
 		t.Fatalf("future registry was mutated through returned slice: %q", got)
+	}
+}
+
+func TestRegistryViewsProjectOneCanonicalDescriptorPerAction(t *testing.T) {
+	if len(canonicalActionDescriptors) != 9 {
+		t.Fatalf("canonical descriptor count = %d, want 9", len(canonicalActionDescriptors))
+	}
+	seen := map[Action]bool{}
+	for _, descriptor := range canonicalActionDescriptors {
+		if seen[descriptor.Action] {
+			t.Fatalf("duplicate canonical descriptor for action %d", descriptor.Action)
+		}
+		seen[descriptor.Action] = true
+	}
+	views := [][]Descriptor{InactiveActionDescriptors(), FutureActionDescriptors(), ActiveActionRegistry()}
+	for _, view := range views {
+		for _, descriptor := range view {
+			canonical, ok := canonicalActionDescriptor(descriptor.Action)
+			if !ok {
+				t.Fatalf("view action %d missing canonical descriptor", descriptor.Action)
+			}
+			if descriptor.Action != canonical.Action || descriptor.Name != canonical.Name || descriptor.Capability != canonical.Capability ||
+				descriptor.RootOnly != canonical.RootOnly || descriptor.RequiresTicket != canonical.RequiresTicket || descriptor.TargetKind != canonical.TargetKind ||
+				reflect.ValueOf(descriptor.Encode).Pointer() != reflect.ValueOf(canonical.Encode).Pointer() {
+				t.Fatalf("view descriptor drifted from canonical action %d: %#v vs %#v", descriptor.Action, descriptor, canonical)
+			}
+		}
+	}
+}
+
+func TestFutureActionDescriptorsUseTheirOwnTypedEncoders(t *testing.T) {
+	future := FutureActionDescriptors()
+	tests := []struct {
+		name      string
+		action    Action
+		valid     any
+		wrongRole any
+		wrongType any
+	}{
+		{
+			name:      "ordinary create",
+			action:    ActionUsersCreate,
+			valid:     CreateAccountIntent{Username: "alice", Password: []byte{1}, Role: "user", PlanType: 1},
+			wrongRole: CreateAccountIntent{Username: "alice", Password: []byte{1}, Role: "admin", PlanType: 1},
+			wrongType: DeleteUserIntent{},
+		},
+		{
+			name:      "admin create",
+			action:    ActionUsersCreateAdmin,
+			valid:     CreateAccountIntent{Username: "alice", Password: []byte{1}, Role: "admin", PlanType: 1},
+			wrongRole: CreateAccountIntent{Username: "alice", Password: []byte{1}, Role: "user", PlanType: 1},
+			wrongType: DeleteUserIntent{},
+		},
+		{
+			name:      "delete",
+			action:    ActionUsersDelete,
+			valid:     DeleteUserIntent{TargetGUID: 1, ExpectedAuthVersion: 1, Reason: "case"},
+			wrongType: CreateAccountIntent{},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			descriptor := descriptorByAction(t, future, tc.action)
+			if _, err := descriptor.Encode(tc.valid); err != nil {
+				t.Fatalf("valid intent rejected: %v", err)
+			}
+			if tc.wrongRole != nil {
+				if _, err := descriptor.Encode(tc.wrongRole); err == nil {
+					t.Fatal("wrong role accepted")
+				}
+			}
+			if _, err := descriptor.Encode(tc.wrongType); err != errWrongIntentType {
+				t.Fatalf("wrong type error = %v, want %v", err, errWrongIntentType)
+			}
+		})
 	}
 }
 
