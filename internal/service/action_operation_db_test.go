@@ -106,6 +106,7 @@ func openRealActionFixture(t *testing.T, now int64) *realActionFixture {
 	username := fixtureUsername(testSnowflake.Next())
 	actorRow := models.User{
 		AuditFields: models.AuditFields{Guid: testSnowflake.Next(), CreatedAt: now, UpdatedAt: now},
+		GroupID:     testDefaultBusinessGroupID(t, db),
 		Username:    &username, PasswordHash: &passwordHash, Role: models.UserRoleRoot,
 		Status: models.UserStatusActive, AuthVersion: 7, PlanType: models.PlanFree, AllowedModels: models.JSONSlice{},
 	}
@@ -115,6 +116,7 @@ func openRealActionFixture(t *testing.T, now int64) *realActionFixture {
 	targetUsername := fixtureUsername(testSnowflake.Next())
 	targetRow := models.User{
 		AuditFields: models.AuditFields{Guid: testSnowflake.Next(), CreatedAt: now, UpdatedAt: now},
+		GroupID:     testDefaultBusinessGroupID(t, db),
 		Username:    &targetUsername, Role: models.UserRoleUser, Status: models.UserStatusActive, AuthVersion: 4,
 		PlanType: models.PlanFree, AllowedModels: models.JSONSlice{},
 	}

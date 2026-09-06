@@ -763,6 +763,7 @@ func TestActionVerificationIssuePersistsOnlyDigestsAndReissueSoftDeletes(t *test
 	username := fixtureUsername(testSnowflake.Next())
 	actor := models.User{
 		AuditFields: models.AuditFields{Guid: testSnowflake.Next(), CreatedAt: now, UpdatedAt: now, IsDeleted: 0},
+		GroupID:     testDefaultBusinessGroupID(t, db),
 		Username:    &username, PasswordHash: &passwordHash, Status: models.UserStatusActive,
 		Role: models.UserRoleRoot, AuthVersion: 7, PlanType: models.PlanFree, AllowedModels: models.JSONSlice{},
 	}
@@ -770,7 +771,7 @@ func TestActionVerificationIssuePersistsOnlyDigestsAndReissueSoftDeletes(t *test
 		t.Fatal(err)
 	}
 	targetUsername := fixtureUsername(testSnowflake.Next())
-	target := models.User{AuditFields: models.AuditFields{Guid: testSnowflake.Next(), CreatedAt: now, UpdatedAt: now}, Username: &targetUsername, Role: models.UserRoleUser, Status: models.UserStatusActive, AuthVersion: 4, PlanType: models.PlanFree, AllowedModels: models.JSONSlice{}}
+	target := models.User{AuditFields: models.AuditFields{Guid: testSnowflake.Next(), CreatedAt: now, UpdatedAt: now}, GroupID: testDefaultBusinessGroupID(t, db), Username: &targetUsername, Role: models.UserRoleUser, Status: models.UserStatusActive, AuthVersion: 4, PlanType: models.PlanFree, AllowedModels: models.JSONSlice{}}
 	if err := db.Create(&target).Error; err != nil {
 		t.Fatal(err)
 	}

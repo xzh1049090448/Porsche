@@ -54,10 +54,15 @@ type businessGroupColumnMetadata struct {
 }
 
 type businessGroupIndexMetadata struct {
-	name      string
-	column    string
-	sequence  int
-	nonUnique int
+	name       string
+	column     string
+	sequence   int
+	nonUnique  int
+	subPart    sql.NullInt64
+	collation  sql.NullString
+	indexType  string
+	visible    string
+	expression sql.NullString
 }
 
 type businessGroupForeignKeyMetadata struct {
@@ -75,6 +80,14 @@ type businessGroupCheckMetadata struct {
 	name     string
 	clause   string
 	enforced string
+}
+
+type businessGroupDefaultRow struct {
+	id        int64
+	guid      int64
+	key       string
+	status    int
+	isDeleted int
 }
 
 type businessGroupTableMetadata struct {
@@ -158,24 +171,39 @@ func VerifyBusinessGroupsSchema(ctx context.Context, db *gorm.DB) error {
 	if !ok || !matchesBusinessGroupUserRelationContract(businessGroupUserRelationContractDefinition(), relationMetadata, currentSchema, false) {
 		return ErrBusinessGroupsSchema
 	}
-	var activeDefaults, nullableUsers, orphanedUsers int64
-	if err := db.WithContext(ctx).Raw("SELECT COUNT(*) FROM business_groups WHERE group_key='default' AND status=1 AND is_deleted=0").Row().Scan(&activeDefaults); err != nil {
+	var defaultRows []struct {
+		ID        int64  `gorm:"column:id"`
+		GUID      int64  `gorm:"column:guid"`
+		Key       string `gorm:"column:group_key"`
+		Status    int    `gorm:"column:status"`
+		IsDeleted int    `gorm:"column:is_deleted"`
+	}
+	if err := db.WithContext(ctx).Raw("SELECT id,guid,group_key,status,is_deleted FROM business_groups WHERE group_key='default' AND is_deleted=0 ORDER BY id ASC").Scan(&defaultRows).Error; err != nil {
 		return ErrBusinessGroupsSchema
 	}
+	groups := make([]businessGroupDefaultRow, 0, len(defaultRows))
+	for _, row := range defaultRows {
+		groups = append(groups, businessGroupDefaultRow{id: row.ID, guid: row.GUID, key: row.Key, status: row.Status, isDeleted: row.IsDeleted})
+	}
+	var nullableUsers, orphanedUsers int64
 	if err := db.WithContext(ctx).Raw("SELECT COUNT(*) FROM users WHERE group_id IS NULL").Row().Scan(&nullableUsers); err != nil {
 		return ErrBusinessGroupsSchema
 	}
 	if err := db.WithContext(ctx).Raw("SELECT COUNT(*) FROM users u LEFT JOIN business_groups g ON g.id=u.group_id WHERE g.id IS NULL").Row().Scan(&orphanedUsers); err != nil {
 		return ErrBusinessGroupsSchema
 	}
-	if !validBusinessGroupDataCounts(activeDefaults, nullableUsers, orphanedUsers) {
+	if !validBusinessGroupState(groups, nullableUsers, orphanedUsers) {
 		return ErrBusinessGroupsSchema
 	}
 	return nil
 }
 
-func validBusinessGroupDataCounts(activeDefaults, nullableUsers, orphanedUsers int64) bool {
-	return activeDefaults == 1 && nullableUsers == 0 && orphanedUsers == 0
+func validBusinessGroupState(groups []businessGroupDefaultRow, nullableUsers, orphanedUsers int64) bool {
+	if len(groups) != 1 || nullableUsers != 0 || orphanedUsers != 0 {
+		return false
+	}
+	group := groups[0]
+	return group.id > 0 && group.guid > 0 && group.key == "default" && group.status == 1 && group.isDeleted == 0
 }
 
 func matchesBusinessGroupTableContract(want businessGroupTableContract, got businessGroupTableMetadata) bool {
@@ -202,7 +230,7 @@ func matchesBusinessGroupTableContract(want businessGroupTableContract, got busi
 			return false
 		}
 		for i, row := range rows {
-			if row.sequence != i+1 || row.column != expected.columns[i] || (row.nonUnique == 0) != expected.unique {
+			if row.sequence != i+1 || row.column != expected.columns[i] || (row.nonUnique == 0) != expected.unique || !validRequiredBusinessGroupIndexMetadata(row) {
 				return false
 			}
 		}
@@ -232,11 +260,17 @@ func matchesBusinessGroupUserRelationContract(want businessGroupUserRelationCont
 	if len(got.columns) != 1 || !matchesBusinessGroupColumn(want.column, got.columns[0], allowNullable) {
 		return false
 	}
-	if len(got.indexes) != 1 {
+	var requiredIndexes []businessGroupIndexMetadata
+	for _, index := range got.indexes {
+		if index.name == want.index.name {
+			requiredIndexes = append(requiredIndexes, index)
+		}
+	}
+	if len(requiredIndexes) != 1 {
 		return false
 	}
-	index := got.indexes[0]
-	if index.name != want.index.name || index.column != want.index.columns[0] || index.sequence != 1 || index.nonUnique != 1 {
+	index := requiredIndexes[0]
+	if index.column != want.index.columns[0] || index.sequence != 1 || index.nonUnique != 1 || !validRequiredBusinessGroupIndexMetadata(index) {
 		return false
 	}
 	if len(got.foreignKeys) != 1 {
@@ -246,6 +280,47 @@ func matchesBusinessGroupUserRelationContract(want businessGroupUserRelationCont
 	return foreignKey.name == want.foreignKey.name && foreignKey.column == want.foreignKey.column && foreignKey.ordinal == 1 &&
 		foreignKey.targetSchema == currentSchema && foreignKey.targetTable == want.foreignKey.targetTable && foreignKey.targetColumn == want.foreignKey.targetColumn &&
 		restrictRule(foreignKey.deleteRule) && restrictRule(foreignKey.updateRule)
+}
+
+func validRequiredBusinessGroupIndexMetadata(index businessGroupIndexMetadata) bool {
+	return !index.subPart.Valid && index.collation.Valid && index.collation.String == "A" && strings.EqualFold(index.indexType, "BTREE") && index.visible == "YES" && !index.expression.Valid
+}
+
+func businessGroupIndexMetadataProjection(hasVisibility, hasExpression bool) string {
+	visibility := "'YES' AS is_visible"
+	if hasVisibility {
+		visibility = "is_visible"
+	}
+	expression := "NULL AS expression"
+	if hasExpression {
+		expression = "expression"
+	}
+	return "index_name, column_name, seq_in_index, non_unique, sub_part, collation, index_type, " + visibility + ", " + expression
+}
+
+func businessGroupIndexMetadataCapabilities(ctx context.Context, db *gorm.DB) (bool, bool, bool) {
+	rows, err := db.WithContext(ctx).Raw(`SELECT column_name FROM information_schema.columns WHERE table_schema='information_schema' AND UPPER(table_name)='STATISTICS' AND UPPER(column_name) IN ('IS_VISIBLE','EXPRESSION')`).Rows()
+	if err != nil {
+		return false, false, false
+	}
+	var hasVisibility, hasExpression bool
+	for rows.Next() {
+		var column string
+		if err := rows.Scan(&column); err != nil {
+			_ = rows.Close()
+			return false, false, false
+		}
+		switch {
+		case strings.EqualFold(column, "IS_VISIBLE"):
+			hasVisibility = true
+		case strings.EqualFold(column, "EXPRESSION"):
+			hasExpression = true
+		}
+	}
+	if rows.Err() != nil || rows.Close() != nil {
+		return false, false, false
+	}
+	return hasVisibility, hasExpression, true
 }
 
 func matchesBusinessGroupColumn(want, got businessGroupColumnMetadata, allowNullable bool) bool {
@@ -280,13 +355,18 @@ func loadBusinessGroupTableMetadata(ctx context.Context, db *gorm.DB, table stri
 	if rows.Err() != nil || rows.Close() != nil {
 		return actual, false
 	}
-	indexRows, err := db.WithContext(ctx).Raw(`SELECT index_name, column_name, seq_in_index, non_unique FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name=? ORDER BY index_name, seq_in_index`, table).Rows()
+	hasVisibility, hasExpression, ok := businessGroupIndexMetadataCapabilities(ctx, db)
+	if !ok {
+		return actual, false
+	}
+	indexQuery := "SELECT " + businessGroupIndexMetadataProjection(hasVisibility, hasExpression) + " FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name=? ORDER BY index_name, seq_in_index"
+	indexRows, err := db.WithContext(ctx).Raw(indexQuery, table).Rows()
 	if err != nil {
 		return actual, false
 	}
 	for indexRows.Next() {
 		var row businessGroupIndexMetadata
-		if err := indexRows.Scan(&row.name, &row.column, &row.sequence, &row.nonUnique); err != nil {
+		if err := indexRows.Scan(&row.name, &row.column, &row.sequence, &row.nonUnique, &row.subPart, &row.collation, &row.indexType, &row.visible, &row.expression); err != nil {
 			_ = indexRows.Close()
 			return actual, false
 		}
@@ -345,13 +425,18 @@ func loadBusinessGroupUserRelationMetadata(ctx context.Context, db *gorm.DB) (bu
 	if columnRows.Err() != nil || columnRows.Close() != nil {
 		return actual, false
 	}
-	indexRows, err := db.WithContext(ctx).Raw(`SELECT index_name, column_name, seq_in_index, non_unique FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='users' AND index_name IN (SELECT s.index_name FROM information_schema.statistics s WHERE s.table_schema=DATABASE() AND s.table_name='users' AND s.column_name='group_id') ORDER BY index_name, seq_in_index`).Rows()
+	hasVisibility, hasExpression, ok := businessGroupIndexMetadataCapabilities(ctx, db)
+	if !ok {
+		return actual, false
+	}
+	indexQuery := "SELECT " + businessGroupIndexMetadataProjection(hasVisibility, hasExpression) + " FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='users' AND index_name='idx_users_group_id' ORDER BY seq_in_index"
+	indexRows, err := db.WithContext(ctx).Raw(indexQuery).Rows()
 	if err != nil {
 		return actual, false
 	}
 	for indexRows.Next() {
 		var row businessGroupIndexMetadata
-		if err := indexRows.Scan(&row.name, &row.column, &row.sequence, &row.nonUnique); err != nil {
+		if err := indexRows.Scan(&row.name, &row.column, &row.sequence, &row.nonUnique, &row.subPart, &row.collation, &row.indexType, &row.visible, &row.expression); err != nil {
 			_ = indexRows.Close()
 			return actual, false
 		}
@@ -499,23 +584,30 @@ func loadBusinessGroupIDColumn(conn *gorm.DB) (businessGroupColumnMetadata, bool
 
 func ensureDefaultBusinessGroup(conn *gorm.DB, nextGUID func() int64, nowMillis func() int64) (int64, error) {
 	var groups []struct {
-		ID     int64
-		Status int
+		ID        int64  `gorm:"column:id"`
+		GUID      int64  `gorm:"column:guid"`
+		Key       string `gorm:"column:group_key"`
+		Status    int    `gorm:"column:status"`
+		IsDeleted int    `gorm:"column:is_deleted"`
 	}
-	if err := conn.Raw("SELECT id,status FROM business_groups WHERE group_key='default' AND is_deleted=0 ORDER BY id LIMIT 2").Scan(&groups).Error; err != nil {
+	if err := conn.Raw("SELECT id,guid,group_key,status,is_deleted FROM business_groups WHERE group_key='default' AND is_deleted=0 ORDER BY id LIMIT 2").Scan(&groups).Error; err != nil {
 		return 0, fmt.Errorf("read default business group: %w", err)
 	}
 	if len(groups) > 1 {
 		return 0, fmt.Errorf("multiple live default business groups")
 	}
 	if len(groups) == 1 {
-		if groups[0].Status != 1 {
-			return 0, fmt.Errorf("default business group is inactive")
+		group := groups[0]
+		if group.ID <= 0 || group.GUID <= 0 || group.Key != "default" || group.Status != 1 || group.IsDeleted != 0 {
+			return 0, fmt.Errorf("default business group is corrupt")
 		}
-		return groups[0].ID, nil
+		return group.ID, nil
+	}
+	guid := nextGUID()
+	if guid <= 0 {
+		return 0, fmt.Errorf("default business group GUID must be positive")
 	}
 	now := nowMillis()
-	guid := nextGUID()
 	result := conn.Exec(`INSERT INTO business_groups (guid,group_key,display_name,status,created_at,created_by,updated_at,updated_by,is_deleted) VALUES (?,'default','Default',1,?,NULL,?,NULL,0)`, guid, now, now)
 	if result.Error != nil {
 		return 0, fmt.Errorf("seed default business group: %w", result.Error)
@@ -524,7 +616,7 @@ func ensureDefaultBusinessGroup(conn *gorm.DB, nextGUID func() int64, nowMillis 
 		return 0, fmt.Errorf("seed default business group affected unexpected rows")
 	}
 	var id int64
-	if err := conn.Raw("SELECT id FROM business_groups WHERE guid=? AND group_key='default' AND status=1 AND is_deleted=0", guid).Row().Scan(&id); err != nil {
+	if err := conn.Raw("SELECT id FROM business_groups WHERE guid=? AND BINARY group_key=BINARY 'default' AND status=1 AND is_deleted=0", guid).Row().Scan(&id); err != nil {
 		return 0, fmt.Errorf("read seeded default business group: %w", err)
 	}
 	if id <= 0 {
@@ -535,17 +627,37 @@ func ensureDefaultBusinessGroup(conn *gorm.DB, nextGUID func() int64, nowMillis 
 
 func namedBusinessGroupUserIndex(conn *gorm.DB) (bool, bool, error) {
 	var rows []struct {
-		Column    string `gorm:"column:column_name"`
-		Sequence  int    `gorm:"column:seq_in_index"`
-		NonUnique int    `gorm:"column:non_unique"`
+		Name       string         `gorm:"column:index_name"`
+		Column     string         `gorm:"column:column_name"`
+		Sequence   int            `gorm:"column:seq_in_index"`
+		NonUnique  int            `gorm:"column:non_unique"`
+		SubPart    sql.NullInt64  `gorm:"column:sub_part"`
+		Collation  sql.NullString `gorm:"column:collation"`
+		IndexType  string         `gorm:"column:index_type"`
+		Visible    string         `gorm:"column:is_visible"`
+		Expression sql.NullString `gorm:"column:expression"`
 	}
-	if err := conn.Raw(`SELECT column_name,seq_in_index,non_unique FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='users' AND index_name='idx_users_group_id' ORDER BY seq_in_index`).Scan(&rows).Error; err != nil {
+	ctx := conn.Statement.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	hasVisibility, hasExpression, ok := businessGroupIndexMetadataCapabilities(ctx, conn)
+	if !ok {
+		return false, false, fmt.Errorf("read index metadata capabilities")
+	}
+	indexQuery := "SELECT " + businessGroupIndexMetadataProjection(hasVisibility, hasExpression) + " FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='users' AND index_name='idx_users_group_id' ORDER BY seq_in_index"
+	if err := conn.Raw(indexQuery).Scan(&rows).Error; err != nil {
 		return false, false, fmt.Errorf("read users group index: %w", err)
 	}
 	if len(rows) == 0 {
 		return false, false, nil
 	}
-	return true, len(rows) == 1 && rows[0].Column == "group_id" && rows[0].Sequence == 1 && rows[0].NonUnique == 1, nil
+	if len(rows) != 1 {
+		return true, false, nil
+	}
+	row := rows[0]
+	metadata := businessGroupIndexMetadata{name: row.Name, column: row.Column, sequence: row.Sequence, nonUnique: row.NonUnique, subPart: row.SubPart, collation: row.Collation, indexType: row.IndexType, visible: row.Visible, expression: row.Expression}
+	return true, row.Column == "group_id" && row.Sequence == 1 && row.NonUnique == 1 && validRequiredBusinessGroupIndexMetadata(metadata), nil
 }
 
 func namedBusinessGroupUserForeignKey(conn *gorm.DB) (bool, bool, error) {

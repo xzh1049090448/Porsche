@@ -77,7 +77,7 @@ func openA14DeleteFixture(t *testing.T, now int64, role models.UserRole, allowDe
 		t.Fatal(err)
 	}
 	username := fixtureUsername(testSnowflake.Next())
-	actor := models.User{AuditFields: a14Audit(now), Username: &username, PasswordHash: &hash, Role: role, Status: models.UserStatusActive, AuthVersion: 7, PlanType: models.PlanFree, AllowedModels: models.JSONSlice{}}
+	actor := models.User{AuditFields: a14Audit(now), GroupID: testDefaultBusinessGroupID(t, db), Username: &username, PasswordHash: &hash, Role: role, Status: models.UserStatusActive, AuthVersion: 7, PlanType: models.PlanFree, AllowedModels: models.JSONSlice{}}
 	if err := db.Create(&actor).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +120,7 @@ func (f *a14DeleteFixture) createTarget(t *testing.T, role models.UserRole, stat
 	t.Helper()
 	username := fixtureUsername(testSnowflake.Next())
 	nickname, phone, realName, idCard := "delete-me", testPhone(), "private", strings.Repeat("c", 64)
-	target := models.User{AuditFields: a14Audit(f.clock.NowMillis()), Username: &username, Nickname: &nickname, Phone: &phone, RealName: &realName, IDCardHash: &idCard,
+	target := models.User{AuditFields: a14Audit(f.clock.NowMillis()), GroupID: testDefaultBusinessGroupID(t, f.db), Username: &username, Nickname: &nickname, Phone: &phone, RealName: &realName, IDCardHash: &idCard,
 		PasswordHash: f.actor.PasswordHash, Role: role, Status: status, AuthVersion: authVersion, IsVerified: true, PlanType: models.PlanFree, AllowedModels: models.JSONSlice{}}
 	if err := f.db.Create(&target).Error; err != nil {
 		t.Fatal(err)

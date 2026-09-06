@@ -44,9 +44,9 @@ func TestAdminUserUpdateRejectsMalformedOrOutOfContractJSON(t *testing.T) {
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			state := authHTTPTestState(t)
-			actor := platformTestUser("update-actor", nil)
+			actor := platformTestUser(t, state, "update-actor", nil)
 			actor.Role = models.UserRoleAdmin
-			target := platformTestUser("update-target", models.JSONSlice{"model-a"})
+			target := platformTestUser(t, state, "update-target", models.JSONSlice{"model-a"})
 			target.DailyCallLimit = 17
 			target.UpdatedAt = 1_700_000_000_000
 			if err := state.DB.Create(&actor).Error; err != nil {
@@ -118,9 +118,9 @@ func TestAdminUserUpdateRejectsMalformedOrOutOfContractJSON(t *testing.T) {
 func TestAdminUserUpdateNoOpAndAuthenticationPreconditions(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	state := authHTTPTestState(t)
-	actor := platformTestUser("update-actor", nil)
+	actor := platformTestUser(t, state, "update-actor", nil)
 	actor.Role = models.UserRoleAdmin
-	target := platformTestUser("update-target", models.JSONSlice{"model-a"})
+	target := platformTestUser(t, state, "update-target", models.JSONSlice{"model-a"})
 	target.DailyCallLimit = 17
 	target.UpdatedAt = 1_700_000_000_000
 	if err := state.DB.Create(&actor).Error; err != nil {
@@ -171,9 +171,9 @@ func TestAdminUserUpdateNoOpAndAuthenticationPreconditions(t *testing.T) {
 func TestAdminUserUpdateAppliesPlanAndRevokesOnlyTheTargetSession(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	state := authHTTPTestState(t)
-	actor := platformTestUser("update-actor", nil)
+	actor := platformTestUser(t, state, "update-actor", nil)
 	actor.Role = models.UserRoleAdmin
-	target := platformTestUser("update-target", models.JSONSlice{"model-a"})
+	target := platformTestUser(t, state, "update-target", models.JSONSlice{"model-a"})
 	if err := state.DB.Create(&actor).Error; err != nil {
 		t.Fatal(err)
 	}

@@ -23,7 +23,7 @@ func TestGatewayTokenAuthenticationStorageFailuresFailClosed(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			db := openTestMySQL(t)
-			user := testUser("13800138111")
+			user := testUser(t, db, "13800138111")
 			if err := db.Create(&user).Error; err != nil {
 				t.Fatal(err)
 			}
@@ -60,7 +60,7 @@ func TestGatewayTokenAuthenticationStorageFailuresFailClosed(t *testing.T) {
 
 func TestGatewayTokenDeletedOwnerIsDisabled(t *testing.T) {
 	db := openTestMySQL(t)
-	user := testUser("13800138112")
+	user := testUser(t, db, "13800138112")
 	if err := db.Create(&user).Error; err != nil {
 		t.Fatal(err)
 	}

@@ -25,7 +25,7 @@ import (
 
 func TestGatewayModelsUseTokenACLAndDynamicCatalog(t *testing.T) {
 	state, upstream, calls := gatewayWhiteLabelState(t, `{"data":[{"id":"model-a","owned_by":"white"},{"id":"model-b"}]}`)
-	user := gatewayWhiteLabelUser("13900200001")
+	user := gatewayWhiteLabelUser(t, state, "13900200001")
 	if err := state.DB.Create(user).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +68,7 @@ func TestGatewayModelsUseTokenACLAndDynamicCatalog(t *testing.T) {
 func TestGatewaySlashModelDetailUsesQueryIDAndTokenACL(t *testing.T) {
 	const modelID = "zai-org/glm-5.1"
 	state, _, calls := gatewayWhiteLabelState(t, `{"data":[{"id":"zai-org/glm-5.1"}]}`)
-	user := gatewayWhiteLabelUser("13900200013")
+	user := gatewayWhiteLabelUser(t, state, "13900200013")
 	if err := state.DB.Create(user).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +90,7 @@ func TestGatewaySlashModelDetailUsesQueryIDAndTokenACL(t *testing.T) {
 
 func TestGatewaySlashModelDetailDoesNotCallUpstreamWhenTokenDenied(t *testing.T) {
 	state, _, calls := gatewayWhiteLabelState(t, `{"data":[{"id":"zai-org/glm-5.1"}]}`)
-	user := gatewayWhiteLabelUser("13900200014")
+	user := gatewayWhiteLabelUser(t, state, "13900200014")
 	if err := state.DB.Create(user).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +113,7 @@ func TestGatewaySlashModelDetailDoesNotCallUpstreamWhenTokenDenied(t *testing.T)
 func TestGatewayMalformedOrDuplicateDetailQueryDoesNotCallUpstream(t *testing.T) {
 	const modelID = "zai-org/glm-5.1"
 	state, _, calls := gatewayWhiteLabelState(t, `{"data":[{"id":"zai-org/glm-5.1"}]}`)
-	user := gatewayWhiteLabelUser("13900200016")
+	user := gatewayWhiteLabelUser(t, state, "13900200016")
 	if err := state.DB.Create(user).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -138,7 +138,7 @@ func TestGatewayMalformedOrDuplicateDetailQueryDoesNotCallUpstream(t *testing.T)
 
 func TestGatewayDetailRoutePreservesLegacyDetailModelID(t *testing.T) {
 	state, _, calls := gatewayWhiteLabelState(t, `{"data":[{"id":"detail"}]}`)
-	user := gatewayWhiteLabelUser("13900200015")
+	user := gatewayWhiteLabelUser(t, state, "13900200015")
 	if err := state.DB.Create(user).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -160,7 +160,7 @@ func TestGatewayDetailRoutePreservesLegacyDetailModelID(t *testing.T) {
 
 func TestGatewayChatRejectsBeforeWhiteLabelUpstream(t *testing.T) {
 	state, _, calls := gatewayWhiteLabelState(t, `{"data":[{"id":"model-a"}]}`)
-	user := gatewayWhiteLabelUser("13900200002")
+	user := gatewayWhiteLabelUser(t, state, "13900200002")
 	if err := state.DB.Create(user).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -189,7 +189,7 @@ func TestGatewayChatRejectsBeforeWhiteLabelUpstream(t *testing.T) {
 
 func TestGatewaySSEPostFirstChunkEmitsErrorAndDone(t *testing.T) {
 	state, _, _ := gatewayWhiteLabelState(t, `{"data":[{"id":"model-a"}]}`)
-	user := gatewayWhiteLabelUser("13900200003")
+	user := gatewayWhiteLabelUser(t, state, "13900200003")
 	if err := state.DB.Create(user).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -235,7 +235,7 @@ func TestGatewaySSEPostFirstChunkEmitsErrorAndDone(t *testing.T) {
 
 func TestGatewaySSEProjectsChunksAndDropsUpstreamFields(t *testing.T) {
 	state, _, _ := gatewayWhiteLabelState(t, `{"data":[{"id":"model-a"}]}`)
-	user := gatewayWhiteLabelUser("13900200011")
+	user := gatewayWhiteLabelUser(t, state, "13900200011")
 	if err := state.DB.Create(user).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -264,7 +264,7 @@ func TestGatewaySSEProjectsChunksAndDropsUpstreamFields(t *testing.T) {
 
 func TestGatewaySSEMalformedFirstChunkReturnsJSON503(t *testing.T) {
 	state, _, _ := gatewayWhiteLabelState(t, `{"data":[{"id":"model-a"}]}`)
-	user := gatewayWhiteLabelUser("13900200012")
+	user := gatewayWhiteLabelUser(t, state, "13900200012")
 	if err := state.DB.Create(user).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -285,7 +285,7 @@ func TestGatewaySSEMalformedFirstChunkReturnsJSON503(t *testing.T) {
 
 func TestGatewaySSEBeforeFirstPayloadReturnsJSONError(t *testing.T) {
 	state, _, _ := gatewayWhiteLabelState(t, `{"data":[{"id":"model-a"}]}`)
-	user := gatewayWhiteLabelUser("13900200008")
+	user := gatewayWhiteLabelUser(t, state, "13900200008")
 	if err := state.DB.Create(user).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -306,7 +306,7 @@ func TestGatewaySSEBeforeFirstPayloadReturnsJSONError(t *testing.T) {
 
 func TestGatewayChatAuthenticatesBeforeReadingOrValidatingBody(t *testing.T) {
 	state, _, calls := gatewayWhiteLabelState(t, `{"data":[{"id":"model-a"}]}`)
-	user := gatewayWhiteLabelUser("13900200004")
+	user := gatewayWhiteLabelUser(t, state, "13900200004")
 	if err := state.DB.Create(user).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -342,7 +342,7 @@ func TestGatewayChatAuthenticatesBeforeReadingOrValidatingBody(t *testing.T) {
 
 func TestGatewayChatRequiresExactJSONMediaTypeAndStableErrors(t *testing.T) {
 	state, _, _ := gatewayWhiteLabelState(t, `{"data":[{"id":"model-a"}]}`)
-	user := gatewayWhiteLabelUser("13900200005")
+	user := gatewayWhiteLabelUser(t, state, "13900200005")
 	if err := state.DB.Create(user).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -368,7 +368,7 @@ func TestGatewayChatRequiresExactJSONMediaTypeAndStableErrors(t *testing.T) {
 
 func TestGatewayChatKeepsAuthenticatedRequestBodyLimit(t *testing.T) {
 	state, _, calls := gatewayWhiteLabelState(t, `{"data":[{"id":"model-a"}]}`)
-	user := gatewayWhiteLabelUser("13900200009")
+	user := gatewayWhiteLabelUser(t, state, "13900200009")
 	if err := state.DB.Create(user).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -392,7 +392,7 @@ func TestGatewayChatKeepsAuthenticatedRequestBodyLimit(t *testing.T) {
 
 func TestGatewayChatRequiresCurrentCatalogAndEnabledModelBeforeChat(t *testing.T) {
 	state, _, calls := gatewayWhiteLabelState(t, `{"data":[{"id":"model-a"}]}`)
-	user := gatewayWhiteLabelUser("13900200006")
+	user := gatewayWhiteLabelUser(t, state, "13900200006")
 	if err := state.DB.Create(user).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -429,7 +429,7 @@ func TestGatewayChatRequiresCurrentCatalogAndEnabledModelBeforeChat(t *testing.T
 
 func TestGatewayChatProjectsValidatedCompletionAndMasksUpstreamFields(t *testing.T) {
 	state, _, calls := gatewayWhiteLabelState(t, `{"data":[{"id":"model-a"}]}`)
-	user := gatewayWhiteLabelUser("13900200007")
+	user := gatewayWhiteLabelUser(t, state, "13900200007")
 	if err := state.DB.Create(user).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -473,7 +473,7 @@ func TestGatewayChatProjectsValidatedCompletionAndMasksUpstreamFields(t *testing
 
 func TestGatewayChatRejectsMalformedUpstreamCompletion(t *testing.T) {
 	state, _, _ := gatewayWhiteLabelState(t, `{"data":[{"id":"model-a"}]}`)
-	user := gatewayWhiteLabelUser("13900200010")
+	user := gatewayWhiteLabelUser(t, state, "13900200010")
 	if err := state.DB.Create(user).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -600,15 +600,32 @@ func testDatabaseURL(t *testing.T) string {
 
 var gatewayWhiteLabelSnowflake = persistence.NewSnowflake(os.Getpid()%1024, persistence.SystemClock())
 
-func gatewayWhiteLabelUser(_ string) *models.User {
+func gatewayWhiteLabelUser(t *testing.T, state *app.State, _ string) *models.User {
+	t.Helper()
 	now := time.Now().UTC().UnixMilli()
 	return &models.User{
 		AuditFields:   models.AuditFields{Guid: gatewayWhiteLabelSnowflake.Next(), CreatedAt: now, UpdatedAt: now, IsDeleted: 0},
+		GroupID:       gatewayWhiteLabelDefaultBusinessGroupID(t, state),
 		Phone:         gatewayWhiteLabelTestPhone(),
 		Status:        models.UserStatusActive,
 		PlanType:      models.PlanFree,
 		AllowedModels: models.JSONSlice{},
 	}
+}
+
+func gatewayWhiteLabelDefaultBusinessGroupID(t *testing.T, state *app.State) int64 {
+	t.Helper()
+	var groups []models.BusinessGroup
+	if state == nil || state.DB == nil {
+		t.Fatal("gateway white-label test state has no database")
+	}
+	if err := state.DB.Where("group_key = ? AND is_deleted = 0", "default").Order("id ASC").Find(&groups).Error; err != nil {
+		t.Fatalf("load gateway white-label default business group: %v", err)
+	}
+	if len(groups) != 1 || groups[0].ID <= 0 || groups[0].Guid <= 0 || groups[0].Key != "default" || groups[0].Status != models.BusinessGroupStatusActive || groups[0].IsDeleted != 0 {
+		t.Fatalf("invalid gateway white-label default business group: %#v", groups)
+	}
+	return groups[0].ID
 }
 
 // gatewayWhiteLabelTestPhone makes each persisted handler fixture distinct

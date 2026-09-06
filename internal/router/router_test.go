@@ -90,7 +90,7 @@ func TestHostAllowlistAcceptsDomainAndRejectsDirectIPAddress(t *testing.T) {
 
 func TestGatewayModelsAreFilteredByDatabaseToken(t *testing.T) {
 	state := newGatewayTestState(t)
-	user := gatewayTestUserFixture("13900139000")
+	user := gatewayTestUserFixture(t, state, "13900139000")
 	if err := state.DB.Create(&user).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -124,7 +124,7 @@ func TestGatewayModelsAreFilteredByDatabaseToken(t *testing.T) {
 
 func TestGatewayRejectsTokenModelBeforeUpstream(t *testing.T) {
 	state := newGatewayTestState(t)
-	user := gatewayTestUserFixture("13900139001")
+	user := gatewayTestUserFixture(t, state, "13900139001")
 	if err := state.DB.Create(&user).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -157,7 +157,7 @@ func TestGatewayRejectsTokenModelBeforeUpstream(t *testing.T) {
 func TestGatewayRejectsSpoofedForwardedIPFromUntrustedPeer(t *testing.T) {
 	state := newGatewayTestState(t)
 	state.Settings.TrustProxyHeaders = true
-	user := gatewayTestUserFixture("13900139002")
+	user := gatewayTestUserFixture(t, state, "13900139002")
 	if err := state.DB.Create(&user).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -343,7 +343,7 @@ func TestGatewayErrorDoesNotEchoSecretAndSanitizesRequestID(t *testing.T) {
 
 func createGatewayTestUser(t *testing.T, state *app.State, phone string) *models.User {
 	t.Helper()
-	user := gatewayTestUserFixture(phone)
+	user := gatewayTestUserFixture(t, state, phone)
 	if err := state.DB.Create(&user).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -352,10 +352,12 @@ func createGatewayTestUser(t *testing.T, state *app.State, phone string) *models
 
 var gatewayTestSnowflake = persistence.NewSnowflake(os.Getpid()%1024, persistence.SystemClock())
 
-func gatewayTestUserFixture(_ string) models.User {
+func gatewayTestUserFixture(t *testing.T, state *app.State, _ string) models.User {
+	t.Helper()
 	now := time.Now().UTC().UnixMilli()
 	return models.User{
 		AuditFields:   models.AuditFields{Guid: gatewayTestSnowflake.Next(), CreatedAt: now, UpdatedAt: now, IsDeleted: 0},
+		GroupID:       gatewayTestDefaultBusinessGroupID(t, state),
 		Phone:         gatewayTestPhone(),
 		Status:        models.UserStatusActive,
 		Role:          models.UserRoleUser,
@@ -363,6 +365,21 @@ func gatewayTestUserFixture(_ string) models.User {
 		PlanType:      models.PlanFree,
 		AllowedModels: models.JSONSlice{},
 	}
+}
+
+func gatewayTestDefaultBusinessGroupID(t *testing.T, state *app.State) int64 {
+	t.Helper()
+	var groups []models.BusinessGroup
+	if state == nil || state.DB == nil {
+		t.Fatal("gateway test state has no database")
+	}
+	if err := state.DB.Where("group_key = ? AND is_deleted = 0", "default").Order("id ASC").Find(&groups).Error; err != nil {
+		t.Fatalf("load gateway default business group: %v", err)
+	}
+	if len(groups) != 1 || groups[0].ID <= 0 || groups[0].Guid <= 0 || groups[0].Key != "default" || groups[0].Status != models.BusinessGroupStatusActive || groups[0].IsDeleted != 0 {
+		t.Fatalf("invalid gateway default business group: %#v", groups)
+	}
+	return groups[0].ID
 }
 
 // gatewayTestPhone derives a database-safe phone value from the package test

@@ -112,13 +112,13 @@ func TestAuthSessionHTTPFlow(t *testing.T) {
 // downward hierarchy and never serialize sensitive account fields.
 func TestAdminUsersHTTPHierarchy(t *testing.T) {
 	state := authHTTPTestState(t)
-	admin := platformTestUser("auth-http-admin", nil)
+	admin := platformTestUser(t, state, "auth-http-admin", nil)
 	admin.Role = models.UserRoleAdmin
-	peer := platformTestUser("auth-http-peer", nil)
+	peer := platformTestUser(t, state, "auth-http-peer", nil)
 	peer.Role = models.UserRoleAdmin
-	root := platformTestUser("auth-http-root", nil)
+	root := platformTestUser(t, state, "auth-http-root", nil)
 	root.Role = models.UserRoleRoot
-	ordinary := platformTestUser("auth-http-user", nil)
+	ordinary := platformTestUser(t, state, "auth-http-user", nil)
 	for _, user := range []*models.User{&admin, &peer, &root, &ordinary} {
 		if err := state.DB.Create(user).Error; err != nil {
 			t.Fatal(err)

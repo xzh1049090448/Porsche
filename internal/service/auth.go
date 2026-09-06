@@ -16,7 +16,10 @@ import (
 	"github.com/porsche/ai-gateway-go/internal/models"
 	"github.com/porsche/ai-gateway-go/internal/security"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
+
+var errDefaultBusinessGroupUnavailable = errors.New("default business group is unavailable")
 
 type AuthService struct {
 	settings *config.Settings
@@ -106,6 +109,11 @@ func (a *AuthService) RegisterUsername(ctx context.Context, rawUsername, passwor
 		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
 			return err
 		}
+		groupID, err := lockCanonicalDefaultBusinessGroup(tx)
+		if err != nil {
+			return err
+		}
+		user.GroupID = groupID
 		if err := tx.Create(user).Error; err != nil {
 			return err
 		}
@@ -213,6 +221,11 @@ func (a *AuthService) BootstrapRoot(ctx context.Context) (*models.User, error) {
 			if count > 0 {
 				return nil
 			}
+			groupID, err := lockCanonicalDefaultBusinessGroup(tx)
+			if err != nil {
+				return err
+			}
+			root.GroupID = groupID
 			if err := tx.Create(root).Error; err != nil {
 				return err
 			}
@@ -228,6 +241,32 @@ func (a *AuthService) BootstrapRoot(ctx context.Context) (*models.User, error) {
 		return nil, nil
 	}
 	return root, nil
+}
+
+// lockCanonicalDefaultBusinessGroup resolves the sole live default group on
+// the caller's transaction and locks it through the following user insert.
+// The normal utf8mb4 collation deliberately finds case variants; Go then
+// enforces the exact immutable key bytes before accepting the row.
+func lockCanonicalDefaultBusinessGroup(tx *gorm.DB) (int64, error) {
+	if tx == nil {
+		return 0, errDefaultBusinessGroupUnavailable
+	}
+	var groups []models.BusinessGroup
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Select("id", "guid", "group_key", "status", "is_deleted").
+		Where("group_key = ? AND is_deleted = 0", "default").
+		Order("id ASC").
+		Find(&groups).Error; err != nil {
+		return 0, errDefaultBusinessGroupUnavailable
+	}
+	if len(groups) != 1 {
+		return 0, errDefaultBusinessGroupUnavailable
+	}
+	group := groups[0]
+	if group.ID <= 0 || group.Guid <= 0 || group.Key != "default" || group.Status != models.BusinessGroupStatusActive || group.IsDeleted != 0 {
+		return 0, errDefaultBusinessGroupUnavailable
+	}
+	return group.ID, nil
 }
 
 // CanManageUser enforces the role hierarchy for state-changing administrator

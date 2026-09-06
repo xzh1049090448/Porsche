@@ -424,9 +424,10 @@ func TestMigrationSequencePreservesPublishedChecksums(t *testing.T) {
 		{"0004", "44b5caba0473162c239e6b3035e6d9067e3af0b35e998a79c827a1424621494e"},
 		{"0005", "4fc34da357e155c4a04548838153796803f618f0c7199adda17098ef5190cd68"},
 		{"0006", "c0bc9f68370985315db711c0028ee644dafe4d9667c595a49193ed38e2d6f6b6"},
+		{"0007", "b3c3351771fce2dbf5466d300cb92ffd5dbd183cffaff15671e46a8bc87e143e"},
 	}
-	if len(migrations) != 7 {
-		t.Fatalf("migration count = %d, want 7", len(migrations))
+	if len(want) != len(migrations) {
+		t.Fatalf("checksum list length = %d, migrations = %d", len(want), len(migrations))
 	}
 	for i, published := range want {
 		if migrations[i].Version != published.version {

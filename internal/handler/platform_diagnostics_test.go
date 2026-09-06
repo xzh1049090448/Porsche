@@ -118,7 +118,7 @@ func TestPlatformDiagnosticPipeline(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			gin.SetMode(gin.TestMode)
 			state := newPlatformWhiteLabelTestState(t)
-			user := platformTestUser("diagnostic-"+tc.name, models.JSONSlice{"model-a"})
+			user := platformTestUser(t, state, "diagnostic-"+tc.name, models.JSONSlice{"model-a"})
 			if tc.name == "quota_exhausted" {
 				user.DailyCallLimit = 1
 				user.DailyCallsUsed = 1
@@ -213,7 +213,7 @@ func TestPlatformDiagnosticPipeline(t *testing.T) {
 			RegisterPlatform(engine, state)
 			body := tc.body
 			if tc.name == "conversation_other_user" {
-				other := platformTestUser("diag-other", nil)
+				other := platformTestUser(t, state, "diag-other", nil)
 				if err := state.DB.Create(&other).Error; err != nil {
 					t.Fatal(err)
 				}
@@ -301,7 +301,7 @@ func (w *diagnosticFailWriter) Write(b []byte) (int, error) {
 
 func TestPlatformDiagnosticSerializationFailureBeforeUpstream(t *testing.T) {
 	state := newPlatformWhiteLabelTestState(t)
-	user := platformTestUser("diag-serialize", models.JSONSlice{"model-a"})
+	user := platformTestUser(t, state, "diag-serialize", models.JSONSlice{"model-a"})
 	if err := state.DB.Create(&user).Error; err != nil {
 		t.Fatal(err)
 	}

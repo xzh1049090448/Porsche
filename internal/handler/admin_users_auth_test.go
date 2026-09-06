@@ -234,12 +234,12 @@ func TestAdminUserBehaviorRequiresStrictlyLowerTargetRole(t *testing.T) {
 		{name: "soft-deleted-target", actorRole: models.UserRoleRoot, targetRole: models.UserRoleUser, deleted: 1, wantStatus: http.StatusNotFound},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
-			actor := platformTestUser("behavior-actor", nil)
+			actor := platformTestUser(t, state, "behavior-actor", nil)
 			actor.Role = testCase.actorRole
 			if err := state.DB.Create(&actor).Error; err != nil {
 				t.Fatal(err)
 			}
-			target := platformTestUser("behavior-target", nil)
+			target := platformTestUser(t, state, "behavior-target", nil)
 			target.Role = testCase.targetRole
 			target.IsDeleted = testCase.deleted
 			if err := state.DB.Create(&target).Error; err != nil {

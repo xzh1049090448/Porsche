@@ -353,7 +353,7 @@ func adminAuthzHTTPState(t *testing.T) *app.State {
 }
 func adminAuthzHTTPUser(t *testing.T, state *app.State, role models.UserRole) *models.User {
 	t.Helper()
-	user := platformTestUser("admin-authz-read", nil)
+	user := platformTestUser(t, state, "admin-authz-read", nil)
 	user.Role = role
 	if err := state.DB.Create(&user).Error; err != nil {
 		t.Fatal("create unique HTTP fixture user failed")

@@ -78,7 +78,7 @@ func TestGatewayAllowedModelsRawValidationAndPrincipalCopies(t *testing.T) {
 
 func TestGatewayTokenCreateAndAuthenticate(t *testing.T) {
 	gdb := openTestMySQL(t)
-	user := testUser("13800138001")
+	user := testUser(t, gdb, "13800138001")
 	if err := gdb.Create(&user).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +115,7 @@ func TestGatewayTokenCreateAndAuthenticate(t *testing.T) {
 
 func TestGatewayTokenRejectsExpiredAndRevoked(t *testing.T) {
 	gdb := openTestMySQL(t)
-	user := testUser("13800138002")
+	user := testUser(t, gdb, "13800138002")
 	if err := gdb.Create(&user).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -145,7 +145,7 @@ func TestGatewayTokenRejectsExpiredAndRevoked(t *testing.T) {
 
 func TestGatewayTokenRejectsDisabledOwner(t *testing.T) {
 	gdb := openTestMySQL(t)
-	user := testUser("13800138003")
+	user := testUser(t, gdb, "13800138003")
 	if err := gdb.Create(&user).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -164,7 +164,7 @@ func TestGatewayTokenRejectsDisabledOwner(t *testing.T) {
 
 func TestGatewayTokenOwnerACLChangeAppliesToNextAuthentication(t *testing.T) {
 	gdb := openTestMySQL(t)
-	user := testUser("13800138004")
+	user := testUser(t, gdb, "13800138004")
 	user.AllowedModels = models.JSONSlice{"owner-a"}
 	if err := gdb.Create(&user).Error; err != nil {
 		t.Fatal(err)
@@ -187,7 +187,7 @@ func TestGatewayTokenOwnerACLChangeAppliesToNextAuthentication(t *testing.T) {
 
 func TestGatewayTokenPersistedACLShapesFailClosed(t *testing.T) {
 	gdb := openTestMySQL(t)
-	user := testUser("13800138005")
+	user := testUser(t, gdb, "13800138005")
 	if err := gdb.Create(&user).Error; err != nil {
 		t.Fatal(err)
 	}

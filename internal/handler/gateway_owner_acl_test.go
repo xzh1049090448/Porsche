@@ -256,7 +256,7 @@ func gatewayOwnerHTTPState(t *testing.T) (*app.State, *gatewayOwnerHTTPCalls, *a
 
 func gatewayOwnerHTTPUser(t *testing.T, state *app.State, role models.UserRole, acl models.JSONSlice) *models.User {
 	t.Helper()
-	user := gatewayWhiteLabelUser("")
+	user := gatewayWhiteLabelUser(t, state, "")
 	user.Role, user.AuthVersion, user.AllowedModels = role, 1, acl
 	if err := state.DB.Create(user).Error; err != nil {
 		t.Fatal("create unique owner HTTP fixture user failed")

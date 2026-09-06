@@ -30,9 +30,9 @@ func TestNormalizeUsernameTrimsAndEnforcesLength(t *testing.T) {
 	}
 }
 
-func TestUsernameRegistrationPermanentlyReservesTrimmedUsername(t *testing.T) {
-	redisStore := openTestAuthRedis(t)
+func TestPost0007UsernameRegistrationUsesDefaultGroupAndReservesUsername(t *testing.T) {
 	db := openTestMySQL(t)
+	redisStore := openTestAuthRedis(t)
 	prepareAuthRegistrationSchema(t, db)
 	auth := NewAuthService(&config.Settings{RegisterEnabled: true, PasswordRegisterEnabled: true}, nil, db)
 	auth.SetSessionService(NewSessionService(db, redisStore, testSessionSettings()))
@@ -44,6 +44,7 @@ func TestUsernameRegistrationPermanentlyReservesTrimmedUsername(t *testing.T) {
 	if created.Username == nil || *created.Username != username || created.Phone != nil || created.PasswordHash == nil || !strings.HasPrefix(*created.PasswordHash, "$argon2id$") {
 		t.Fatalf("unsafe username registration result: %#v", created)
 	}
+	assertUserCanonicalDefaultGroup(t, db, created)
 	if err := db.Model(&models.User{}).Where("id = ?", created.ID).Updates(map[string]any{"is_deleted": 1}).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +141,7 @@ func equalStringPointer(left, right *string) bool {
 	return *left == *right
 }
 
-func TestRootBootstrapCreatesOnlyTheFirstRoot(t *testing.T) {
+func TestPost0007RootBootstrapUsesDefaultGroupAndCreatesOnlyFirstRoot(t *testing.T) {
 	db := openRootTestMySQL(t)
 	prepareAuthRegistrationSchema(t, db)
 	settings := &config.Settings{RootBootstrapUsername: "initial_root", RootBootstrapPassword: "Str0ng!Root1"}
@@ -149,6 +150,7 @@ func TestRootBootstrapCreatesOnlyTheFirstRoot(t *testing.T) {
 	if err != nil || root == nil || root.Role != models.UserRoleRoot {
 		t.Fatalf("bootstrap root = %#v, %v", root, err)
 	}
+	assertUserCanonicalDefaultGroup(t, db, root)
 	if settings.RootBootstrapUsername != "" || settings.RootBootstrapPassword != "" {
 		t.Fatal("successful bootstrap values remained reusable")
 	}
@@ -168,7 +170,7 @@ func TestRootBootstrapDoesNotReplaceTombstonedRoot(t *testing.T) {
 	prepareAuthRegistrationSchema(t, db)
 	username := "retired_root"
 	now := persistence.NowMillis()
-	retired := &models.User{AuditFields: models.AuditFields{Guid: testSnowflake.Next(), CreatedAt: now, UpdatedAt: now, IsDeleted: 1}, Username: &username, Nickname: &username, PlanType: models.PlanFree, Status: models.UserStatusDisabled, Role: models.UserRoleRoot, AuthVersion: 2, AllowedModels: models.JSONSlice{}}
+	retired := &models.User{AuditFields: models.AuditFields{Guid: testSnowflake.Next(), CreatedAt: now, UpdatedAt: now, IsDeleted: 1}, GroupID: testDefaultBusinessGroupID(t, db), Username: &username, Nickname: &username, PlanType: models.PlanFree, Status: models.UserStatusDisabled, Role: models.UserRoleRoot, AuthVersion: 2, AllowedModels: models.JSONSlice{}}
 	if err := db.Create(retired).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -341,7 +343,7 @@ func TestLoginUsernameRejectsDisabledAndSoftDeletedUser(t *testing.T) {
 	}
 	username := fixtureUsername(testSnowflake.Next())
 	now := persistence.NowMillis()
-	user := &models.User{AuditFields: models.AuditFields{Guid: testSnowflake.Next(), CreatedAt: now, UpdatedAt: now}, Username: &username, PasswordHash: &hash, Status: models.UserStatusDisabled, Role: models.UserRoleUser, AuthVersion: 1, PlanType: models.PlanFree, AllowedModels: models.JSONSlice{}}
+	user := &models.User{AuditFields: models.AuditFields{Guid: testSnowflake.Next(), CreatedAt: now, UpdatedAt: now}, GroupID: testDefaultBusinessGroupID(t, db), Username: &username, PasswordHash: &hash, Status: models.UserStatusDisabled, Role: models.UserRoleUser, AuthVersion: 1, PlanType: models.PlanFree, AllowedModels: models.JSONSlice{}}
 	if err := db.Create(user).Error; err != nil {
 		t.Fatal(err)
 	}

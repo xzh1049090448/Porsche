@@ -27,6 +27,7 @@ func TestAdminUsersReadPerformance(t *testing.T) {
 	root := adminAuthzHTTPUser(t, state, models.UserRoleRoot)
 	access := platformJWT(t, state, root)
 	now := time.Now().UTC().UnixMilli()
+	groupID := platformTestDefaultBusinessGroupID(t, state)
 	for batch := 0; batch < 200; batch++ {
 		users := make([]models.User, 500)
 		for i := range users {
@@ -34,7 +35,7 @@ func TestAdminUsersReadPerformance(t *testing.T) {
 			// Base36 preserves task-row uniqueness while fitting the production
 			// users.username VARCHAR(20) constraint in the real MySQL fixture.
 			username := "p" + strconv.FormatInt(guid, 36)
-			users[i] = models.User{AuditFields: models.AuditFields{Guid: guid, CreatedAt: now, UpdatedAt: now}, Username: &username, PlanType: models.PlanFree, Status: models.UserStatusActive, Role: models.UserRoleUser, AuthVersion: 1, AllowedModels: models.JSONSlice{}}
+			users[i] = models.User{AuditFields: models.AuditFields{Guid: guid, CreatedAt: now, UpdatedAt: now}, GroupID: groupID, Username: &username, PlanType: models.PlanFree, Status: models.UserStatusActive, Role: models.UserRoleUser, AuthVersion: 1, AllowedModels: models.JSONSlice{}}
 		}
 		if err := state.DB.CreateInBatches(users, 500).Error; err != nil {
 			t.Fatal("seed task-owned synthetic users failed")
