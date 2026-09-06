@@ -461,31 +461,34 @@ var (
 )
 
 type actionOperationScript struct {
-	mu               sync.Mutex
-	now              int64
-	keyHex           string
-	actor            models.User
-	target           *models.User
-	sessions         []models.Session
-	operation        *models.AdminOperation
-	pendingOperation *models.AdminOperation
-	verification     *models.AdminActionVerification
-	policyHead       *models.PermissionPolicyHead
-	overrides        []models.PermissionOverride
-	queries          []string
-	queryArgs        [][]driver.NamedValue
-	execs            []string
-	execArgs         [][]driver.NamedValue
-	events           []string
-	beginCount       int
-	commitCount      int
-	rollbackCount    int
-	isolations       []driver.IsolationLevel
-	failExec         bool
-	failExecAt       int
-	execError        error
-	zeroAffected     bool
-	failCommit       bool
+	mu                        sync.Mutex
+	now                       int64
+	action                    actionsecurity.Action
+	keyHex                    string
+	actor                     models.User
+	target                    *models.User
+	sessions                  []models.Session
+	operation                 *models.AdminOperation
+	pendingOperation          *models.AdminOperation
+	verification              *models.AdminActionVerification
+	policyHead                *models.PermissionPolicyHead
+	overrides                 []models.PermissionOverride
+	queries                   []string
+	queryArgs                 [][]driver.NamedValue
+	execs                     []string
+	execArgs                  [][]driver.NamedValue
+	events                    []string
+	beginCount                int
+	commitCount               int
+	rollbackCount             int
+	isolations                []driver.IsolationLevel
+	failExec                  bool
+	failExecAt                int
+	execError                 error
+	zeroAffected              bool
+	failCommit                bool
+	ticketless                bool
+	rejectVerificationQueries bool
 }
 
 type actionOperationDriver struct{}
@@ -655,7 +658,11 @@ func (c *actionOperationConn) QueryContext(_ context.Context, query string, args
 			return nil, errors.New("operation lookup excluded tombstones")
 		}
 		if strings.Contains(query, "idempotency_key_hmac = ?") {
-			if len(args) != 4 || fmt.Sprint(args[0].Value) != fmt.Sprint(s.actor.ID) || fmt.Sprint(args[1].Value) != fmt.Sprint(int(testNoopAction)) || fmt.Sprint(args[2].Value) != s.keyHex {
+			action := s.action
+			if action == 0 {
+				action = testNoopAction
+			}
+			if len(args) != 4 || fmt.Sprint(args[0].Value) != fmt.Sprint(s.actor.ID) || fmt.Sprint(args[1].Value) != fmt.Sprint(int(action)) || fmt.Sprint(args[2].Value) != s.keyHex {
 				return nil, errors.New("wrong operation selector vars")
 			}
 		} else if strings.Contains(query, "id = ?") && (s.operation == nil || len(args) != 2 || fmt.Sprint(args[0].Value) != fmt.Sprint(s.operation.ID)) {
@@ -666,6 +673,9 @@ func (c *actionOperationConn) QueryContext(_ context.Context, query string, args
 		}
 		return operationRows(operationColumns(), [][]driver.Value{operationValues(*s.operation)}), nil
 	case strings.Contains(query, "FROM `admin_action_verifications`"):
+		if s.rejectVerificationQueries {
+			return nil, errors.New("ticketless operation accessed verification storage")
+		}
 		if (!strings.Contains(query, "ticket_hmac = ?") && !strings.Contains(query, "id = ?")) || !strings.Contains(query, "FOR UPDATE") {
 			return nil, errors.New("verification not locked by digest")
 		}
@@ -767,8 +777,10 @@ func (c *actionOperationConn) ExecContext(_ context.Context, query string, args 
 		leaseExpires := mustOperationInt64(values["lease_expires_at"])
 		copy.LeaseExpiresAt = &leaseExpires
 		copy.QueryExpiresAt = mustOperationInt64(values["query_expires_at"])
-		verificationID := mustOperationInt64(values["verification_id"])
-		copy.VerificationID = &verificationID
+		if rawVerificationID, ok := values["verification_id"]; ok {
+			verificationID := mustOperationInt64(rawVerificationID)
+			copy.VerificationID = &verificationID
+		}
 		s.pendingOperation = &copy
 	}
 	return actionOperationResult{id: 30, affected: affected}, nil
@@ -810,10 +822,21 @@ func validateActionOperationExec(script *actionOperationScript, query string, ar
 	case strings.HasPrefix(query, "INSERT INTO `admin_operations`"):
 		return requireFragments("`actor_user_id`", "`idempotency_key_hmac`", "`request_hmac`", "`state`", "`lease_owner_hmac`", "`lease_expires_at`", "`query_expires_at`", "`created_by`", "`updated_by`")
 	case strings.HasPrefix(query, "UPDATE `admin_operations`") && strings.Contains(query, "verification_id IS NULL"):
-		if err := requireFragments("SET", "`created_at`=?", "`lease_expires_at`=?", "`query_expires_at`=?", "`updated_at`=?", "`updated_by`=?", "`verification_id`=?", "id = ? AND state = ? AND is_deleted = 0 AND verification_id IS NULL"); err != nil {
+		fragments := []string{"SET", "`created_at`=?", "`lease_expires_at`=?", "`query_expires_at`=?", "`updated_at`=?", "`updated_by`=?", "id = ? AND state = ? AND is_deleted = 0 AND verification_id IS NULL"}
+		if !script.ticketless {
+			fragments = append(fragments, "`verification_id`=?")
+		}
+		if err := requireFragments(fragments...); err != nil {
 			return err
 		}
-		if len(args) != 8 || script.verification == nil {
+		wantArgs := 8
+		if script.ticketless {
+			wantArgs = 7
+			if strings.Contains(query, "`verification_id`=?") {
+				return errors.New("ticketless operation stored a verification id")
+			}
+		}
+		if len(args) != wantArgs || (!script.ticketless && script.verification == nil) {
 			return errors.New("verification reservation has wrong args")
 		}
 		createdAt, createdOK := operationInt64(args[0].Value)
@@ -822,8 +845,11 @@ func validateActionOperationExec(script *actionOperationScript, query string, ar
 		if !createdOK || !leaseOK || !queryOK ||
 			fmt.Sprint(args[0].Value) != fmt.Sprint(args[3].Value) ||
 			leaseExpires != createdAt+actionOperationLeaseMillis || queryExpires != createdAt+actionOperationQueryRetentionMS ||
-			fmt.Sprint(args[4].Value) != fmt.Sprint(script.actor.ID) || fmt.Sprint(args[5].Value) != fmt.Sprint(script.verification.ID) {
+			fmt.Sprint(args[4].Value) != fmt.Sprint(script.actor.ID) {
 			return errors.New("verification reservation did not refresh final timestamps and audit")
+		}
+		if !script.ticketless && fmt.Sprint(args[5].Value) != fmt.Sprint(script.verification.ID) {
+			return errors.New("verification reservation stored wrong verification id")
 		}
 		return requireTail(int64(30), int64(models.OperationProcessing))
 	case strings.HasPrefix(query, "UPDATE `admin_operations`") && strings.Contains(query, "query_expires_at <= ?"):

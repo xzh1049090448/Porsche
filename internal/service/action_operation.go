@@ -191,7 +191,7 @@ func (s *ActionOperationService) Begin(ctx context.Context, in OperationBegin) (
 	if err != nil {
 		return nil, nil, ErrActionOperationForbidden
 	}
-	ticketRaw, err := actionsecurity.ParseTicket(in.TicketValues)
+	ticketRaw, hasTicket, err := parseOperationTicket(descriptor, in.TicketValues)
 	if err != nil {
 		clear(keyRaw[:])
 		return nil, nil, ErrActionOperationForbidden
@@ -213,15 +213,18 @@ func (s *ActionOperationService) Begin(ctx context.Context, in OperationBegin) (
 		return nil, nil, ErrActionOperationForbidden
 	}
 	keyDigest := s.crypto.IdempotencyDigest(keyRaw)
-	ticketDigest := s.crypto.TicketDigest(ticketRaw)
 	clear(keyRaw[:])
-	clear(ticketRaw[:])
 	requestHex := hex.EncodeToString(requestDigest[:])
 	keyHex := hex.EncodeToString(keyDigest[:])
-	ticketHex := hex.EncodeToString(ticketDigest[:])
+	var ticketHex string
+	if hasTicket {
+		ticketDigest := s.crypto.TicketDigest(ticketRaw)
+		ticketHex = hex.EncodeToString(ticketDigest[:])
+		clear(ticketDigest[:])
+	}
+	clear(ticketRaw[:])
 	clear(requestDigest[:])
 	clear(keyDigest[:])
-	clear(ticketDigest[:])
 
 	// The logical SID is stable across refresh rotation. It is HMACed before
 	// Redis and never appears in a Redis key, SQL argument, or retained error.
@@ -267,13 +270,9 @@ func (s *ActionOperationService) Begin(ctx context.Context, in OperationBegin) (
 			if existing.ActorAuthVersion != locked.actor.AuthVersion || !validOperationState(existing.State) {
 				return ErrActionOperationForbidden
 			}
-			verification, err := lockOperationVerificationByTicket(tx, ticketHex)
+			verification, err := lockOperationBeginVerification(tx, descriptor, ticketHex, locked, requestHex, parsedTarget, existing.VerificationID, true)
 			if err != nil {
 				return err
-			}
-			if existing.VerificationID == nil || *existing.VerificationID != verification.ID ||
-				!validOperationVerificationBinding(verification, locked, descriptor, requestHex, parsedTarget) {
-				return ErrActionOperationForbidden
 			}
 			// Terminal replays return the already authorized and request-bound
 			// result. A successful action may have changed the target so it no
@@ -287,8 +286,8 @@ func (s *ActionOperationService) Begin(ctx context.Context, in OperationBegin) (
 			if finalNow < now || !validOperationNow(finalNow) {
 				return ErrActionOperationUnavailable
 			}
-			if locked.session.ExpiresAt <= finalNow || !validOperationVerificationState(existing, verification, finalNow) ||
-				!validExistingBeginVerificationState(verification, existing.State, finalNow) {
+			if locked.session.ExpiresAt <= finalNow || !validOperationStateWithOptionalVerification(existing, verification, finalNow) ||
+				(descriptor.RequiresTicket && !validExistingBeginVerificationState(*verification, existing.State, finalNow)) {
 				return ErrActionOperationForbidden
 			}
 			if existing.State == models.OperationExpired {
@@ -341,14 +340,10 @@ func (s *ActionOperationService) Begin(ctx context.Context, in OperationBegin) (
 			clear(leaseOwner[:])
 			return ErrActionOperationUnavailable
 		}
-		verification, err := lockOperationVerificationByTicket(tx, ticketHex)
+		verification, err := lockOperationBeginVerification(tx, descriptor, ticketHex, locked, requestHex, parsedTarget, operation.VerificationID, false)
 		if err != nil {
 			clear(leaseOwner[:])
 			return err
-		}
-		if !validOperationVerificationBinding(verification, locked, descriptor, requestHex, parsedTarget) {
-			clear(leaseOwner[:])
-			return ErrActionOperationForbidden
 		}
 		if err := authorizeOperationDescriptor(tx, locked.actor, descriptor, parsedTarget); err != nil {
 			clear(leaseOwner[:])
@@ -359,18 +354,22 @@ func (s *ActionOperationService) Begin(ctx context.Context, in OperationBegin) (
 			clear(leaseOwner[:])
 			return ErrActionOperationUnavailable
 		}
-		if locked.session.ExpiresAt <= finalNow || verificationRelationAt(verification, finalNow) != operationVerificationActive {
+		if locked.session.ExpiresAt <= finalNow || (descriptor.RequiresTicket && verificationRelationAt(*verification, finalNow) != operationVerificationActive) {
 			clear(leaseOwner[:])
 			return ErrActionOperationForbidden
 		}
 		leaseExpires = finalNow + actionOperationLeaseMillis
 		queryExpires = finalNow + actionOperationQueryRetentionMS
+		updates := map[string]any{
+			"created_at": finalNow, "lease_expires_at": leaseExpires, "query_expires_at": queryExpires,
+			"updated_at": finalNow, "updated_by": actorID,
+		}
+		if descriptor.RequiresTicket {
+			updates["verification_id"] = verification.ID
+		}
 		result := tx.Model(&models.AdminOperation{}).
 			Where("id = ? AND state = ? AND is_deleted = 0 AND verification_id IS NULL", operation.ID, models.OperationProcessing).
-			Updates(map[string]any{
-				"created_at": finalNow, "lease_expires_at": leaseExpires, "query_expires_at": queryExpires,
-				"updated_at": finalNow, "updated_by": actorID, "verification_id": verification.ID,
-			})
+			Updates(updates)
 		if result.Error != nil {
 			clear(leaseOwner[:])
 			var mysqlErr *mysqlDriver.MySQLError
@@ -383,7 +382,9 @@ func (s *ActionOperationService) Begin(ctx context.Context, in OperationBegin) (
 			clear(leaseOwner[:])
 			return ErrActionOperationUnavailable
 		}
-		operation.VerificationID = &verification.ID
+		if descriptor.RequiresTicket {
+			operation.VerificationID = &verification.ID
+		}
 		operation.CreatedAt = finalNow
 		operation.UpdatedAt = finalNow
 		operation.LeaseExpiresAt = &leaseExpires
@@ -463,11 +464,8 @@ func (s *ActionOperationService) Query(ctx context.Context, action actionsecurit
 		if operation.ActorAuthVersion != locked.actor.AuthVersion || !validOperationState(operation.State) {
 			return ErrActionOperationHidden
 		}
-		if operation.VerificationID == nil {
-			return ErrActionOperationHidden
-		}
-		verification, err := lockOperationVerificationByID(tx, *operation.VerificationID)
-		if err != nil || !validOperationVerificationBinding(verification, locked, descriptor, operation.RequestHMAC, verification.TargetGUID) {
+		verification, targetGUID, err := lockOperationQueryVerification(tx, descriptor, locked, operation)
+		if err != nil {
 			if errors.Is(err, ErrActionOperationUnavailable) {
 				return err
 			}
@@ -477,7 +475,7 @@ func (s *ActionOperationService) Query(ctx context.Context, action actionsecurit
 		// action and verification. The action may have changed its target state,
 		// so reauthorizing that target would hide a committed-but-unknown result.
 		if operation.State == models.OperationProcessing || operation.State == models.OperationPendingRecovery {
-			if err := authorizeOperationDescriptor(tx, locked.actor, descriptor, verification.TargetGUID); err != nil {
+			if err := authorizeOperationDescriptor(tx, locked.actor, descriptor, targetGUID); err != nil {
 				if errors.Is(err, ErrActionOperationUnavailable) {
 					return err
 				}
@@ -488,7 +486,7 @@ func (s *ActionOperationService) Query(ctx context.Context, action actionsecurit
 		if finalNow < now || !validOperationNow(finalNow) {
 			return ErrActionOperationUnavailable
 		}
-		if locked.session.ExpiresAt <= finalNow || !validOperationVerificationState(operation, verification, finalNow) {
+		if locked.session.ExpiresAt <= finalNow || !validOperationStateWithOptionalVerification(operation, verification, finalNow) {
 			return ErrActionOperationHidden
 		}
 		if operation.State == models.OperationExpired {
@@ -658,6 +656,57 @@ func lockOperationVerificationByID(tx *gorm.DB, id int64) (models.AdminActionVer
 	return verification, nil
 }
 
+func parseOperationTicket(descriptor actionsecurity.Descriptor, values []string) ([32]byte, bool, error) {
+	if !descriptor.RequiresTicket {
+		if len(values) != 0 {
+			return [32]byte{}, false, ErrActionOperationForbidden
+		}
+		return [32]byte{}, false, nil
+	}
+	raw, err := actionsecurity.ParseTicket(values)
+	if err != nil {
+		return [32]byte{}, false, err
+	}
+	return raw, true, nil
+}
+
+func lockOperationBeginVerification(tx *gorm.DB, descriptor actionsecurity.Descriptor, ticketHex string, locked operationLockedIdentity, requestHex string, targetGUID *int64, expectedID *int64, existing bool) (*models.AdminActionVerification, error) {
+	if !descriptor.RequiresTicket {
+		if ticketHex != "" || expectedID != nil {
+			return nil, ErrActionOperationForbidden
+		}
+		return nil, nil
+	}
+	verification, err := lockOperationVerificationByTicket(tx, ticketHex)
+	if err != nil {
+		return nil, err
+	}
+	if (existing && (expectedID == nil || *expectedID != verification.ID)) || !validOperationVerificationBinding(verification, locked, descriptor, requestHex, targetGUID) {
+		return nil, ErrActionOperationForbidden
+	}
+	return &verification, nil
+}
+
+func lockOperationQueryVerification(tx *gorm.DB, descriptor actionsecurity.Descriptor, locked operationLockedIdentity, operation models.AdminOperation) (*models.AdminActionVerification, *int64, error) {
+	if !descriptor.RequiresTicket {
+		if operation.VerificationID != nil || descriptor.TargetKind != actionsecurity.TargetNone {
+			return nil, nil, ErrActionOperationHidden
+		}
+		return nil, nil, nil
+	}
+	if operation.VerificationID == nil {
+		return nil, nil, ErrActionOperationHidden
+	}
+	verification, err := lockOperationVerificationByID(tx, *operation.VerificationID)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !validOperationVerificationBinding(verification, locked, descriptor, operation.RequestHMAC, verification.TargetGUID) {
+		return nil, nil, ErrActionOperationHidden
+	}
+	return &verification, verification.TargetGUID, nil
+}
+
 func validOperationVerificationBinding(verification models.AdminActionVerification, locked operationLockedIdentity, descriptor actionsecurity.Descriptor, requestHex string, targetGUID *int64) bool {
 	return verification.ID > 0 && verification.ActorUserID == locked.actor.ID && verification.ActorAuthVersion == locked.actor.AuthVersion &&
 		verification.SessionID == locked.session.ID && verification.Action == int(descriptor.Action) &&
@@ -724,6 +773,21 @@ func validOperationVerificationState(operation models.AdminOperation, verificati
 	default:
 		return false
 	}
+}
+
+func validOperationStateWithOptionalVerification(operation models.AdminOperation, verification *models.AdminActionVerification, now int64) bool {
+	if verification != nil {
+		return operation.VerificationID != nil && validOperationVerificationState(operation, *verification, now)
+	}
+	if operation.VerificationID != nil || (operation.State == models.OperationExpired && operation.IsDeleted != 1) ||
+		(operation.State != models.OperationExpired && operation.IsDeleted != 0) {
+		return false
+	}
+	if operation.State == models.OperationExpired {
+		return operation.QueryExpiresAt <= now
+	}
+	return operation.State == models.OperationProcessing || operation.State == models.OperationPendingRecovery ||
+		operation.State == models.OperationSucceeded || operation.State == models.OperationFailed
 }
 
 func authorizeOperationDescriptor(tx *gorm.DB, actor models.User, descriptor actionsecurity.Descriptor, targetGUID *int64) error {
@@ -860,7 +924,7 @@ func operationView(descriptor actionsecurity.Descriptor, operation models.AdminO
 }
 
 func validOperationDescriptor(descriptor actionsecurity.Descriptor, action actionsecurity.Action, ok bool) bool {
-	return ok && descriptor.Active && descriptor.RequiresTicket && descriptor.Action == action && descriptor.Name != "" && descriptor.Capability != "" && descriptor.Encode != nil
+	return ok && descriptor.Active && descriptor.Action == action && descriptor.Name != "" && descriptor.Capability != "" && descriptor.Encode != nil
 }
 
 func validOperationActorClaims(actor ActionActor) bool {

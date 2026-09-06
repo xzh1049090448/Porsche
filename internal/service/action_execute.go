@@ -67,7 +67,7 @@ func (s *ActionOperationService) executeWithRunner(ctx context.Context, identity
 			return ErrActionOperationUnavailable
 		}
 		if operation.ActorUserID != locked.actor.ID || operation.SessionID != locked.session.ID || operation.ActorAuthVersion != locked.actor.AuthVersion ||
-			operation.State != models.OperationProcessing || operation.IsDeleted != 0 || operation.VerificationID == nil ||
+			operation.State != models.OperationProcessing || operation.IsDeleted != 0 ||
 			operation.LeaseOwnerHMAC == nil || operation.LeaseExpiresAt == nil || !constantTimeOperationStringEqual(operation.PublicRef, identity.PublicRef) {
 			return ErrActionOperationForbidden
 		}
@@ -78,28 +78,43 @@ func (s *ActionOperationService) executeWithRunner(ctx context.Context, identity
 		if !constantTimeOperationStringEqual(*operation.LeaseOwnerHMAC, leaseHex) {
 			return ErrActionOperationForbidden
 		}
-		verification, err := lockOperationVerificationByID(tx, *operation.VerificationID)
-		if err != nil {
-			return ErrActionOperationUnavailable
-		}
 		descriptor, ok := s.resolve(actionsecurity.Action(operation.Action))
-		if !validOperationDescriptor(descriptor, actionsecurity.Action(operation.Action), ok) ||
-			!validOperationVerificationBinding(verification, locked, descriptor, operation.RequestHMAC, verification.TargetGUID) {
+		if !validOperationDescriptor(descriptor, actionsecurity.Action(operation.Action), ok) {
 			return ErrActionOperationForbidden
 		}
-		if err := authorizeExecuteDescriptor(tx, locked.actor, descriptor, verification.TargetGUID); err != nil {
+		var verification *models.AdminActionVerification
+		var targetGUID *int64
+		if descriptor.RequiresTicket {
+			if operation.VerificationID == nil {
+				return ErrActionOperationForbidden
+			}
+			lockedVerification, err := lockOperationVerificationByID(tx, *operation.VerificationID)
+			if err != nil {
+				return ErrActionOperationUnavailable
+			}
+			if !validOperationVerificationBinding(lockedVerification, locked, descriptor, operation.RequestHMAC, lockedVerification.TargetGUID) {
+				return ErrActionOperationForbidden
+			}
+			verification = &lockedVerification
+			targetGUID = lockedVerification.TargetGUID
+		} else if operation.VerificationID != nil || descriptor.TargetKind != actionsecurity.TargetNone {
+			return ErrActionOperationForbidden
+		}
+		if err := authorizeExecuteDescriptor(tx, locked.actor, descriptor, targetGUID); err != nil {
 			return err
 		}
 		finalNow := s.clock.NowMillis()
 		if finalNow < startedAt || !validOperationNow(finalNow) || locked.session.ExpiresAt <= finalNow ||
-			*operation.LeaseExpiresAt <= finalNow || verificationRelationAt(verification, finalNow) != operationVerificationActive {
+			*operation.LeaseExpiresAt <= finalNow || (descriptor.RequiresTicket && verificationRelationAt(*verification, finalNow) != operationVerificationActive) {
 			return ErrActionOperationForbidden
 		}
-		consume := tx.Model(&models.AdminActionVerification{}).
-			Where("id = ? AND consumed_at IS NULL AND expires_at > ? AND is_deleted = 0", verification.ID, finalNow).
-			Updates(map[string]any{"consumed_at": finalNow, "is_deleted": 1, "updated_at": finalNow, "updated_by": locked.actor.ID})
-		if consume.Error != nil || consume.RowsAffected != 1 {
-			return ErrActionOperationUnavailable
+		if descriptor.RequiresTicket {
+			consume := tx.Model(&models.AdminActionVerification{}).
+				Where("id = ? AND consumed_at IS NULL AND expires_at > ? AND is_deleted = 0", verification.ID, finalNow).
+				Updates(map[string]any{"consumed_at": finalNow, "is_deleted": 1, "updated_at": finalNow, "updated_by": locked.actor.ID})
+			if consume.Error != nil || consume.RowsAffected != 1 {
+				return ErrActionOperationUnavailable
+			}
 		}
 		if err := tx.SavePoint(actionExecuteSavepoint).Error; err != nil {
 			return ErrActionOperationUnavailable
@@ -125,7 +140,7 @@ func (s *ActionOperationService) executeWithRunner(ctx context.Context, identity
 			resultGUID = copyInt64(outcome.ResultGUID)
 		}
 		auditEvent := ActionAuditEvent{PublicRef: operation.PublicRef, ActorGUID: locked.actor.Guid, SessionGUID: locked.session.Guid,
-			Action: descriptor.Action, TargetKind: descriptor.TargetKind, TargetGUID: copyInt64(verification.TargetGUID), State: terminalState,
+			Action: descriptor.Action, TargetKind: descriptor.TargetKind, TargetGUID: copyInt64(targetGUID), State: terminalState,
 			Failure: copyOperationFailure(failure), ResultKind: copyResultKind(resultKind), ResultGUID: copyInt64(resultGUID), OccurredAt: finalNow}
 		outboxEvent := ActionOutboxEvent{PublicRef: auditEvent.PublicRef, ActorGUID: auditEvent.ActorGUID, SessionGUID: auditEvent.SessionGUID,
 			Action: auditEvent.Action, TargetKind: auditEvent.TargetKind, TargetGUID: copyInt64(auditEvent.TargetGUID), State: auditEvent.State,
@@ -142,9 +157,16 @@ func (s *ActionOperationService) executeWithRunner(ctx context.Context, identity
 		updates := map[string]any{"state": terminalState, "finished_at": finalNow, "query_expires_at": finalNow + actionOperationQueryRetentionMS,
 			"lease_owner_hmac": nil, "lease_expires_at": nil, "error_code": failure, "result_kind": resultKind,
 			"result_guid": resultGUID, "result_http_status": outcome.HTTPStatus, "updated_at": finalNow, "updated_by": locked.actor.ID}
-		terminal := tx.Model(&models.AdminOperation{}).
-			Where("id = ? AND state = ? AND is_deleted = 0 AND lease_owner_hmac = ? AND verification_id = ?", operation.ID, models.OperationProcessing, leaseHex, verification.ID).
-			Updates(updates)
+		var terminal *gorm.DB
+		if descriptor.RequiresTicket {
+			terminal = tx.Model(&models.AdminOperation{}).
+				Where("id = ? AND state = ? AND is_deleted = 0 AND lease_owner_hmac = ? AND verification_id = ?", operation.ID, models.OperationProcessing, leaseHex, verification.ID).
+				Updates(updates)
+		} else {
+			terminal = tx.Model(&models.AdminOperation{}).
+				Where("id = ? AND state = ? AND is_deleted = 0 AND lease_owner_hmac = ? AND verification_id IS NULL", operation.ID, models.OperationProcessing, leaseHex).
+				Updates(updates)
+		}
 		if terminal.Error != nil || terminal.RowsAffected != 1 {
 			return ErrActionOperationUnavailable
 		}

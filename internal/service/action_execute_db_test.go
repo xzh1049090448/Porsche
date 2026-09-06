@@ -174,6 +174,7 @@ type actionExecuteScript struct {
 	commitUnknown bool
 	lastError     string
 	queryStep     int
+	ticketless    bool
 }
 type actionExecuteDriver struct{}
 type actionExecuteConn struct {
@@ -259,6 +260,9 @@ func (c *actionExecuteConn) QueryContext(_ context.Context, query string, args [
 	defer c.script.mu.Unlock()
 	c.script.queries = append(c.script.queries, query)
 	kind := executeQueryKind(query)
+	if c.script.ticketless && kind == "verification" {
+		return nil, errors.New("ticketless execute accessed verification storage")
+	}
 	if err := validateExecuteQuery(c.script, c.tx, kind, query, args); err != nil {
 		return nil, err
 	}
@@ -267,6 +271,9 @@ func (c *actionExecuteConn) QueryContext(_ context.Context, query string, args [
 		sequenceKind += "_lock"
 	}
 	expected := []string{"actor", "session", "operation", "verification", "target", "policy_lock", "rules_lock", "policy", "rules"}
+	if c.script.ticketless {
+		expected = []string{"actor", "session", "operation", "policy_lock", "rules_lock", "policy", "rules"}
+	}
 	if c.script.queryStep >= len(expected) || sequenceKind != expected[c.script.queryStep] {
 		return nil, fmt.Errorf("execute query order step %d=%s", c.script.queryStep, sequenceKind)
 	}
@@ -478,6 +485,9 @@ func validateExecuteQuery(script *actionExecuteScript, tx *actionExecuteTx, kind
 			return fmt.Errorf("%s lock outside transaction", kind)
 		}
 		order := []string{"actor", "session", "operation", "verification", "target", "policy", "rules"}
+		if script.ticketless {
+			order = []string{"actor", "session", "operation", "policy", "rules"}
+		}
 		if tx.lockStep >= len(order) || kind != order[tx.lockStep] {
 			return fmt.Errorf("lock order step %d=%s", tx.lockStep, kind)
 		}
@@ -519,6 +529,9 @@ func (c *actionExecuteConn) ExecContext(_ context.Context, query string, args []
 	defer c.script.mu.Unlock()
 	c.script.execs = append(c.script.execs, query)
 	kind := executeExecKind(query)
+	if c.script.ticketless && kind == "consume" {
+		return nil, errors.New("ticketless execute consumed verification storage")
+	}
 	if strings.HasPrefix(query, "UPDATE `admin_operations`") {
 		values, parseErr := operationUpdateValues(query, args)
 		if parseErr != nil {
@@ -655,10 +668,16 @@ func validateExecuteExec(script *actionExecuteScript, tx *actionExecuteTx, kind,
 		}
 		return nil
 	case "terminal_success", "terminal_failed":
-		if err := exactSQL("UPDATE `admin_operations` SET `error_code`=?,`finished_at`=?,`lease_expires_at`=?,`lease_owner_hmac`=?,`query_expires_at`=?,`result_guid`=?,`result_http_status`=?,`result_kind`=?,`state`=?,`updated_at`=?,`updated_by`=? WHERE id = ? AND state = ? AND is_deleted = 0 AND lease_owner_hmac = ? AND verification_id = ?"); err != nil {
+		terminalSQL := "UPDATE `admin_operations` SET `error_code`=?,`finished_at`=?,`lease_expires_at`=?,`lease_owner_hmac`=?,`query_expires_at`=?,`result_guid`=?,`result_http_status`=?,`result_kind`=?,`state`=?,`updated_at`=?,`updated_by`=? WHERE id = ? AND state = ? AND is_deleted = 0 AND lease_owner_hmac = ? AND verification_id = ?"
+		selector := "id = ? AND state = ? AND is_deleted = 0 AND lease_owner_hmac = ? AND verification_id = ?"
+		if script.ticketless {
+			terminalSQL = "UPDATE `admin_operations` SET `error_code`=?,`finished_at`=?,`lease_expires_at`=?,`lease_owner_hmac`=?,`query_expires_at`=?,`result_guid`=?,`result_http_status`=?,`result_kind`=?,`state`=?,`updated_at`=?,`updated_by`=? WHERE id = ? AND state = ? AND is_deleted = 0 AND lease_owner_hmac = ? AND verification_id IS NULL"
+			selector = "id = ? AND state = ? AND is_deleted = 0 AND lease_owner_hmac = ? AND verification_id IS NULL"
+		}
+		if err := exactSQL(terminalSQL); err != nil {
 			return err
 		}
-		if err := require("UPDATE `admin_operations`", "id = ? AND state = ? AND is_deleted = 0 AND lease_owner_hmac = ? AND verification_id = ?"); err != nil {
+		if err := require("UPDATE `admin_operations`", selector); err != nil {
 			return err
 		}
 		values, err := operationUpdateValues(query, args)
@@ -687,7 +706,11 @@ func validateExecuteExec(script *actionExecuteScript, tx *actionExecuteTx, kind,
 			}
 		}
 		assignments := len(values)
-		if len(args) != assignments+4 {
+		wantTailLen := 4
+		if script.ticketless {
+			wantTailLen = 3
+		}
+		if len(args) != assignments+wantTailLen {
 			return fmt.Errorf("terminal tail args=%d", len(args)-assignments)
 		}
 		tail := args[assignments:]
@@ -696,6 +719,9 @@ func validateExecuteExec(script *actionExecuteScript, tx *actionExecuteTx, kind,
 			return errors.New("terminal expected lease missing")
 		}
 		wantTail := []any{script.state.operation.ID, int64(models.OperationProcessing), *lease, script.state.verification.ID}
+		if script.ticketless {
+			wantTail = []any{script.state.operation.ID, int64(models.OperationProcessing), *lease}
+		}
 		if len(tail) != len(wantTail) {
 			return fmt.Errorf("terminal selector tail=%v", tail)
 		}
