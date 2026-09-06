@@ -57,7 +57,7 @@ func NormalizeUsername(raw string) (string, error) {
 // ValidatePassword enforces the reviewed username-password registration
 // contract before an Argon2id hash is generated.
 func ValidatePassword(password string) error {
-	if len([]rune(password)) < 8 || len([]rune(password)) > 20 {
+	if !utf8.ValidString(password) || utf8.RuneCountInString(password) < 8 || utf8.RuneCountInString(password) > 20 {
 		return errBadRequest("密码长度必须为8到20个字符")
 	}
 	switch strings.ToLower(strings.TrimSpace(password)) {

@@ -393,7 +393,7 @@ func TestPasswordUsesArgon2idAndRejectsWeakPassword(t *testing.T) {
 	}
 }
 
-func TestNormalizeManagedUserNicknameAndHashPassword(t *testing.T) {
+func TestAdminUserCreateNormalizeManagedUserNickname(t *testing.T) {
 	nickname, err := NormalizeManagedUserNickname("  管理用户  ")
 	if err != nil || nickname != "管理用户" {
 		t.Fatalf("nickname=%q err=%v", nickname, err)
@@ -403,11 +403,31 @@ func TestNormalizeManagedUserNicknameAndHashPassword(t *testing.T) {
 			t.Fatalf("NormalizeManagedUserNickname(%q) unexpectedly succeeded", invalid)
 		}
 	}
-	hash, err := HashManagedCreationPassword("Str0ng!pw")
-	if err != nil || !security.VerifyPassword("Str0ng!pw", hash) {
-		t.Fatalf("managed password hash err=%v", err)
+
+}
+
+func TestAdminUserCreateHashManagedCreationPassword(t *testing.T) {
+	password := "Str0ng!pw"
+	hash, err := HashManagedCreationPassword(password)
+	if err != nil || hash == "" || hash == password || !security.VerifyPassword(password, hash) {
+		t.Fatal("managed password hash contract failed")
 	}
 	if _, err := HashManagedCreationPassword("password"); err == nil {
 		t.Fatal("managed password hash accepted weak password")
+	}
+}
+
+func TestValidatePasswordRejectsInvalidUTF8(t *testing.T) {
+	invalidPassword := string([]byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff})
+	if err := ValidatePassword(invalidPassword); err == nil {
+		t.Fatal("ValidatePassword accepted invalid UTF-8")
+	}
+}
+
+func TestAdminUserCreateHashManagedCreationPasswordRejectsInvalidUTF8(t *testing.T) {
+	invalidPassword := string([]byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff})
+	hash, err := HashManagedCreationPassword(invalidPassword)
+	if err == nil || hash != "" {
+		t.Fatal("managed password hash accepted invalid UTF-8")
 	}
 }
