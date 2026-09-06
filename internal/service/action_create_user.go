@@ -49,6 +49,7 @@ type createAccountExecutionState struct {
 	consumerStarted bool
 	auditStarted    bool
 	resultRecorded  bool
+	resultCommitted bool
 	resultUser      models.User
 	resultGroup     models.BusinessGroup
 }
@@ -81,7 +82,8 @@ func NewCreateAccountExecution(
 	username, err := NormalizeUsername(intent.Username)
 	if err != nil || username != intent.Username || intent.Password != nil || intent.Role != role.String() ||
 		(intent.Role == models.UserRoleUser.String() && len(intent.Overrides) != 0) ||
-		intent.DailyCallLimit < 0 || (intent.PlanType != int(models.PlanFree) && intent.PlanType != int(models.PlanProfessional) && intent.PlanType != int(models.PlanEnterprise)) {
+		len(intent.AllowedModels) != 0 || intent.DailyCallLimit != 100 ||
+		(intent.PlanType != int(models.PlanFree) && intent.PlanType != int(models.PlanProfessional) && intent.PlanType != int(models.PlanEnterprise)) {
 		return fail()
 	}
 	var nickname *string
@@ -101,13 +103,7 @@ func NewCreateAccountExecution(
 		value := *intent.GroupGUID
 		groupGUID = &value
 	}
-	allowedModels := append([]string(nil), intent.AllowedModels...)
-	for i, model := range allowedModels {
-		if model == "" || !utf8.ValidString(model) || (i > 0 && allowedModels[i-1] >= model) {
-			return fail()
-		}
-		allowedModels[i] = strings.Clone(model)
-	}
+	allowedModels := make([]string, 0)
 	overrides := append([]actionsecurity.PermissionOverrideIntent(nil), intent.Overrides...)
 	sort.Slice(overrides, func(i, j int) bool { return overrides[i].Capability < overrides[j].Capability })
 	for i := range overrides {
@@ -215,7 +211,22 @@ func (execution CreateAccountExecution) Format(state fmt.State, _ rune) {
 
 func (CreateAccountExecution) MarshalJSON() ([]byte, error) { return json.Marshal(struct{}{}) }
 
+// ClearSecrets clears the execution-owned password digest. It is safe to call
+// repeatedly and concurrently, including while ActionOperationService.Execute
+// is returning from a pre-consumer failure.
+func (execution *CreateAccountExecution) ClearSecrets() {
+	if execution == nil || execution.state == nil {
+		return
+	}
+	execution.state.mu.Lock()
+	clear(execution.state.passwordHash)
+	execution.state.passwordHash = nil
+	execution.state.mu.Unlock()
+}
+
 var _ TransactionalActionConsumer = (*CreateAccountExecution)(nil)
+var _ actionExecutionSecretClearer = (*CreateAccountExecution)(nil)
+var _ actionExecutionCommitObserver = (*CreateAccountExecution)(nil)
 
 // Execute creates the reviewed account and its authentication audit using only
 // the caller-owned transaction. The execution is deliberately single-use even
@@ -282,7 +293,7 @@ func (execution *CreateAccountExecution) Execute(ctx context.Context, tx *gorm.D
 		AuditFields: models.AuditFields{Guid: userGUID, CreatedAt: now, CreatedBy: &actorID, UpdatedAt: now, UpdatedBy: &actorID},
 		GroupID:     group.ID, Username: &username, PasswordHash: &password, Nickname: copyString(execution.intent.Nickname),
 		PlanType: models.PlanType(execution.intent.PlanType), Status: models.UserStatusActive, Role: role, AuthVersion: 1,
-		AllowedModels: append(models.JSONSlice(nil), execution.intent.AllowedModels...), DailyCallLimit: execution.intent.DailyCallLimit,
+		AllowedModels: append(models.JSONSlice{}, execution.intent.AllowedModels...), DailyCallLimit: execution.intent.DailyCallLimit,
 		DailyCallsUsed: 0, TotalTokensUsed: 0,
 	}
 	created := db.Create(&user)
@@ -532,7 +543,7 @@ func (execution *CreateAccountExecution) ResultUser() (*UserReadDTO, bool) {
 		return nil, false
 	}
 	execution.state.mu.Lock()
-	if !execution.state.resultRecorded {
+	if !execution.state.resultRecorded || !execution.state.resultCommitted {
 		execution.state.mu.Unlock()
 		return nil, false
 	}
@@ -541,4 +552,17 @@ func (execution *CreateAccountExecution) ResultUser() (*UserReadDTO, bool) {
 	execution.state.mu.Unlock()
 	result, err := ProjectCreatedUserRead(user, group)
 	return result, err == nil
+}
+
+// actionCommitConfirmed is called only by ActionOperationService after its
+// transaction runner has confirmed commit success.
+func (execution *CreateAccountExecution) actionCommitConfirmed() {
+	if execution == nil || execution.state == nil {
+		return
+	}
+	execution.state.mu.Lock()
+	if execution.state.resultRecorded {
+		execution.state.resultCommitted = true
+	}
+	execution.state.mu.Unlock()
 }

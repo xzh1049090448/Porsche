@@ -302,6 +302,9 @@ func TestCreateAccountRealWriteFaultsRollbackEveryStage(t *testing.T) {
 			if view != nil || !errors.Is(err, ErrActionOperationUnavailable) || matches.Load() < fault.occurrence {
 				t.Fatalf("fault result = %#v/%v matches=%d", view, err, matches.Load())
 			}
+			if result, ok := execution.ResultUser(); ok || result != nil {
+				t.Fatalf("rollback exposed uncommitted result: %#v", result)
+			}
 			var userCount, authCount, managementCount, outboxCount int64
 			if err := f.db.Model(&models.User{}).Where("username = ?", username).Count(&userCount).Error; err != nil {
 				t.Fatal(err)
@@ -320,4 +323,26 @@ func TestCreateAccountRealWriteFaultsRollbackEveryStage(t *testing.T) {
 			assertCreateHashCleared(t, execution)
 		})
 	}
+}
+
+func TestCreateAccountRealCommitUnknownDoesNotPublishResult(t *testing.T) {
+	f, services := openA03CreateServices(t, 1_910_300_000_000)
+	username := fixtureUsername(testSnowflake.Next())
+	key := newRealIdempotencyKey(t)
+	base := actionsecurity.CreateAccountIntent{Username: username, Role: "user", PlanType: int(models.PlanFree), AllowedModels: []string{}, DailyCallLimit: 100}
+	identity, execution := services.prepare(t, f, base, "A03-Strong-Password!", key)
+	runner := &realCommitUnknownRunner{}
+	view, err := services.operations.executeWithRunner(context.Background(), identity, execution, execution, services.outbox, runner)
+	var unknown *CommitUnknownError
+	if view != nil || !errors.As(err, &unknown) || unknown.PublicRef != identity.PublicRef || runner.calls.Load() != 1 {
+		t.Fatalf("commit unknown = %#v/%v calls=%d", view, err, runner.calls.Load())
+	}
+	if result, ok := execution.ResultUser(); ok || result != nil {
+		t.Fatalf("commit-unknown exposed result: %#v", result)
+	}
+	queried, queryErr := services.operations.Query(context.Background(), actionsecurity.ActionUsersCreate, f.actorAPI, []string{key})
+	if queryErr != nil || queried == nil || queried.Status != "succeeded" || queried.PublicRef != identity.PublicRef {
+		t.Fatalf("commit-unknown query = %#v/%v", queried, queryErr)
+	}
+	assertCreateHashCleared(t, execution)
 }

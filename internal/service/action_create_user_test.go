@@ -28,7 +28,7 @@ func TestCreateAccountExecutionOwnsInputsAndRedactsHash(t *testing.T) {
 	descriptor := createAccountTestDescriptor(t, actionsecurity.ActionUsersCreateAdmin)
 	nickname := "Alice"
 	groupGUID := int64(7001)
-	modelsInput := []string{"model-a", "model-b"}
+	modelsInput := make([]string, 0, 2)
 	overrides := []actionsecurity.PermissionOverrideIntent{{Capability: "users.read", Effect: 3}}
 	hash := []byte(createAccountTestPasswordHash)
 	intent := actionsecurity.CreateAccountIntent{
@@ -44,11 +44,11 @@ func TestCreateAccountExecutionOwnsInputsAndRedactsHash(t *testing.T) {
 
 	nickname = "mutated"
 	groupGUID = 7002
-	modelsInput[0] = "mutated"
+	modelsInput = append(modelsInput, "mutated")
 	overrides[0].Capability = "users.create"
 	hash[0] = '!'
 	if execution.intent.Nickname == nil || *execution.intent.Nickname != "Alice" || execution.intent.GroupGUID == nil || *execution.intent.GroupGUID != 7001 ||
-		execution.intent.AllowedModels[0] != "model-a" || execution.intent.Overrides[0].Capability != "users.read" || string(execution.state.passwordHash) != createAccountTestPasswordHash {
+		len(execution.intent.AllowedModels) != 0 || execution.intent.Overrides[0].Capability != "users.read" || string(execution.state.passwordHash) != createAccountTestPasswordHash {
 		t.Fatal("constructor retained caller-owned mutable input")
 	}
 
@@ -123,7 +123,7 @@ func TestCreateAccountExecutionCreatesAdminPolicyAndCanonicalOverrides(t *testin
 	groupGUID := int64(6002)
 	script.groups = []models.BusinessGroup{{ID: 62, AuditFields: models.AuditFields{Guid: groupGUID}, Key: "enterprise", DisplayName: "Enterprise", Status: models.BusinessGroupStatusActive}}
 	intent := actionsecurity.CreateAccountIntent{
-		Username: "managed_admin", Role: "admin", GroupGUID: &groupGUID, PlanType: int(models.PlanEnterprise), AllowedModels: []string{"model-a"}, DailyCallLimit: 250,
+		Username: "managed_admin", Role: "admin", GroupGUID: &groupGUID, PlanType: int(models.PlanEnterprise), AllowedModels: []string{}, DailyCallLimit: 100,
 		Overrides: []actionsecurity.PermissionOverrideIntent{{Capability: "users.sessions.read", Effect: 2}, {Capability: "users.read", Effect: 3}},
 	}
 	execution := newCreateAccountTestExecution(t, actionsecurity.ActionUsersCreateAdmin, intent, createAccountTestGUIDs(9101, 9102, 9103, 9104, 9105))
@@ -143,6 +143,10 @@ func TestCreateAccountExecutionCreatesAdminPolicyAndCanonicalOverrides(t *testin
 	}
 	if got := script.execCount("user_permission_overrides"); got != 2 {
 		t.Fatalf("permission override writes = %d", got)
+	}
+	user := createAccountInsertValues(t, script.committedTableCall("users", 0))
+	if fmt.Sprint(user["allowed_models"]) != "[]" || fmt.Sprint(user["daily_call_limit"]) != "100" {
+		t.Fatalf("resolved create defaults drifted in persistence: %#v", user)
 	}
 	head := createAccountInsertValues(t, script.committedTableCall("user_permission_heads", 0))
 	if head["guid"] != int64(9102) || head["user_id"] != int64(501) || head["policy_version"] != int64(1) ||
@@ -243,7 +247,7 @@ func TestCreateAccountWritersPersistRedactedManagementAuditAndResultOutbox(t *te
 	}
 }
 
-func TestCreateAccountResultUserIsOwnedAndUnavailableBeforeConsume(t *testing.T) {
+func TestCreateAccountResultUserIsOwnedAndUnavailableBeforeCommit(t *testing.T) {
 	db, _ := newCreateAccountTestDB(t)
 	nickname := "Alice"
 	execution := newCreateAccountTestExecution(t, actionsecurity.ActionUsersCreate, actionsecurity.CreateAccountIntent{
@@ -256,6 +260,13 @@ func TestCreateAccountResultUserIsOwnedAndUnavailableBeforeConsume(t *testing.T)
 	if outcome, err := execution.Execute(context.Background(), tx, validCreateAccountTestOperation(actionsecurity.ActionUsersCreate)); err != nil || outcome.Failure != nil {
 		t.Fatalf("consume = %#v/%v", outcome, err)
 	}
+	if result, ok := execution.ResultUser(); ok || result != nil {
+		t.Fatal("result was visible before transaction commit confirmation")
+	}
+	if err := tx.Commit().Error; err != nil {
+		t.Fatal(err)
+	}
+	execution.actionCommitConfirmed()
 	result, ok := execution.ResultUser()
 	if !ok || result == nil || result.GUID != "9301" || result.Username == nil || *result.Username != "alice" || result.Nickname == nil ||
 		*result.Nickname != "Alice" || result.Group == nil || *result.Group != "default" || result.PlanType != "free" || result.Role != "user" ||
@@ -267,7 +278,6 @@ func TestCreateAccountResultUserIsOwnedAndUnavailableBeforeConsume(t *testing.T)
 	if !ok || again == nil || again.Username == nil || *again.Username != "alice" {
 		t.Fatal("result projection exposed mutable stored state")
 	}
-	_ = tx.Rollback().Error
 }
 
 func TestCreateAccountConstructorRejectsDescriptorRoleCatalogAndMetadataDrift(t *testing.T) {
@@ -308,6 +318,15 @@ func TestCreateAccountConstructorRejectsDescriptorRoleCatalogAndMetadataDrift(t 
 		}},
 		{"duplicate models", func(_ *actionsecurity.Descriptor, i *actionsecurity.CreateAccountIntent, _ *CreateAccountRequestMetadata, _ *[]byte) {
 			i.AllowedModels = []string{"a", "a"}
+		}},
+		{"non-default allowed models", func(_ *actionsecurity.Descriptor, i *actionsecurity.CreateAccountIntent, _ *CreateAccountRequestMetadata, _ *[]byte) {
+			i.AllowedModels = []string{"model-a"}
+		}},
+		{"zero daily limit", func(_ *actionsecurity.Descriptor, i *actionsecurity.CreateAccountIntent, _ *CreateAccountRequestMetadata, _ *[]byte) {
+			i.DailyCallLimit = 0
+		}},
+		{"non-default daily limit", func(_ *actionsecurity.Descriptor, i *actionsecurity.CreateAccountIntent, _ *CreateAccountRequestMetadata, _ *[]byte) {
+			i.DailyCallLimit = 101
 		}},
 		{"request id", func(_ *actionsecurity.Descriptor, _ *actionsecurity.CreateAccountIntent, m *CreateAccountRequestMetadata, _ *[]byte) {
 			m.RequestID = "bad request"
@@ -622,6 +641,112 @@ func TestCreateAccountInvalidTransactionFailureClearsHash(t *testing.T) {
 	assertCreateHashCleared(t, execution)
 }
 
+func TestCreateAccountClearSecretsIsIdempotentAndConcurrent(t *testing.T) {
+	execution := newCreateAccountTestExecution(t, actionsecurity.ActionUsersCreate, actionsecurity.CreateAccountIntent{
+		Username: "alice", Role: "user", PlanType: int(models.PlanFree), AllowedModels: []string{}, DailyCallLimit: 100,
+	}, createAccountTestGUIDs(9571, 9572))
+	start := make(chan struct{})
+	var wait sync.WaitGroup
+	for index := 0; index < 32; index++ {
+		copyExecution := *execution
+		wait.Add(1)
+		go func(candidate *CreateAccountExecution) {
+			defer wait.Done()
+			<-start
+			candidate.ClearSecrets()
+			candidate.ClearSecrets()
+		}(&copyExecution)
+	}
+	close(start)
+	wait.Wait()
+	assertCreateHashCleared(t, execution)
+	if outcome, err := execution.Execute(context.Background(), nil, validCreateAccountTestOperation(actionsecurity.ActionUsersCreate)); outcome != (TerminalOutcome{}) || !errors.Is(err, ErrActionOperationUnavailable) {
+		t.Fatalf("cleared execution was reusable: %#v/%v", outcome, err)
+	}
+}
+
+func TestCreateAccountOperationOwnerClearsSecretsOnPreConsumerFailures(t *testing.T) {
+	tests := []struct {
+		name        string
+		mutate      func(*ActionOperationService, *actionExecuteScript, **OperationIdentity, *createAccountLifecycleConsumer)
+		wantConsume int32
+	}{
+		{"identity", func(_ *ActionOperationService, _ *actionExecuteScript, identity **OperationIdentity, _ *createAccountLifecycleConsumer) {
+			*identity = nil
+		}, 0},
+		{"redis", func(service *ActionOperationService, _ *actionExecuteScript, _ **OperationIdentity, _ *createAccountLifecycleConsumer) {
+			service.authRedis.client.(*actionIssueRedisClient).err = errors.New("private redis failure")
+		}, 0},
+		{"actor", func(_ *ActionOperationService, script *actionExecuteScript, _ **OperationIdentity, _ *createAccountLifecycleConsumer) {
+			script.failAt = "actor"
+		}, 0},
+		{"session", func(_ *ActionOperationService, script *actionExecuteScript, _ **OperationIdentity, _ *createAccountLifecycleConsumer) {
+			script.failAt = "session"
+		}, 0},
+		{"descriptor", func(service *ActionOperationService, _ *actionExecuteScript, _ **OperationIdentity, _ *createAccountLifecycleConsumer) {
+			service.resolve = func(actionsecurity.Action) (actionsecurity.Descriptor, bool) {
+				return actionsecurity.Descriptor{}, false
+			}
+		}, 0},
+		{"consumer", func(_ *ActionOperationService, _ *actionExecuteScript, _ **OperationIdentity, consumer *createAccountLifecycleConsumer) {
+			consumer.err = errors.New("private consumer failure")
+		}, 1},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			service, script, identity := actionExecuteFixture(t)
+			execution := newCreateAccountTestExecution(t, actionsecurity.ActionUsersCreate, actionsecurity.CreateAccountIntent{
+				Username: "alice", Role: "user", PlanType: int(models.PlanFree), AllowedModels: []string{}, DailyCallLimit: 100,
+			}, createAccountTestGUIDs(9581, 9582))
+			consumer := &createAccountLifecycleConsumer{CreateAccountExecution: execution,
+				outcome: TerminalOutcome{ResultKind: models.ResultNone, HTTPStatus: 204}}
+			test.mutate(service, script, &identity, consumer)
+			view, err := service.Execute(context.Background(), identity, consumer, &fixtureActionAuditWriter{}, &fixtureActionOutboxWriter{})
+			if view != nil || err == nil || consumer.calls.Load() != test.wantConsume {
+				t.Fatalf("pre-consumer failure view/error/calls = %#v/%v/%d", view, err, consumer.calls.Load())
+			}
+			assertCreateHashCleared(t, execution)
+		})
+	}
+}
+
+func TestCreateAccountResultPublishesOnlyAfterConfirmedCommit(t *testing.T) {
+	tests := []struct {
+		name          string
+		failAt        string
+		commitUnknown bool
+		wantResult    bool
+	}{
+		{name: "confirmed commit", wantResult: true},
+		{name: "management audit rollback", failAt: "official_audit"},
+		{name: "outbox rollback", failAt: "official_outbox"},
+		{name: "terminal rollback", failAt: "terminal_success"},
+		{name: "commit unknown", commitUnknown: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			service, script, identity := actionExecuteFixture(t)
+			script.failAt = test.failAt
+			script.commitUnknown = test.commitUnknown
+			execution := newCreateAccountTestExecution(t, actionsecurity.ActionUsersCreate, actionsecurity.CreateAccountIntent{
+				Username: "alice", Role: "user", PlanType: int(models.PlanFree), AllowedModels: []string{}, DailyCallLimit: 100,
+			}, createAccountTestGUIDs(9591, 9592))
+			consumer := &createAccountLifecycleConsumer{CreateAccountExecution: execution, publishPending: true,
+				outcome: TerminalOutcome{ResultKind: models.ResultNone, HTTPStatus: 204}}
+			view, err := service.Execute(context.Background(), identity, consumer, &fixtureActionAuditWriter{}, &fixtureActionOutboxWriter{})
+			result, ok := execution.ResultUser()
+			if test.wantResult {
+				if err != nil || view == nil || !ok || result == nil || result.GUID != "9591" {
+					t.Fatalf("confirmed result = %#v/%#v/%v last=%s queries=%v execs=%v", view, result, err, script.lastError, script.queries, script.execs)
+				}
+			} else if view != nil || err == nil || ok || result != nil {
+				t.Fatalf("unconfirmed result leaked = %#v/%#v/%v", view, result, err)
+			}
+			assertCreateHashCleared(t, execution)
+		})
+	}
+}
+
 func TestCreateAccountUniqueKeyRaceReturnsPermanentUsernameConflict(t *testing.T) {
 	db, script := newCreateAccountTestDB(t)
 	script.execErrors["users"] = &mysqlDriver.MySQLError{Number: 1062, Message: "Duplicate entry 'alice' for key 'users.uk_users_username'"}
@@ -752,6 +877,32 @@ func createAccountTestDescriptor(t *testing.T, action actionsecurity.Action) act
 type createAccountTestClock struct{ now int64 }
 
 func (clock *createAccountTestClock) NowMillis() int64 { return clock.now }
+
+type createAccountLifecycleConsumer struct {
+	*CreateAccountExecution
+	outcome        TerminalOutcome
+	err            error
+	publishPending bool
+	calls          atomic.Int32
+}
+
+func (consumer *createAccountLifecycleConsumer) Execute(_ context.Context, _ *gorm.DB, _ models.AdminOperation) (TerminalOutcome, error) {
+	consumer.calls.Add(1)
+	if consumer.err != nil {
+		return TerminalOutcome{}, consumer.err
+	}
+	if consumer.publishPending {
+		username := "alice"
+		consumer.state.mu.Lock()
+		consumer.state.resultUser = models.User{ID: 501, AuditFields: models.AuditFields{Guid: 9591, CreatedAt: 8001, UpdatedAt: 8001},
+			GroupID: 61, Username: &username, PlanType: models.PlanFree, Status: models.UserStatusActive, Role: models.UserRoleUser,
+			AuthVersion: 1, AllowedModels: models.JSONSlice{}}
+		consumer.state.resultGroup = models.BusinessGroup{ID: 61, AuditFields: models.AuditFields{Guid: 6001}, Key: "default", DisplayName: "Default", Status: models.BusinessGroupStatusActive}
+		consumer.state.resultRecorded = true
+		consumer.state.mu.Unlock()
+	}
+	return consumer.outcome, nil
+}
 
 func newCreateAccountTestExecution(t *testing.T, action actionsecurity.Action, intent actionsecurity.CreateAccountIntent, nextGUID func() int64) *CreateAccountExecution {
 	t.Helper()

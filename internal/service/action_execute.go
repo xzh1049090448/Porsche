@@ -22,6 +22,14 @@ type actionExecuteTransactionRunner interface {
 
 type gormActionExecuteTransactionRunner struct{}
 
+type actionExecutionSecretClearer interface {
+	ClearSecrets()
+}
+
+type actionExecutionCommitObserver interface {
+	actionCommitConfirmed()
+}
+
 func (gormActionExecuteTransactionRunner) Run(ctx context.Context, db *gorm.DB, callback func(*gorm.DB) error) error {
 	return db.WithContext(ctx).Transaction(callback, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 }
@@ -31,6 +39,9 @@ func (s *ActionOperationService) Execute(ctx context.Context, identity *Operatio
 }
 
 func (s *ActionOperationService) executeWithRunner(ctx context.Context, identity *OperationIdentity, consumer TransactionalActionConsumer, audit TransactionalAuditWriter, outbox TransactionalOutboxWriter, runner actionExecuteTransactionRunner) (*OperationView, error) {
+	if clearer, ok := consumer.(actionExecutionSecretClearer); ok {
+		defer clearer.ClearSecrets()
+	}
 	if identity == nil {
 		return nil, ErrActionOperationUnavailable
 	}
@@ -186,6 +197,9 @@ func (s *ActionOperationService) executeWithRunner(ctx context.Context, identity
 	}
 	if !callbackComplete || resultView == nil {
 		return nil, ErrActionOperationUnavailable
+	}
+	if observer, ok := consumer.(actionExecutionCommitObserver); ok {
+		observer.actionCommitConfirmed()
 	}
 	return resultView, nil
 }
