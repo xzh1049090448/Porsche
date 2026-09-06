@@ -54,6 +54,12 @@ var businessGroupsUp []byte
 //go:embed sql/0007_business_groups.down.sql
 var businessGroupsDown []byte
 
+//go:embed sql/0008_admin_operation_responses.up.sql
+var adminOperationResponsesUp []byte
+
+//go:embed sql/0008_admin_operation_responses.down.sql
+var adminOperationResponsesDown []byte
+
 // Migration is an immutable, embedded schema version.
 type Migration struct {
 	Version string
@@ -77,6 +83,7 @@ func All() ([]Migration, error) {
 		{Version: "0005", UpSQL: adminOperationSafetyUp, DownSQL: adminOperationSafetyDown},
 		{Version: "0006", UpSQL: adminActionOutboxUp, DownSQL: adminActionOutboxDown},
 		{Version: "0007", UpSQL: businessGroupsUp, DownSQL: businessGroupsDown},
+		{Version: "0008", UpSQL: adminOperationResponsesUp, DownSQL: adminOperationResponsesDown},
 	}
 	sort.Slice(migrations, func(i, j int) bool { return migrations[i].Version < migrations[j].Version })
 	return migrations, nil
@@ -160,6 +167,11 @@ func Up(ctx context.Context, db *gorm.DB, nextGUID func() int64, nowMillis func(
 						return err
 					}
 				}
+				if migration.Version == "0008" {
+					if err := VerifyAdminOperationResponseSchema(ctx, conn); err != nil {
+						return err
+					}
+				}
 				continue
 			}
 			if migration.Version == "0007" {
@@ -171,6 +183,11 @@ func Up(ctx context.Context, db *gorm.DB, nextGUID func() int64, nowMillis func(
 					if err := conn.Exec(statement).Error; err != nil {
 						return fmt.Errorf("apply migration %s: %w", migration.Version, err)
 					}
+				}
+			}
+			if migration.Version == "0008" {
+				if err := VerifyAdminOperationResponseSchema(ctx, conn); err != nil {
+					return err
 				}
 			}
 			if migration.Version == "0003" {
@@ -252,7 +269,10 @@ func Verify(ctx context.Context, db *gorm.DB) error {
 	if err := VerifyAdminActionOutboxSchema(ctx, db); err != nil {
 		return err
 	}
-	return VerifyBusinessGroupsSchema(ctx, db)
+	if err := VerifyBusinessGroupsSchema(ctx, db); err != nil {
+		return err
+	}
+	return VerifyAdminOperationResponseSchema(ctx, db)
 }
 
 // VerifyApplied is the side-effect-free portion of Verify, kept separate so

@@ -85,7 +85,7 @@ func TestCreateAccountExecutionCreatesOrdinaryUserAndRegistrationAudit(t *testin
 	}
 	if got := script.committedKinds(); fmt.Sprint(got) != fmt.Sprint([]string{
 		"query:users", "query:user_sessions", "query:user_permission_heads", "query:user_permission_overrides",
-		"query:business_groups", "query:users", "exec:users", "exec:auth_audit_events",
+		"query:business_groups", "query:users", "exec:users", "exec:auth_audit_events", "exec:admin_operation_responses",
 	}) {
 		t.Fatalf("call order = %v", got)
 	}
@@ -107,6 +107,11 @@ func TestCreateAccountExecutionCreatesOrdinaryUserAndRegistrationAudit(t *testin
 	if audit["guid"] != int64(9002) || audit["user_id"] != int64(501) || audit["event_type"] != int64(models.AuthAuditEventRegistered) ||
 		audit["created_by"] != int64(41) || audit["ip"] != "203.0.113.7" || audit["login_method"] != int64(models.LoginMethodPassword) {
 		t.Fatalf("registration audit = %#v", audit)
+	}
+	response := createAccountInsertValues(t, script.committedTableCall("admin_operation_responses", 0))
+	if fmt.Sprint(response["guid"]) != "3001" || fmt.Sprint(response["operation_id"]) != "31" || fmt.Sprint(response["http_status"]) != "201" ||
+		response["media_type"] != createAccountResponseMediaType || !validCreateAccountResponseBody(response["response_body"].([]byte), deleteWriterPublicRef, actionsecurity.ActionUsersCreate, 9001) {
+		t.Fatalf("operation response = %#v", response)
 	}
 	if script.containsSQL("amount") || script.containsSQL("balance") {
 		t.Fatal("create path referenced forbidden amount/balance storage")
@@ -168,6 +173,9 @@ func TestCreateAccountExecutionCreatesAdminPolicyAndCanonicalOverrides(t *testin
 	}
 	if auth := createAccountInsertValues(t, script.committedTableCall("auth_audit_events", 0)); auth["guid"] != int64(9105) {
 		t.Fatalf("auth audit GUID ordering = %#v", auth)
+	}
+	if response := createAccountInsertValues(t, script.committedTableCall("admin_operation_responses", 0)); response["guid"] != int64(3001) || response["operation_id"] != int64(31) {
+		t.Fatalf("admin operation response = %#v", response)
 	}
 }
 
@@ -858,7 +866,7 @@ func TestCreateAccountWritersRejectDescriptorAndBindingDriftWithoutWrites(t *tes
 		t.Fatalf("outbox target drift = %v", err)
 	}
 	_ = tx.Rollback().Error
-	if script.writeCount() != 2 { // user and registration audit from the consumer only
+	if script.writeCount() != 3 { // user, registration audit, and immutable response from the consumer only
 		t.Fatalf("drift writers emitted writes: %v", script.observedKinds())
 	}
 }
@@ -1178,7 +1186,7 @@ func newCreateAccountTestDB(t *testing.T) (*gorm.DB, *createAccountScript) {
 		session:   models.Session{ID: 45, AuditFields: models.AuditFields{Guid: 4501}, UserID: 41, SessionVersion: 2, ExpiresAt: 10000},
 		groups:    []models.BusinessGroup{{ID: 61, AuditFields: models.AuditFields{Guid: 6001}, Key: "default", DisplayName: "Default", Status: models.BusinessGroupStatusActive}},
 		operation: operation, rowsAffected: map[string]int64{}, lastInsertIDs: map[string]int64{
-			"users": 501, "user_permission_heads": 601, "user_permission_overrides": 701, "auth_audit_events": 801, "audit_logs": 901, "admin_action_outbox": 1001,
+			"users": 501, "user_permission_heads": 601, "user_permission_overrides": 701, "auth_audit_events": 801, "audit_logs": 901, "admin_action_outbox": 1001, "admin_operation_responses": 1101,
 		},
 		execSeen: map[string]int{}, execErrors: map[string]error{},
 	}
@@ -1199,7 +1207,7 @@ func newCreateAccountTestDB(t *testing.T) (*gorm.DB, *createAccountScript) {
 }
 
 func createAccountTable(query string) string {
-	for _, table := range []string{"admin_action_verifications", "admin_action_outbox", "admin_operations", "auth_audit_events", "audit_logs", "user_permission_overrides", "user_permission_heads", "business_groups", "user_sessions", "users"} {
+	for _, table := range []string{"admin_action_verifications", "admin_action_outbox", "admin_operation_responses", "admin_operations", "auth_audit_events", "audit_logs", "user_permission_overrides", "user_permission_heads", "business_groups", "user_sessions", "users"} {
 		if strings.Contains(query, "`"+table+"`") {
 			return table
 		}

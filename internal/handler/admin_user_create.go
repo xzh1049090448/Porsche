@@ -8,8 +8,6 @@ import (
 	"io"
 	"net/http"
 	"strconv"
-	"strings"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/porsche/ai-gateway-go/internal/actionsecurity"
@@ -39,7 +37,7 @@ type userManagementActionBackend interface {
 	ExecuteDelete(context.Context, *service.OperationIdentity, *service.DeleteUserExecution) (*service.OperationView, error)
 	NewCreateExecution(actionsecurity.Action, actionsecurity.CreateAccountIntent, []byte, service.CreateAccountRequestMetadata) (*service.CreateAccountExecution, error)
 	ExecuteCreate(context.Context, *service.OperationIdentity, *service.CreateAccountExecution) (*service.OperationView, error)
-	CreateOutcome(context.Context, actionsecurity.Action, service.ActionActor, string, *service.CreateAccountExecution) (*service.UserReadDTO, int, error)
+	CreateOutcome(context.Context, actionsecurity.Action, service.ActionActor, string) (*service.PersistedActionResponse, int, error)
 	Query(context.Context, actionsecurity.Action, service.ActionActor, []string) (*service.OperationView, error)
 }
 
@@ -80,19 +78,13 @@ func (backend userManagementActionBundleBackend) Query(ctx context.Context, acti
 	return backend.bundle.Operations.Query(ctx, action, actor, keys)
 }
 
-func (backend userManagementActionBundleBackend) CreateOutcome(ctx context.Context, action actionsecurity.Action, actor service.ActionActor, publicRef string, execution *service.CreateAccountExecution) (*service.UserReadDTO, int, error) {
-	if execution != nil {
-		if result, ok := execution.ResultUser(); ok {
-			return result, http.StatusCreated, nil
-		}
-	}
-	if backend.db == nil || backend.db.Statement == nil || backend.db.Statement.ConnPool == nil || ctx == nil || actor.UserID <= 0 || actor.AuthVersion <= 0 ||
-		(action != actionsecurity.ActionUsersCreate && action != actionsecurity.ActionUsersCreateAdmin) || !validUserDeleteOperationRef(publicRef) {
+func (backend userManagementActionBundleBackend) CreateOutcome(ctx context.Context, action actionsecurity.Action, actor service.ActionActor, publicRef string) (*service.PersistedActionResponse, int, error) {
+	if backend.bundle == nil || backend.bundle.Operations == nil || backend.db == nil || backend.db.Statement == nil || backend.db.Statement.ConnPool == nil || ctx == nil {
 		return nil, 0, service.ErrActionOperationUnavailable
 	}
-	db := backend.db.Session(&gorm.Session{NewDB: true, Logger: logger.Discard}).WithContext(ctx)
 	var operations []models.AdminOperation
-	if err := db.Where("public_ref = ? AND actor_user_id = ? AND actor_auth_version = ? AND action = ? AND is_deleted = 0", publicRef, actor.UserID, actor.AuthVersion, int(action)).Limit(2).Find(&operations).Error; err != nil || len(operations) != 1 {
+	db := backend.db.Session(&gorm.Session{NewDB: true, Logger: logger.Discard}).WithContext(ctx)
+	if db.Where("public_ref = ? AND actor_user_id = ? AND actor_auth_version = ? AND action = ? AND is_deleted = 0", publicRef, actor.UserID, actor.AuthVersion, int(action)).Limit(2).Find(&operations).Error != nil || len(operations) != 1 {
 		return nil, 0, service.ErrActionOperationUnavailable
 	}
 	operation := operations[0]
@@ -102,22 +94,11 @@ func (backend userManagementActionBundleBackend) CreateOutcome(ctx context.Conte
 	status := *operation.ResultHTTPStatus
 	switch operation.State {
 	case models.OperationSucceeded:
-		if status != http.StatusCreated || operation.ErrorCode != nil || operation.ResultKind == nil || *operation.ResultKind != models.ResultUser || operation.ResultGUID == nil || *operation.ResultGUID <= 0 {
+		response, err := backend.bundle.Operations.CreateAccountResponse(ctx, action, actor, publicRef)
+		if err != nil || response == nil || response.HTTPStatus != status {
 			return nil, 0, service.ErrActionOperationUnavailable
 		}
-		var users []models.User
-		if err := db.Where("guid = ?", *operation.ResultGUID).Limit(2).Find(&users).Error; err != nil || len(users) != 1 {
-			return nil, 0, service.ErrActionOperationUnavailable
-		}
-		var groups []models.BusinessGroup
-		if err := db.Where("id = ?", users[0].GroupID).Limit(2).Find(&groups).Error; err != nil || len(groups) != 1 {
-			return nil, 0, service.ErrActionOperationUnavailable
-		}
-		result, err := service.ProjectCreatedUserRead(users[0], groups[0])
-		if err != nil {
-			return nil, 0, service.ErrActionOperationUnavailable
-		}
-		return result, status, nil
+		return response, status, nil
 	case models.OperationFailed:
 		if operation.ErrorCode == nil || operation.ResultKind != nil || operation.ResultGUID != nil || (status != http.StatusForbidden && status != http.StatusNotFound && status != http.StatusConflict) {
 			return nil, 0, service.ErrActionOperationUnavailable
@@ -325,7 +306,7 @@ func executeAdminUserCreate(c *gin.Context, backend userManagementActionBackend,
 		return
 	}
 	if !backend.ExecutionReady(identity) {
-		writeAdminUserCreateView(c, backend, action, actor, identity, view, nil)
+		writeAdminUserCreateView(c, backend, action, actor, identity, view)
 		return
 	}
 	trustedIP := ""
@@ -351,7 +332,7 @@ func executeAdminUserCreate(c *gin.Context, backend userManagementActionBackend,
 		adminUserActionError(c, err, "")
 		return
 	}
-	writeAdminUserCreateView(c, backend, action, actor, identity, view, execution)
+	writeAdminUserCreateView(c, backend, action, actor, identity, view)
 }
 
 func adminUserCreateIntent(request dto.AdminUserCreateRequest) actionsecurity.CreateAccountIntent {
@@ -362,7 +343,7 @@ func adminUserCreateIntent(request dto.AdminUserCreateRequest) actionsecurity.Cr
 	}
 }
 
-func writeAdminUserCreateView(c *gin.Context, backend userManagementActionBackend, action actionsecurity.Action, actor service.ActionActor, identity *service.OperationIdentity, view *service.OperationView, execution *service.CreateAccountExecution) {
+func writeAdminUserCreateView(c *gin.Context, backend userManagementActionBackend, action actionsecurity.Action, actor service.ActionActor, identity *service.OperationIdentity, view *service.OperationView) {
 	if identity == nil || view == nil || identity.PublicRef != view.PublicRef || view.Scope != createActionScope(action) || !validUserDeleteOperationRef(view.PublicRef) {
 		adminUserActionError(c, service.ErrActionOperationUnavailable, "")
 		return
@@ -373,19 +354,19 @@ func writeAdminUserCreateView(c *gin.Context, backend userManagementActionBacken
 			adminUserActionError(c, service.ErrActionOperationUnavailable, "")
 			return
 		}
-		user, status, err := backend.CreateOutcome(c.Request.Context(), action, actor, view.PublicRef, execution)
-		if err != nil || status != http.StatusCreated || !validAdminUserCreateResult(user, action) {
+		response, status, err := backend.CreateOutcome(c.Request.Context(), action, actor, view.PublicRef)
+		if err != nil || response == nil || status != http.StatusCreated || response.HTTPStatus != status || response.MediaType != "application/json" || len(response.Body) == 0 {
 			adminUserActionError(c, service.ErrActionOperationUnavailable, "")
 			return
 		}
-		writeAdminUserCreateSuccess(c, view.PublicRef, user)
+		c.Data(response.HTTPStatus, response.MediaType, response.Body)
 	case "failed":
 		if view.FinishedAt == nil || view.FailureCode == nil || view.RetryAfterSeconds != 0 {
 			adminUserActionError(c, service.ErrActionOperationUnavailable, "")
 			return
 		}
-		user, status, err := backend.CreateOutcome(c.Request.Context(), action, actor, view.PublicRef, execution)
-		if err != nil || user != nil {
+		response, status, err := backend.CreateOutcome(c.Request.Context(), action, actor, view.PublicRef)
+		if err != nil || response != nil {
 			adminUserActionError(c, service.ErrActionOperationUnavailable, "")
 			return
 		}
@@ -415,38 +396,6 @@ func writeAdminUserCreateFailure(c *gin.Context, failure string, status int) {
 	default:
 		adminUserActionError(c, service.ErrActionOperationUnavailable, "")
 	}
-}
-
-type adminUserCreateResponse struct {
-	OperationRef       string              `json:"operation_ref"`
-	User               service.UserReadDTO `json:"user"`
-	PermissionsVersion *string             `json:"permissions_version"`
-}
-
-func writeAdminUserCreateSuccess(c *gin.Context, publicRef string, user *service.UserReadDTO) {
-	var permissionsVersion *string
-	if user.Role == "admin" {
-		value := "1"
-		permissionsVersion = &value
-	}
-	c.JSON(http.StatusCreated, adminUserCreateResponse{OperationRef: publicRef, User: *user, PermissionsVersion: permissionsVersion})
-}
-
-func validAdminUserCreateResult(user *service.UserReadDTO, action actionsecurity.Action) bool {
-	if user == nil || user.Username == nil || *user.Username == "" || user.Email != nil || user.Group == nil || *user.Group == "" ||
-		user.Status != "active" || user.AuthVersion != 1 || user.LastLoginAt != nil || !strings.HasSuffix(user.CreatedAt, "Z") {
-		return false
-	}
-	if _, err := service.ParseAdminPermissionGUID(user.GUID); err != nil {
-		return false
-	}
-	if _, err := time.Parse(time.RFC3339Nano, user.CreatedAt); err != nil {
-		return false
-	}
-	if plan, ok := models.ParsePlanType(user.PlanType); !ok || (plan != models.PlanFree && plan != models.PlanProfessional && plan != models.PlanEnterprise) {
-		return false
-	}
-	return (action == actionsecurity.ActionUsersCreate && user.Role == "user") || (action == actionsecurity.ActionUsersCreateAdmin && user.Role == "admin")
 }
 
 func createActionScope(action actionsecurity.Action) string {

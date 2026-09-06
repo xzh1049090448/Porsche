@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	cryptorand "crypto/rand"
 	"errors"
@@ -192,6 +193,10 @@ func TestCreateAccountRealOrdinaryAndAdminPersistAtomicState(t *testing.T) {
 				*operation.ResultKind != models.ResultUser || operation.ResultGUID == nil || *operation.ResultGUID != user.Guid || operation.ResultHTTPStatus == nil || *operation.ResultHTTPStatus != 201 {
 				t.Fatalf("terminal operation = %#v/%v", operation, err)
 			}
+			response, err := services.operations.CreateAccountResponse(context.Background(), services.descriptorsForRole(base.Role).Action, f.actorAPI, identity.PublicRef)
+			if err != nil || response == nil || response.HTTPStatus != 201 || response.MediaType != createAccountResponseMediaType || !validCreateAccountResponseBody(response.Body, identity.PublicRef, services.descriptorsForRole(base.Role).Action, user.Guid) {
+				t.Fatalf("persisted operation response = %#v/%v", response, err)
+			}
 			var heads []models.PermissionPolicyHead
 			if err := f.db.Where("user_id = ?", user.ID).Find(&heads).Error; err != nil {
 				t.Fatal(err)
@@ -212,6 +217,123 @@ func TestCreateAccountRealOrdinaryAndAdminPersistAtomicState(t *testing.T) {
 			assertCreateHashCleared(t, execution)
 		})
 	}
+}
+
+func TestCreateAccountRealReplayUsesImmutableResponseAcrossMutationAndServiceRestart(t *testing.T) {
+	requireDefaultMySQLAffectedRows(t)
+	f, services := openA03CreateServices(t, 1_910_050_000_000)
+	username := fixtureUsername(testSnowflake.Next())
+	nickname := "Immutable Replay"
+	key := newRealIdempotencyKey(t)
+	groupKey := fixtureUsername(testSnowflake.Next())
+	group := models.BusinessGroup{AuditFields: a14Audit(f.clock.NowMillis()), Key: groupKey, DisplayName: "Replay Group", Status: models.BusinessGroupStatusActive}
+	if err := f.db.Create(&group).Error; err != nil {
+		t.Fatal(err)
+	}
+	base := actionsecurity.CreateAccountIntent{Username: username, Nickname: &nickname, Role: models.UserRoleUser.String(),
+		GroupGUID: &group.Guid, PlanType: int(models.PlanFree), AllowedModels: []string{}, DailyCallLimit: 100}
+	identity, execution := services.prepare(t, f, base, "A03-Strong-Password!", key)
+	view, err := services.operations.Execute(context.Background(), identity, execution, execution, services.outbox)
+	if err != nil || view == nil || view.Status != "succeeded" {
+		t.Fatalf("execute = %#v/%v", view, err)
+	}
+	first, err := services.operations.CreateAccountResponse(context.Background(), actionsecurity.ActionUsersCreate, f.actorAPI, identity.PublicRef)
+	if err != nil || first == nil || first.HTTPStatus != 201 || first.MediaType != createAccountResponseMediaType || len(first.Body) == 0 {
+		t.Fatalf("first response = %#v/%v", first, err)
+	}
+
+	var operation models.AdminOperation
+	if err := f.db.Where("public_ref = ?", identity.PublicRef).First(&operation).Error; err != nil || operation.ResultGUID == nil {
+		t.Fatalf("operation = %#v/%v", operation, err)
+	}
+	var user models.User
+	if err := f.db.Where("guid = ?", *operation.ResultGUID).First(&user).Error; err != nil {
+		t.Fatal(err)
+	}
+	counts := func() [4]int64 {
+		t.Helper()
+		var got [4]int64
+		if err := f.db.Model(&models.AuthAuditEvent{}).Where("user_id = ? AND event_type = ?", user.ID, models.AuthAuditEventRegistered).Count(&got[0]).Error; err != nil {
+			t.Fatal(err)
+		}
+		if err := f.db.Model(&models.AuditLog{}).Where("detail->>'$.operation_ref' = ?", identity.PublicRef).Count(&got[1]).Error; err != nil {
+			t.Fatal(err)
+		}
+		if err := f.db.Model(&models.AdminActionOutbox{}).Where("public_ref = ?", identity.PublicRef).Count(&got[2]).Error; err != nil {
+			t.Fatal(err)
+		}
+		if err := f.db.Model(&models.AdminOperationResponse{}).Where("operation_id = ?", operation.ID).Count(&got[3]).Error; err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	before := counts()
+	lastLogin := f.clock.NowMillis() + 99
+	if err := f.db.Model(&models.User{}).Where("id = ?", user.ID).Updates(map[string]any{
+		"last_login_at": lastLogin, "status": models.UserStatusDisabled, "plan_type": models.PlanEnterprise,
+		"auth_version": 7, "is_deleted": 1, "updated_at": lastLogin, "updated_by": f.actor.ID,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.Model(&models.BusinessGroup{}).Where("id = ?", group.ID).Updates(map[string]any{
+		"group_key": "changed-after-create", "display_name": "Changed", "status": models.BusinessGroupStatusInactive,
+		"is_deleted": 1, "updated_at": lastLogin, "updated_by": f.actor.ID,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	restarted := restartA03CreateOperationService(t, f)
+	replayIntent := base
+	replayIntent.Password = []byte("A03-Strong-Password!")
+	replayed, replayView, err := restarted.Begin(context.Background(), OperationBegin{Action: actionsecurity.ActionUsersCreate,
+		Actor: f.actorAPI, IdempotencyKeyValues: []string{key}, Intent: replayIntent})
+	if err != nil || replayed == nil || replayed.ReadyForExecution() || replayView == nil || replayView.Status != "succeeded" || replayView.PublicRef != identity.PublicRef {
+		t.Fatalf("replay Begin = %#v/%#v/%v", replayed, replayView, err)
+	}
+	second, err := restarted.CreateAccountResponse(context.Background(), actionsecurity.ActionUsersCreate, f.actorAPI, replayView.PublicRef)
+	if err != nil || second == nil || second.HTTPStatus != 201 || second.MediaType != first.MediaType || !bytes.Equal(second.Body, first.Body) {
+		t.Fatalf("restarted response drifted first=%q second=%#v err=%v", first.Body, second, err)
+	}
+	if after := counts(); after != before || after != [4]int64{1, 1, 1, 1} {
+		t.Fatalf("replay created side effects before=%v after=%v", before, after)
+	}
+}
+
+func restartA03CreateOperationService(t *testing.T, f *a14DeleteFixture) *ActionOperationService {
+	t.Helper()
+	root, reason := actionsecurity.ParseRootKey(strings.TrimSpace(os.Getenv("ACTION_SECURITY_HMAC_KEY")))
+	if reason != "" {
+		t.Fatalf("invalid isolated action key: %s", reason)
+	}
+	crypto, err := actionsecurity.NewCrypto(root)
+	clear(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authRedis, err := NewAuthRedis(f.redis, "a03-create-auth-hmac-material")
+	if err != nil {
+		t.Fatal(err)
+	}
+	limiter, err := NewActionSecurityRedis(f.redis, crypto)
+	if err != nil {
+		t.Fatal(err)
+	}
+	active := make(map[actionsecurity.Action]actionsecurity.Descriptor)
+	for _, descriptor := range actionsecurity.FutureActionDescriptors() {
+		if descriptor.Action == actionsecurity.ActionUsersCreate || descriptor.Action == actionsecurity.ActionUsersCreateAdmin {
+			descriptor.Active = true
+			active[descriptor.Action] = descriptor
+		}
+	}
+	resolve := func(action actionsecurity.Action) (actionsecurity.Descriptor, bool) {
+		descriptor, ok := active[action]
+		return descriptor, ok
+	}
+	service, err := newActionOperationService(f.db, limiter, authRedis, crypto, resolve, f.clock, cryptorand.Reader, func() int64 { return testSnowflake.Next() })
+	if err != nil {
+		t.Fatal(err)
+	}
+	return service
 }
 
 func TestCreateAccountRealConcurrentUsernameRaceCommitsOneUser(t *testing.T) {
@@ -267,6 +389,7 @@ func TestCreateAccountRealWriteFaultsRollbackEveryStage(t *testing.T) {
 		{"first_override_batch", "user_permission_overrides", 1, false},
 		{"second_override_batch", "user_permission_overrides", 2, false},
 		{"auth_audit", "auth_audit_events", 1, false},
+		{"operation_response", "admin_operation_responses", 1, false},
 		{"management_audit", "audit_logs", 1, false},
 		{"outbox", "admin_action_outbox", 1, false},
 		{"terminal_operation", "admin_operations", 1, true},
@@ -322,20 +445,21 @@ func TestCreateAccountRealWriteFaultsRollbackEveryStage(t *testing.T) {
 			if result, ok := execution.ResultUser(); ok || result != nil {
 				t.Fatalf("rollback exposed uncommitted result: %#v", result)
 			}
-			var userCount, authCount, managementCount, outboxCount int64
+			var userCount, authCount, responseCount, managementCount, outboxCount int64
 			if err := f.db.Model(&models.User{}).Where("username = ?", username).Count(&userCount).Error; err != nil {
 				t.Fatal(err)
 			}
 			_ = f.db.Model(&models.AuthAuditEvent{}).Joins("JOIN users ON users.id = auth_audit_events.user_id").Where("users.username = ?", username).Count(&authCount).Error
+			_ = f.db.Model(&models.AdminOperationResponse{}).Where("operation_id = ?", identity.ID).Count(&responseCount).Error
 			_ = f.db.Model(&models.AuditLog{}).Where("detail->>'$.operation_ref' = ?", identity.PublicRef).Count(&managementCount).Error
 			_ = f.db.Model(&models.AdminActionOutbox{}).Where("public_ref = ?", identity.PublicRef).Count(&outboxCount).Error
 			var operation models.AdminOperation
 			if err := f.db.Where("public_ref = ?", identity.PublicRef).First(&operation).Error; err != nil {
 				t.Fatal(err)
 			}
-			if userCount != 0 || authCount != 0 || managementCount != 0 || outboxCount != 0 || operation.State != models.OperationProcessing ||
+			if userCount != 0 || authCount != 0 || responseCount != 0 || managementCount != 0 || outboxCount != 0 || operation.State != models.OperationProcessing ||
 				operation.ResultGUID != nil || operation.ResultKind != nil || operation.FinishedAt != nil {
-				t.Fatalf("partial state user/auth/audit/outbox/op = %d/%d/%d/%d/%#v", userCount, authCount, managementCount, outboxCount, operation)
+				t.Fatalf("partial state user/auth/response/audit/outbox/op = %d/%d/%d/%d/%d/%#v", userCount, authCount, responseCount, managementCount, outboxCount, operation)
 			}
 			assertCreateHashCleared(t, execution)
 		})

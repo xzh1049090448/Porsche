@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"net/http"
@@ -27,7 +28,7 @@ type scriptedUserManagementBackend struct {
 	executeErr        error
 	queryView         *service.OperationView
 	queryErr          error
-	outcomeUser       *service.UserReadDTO
+	outcomeResponse   *service.PersistedActionResponse
 	outcomeStatus     int
 	outcomeErr        error
 	issueCalls        int
@@ -58,7 +59,6 @@ type scriptedUserManagementBackend struct {
 	outcomeAction     actionsecurity.Action
 	outcomeActor      service.ActionActor
 	outcomeRef        string
-	outcomeExecution  *service.CreateAccountExecution
 }
 
 func (s *scriptedUserManagementBackend) Issue(_ context.Context, issue service.VerificationIssue) (*service.IssuedVerification, error) {
@@ -110,10 +110,10 @@ func (s *scriptedUserManagementBackend) ExecuteCreate(_ context.Context, _ *serv
 	return s.executeView, s.executeErr
 }
 
-func (s *scriptedUserManagementBackend) CreateOutcome(_ context.Context, action actionsecurity.Action, actor service.ActionActor, ref string, execution *service.CreateAccountExecution) (*service.UserReadDTO, int, error) {
+func (s *scriptedUserManagementBackend) CreateOutcome(_ context.Context, action actionsecurity.Action, actor service.ActionActor, ref string) (*service.PersistedActionResponse, int, error) {
 	s.outcomeCalls++
-	s.outcomeAction, s.outcomeActor, s.outcomeRef, s.outcomeExecution = action, actor, ref, execution
-	return s.outcomeUser, s.outcomeStatus, s.outcomeErr
+	s.outcomeAction, s.outcomeActor, s.outcomeRef = action, actor, ref
+	return s.outcomeResponse, s.outcomeStatus, s.outcomeErr
 }
 
 func (s *scriptedUserManagementBackend) Query(_ context.Context, action actionsecurity.Action, _ service.ActionActor, keys []string) (*service.OperationView, error) {
@@ -137,22 +137,22 @@ func newScriptedUserManagementEngine(t *testing.T, backend userManagementActionB
 	return r
 }
 
-func adminUserCreateResult(role string) *service.UserReadDTO {
-	username, nickname, group := "alice", "Alice", "default"
-	return &service.UserReadDTO{
-		GUID: "123456789012345678", Username: &username, Nickname: &nickname, Group: &group,
-		PlanType: "free", Role: role, Status: "active", AuthVersion: 1,
-		CreatedAt: "2026-09-06T00:00:00Z",
+func adminUserCreateResult(role string) *service.PersistedActionResponse {
+	permissionsVersion := "null"
+	if role == "admin" {
+		permissionsVersion = `"1"`
 	}
+	body := `{"operation_ref":"` + testOperationRef + `","user":{"guid":"123456789012345678","username":"alice","nickname":"Alice","email":null,"group":"default","plan_type":"free","role":"` + role + `","status":"active","auth_version":1,"created_at":"2026-09-06T00:00:00Z","last_login_at":null},"permissions_version":` + permissionsVersion + `}`
+	return &service.PersistedActionResponse{HTTPStatus: http.StatusCreated, MediaType: "application/json", Body: []byte(body)}
 }
 
 func adminUserCreateBackend(role string) *scriptedUserManagementBackend {
 	finished := int64(1790000000000)
 	return &scriptedUserManagementBackend{
 		identity: &service.OperationIdentity{PublicRef: testOperationRef}, ready: true,
-		beginView:   &service.OperationView{PublicRef: testOperationRef, Scope: "users.create", Status: "processing", RetryAfterSeconds: 30},
-		executeView: &service.OperationView{PublicRef: testOperationRef, Scope: "users.create", Status: "succeeded", FinishedAt: &finished},
-		outcomeUser: adminUserCreateResult(role), outcomeStatus: http.StatusCreated,
+		beginView:       &service.OperationView{PublicRef: testOperationRef, Scope: "users.create", Status: "processing", RetryAfterSeconds: 30},
+		executeView:     &service.OperationView{PublicRef: testOperationRef, Scope: "users.create", Status: "succeeded", FinishedAt: &finished},
+		outcomeResponse: adminUserCreateResult(role), outcomeStatus: http.StatusCreated,
 	}
 }
 
@@ -177,7 +177,7 @@ func TestAdminUserCreateOrdinaryUsesTicketlessActionHashAndExactDTO(t *testing.T
 		backend.createIntent.Password != nil || backend.createIntent.Role != "user" || backend.createIntent.PlanType != int(models.PlanFree) ||
 		len(backend.createIntent.AllowedModels) != 0 || backend.createIntent.DailyCallLimit != 100 || len(backend.createIntent.Overrides) != 0 ||
 		!backend.createHashValid || backend.createMetadata.RequestID != "request-create-1" ||
-		backend.createMetadata.TrustedIP != "203.0.113.8" || backend.executeCalls != 1 || backend.outcomeCalls != 1 || backend.outcomeExecution == nil {
+		backend.createMetadata.TrustedIP != "203.0.113.8" || backend.executeCalls != 1 || backend.outcomeCalls != 1 {
 		t.Fatal("ordinary create did not preserve the reviewed action, defaults, hash, metadata, and execution flow")
 	}
 	for _, secret := range [][]byte{backend.beginPassword, backend.createHash} {
@@ -286,12 +286,12 @@ func TestAdminUserCreateRejectsForbiddenHeaderAndRoleCombinationsBeforeBegin(t *
 func TestAdminUserCreateReplayAndA03FailureCodesDoNotReexecute(t *testing.T) {
 	finished := int64(1790000000000)
 	tests := []struct {
-		name          string
-		view          *service.OperationView
-		outcomeStatus int
-		outcomeUser   *service.UserReadDTO
-		wantStatus    int
-		wantCode      string
+		name            string
+		view            *service.OperationView
+		outcomeStatus   int
+		outcomeResponse *service.PersistedActionResponse
+		wantStatus      int
+		wantCode        string
 	}{
 		{"replay", &service.OperationView{PublicRef: testOperationRef, Scope: "users.create", Status: "succeeded", FinishedAt: &finished}, 201, adminUserCreateResult("user"), 201, ""},
 		{"username conflict", &service.OperationView{PublicRef: testOperationRef, Scope: "users.create", Status: "failed", FinishedAt: &finished, FailureCode: stringPointer("consumer_validation_failed")}, 409, nil, 409, "username_conflict"},
@@ -303,11 +303,16 @@ func TestAdminUserCreateReplayAndA03FailureCodesDoNotReexecute(t *testing.T) {
 			backend := adminUserCreateBackend("user")
 			backend.ready = false
 			backend.beginView = test.view
-			backend.outcomeStatus, backend.outcomeUser = test.outcomeStatus, test.outcomeUser
+			backend.outcomeStatus, backend.outcomeResponse = test.outcomeStatus, test.outcomeResponse
 			engine := newScriptedUserManagementEngine(t, backend, models.UserRoleAdmin)
 			rec := performActionRequest(engine, http.MethodPost, "/admin/v2/users", `{"username":"alice","password":"`+adminUserCreatePassword+`","role":"user"}`, http.Header{"Idempotency-Key": {testActionKey}})
 			if rec.Code != test.wantStatus || backend.newCreateCalls != 0 || backend.executeCalls != 0 || backend.outcomeCalls != 1 {
 				t.Fatalf("status/new/execute/outcome=%d/%d/%d/%d", rec.Code, backend.newCreateCalls, backend.executeCalls, backend.outcomeCalls)
+			}
+			if test.wantStatus == http.StatusCreated {
+				if !bytes.Equal(rec.Body.Bytes(), backend.outcomeResponse.Body) || rec.Header().Get("Cache-Control") != "no-store" || rec.Header().Get("X-Request-ID") == "" {
+					t.Fatalf("replay body/header drift body=%q cache=%q request_id=%q", rec.Body.Bytes(), rec.Header().Get("Cache-Control"), rec.Header().Get("X-Request-ID"))
+				}
 			}
 			if test.wantCode != "" {
 				response := decodeActionTestResponse[actionTestErrorEnvelope](t, rec)
