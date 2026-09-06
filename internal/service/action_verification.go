@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	cryptorand "crypto/rand"
 	"database/sql"
@@ -11,8 +12,10 @@ import (
 	"math"
 	"net/netip"
 	"reflect"
+	"unicode/utf8"
 
 	"github.com/porsche/ai-gateway-go/internal/actionsecurity"
+	"github.com/porsche/ai-gateway-go/internal/authz"
 	"github.com/porsche/ai-gateway-go/internal/models"
 	"github.com/porsche/ai-gateway-go/internal/persistence"
 	"github.com/porsche/ai-gateway-go/internal/security"
@@ -88,6 +91,7 @@ func newActionVerificationService(db *gorm.DB, limiter *ActionSecurityRedis, aut
 
 func (s *ActionVerificationService) Issue(ctx context.Context, in VerificationIssue) (*IssuedVerification, error) {
 	defer clear(in.CurrentPassword)
+	defer clearCreateVerificationPassword(in.Intent)
 	if s == nil || ctx == nil || s.resolve == nil {
 		return nil, ErrActionVerificationUnavailable
 	}
@@ -118,15 +122,6 @@ func (s *ActionVerificationService) Issue(ctx context.Context, in VerificationIs
 		return nil, ErrActionVerificationForbidden
 	}
 
-	encoded, err := descriptor.Encode(in.Intent)
-	if err != nil {
-		return nil, ErrActionVerificationForbidden
-	}
-	intentDigest := s.crypto.IntentDigest(encoded)
-	clear(encoded)
-	intentHex := hex.EncodeToString(intentDigest[:])
-	clear(intentDigest[:])
-
 	now := s.clock.NowMillis()
 	if now <= 0 || now > math.MaxInt64-actionVerificationTTLMillis {
 		return nil, ErrActionVerificationUnavailable
@@ -153,9 +148,21 @@ func (s *ActionVerificationService) Issue(ctx context.Context, in VerificationIs
 			if err := validateLockedDeleteIntent(descriptor, in.Intent, identity.target); err != nil {
 				return err
 			}
+		case actionsecurity.ActionUsersCreateAdmin:
+			if err := validateLockedCreateAdminIntent(tx, descriptor, in.Intent, identity.actor); err != nil {
+				return err
+			}
 		default:
 			return ErrActionVerificationUnavailable
 		}
+		encoded, err := descriptor.Encode(in.Intent)
+		if err != nil {
+			return ErrActionVerificationConflict
+		}
+		intentDigest := s.crypto.IntentDigest(encoded)
+		clear(encoded)
+		intentHex := hex.EncodeToString(intentDigest[:])
+		clear(intentDigest[:])
 		passwordOK := identity.actor.PasswordHash != nil && security.VerifyPassword(string(in.CurrentPassword), *identity.actor.PasswordHash)
 		clear(in.CurrentPassword)
 		if !passwordOK {
@@ -212,6 +219,84 @@ func (s *ActionVerificationService) Issue(ctx context.Context, in VerificationIs
 		return nil, ErrActionVerificationUnavailable
 	}
 	return issued, nil
+}
+
+func clearCreateVerificationPassword(value any) {
+	if intent, ok := value.(actionsecurity.CreateAccountIntent); ok {
+		clear(intent.Password)
+	}
+}
+
+func validateLockedCreateAdminIntent(tx *gorm.DB, descriptor actionsecurity.Descriptor, value any, actor models.User) error {
+	expected, ok := actionsecurity.ResolveActiveAction(actionsecurity.ActionUsersCreateAdmin)
+	if !ok || descriptor.Action != expected.Action || descriptor.Name != expected.Name ||
+		descriptor.Capability != expected.Capability || descriptor.RootOnly != expected.RootOnly ||
+		descriptor.RequiresTicket != expected.RequiresTicket || descriptor.Active != expected.Active ||
+		descriptor.TargetKind != expected.TargetKind || descriptor.Encode == nil || expected.Encode == nil ||
+		reflect.ValueOf(descriptor.Encode).Pointer() != reflect.ValueOf(expected.Encode).Pointer() {
+		return ErrActionVerificationConflict
+	}
+	intent, ok := value.(actionsecurity.CreateAccountIntent)
+	if !ok || actor.ID <= 0 || actor.Guid <= 0 || actor.Role != models.UserRoleRoot || actor.Status != models.UserStatusActive || actor.IsDeleted != 0 ||
+		intent.Role != models.UserRoleAdmin.String() || !validCreateVerificationPassword(intent.Password) || len(intent.AllowedModels) != 0 || intent.DailyCallLimit != 100 ||
+		(intent.PlanType != int(models.PlanFree) && intent.PlanType != int(models.PlanProfessional) && intent.PlanType != int(models.PlanEnterprise)) {
+		return ErrActionVerificationConflict
+	}
+	username, err := NormalizeUsername(intent.Username)
+	if err != nil || username != intent.Username {
+		return ErrActionVerificationConflict
+	}
+	if intent.Nickname != nil {
+		nickname, err := NormalizeManagedUserNickname(*intent.Nickname)
+		if err != nil || nickname != *intent.Nickname {
+			return ErrActionVerificationConflict
+		}
+	}
+	if intent.GroupGUID != nil && *intent.GroupGUID <= 0 {
+		return ErrActionVerificationConflict
+	}
+	for index, override := range intent.Overrides {
+		if !validCreateOverride(override) || (index > 0 && intent.Overrides[index-1].Capability >= override.Capability) {
+			return ErrActionVerificationConflict
+		}
+	}
+	group, err := lockCreateAccountGroup(tx, intent.GroupGUID)
+	if err != nil {
+		if errors.Is(err, errCreateAccountGroupRejected) {
+			if intent.GroupGUID == nil {
+				return ErrActionVerificationUnavailable
+			}
+			return ErrActionVerificationHidden
+		}
+		return ErrActionVerificationUnavailable
+	}
+	evaluator, err := authz.NewEvaluator(actionAccount(actor), nil)
+	if err != nil || evaluator.Create(models.UserRoleAdmin) != authz.Allowed {
+		return ErrActionVerificationForbidden
+	}
+	if group.Key != "default" && !createAccountCapabilityAllowed(evaluator, actor, models.UserRoleAdmin, "users.group.change") {
+		return ErrActionVerificationForbidden
+	}
+	if models.PlanType(intent.PlanType) != models.PlanFree && !createAccountCapabilityAllowed(evaluator, actor, models.UserRoleAdmin, "users.plan.change") {
+		return ErrActionVerificationForbidden
+	}
+	return nil
+}
+
+func validCreateVerificationPassword(value []byte) bool {
+	if !utf8.Valid(value) || utf8.RuneCount(value) < 8 || utf8.RuneCount(value) > 20 {
+		return false
+	}
+	trimmed := bytes.TrimSpace(value)
+	for _, weak := range [][]byte{
+		[]byte("password"), []byte("password123"), []byte("12345678"),
+		[]byte("qwerty123"), []byte("porsche"), []byte("porsche@2026"),
+	} {
+		if bytes.EqualFold(trimmed, weak) {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *ActionVerificationService) reserveVerification(ctx context.Context, actorID int64, sessionSID, trustedIP string) error {

@@ -93,7 +93,7 @@ func TestUserDeleteActionsNewExecutionStaysBoundToReviewedDescriptor(t *testing.
 	db := actionIssueDryDB(t)
 	client := &actionIssueRedisClient{actionRateEvalClient: newActionRateEvalClient()}
 	authRedis, crypto := userDeleteBundleSecurity(t, client)
-	descriptor := actionsecurity.ActiveActionRegistry()[0]
+	descriptor := actionsecurity.ActiveActionRegistry()[2]
 	productionEncode := descriptor.Encode
 	encodeCalls := 0
 	descriptor.Encode = func(value any) ([]byte, error) {
@@ -169,7 +169,7 @@ func TestNewUserDeleteActionsRejectsRegistryDrift(t *testing.T) {
 	db := actionIssueDryDB(t)
 	client := &actionIssueRedisClient{actionRateEvalClient: newActionRateEvalClient()}
 	authRedis, crypto := userDeleteBundleSecurity(t, client)
-	valid := actionsecurity.ActiveActionRegistry()[0]
+	valid := actionsecurity.ActiveActionRegistry()[2]
 	tests := []struct {
 		name     string
 		registry func() []actionsecurity.Descriptor

@@ -29,7 +29,7 @@ var inactiveActionOrder = [...]Action{
 }
 
 var futureActionOrder = [...]Action{ActionUsersCreate, ActionUsersCreateAdmin, ActionUsersDelete}
-var activeActionOrder = [...]Action{ActionUsersDelete}
+var activeActionOrder = [...]Action{ActionUsersCreate, ActionUsersCreateAdmin, ActionUsersDelete}
 
 func InactiveActionDescriptors() []Descriptor {
 	return projectActionDescriptors(inactiveActionOrder[:], nil)

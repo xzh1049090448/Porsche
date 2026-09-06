@@ -40,10 +40,15 @@ func newUserDeleteActions(
 		return nil, ErrActionVerificationUnavailable
 	}
 	descriptors := activeRegistry()
-	if len(descriptors) != 1 || !exactActiveUserDeleteDescriptor(descriptors[0]) || !typedUserDeleteEncoder(descriptors[0].Encode) {
+	var descriptor actionsecurity.Descriptor
+	switch {
+	case len(descriptors) == 1 && exactActiveUserDeleteDescriptor(descriptors[0]) && typedUserDeleteEncoder(descriptors[0].Encode):
+		descriptor = descriptors[0]
+	case exactActiveUserManagementDescriptors(descriptors):
+		descriptor = descriptors[2]
+	default:
 		return nil, ErrActionVerificationUnavailable
 	}
-	descriptor := descriptors[0]
 	resolverDescriptor := descriptor
 	resolve := func(action actionsecurity.Action) (actionsecurity.Descriptor, bool) {
 		if action != actionsecurity.ActionUsersDelete {

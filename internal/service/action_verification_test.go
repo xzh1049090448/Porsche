@@ -47,6 +47,7 @@ type actionIssueSQLScript struct {
 	targetGUID int64
 	policyHead *models.PermissionPolicyHead
 	overrides  []models.PermissionOverride
+	groups     []models.BusinessGroup
 	queries    []actionIssueSQLCall
 	execs      []actionIssueSQLCall
 	failQuery  string
@@ -185,6 +186,31 @@ func (c *actionIssueConn) QueryContext(_ context.Context, query string, args []d
 			values = append(values, []driver.Value{r.ID, r.Guid, int64(r.IsDeleted), r.PolicyVersion, int64(r.Capability), int64(r.Effect)})
 		}
 		return scriptedActionIssueRows(kind, c.script, columns, values), nil
+	case strings.Contains(query, "FROM `business_groups`"):
+		kind = "group"
+		fragments := []string{"FROM `business_groups`", "ORDER BY id ASC", "LIMIT ?", "FOR UPDATE"}
+		var expected []any
+		if strings.Contains(query, "group_key = ?") {
+			fragments = append(fragments, "group_key = ?", "is_deleted = 0")
+			expected = []any{"default", int64(2)}
+		} else if strings.Contains(query, "guid = ?") {
+			expected = []any{c.script.groups[0].Guid, int64(2)}
+		} else {
+			return nil, errors.New("missing group selector")
+		}
+		if err := requireActionIssueQuery(query, args, fragments, expected...); err != nil {
+			return nil, err
+		}
+		if c.script.failQuery == kind {
+			return nil, errors.New("private group query failure")
+		}
+		columns := []string{"id", "guid", "group_key", "display_name", "status", "is_deleted"}
+		values := make([][]driver.Value, 0, len(c.script.groups))
+		for i := range c.script.groups {
+			group := &c.script.groups[i]
+			values = append(values, []driver.Value{group.ID, group.Guid, group.Key, group.DisplayName, int64(group.Status), int64(group.IsDeleted)})
+		}
+		return scriptedActionIssueRows(kind, c.script, columns, values), nil
 	default:
 		return nil, fmt.Errorf("unexpected query: %s", query)
 	}
@@ -321,7 +347,8 @@ func actionIssueScriptFixture(t *testing.T, now int64) (*actionIssueSQLScript, A
 	actor := models.User{ID: 10, AuditFields: models.AuditFields{Guid: 1001}, PasswordHash: &hash, Role: models.UserRoleRoot, Status: models.UserStatusActive, AuthVersion: 7}
 	session := models.Session{ID: 20, AuditFields: models.AuditFields{Guid: 2001}, SID: sid, UserID: actor.ID, SessionVersion: 3, ExpiresAt: now + 60_000}
 	target := &models.User{ID: 30, AuditFields: models.AuditFields{Guid: testNoopTargetGUID}, Role: models.UserRoleUser, Status: models.UserStatusActive, AuthVersion: 4}
-	script := &actionIssueSQLScript{now: now, actor: actor, sessions: []models.Session{session}, target: target, targetGUID: target.Guid}
+	group := models.BusinessGroup{ID: 61, AuditFields: models.AuditFields{Guid: 6101}, Key: "default", DisplayName: "Default", Status: models.BusinessGroupStatusActive}
+	script := &actionIssueSQLScript{now: now, actor: actor, sessions: []models.Session{session}, target: target, targetGUID: target.Guid, groups: []models.BusinessGroup{group}}
 	claims := ActionActor{UserID: actor.ID, UserGUID: actor.Guid, AuthVersion: actor.AuthVersion, SessionSID: sid, SessionVersion: session.SessionVersion}
 	return script, claims, password
 }
@@ -378,6 +405,162 @@ func TestDeleteVerificationIssueAuthorizationMatrix(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestCreateAdminVerificationAcceptsFreshRootAndBindsExactCanonicalIntent(t *testing.T) {
+	const now int64 = 1_800_000_000_000
+	script, actor, currentPassword := actionIssueScriptFixture(t, now)
+	script.groups = []models.BusinessGroup{{ID: 62, AuditFields: models.AuditFields{Guid: 6201}, Key: "enterprise", DisplayName: "Enterprise", Status: models.BusinessGroupStatusActive}}
+	groupGUID := script.groups[0].Guid
+	nickname := "Managed Admin"
+	intentPassword := []byte("A03Adm1n!Secret")
+	intent := actionsecurity.CreateAccountIntent{
+		Username: "managed_admin", Nickname: &nickname, Password: intentPassword, Role: "admin", GroupGUID: &groupGUID,
+		PlanType: int(models.PlanEnterprise), AllowedModels: []string{}, DailyCallLimit: 100,
+		Overrides: []actionsecurity.PermissionOverrideIntent{{Capability: "users.read", Effect: 3}, {Capability: "users.sessions.read", Effect: 2}},
+	}
+	service := newTestActionVerificationService(t, openActionIssueScriptDB(t, script, nil), &actionIssueRedisClient{actionRateEvalClient: newActionRateEvalClient()}, &actionIssueClock{now: now}, bytes.NewReader(bytes.Repeat([]byte{0x51}, 32)), func() int64 { return 9701 })
+	descriptor := activeCreateVerificationDescriptor(t, actionsecurity.ActionUsersCreateAdmin)
+	service.resolve = func(action actionsecurity.Action) (actionsecurity.Descriptor, bool) {
+		return descriptor, action == descriptor.Action
+	}
+	expectedPassword := append([]byte(nil), intentPassword...)
+	expectedIntent := intent
+	expectedIntent.Password = expectedPassword
+	encoded, err := descriptor.Encode(expectedIntent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectedDigest := service.crypto.IntentDigest(encoded)
+	expectedHex := hex.EncodeToString(expectedDigest[:])
+	clear(expectedDigest[:])
+	clear(encoded)
+
+	issued, err := service.Issue(context.Background(), VerificationIssue{
+		Action: descriptor.Action, Actor: actor, Intent: intent, CurrentPassword: []byte(currentPassword), TrustedIP: "203.0.113.30",
+	})
+	if err != nil || issued == nil {
+		t.Fatalf("issued/error = %#v/%v", issued, err)
+	}
+	if script.commits != 1 || script.rollbacks != 0 || len(script.execs) != 2 {
+		t.Fatalf("commit/rollback/writes = %d/%d/%d", script.commits, script.rollbacks, len(script.execs))
+	}
+	if len(script.queries) != 5 || !strings.Contains(script.queries[4].query, "FROM `business_groups`") || !strings.Contains(script.queries[4].query, "FOR UPDATE") {
+		t.Fatalf("locked create-admin query order = %#v", script.queries)
+	}
+	foundDigest := false
+	for _, arg := range script.execs[1].args {
+		if value, ok := arg.Value.(string); ok && value == expectedHex {
+			foundDigest = true
+		}
+	}
+	if !foundDigest {
+		t.Fatalf("verification insert did not bind exact canonical intent digest %q", expectedHex)
+	}
+	if !bytes.Equal(intentPassword, make([]byte, len(intentPassword))) {
+		t.Fatal("create-admin verification retained raw initial password")
+	}
+}
+
+func TestCreateAdminVerificationRejectsOrdinaryCreateAndNonFreshAuthority(t *testing.T) {
+	const now int64 = 1_800_000_000_000
+	for _, tc := range []struct {
+		name   string
+		action actionsecurity.Action
+		mutate func(*actionIssueSQLScript, *ActionActor)
+		want   error
+	}{
+		{name: "ordinary create", action: actionsecurity.ActionUsersCreate, want: ErrActionVerificationInactive},
+		{name: "admin actor", action: actionsecurity.ActionUsersCreateAdmin, mutate: func(script *actionIssueSQLScript, _ *ActionActor) { script.actor.Role = models.UserRoleAdmin }, want: ErrActionVerificationForbidden},
+		{name: "stale auth version", action: actionsecurity.ActionUsersCreateAdmin, mutate: func(_ *actionIssueSQLScript, actor *ActionActor) { actor.AuthVersion++ }, want: ErrActionVerificationForbidden},
+		{name: "stale session version", action: actionsecurity.ActionUsersCreateAdmin, mutate: func(_ *actionIssueSQLScript, actor *ActionActor) { actor.SessionVersion++ }, want: ErrActionVerificationForbidden},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			script, actor, currentPassword := actionIssueScriptFixture(t, now)
+			if tc.mutate != nil {
+				tc.mutate(script, &actor)
+			}
+			password := []byte("A03Adm1n!Secret")
+			intent := actionsecurity.CreateAccountIntent{Username: "managed_admin", Password: password, Role: "admin", PlanType: int(models.PlanFree), AllowedModels: []string{}, DailyCallLimit: 100}
+			service := newTestActionVerificationService(t, openActionIssueScriptDB(t, script, nil), &actionIssueRedisClient{actionRateEvalClient: newActionRateEvalClient()}, &actionIssueClock{now: now}, bytes.NewReader(bytes.Repeat([]byte{0x52}, 32)), func() int64 { return 9702 })
+			descriptor := activeCreateVerificationDescriptor(t, tc.action)
+			service.resolve = func(action actionsecurity.Action) (actionsecurity.Descriptor, bool) {
+				return descriptor, action == descriptor.Action
+			}
+			issued, err := service.Issue(context.Background(), VerificationIssue{Action: tc.action, Actor: actor, Intent: intent, CurrentPassword: []byte(currentPassword), TrustedIP: "203.0.113.31"})
+			if issued != nil || !errors.Is(err, tc.want) || len(script.execs) != 0 {
+				t.Fatalf("issued/error/writes = %#v/%v/%d, want nil/%v/0", issued, err, len(script.execs), tc.want)
+			}
+			if !bytes.Equal(password, make([]byte, len(password))) {
+				t.Fatal("rejected verification retained raw initial password")
+			}
+		})
+	}
+}
+
+func TestCreateAdminVerificationValidatesCanonicalGroupPlanAndOverridesUnderLocks(t *testing.T) {
+	const now int64 = 1_800_000_000_000
+	tests := []struct {
+		name   string
+		mutate func(*actionIssueSQLScript, *actionsecurity.CreateAccountIntent)
+		want   error
+	}{
+		{name: "missing default group", mutate: func(script *actionIssueSQLScript, _ *actionsecurity.CreateAccountIntent) { script.groups = nil }, want: ErrActionVerificationUnavailable},
+		{name: "inactive explicit group", mutate: func(script *actionIssueSQLScript, intent *actionsecurity.CreateAccountIntent) {
+			script.groups[0].Status = models.BusinessGroupStatusInactive
+			intent.GroupGUID = &script.groups[0].Guid
+		}, want: ErrActionVerificationHidden},
+		{name: "invalid plan", mutate: func(_ *actionIssueSQLScript, intent *actionsecurity.CreateAccountIntent) { intent.PlanType = 99 }, want: ErrActionVerificationConflict},
+		{name: "weak password", mutate: func(_ *actionIssueSQLScript, intent *actionsecurity.CreateAccountIntent) {
+			intent.Password = []byte("password")
+		}, want: ErrActionVerificationConflict},
+		{name: "unknown override", mutate: func(_ *actionIssueSQLScript, intent *actionsecurity.CreateAccountIntent) {
+			intent.Overrides = []actionsecurity.PermissionOverrideIntent{{Capability: "unknown", Effect: 2}}
+		}, want: ErrActionVerificationConflict},
+		{name: "unsorted overrides", mutate: func(_ *actionIssueSQLScript, intent *actionsecurity.CreateAccountIntent) {
+			intent.Overrides = []actionsecurity.PermissionOverrideIntent{{Capability: "users.sessions.read", Effect: 2}, {Capability: "users.read", Effect: 3}}
+		}, want: ErrActionVerificationConflict},
+		{name: "noncanonical username", mutate: func(_ *actionIssueSQLScript, intent *actionsecurity.CreateAccountIntent) {
+			intent.Username = " managed_admin "
+		}, want: ErrActionVerificationConflict},
+		{name: "noncanonical defaults", mutate: func(_ *actionIssueSQLScript, intent *actionsecurity.CreateAccountIntent) { intent.DailyCallLimit = 101 }, want: ErrActionVerificationConflict},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			script, actor, currentPassword := actionIssueScriptFixture(t, now)
+			password := []byte("A03Adm1n!Secret")
+			intent := actionsecurity.CreateAccountIntent{Username: "managed_admin", Password: password, Role: "admin", PlanType: int(models.PlanFree), AllowedModels: []string{}, DailyCallLimit: 100}
+			tc.mutate(script, &intent)
+			password = intent.Password
+			service := newTestActionVerificationService(t, openActionIssueScriptDB(t, script, nil), &actionIssueRedisClient{actionRateEvalClient: newActionRateEvalClient()}, &actionIssueClock{now: now}, &actionIssueObservingReader{password: []byte(currentPassword), data: bytes.Repeat([]byte{0x53}, 32)}, func() int64 { return 9703 })
+			descriptor := activeCreateVerificationDescriptor(t, actionsecurity.ActionUsersCreateAdmin)
+			service.resolve = func(action actionsecurity.Action) (actionsecurity.Descriptor, bool) {
+				return descriptor, action == descriptor.Action
+			}
+			issued, err := service.Issue(context.Background(), VerificationIssue{Action: descriptor.Action, Actor: actor, Intent: intent, CurrentPassword: []byte(currentPassword), TrustedIP: "203.0.113.32"})
+			if issued != nil || !errors.Is(err, tc.want) || len(script.execs) != 0 || script.commits != 0 || script.rollbacks != 1 {
+				t.Fatalf("issued/error/writes/commits/rollbacks = %#v/%v/%d/%d/%d, want nil/%v/0/0/1", issued, err, len(script.execs), script.commits, script.rollbacks, tc.want)
+			}
+			if len(script.queries) < 4 || !strings.Contains(script.queries[0].query, "FOR UPDATE") || !strings.Contains(script.queries[1].query, "FOR UPDATE") {
+				t.Fatalf("validation occurred before identity locks: %#v", script.queries)
+			}
+			if !bytes.Equal(password, make([]byte, len(password))) {
+				t.Fatal("invalid create-admin intent retained raw initial password")
+			}
+		})
+	}
+}
+
+func activeCreateVerificationDescriptor(t *testing.T, action actionsecurity.Action) actionsecurity.Descriptor {
+	t.Helper()
+	for _, descriptor := range actionsecurity.FutureActionDescriptors() {
+		if descriptor.Action == action {
+			descriptor.Active = true
+			return descriptor
+		}
+	}
+	t.Fatalf("create descriptor %d missing", action)
+	return actionsecurity.Descriptor{}
 }
 
 func TestDeleteVerificationIssueRejectsLockedIntentBeforePasswordAndWrites(t *testing.T) {

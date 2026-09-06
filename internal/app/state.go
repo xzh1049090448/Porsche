@@ -14,21 +14,22 @@ import (
 )
 
 type State struct {
-	Settings             *config.Settings
-	DB                   *gorm.DB
-	Auth                 *service.AuthService
-	Billing              *service.BillingService
-	SMS                  *service.SMSService
-	Platform             *service.PlatformChatService
-	GatewayTokens        *service.GatewayTokenService
-	WhiteLabel           *whitelabel.WhiteLabelService
-	Audit                *service.AuditService
-	AuthRedis            *service.AuthRedis
-	Sessions             *service.SessionService
-	ActionSecurityCrypto *actionsecurity.Crypto
-	UserDeleteActions    *service.UserDeleteActions
-	ActionVerifications  *service.ActionVerificationService
-	HTTP                 *http.Client
+	Settings              *config.Settings
+	DB                    *gorm.DB
+	Auth                  *service.AuthService
+	Billing               *service.BillingService
+	SMS                   *service.SMSService
+	Platform              *service.PlatformChatService
+	GatewayTokens         *service.GatewayTokenService
+	WhiteLabel            *whitelabel.WhiteLabelService
+	Audit                 *service.AuditService
+	AuthRedis             *service.AuthRedis
+	Sessions              *service.SessionService
+	ActionSecurityCrypto  *actionsecurity.Crypto
+	UserManagementActions *service.UserManagementActions
+	UserDeleteActions     *service.UserDeleteActions
+	ActionVerifications   *service.ActionVerificationService
+	HTTP                  *http.Client
 }
 
 func NewState(settings *config.Settings, db *gorm.DB) (*State, error) {
@@ -36,14 +37,14 @@ func NewState(settings *config.Settings, db *gorm.DB) (*State, error) {
 }
 
 type stateConstructors struct {
-	newAuthRedisFromURL  func(context.Context, string, string) (*service.AuthRedis, error)
-	newUserDeleteActions func(*gorm.DB, *service.AuthRedis, *actionsecurity.Crypto) (*service.UserDeleteActions, error)
+	newAuthRedisFromURL      func(context.Context, string, string) (*service.AuthRedis, error)
+	newUserManagementActions func(*gorm.DB, *service.AuthRedis, *actionsecurity.Crypto) (*service.UserManagementActions, error)
 }
 
 func defaultStateConstructors() stateConstructors {
 	return stateConstructors{
-		newAuthRedisFromURL:  service.NewAuthRedisFromURL,
-		newUserDeleteActions: service.NewUserDeleteActions,
+		newAuthRedisFromURL:      service.NewAuthRedisFromURL,
+		newUserManagementActions: service.NewUserManagementActions,
 	}
 }
 
@@ -97,16 +98,22 @@ func newState(settings *config.Settings, db *gorm.DB, constructors stateConstruc
 	s.Sessions = service.NewSessionService(db, s.AuthRedis, settings)
 	s.Auth.SetSessionService(s.Sessions)
 	if s.ActionSecurityCrypto != nil {
-		if db == nil || s.AuthRedis == nil || constructors.newUserDeleteActions == nil {
+		if db == nil || s.AuthRedis == nil || constructors.newUserManagementActions == nil {
 			return nil, service.ErrActionVerificationUnavailable
 		}
-		userDeleteActions, err := constructors.newUserDeleteActions(db, s.AuthRedis, s.ActionSecurityCrypto)
-		if err != nil || userDeleteActions == nil || userDeleteActions.Verifications == nil ||
-			userDeleteActions.Operations == nil || userDeleteActions.Outbox == nil || userDeleteActions.NewExecution == nil {
+		userManagementActions, err := constructors.newUserManagementActions(db, s.AuthRedis, s.ActionSecurityCrypto)
+		if err != nil || userManagementActions == nil || userManagementActions.Verifications == nil ||
+			userManagementActions.Operations == nil || userManagementActions.DeleteOutbox == nil || userManagementActions.CreateOutbox == nil ||
+			userManagementActions.NewDeleteExecution == nil || userManagementActions.NewCreateExecution == nil {
 			return nil, service.ErrActionVerificationUnavailable
 		}
+		userDeleteActions := userManagementActions.DeleteActions()
+		if userDeleteActions == nil {
+			return nil, service.ErrActionVerificationUnavailable
+		}
+		s.UserManagementActions = userManagementActions
 		s.UserDeleteActions = userDeleteActions
-		s.ActionVerifications = userDeleteActions.Verifications
+		s.ActionVerifications = userManagementActions.Verifications
 	}
 	s.Platform = service.NewPlatformChatService(service.PlatformDeps{
 		Settings:   settings,
