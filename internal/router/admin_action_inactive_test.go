@@ -37,19 +37,24 @@ func TestRouteInventoryRemainsPreB1E(t *testing.T) {
 	}
 }
 
-func TestUserDeleteActionRouteInventoryIsExactAndBundleGated(t *testing.T) {
-	complete := &service.UserDeleteActions{
-		Verifications: &service.ActionVerificationService{},
-		Operations:    &service.ActionOperationService{},
-		Outbox:        &service.AdminActionOutboxWriter{},
-		NewExecution: func(serviceIntent actionsecurity.DeleteUserIntent) (*service.DeleteUserExecution, error) {
+func completeRouterUserManagementActions() *service.UserManagementActions {
+	return &service.UserManagementActions{
+		Verifications: &service.ActionVerificationService{}, Operations: &service.ActionOperationService{},
+		DeleteOutbox: &service.AdminActionOutboxWriter{}, CreateOutbox: &service.CreateAccountOutboxWriter{},
+		NewDeleteExecution: func(actionsecurity.DeleteUserIntent) (*service.DeleteUserExecution, error) { return nil, nil },
+		NewCreateExecution: func(actionsecurity.Action, actionsecurity.CreateAccountIntent, []byte, service.CreateAccountRequestMetadata) (*service.CreateAccountExecution, error) {
 			return nil, nil
 		},
 	}
-	state := &app.State{Settings: &config.Settings{AppEnv: "test", AllowedHosts: "example.com"}, UserDeleteActions: complete}
+}
+
+func TestUserManagementActionRouteInventoryIsExactAndBundleGated(t *testing.T) {
+	complete := completeRouterUserManagementActions()
+	state := &app.State{Settings: &config.Settings{AppEnv: "test", AllowedHosts: "example.com"}, UserManagementActions: complete}
 	engine := router.New(state)
 	want := []routeContract{
 		{http.MethodPost, "/admin/v2/action-verifications"},
+		{http.MethodPost, "/admin/v2/users"},
 		{http.MethodPost, "/admin/v2/users/:guid/actions"},
 		{http.MethodGet, "/admin/v2/operations"},
 	}
@@ -64,13 +69,61 @@ func TestUserDeleteActionRouteInventoryIsExactAndBundleGated(t *testing.T) {
 		}
 	}
 
-	partials := []*service.UserDeleteActions{
+	partials := []*service.UserManagementActions{
 		{},
-		{Verifications: complete.Verifications, Operations: complete.Operations, Outbox: complete.Outbox},
-		{Verifications: complete.Verifications, Operations: complete.Operations, NewExecution: complete.NewExecution},
+		{Verifications: complete.Verifications, Operations: complete.Operations, DeleteOutbox: complete.DeleteOutbox, CreateOutbox: complete.CreateOutbox, NewDeleteExecution: complete.NewDeleteExecution},
+		{Verifications: complete.Verifications, Operations: complete.Operations, DeleteOutbox: complete.DeleteOutbox, CreateOutbox: complete.CreateOutbox, NewCreateExecution: complete.NewCreateExecution},
 	}
 	for index, partial := range partials {
-		partialEngine := router.New(&app.State{Settings: state.Settings, UserDeleteActions: partial})
+		partialEngine := router.New(&app.State{Settings: state.Settings, UserManagementActions: partial})
+		for _, expected := range want {
+			if slices.ContainsFunc(partialEngine.Routes(), func(route gin.RouteInfo) bool { return route.Method == expected.Method && route.Path == expected.Path }) {
+				t.Fatalf("partial bundle %d registered %s %s", index, expected.Method, expected.Path)
+			}
+		}
+	}
+}
+
+func TestAdminUserCreateRouteInventoryUsesOneCompleteBundleWithoutDuplicateOwnership(t *testing.T) {
+	complete := completeRouterUserManagementActions()
+	settings := &config.Settings{AppEnv: "test", AllowedHosts: "example.com"}
+	engine := router.New(&app.State{Settings: settings, UserManagementActions: complete})
+	want := []routeContract{
+		{http.MethodPost, "/admin/v2/action-verifications"},
+		{http.MethodPost, "/admin/v2/users"},
+		{http.MethodPost, "/admin/v2/users/:guid/actions"},
+		{http.MethodGet, "/admin/v2/operations"},
+	}
+	for _, expected := range want {
+		count := 0
+		for _, route := range engine.Routes() {
+			if route.Method == expected.Method && route.Path == expected.Path {
+				count++
+			}
+		}
+		if count != 1 {
+			t.Fatalf("route %s %s count=%d want=1", expected.Method, expected.Path, count)
+		}
+	}
+	getCount, legacyCount := 0, 0
+	for _, route := range engine.Routes() {
+		if route.Method == http.MethodGet && route.Path == "/admin/v2/users" {
+			getCount++
+		}
+		if route.Path == "/admin/users" {
+			legacyCount++
+		}
+	}
+	if getCount != 1 || legacyCount != 1 {
+		t.Fatalf("existing GET/legacy collection routes changed: get=%d legacy=%d", getCount, legacyCount)
+	}
+
+	partials := []*service.UserManagementActions{{}, {
+		Verifications: complete.Verifications, Operations: complete.Operations, DeleteOutbox: complete.DeleteOutbox,
+		CreateOutbox: complete.CreateOutbox, NewDeleteExecution: complete.NewDeleteExecution,
+	}}
+	for index, partial := range partials {
+		partialEngine := router.New(&app.State{Settings: settings, UserManagementActions: partial})
 		for _, expected := range want {
 			if slices.ContainsFunc(partialEngine.Routes(), func(route gin.RouteInfo) bool { return route.Method == expected.Method && route.Path == expected.Path }) {
 				t.Fatalf("partial bundle %d registered %s %s", index, expected.Method, expected.Path)
@@ -80,12 +133,9 @@ func TestUserDeleteActionRouteInventoryIsExactAndBundleGated(t *testing.T) {
 }
 
 func TestUserDeleteActionRoutesKeepAuthenticationAndSecurityHeaders(t *testing.T) {
-	state := &app.State{Settings: &config.Settings{AppEnv: "test", AllowedHosts: "example.com"}, UserDeleteActions: &service.UserDeleteActions{
-		Verifications: &service.ActionVerificationService{}, Operations: &service.ActionOperationService{}, Outbox: &service.AdminActionOutboxWriter{},
-		NewExecution: func(actionsecurity.DeleteUserIntent) (*service.DeleteUserExecution, error) { return nil, nil },
-	}}
+	state := &app.State{Settings: &config.Settings{AppEnv: "test", AllowedHosts: "example.com"}, UserManagementActions: completeRouterUserManagementActions()}
 	engine := router.New(state)
-	for caseIndex, route := range []routeContract{{http.MethodPost, "/admin/v2/action-verifications"}, {http.MethodPost, "/admin/v2/users/123/actions"}, {http.MethodGet, "/admin/v2/operations?scope=users.delete"}} {
+	for caseIndex, route := range []routeContract{{http.MethodPost, "/admin/v2/action-verifications"}, {http.MethodPost, "/admin/v2/users"}, {http.MethodPost, "/admin/v2/users/123/actions"}, {http.MethodGet, "/admin/v2/operations?scope=users.delete"}} {
 		req := httptest.NewRequest(route.Method, route.Path, strings.NewReader(`{}`))
 		rec := httptest.NewRecorder()
 		engine.ServeHTTP(rec, req)
@@ -95,16 +145,12 @@ func TestUserDeleteActionRoutesKeepAuthenticationAndSecurityHeaders(t *testing.T
 	}
 }
 
-func TestCompleteUserDeleteBundleLeavesGenericAndOtherActionPaths404(t *testing.T) {
-	state := &app.State{Settings: &config.Settings{AppEnv: "test", AllowedHosts: "example.com"}, UserDeleteActions: &service.UserDeleteActions{
-		Verifications: &service.ActionVerificationService{}, Operations: &service.ActionOperationService{}, Outbox: &service.AdminActionOutboxWriter{},
-		NewExecution: func(actionsecurity.DeleteUserIntent) (*service.DeleteUserExecution, error) { return nil, nil },
-	}}
+func TestCompleteUserManagementBundleLeavesGenericAndOtherActionPaths404(t *testing.T) {
+	state := &app.State{Settings: &config.Settings{AppEnv: "test", AllowedHosts: "example.com"}, UserManagementActions: completeRouterUserManagementActions()}
 	engine := router.New(state)
 	for caseIndex, route := range []routeContract{
 		{http.MethodPost, "/admin/v2/actions"},
 		{http.MethodPost, "/admin/v2/actions/users.delete"},
-		{http.MethodPost, "/admin/v2/users"},
 		{http.MethodPost, "/admin/v2/users/123/actions/promote"},
 		{http.MethodPost, "/admin/v2/public-content/announcements/publish"},
 		{http.MethodPost, "/admin/v2/public-content/announcements/rollback"},

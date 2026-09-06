@@ -61,6 +61,14 @@ type scriptedUserDeleteBackend struct {
 	queryInputMatches   bool
 }
 
+// registerAdminUserActionRoutes keeps the legacy delete-only unit harness out
+// of the production route registry, which has one complete-bundle owner.
+func registerAdminUserActionRoutes(g *gin.RouterGroup, backend userDeleteActionBackend, settings *config.Settings) {
+	g.POST("/action-verifications", func(c *gin.Context) { issueUserDeleteVerification(c, backend, settings) })
+	g.POST("/users/:guid/actions", func(c *gin.Context) { executeUserDelete(c, backend) })
+	g.GET("/operations", func(c *gin.Context) { queryUserDeleteOperation(c, backend) })
+}
+
 func (s *scriptedUserDeleteBackend) Issue(_ context.Context, in service.VerificationIssue) (*service.IssuedVerification, error) {
 	s.issueCalls++
 	intent, intentOK := in.Intent.(actionsecurity.DeleteUserIntent)

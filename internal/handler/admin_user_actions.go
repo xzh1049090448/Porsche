@@ -9,7 +9,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/porsche/ai-gateway-go/internal/actionsecurity"
-	"github.com/porsche/ai-gateway-go/internal/app"
 	"github.com/porsche/ai-gateway-go/internal/config"
 	"github.com/porsche/ai-gateway-go/internal/dto"
 	"github.com/porsche/ai-gateway-go/internal/httpx"
@@ -28,50 +27,9 @@ type userDeleteActionBackend interface {
 	Query(context.Context, actionsecurity.Action, service.ActionActor, []string) (*service.OperationView, error)
 }
 
-type userDeleteActionBundleBackend struct{ bundle *service.UserDeleteActions }
-
-func (backend userDeleteActionBundleBackend) Issue(ctx context.Context, issue service.VerificationIssue) (*service.IssuedVerification, error) {
-	return backend.bundle.Verifications.Issue(ctx, issue)
-}
-func (backend userDeleteActionBundleBackend) Begin(ctx context.Context, begin service.OperationBegin) (*service.OperationIdentity, *service.OperationView, error) {
-	return backend.bundle.Operations.Begin(ctx, begin)
-}
-func (userDeleteActionBundleBackend) ExecutionReady(identity *service.OperationIdentity) bool {
-	return identity.ReadyForExecution()
-}
-func (backend userDeleteActionBundleBackend) NewExecution(intent actionsecurity.DeleteUserIntent) (*service.DeleteUserExecution, error) {
-	return backend.bundle.NewExecution(intent)
-}
-func (backend userDeleteActionBundleBackend) Execute(ctx context.Context, identity *service.OperationIdentity, execution *service.DeleteUserExecution) (*service.OperationView, error) {
-	return backend.bundle.Operations.Execute(ctx, identity, execution, execution, backend.bundle.Outbox)
-}
-func (backend userDeleteActionBundleBackend) Query(ctx context.Context, action actionsecurity.Action, actor service.ActionActor, values []string) (*service.OperationView, error) {
-	return backend.bundle.Operations.Query(ctx, action, actor, values)
-}
-
-// RegisterAdminUserActions exposes only the reviewed users.delete adapters.
-// A nil or partially constructed bundle leaves every route unregistered.
-func RegisterAdminUserActions(r *gin.Engine, state *app.State) {
-	if r == nil || state == nil || state.Settings == nil || !completeUserDeleteActionBundle(state.UserDeleteActions) {
-		return
-	}
-	g := r.Group("/admin/v2", gatewayRequestID(), adminUserActionNoStore, middleware.RequireUser(state))
-	registerAdminUserActionRoutes(g, userDeleteActionBundleBackend{bundle: state.UserDeleteActions}, state.Settings)
-}
-
-func completeUserDeleteActionBundle(bundle *service.UserDeleteActions) bool {
-	return bundle != nil && bundle.Verifications != nil && bundle.Operations != nil && bundle.Outbox != nil && bundle.NewExecution != nil
-}
-
 func adminUserActionNoStore(c *gin.Context) {
 	c.Header("Cache-Control", "no-store")
 	c.Next()
-}
-
-func registerAdminUserActionRoutes(g *gin.RouterGroup, backend userDeleteActionBackend, settings *config.Settings) {
-	g.POST("/action-verifications", func(c *gin.Context) { issueUserDeleteVerification(c, backend, settings) })
-	g.POST("/users/:guid/actions", func(c *gin.Context) { executeUserDelete(c, backend) })
-	g.GET("/operations", func(c *gin.Context) { queryUserDeleteOperation(c, backend) })
 }
 
 func issueUserDeleteVerification(c *gin.Context, backend userDeleteActionBackend, settings *config.Settings) {
