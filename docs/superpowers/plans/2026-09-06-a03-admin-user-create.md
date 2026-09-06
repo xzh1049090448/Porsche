@@ -4,7 +4,7 @@
 
 **Goal:** Deliver the real `/admin/v2/users` create flow for ordinary users and administrators with permanent username uniqueness, default groups, authorization, optional administrator verification tickets, atomic permissions/audit/outbox writes, idempotent recovery, and a safe Vue form.
 
-**Architecture:** Append a `users.create` operation descriptor that uses the existing operation ledger without a ticket, then activate the existing `users.create_admin` descriptor for Root-only verified creation. Both paths normalize into one immutable account-create intent and execute one transactional consumer. Migration 0007 adds the real business-group relation; the frontend uses a dedicated create workflow and strict DTO mapper before integrating a dialog into `/users`.
+**Architecture:** Stage `users.create` and `users.create_admin` descriptor contracts before their consumers exist, while keeping production resolution on the reviewed `users.delete` action. Task 7 atomically activates both create actions only with the complete user-management bundle. Both paths normalize into one immutable account-create intent and execute one transactional consumer. Migration 0007 adds the real business-group relation; the frontend uses a dedicated create workflow and strict DTO mapper before integrating a dialog into `/users`.
 
 **Tech Stack:** Go 1.22, Gin, GORM, MySQL 8, Redis 7, Vue 3, Pinia, Element Plus, Node test runner, Vite.
 
@@ -16,7 +16,7 @@
 - Frontend: `/Users/xuzhihao/code/Porsche-Web/.worktrees/admin-public-260903`
 - Design: `docs/superpowers/specs/2026-09-06-a03-admin-user-create-design.md`
 - Use TDD for every behavior change. Do not alter migration 0001–0006 or their checksums.
-- Do not run production migrations, deploy, push, create real business users, or activate actions other than `users.create`, `users.create_admin`, and the already active `users.delete`.
+- Do not run production migrations, deploy, push, create real business users, or activate actions before Task 7 constructs and validates their coherent consumer bundle.
 - A03 completion may update only A03 from `BLOCKED_NOT_IMPLEMENTED` to `PASS_LIMITED_SCOPE`; all unrelated acceptance rows retain their current state.
 
 ## File map
@@ -174,7 +174,7 @@ Expected: non-fixture tests PASS; MySQL fixture test is an explicit SKIP when `T
 
 `git add internal/models internal/migration && git commit -m "feat: add default business group schema"`
 
-### Task 3: Define canonical create intents and registry activation
+### Task 3: Define canonical create intents and candidate descriptors
 
 **Files:**
 - Modify: `internal/actionsecurity/types.go`
@@ -185,7 +185,7 @@ Expected: non-fixture tests PASS; MySQL fixture test is an explicit SKIP when `T
 
 - [ ] **Step 1: Write canonical-intent RED tests**
 
-Add table tests proving role/default/group/plan/password and sorted permission overrides affect HMAC input, duplicate capabilities and invalid effects fail, inputs are not mutated except owned password bytes are cleared, and the active registry is exactly create/create-admin/delete.
+Add table tests proving role/default/group/plan/password and sorted permission overrides affect HMAC input, duplicate capabilities and invalid effects fail, inputs are not mutated except owned password bytes are cleared, and the future candidate order is create/create-admin/delete. Production `ActiveActionRegistry()` and `ResolveActiveAction` remain delete-only until Task 7.
 
 ```go
 func TestCreateAdminIntentCanonicalOverrides(t *testing.T) {
@@ -207,15 +207,15 @@ Expected: compile/assertion failure for missing ordinary action and overrides.
 
 - [ ] **Step 3: Implement exact descriptors**
 
-Append `ActionUsersCreate Action = 9`; do not renumber 1–8. Replace the narrow input with `CreateAccountIntent` containing username, optional nickname, owned password bytes, role, optional group GUID, plan, resolved models/limit, and overrides. Register:
+Append `ActionUsersCreate Action = 9`; do not renumber 1–8. Replace the narrow input with `CreateAccountIntent` containing username, optional nickname, owned password bytes, role, optional group GUID, plan, resolved models/limit, and overrides. Stage these exact future activation candidates, with both create descriptors inactive:
 
 ```go
-{ActionUsersCreate, "users.create", "users.create", false, false, true, TargetNone, encodeCreateUserAny},
-{ActionUsersCreateAdmin, "users.create_admin", "users.create", true, true, true, TargetNone, encodeCreateAdminAny},
+{ActionUsersCreate, "users.create", "users.create", false, false, false, TargetNone, encodeCreateUserAny},
+{ActionUsersCreateAdmin, "users.create_admin", "users.create", true, true, false, TargetNone, encodeCreateAdminAny},
 {ActionUsersDelete, "users.delete", "users.delete", false, true, true, TargetUser, encodeDeleteUserAny},
 ```
 
-Keep all other descriptors inactive. Encode ordinary/admin role explicitly; canonicalize overrides by capability and reject duplicate/unknown-shaped entries before encoding.
+Keep `ActiveActionRegistry()` and `ResolveActiveAction` on the existing delete-only descriptor. Keep all other descriptors inactive. Encode ordinary/admin role explicitly; canonicalize overrides by capability and reject duplicate/unknown-shaped entries before encoding. Task 7 is the sole activation point after its complete bundle checks pass.
 
 - [ ] **Step 4: Run GREEN tests and secret scan**
 
@@ -407,6 +407,8 @@ Expected: PASS; rollback assertions show zero committed partial rows.
 - Modify: `internal/service/action_verification_test.go`
 - Create: `internal/service/action_create_user_bundle.go`
 - Create: `internal/service/action_create_user_bundle_test.go`
+- Modify: `internal/actionsecurity/registry.go`
+- Modify: `internal/actionsecurity/registry_test.go`
 - Modify: `internal/app/state.go`
 - Modify: `internal/app/state_test.go`
 
@@ -422,7 +424,7 @@ Expected: verification returns unavailable and bundle symbols are absent.
 
 - [ ] **Step 3: Implement the locked validator and bundle**
 
-Add `validateLockedCreateAdminIntent` to the action-specific switch. Construct one `UserManagementActions` bundle sharing DB, Redis, crypto, resolver, clock, RNG, GUID source, operation service, verification service, outbox writer, delete execution factory, and create execution factory. Replace the delete-only state constructor only after completeness checks cover all three active descriptors.
+Add `validateLockedCreateAdminIntent` to the action-specific switch. Construct one `UserManagementActions` bundle sharing DB, Redis, crypto, resolver, clock, RNG, GUID source, operation service, verification service, outbox writer, delete execution factory, and create execution factory. After its completeness checks cover all three actions, atomically promote the exact production registry order `users.create`, `users.create_admin`, `users.delete`; before that point it remains delete-only. Replace the delete-only state constructor only after this activation and bundle validation are coherent.
 
 - [ ] **Step 4: Run service/app GREEN tests**
 
