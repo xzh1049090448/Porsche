@@ -1,9 +1,11 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"sort"
 	"strconv"
 	"testing"
@@ -11,6 +13,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/porsche/ai-gateway-go/internal/app"
 	"github.com/porsche/ai-gateway-go/internal/models"
+	"github.com/porsche/ai-gateway-go/internal/service"
 )
 
 func TestAdminUsersActiveGroupsRequireAuthentication(t *testing.T) {
@@ -132,9 +135,16 @@ func TestAdminUsersActiveGroupsDependencyAndCorruptionFailClosed(t *testing.T) {
 				}
 				restore = func() { _ = state.DB.Delete(&group).Error }
 			case "redis":
-				if err := state.AuthRedis.Close(); err != nil {
-					t.Fatal("close Redis fixture")
+				authRedis := state.AuthRedis
+				failedRedis, err := service.NewAuthRedisFromURL(context.Background(), os.Getenv("TEST_REDIS_URL"), state.Settings.AuthHMACKey)
+				if err != nil {
+					t.Fatal("open independent Redis failure client")
 				}
+				if err := failedRedis.Close(); err != nil {
+					t.Fatal("close independent Redis failure client")
+				}
+				state.AuthRedis = failedRedis
+				restore = func() { state.AuthRedis = authRedis }
 			}
 			if restore != nil {
 				defer restore()
