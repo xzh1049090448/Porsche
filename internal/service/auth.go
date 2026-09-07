@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -67,6 +68,36 @@ func ValidatePassword(password string) error {
 	return nil
 }
 
+// ValidatePasswordBytes enforces the managed-create password contract without
+// materializing plaintext as a Go string.
+func ValidatePasswordBytes(password []byte) error {
+	if !utf8.Valid(password) || utf8.RuneCount(password) < 8 || utf8.RuneCount(password) > 20 {
+		return errBadRequest("密码长度必须为8到20个字符")
+	}
+	trimmed := bytes.TrimSpace(password)
+	for _, weak := range [][]byte{[]byte("password"), []byte("password123"), []byte("12345678"), []byte("qwerty123"), []byte("porsche"), []byte("porsche@2026")} {
+		if asciiEqualFold(trimmed, weak) {
+			return errBadRequest("密码过于简单")
+		}
+	}
+	return nil
+}
+
+func asciiEqualFold(left, right []byte) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	var different byte
+	for index := range left {
+		value := left[index]
+		if value >= 'A' && value <= 'Z' {
+			value += 'a' - 'A'
+		}
+		different |= value ^ right[index]
+	}
+	return different == 0
+}
+
 // NormalizeManagedUserNickname applies the stricter public managed-creation
 // nickname contract without changing self-registration's legacy display-name
 // fallback behavior.
@@ -85,6 +116,15 @@ func HashManagedCreationPassword(password string) (string, error) {
 		return "", err
 	}
 	return security.HashPassword(password)
+}
+
+// HashManagedCreationPasswordBytes validates and derives one managed-create
+// hash while retaining plaintext exclusively in caller-owned byte slices.
+func HashManagedCreationPasswordBytes(password []byte) ([]byte, error) {
+	if err := ValidatePasswordBytes(password); err != nil {
+		return nil, err
+	}
+	return security.HashPasswordBytes(password)
 }
 
 // RegisterUsername creates one ordinary username user. Username uniqueness is

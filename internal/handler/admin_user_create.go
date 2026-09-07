@@ -33,6 +33,7 @@ type userManagementActionBackend interface {
 	Issue(context.Context, service.VerificationIssue) (*service.IssuedVerification, error)
 	Begin(context.Context, service.OperationBegin) (*service.OperationIdentity, *service.OperationView, error)
 	ExecutionReady(*service.OperationIdentity) bool
+	HashCreatePassword([]byte) ([]byte, error)
 	NewDeleteExecution(actionsecurity.DeleteUserIntent) (*service.DeleteUserExecution, error)
 	ExecuteDelete(context.Context, *service.OperationIdentity, *service.DeleteUserExecution) (*service.OperationView, error)
 	NewCreateExecution(actionsecurity.Action, actionsecurity.CreateAccountIntent, []byte, service.CreateAccountRequestMetadata) (*service.CreateAccountExecution, error)
@@ -56,6 +57,10 @@ func (backend userManagementActionBundleBackend) Begin(ctx context.Context, begi
 
 func (userManagementActionBundleBackend) ExecutionReady(identity *service.OperationIdentity) bool {
 	return identity.ReadyForExecution()
+}
+
+func (userManagementActionBundleBackend) HashCreatePassword(password []byte) ([]byte, error) {
+	return service.HashManagedCreationPasswordBytes(password)
 }
 
 func (backend userManagementActionBundleBackend) NewDeleteExecution(intent actionsecurity.DeleteUserIntent) (*service.DeleteUserExecution, error) {
@@ -95,6 +100,9 @@ func (backend userManagementActionBundleBackend) CreateOutcome(ctx context.Conte
 	switch operation.State {
 	case models.OperationSucceeded:
 		response, err := backend.bundle.Operations.CreateAccountResponse(ctx, action, actor, publicRef)
+		if errors.Is(err, service.ErrCreatedAccountDeleted) && response == nil {
+			return nil, http.StatusGone, service.ErrCreatedAccountDeleted
+		}
 		if err != nil || response == nil || response.HTTPStatus != status {
 			return nil, 0, service.ErrActionOperationUnavailable
 		}
@@ -282,21 +290,10 @@ func executeAdminUserCreate(c *gin.Context, backend userManagementActionBackend,
 	intent := adminUserCreateIntent(request)
 	defer clear(intent.Password)
 	request.ClearSecrets()
-	passwordText := string(intent.Password)
-	passwordHashText, err := service.HashManagedCreationPassword(passwordText)
-	passwordText = ""
-	if err != nil {
-		adminUserCreateError(c, errInvalidAdminUserCreate, "")
-		return
-	}
-	passwordHash := []byte(passwordHashText)
-	passwordHashText = ""
-	defer clear(passwordHash)
 	actor := adminUserActionActor(c)
 	identity, view, err := backend.Begin(c.Request.Context(), service.OperationBegin{
 		Action: action, Actor: actor, IdempotencyKeyValues: keyValues, TicketValues: ticketValues, Intent: intent,
 	})
-	intent.Password = nil
 	if err != nil {
 		adminUserActionError(c, err, "")
 		return
@@ -309,6 +306,15 @@ func executeAdminUserCreate(c *gin.Context, backend userManagementActionBackend,
 		writeAdminUserCreateView(c, backend, action, actor, identity, view)
 		return
 	}
+	passwordHash, err := backend.HashCreatePassword(intent.Password)
+	clear(intent.Password)
+	intent.Password = nil
+	if err != nil || len(passwordHash) == 0 {
+		clear(passwordHash)
+		adminUserCreateError(c, errInvalidAdminUserCreate, "")
+		return
+	}
+	defer clear(passwordHash)
 	trustedIP := ""
 	if settings != nil {
 		trustedIP = httpx.ClientIP(c, settings.TrustProxyHeaders, settings.TrustedProxyCIDRs)
@@ -355,6 +361,10 @@ func writeAdminUserCreateView(c *gin.Context, backend userManagementActionBacken
 			return
 		}
 		response, status, err := backend.CreateOutcome(c.Request.Context(), action, actor, view.PublicRef)
+		if errors.Is(err, service.ErrCreatedAccountDeleted) && response == nil && status == http.StatusGone {
+			adminUserActionFixedError(c, http.StatusGone, "created_user_deleted", view.PublicRef)
+			return
+		}
 		if err != nil || response == nil || status != http.StatusCreated || response.HTTPStatus != status || response.MediaType != "application/json" || len(response.Body) == 0 {
 			adminUserActionError(c, service.ErrActionOperationUnavailable, "")
 			return

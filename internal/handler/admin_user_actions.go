@@ -343,7 +343,7 @@ func adminUserActionError(c *gin.Context, err error, operationRef string) {
 }
 
 func adminUserActionFixedError(c *gin.Context, status int, code, operationRef string) {
-	if code != "operation_commit_unknown" || !validUserDeleteOperationRef(operationRef) {
+	if (code != "operation_commit_unknown" && code != "created_user_deleted") || !validUserDeleteOperationRef(operationRef) {
 		operationRef = ""
 	}
 	requestID := c.Writer.Header().Get("X-Request-ID")

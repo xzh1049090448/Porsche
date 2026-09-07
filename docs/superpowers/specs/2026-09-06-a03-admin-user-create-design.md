@@ -1,7 +1,7 @@
 # A03 管理端创建用户与管理员设计
 
 日期：2026-09-06  
-状态：设计已获用户批准并完成规格自审，待用户书面审阅后编制实施计划  
+状态：设计已获用户批准；2026-09-07 按三审结论补充删除隐私、响应完整性、密码哈希顺序、分组 fail-closed 与审计结果契约
 范围：PRD-260903 A03；不包含用户编辑、启停、密码重置、角色变更、金额 Mock、分组管理界面或生产发布
 
 ## 1. 目标与既定边界
@@ -98,15 +98,21 @@
 - 成功提交后响应丢失：客户端用现有 operation query 查询；不得自动生成新 key 重做。
 - 失败前未提交业务事务：返回稳定错误；票据消费和 operation 状态遵守现有恢复语义。
 
+终态成功响应由 `admin_operation_responses` 保存。目标账户仍活跃且快照完整时，同一 actor/session/action/key 的相同请求精确重放原 `201`。A14 软删除目标账户时，必须在同一数据库事务内把对应创建快照改为受控脱敏态；之后相同创建请求稳定返回 `410 created_user_deleted`，正文只含通用错误、request ID 和 operation ref，不返回原 username、nickname、GUID、角色、分组或任何旧响应片段。删除事务任一步失败时，账户软删除与快照脱敏一起回滚。
+
+快照使用 action-security 根密钥派生的独立 response key，以 HMAC v1 绑定 integrity version、lifecycle、operation ID/ref、action、terminal state、result kind/GUID、HTTP status、media type 和完整 response body。活跃 legacy v0 行不再允许重放；直接修改 body、digest、version 或 lifecycle 而不能同时生成有效 HMAC 时 fail closed，直接删除快照也 fail closed。密钥轮换后旧快照在没有明确旧 key 生命周期支持时 fail closed。0009 不创建 trigger，也不要求 `SUPER`、`log_bin_trust_function_creators` 或其他生产服务器策略；应用是唯一受控脱敏写入者。
+
 ### 2.4 创建表单分组选项
 
 `GET /admin/v2/groups?status=active` 返回当前操作者可读的启用、未删除业务分组，只包含字符串 GUID、稳定 key 和显示名；要求 `groups.read`，使用 `Cache-Control: no-store` 和 `X-Request-ID`。请求只接受唯一的固定 `status=active`，结果按 key 升序且 `default` 必须存在。依赖不可用、重复 default 或用户可见分组数据损坏时返回 503，不用硬编码选项掩盖问题。
 
-该接口只服务 A03 选择器和后续管理页面，不提供创建、改名、停用或删除分组的写能力。若操作者有 `users.create` 但没有 `groups.read`，前端仍可提交省略 `group_guid` 的默认分组创建；选择器只显示只读的“默认分组”说明，不请求或猜测其他分组。
+该接口只服务 A03 选择器和后续管理页面，不提供创建、改名、停用或删除分组的写能力。若操作者有 `users.create` 但没有 `groups.read`，前端仍可提交省略 `group_guid` 的默认分组创建；选择器只显示不可变的“默认分组”说明，不请求或猜测其他分组。若操作者有 `groups.read`，目录 pending、error、空结果或当前选择不在有效 active catalog 中时均禁止提交，create/verify 请求数必须保持为零。
 
 ## 3. 数据模型与迁移
 
 A03 新增前向迁移，遵守 `docs/conventions/database-standards.md`，不使用 AutoMigrate，不修改已发布 migration checksum。
+
+实际基线在 A03 实施期间已由独立批准的响应快照迁移推进至 0008；本修订新增 0009。0009 为快照增加 lifecycle、integrity version 和 response HMAC，为 outbox 增加脱敏 failure code 与成功/失败结果约束。迁移和 verifier 只依赖普通表级 DDL 权限，并保留 0001–0008 的既有 checksum。
 
 新增 `business_groups`：
 
@@ -128,11 +134,11 @@ A03 新增前向迁移，遵守 `docs/conventions/database-standards.md`，不�
 1. 锁定并重新核验 operation、票据（管理员创建）、actor、session 和 actor permission head/overrides。
 2. 解析并锁定目标分组；重新核验附加 plan/group 权限。
 3. 按规范化 username 查询包括墓碑的冲突记录；数据库永久唯一索引处理并发竞态。
-4. 在事务外预先完成密码强度校验与 Argon2/bcrypt hash 计算；事务内只持有必要 hash，不延长数据库锁。
+4. HTTP 解码只保留 caller-owned `[]byte` 密码并完成字节级强度校验。认证、action rate limit、角色/能力检查和幂等 terminal replay 先完成；replay、forbidden、rate-limited 与其他不可执行请求返回前执行零次 Argon2。只有 `ExecutionReady` 的 fresh attempt 在事务外哈希一次，随后清零明文与 hash 的 owned byte slice；该路径不创建 password string。
 5. 创建 user，写 group/plan/模型范围/每日限制和安全默认值。
 6. 若为 admin，创建 permission head 与 canonical overrides。
-7. 写目标账户的注册安全事实，并写管理创建审计：操作者使用内部 user ID 关联，resource/detail 记录目标 GUID、角色、分组、套餐、权限覆盖类别、原始 HTTP request ID 和 operation ref；密码只记录“已设置”，不记录内容、摘要或长度。
-8. 写 outbox、operation result GUID/status，并消费票据。
+7. 写目标账户的注册安全事实，并写管理创建审计：操作者使用内部 user ID 关联，action 精确为 `users.create` 或 `users.create_admin`；resource/detail 记录 terminal state、脱敏 failure enum、成功时的目标 GUID/角色/分组/套餐/权限覆盖类别、原始 HTTP request ID 和 operation ref。不得记录密码“已设置”标志、内容、摘要或长度。
+8. 写带 terminal success/failure 与脱敏 failure code 的 outbox、operation result GUID/status，并消费票据。
 9. 一次 commit；commit 后才构造响应。
 
 任何一步失败整体回滚，不留下用户、权限半状态、成功审计、成功 outbox 或终态成功 operation。若 commit 结果未知，返回 `503 operation_commit_unknown` 和 `operation_ref`，由 query/recovery 判定，不报告创建成功。
@@ -147,6 +153,7 @@ A03 复用 A14 固定 `admin_action_error` envelope 和安全消息，不返回�
 - `404 action_group_not_found`：显式分组不存在、停用或不可见，统一安全响应。
 - `409 username_conflict`：用户名已被任何活动或墓碑账户占用；只返回冲突事实。
 - `409`：幂等、票据、actor/session/policy 漂移等沿用管理动作错误码。
+- `410 created_user_deleted`：原创建 operation 成功，但目标已按 A14 软删除；只返回安全错误和 operation ref，不读取或返回旧成功正文。
 - `422 action_inactive`：仅用于服务端尚未激活动作或部署版本不一致。
 - `429 action_rate_limited`：带整数秒 `Retry-After`。
 - `503 action_dependency_unavailable|operation_commit_unknown`：数据库、Redis、权限或提交状态不可安全判断。
@@ -176,6 +183,9 @@ A03 复用 A14 固定 `admin_action_error` envelope 和安全消息，不返回�
 - 管理员 intent HMAC 对密码、resolved defaults、group、plan 与排序后 overrides 的绑定和 secret 清理。
 - 同 key 同请求、同 key 异请求、跨 session、并发用户名、票据单次消费和 commit unknown/query。
 - 用户/权限/审计/outbox/operation 的事务回滚注入测试。
+- 创建→删除→重放的真实 MySQL 测试，证明删除与响应脱敏原子、删除后稳定 410 且无 PII。
+- response HMAC 字段绑定、直接数据库 mutation/delete 拒绝，以及 key/version 生命周期测试。
+- hasher 注入计数与并发门禁：forbidden/rate-limited/replay 为 0，fresh 为 1，同一 operation 并发只允许 fresh owner 哈希一次。
 - 密码、ticket、幂等键、旧用户详情和依赖原文不进入日志/响应/持久化。
 - MySQL 8 与 Redis 7 隔离 fixture、focused race、全量 `go test ./...`、build、vet、migration ledger/verifier。
 

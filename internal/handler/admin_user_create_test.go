@@ -5,6 +5,9 @@ import (
 	"context"
 	"crypto/sha256"
 	"net/http"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -34,6 +37,7 @@ type scriptedUserManagementBackend struct {
 	issueCalls        int
 	beginCalls        int
 	newCreateCalls    int
+	hashCalls         int
 	executeCalls      int
 	queryCalls        int
 	outcomeCalls      int
@@ -61,6 +65,61 @@ type scriptedUserManagementBackend struct {
 	outcomeRef        string
 }
 
+type concurrentUserCreateHashBackend struct {
+	freshIdentity  *service.OperationIdentity
+	replayIdentity *service.OperationIdentity
+	bothBegun      chan struct{}
+	beginCalls     atomic.Int32
+	hashCalls      atomic.Int32
+	newCalls       atomic.Int32
+	executeCalls   atomic.Int32
+}
+
+func (backend *concurrentUserCreateHashBackend) Issue(context.Context, service.VerificationIssue) (*service.IssuedVerification, error) {
+	return nil, service.ErrActionOperationUnavailable
+}
+func (backend *concurrentUserCreateHashBackend) Begin(_ context.Context, _ service.OperationBegin) (*service.OperationIdentity, *service.OperationView, error) {
+	finished := int64(1_790_000_000_000)
+	switch backend.beginCalls.Add(1) {
+	case 1:
+		<-backend.bothBegun
+		return backend.freshIdentity, &service.OperationView{PublicRef: testOperationRef, Scope: "users.create", Status: "processing", RetryAfterSeconds: 30}, nil
+	case 2:
+		close(backend.bothBegun)
+		return backend.replayIdentity, &service.OperationView{PublicRef: testOperationRef, Scope: "users.create", Status: "succeeded", FinishedAt: &finished}, nil
+	default:
+		return nil, nil, service.ErrActionOperationUnavailable
+	}
+}
+func (backend *concurrentUserCreateHashBackend) ExecutionReady(identity *service.OperationIdentity) bool {
+	return identity == backend.freshIdentity
+}
+func (backend *concurrentUserCreateHashBackend) HashCreatePassword(password []byte) ([]byte, error) {
+	backend.hashCalls.Add(1)
+	return service.HashManagedCreationPasswordBytes(password)
+}
+func (backend *concurrentUserCreateHashBackend) NewDeleteExecution(actionsecurity.DeleteUserIntent) (*service.DeleteUserExecution, error) {
+	return nil, service.ErrActionOperationUnavailable
+}
+func (backend *concurrentUserCreateHashBackend) ExecuteDelete(context.Context, *service.OperationIdentity, *service.DeleteUserExecution) (*service.OperationView, error) {
+	return nil, service.ErrActionOperationUnavailable
+}
+func (backend *concurrentUserCreateHashBackend) NewCreateExecution(actionsecurity.Action, actionsecurity.CreateAccountIntent, []byte, service.CreateAccountRequestMetadata) (*service.CreateAccountExecution, error) {
+	backend.newCalls.Add(1)
+	return &service.CreateAccountExecution{}, nil
+}
+func (backend *concurrentUserCreateHashBackend) ExecuteCreate(context.Context, *service.OperationIdentity, *service.CreateAccountExecution) (*service.OperationView, error) {
+	backend.executeCalls.Add(1)
+	finished := int64(1_790_000_000_000)
+	return &service.OperationView{PublicRef: testOperationRef, Scope: "users.create", Status: "succeeded", FinishedAt: &finished}, nil
+}
+func (backend *concurrentUserCreateHashBackend) CreateOutcome(context.Context, actionsecurity.Action, service.ActionActor, string) (*service.PersistedActionResponse, int, error) {
+	return adminUserCreateResult("user"), http.StatusCreated, nil
+}
+func (backend *concurrentUserCreateHashBackend) Query(context.Context, actionsecurity.Action, service.ActionActor, []string) (*service.OperationView, error) {
+	return nil, service.ErrActionOperationUnavailable
+}
+
 func (s *scriptedUserManagementBackend) Issue(_ context.Context, issue service.VerificationIssue) (*service.IssuedVerification, error) {
 	s.issueCalls++
 	s.issueAction = issue.Action
@@ -85,6 +144,11 @@ func (s *scriptedUserManagementBackend) Begin(_ context.Context, begin service.O
 
 func (s *scriptedUserManagementBackend) ExecutionReady(*service.OperationIdentity) bool {
 	return s.ready
+}
+
+func (s *scriptedUserManagementBackend) HashCreatePassword(password []byte) ([]byte, error) {
+	s.hashCalls++
+	return service.HashManagedCreationPasswordBytes(password)
 }
 
 func (s *scriptedUserManagementBackend) NewDeleteExecution(actionsecurity.DeleteUserIntent) (*service.DeleteUserExecution, error) {
@@ -172,7 +236,7 @@ func TestAdminUserCreateOrdinaryUsesTicketlessActionHashAndExactDTO(t *testing.T
 		t.Fatalf("security headers cache=%q request_id=%q", rec.Header().Get("Cache-Control"), rec.Header().Get("X-Request-ID"))
 	}
 	passwordDigest := sha256.Sum256([]byte(adminUserCreatePassword))
-	if backend.beginCalls != 1 || backend.beginAction != actionsecurity.ActionUsersCreate || len(backend.beginTickets) != 0 ||
+	if backend.beginCalls != 1 || backend.beginAction != actionsecurity.ActionUsersCreate || len(backend.beginTickets) != 0 || backend.hashCalls != 1 ||
 		backend.beginPasswordHash != passwordDigest || backend.newCreateCalls != 1 || backend.createAction != actionsecurity.ActionUsersCreate ||
 		backend.createIntent.Password != nil || backend.createIntent.Role != "user" || backend.createIntent.PlanType != int(models.PlanFree) ||
 		len(backend.createIntent.AllowedModels) != 0 || backend.createIntent.DailyCallLimit != 100 || len(backend.createIntent.Overrides) != 0 ||
@@ -290,23 +354,25 @@ func TestAdminUserCreateReplayAndA03FailureCodesDoNotReexecute(t *testing.T) {
 		view            *service.OperationView
 		outcomeStatus   int
 		outcomeResponse *service.PersistedActionResponse
+		outcomeErr      error
 		wantStatus      int
 		wantCode        string
 	}{
-		{"replay", &service.OperationView{PublicRef: testOperationRef, Scope: "users.create", Status: "succeeded", FinishedAt: &finished}, 201, adminUserCreateResult("user"), 201, ""},
-		{"username conflict", &service.OperationView{PublicRef: testOperationRef, Scope: "users.create", Status: "failed", FinishedAt: &finished, FailureCode: stringPointer("consumer_validation_failed")}, 409, nil, 409, "username_conflict"},
-		{"group hidden", &service.OperationView{PublicRef: testOperationRef, Scope: "users.create", Status: "failed", FinishedAt: &finished, FailureCode: stringPointer("consumer_validation_failed")}, 404, nil, 404, "action_group_not_found"},
-		{"capability rejected", &service.OperationView{PublicRef: testOperationRef, Scope: "users.create", Status: "failed", FinishedAt: &finished, FailureCode: stringPointer("action_rejected")}, 403, nil, 403, "action_operation_rejected"},
+		{"replay", &service.OperationView{PublicRef: testOperationRef, Scope: "users.create", Status: "succeeded", FinishedAt: &finished}, 201, adminUserCreateResult("user"), nil, 201, ""},
+		{"deleted replay", &service.OperationView{PublicRef: testOperationRef, Scope: "users.create", Status: "succeeded", FinishedAt: &finished}, 410, nil, service.ErrCreatedAccountDeleted, 410, "created_user_deleted"},
+		{"username conflict", &service.OperationView{PublicRef: testOperationRef, Scope: "users.create", Status: "failed", FinishedAt: &finished, FailureCode: stringPointer("consumer_validation_failed")}, 409, nil, nil, 409, "username_conflict"},
+		{"group hidden", &service.OperationView{PublicRef: testOperationRef, Scope: "users.create", Status: "failed", FinishedAt: &finished, FailureCode: stringPointer("consumer_validation_failed")}, 404, nil, nil, 404, "action_group_not_found"},
+		{"capability rejected", &service.OperationView{PublicRef: testOperationRef, Scope: "users.create", Status: "failed", FinishedAt: &finished, FailureCode: stringPointer("action_rejected")}, 403, nil, nil, 403, "action_operation_rejected"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			backend := adminUserCreateBackend("user")
 			backend.ready = false
 			backend.beginView = test.view
-			backend.outcomeStatus, backend.outcomeResponse = test.outcomeStatus, test.outcomeResponse
+			backend.outcomeStatus, backend.outcomeResponse, backend.outcomeErr = test.outcomeStatus, test.outcomeResponse, test.outcomeErr
 			engine := newScriptedUserManagementEngine(t, backend, models.UserRoleAdmin)
 			rec := performActionRequest(engine, http.MethodPost, "/admin/v2/users", `{"username":"alice","password":"`+adminUserCreatePassword+`","role":"user"}`, http.Header{"Idempotency-Key": {testActionKey}})
-			if rec.Code != test.wantStatus || backend.newCreateCalls != 0 || backend.executeCalls != 0 || backend.outcomeCalls != 1 {
+			if rec.Code != test.wantStatus || backend.hashCalls != 0 || backend.newCreateCalls != 0 || backend.executeCalls != 0 || backend.outcomeCalls != 1 {
 				t.Fatalf("status/new/execute/outcome=%d/%d/%d/%d", rec.Code, backend.newCreateCalls, backend.executeCalls, backend.outcomeCalls)
 			}
 			if test.wantStatus == http.StatusCreated {
@@ -318,6 +384,9 @@ func TestAdminUserCreateReplayAndA03FailureCodesDoNotReexecute(t *testing.T) {
 				response := decodeActionTestResponse[actionTestErrorEnvelope](t, rec)
 				if response.Error.Code != test.wantCode {
 					t.Fatalf("code=%q want=%q", response.Error.Code, test.wantCode)
+				}
+				if test.name == "deleted replay" && (response.Error.OperationRef != testOperationRef || strings.Contains(rec.Body.String(), "alice")) {
+					t.Fatalf("deleted replay leaked identity or lost operation reference: %q", rec.Body.String())
 				}
 			}
 		})
@@ -351,7 +420,7 @@ func TestAdminUserCreateRoleCapabilityAndDependencyOutcomesKeepSafeHeaders(t *te
 				headers.Set("X-Action-Ticket", testActionTicket)
 			}
 			rec := performActionRequest(engine, http.MethodPost, "/admin/v2/users", `{"username":"alice","password":"`+adminUserCreatePassword+`","role":"`+test.role+`"}`, headers)
-			if rec.Code != test.wantStatus || backend.beginCalls != 1 || backend.newCreateCalls != 0 || rec.Header().Get("Retry-After") != test.wantRetry {
+			if rec.Code != test.wantStatus || backend.beginCalls != 1 || backend.hashCalls != 0 || backend.newCreateCalls != 0 || rec.Header().Get("Retry-After") != test.wantRetry {
 				t.Fatalf("status/begin/new/retry=%d/%d/%d/%q", rec.Code, backend.beginCalls, backend.newCreateCalls, rec.Header().Get("Retry-After"))
 			}
 			response := decodeActionTestResponse[actionTestErrorEnvelope](t, rec)
@@ -359,6 +428,34 @@ func TestAdminUserCreateRoleCapabilityAndDependencyOutcomesKeepSafeHeaders(t *te
 				t.Fatalf("code/request/cache/header=%q/%q/%q/%q", response.Error.Code, response.Error.RequestID, rec.Header().Get("Cache-Control"), rec.Header().Get("X-Request-ID"))
 			}
 		})
+	}
+}
+
+func TestAdminUserCreateConcurrentSameOperationHashesOnlyFreshAttempt(t *testing.T) {
+	backend := &concurrentUserCreateHashBackend{
+		freshIdentity: &service.OperationIdentity{PublicRef: testOperationRef}, replayIdentity: &service.OperationIdentity{PublicRef: testOperationRef},
+		bothBegun: make(chan struct{}),
+	}
+	engine := newScriptedUserManagementEngine(t, backend, models.UserRoleAdmin)
+	var wait sync.WaitGroup
+	statuses := make(chan int, 2)
+	for i := 0; i < 2; i++ {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			recorder := performActionRequest(engine, http.MethodPost, "/admin/v2/users", `{"username":"alice","password":"`+adminUserCreatePassword+`","role":"user"}`, http.Header{"Idempotency-Key": {testActionKey}})
+			statuses <- recorder.Code
+		}()
+	}
+	wait.Wait()
+	close(statuses)
+	for status := range statuses {
+		if status != http.StatusCreated {
+			t.Fatalf("concurrent status = %d", status)
+		}
+	}
+	if backend.beginCalls.Load() != 2 || backend.hashCalls.Load() != 1 || backend.newCalls.Load() != 1 || backend.executeCalls.Load() != 1 {
+		t.Fatalf("begin/hash/new/execute = %d/%d/%d/%d", backend.beginCalls.Load(), backend.hashCalls.Load(), backend.newCalls.Load(), backend.executeCalls.Load())
 	}
 }
 

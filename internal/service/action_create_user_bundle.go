@@ -86,7 +86,7 @@ func newUserManagementActions(
 		DeleteOutbox:  deleteOutbox,
 		CreateOutbox:  createOutbox,
 		NewDeleteExecution: func(intent actionsecurity.DeleteUserIntent) (*DeleteUserExecution, error) {
-			return newDeleteUserExecution(descriptorByAction[actionsecurity.ActionUsersDelete], intent, nextGUID, clock)
+			return newDeleteUserExecution(descriptorByAction[actionsecurity.ActionUsersDelete], intent, nextGUID, clock, crypto)
 		},
 		NewCreateExecution: func(action actionsecurity.Action, intent actionsecurity.CreateAccountIntent, passwordHash []byte, metadata CreateAccountRequestMetadata) (*CreateAccountExecution, error) {
 			descriptor, ok := descriptorByAction[action]
@@ -94,7 +94,7 @@ func newUserManagementActions(
 				clear(passwordHash)
 				return nil, ErrActionOperationUnavailable
 			}
-			return NewCreateAccountExecution(descriptor, intent, passwordHash, metadata, nextGUID, clock)
+			return NewCreateAccountExecution(descriptor, intent, passwordHash, metadata, nextGUID, clock, crypto)
 		},
 	}
 	if !completeUserManagementActions(bundle) {

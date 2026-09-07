@@ -40,6 +40,7 @@ type CreateAccountExecution struct {
 	metadata   CreateAccountRequestMetadata
 	nextGUID   func() int64
 	clock      persistence.Clock
+	crypto     *actionsecurity.Crypto
 	state      *createAccountExecutionState
 }
 
@@ -64,6 +65,7 @@ func NewCreateAccountExecution(
 	metadata CreateAccountRequestMetadata,
 	nextGUID func() int64,
 	clock persistence.Clock,
+	crypto *actionsecurity.Crypto,
 ) (*CreateAccountExecution, error) {
 	ownedHash := append([]byte(nil), passwordHash...)
 	fail := func() (*CreateAccountExecution, error) {
@@ -72,7 +74,7 @@ func NewCreateAccountExecution(
 		return nil, ErrActionOperationUnavailable
 	}
 	role, ok := createAccountDescriptorRole(descriptor)
-	if !ok || nextGUID == nil || operationInterfaceNil(clock) || !validManagedCreatePasswordHash(ownedHash) || !validCreateRequestID(metadata.RequestID) {
+	if !ok || nextGUID == nil || operationInterfaceNil(clock) || crypto == nil || !validManagedCreatePasswordHash(ownedHash) || !validCreateRequestID(metadata.RequestID) {
 		return fail()
 	}
 	address, err := netip.ParseAddr(metadata.TrustedIP)
@@ -122,6 +124,7 @@ func NewCreateAccountExecution(
 		metadata:   CreateAccountRequestMetadata{RequestID: strings.Clone(metadata.RequestID), TrustedIP: strings.Clone(address.String())},
 		nextGUID:   nextGUID,
 		clock:      clock,
+		crypto:     crypto,
 		state:      &createAccountExecutionState{passwordHash: ownedHash},
 	}, nil
 }
@@ -331,7 +334,7 @@ func (execution *CreateAccountExecution) Execute(ctx context.Context, tx *gorm.D
 	if responseGUID <= 0 {
 		return TerminalOutcome{}, ErrActionOperationUnavailable
 	}
-	if persistCreateAccountResponse(ctx, tx, operation, actorID, responseGUID, now, user, group) != nil {
+	if persistCreateAccountResponse(ctx, tx, operation, actorID, responseGUID, now, user, group, execution.crypto) != nil {
 		return TerminalOutcome{}, ErrActionOperationUnavailable
 	}
 	execution.state.mu.Lock()

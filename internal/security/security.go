@@ -23,13 +23,29 @@ const (
 // HashPassword derives a versioned Argon2id password hash. Only the encoded
 // result is persistable; callers must never log either input or output.
 func HashPassword(password string) (string, error) {
+	encoded, err := HashPasswordBytes([]byte(password))
+	if err != nil {
+		return "", err
+	}
+	return string(encoded), nil
+}
+
+// HashPasswordBytes derives the same project encoding without converting the
+// caller-owned plaintext into a Go string. The input is never mutated.
+func HashPasswordBytes(password []byte) ([]byte, error) {
 	salt := make([]byte, argon2SaltLen)
 	if _, err := rand.Read(salt); err != nil {
-		return "", fmt.Errorf("generate password salt: %w", err)
+		return nil, fmt.Errorf("generate password salt: %w", err)
 	}
-	derived := argon2.IDKey([]byte(password), salt, argon2Time, argon2Memory, argon2Threads, argon2KeyLen)
-	return fmt.Sprintf("$argon2id$v=19$m=%d,t=%d,p=%d$%s$%s", argon2Memory, argon2Time, argon2Threads,
-		base64.RawStdEncoding.EncodeToString(salt), base64.RawStdEncoding.EncodeToString(derived)), nil
+	defer clear(salt)
+	derived := argon2.IDKey(password, salt, argon2Time, argon2Memory, argon2Threads, argon2KeyLen)
+	defer clear(derived)
+	encoded := make([]byte, 0, 96)
+	encoded = append(encoded, "$argon2id$v=19$m=65536,t=3,p=4$"...)
+	encoded = base64.RawStdEncoding.AppendEncode(encoded, salt)
+	encoded = append(encoded, '$')
+	encoded = base64.RawStdEncoding.AppendEncode(encoded, derived)
+	return encoded, nil
 }
 
 // VerifyPassword verifies only the project Argon2id encoding. Legacy bcrypt

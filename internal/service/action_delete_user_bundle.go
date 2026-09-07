@@ -79,7 +79,7 @@ func newUserDeleteActions(
 		Operations:    operations,
 		Outbox:        outbox,
 		NewExecution: func(intent actionsecurity.DeleteUserIntent) (*DeleteUserExecution, error) {
-			return newDeleteUserExecution(executionDescriptor, intent, nextGUID, clock)
+			return newDeleteUserExecution(executionDescriptor, intent, nextGUID, clock, crypto)
 		},
 	}, nil
 }

@@ -52,6 +52,7 @@ func TestDeleteUserExecutionPersistsExactAtomicSoftDelete(t *testing.T) {
 	calls := script.committedCalls()
 	wantKinds := []string{
 		"query:users", "query:user_sessions", "query:gateway_api_tokens", "query:user_permission_heads", "query:user_permission_overrides",
+		"query:admin_operations",
 		"exec:user_sessions", "exec:gateway_api_tokens", "exec:user_permission_heads", "exec:user_permission_overrides", "exec:users", "exec:auth_audit_events",
 	}
 	if got := deleteConsumerCallKinds(calls); fmt.Sprint(got) != fmt.Sprint(wantKinds) {
@@ -69,28 +70,28 @@ func TestDeleteUserExecutionPersistsExactAtomicSoftDelete(t *testing.T) {
 	assertDeleteConsumerArgs(t, calls[3], int64(61))
 	assertDeleteConsumerArgs(t, calls[4], int64(61))
 
-	assertDeleteConsumerUpdate(t, calls[5], []string{"revoked_at", "session_version", "updated_at", "updated_by"},
+	assertDeleteConsumerUpdate(t, calls[6], []string{"revoked_at", "session_version", "updated_at", "updated_by"},
 		"WHERE user_id = ? AND is_deleted = 0 AND revoked_at IS NULL AND session_version < ?")
-	assertDeleteConsumerUpdate(t, calls[6], []string{"status", "updated_at", "updated_by"},
+	assertDeleteConsumerUpdate(t, calls[7], []string{"status", "updated_at", "updated_by"},
 		"WHERE user_id = ? AND is_deleted = 0 AND status = ? AND (expires_at IS NULL OR expires_at > ?)")
-	assertDeleteConsumerUpdate(t, calls[7], []string{"is_deleted", "updated_at", "updated_by"}, "WHERE user_id = ? AND is_deleted = 0")
 	assertDeleteConsumerUpdate(t, calls[8], []string{"is_deleted", "updated_at", "updated_by"}, "WHERE user_id = ? AND is_deleted = 0")
-	assertDeleteConsumerUpdate(t, calls[9], []string{
+	assertDeleteConsumerUpdate(t, calls[9], []string{"is_deleted", "updated_at", "updated_by"}, "WHERE user_id = ? AND is_deleted = 0")
+	assertDeleteConsumerUpdate(t, calls[10], []string{
 		"auth_version", "id_card_hash", "is_deleted", "is_verified", "nickname", "password_hash", "phone", "real_name", "status", "updated_at", "updated_by",
 	}, "WHERE id = ? AND guid = ? AND is_deleted = 0 AND auth_version = ? AND role = ? AND status = ?")
-	assertDeleteConsumerArgs(t, calls[5], int64(8_001), int64(8_001), int64(41), int64(61), int64(math.MaxInt32))
-	assertDeleteConsumerArgs(t, calls[6], int64(models.GatewayTokenRevoked), int64(8_001), int64(41), int64(61), int64(models.GatewayTokenActive), int64(8_001))
-	assertDeleteConsumerArgs(t, calls[7], int64(1), int64(8_001), int64(41), int64(61))
+	assertDeleteConsumerArgs(t, calls[6], int64(8_001), int64(8_001), int64(41), int64(61), int64(math.MaxInt32))
+	assertDeleteConsumerArgs(t, calls[7], int64(models.GatewayTokenRevoked), int64(8_001), int64(41), int64(61), int64(models.GatewayTokenActive), int64(8_001))
 	assertDeleteConsumerArgs(t, calls[8], int64(1), int64(8_001), int64(41), int64(61))
-	assertDeleteConsumerArgs(t, calls[9], nil, int64(1), false, nil, nil, nil, nil, int64(models.UserStatusDisabled), int64(8_001), int64(41),
+	assertDeleteConsumerArgs(t, calls[9], int64(1), int64(8_001), int64(41), int64(61))
+	assertDeleteConsumerArgs(t, calls[10], nil, int64(1), false, nil, nil, nil, nil, int64(models.UserStatusDisabled), int64(8_001), int64(41),
 		int64(61), int64(6_001), int64(7), int64(models.UserRoleUser), int64(models.UserStatusActive))
 	for _, preserved := range []string{"username", "guid", "role", "plan_type", "allowed_models", "created_at", "created_by", "last_login_at", "daily_call_limit", "daily_calls_used", "daily_calls_reset_at", "total_tokens_used"} {
-		if deleteConsumerSetColumns(calls[9].query)[preserved] {
-			t.Errorf("user update changed preserved column %q: %s", preserved, calls[9].query)
+		if deleteConsumerSetColumns(calls[10].query)[preserved] {
+			t.Errorf("user update changed preserved column %q: %s", preserved, calls[10].query)
 		}
 	}
 
-	audit := deleteConsumerInsertValues(t, calls[10])
+	audit := deleteConsumerInsertValues(t, calls[11])
 	wantAudit := map[string]any{
 		"guid": int64(7_001), "created_at": int64(8_001), "created_by": int64(41), "updated_at": int64(8_001), "updated_by": int64(41),
 		"is_deleted": int64(0), "user_id": int64(61), "session_guid": nil, "event_type": int64(models.AuthAuditEventUserDeleted),
@@ -346,6 +347,7 @@ func TestDeleteUserExecutionSanitizesEveryWriteFailureAndRowsMismatch(t *testing
 func TestDeleteUserExecutionIsOneShotAcrossCopiesAndConcurrency(t *testing.T) {
 	db, script := newDeleteConsumerDB(t)
 	execution := newDeleteConsumerExecution(t, deleteWriterIntent(), &deleteConsumerClock{now: 8_001}, func() int64 { return 7_001 })
+	configureDeleteConsumerCreateResponse(t, script, execution.crypto)
 	var successes atomic.Int32
 	var unavailable atomic.Int32
 	start := make(chan struct{})
@@ -377,6 +379,58 @@ func TestDeleteUserExecutionIsOneShotAcrossCopiesAndConcurrency(t *testing.T) {
 	if script.execKindCount("auth_audit_events") != 1 {
 		t.Fatalf("auth audit writes = %d, want 1", script.execKindCount("auth_audit_events"))
 	}
+	if script.execKindCount("admin_operation_responses") != 1 {
+		t.Fatalf("response redactions = %d, want 1", script.execKindCount("admin_operation_responses"))
+	}
+}
+
+func TestDeleteUserResponseRedactionFailureRollsBackSoftDelete(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		failExec bool
+	}{
+		{name: "database failure", failExec: true},
+		{name: "lost update"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			db, script := newDeleteConsumerDB(t)
+			execution := newDeleteConsumerExecution(t, deleteWriterIntent(), &deleteConsumerClock{now: 8_001}, func() int64 { return 7_001 })
+			configureDeleteConsumerCreateResponse(t, script, execution.crypto)
+			if test.failExec {
+				script.failExec = "admin_operation_responses"
+			} else {
+				script.rowsAffected["admin_operation_responses"] = 0
+			}
+			tx := db.Begin()
+			outcome, err := execution.Execute(context.Background(), tx, validDeleteConsumerOperation())
+			if outcome != (TerminalOutcome{}) || !errors.Is(err, ErrActionOperationUnavailable) {
+				t.Fatalf("redaction failure = %#v/%v", outcome, err)
+			}
+			_ = tx.Rollback().Error
+			if len(script.committed) != 0 || script.execKindCount("auth_audit_events") != 0 {
+				t.Fatalf("redaction failure committed partial state: %v", script.committed)
+			}
+		})
+	}
+}
+
+func configureDeleteConsumerCreateResponse(t *testing.T, script *deleteConsumerScript, crypto *actionsecurity.Crypto) {
+	t.Helper()
+	finished := int64(7_999)
+	resultKind := models.ResultUser
+	resultGUID := script.target.Guid
+	resultStatus := 201
+	operation := models.AdminOperation{ID: 131, PublicRef: "op_CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC", Action: int(actionsecurity.ActionUsersCreate), State: models.OperationSucceeded,
+		FinishedAt: &finished, ResultKind: &resultKind, ResultGUID: &resultGUID, ResultHTTPStatus: &resultStatus}
+	body := []byte("{}")
+	hmacValue, ok := createAccountResponseHMAC(crypto, operation, models.OperationResponseActive, resultGUID, resultStatus, createAccountResponseMediaType, body)
+	if !ok {
+		t.Fatal("create response HMAC fixture failed")
+	}
+	script.createOperations = []models.AdminOperation{operation}
+	script.createResponses = []models.AdminOperationResponse{{ID: 141, AuditFields: models.AuditFields{IsDeleted: 0}, OperationID: operation.ID,
+		LifecycleState: models.OperationResponseActive, IntegrityVersion: models.OperationResponseIntegrityHMACV1, ResponseHMAC: &hmacValue,
+		HTTPStatus: resultStatus, MediaType: createAccountResponseMediaType, ResponseBody: body, BodySHA256: redactedCreateResponseSHA256}}
 }
 
 type deleteConsumerClock struct {
@@ -391,7 +445,7 @@ func (clock *deleteConsumerClock) NowMillis() int64 {
 
 func newDeleteConsumerExecution(t *testing.T, intent actionsecurity.DeleteUserIntent, clock *deleteConsumerClock, nextGUID func() int64) *DeleteUserExecution {
 	t.Helper()
-	execution, err := NewDeleteUserExecution(intent, nextGUID, clock)
+	execution, err := NewDeleteUserExecution(intent, nextGUID, clock, createAccountTestCrypto(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -432,6 +486,8 @@ type deleteConsumerScript struct {
 	tokens           []models.GatewayAPIToken
 	heads            []models.PermissionPolicyHead
 	overrides        []models.PermissionOverride
+	createOperations []models.AdminOperation
+	createResponses  []models.AdminOperationResponse
 	failQuery        string
 	failExec         string
 	rowsAffected     map[string]int64
@@ -539,6 +595,18 @@ func (conn *deleteConsumerConn) QueryContext(_ context.Context, query string, ar
 		return &deleteConsumerRows{columns: []string{"id", "session_version"}, values: values}, nil
 	case "gateway_api_tokens", "user_permission_heads", "user_permission_overrides":
 		return conn.script.idRows(table)
+	case "admin_operations":
+		values := make([][]driver.Value, 0, len(conn.script.createOperations))
+		for _, row := range conn.script.createOperations {
+			values = append(values, []driver.Value{row.ID, row.PublicRef, int64(row.Action), int64(row.State), row.FinishedAt, row.ErrorCode, row.ResultKind, row.ResultGUID, row.ResultHTTPStatus, int64(row.IsDeleted)})
+		}
+		return &deleteConsumerRows{columns: []string{"id", "public_ref", "action", "state", "finished_at", "error_code", "result_kind", "result_guid", "result_http_status", "is_deleted"}, values: values}, nil
+	case "admin_operation_responses":
+		values := make([][]driver.Value, 0, len(conn.script.createResponses))
+		for _, row := range conn.script.createResponses {
+			values = append(values, []driver.Value{row.ID, row.OperationID, int64(row.LifecycleState), int64(row.IntegrityVersion), row.ResponseHMAC, int64(row.HTTPStatus), row.MediaType, row.ResponseBody, row.BodySHA256, int64(row.IsDeleted)})
+		}
+		return &deleteConsumerRows{columns: []string{"id", "operation_id", "lifecycle_state", "integrity_version", "response_hmac", "http_status", "media_type", "response_body", "body_sha256", "is_deleted"}, values: values}, nil
 	default:
 		return nil, fmt.Errorf("private unexpected query: %s", query)
 	}
@@ -568,7 +636,7 @@ func (conn *deleteConsumerConn) ExecContext(_ context.Context, query string, arg
 			affected = int64(len(conn.script.heads))
 		case "user_permission_overrides":
 			affected = int64(len(conn.script.overrides))
-		case "users", "auth_audit_events":
+		case "users", "auth_audit_events", "admin_operation_responses":
 			affected = 1
 		default:
 			conn.script.mu.Unlock()
@@ -632,7 +700,7 @@ func deleteConsumerRow(columns []string, values []driver.Value) *deleteConsumerR
 	return &deleteConsumerRows{columns: columns, values: [][]driver.Value{values}}
 }
 func deleteConsumerTable(query string) string {
-	for _, table := range []string{"auth_audit_events", "user_permission_overrides", "user_permission_heads", "gateway_api_tokens", "user_sessions", "users"} {
+	for _, table := range []string{"admin_operation_responses", "admin_operations", "auth_audit_events", "user_permission_overrides", "user_permission_heads", "gateway_api_tokens", "user_sessions", "users"} {
 		if strings.Contains(query, "`"+table+"`") {
 			return table
 		}

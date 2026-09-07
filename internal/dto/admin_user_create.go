@@ -107,7 +107,7 @@ func decodeAdminUserCreateRaw(raw []byte) (AdminUserCreateRequest, error) {
 		return AdminUserCreateRequest{}, ErrAdminUserCreateInvalidBody
 	}
 	password, ok := decodeOwnedUserDeleteJSONString(values[2])
-	if !ok || service.ValidatePassword(string(password)) != nil {
+	if !ok || service.ValidatePasswordBytes(password) != nil {
 		clear(password)
 		return AdminUserCreateRequest{}, ErrAdminUserCreateInvalidBody
 	}

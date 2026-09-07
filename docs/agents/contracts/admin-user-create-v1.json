@@ -1,6 +1,6 @@
 {
   "contract": "admin-user-create-v1",
-  "revision": "2026-09-06-a03-v1",
+  "revision": "2026-09-07-a03-v2",
   "status": "AGREED_FOR_IMPLEMENTATION",
   "design_source": "docs/superpowers/specs/2026-09-06-a03-admin-user-create-design.md",
   "create": {
@@ -137,11 +137,15 @@
     "operation_scopes": ["users.create", "users.create_admin"],
     "operation_key": "unique on actor/session/action/idempotency digest",
     "request_hmac": "covers the normalized complete create intent",
-    "same_scope_same_request": "return the original terminal 201 result without another user or audit record",
+    "same_scope_same_request": {
+      "active_target": "return the exact HMAC-verified original terminal 201 result without another user or audit record",
+      "deleted_target": {"status": 410, "code": "created_user_deleted", "rule": "return only the stable safe error and operation_ref after the A14 delete transaction atomically redacts and re-HMACs the snapshot; never read or return the old success body"}
+    },
     "same_scope_different_request": {"status": 409, "code": "idempotency_conflict"},
     "cross_session_reuse": {"status": 409, "code": "idempotency_cross_session"},
     "lost_response": "query the operation with the same scope; never automatically create a new key and replay",
-    "pre_commit_failure": "return a stable error; ticket consumption and operation state use the existing recovery semantics"
+    "pre_commit_failure": "return a stable error; ticket consumption and operation state use the existing recovery semantics",
+    "response_integrity": {"version": 1, "key": "independent response key derived from the action-security root key", "binding": ["integrity_version", "lifecycle", "operation_id", "operation_ref", "action", "terminal_state", "result_kind", "result_guid", "http_status", "media_type", "response_body"], "tamper_rule": "legacy active rows, direct body/digest/version/lifecycle mutation without a valid HMAC, direct snapshot deletion, and unsupported key rotation fail closed"}
   },
   "operation_query": {
     "method": "GET",
@@ -165,25 +169,27 @@
   "active_group_directory": {
     "method": "GET",
     "path": "/admin/v2/groups?status=active",
-    "authorization": "groups.read; callers lacking groups.read may omit group_guid and use the default-group form path without querying this directory",
+    "authorization": "groups.read; callers lacking groups.read may omit group_guid and use the immutable default-group form path without querying this directory",
     "request": {"query_schema": {"type": "object", "additionalProperties": false, "required": ["status"], "properties": {"status": {"type": "string", "const": "active"}}}, "query_rule": "accept exactly one status=active and no other query parameters"},
     "response": {"status": 200, "headers": {"Cache-Control": "no-store", "X-Request-ID": "required non-empty"}, "schema": {"type": "object", "additionalProperties": false, "required": ["items"], "properties": {"items": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["guid", "key", "display_name"], "properties": {"guid": {"type": "string", "rule": "canonical positive decimal int64 string"}, "key": {"type": "string"}, "display_name": {"type": "string"}}}}}}, "result_rule": "active, non-deleted, readable groups ordered by key ascending; default must be present"},
-    "dependency_failure": {"status": 503, "code": "action_dependency_unavailable", "rule": "return when a dependency is unavailable, default is duplicated, or visible group data is corrupt; do not substitute hard-coded choices"}
+    "dependency_failure": {"status": 503, "code": "action_dependency_unavailable", "rule": "return when a dependency is unavailable, default is duplicated, or visible group data is corrupt; do not substitute hard-coded choices"},
+    "frontend_submit_gate": "when groups.read is present, pending, error, empty results, or a selection absent from the current active catalog all disable submit and produce zero create/verify requests; only callers without groups.read use omitted group_guid"
   },
   "transaction": {
     "result": "user, administrator permission head/overrides, security facts, redacted audit, outbox, operation result, and ticket consumption commit atomically",
-    "rollback": "any failure rolls back all listed writes and terminal success state",
+    "rollback": "any failure rolls back all listed writes and terminal success state; A14 deletion and create-response redaction/re-HMAC also commit or roll back together",
     "commit_unknown": {"status": 503, "code": "operation_commit_unknown", "rule": "include operation_ref and require query/recovery; never report success"}
   },
   "errors": {
     "headers": {"Cache-Control": "no-store", "X-Request-ID": "required non-empty on every success and route error", "Retry-After": "only 429 and is an integer number of seconds"},
-    "envelope": {"type": "object", "additionalProperties": false, "required": ["error"], "properties": {"error": {"type": "object", "additionalProperties": false, "required": ["code", "message", "type", "request_id"], "properties": {"code": {"type": "string"}, "message": {"type": "string", "const": "请求无法完成"}, "type": {"type": "string", "const": "admin_action_error"}, "request_id": {"type": "string"}, "operation_ref": {"type": "string", "rule": "only operation_commit_unknown"}}}}},
+    "envelope": {"type": "object", "additionalProperties": false, "required": ["error"], "properties": {"error": {"type": "object", "additionalProperties": false, "required": ["code", "message", "type", "request_id"], "properties": {"code": {"type": "string"}, "message": {"type": "string", "const": "请求无法完成"}, "type": {"type": "string", "const": "admin_action_error"}, "request_id": {"type": "string"}, "operation_ref": {"type": "string", "rule": "only operation_commit_unknown or created_user_deleted"}}}}},
     "matrix": [
       {"status": 400, "codes": ["invalid_admin_user_create_request"], "rule": "invalid JSON or fields, username, nickname, password, role, group GUID, plan, override format, amount, or another unknown field"},
       {"status": 401, "codes": [], "rule": "existing authentication middleware detail shape"},
       {"status": 403, "codes": ["action_operation_rejected"], "rule": "role hierarchy, users.create, or additional capability denied; do not disclose hidden resources"},
       {"status": 404, "codes": ["action_group_not_found"], "rule": "explicit group missing, inactive, or invisible; use one safe response"},
       {"status": 409, "codes": ["username_conflict", "idempotency_conflict", "idempotency_cross_session", "action_rejected", "action_verification_conflict", "policy_version_conflict", "target_state_conflict", "consumer_validation_failed"], "rule": "username conflict reveals only the conflict fact; ticket, actor/session, and policy drift retain existing action codes"},
+      {"status": 410, "codes": ["created_user_deleted"], "rule": "the original create succeeded and its target was later soft-deleted; return no original target fields or response body"},
       {"status": 422, "codes": ["action_inactive"], "rule": "only action not activated server-side or deployment version mismatch"},
       {"status": 429, "codes": ["action_rate_limited"], "rule": "include Retry-After as integer seconds"},
       {"status": 503, "codes": ["action_dependency_unavailable", "operation_commit_unknown"], "rule": "database, Redis, permission, or commit state cannot be safely determined"}
@@ -196,5 +202,7 @@
     "conflict_recovery": "on username_conflict retain non-sensitive form fields and clear password, ticket, and idempotency key",
     "policy_drift_recovery": "refresh current capability and directory data",
     "money": "no amount or balance input, query/localStorage mock toggle, ledger, recharge, refund, or deduction"
-  }
+  },
+  "execution_order": "authenticate, enforce action rate limit, role and capability checks, and resolve idempotent terminal replay before Argon2; forbidden, rate-limited, and replay requests hash zero times; one fresh executable attempt hashes exactly once using owned byte slices and clears plaintext/hash without creating a password string",
+  "audit_outbox": "audit action is exactly users.create or users.create_admin and records terminal_state, redacted failure_code, request_id, operation_ref, and successful resource detail; outbox records terminal success/failure plus failure_code; neither persists password, ticket, idempotency key, hash, length, or fragment"
 }

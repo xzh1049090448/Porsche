@@ -30,7 +30,7 @@ func deleteWriterIntent() actionsecurity.DeleteUserIntent {
 }
 
 func TestNewDeleteUserExecutionValidatesAndOwnsNormalizedIntent(t *testing.T) {
-	execution, err := NewDeleteUserExecution(deleteWriterIntent(), func() int64 { return 7001 }, deleteWriterClock(8001))
+	execution, err := NewDeleteUserExecution(deleteWriterIntent(), func() int64 { return 7001 }, deleteWriterClock(8001), createAccountTestCrypto(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,15 +64,18 @@ func TestDeleteUserWriterConstructorsFailClosed(t *testing.T) {
 		{TargetGUID: 1, ExpectedAuthVersion: 0, Reason: "reason"},
 	}
 	for _, intent := range invalidIntents {
-		if got, err := NewDeleteUserExecution(intent, validNext, validClock); got != nil || !errors.Is(err, ErrActionOperationUnavailable) {
+		if got, err := NewDeleteUserExecution(intent, validNext, validClock, createAccountTestCrypto(t)); got != nil || !errors.Is(err, ErrActionOperationUnavailable) {
 			t.Fatalf("invalid intent accepted: got=%v err=%v", got, err)
 		}
 	}
-	if got, err := NewDeleteUserExecution(deleteWriterIntent(), nil, validClock); got != nil || !errors.Is(err, ErrActionOperationUnavailable) {
+	if got, err := NewDeleteUserExecution(deleteWriterIntent(), nil, validClock, createAccountTestCrypto(t)); got != nil || !errors.Is(err, ErrActionOperationUnavailable) {
 		t.Fatalf("nil GUID dependency accepted: got=%v err=%v", got, err)
 	}
-	if got, err := NewDeleteUserExecution(deleteWriterIntent(), validNext, nil); got != nil || !errors.Is(err, ErrActionOperationUnavailable) {
+	if got, err := NewDeleteUserExecution(deleteWriterIntent(), validNext, nil, createAccountTestCrypto(t)); got != nil || !errors.Is(err, ErrActionOperationUnavailable) {
 		t.Fatalf("nil clock accepted: got=%v err=%v", got, err)
+	}
+	if got, err := NewDeleteUserExecution(deleteWriterIntent(), validNext, validClock, nil); got != nil || !errors.Is(err, ErrActionOperationUnavailable) {
+		t.Fatalf("nil response integrity key accepted: got=%v err=%v", got, err)
 	}
 	if got, err := NewAdminActionOutboxWriter(nil, validClock); got != nil || !errors.Is(err, ErrActionOperationUnavailable) {
 		t.Fatalf("nil outbox GUID dependency accepted: got=%v err=%v", got, err)
@@ -338,7 +341,7 @@ func TestAdminActionOutboxWriterPersistsExactPendingRow(t *testing.T) {
 		"updated_at": int64(8001), "updated_by": int64(41), "is_deleted": int64(0),
 		"operation_id": int64(31), "public_ref": deleteWriterPublicRef,
 		"action": int64(actionsecurity.ActionUsersDelete), "target_kind": int64(actionsecurity.TargetUser),
-		"target_guid": int64(6001), "state": int64(models.OperationSucceeded), "result_guid": int64(6001),
+		"target_guid": int64(6001), "state": int64(models.OperationSucceeded), "failure_code": nil, "result_guid": int64(6001),
 		"delivery_state": int64(models.DeliveryPending), "available_at": int64(8001),
 		"delivered_at": nil, "attempt_count": int64(0),
 	}
@@ -372,8 +375,8 @@ func TestAdminActionOutboxWriterPersistsFailedTerminalWithoutResult(t *testing.T
 		t.Fatal(err)
 	}
 	values := script.singleCommittedInsert(t, "admin_action_outbox").columnValues(t)
-	if fmt.Sprint(values["state"]) != "3" || values["result_guid"] != nil {
-		t.Fatalf("failed outbox state/result = %v/%v", values["state"], values["result_guid"])
+	if fmt.Sprint(values["state"]) != "3" || fmt.Sprint(values["failure_code"]) != fmt.Sprint(models.FailureTargetVersionConflict) || values["result_guid"] != nil {
+		t.Fatalf("failed outbox state/failure/result = %v/%v/%v", values["state"], values["failure_code"], values["result_guid"])
 	}
 }
 
@@ -498,7 +501,7 @@ func TestDeleteUserWritersRejectForgedPositiveSessionGUID(t *testing.T) {
 
 func newDeleteWriterExecution(t *testing.T, nextGUID func() int64) *DeleteUserExecution {
 	t.Helper()
-	execution, err := NewDeleteUserExecution(deleteWriterIntent(), nextGUID, deleteWriterClock(8001))
+	execution, err := NewDeleteUserExecution(deleteWriterIntent(), nextGUID, deleteWriterClock(8001), createAccountTestCrypto(t))
 	if err != nil {
 		t.Fatal(err)
 	}

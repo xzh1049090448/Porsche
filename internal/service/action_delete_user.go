@@ -109,6 +109,9 @@ func (execution *DeleteUserExecution) Execute(ctx context.Context, tx *gorm.DB, 
 	if userUpdate.Error != nil || userUpdate.RowsAffected != 1 {
 		return TerminalOutcome{}, ErrActionOperationUnavailable
 	}
+	if err := redactCreatedAccountResponse(ctx, tx, target.Guid, operation.ActorUserID, now, execution.crypto); err != nil {
+		return TerminalOutcome{}, ErrActionOperationUnavailable
+	}
 	actorID := operation.ActorUserID
 	audit := models.AuthAuditEvent{
 		AuditFields: models.AuditFields{Guid: auditGUID, CreatedAt: now, CreatedBy: &actorID, UpdatedAt: now, UpdatedBy: &actorID},

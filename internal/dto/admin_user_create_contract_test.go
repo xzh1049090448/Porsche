@@ -22,7 +22,8 @@ func TestAdminUserCreateContractExamples(t *testing.T) {
 	if err := decoder.Decode(&document); err != nil {
 		t.Fatal(err)
 	}
-	adminUserCreateRawExactKeys(t, document, "contract", "revision", "status", "design_source", "create", "action_ticket", "idempotency", "operation_query", "active_group_directory", "transaction", "errors", "frontend_security")
+	adminUserCreateRawExactKeys(t, document, "contract", "revision", "status", "design_source", "create", "action_ticket", "idempotency", "operation_query", "active_group_directory", "transaction", "errors", "frontend_security", "execution_order", "audit_outbox")
+	adminUserCreateRawValue(t, document, "2026-09-07-a03-v2", "revision")
 
 	create := adminUserCreateRawObject(t, document, "create")
 	adminUserCreateRawValue(t, create, "POST", "method")
@@ -77,6 +78,9 @@ func TestAdminUserCreateContractExamples(t *testing.T) {
 	adminUserCreateRawValue(t, adminUserCreateRawObject(t, operationQuery, "request", "headers"), "forbidden", "X-Action-Ticket")
 	adminUserCreateRawValue(t, adminUserCreateRawObject(t, operationQuery, "request", "query_schema", "properties", "scope"), []any{"users.create", "users.create_admin"}, "enum")
 	adminUserCreateRawValue(t, adminUserCreateRawObject(t, document, "idempotency"), []any{"users.create", "users.create_admin"}, "operation_scopes")
+	integrity := adminUserCreateRawObject(t, document, "idempotency", "response_integrity")
+	adminUserCreateRawValue(t, integrity, json.Number("1"), "version")
+	adminUserCreateRawValue(t, integrity, []any{"integrity_version", "lifecycle", "operation_id", "operation_ref", "action", "terminal_state", "result_kind", "result_guid", "http_status", "media_type", "response_body"}, "binding")
 
 	groups := adminUserCreateRawObject(t, document, "active_group_directory")
 	adminUserCreateRawValue(t, groups, "GET", "method")
@@ -91,6 +95,7 @@ func TestAdminUserCreateContractExamples(t *testing.T) {
 		map[string]any{"status": json.Number("403"), "codes": []any{"action_operation_rejected"}, "rule": "role hierarchy, users.create, or additional capability denied; do not disclose hidden resources"},
 		map[string]any{"status": json.Number("404"), "codes": []any{"action_group_not_found"}, "rule": "explicit group missing, inactive, or invisible; use one safe response"},
 		map[string]any{"status": json.Number("409"), "codes": []any{"username_conflict", "idempotency_conflict", "idempotency_cross_session", "action_rejected", "action_verification_conflict", "policy_version_conflict", "target_state_conflict", "consumer_validation_failed"}, "rule": "username conflict reveals only the conflict fact; ticket, actor/session, and policy drift retain existing action codes"},
+		map[string]any{"status": json.Number("410"), "codes": []any{"created_user_deleted"}, "rule": "the original create succeeded and its target was later soft-deleted; return no original target fields or response body"},
 		map[string]any{"status": json.Number("422"), "codes": []any{"action_inactive"}, "rule": "only action not activated server-side or deployment version mismatch"},
 		map[string]any{"status": json.Number("429"), "codes": []any{"action_rate_limited"}, "rule": "include Retry-After as integer seconds"},
 		map[string]any{"status": json.Number("503"), "codes": []any{"action_dependency_unavailable", "operation_commit_unknown"}, "rule": "database, Redis, permission, or commit state cannot be safely determined"},

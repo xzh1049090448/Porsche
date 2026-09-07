@@ -34,6 +34,7 @@ func TestCryptoGoldenAndSeparation(t *testing.T) {
 		{name: "intent", info: "porsche/admin-action/intent/v1", purpose: "intent-v1", got: c.IntentDigest(intentPayload), payload: intentPayload},
 		{name: "idempotency", info: "porsche/admin-action/idempotency/v1", purpose: "idempotency-value", got: c.IdempotencyDigest(raw), payload: raw[:]},
 		{name: "lease", info: "porsche/admin-action/lease/v1", purpose: "lease-owner", got: c.LeaseOwnerDigest(raw), payload: raw[:]},
+		{name: "response", info: "porsche/admin-action/response/v1", purpose: "response-v1", got: c.ResponseDigest(intentPayload), payload: intentPayload},
 	}
 	seen := map[string]string{}
 	for _, tc := range tests {

@@ -22,6 +22,7 @@ type DeleteUserExecution struct {
 	intent   actionsecurity.DeleteUserIntent
 	nextGUID func() int64
 	clock    persistence.Clock
+	crypto   *actionsecurity.Crypto
 	state    *deleteUserExecutionState
 }
 
@@ -43,18 +44,18 @@ type deleteUserAuditFacts struct {
 
 // NewDeleteUserExecution validates and takes an immutable normalized copy of
 // the active users.delete intent. The returned value is bound to one request.
-func NewDeleteUserExecution(intent actionsecurity.DeleteUserIntent, nextGUID func() int64, clock persistence.Clock) (*DeleteUserExecution, error) {
+func NewDeleteUserExecution(intent actionsecurity.DeleteUserIntent, nextGUID func() int64, clock persistence.Clock, crypto *actionsecurity.Crypto) (*DeleteUserExecution, error) {
 	descriptor, ok := actionsecurity.ResolveActiveAction(actionsecurity.ActionUsersDelete)
 	if !ok {
 		return nil, ErrActionOperationUnavailable
 	}
-	return newDeleteUserExecution(descriptor, intent, nextGUID, clock)
+	return newDeleteUserExecution(descriptor, intent, nextGUID, clock, crypto)
 }
 
-func newDeleteUserExecution(descriptor actionsecurity.Descriptor, intent actionsecurity.DeleteUserIntent, nextGUID func() int64, clock persistence.Clock) (*DeleteUserExecution, error) {
+func newDeleteUserExecution(descriptor actionsecurity.Descriptor, intent actionsecurity.DeleteUserIntent, nextGUID func() int64, clock persistence.Clock, crypto *actionsecurity.Crypto) (*DeleteUserExecution, error) {
 	if descriptor.Action != actionsecurity.ActionUsersDelete || descriptor.Name != "users.delete" ||
 		descriptor.Capability != "users.delete" || descriptor.RootOnly || !descriptor.RequiresTicket || !descriptor.Active ||
-		descriptor.TargetKind != actionsecurity.TargetUser || descriptor.Encode == nil || nextGUID == nil || operationInterfaceNil(clock) {
+		descriptor.TargetKind != actionsecurity.TargetUser || descriptor.Encode == nil || nextGUID == nil || operationInterfaceNil(clock) || crypto == nil {
 		return nil, ErrActionOperationUnavailable
 	}
 	encoded, err := descriptor.Encode(intent)
@@ -67,7 +68,7 @@ func newDeleteUserExecution(descriptor actionsecurity.Descriptor, intent actions
 		ExpectedAuthVersion: intent.ExpectedAuthVersion,
 		Reason:              strings.Clone(strings.TrimSpace(intent.Reason)),
 	}
-	return &DeleteUserExecution{intent: owned, nextGUID: nextGUID, clock: clock, state: &deleteUserExecutionState{}}, nil
+	return &DeleteUserExecution{intent: owned, nextGUID: nextGUID, clock: clock, crypto: crypto, state: &deleteUserExecutionState{}}, nil
 }
 
 func (execution *DeleteUserExecution) String() string {
@@ -194,7 +195,7 @@ func (writer *AdminActionOutboxWriter) Write(ctx context.Context, tx *gorm.DB, e
 			UpdatedAt: event.OccurredAt, UpdatedBy: &actorID, IsDeleted: 0},
 		OperationID: binding.operationID, PublicRef: event.PublicRef, Action: int(event.Action),
 		TargetKind: int(event.TargetKind), TargetGUID: copyInt64(event.TargetGUID), State: event.State,
-		ResultGUID: copyInt64(event.ResultGUID), DeliveryState: models.DeliveryPending, AvailableAt: event.OccurredAt,
+		FailureCode: copyOperationFailure(event.Failure), ResultGUID: copyInt64(event.ResultGUID), DeliveryState: models.DeliveryPending, AvailableAt: event.OccurredAt,
 		DeliveredAt: nil, AttemptCount: 0,
 	}
 	if err := db.Create(&row).Error; err != nil {

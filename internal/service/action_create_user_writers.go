@@ -51,18 +51,21 @@ func (execution *CreateAccountExecution) Write(ctx context.Context, tx *gorm.DB,
 		"permission_overrides": createAuditOverrides(execution.intent.Overrides),
 		"request_id":           execution.metadata.RequestID,
 		"operation_ref":        event.PublicRef,
-		"password":             "set",
+		"terminal_state":       event.State.String(),
+		"failure_code":         nil,
 	}
 	resourceValue := "users"
 	if event.State == models.OperationSucceeded {
 		resourceValue += "/" + strconv.FormatInt(user.Guid, 10)
 		detail["target_guid"] = user.Guid
 		detail["group_key"] = group.Key
+	} else {
+		detail["failure_code"] = event.Failure.String()
 	}
 	ip := strings.Clone(execution.metadata.TrustedIP)
 	row := models.AuditLog{
 		AuditFields: models.AuditFields{Guid: guid, CreatedAt: event.OccurredAt, CreatedBy: &actorID, UpdatedAt: event.OccurredAt, UpdatedBy: &actorID},
-		UserID:      &actorID, Action: "users.create", Resource: &resourceValue, Detail: detail, IP: &ip,
+		UserID:      &actorID, Action: execution.descriptor.Name, Resource: &resourceValue, Detail: detail, IP: &ip,
 	}
 	created := db.Create(&row)
 	if created.Error != nil || created.RowsAffected != 1 {
@@ -135,7 +138,7 @@ func (writer *CreateAccountOutboxWriter) Write(ctx context.Context, tx *gorm.DB,
 	row := models.AdminActionOutbox{
 		AuditFields: models.AuditFields{Guid: guid, CreatedAt: event.OccurredAt, CreatedBy: &actorID, UpdatedAt: event.OccurredAt, UpdatedBy: &actorID},
 		OperationID: binding.operationID, PublicRef: event.PublicRef, Action: int(event.Action), TargetKind: int(actionsecurity.TargetNone), TargetGUID: nil,
-		State: event.State, ResultGUID: copyInt64(event.ResultGUID), DeliveryState: models.DeliveryPending, AvailableAt: event.OccurredAt,
+		State: event.State, FailureCode: copyOperationFailure(event.Failure), ResultGUID: copyInt64(event.ResultGUID), DeliveryState: models.DeliveryPending, AvailableAt: event.OccurredAt,
 	}
 	created := db.Create(&row)
 	if created.Error != nil || created.RowsAffected != 1 {

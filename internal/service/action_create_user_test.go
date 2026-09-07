@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -37,7 +38,7 @@ func TestCreateAccountExecutionOwnsInputsAndRedactsHash(t *testing.T) {
 	}
 	execution, err := NewCreateAccountExecution(descriptor, intent, hash, CreateAccountRequestMetadata{
 		RequestID: "request.create-1", TrustedIP: "203.0.113.7",
-	}, func() int64 { return 9001 }, persistence.SystemClock())
+	}, func() int64 { return 9001 }, persistence.SystemClock(), createAccountTestCrypto(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,7 +111,9 @@ func TestCreateAccountExecutionCreatesOrdinaryUserAndRegistrationAudit(t *testin
 	}
 	response := createAccountInsertValues(t, script.committedTableCall("admin_operation_responses", 0))
 	if fmt.Sprint(response["guid"]) != "9003" || fmt.Sprint(response["operation_id"]) != "31" || fmt.Sprint(response["http_status"]) != "201" ||
-		response["media_type"] != createAccountResponseMediaType || !validCreateAccountResponseBody(response["response_body"].([]byte), deleteWriterPublicRef, actionsecurity.ActionUsersCreate, 9001) {
+		fmt.Sprint(response["lifecycle_state"]) != fmt.Sprint(models.OperationResponseActive) || fmt.Sprint(response["integrity_version"]) != fmt.Sprint(models.OperationResponseIntegrityHMACV1) ||
+		len(fmt.Sprint(response["response_hmac"])) != 64 || response["media_type"] != createAccountResponseMediaType ||
+		!validCreateAccountResponseBody(response["response_body"].([]byte), deleteWriterPublicRef, actionsecurity.ActionUsersCreate, 9001) {
 		t.Fatalf("operation response = %#v", response)
 	}
 	if script.containsSQL("amount") || script.containsSQL("balance") {
@@ -238,7 +241,7 @@ func TestCreateAccountWritersPersistRedactedManagementAuditAndResultOutbox(t *te
 		t.Fatalf("decode management detail: %v; audit=%#v", err, audit)
 	}
 	if detail["target_guid"] != float64(9201) || detail["role"] != "user" || detail["group_key"] != "default" || detail["plan"] != "free" ||
-		detail["request_id"] != "request.create-1" || detail["operation_ref"] != operation.PublicRef || detail["password"] != "set" {
+		detail["request_id"] != "request.create-1" || detail["operation_ref"] != operation.PublicRef || detail["terminal_state"] != "succeeded" || detail["failure_code"] != nil {
 		t.Fatalf("management detail = %#v", detail)
 	}
 	encoded := fmt.Sprint(audit["detail"])
@@ -250,8 +253,113 @@ func TestCreateAccountWritersPersistRedactedManagementAuditAndResultOutbox(t *te
 	outboxRow := createAccountInsertValues(t, script.committedTableCall("admin_action_outbox", 0))
 	if outboxRow["guid"] != int64(9205) || outboxRow["operation_id"] != int64(31) || fmt.Sprint(outboxRow["action"]) != fmt.Sprint(actionsecurity.ActionUsersCreate) ||
 		fmt.Sprint(outboxRow["target_kind"]) != fmt.Sprint(actionsecurity.TargetNone) || outboxRow["target_guid"] != nil || outboxRow["result_guid"] != int64(9201) ||
-		fmt.Sprint(outboxRow["delivery_state"]) != fmt.Sprint(models.DeliveryPending) {
+		fmt.Sprint(outboxRow["failure_code"]) != "<nil>" || fmt.Sprint(outboxRow["delivery_state"]) != fmt.Sprint(models.DeliveryPending) {
 		t.Fatalf("create outbox = %#v", outboxRow)
+	}
+}
+
+func TestCreateAccountResponseHMACBindsOperationActionResultStatusMediaAndBody(t *testing.T) {
+	resultGUID := int64(9201)
+	resultKind := models.ResultUser
+	resultStatus := http.StatusCreated
+	operation := models.AdminOperation{ID: 31, PublicRef: deleteWriterPublicRef, Action: int(actionsecurity.ActionUsersCreate), State: models.OperationSucceeded,
+		ResultKind: &resultKind, ResultGUID: &resultGUID, ResultHTTPStatus: &resultStatus}
+	body := []byte(`{"operation_ref":"` + deleteWriterPublicRef + `"}`)
+	mac, ok := createAccountResponseHMAC(createAccountTestCrypto(t), operation, models.OperationResponseActive, resultGUID, http.StatusCreated, createAccountResponseMediaType, body)
+	if !ok {
+		t.Fatal("HMAC setup failed")
+	}
+	response := models.AdminOperationResponse{OperationID: operation.ID, LifecycleState: models.OperationResponseActive,
+		IntegrityVersion: models.OperationResponseIntegrityHMACV1, ResponseHMAC: &mac, HTTPStatus: http.StatusCreated,
+		MediaType: createAccountResponseMediaType, ResponseBody: append([]byte(nil), body...)}
+	if !matchingCreateAccountResponseHMAC(createAccountTestCrypto(t), operation, response) {
+		t.Fatal("valid operation response HMAC rejected")
+	}
+	tests := []struct {
+		name   string
+		mutate func(*models.AdminOperation, *models.AdminOperationResponse)
+	}{
+		{"operation", func(op *models.AdminOperation, _ *models.AdminOperationResponse) { op.ID++ }},
+		{"reference", func(op *models.AdminOperation, _ *models.AdminOperationResponse) {
+			op.PublicRef = "op_BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
+		}},
+		{"action", func(op *models.AdminOperation, _ *models.AdminOperationResponse) {
+			op.Action = int(actionsecurity.ActionUsersCreateAdmin)
+		}},
+		{"result", func(op *models.AdminOperation, _ *models.AdminOperationResponse) {
+			value := int64(9202)
+			op.ResultGUID = &value
+		}},
+		{"lifecycle", func(_ *models.AdminOperation, got *models.AdminOperationResponse) {
+			got.LifecycleState = models.OperationResponseRedacted
+		}},
+		{"status", func(_ *models.AdminOperation, got *models.AdminOperationResponse) {
+			got.HTTPStatus = http.StatusAccepted
+		}},
+		{"media", func(_ *models.AdminOperation, got *models.AdminOperationResponse) {
+			got.MediaType = "application/problem+json"
+		}},
+		{"body", func(_ *models.AdminOperation, got *models.AdminOperationResponse) { got.ResponseBody[0] ^= 1 }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			gotOperation := operation
+			gotResponse := response
+			gotResponse.ResponseBody = append([]byte(nil), response.ResponseBody...)
+			test.mutate(&gotOperation, &gotResponse)
+			if matchingCreateAccountResponseHMAC(createAccountTestCrypto(t), gotOperation, gotResponse) {
+				t.Fatal("HMAC accepted coordinated field drift")
+			}
+		})
+	}
+}
+
+func TestCreateAccountFailureTelemetryUsesStableActionStateAndRedactedFailure(t *testing.T) {
+	db, script := newCreateAccountTestDB(t)
+	consumedAt := int64(7999)
+	script.operation = validCreateAccountTestOperation(actionsecurity.ActionUsersCreateAdmin)
+	script.verification = models.AdminActionVerification{ID: 51, ActorUserID: script.operation.ActorUserID, ActorAuthVersion: script.operation.ActorAuthVersion,
+		SessionID: script.operation.SessionID, Action: int(actionsecurity.ActionUsersCreateAdmin), TargetKind: int(actionsecurity.TargetNone), ConsumedAt: &consumedAt,
+		AuditFields: models.AuditFields{IsDeleted: 1}}
+	execution := newCreateAccountTestExecution(t, actionsecurity.ActionUsersCreateAdmin, actionsecurity.CreateAccountIntent{
+		Username: "alice", Role: "admin", PlanType: int(models.PlanFree), AllowedModels: []string{}, DailyCallLimit: 100,
+	}, createAccountTestGUIDs(9251))
+	failure := models.FailureActionRejected
+	event := ActionAuditEvent{PublicRef: deleteWriterPublicRef, ActorGUID: script.actor.Guid, SessionGUID: script.session.Guid,
+		Action: actionsecurity.ActionUsersCreateAdmin, TargetKind: actionsecurity.TargetNone, State: models.OperationFailed,
+		Failure: &failure, OccurredAt: 8001}
+	tx := db.Begin()
+	if err := execution.Write(context.Background(), tx, event); err != nil {
+		t.Fatal(err)
+	}
+	outbox, err := NewCreateAccountOutboxWriter(createAccountTestGUIDs(9252), &createAccountTestClock{now: 8001})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := outbox.Write(context.Background(), tx, ActionOutboxEvent{PublicRef: event.PublicRef, ActorGUID: event.ActorGUID, SessionGUID: event.SessionGUID,
+		Action: event.Action, TargetKind: event.TargetKind, State: event.State, Failure: event.Failure, OccurredAt: event.OccurredAt}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit().Error; err != nil {
+		t.Fatal(err)
+	}
+	audit := createAccountInsertValues(t, script.committedTableCall("audit_logs", 0))
+	if audit["action"] != "users.create_admin" || audit["resource"] != "users" {
+		t.Fatalf("failure audit action/resource = %#v", audit)
+	}
+	var detail map[string]any
+	if err := json.Unmarshal([]byte(fmt.Sprint(audit["detail"])), &detail); err != nil {
+		t.Fatal(err)
+	}
+	if detail["terminal_state"] != "failed" || detail["failure_code"] != "action_rejected" || detail["operation_ref"] != event.PublicRef || detail["request_id"] != "request.create-1" || detail["target_guid"] != nil {
+		t.Fatalf("failure audit detail = %#v", detail)
+	}
+	if encoded := strings.ToLower(fmt.Sprint(audit["detail"])); strings.Contains(encoded, "password") || strings.Contains(encoded, "ticket") || strings.Contains(encoded, "idempotency") {
+		t.Fatalf("failure audit contains secret vocabulary: %s", encoded)
+	}
+	outboxRow := createAccountInsertValues(t, script.committedTableCall("admin_action_outbox", 0))
+	if fmt.Sprint(outboxRow["state"]) != fmt.Sprint(models.OperationFailed) || fmt.Sprint(outboxRow["failure_code"]) != fmt.Sprint(models.FailureActionRejected) || outboxRow["result_guid"] != nil {
+		t.Fatalf("failure outbox = %#v", outboxRow)
 	}
 }
 
@@ -368,7 +476,7 @@ func TestCreateAccountConstructorRejectsDescriptorRoleCatalogAndMetadataDrift(t 
 			metadata := CreateAccountRequestMetadata{RequestID: "request-1", TrustedIP: "203.0.113.7"}
 			hash := []byte(createAccountTestPasswordHash)
 			test.mutate(&descriptor, &intent, &metadata, &hash)
-			result, err := NewCreateAccountExecution(descriptor, intent, hash, metadata, func() int64 { return 1 }, &createAccountTestClock{now: 8001})
+			result, err := NewCreateAccountExecution(descriptor, intent, hash, metadata, func() int64 { return 1 }, &createAccountTestClock{now: 8001}, createAccountTestCrypto(t))
 			if result != nil || !errors.Is(err, ErrActionOperationUnavailable) {
 				t.Fatalf("invalid constructor result = %#v/%v", result, err)
 			}
@@ -384,7 +492,7 @@ func TestCreateAccountConstructorRejectsDescriptorRoleCatalogAndMetadataDrift(t 
 	ordinary := actionsecurity.CreateAccountIntent{Username: "alice", Role: "user", PlanType: int(models.PlanFree), AllowedModels: []string{}, DailyCallLimit: 100,
 		Overrides: []actionsecurity.PermissionOverrideIntent{{Capability: "users.read", Effect: 2}}}
 	if result, err := NewCreateAccountExecution(createAccountTestDescriptor(t, actionsecurity.ActionUsersCreate), ordinary, hash,
-		CreateAccountRequestMetadata{RequestID: "request-1", TrustedIP: "203.0.113.7"}, func() int64 { return 1 }, &createAccountTestClock{now: 8001}); result != nil || err == nil {
+		CreateAccountRequestMetadata{RequestID: "request-1", TrustedIP: "203.0.113.7"}, func() int64 { return 1 }, &createAccountTestClock{now: 8001}, createAccountTestCrypto(t)); result != nil || err == nil {
 		t.Fatal("ordinary creation accepted permission overrides")
 	}
 }
@@ -394,7 +502,7 @@ func TestCreateAccountConstructorRejectsRawOrMalformedPasswordHash(t *testing.T)
 	for _, raw := range []string{"A03-Strong-Password!", "$argon2id$malformed", ""} {
 		hash := []byte(raw)
 		result, err := NewCreateAccountExecution(createAccountTestDescriptor(t, actionsecurity.ActionUsersCreate), intent, hash,
-			CreateAccountRequestMetadata{RequestID: "request-1", TrustedIP: "203.0.113.7"}, func() int64 { return 1 }, &createAccountTestClock{now: 8001})
+			CreateAccountRequestMetadata{RequestID: "request-1", TrustedIP: "203.0.113.7"}, func() int64 { return 1 }, &createAccountTestClock{now: 8001}, createAccountTestCrypto(t))
 		if result != nil || !errors.Is(err, ErrActionOperationUnavailable) {
 			t.Fatalf("non-hash %q accepted: %#v/%v", raw, result, err)
 		}
@@ -922,11 +1030,20 @@ func (consumer *createAccountLifecycleConsumer) Execute(_ context.Context, _ *go
 func newCreateAccountTestExecution(t *testing.T, action actionsecurity.Action, intent actionsecurity.CreateAccountIntent, nextGUID func() int64) *CreateAccountExecution {
 	t.Helper()
 	execution, err := NewCreateAccountExecution(createAccountTestDescriptor(t, action), intent, []byte(createAccountTestPasswordHash),
-		CreateAccountRequestMetadata{RequestID: "request.create-1", TrustedIP: "203.0.113.7"}, nextGUID, &createAccountTestClock{now: 8001})
+		CreateAccountRequestMetadata{RequestID: "request.create-1", TrustedIP: "203.0.113.7"}, nextGUID, &createAccountTestClock{now: 8001}, createAccountTestCrypto(t))
 	if err != nil {
 		t.Fatal(err)
 	}
 	return execution
+}
+
+func createAccountTestCrypto(t *testing.T) *actionsecurity.Crypto {
+	t.Helper()
+	crypto, err := actionsecurity.NewCrypto([]byte("0123456789abcdef0123456789abcdef"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return crypto
 }
 
 func createAccountTestGUIDs(values ...int64) func() int64 {

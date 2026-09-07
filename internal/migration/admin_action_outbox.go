@@ -80,6 +80,7 @@ func adminActionOutboxContract() adminActionOutboxTableContract {
 		requiredOutboxColumn("target_kind", "int"),
 		nullableOutboxColumn("target_guid", "bigint"),
 		requiredOutboxColumn("state", "int"),
+		nullableOutboxColumn("failure_code", "int"),
 		nullableOutboxColumn("result_guid", "bigint"),
 		requiredOutboxColumn("delivery_state", "int"),
 		requiredOutboxColumn("available_at", "bigint"),
@@ -90,8 +91,8 @@ func adminActionOutboxContract() adminActionOutboxTableContract {
 	columns[6].defaultVal = sql.NullString{String: "0", Valid: true}
 	columns[8].characterSet = "ascii"
 	columns[8].collation = "ascii_bin"
-	columns[14].defaultVal = sql.NullString{String: "1", Valid: true}
-	columns[17].defaultVal = sql.NullString{String: "0", Valid: true}
+	columns[15].defaultVal = sql.NullString{String: "1", Valid: true}
+	columns[18].defaultVal = sql.NullString{String: "0", Valid: true}
 
 	return adminActionOutboxTableContract{
 		name:    "admin_action_outbox",
@@ -113,6 +114,7 @@ func adminActionOutboxContract() adminActionOutboxTableContract {
 			{"chk_admin_action_outbox_audit", "created_at >= 0 AND updated_at >= 0 AND is_deleted IN (0, 1)", "YES"},
 			{"chk_admin_action_outbox_delivery", "(delivery_state = 1 AND delivered_at IS NULL) OR (delivery_state IN (2, 3) AND delivered_at IS NOT NULL)", "YES"},
 			{"chk_admin_action_outbox_delivery_state", "delivery_state IN (1, 2, 3)", "YES"},
+			{"chk_admin_action_outbox_outcome", "(state = 2 AND failure_code IS NULL AND result_guid IS NOT NULL) OR (state = 3 AND failure_code IN (1, 2, 3, 4, 5) AND result_guid IS NULL)", "YES"},
 			{"chk_admin_action_outbox_state", "state IN (2, 3, 4)", "YES"},
 			{"chk_admin_action_outbox_target_kind", "target_kind IN (1, 2, 3)", "YES"},
 			{"chk_admin_action_outbox_times", "available_at >= 0 AND (delivered_at IS NULL OR delivered_at >= 0)", "YES"},

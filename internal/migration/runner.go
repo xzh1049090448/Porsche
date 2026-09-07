@@ -60,6 +60,12 @@ var adminOperationResponsesUp []byte
 //go:embed sql/0008_admin_operation_responses.down.sql
 var adminOperationResponsesDown []byte
 
+//go:embed sql/0009_admin_response_integrity.up.sql
+var adminResponseIntegrityUp []byte
+
+//go:embed sql/0009_admin_response_integrity.down.sql
+var adminResponseIntegrityDown []byte
+
 // Migration is an immutable, embedded schema version.
 type Migration struct {
 	Version string
@@ -84,6 +90,7 @@ func All() ([]Migration, error) {
 		{Version: "0006", UpSQL: adminActionOutboxUp, DownSQL: adminActionOutboxDown},
 		{Version: "0007", UpSQL: businessGroupsUp, DownSQL: businessGroupsDown},
 		{Version: "0008", UpSQL: adminOperationResponsesUp, DownSQL: adminOperationResponsesDown},
+		{Version: "0009", UpSQL: adminResponseIntegrityUp, DownSQL: adminResponseIntegrityDown},
 	}
 	sort.Slice(migrations, func(i, j int) bool { return migrations[i].Version < migrations[j].Version })
 	return migrations, nil
@@ -157,18 +164,16 @@ func Up(ctx context.Context, db *gorm.DB, nextGUID func() int64, nowMillis func(
 						return err
 					}
 				}
-				if migration.Version == "0006" {
-					if err := VerifyAdminActionOutboxSchema(ctx, conn); err != nil {
-						return err
-					}
-				}
 				if migration.Version == "0007" {
 					if err := VerifyBusinessGroupsSchema(ctx, conn); err != nil {
 						return err
 					}
 				}
-				if migration.Version == "0008" {
+				if migration.Version == "0009" {
 					if err := VerifyAdminOperationResponseSchema(ctx, conn); err != nil {
+						return err
+					}
+					if err := VerifyAdminActionOutboxSchema(ctx, conn); err != nil {
 						return err
 					}
 				}
@@ -178,6 +183,10 @@ func Up(ctx context.Context, db *gorm.DB, nextGUID func() int64, nowMillis func(
 				if err := applyBusinessGroupsMigration(conn, migration.UpSQL, nextGUID, nowMillis); err != nil {
 					return fmt.Errorf("apply migration %s: %w", migration.Version, err)
 				}
+			} else if migration.Version == "0009" {
+				if err := applyAdminResponseIntegrityMigration(conn, migration.UpSQL); err != nil {
+					return fmt.Errorf("apply migration %s: %w", migration.Version, err)
+				}
 			} else {
 				for _, statement := range splitStatements(string(migration.UpSQL)) {
 					if err := conn.Exec(statement).Error; err != nil {
@@ -185,8 +194,11 @@ func Up(ctx context.Context, db *gorm.DB, nextGUID func() int64, nowMillis func(
 					}
 				}
 			}
-			if migration.Version == "0008" {
+			if migration.Version == "0009" {
 				if err := VerifyAdminOperationResponseSchema(ctx, conn); err != nil {
+					return err
+				}
+				if err := VerifyAdminActionOutboxSchema(ctx, conn); err != nil {
 					return err
 				}
 			}
@@ -202,11 +214,6 @@ func Up(ctx context.Context, db *gorm.DB, nextGUID func() int64, nowMillis func(
 			}
 			if migration.Version == "0005" {
 				if err := VerifyAdminOperationSafetySchema(ctx, conn); err != nil {
-					return err
-				}
-			}
-			if migration.Version == "0006" {
-				if err := VerifyAdminActionOutboxSchema(ctx, conn); err != nil {
 					return err
 				}
 			}

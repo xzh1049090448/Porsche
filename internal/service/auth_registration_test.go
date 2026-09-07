@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"strings"
@@ -407,12 +408,17 @@ func TestAdminUserCreateNormalizeManagedUserNickname(t *testing.T) {
 }
 
 func TestAdminUserCreateHashManagedCreationPassword(t *testing.T) {
-	password := "Str0ng!pw"
-	hash, err := HashManagedCreationPassword(password)
-	if err != nil || hash == "" || hash == password || !security.VerifyPassword(password, hash) {
+	password := []byte("Str0ng!pw")
+	original := append([]byte(nil), password...)
+	hash, err := HashManagedCreationPasswordBytes(password)
+	if err != nil || len(hash) == 0 || bytes.Equal(hash, password) || !security.VerifyPassword(string(original), string(hash)) {
 		t.Fatal("managed password hash contract failed")
 	}
-	if _, err := HashManagedCreationPassword("password"); err == nil {
+	if !bytes.Equal(password, original) {
+		t.Fatal("managed byte hasher mutated caller password")
+	}
+	clear(hash)
+	if _, err := HashManagedCreationPasswordBytes([]byte("password")); err == nil {
 		t.Fatal("managed password hash accepted weak password")
 	}
 }
@@ -425,9 +431,9 @@ func TestValidatePasswordRejectsInvalidUTF8(t *testing.T) {
 }
 
 func TestAdminUserCreateHashManagedCreationPasswordRejectsInvalidUTF8(t *testing.T) {
-	invalidPassword := string([]byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff})
-	hash, err := HashManagedCreationPassword(invalidPassword)
-	if err == nil || hash != "" {
+	invalidPassword := []byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff}
+	hash, err := HashManagedCreationPasswordBytes(invalidPassword)
+	if err == nil || hash != nil {
 		t.Fatal("managed password hash accepted invalid UTF-8")
 	}
 }

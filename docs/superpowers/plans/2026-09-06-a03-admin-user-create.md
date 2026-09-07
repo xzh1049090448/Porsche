@@ -19,6 +19,20 @@
 - Do not run production migrations, deploy, push, create real business users, or activate actions before Task 7 constructs and validates their coherent consumer bundle.
 - A03 completion may update only A03 from `BLOCKED_NOT_IMPLEMENTED` to `PASS_LIMITED_SCOPE`; all unrelated acceptance rows retain their current state.
 
+**2026-09-07 remediation baseline:** The Task 2 references to 0007 describe the historical A03 group migration. An independently approved immutable-response change already added 0008, and this security remediation adds 0009 for deletion-aware response HMAC and outbox outcome classification. Final migration acceptance therefore requires exactly 0001–0009. 0009 uses ordinary table DDL only: no trigger, `SUPER`, `log_bin_trust_function_creators`, production server-policy change, or mutation of 0001–0008 is allowed.
+
+| Version | Immutable up checksum |
+|---|---|
+| 0001 | `2da41ffd07c44d45cb05a705f867db2f2b8f01defb519000197dedce9998aedd` |
+| 0002 | `58712428ca668fb1fea0943d71a2209b2e7faf26de043d870195a033ac0f413c` |
+| 0003 | `31c49d9bb1f171d9ea6caab49714d9de05552b8f6e9cb73f2989760efd0a015c` |
+| 0004 | `44b5caba0473162c239e6b3035e6d9067e3af0b35e998a79c827a1424621494e` |
+| 0005 | `4fc34da357e155c4a04548838153796803f618f0c7199adda17098ef5190cd68` |
+| 0006 | `c0bc9f68370985315db711c0028ee644dafe4d9667c595a49193ed38e2d6f6b6` |
+| 0007 | `b3c3351771fce2dbf5466d300cb92ffd5dbd183cffaff15671e46a8bc87e143e` |
+| 0008 | `21289da334e7ef4425f697c659e6f45227e88c4d86ac4c099867dd6895f666f2` |
+| 0009 | `4dc818d93180bb6777d2ec6d8318e728fe76add4c736a178f19b808ca2afedf7` |
+
 ## File map
 
 Backend files to create:
@@ -624,7 +638,7 @@ Expected: all tests PASS and build exits 0 with only the already documented Roll
 - Modify: `/Users/xuzhihao/code/Porsche-Web/.worktrees/admin-public-260903/progress.md`
 - Modify: `/Users/xuzhihao/code/Porsche-Web/.worktrees/admin-public-260903/feature_list.json`
 
-- [ ] **Step 1: Provision task-owned fixtures and run migration 0001–0007**
+- [ ] **Step 1: Provision task-owned fixtures and run migration 0001–0009**
 
 Use unique container names/labels, random loopback ports, tmpfs/AutoRemove, and a private 0700 temp directory. Record IDs, image digests, ports, migration ledger, and pre-existing unrelated resources without printing credentials. Do not use existing named volumes or production `.env`.
 
@@ -679,7 +693,7 @@ Frontend: `git add docs/agents/validation/joint-acceptance-20260904/acceptance-m
 
 - [ ] Backend and frontend worktrees are clean.
 - [ ] Contract JSON and all status JSON parse successfully.
-- [ ] Migration ledger is exactly 0001–0007 with immutable prior checksums.
+- [ ] Migration ledger is exactly 0001–0009 and matches the remediation baseline checksums above; 0009 passes on default MySQL 8.4 with the ordinary fixture DDL user and no trigger/server-policy exception.
 - [ ] Production active registry is exactly `users.create`, `users.create_admin`, and `users.delete`.
 - [ ] Ordinary creation performs zero ticket verification; admin creation cannot execute without a valid bound ticket.
 - [ ] All atomic rollback, replay, concurrency, secret-lifecycle, and permission tests pass.

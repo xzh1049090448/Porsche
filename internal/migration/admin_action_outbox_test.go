@@ -13,7 +13,7 @@ func TestAdminActionOutboxMigrationContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(migrations) != 8 || migrations[5].Version != "0006" || migrations[6].Version != "0007" || migrations[7].Version != "0008" {
+	if len(migrations) != 9 || migrations[5].Version != "0006" || migrations[6].Version != "0007" || migrations[7].Version != "0008" || migrations[8].Version != "0009" {
 		t.Fatalf("admin action outbox migration 0006 is missing: %#v", migrations)
 	}
 
@@ -75,7 +75,7 @@ func TestAdminActionOutboxMigrationContract(t *testing.T) {
 
 func TestAdminActionOutboxContractIsExact(t *testing.T) {
 	want := adminActionOutboxContract()
-	if want.name != "admin_action_outbox" || len(want.columns) != 18 || len(want.indexes) != 6 || len(want.foreignKeys) != 1 || len(want.checks) != 8 {
+	if want.name != "admin_action_outbox" || len(want.columns) != 19 || len(want.indexes) != 6 || len(want.foreignKeys) != 1 || len(want.checks) != 9 {
 		t.Fatalf("unexpected outbox contract: %#v", want)
 	}
 	valid := adminActionOutboxMetadataFromContract(want, "fixture")

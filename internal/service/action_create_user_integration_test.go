@@ -6,6 +6,7 @@ import (
 	cryptorand "crypto/rand"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"os"
 	"strings"
@@ -24,6 +25,7 @@ type a03CreateServices struct {
 	verifications *ActionVerificationService
 	outbox        *CreateAccountOutboxWriter
 	descriptors   map[actionsecurity.Action]actionsecurity.Descriptor
+	crypto        *actionsecurity.Crypto
 }
 
 func requireDefaultMySQLAffectedRows(t *testing.T) {
@@ -89,7 +91,7 @@ func openA03CreateServices(t *testing.T, now int64) (*a14DeleteFixture, *a03Crea
 	if err != nil {
 		t.Fatal(err)
 	}
-	return f, &a03CreateServices{operations: operations, verifications: verifications, outbox: outbox, descriptors: descriptors}
+	return f, &a03CreateServices{operations: operations, verifications: verifications, outbox: outbox, descriptors: descriptors, crypto: crypto}
 }
 
 func (services *a03CreateServices) prepare(t *testing.T, f *a14DeleteFixture, base actionsecurity.CreateAccountIntent, plaintext, key string) (*OperationIdentity, *CreateAccountExecution) {
@@ -120,7 +122,7 @@ func (services *a03CreateServices) prepare(t *testing.T, f *a14DeleteFixture, ba
 	}
 	hashBytes := []byte(hash)
 	execution, err := NewCreateAccountExecution(services.descriptorsForRole(base.Role), base, hashBytes,
-		CreateAccountRequestMetadata{RequestID: "a03-real-request", TrustedIP: "198.18.3.1"}, func() int64 { return testSnowflake.Next() }, f.clock)
+		CreateAccountRequestMetadata{RequestID: "a03-real-request", TrustedIP: "198.18.3.1"}, func() int64 { return testSnowflake.Next() }, f.clock, services.crypto)
 	clear(hashBytes)
 	if err != nil {
 		t.Fatal(err)
@@ -179,13 +181,14 @@ func TestCreateAccountRealOrdinaryAndAdminPersistAtomicState(t *testing.T) {
 				t.Fatalf("registration events = %#v/%v", authEvents, err)
 			}
 			var audit models.AuditLog
-			if err := f.db.Where("action = ? AND resource = ? AND is_deleted = 0", "users.create", "users/"+guid).First(&audit).Error; err != nil || audit.UserID == nil || *audit.UserID != f.actor.ID || audit.IP == nil || *audit.IP != "198.18.3.1" ||
-				audit.Detail["password"] != "set" || audit.Detail["operation_ref"] != identity.PublicRef {
+			auditAction := services.descriptorsForRole(base.Role).Name
+			if err := f.db.Where("action = ? AND resource = ? AND is_deleted = 0", auditAction, "users/"+guid).First(&audit).Error; err != nil || audit.UserID == nil || *audit.UserID != f.actor.ID || audit.IP == nil || *audit.IP != "198.18.3.1" ||
+				audit.Detail["terminal_state"] != "succeeded" || audit.Detail["failure_code"] != nil || audit.Detail["request_id"] != "a03-real-request" || audit.Detail["operation_ref"] != identity.PublicRef || audit.Detail["password"] != nil {
 				t.Fatalf("management audit = %#v/%v", audit, err)
 			}
 			var outbox models.AdminActionOutbox
 			if err := f.db.Where("public_ref = ?", identity.PublicRef).First(&outbox).Error; err != nil || outbox.TargetKind != int(actionsecurity.TargetNone) || outbox.TargetGUID != nil ||
-				outbox.ResultGUID == nil || *outbox.ResultGUID != user.Guid || outbox.State != models.OperationSucceeded {
+				outbox.ResultGUID == nil || *outbox.ResultGUID != user.Guid || outbox.State != models.OperationSucceeded || outbox.FailureCode != nil {
 				t.Fatalf("outbox = %#v/%v", outbox, err)
 			}
 			var operation models.AdminOperation
@@ -223,7 +226,7 @@ func TestCreateAccountRealOrdinaryAndAdminPersistAtomicState(t *testing.T) {
 	}
 }
 
-func TestCreateAccountRealReplayUsesImmutableResponseAcrossMutationAndServiceRestart(t *testing.T) {
+func TestCreateAccountRealDeleteRedactsSnapshotAndReplayReturnsGone(t *testing.T) {
 	requireDefaultMySQLAffectedRows(t)
 	f, services := openA03CreateServices(t, 1_910_050_000_000)
 	username := fixtureUsername(testSnowflake.Next())
@@ -244,6 +247,11 @@ func TestCreateAccountRealReplayUsesImmutableResponseAcrossMutationAndServiceRes
 	first, err := services.operations.CreateAccountResponse(context.Background(), actionsecurity.ActionUsersCreate, f.actorAPI, identity.PublicRef)
 	if err != nil || first == nil || first.HTTPStatus != 201 || first.MediaType != createAccountResponseMediaType || len(first.Body) == 0 {
 		t.Fatalf("first response = %#v/%v", first, err)
+	}
+	activeRestart := restartA03CreateOperationService(t, f)
+	activeReplay, err := activeRestart.CreateAccountResponse(context.Background(), actionsecurity.ActionUsersCreate, f.actorAPI, identity.PublicRef)
+	if err != nil || activeReplay == nil || activeReplay.HTTPStatus != http.StatusCreated || activeReplay.MediaType != first.MediaType || !bytes.Equal(activeReplay.Body, first.Body) {
+		t.Fatalf("active replay drifted first=%q replay=%#v err=%v", first.Body, activeReplay, err)
 	}
 
 	var operation models.AdminOperation
@@ -272,18 +280,22 @@ func TestCreateAccountRealReplayUsesImmutableResponseAcrossMutationAndServiceRes
 		return got
 	}
 	before := counts()
-	lastLogin := f.clock.NowMillis() + 99
-	if err := f.db.Model(&models.User{}).Where("id = ?", user.ID).Updates(map[string]any{
-		"last_login_at": lastLogin, "status": models.UserStatusDisabled, "plan_type": models.PlanEnterprise,
-		"auth_version": 7, "is_deleted": 1, "updated_at": lastLogin, "updated_by": f.actor.ID,
-	}).Error; err != nil {
+	deleteIdentity, deleteIntent, _ := f.prepare(t, user, newRealIdempotencyKey(t))
+	deleteExecution, err := f.bundle.NewExecution(deleteIntent)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := f.db.Model(&models.BusinessGroup{}).Where("id = ?", group.ID).Updates(map[string]any{
-		"group_key": "changed-after-create", "display_name": "Changed", "status": models.BusinessGroupStatusInactive,
-		"is_deleted": 1, "updated_at": lastLogin, "updated_by": f.actor.ID,
-	}).Error; err != nil {
+	deleteView, err := f.bundle.Operations.Execute(context.Background(), deleteIdentity, deleteExecution, deleteExecution, f.bundle.Outbox)
+	if err != nil || deleteView == nil || deleteView.Status != "succeeded" {
+		t.Fatalf("delete = %#v/%v", deleteView, err)
+	}
+	var storedResponse models.AdminOperationResponse
+	if err := f.db.Unscoped().Where("operation_id = ?", operation.ID).First(&storedResponse).Error; err != nil {
 		t.Fatal(err)
+	}
+	if storedResponse.LifecycleState != models.OperationResponseRedacted || storedResponse.IsDeleted != 1 || storedResponse.IntegrityVersion != models.OperationResponseIntegrityHMACV1 || storedResponse.ResponseHMAC == nil || len(*storedResponse.ResponseHMAC) != 64 ||
+		!bytes.Equal(storedResponse.ResponseBody, []byte("{}")) || storedResponse.BodySHA256 != redactedCreateResponseSHA256 || bytes.Contains(storedResponse.ResponseBody, []byte(username)) || bytes.Contains(storedResponse.ResponseBody, []byte(nickname)) {
+		t.Fatalf("redacted response = %#v", storedResponse)
 	}
 
 	restarted := restartA03CreateOperationService(t, f)
@@ -295,11 +307,74 @@ func TestCreateAccountRealReplayUsesImmutableResponseAcrossMutationAndServiceRes
 		t.Fatalf("replay Begin = %#v/%#v/%v", replayed, replayView, err)
 	}
 	second, err := restarted.CreateAccountResponse(context.Background(), actionsecurity.ActionUsersCreate, f.actorAPI, replayView.PublicRef)
-	if err != nil || second == nil || second.HTTPStatus != 201 || second.MediaType != first.MediaType || !bytes.Equal(second.Body, first.Body) {
-		t.Fatalf("restarted response drifted first=%q second=%#v err=%v", first.Body, second, err)
+	if second != nil || !errors.Is(err, ErrCreatedAccountDeleted) {
+		t.Fatalf("deleted replay = %#v/%v", second, err)
 	}
 	if after := counts(); after != before || after != [4]int64{1, 1, 1, 1} {
 		t.Fatalf("replay created side effects before=%v after=%v", before, after)
+	}
+}
+
+func TestCreateAccountRealSnapshotRejectsDirectMutationAndRotatedKey(t *testing.T) {
+	requireDefaultMySQLAffectedRows(t)
+	f, services := openA03CreateServices(t, 1_910_060_000_000)
+	username := fixtureUsername(testSnowflake.Next())
+	base := actionsecurity.CreateAccountIntent{Username: username, Role: models.UserRoleUser.String(), PlanType: int(models.PlanFree), AllowedModels: []string{}, DailyCallLimit: 100}
+	identity, execution := services.prepare(t, f, base, "A03-Strong-Password!", newRealIdempotencyKey(t))
+	view, err := services.operations.Execute(context.Background(), identity, execution, execution, services.outbox)
+	if err != nil || view == nil || view.Status != "succeeded" {
+		t.Fatalf("execute = %#v/%v", view, err)
+	}
+	var operation models.AdminOperation
+	if err := f.db.Where("public_ref = ?", identity.PublicRef).First(&operation).Error; err != nil {
+		t.Fatal(err)
+	}
+	var response models.AdminOperationResponse
+	if err := f.db.Where("operation_id = ?", operation.ID).First(&response).Error; err != nil {
+		t.Fatal(err)
+	}
+	if response.IntegrityVersion != models.OperationResponseIntegrityHMACV1 || response.ResponseHMAC == nil || len(*response.ResponseHMAC) != 64 {
+		t.Fatalf("unsealed HMAC response = %#v", response)
+	}
+	restore := map[string]any{"lifecycle_state": response.LifecycleState, "integrity_version": response.IntegrityVersion, "response_hmac": response.ResponseHMAC,
+		"http_status": response.HTTPStatus, "media_type": response.MediaType, "response_body": response.ResponseBody, "body_sha256": response.BodySHA256,
+		"is_deleted": response.IsDeleted, "updated_at": response.UpdatedAt, "updated_by": response.UpdatedBy}
+	for name, update := range map[string]map[string]any{
+		"body":      {"response_body": []byte("{}")},
+		"digest":    {"body_sha256": strings.Repeat("0", 64)},
+		"version":   {"integrity_version": models.OperationResponseIntegrityLegacySealed, "response_hmac": nil},
+		"lifecycle": {"lifecycle_state": models.OperationResponseRedacted, "response_body": []byte("{}"), "body_sha256": redactedCreateResponseSHA256, "is_deleted": 1, "updated_at": response.UpdatedAt + 1, "updated_by": f.actor.ID},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if result := f.db.Unscoped().Model(&models.AdminOperationResponse{}).Where("id = ?", response.ID).UpdateColumns(update); result.Error != nil || result.RowsAffected != 1 {
+				t.Fatalf("direct database mutation setup = %d/%v", result.RowsAffected, result.Error)
+			}
+			if got, err := services.operations.CreateAccountResponse(context.Background(), actionsecurity.ActionUsersCreate, f.actorAPI, identity.PublicRef); got != nil || !errors.Is(err, ErrActionOperationUnavailable) {
+				t.Fatalf("tampered replay = %#v/%v", got, err)
+			}
+			if result := f.db.Unscoped().Model(&models.AdminOperationResponse{}).Where("id = ?", response.ID).UpdateColumns(restore); result.Error != nil || result.RowsAffected != 1 {
+				t.Fatalf("restore valid fixture response = %d/%v", result.RowsAffected, result.Error)
+			}
+		})
+	}
+	current, err := services.operations.CreateAccountResponse(context.Background(), actionsecurity.ActionUsersCreate, f.actorAPI, identity.PublicRef)
+	if err != nil || current == nil || current.HTTPStatus != http.StatusCreated {
+		t.Fatalf("same-key replay = %#v/%v", current, err)
+	}
+	rotatedCrypto, err := actionsecurity.NewCrypto([]byte("abcdef0123456789abcdef0123456789"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rotated := *services.operations
+	rotated.crypto = rotatedCrypto
+	if got, err := rotated.CreateAccountResponse(context.Background(), actionsecurity.ActionUsersCreate, f.actorAPI, identity.PublicRef); got != nil || !errors.Is(err, ErrActionOperationUnavailable) {
+		t.Fatalf("rotated-key replay = %#v/%v", got, err)
+	}
+	if result := f.db.Unscoped().Delete(&models.AdminOperationResponse{}, response.ID); result.Error != nil || result.RowsAffected != 1 {
+		t.Fatalf("direct snapshot delete = %d/%v", result.RowsAffected, result.Error)
+	}
+	if got, err := services.operations.CreateAccountResponse(context.Background(), actionsecurity.ActionUsersCreate, f.actorAPI, identity.PublicRef); got != nil || !errors.Is(err, ErrActionOperationUnavailable) {
+		t.Fatalf("missing snapshot replay = %#v/%v", got, err)
 	}
 }
 

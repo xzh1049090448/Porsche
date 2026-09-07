@@ -22,6 +22,7 @@ const (
 	intentInfo      = "porsche/admin-action/intent/v1"
 	idempotencyInfo = "porsche/admin-action/idempotency/v1"
 	leaseInfo       = "porsche/admin-action/lease/v1"
+	responseInfo    = "porsche/admin-action/response/v1"
 )
 
 type Crypto struct {
@@ -29,6 +30,7 @@ type Crypto struct {
 	intent      [32]byte
 	idempotency [32]byte
 	lease       [32]byte
+	response    [32]byte
 }
 
 func NewCrypto(root []byte) (*Crypto, error) {
@@ -47,6 +49,7 @@ func NewCrypto(root []byte) (*Crypto, error) {
 		{info: intentInfo, key: &c.intent},
 		{info: idempotencyInfo, key: &c.idempotency},
 		{info: leaseInfo, key: &c.lease},
+		{info: responseInfo, key: &c.response},
 	} {
 		derived, err := deriveKey(rootCopy, target.info)
 		if err != nil {
@@ -72,6 +75,12 @@ func (c *Crypto) IdempotencyDigest(raw [32]byte) [32]byte {
 
 func (c *Crypto) LeaseOwnerDigest(raw [32]byte) [32]byte {
 	return digest(c.lease, "lease-owner", raw[:])
+}
+
+// ResponseDigest authenticates a canonical operation-result snapshot. The
+// caller owns the canonical field encoding and must clear it after use.
+func (c *Crypto) ResponseDigest(encoded []byte) [32]byte {
+	return digest(c.response, "response-v1", encoded)
 }
 
 func (c *Crypto) RateDigest(purpose string, payload []byte) ([32]byte, error) {

@@ -24,6 +24,9 @@ func adminOperationResponseTableContract() businessGroupTableContract {
 			{name: "updated_by", columnType: "bigint", nullable: "YES"},
 			{name: "is_deleted", columnType: "int", nullable: "NO", defaultVal: sql.NullString{String: "0", Valid: true}},
 			{name: "operation_id", columnType: "bigint", nullable: "NO"},
+			{name: "lifecycle_state", columnType: "int", nullable: "NO", defaultVal: sql.NullString{String: "1", Valid: true}},
+			{name: "integrity_version", columnType: "int", nullable: "NO", defaultVal: sql.NullString{String: "0", Valid: true}},
+			{name: "response_hmac", columnType: "char(64)", nullable: "YES", characterSet: "ascii", collation: "ascii_bin"},
 			{name: "http_status", columnType: "int", nullable: "NO"},
 			{name: "media_type", columnType: "varchar(64)", nullable: "NO", characterSet: "ascii", collation: "ascii_bin"},
 			{name: "response_body", columnType: "varbinary(4096)", nullable: "NO"},
@@ -38,7 +41,7 @@ func adminOperationResponseTableContract() businessGroupTableContract {
 		checks: []businessGroupCheckContract{
 			{name: "chk_admin_operation_responses_http", clause: "http_status = 201 AND media_type = 'application/json'", enforced: "YES"},
 			{name: "chk_admin_operation_responses_body", clause: "OCTET_LENGTH(response_body) BETWEEN 2 AND 4096 AND OCTET_LENGTH(body_sha256) = 64", enforced: "YES"},
-			{name: "chk_admin_operation_responses_immutable", clause: "created_at >= 0 AND updated_at = created_at AND is_deleted = 0 AND ((created_by IS NULL AND updated_by IS NULL) OR (created_by IS NOT NULL AND updated_by = created_by))", enforced: "YES"},
+			{name: "chk_admin_operation_responses_lifecycle", clause: "(lifecycle_state = 1 AND is_deleted = 0 AND updated_at = created_at AND ((integrity_version = 0 AND response_hmac IS NULL) OR (integrity_version = 1 AND OCTET_LENGTH(response_hmac) = 64)) AND ((created_by IS NULL AND updated_by IS NULL) OR (created_by IS NOT NULL AND updated_by = created_by))) OR (lifecycle_state = 2 AND is_deleted = 1 AND integrity_version = 1 AND OCTET_LENGTH(response_hmac) = 64 AND OCTET_LENGTH(response_body) = 2 AND updated_at >= created_at AND updated_by IS NOT NULL)", enforced: "YES"},
 		},
 	}
 }
@@ -353,7 +356,7 @@ func (p *adminOperationResponseCheckParser) parseScalar() (string, bool) {
 		return "string(" + strconv.Quote(token.text) + ")", true
 	case 'i':
 		p.pos++
-		if token.text == "_utf8mb4" {
+		if token.text == "_utf8mb4" || token.text == "_ascii" {
 			if p.pos >= len(p.tokens) || p.tokens[p.pos].kind != 's' {
 				return "", false
 			}

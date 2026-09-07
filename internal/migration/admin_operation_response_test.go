@@ -22,28 +22,27 @@ func TestAdminOperationResponseMigrationIsLatestAndChecksumProtected(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(migrations) != 8 || migrations[7].Version != "0008" {
-		t.Fatalf("All() = %#v, want exactly eight migrations ending at 0008", migrations)
+	if len(migrations) != 9 || migrations[8].Version != "0009" {
+		t.Fatalf("All() = %#v, want exactly nine migrations ending at 0009", migrations)
 	}
-	up := strings.ToLower(string(migrations[7].UpSQL))
+	up := strings.ToLower(string(migrations[8].UpSQL))
 	for _, fragment := range []string{
-		"create table if not exists admin_operation_responses",
-		"response_body varbinary(4096) not null",
-		"body_sha256 char(64)",
-		"unique key uk_admin_operation_responses_guid (guid)",
-		"unique key uk_admin_operation_responses_operation (operation_id)",
-		"constraint fk_admin_operation_responses_operation foreign key (operation_id) references admin_operations(id) on delete restrict on update restrict",
-		"constraint chk_admin_operation_responses_immutable",
+		"lifecycle_state int not null default 1",
+		"integrity_version int not null default 0",
+		"response_hmac char(64)",
+		"failure_code int null",
+		"chk_admin_operation_responses_lifecycle",
+		"chk_admin_action_outbox_outcome",
 	} {
 		if !strings.Contains(up, fragment) {
-			t.Errorf("0008 missing %q", fragment)
+			t.Errorf("0009 missing %q", fragment)
 		}
 	}
-	if strings.Count(up, "create table") != 1 || strings.Contains(up, "alter table") || strings.Contains(up, "timestamp") || strings.Contains(up, "datetime") {
-		t.Fatalf("0008 must be one additive, rerunnable CREATE TABLE statement: %s", up)
+	if !strings.Contains(up, "alter table admin_operation_responses") || !strings.Contains(up, "alter table admin_action_outbox") || strings.Contains(up, "create trigger") || strings.Contains(up, "timestamp") || strings.Contains(up, "datetime") {
+		t.Fatalf("0009 must migrate response integrity and outbox outcome fields: %s", up)
 	}
-	if got := fmt.Sprintf("%x", sha256.Sum256(migrations[7].UpSQL)); got == strings.Repeat("0", 64) || len(got) != 64 {
-		t.Fatalf("0008 checksum = %q", got)
+	if got := fmt.Sprintf("%x", sha256.Sum256(migrations[8].UpSQL)); got == strings.Repeat("0", 64) || len(got) != 64 {
+		t.Fatalf("0009 checksum = %q", got)
 	}
 }
 
@@ -55,7 +54,7 @@ func TestAdminOperationResponseModelIsInternalAndImmutable(t *testing.T) {
 	if parsed.Table != "admin_operation_responses" {
 		t.Fatalf("table = %q", parsed.Table)
 	}
-	for _, name := range []string{"ID", "Guid", "OperationID", "HTTPStatus", "MediaType", "ResponseBody", "BodySHA256", "CreatedAt", "CreatedBy", "UpdatedAt", "UpdatedBy", "IsDeleted"} {
+	for _, name := range []string{"ID", "Guid", "OperationID", "LifecycleState", "IntegrityVersion", "ResponseHMAC", "HTTPStatus", "MediaType", "ResponseBody", "BodySHA256", "CreatedAt", "CreatedBy", "UpdatedAt", "UpdatedBy", "IsDeleted"} {
 		field := parsed.LookUpField(name)
 		if field == nil {
 			t.Errorf("missing model field %s", name)
@@ -68,7 +67,7 @@ func TestAdminOperationResponseModelIsInternalAndImmutable(t *testing.T) {
 
 func TestAdminOperationResponseCheckCanonicalizationAcceptsMySQLStringEscaping(t *testing.T) {
 	want, wantOK := canonicalizeAdminOperationResponseCheck("http_status = 201 AND media_type = 'application/json'")
-	got, gotOK := canonicalizeAdminOperationResponseCheck("((`HTTP_STATUS` = 0201) AnD (`MEDIA_TYPE` = _UTF8MB4\\'application/json\\'))")
+	got, gotOK := canonicalizeAdminOperationResponseCheck("((`HTTP_STATUS` = 0201) AnD (`MEDIA_TYPE` = _ASCII\\'application/json\\'))")
 	if !wantOK || !gotOK || got != want {
 		t.Fatalf("canonical MySQL clause = %q/%v, want %q/%v", got, gotOK, want, wantOK)
 	}
@@ -95,19 +94,19 @@ func TestAdminOperationResponseCheckCanonicalizationAcceptsFunctionFormatting(t 
 	}
 }
 
-func TestAdminOperationResponseContractRejectsActorOROutsideImmutableConjunction(t *testing.T) {
+func TestAdminOperationResponseContractRejectsLifecycleBooleanDrift(t *testing.T) {
 	want := adminOperationResponseTableContract()
 	got := matchingAdminOperationResponseMetadata(want, "fixture_test")
 	if !matchesAdminOperationResponseContract(want, got, "fixture_test") {
 		t.Fatal("equivalent MySQL formatting was rejected")
 	}
 	for index := range got.checks {
-		if got.checks[index].name == "chk_admin_operation_responses_immutable" {
-			got.checks[index].clause = "(created_at >= 0 AND updated_at = created_at AND is_deleted = 0 AND created_by IS NULL AND updated_by IS NULL) OR (created_by IS NOT NULL AND updated_by = created_by)"
+		if got.checks[index].name == "chk_admin_operation_responses_lifecycle" {
+			got.checks[index].clause = "lifecycle_state = 1 OR is_deleted = 0"
 		}
 	}
 	if matchesAdminOperationResponseContract(want, got, "fixture_test") {
-		t.Fatal("verifier accepted actor OR outside the immutable conjunction")
+		t.Fatal("verifier accepted a weakened response lifecycle check")
 	}
 }
 
@@ -135,10 +134,8 @@ func matchingAdminOperationResponseMetadata(contract businessGroupTableContract,
 		name: "fk_admin_operation_responses_operation", column: "operation_id", ordinal: 1, targetSchema: schemaName,
 		targetTable: "admin_operations", targetColumn: "id", deleteRule: "RESTRICT", updateRule: "RESTRICT",
 	}}
-	metadata.checks = []businessGroupCheckMetadata{
-		{name: "chk_admin_operation_responses_body", clause: "((LENGTH(`response_body`) BETWEEN (0002) AND 04096) AND (length(`body_sha256`) = 0064))", enforced: "YES"},
-		{name: "chk_admin_operation_responses_http", clause: "((`HTTP_STATUS` = 0201) AND (`MEDIA_TYPE` = _UTF8MB4\\'application/json\\'))", enforced: "YES"},
-		{name: "chk_admin_operation_responses_immutable", clause: "((`CREATED_AT` >= 0) AND (`UPDATED_AT` = `CREATED_AT`) AND (`IS_DELETED` = 0) AND (((`CREATED_BY` IS NULL) AND (`UPDATED_BY` IS NULL)) OR ((`CREATED_BY` IS NOT NULL) AND (`UPDATED_BY` = `CREATED_BY`))))", enforced: "YES"},
+	for _, check := range contract.checks {
+		metadata.checks = append(metadata.checks, businessGroupCheckMetadata{name: check.name, clause: check.clause, enforced: "YES"})
 	}
 	return metadata
 }
@@ -169,13 +166,13 @@ func TestAdminOperationResponseMigrationOnIsolatedMySQLIsRerunnable(t *testing.T
 	// Simulate a process crash after MySQL atomically created the table but
 	// before the runner recorded the version. The next run must verify the
 	// existing table and recreate exactly one ledger entry.
-	if err := gdb.Exec("DELETE FROM schema_migrations WHERE version = '0008'").Error; err != nil {
+	if err := gdb.Exec("DELETE FROM schema_migrations WHERE version = '0009'").Error; err != nil {
 		t.Fatal(err)
 	}
 	apply()
 	apply()
 	var ledgerCount int64
-	if err := gdb.Raw("SELECT COUNT(*) FROM schema_migrations WHERE version = '0008' AND is_deleted = 0").Row().Scan(&ledgerCount); err != nil || ledgerCount != 1 {
-		t.Fatalf("0008 ledger count = %d (%v)", ledgerCount, err)
+	if err := gdb.Raw("SELECT COUNT(*) FROM schema_migrations WHERE version = '0009' AND is_deleted = 0").Row().Scan(&ledgerCount); err != nil || ledgerCount != 1 {
+		t.Fatalf("0009 ledger count = %d (%v)", ledgerCount, err)
 	}
 }
