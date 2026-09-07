@@ -13,18 +13,19 @@ import (
 )
 
 type State struct {
-	Settings      *config.Settings
-	DB            *gorm.DB
-	Auth          *service.AuthService
-	Billing       *service.BillingService
-	SMS           *service.SMSService
-	Platform      *service.PlatformChatService
-	GatewayTokens *service.GatewayTokenService
-	WhiteLabel    *whitelabel.WhiteLabelService
-	Audit         *service.AuditService
-	AuthRedis     *service.AuthRedis
-	Sessions      *service.SessionService
-	HTTP          *http.Client
+	Settings            *config.Settings
+	DB                  *gorm.DB
+	Auth                *service.AuthService
+	Billing             *service.BillingService
+	SMS                 *service.SMSService
+	Platform            *service.PlatformChatService
+	GatewayTokens       *service.GatewayTokenService
+	WhiteLabel          *whitelabel.WhiteLabelService
+	Audit               *service.AuditService
+	AuthRedis           *service.AuthRedis
+	PlatformGenerations *service.PlatformGenerationStore
+	Sessions            *service.SessionService
+	HTTP                *http.Client
 }
 
 func NewState(settings *config.Settings, db *gorm.DB) (*State, error) {
@@ -57,6 +58,12 @@ func NewState(settings *config.Settings, db *gorm.DB) (*State, error) {
 			return nil, err
 		}
 		s.AuthRedis = authRedis
+		generations, err := service.NewPlatformGenerationStoreFromURL(context.Background(), settings.RedisURL)
+		if err != nil {
+			_ = authRedis.Close()
+			return nil, err
+		}
+		s.PlatformGenerations = generations
 	}
 	s.Sessions = service.NewSessionService(db, s.AuthRedis, settings)
 	s.Auth.SetSessionService(s.Sessions)
