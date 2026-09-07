@@ -1,0 +1,54 @@
+{
+  "baseline": {
+    "exit": 0,
+    "manifest_status": "PASS",
+    "validation_error_count": 0
+  },
+  "mutations": [
+    {
+      "exit": 1,
+      "manifest_status": "FAIL",
+      "mutation": "exit",
+      "validation_error_count": 1
+    },
+    {
+      "exit": 1,
+      "manifest_status": "FAIL",
+      "mutation": "count",
+      "validation_error_count": 2
+    },
+    {
+      "exit": 1,
+      "manifest_status": "FAIL",
+      "mutation": "head",
+      "validation_error_count": 1
+    },
+    {
+      "exit": 1,
+      "manifest_status": "FAIL",
+      "mutation": "ledger",
+      "validation_error_count": 1
+    },
+    {
+      "exit": 1,
+      "manifest_status": "FAIL",
+      "mutation": "browser",
+      "validation_error_count": 1
+    },
+    {
+      "exit": 1,
+      "manifest_status": "FAIL",
+      "mutation": "database",
+      "validation_error_count": 1
+    },
+    {
+      "exit": 1,
+      "manifest_status": "FAIL",
+      "mutation": "secret",
+      "validation_error_count": 1
+    }
+  ],
+  "status": "PASS",
+  "strategy": "each case uses a fresh temporary full report copy; retained database fixtures, stopped application-server state, repositories, and evidence source remain unchanged",
+  "temporary_copies_retained": 0
+}

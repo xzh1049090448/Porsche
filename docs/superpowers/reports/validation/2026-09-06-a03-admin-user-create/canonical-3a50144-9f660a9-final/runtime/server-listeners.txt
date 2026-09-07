@@ -1,0 +1,4 @@
+COMMAND     PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+server    75433 xuzhihao    8u  IPv4 0x7654a42f1555a91f      0t0  TCP 127.0.0.1:51294 (LISTEN)
+node      75488 xuzhihao   14u  IPv4 0x8e31f1b0c22aabfd      0t0  TCP 127.0.0.1:51295 (LISTEN)
+node      75497 xuzhihao   14u  IPv4 0x2a2173ca4beb1437      0t0  TCP 127.0.0.1:51296 (LISTEN)

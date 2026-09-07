@@ -1,0 +1,65 @@
+import json
+import os
+import re
+import subprocess
+import urllib.error
+import urllib.request
+from pathlib import Path
+from urllib.parse import urlparse
+
+username = os.environ["A03_TOMBSTONE_USERNAME"]
+password = os.environ["A03_ORDINARY_PASSWORD"]
+backend_port = int(os.environ["A03_BACKEND_PORT"])
+container = os.environ["A03_MYSQL_NAME"]
+database = os.environ["A03_DATABASE_NAME"]
+database_url = urlparse(os.environ["A03_DATABASE_URL"])
+report = Path(os.environ["A03_REPORT_DIR"])
+
+if not re.fullmatch(r"a03_[a-zA-Z0-9_]+_runtime_test", database):
+    raise RuntimeError("refusing non-runtime schema")
+if database_url.hostname != "127.0.0.1" or database_url.port != 55877 or database_url.path != "/" + database:
+    raise RuntimeError("refusing non-owned database URL")
+
+def sql(statement):
+    proc_env = os.environ.copy()
+    proc_env["MYSQL_PWD"] = database_url.password
+    result = subprocess.run(
+        ["docker", "exec", "-e", "MYSQL_PWD", container, "mysql", "-h127.0.0.1",
+         "-u" + database_url.username, "-N", "-B", database, "-e", statement],
+        env=proc_env, text=True, capture_output=True,
+    )
+    if result.returncode:
+        raise RuntimeError("disposable database query failed")
+    return result.stdout.strip()
+
+quoted = username.replace("'", "''")
+before = sql(f"SELECT COUNT(*) FROM users WHERE BINARY username=BINARY '{quoted}'")
+if before == "0":
+    body = json.dumps({"username": username, "password": password, "nickname": "Tombstone Fixture"}).encode()
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{backend_port}/api/v1/auth/register",
+        data=body, headers={"content-type": "application/json"}, method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            if response.status != 201:
+                raise RuntimeError("unexpected registration status")
+            response.read()
+    except urllib.error.HTTPError as error:
+        error.read()
+        raise RuntimeError("unexpected registration status") from error
+elif before != "1":
+    raise RuntimeError("unexpected tombstone row count")
+
+sql("UPDATE users SET status=2,is_deleted=1,password_hash=NULL,phone=NULL " +
+    f"WHERE BINARY username=BINARY '{quoted}'")
+state = sql("SELECT CONCAT(COUNT(*),':',SUM(is_deleted=1),':',SUM(status=2),':',SUM(password_hash IS NULL)) " +
+            f"FROM users WHERE BINARY username=BINARY '{quoted}'")
+if state != "1:1:1:1":
+    raise RuntimeError("invalid tombstone state")
+
+(report / "tombstone-preparation.json").write_text(json.dumps({
+    "alias": "tombstone_fixture", "rows": 1, "is_deleted": 1,
+    "status": "disabled", "password_hash": "null",
+}, indent=2) + "\n")
+print("tombstone_fixture rows=1 deleted=1 disabled=1 password_hash_null=1")

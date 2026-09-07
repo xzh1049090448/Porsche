@@ -1,0 +1,94 @@
+{
+  "boundaries": {
+    "amounts": "MOCK_ONLY",
+    "business_accounts": "NOT_USED",
+    "deployment": "NOT_RUN",
+    "production_migration": "NOT_RUN"
+  },
+  "changed_status_rows": {
+    "backend": [
+      "A03"
+    ],
+    "matrix": [
+      "A03"
+    ]
+  },
+  "checks": {
+    "active_registry_count_recorded": true,
+    "amount_mock_rows_still_blocked": true,
+    "backend_a03_pass_limited_scope": true,
+    "backend_a14_row_preserved": true,
+    "backend_blocker_count_derived": true,
+    "backend_head_is_code_under_test": true,
+    "backend_other_features_preserved": true,
+    "backend_progress_only_prepended": true,
+    "backend_tracked_diff_bounded": true,
+    "cleanup_pass_recorded": true,
+    "frontend_head_is_code_under_test": true,
+    "frontend_progress_only_prepended": true,
+    "frontend_tracked_diff_bounded": true,
+    "matrix_a03_pass_limited_scope": true,
+    "matrix_a14_item_preserved": true,
+    "matrix_code_heads_recorded": true,
+    "matrix_summary_derived": true,
+    "medium_key_rotation_restriction_recorded": true,
+    "only_a03_backend_status_row_changed": true,
+    "only_a03_matrix_item_changed": true,
+    "production_boundary_recorded": true,
+    "production_deploy_still_blocked": true,
+    "web012_other_features_preserved": true,
+    "web012_status_preserved": true
+  },
+  "code_under_test": {
+    "backend": "3a50144e53268f6ef3ae704699ef9fa851e4a5ee",
+    "frontend": "9f660a9ca26f5738dd661652596a1e450ff34335"
+  },
+  "hashes": [
+    {
+      "after_sha256": "3ba8a5307ff7fd8110ffba3cac9fb9432efac998b0c193d0a0a3e886dc0dcded",
+      "before_sha256": "06efaa19d9860be747d9e7172cfe145564d26cf980f0c65077f3a85883d76fe9",
+      "path": "feature_list.json",
+      "repo": "backend"
+    },
+    {
+      "after_sha256": "e76f190f86eb3f537995cd14f97b81539b29dcedc58fe1716867a0a9dcbcc7bc",
+      "before_sha256": "b1229d259fdc3b06500b0e3e37bbb49a287e1718a8c40a59a05d925d7ce61b85",
+      "path": "progress.md",
+      "repo": "backend"
+    },
+    {
+      "after_sha256": "8248d6736c56ae6e4ce3143553f7abbaff52d3f46dc56a01b5b9d46cfe4a2d70",
+      "before_sha256": "ec251e474410d28ef5f7827e2559dee02ab54de4d76848bed37a0db45f3af812",
+      "path": "feature_list.json",
+      "repo": "frontend"
+    },
+    {
+      "after_sha256": "31ea4103875a6e4a433a837c992b3ae240f3ea707a33480536239bc072b64cf9",
+      "before_sha256": "262bbc2ca17faca3e73c417fa5a00b1572e26742931034cc028c0ad6d6c63489",
+      "path": "progress.md",
+      "repo": "frontend"
+    },
+    {
+      "after_sha256": "4e545d1604c96e9e224a388d9f30cbc3f4eba5233151c472edc1322816ebdd57",
+      "before_sha256": "82fa881c3cbee2c4db5aede492dad1fa413d0c2ef40b61383c297b09c93ca45e",
+      "path": "docs/agents/validation/joint-acceptance-20260904/acceptance-matrix.json",
+      "repo": "frontend"
+    }
+  ],
+  "matrix_summary": {
+    "BLOCKED_ENV": 1,
+    "BLOCKED_NOT_IMPLEMENTED": 13,
+    "BLOCKED_PRODUCT": 1,
+    "FAIL_LOCAL_DEV_ROUTE": 0,
+    "PASS_LIMITED_SCOPE": 11,
+    "blocked_total": 15,
+    "total": 26
+  },
+  "preserved": {
+    "a14_backend": "BLOCKED_NOT_IMPLEMENTED",
+    "a14_matrix": "PASS_LIMITED_SCOPE",
+    "web012": "in_progress"
+  },
+  "status": "PASS",
+  "stored_source_contents": 0
+}

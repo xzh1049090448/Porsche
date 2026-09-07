@@ -1,0 +1,313 @@
+#!/usr/bin/env python3
+import argparse
+import hashlib
+import json
+import re
+import shlex
+import subprocess
+import sys
+from collections import Counter
+from pathlib import Path
+from urllib.parse import unquote, urlparse
+
+CANONICAL_NAME = "canonical-3a50144-9f660a9-final"
+EXPECTED_BE_HEAD = "3a50144e53268f6ef3ae704699ef9fa851e4a5ee"
+EXPECTED_FE_HEAD = "9f660a9ca26f5738dd661652596a1e450ff34335"
+EXPECTED_LEDGER = {
+    "0001":"2da41ffd07c44d45cb05a705f867db2f2b8f01defb519000197dedce9998aedd",
+    "0002":"58712428ca668fb1fea0943d71a2209b2e7faf26de043d870195a033ac0f413c",
+    "0003":"31c49d9bb1f171d9ea6caab49714d9de05552b8f6e9cb73f2989760efd0a015c",
+    "0004":"44b5caba0473162c239e6b3035e6d9067e3af0b35e998a79c827a1424621494e",
+    "0005":"4fc34da357e155c4a04548838153796803f618f0c7199adda17098ef5190cd68",
+    "0006":"c0bc9f68370985315db711c0028ee644dafe4d9667c595a49193ed38e2d6f6b6",
+    "0007":"b3c3351771fce2dbf5466d300cb92ffd5dbd183cffaff15671e46a8bc87e143e",
+    "0008":"21289da334e7ef4425f697c659e6f45227e88c4d86ac4c099867dd6895f666f2",
+    "0009":"4dc818d93180bb6777d2ec6d8318e728fe76add4c736a178f19b808ca2afedf7",
+    "0010":"b6ddd5b7088f1617b9831186e08da622f7d06cbe985707ef9f5524ffe6057780",
+}
+MIGRATION_FILES = {v:f"internal/migration/sql/{v}_{n}.up.sql" for v,n in {
+    "0001":"initial_schema","0002":"auth_core","0003":"permission_policy","0004":"admin_users_read_count",
+    "0005":"admin_operation_safety","0006":"admin_action_outbox","0007":"business_groups",
+    "0008":"admin_operation_responses","0009":"admin_response_integrity","0010":"admin_operation_response_targets",
+}.items()}
+SECRET_PATTERNS = [
+    re.compile(rb"(?<![A-Za-z0-9_-])(?:av|ik)_[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])"),
+    re.compile(rb"(?i)\bBearer\s+[A-Za-z0-9._~+/-]{16,}"),
+    re.compile(rb'''(?i)["'](?:password|current_password|ticket|idempotency[_-]?key|authorization|jwt_secret(?:_key)?|auth_hmac_key|action_security_hmac_key|admin_token|metrics_token|api_key)["']\s*:\s*["'](?!<redacted>)[^"'\r\n]{6,}["']'''),
+    re.compile(rb"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"),
+]
+
+def args():
+    p=argparse.ArgumentParser()
+    p.add_argument("--report-root",default="/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/docs/superpowers/reports/validation/2026-09-06-a03-admin-user-create")
+    p.add_argument("--backend-root",default="/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903")
+    p.add_argument("--frontend-root",default="/Users/xuzhihao/code/Porsche-Web/.worktrees/admin-public-260903")
+    p.add_argument("--probe-mode",action="store_true")
+    p.add_argument("--payload-stdin",action="store_true")
+    return p.parse_args()
+
+def digest(data): return hashlib.sha256(data).hexdigest()
+def json_file(path): return json.loads(path.read_text())
+def exit_file(path):
+    raw=path.read_text().strip()
+    if not re.fullmatch(r"\d+",raw): raise ValueError("non-numeric exit artifact")
+    return int(raw)
+def head(root):
+    r=subprocess.run(["git","rev-parse","HEAD"],cwd=root,text=True,capture_output=True)
+    return r.stdout.strip() if r.returncode==0 else ""
+
+def go_counts(path):
+    terminals,outputs,packages,parse_failures={},{},{},[]
+    for number,raw in enumerate(path.read_text().splitlines(),1):
+        if not raw.strip(): continue
+        try: event=json.loads(raw)
+        except json.JSONDecodeError: parse_failures.append(number); continue
+        action,package,test=event.get("Action"),event.get("Package",""),event.get("Test")
+        if test and action=="output": outputs.setdefault((package,test),[]).append(event.get("Output","").strip())
+        if test and action in {"pass","fail","skip"}: terminals[(package,test)]=action
+        elif not test and action in {"pass","fail","skip"}: packages[package]=action
+    tests=sorted(terminals)
+    leaves=[(p,t) for p,t in tests if not any(op==p and ot.startswith(t+"/") for op,ot in tests)]
+    skips=[]
+    for item in leaves:
+        if terminals[item]=="skip":
+            lines=outputs.get(item,[])
+            reason=next((x for x in lines if "NOT_RUN" in x),next((x for x in lines if "SKIP" in x),""))
+            skips.append({"package":item[0],"test":item[1],"reason":reason})
+    return {"terminal":dict(Counter(terminals.values())),"leaf":dict(Counter(terminals[x] for x in leaves)),"packages":dict(Counter(packages.values())),"leaf_skips":skips,"parse_failures":parse_failures}
+def normalized_counts(data): return {k:data.get(k) for k in ("terminal","leaf","packages","leaf_skips","parse_failures")}
+def ledger(path):
+    result={}
+    for line in path.read_text().splitlines():
+        m=re.fullmatch(r"(\d{4}) ([0-9a-f]{64})",line.strip())
+        if not m: continue
+        if m.group(1) in result: raise ValueError("duplicate ledger version")
+        result[m.group(1)]=m.group(2)
+    if not result: raise ValueError("missing ledger")
+    return result
+
+def known_secrets(payload=None):
+    if payload is not None:
+        return int(payload["private_source_count"]), sorted(set(payload["known_secrets"]), key=len, reverse=True)
+    files=sorted({*Path("/private/tmp").glob("a03-task12*/**/*.env"),*Path("/private/tmp").glob("a03-task12*/**/*env.sh"),*Path("/private/tmp").glob("a03-task12*/**/*credentials*")})
+    names=re.compile(r"(?:PASS(?:WORD)?|SECRET|TOKEN|HMAC|API_KEY|MYSQL_PWD|CREDENTIAL)",re.I)
+    known=set()
+    for path in files:
+        try: text=path.read_text(errors="replace")
+        except OSError: continue
+        for line in text.splitlines():
+            line=line.strip()[7:] if line.strip().startswith("export ") else line.strip()
+            if "=" not in line: continue
+            name,raw=line.split("=",1); value=raw.strip()
+            try:
+                parsed=shlex.split(value,posix=True)
+                if len(parsed)==1: value=parsed[0]
+            except ValueError: pass
+            if names.search(name) and len(value)>=8 and value.lower() not in {"<redacted>","redacted","false","true","null","none"}: known.add(value)
+            if name.upper().endswith("DATABASE_URL") or ("MYSQL" in name.upper() and "://" in value):
+                try:
+                    password=urlparse(value).password
+                    if password and len(unquote(password))>=8: known.add(unquote(password))
+                except ValueError: pass
+    return len(files),sorted(known,key=len,reverse=True)
+def secret_counts(data,known):
+    return {"exact_known_secret_matches":sum(data.count(x.encode()) for x in known),"credential_pattern_matches":sum(len(p.findall(data)) for p in SECRET_PATTERNS),"stored_match_values":0}
+
+def classification(relative):
+    value=relative.as_posix()
+    if not value.startswith(CANONICAL_NAME+"/"): return "superseded","superseded_prior_acceptance"
+    local=value[len(CANONICAL_NAME)+1:]
+    if any(x in local for x in ("initial-shared-redis-app-env-fail","bootstrap-root-initial-password-length-fail","runtime-identity-initial-password-length-fail","browser-run-wrapper-initial-zsh-status-fail","secret-scan-preclosure-superseded","mysql-version-and-ordinary-grants-prequery-superseded","resource-compare-before-cleanup-superseded")):
+        return "superseded","superseded_current_cycle_harness"
+    for prefix,run in [
+        ("gates/backend-focused","backend_focused"),("gates/backend-race","backend_race"),("gates/backend-full","backend_full"),("gates/backend-build","backend_build"),("gates/backend-vet","backend_vet"),("gates/backend-diff","backend_diff"),("gates/frontend-test","frontend_test"),("gates/frontend-build","frontend_build"),("gates/frontend-diff","frontend_diff"),("browser/","browser_acceptance"),("db/","database_evidence"),("runtime/mysql-runtime-security-query","mysql_runtime_security_query"),("runtime/browser-run","browser_acceptance"),("runtime/database-evidence","database_evidence"),("runtime/resource-comparison","resource_compare"),("runtime/","runtime_fixture"),("secret-scan.json","secret_scan"),("manifest.json","manifest"),("adversarial-manifest-tests.json","manifest_adversarial"),("scripts/","reproduction_scripts")]:
+        if local.startswith(prefix): return "canonical",run
+    return "canonical","canonical_evidence"
+
+def main():
+    a=args(); report,backend,frontend=Path(a.report_root),Path(a.backend_root),Path(a.frontend_root)
+    secret_payload=json.load(sys.stdin) if a.payload_stdin else None
+    canonical=report/CANONICAL_NAME; output=canonical/"manifest.json"; errors=[]
+    def check(ok,name):
+        if not ok: errors.append(name)
+    heads={"backend":head(backend),"frontend":head(frontend)}
+    check(heads=={"backend":EXPECTED_BE_HEAD,"frontend":EXPECTED_FE_HEAD},"actual_heads")
+    version_lines=dict(x.split("=",1) for x in (canonical/"runtime/versions-and-heads.txt").read_text().splitlines() if "=" in x)
+    check(version_lines.get("backend_head")==EXPECTED_BE_HEAD,"recorded_backend_head"); check(version_lines.get("frontend_head")==EXPECTED_FE_HEAD,"recorded_frontend_head")
+
+    ledger_paths=[canonical/"gates/migration-ledger.txt",canonical/"gates/full-migration-ledger.txt",canonical/"runtime/runtime-migration-ledger.txt"]
+    for path in ledger_paths:
+        try: check(ledger(path)==EXPECTED_LEDGER,"ledger:"+path.name)
+        except Exception: check(False,"ledger_parse:"+path.name)
+    source_record={}
+    for line in (canonical/"gates/migration-source-sha256.txt").read_text().splitlines():
+        m=re.fullmatch(r"([0-9a-f]{64})  (internal/migration/sql/(\d{4})_[^ ]+\.up\.sql)",line)
+        if m: source_record[m.group(3)]=(m.group(1),m.group(2))
+        else: errors.append("migration_source_record_parse")
+    check(set(source_record)==set(EXPECTED_LEDGER),"migration_source_versions")
+    for version,want in EXPECTED_LEDGER.items():
+        check(source_record.get(version)==(want,MIGRATION_FILES[version]),"migration_source_record:"+version)
+        path=backend/MIGRATION_FILES[version]; check(path.is_file() and digest(path.read_bytes())==want,"migration_source_bytes:"+version)
+    plan=(backend/"docs/superpowers/plans/2026-09-06-a03-admin-user-create.md").read_text()
+    check(dict(re.findall(r"^\| (\d{4}) \| `([0-9a-f]{64})` \|$",plan,re.M))==EXPECTED_LEDGER,"plan_ledger")
+
+    expected_go={
+        "backend-focused":{"terminal":{"pass":673},"leaf":{"pass":610},"packages":{"pass":6},"leaf_skips":[],"parse_failures":[]},
+        "backend-race":{"terminal":{"pass":476},"leaf":{"pass":427},"packages":{"pass":3},"leaf_skips":[],"parse_failures":[]},
+        "backend-full":{"terminal":{"pass":1912,"skip":1},"leaf":{"pass":1739,"skip":1},"packages":{"pass":16,"skip":5},"leaf_skips":[{"package":"github.com/porsche/ai-gateway-go/internal/handler","test":"TestAdminUsersReadPerformance","reason":"admin_users_read_performance_test.go:24: NOT_RUN: opt-in 100k synthetic-user performance fixture requires this batch authorization"}],"parse_failures":[]},
+    }; parsed_go={}
+    for stem,want in expected_go.items():
+        try:
+            raw=go_counts(canonical/f"gates/{stem}.jsonl"); recorded=normalized_counts(json_file(canonical/f"gates/{stem}-counts.json"))
+            check(raw==want,"raw_counts:"+stem); check(recorded==want,"recorded_counts:"+stem); check(raw==recorded,"count_crosscheck:"+stem); parsed_go[stem]=raw
+        except Exception: check(False,"count_parse:"+stem)
+    tap=(canonical/"gates/frontend-test.tap").read_text(); tap_counts={k:int(v) for k,v in re.findall(r"^ℹ (tests|pass|fail|cancelled|skipped|todo) (\d+)$",tap,re.M)}
+    check(tap_counts=={"tests":275,"pass":275,"fail":0,"cancelled":0,"skipped":0,"todo":0},"frontend_counts")
+
+    browser=json_file(canonical/"browser/browser-acceptance.json"); scenarios=browser.get("scenarios",{})
+    check(all([
+        browser.get("status")=="PASS",browser.get("headless") is False,
+        scenarios.get("deleted_replay_no_pii",{}).get("status")==410,scenarios.get("deleted_replay_no_pii",{}).get("code")=="created_user_deleted",scenarios.get("deleted_replay_no_pii",{}).get("pii_fields")==0,
+        all(scenarios.get("groups_directory_fail_closed",{}).get(x,{}).get("create_or_verify_requests")==0 for x in ("pending","error","empty")),
+        scenarios.get("double_submit_post_count")==1,scenarios.get("ambiguous_transport_failure_recovered_by_operation_query") is True,
+        scenarios.get("operation_expired_classification",{}).get("query_status")==410,scenarios.get("operation_expired_classification",{}).get("begin_status")==410,
+        browser.get("runtime_console_secret_scan",{}).get("exact_known_secret_matches")==0,browser.get("runtime_console_secret_scan",{}).get("credential_pattern_matches")==0,browser.get("page_error_count")==0,
+    ]),"browser_acceptance")
+    requests=json_file(canonical/"browser/browser-request-summary.json"); check(any(x.get("username_alias")=="deleted_replay" and x.get("status")==410 for x in requests),"deleted_replay_request_summary")
+    pngs={"browser-admin-denials.png","browser-admin-ordinary-created.png","browser-ambiguous-recovered.png","browser-context-after-deleted-replay.png","browser-double-submit.png","browser-group-detail.png","browser-groups-empty-zero-write.png","browser-groups-error-zero-write.png","browser-groups-pending-zero-write.png","browser-refresh-list-default-group.png","browser-root-admin-created.png","browser-root-admin-overrides.png","browser-tombstone-conflict.png"}
+    check({p.name for p in (canonical/"browser").glob("*.png")}==pngs,"contextual_screenshot_set")
+    check(scenarios.get("deleted_replay_no_pii",{}).get("context_screenshot_scope")=="UI context after API acceptance; does not display or prove the wire 410 body","contextual_screenshot_description")
+
+    db=json_file(canonical/"db/database-evidence.json"); checks=db.get("checks",{})
+    check(db.get("status")=="PASS" and len(checks)==16 and all(checks.values()),"database_status")
+    check(sum(x["count"] for x in db["audit_logs"]["groups"])==8,"database_audit_count"); check(sum(x["count"] for x in db["admin_operations"]["groups"])==9,"database_operation_count"); check(sum(x["count"] for x in db["admin_action_outbox"]["groups"])==9,"database_outbox_count"); check(sum(x["count"] for x in db["admin_operation_responses"]["groups"])==6,"database_response_count")
+    account=db.get("fixture_account",{}); check(account.get("ordinary_ddl") is True and account.get("super") is False and account.get("trigger") is False and account.get("grant_option") is False and account.get("source")=="runtime/mysql-runtime-security-query.tsv","database_derived_privileges")
+    server=db.get("server_security",{}); check(server.get("mysql_version")=="8.4.11" and server.get("log_bin")==1 and server.get("log_bin_trust_function_creators")==0,"database_server_security")
+    query_command=json_file(canonical/"runtime/mysql-runtime-security-query-command.json"); query=(canonical/"runtime/mysql-runtime-security-query.tsv").read_text()
+    check(query_command.get("exit")==0 and query_command.get("column_headers") is True and query_command.get("cwd")==str(backend),"mysql_query_command")
+    check("mysql_version\tlog_bin\tlog_bin_trust_function_creators\n8.4.11\t1\t0" in query,"mysql_query_server_values"); check("[show_grants]\nGrants for " in query and "[information_schema_privileges]\nprivilege_scope\tprivilege_type\tis_grantable" in query,"mysql_query_headers")
+    retention=json_file(canonical/"runtime/server-retention-before-cleanup.json")
+    application_servers=retention.get("application_servers",{}); retained_fixtures=retention.get("retained_fixtures",{})
+    check(all([
+        retention.get("status")=="PASS", retention.get("state")=="STOPPED_AFTER_ACCEPTANCE", retention.get("wrapper_exit")==0,
+        application_servers.get("expected_listener_counts")=={"51294":0,"51295":0,"51296":0},
+        application_servers.get("actual_listener_counts")=={"51294":0,"51295":0,"51296":0},
+        application_servers.get("lsof_exit")=={"51294":1,"51295":1,"51296":1},
+        application_servers.get("curl_expected_exit")==7,
+        application_servers.get("curl_actual_exit")=={"backend_51294":7,"tls_proxy_51296":7},
+        application_servers.get("curl_stdout_empty") is True,
+        application_servers.get("ps_expected_exit")==1, application_servers.get("ps_actual_exit")==1,
+        application_servers.get("ps_stdout_empty") is True,
+        retained_fixtures.get("container_rows")==2, retained_fixtures.get("docker_ps_exit")==0,
+        retained_fixtures.get("mysql_healthy") is True, retained_fixtures.get("mysql_select_1_exit")==0,
+        retained_fixtures.get("redis_healthy") is True, retained_fixtures.get("redis_ping_exit")==0,
+    ]),"server_retention")
+
+    cleanup=json_file(canonical/"cleanup/cleanup-evidence.json")
+    check(cleanup.get("status")=="PASS" and len(cleanup.get("checks",{}))==14 and all(cleanup.get("checks",{}).values()),"cleanup_status")
+    check(cleanup.get("counts",{}).get("task_containers_before")==8 and cleanup.get("counts",{}).get("known_secret_sources_read_before_cleanup")==19 and cleanup.get("counts",{}).get("known_secret_values_held_in_memory")==34 and cleanup.get("counts",{}).get("task_container_logs_held_in_memory")==8,"cleanup_counts")
+    check(cleanup.get("residuals")=={"task_container_count":0,"task_label_match_count":0,"task_named_volume_count":0,"private_path_count":0,"listener_count":0,"process_count":0},"cleanup_zero_residuals")
+    check(cleanup.get("comparison")=={"unrelated_containers_added":0,"unrelated_containers_removed":0,"images_added":0,"images_removed":0,"volumes_added":0,"volumes_removed":0} and cleanup.get("unrelated_resources_changed")==0 and cleanup.get("production_touched") is False,"cleanup_unrelated_unchanged")
+    task_before=json_file(canonical/"cleanup/task-containers-before.json").get("containers",[])
+    check(len(task_before)==8 and len({x.get("id") for x in task_before})==8 and all(len(x.get("id",""))==64 and x.get("auto_remove") is True and x.get("mounts")==[] and x.get("tmpfs") for x in task_before),"cleanup_task_identity")
+    status_snapshot=json_file(canonical/"status/final-status-snapshot.json")
+    check(status_snapshot.get("status")=="PASS" and len(status_snapshot.get("checks",{}))==24 and all(status_snapshot.get("checks",{}).values()),"status_snapshot")
+    check(status_snapshot.get("changed_status_rows")=={"backend":["A03"],"matrix":["A03"]},"status_only_a03")
+    check(status_snapshot.get("matrix_summary")=={"total":26,"PASS_LIMITED_SCOPE":11,"FAIL_LOCAL_DEV_ROUTE":0,"BLOCKED_NOT_IMPLEMENTED":13,"BLOCKED_PRODUCT":1,"BLOCKED_ENV":1,"blocked_total":15},"status_matrix_counts")
+    check(status_snapshot.get("code_under_test")=={"backend":EXPECTED_BE_HEAD,"frontend":EXPECTED_FE_HEAD},"status_code_heads")
+
+    secret=json_file(canonical/"secret-scan.json"); scope=secret.get("scope",{})
+    check(secret.get("status")=="PASS","secret_status"); check(scope.get("known_secret_values_scanned")==34 and scope.get("private_secret_source_files_read_in_memory")==19 and scope.get("task_container_logs_scanned_in_memory")==8,"secret_known_sources")
+    check(scope.get("self_outputs_excluded")==[CANONICAL_NAME+"/secret-scan.json",CANONICAL_NAME+"/manifest.json"],"secret_self_exclusion")
+    check(secret.get("exact_known_secret_scan",{}).get("matches")==0,"secret_exact"); check(all(x.get("runtime_or_evidence")==0 for x in secret.get("credential_pattern_scan",{}).values()),"secret_runtime_patterns")
+    check(secret.get("container_console_scan",{}).get("exact_known_secret_matches")==0 and secret.get("container_console_scan",{}).get("credential_pattern_matches")==0,"secret_container")
+    check(secret.get("browser_runtime_console_scan",{}).get("exact_known_secret_matches")==0 and secret.get("browser_runtime_console_scan",{}).get("credential_pattern_matches")==0,"secret_browser")
+    if not a.probe_mode:
+        adversarial=json_file(canonical/"adversarial-manifest-tests.json")
+        check(adversarial.get("status")=="PASS" and adversarial.get("baseline",{}).get("exit")==0 and adversarial.get("baseline",{}).get("manifest_status")=="PASS","adversarial_baseline")
+        check(len(adversarial.get("mutations",[]))==7 and all(x.get("exit",0)!=0 and x.get("manifest_status")=="FAIL" for x in adversarial.get("mutations",[])),"adversarial_mutations")
+
+    all_files=sorted(p for p in report.rglob("*") if p.is_file()); self_path=f"{CANONICAL_NAME}/manifest.json"; actual_paths={p.relative_to(report).as_posix() for p in all_files}
+    excluded_secret_paths={canonical/"secret-scan.json",canonical/"manifest.json"}
+    independently_text=0; independently_binary=0; independently_text_bytes=0
+    for artifact_path in all_files:
+        if artifact_path in excluded_secret_paths:
+            continue
+        artifact_bytes=artifact_path.read_bytes()
+        if artifact_path.suffix.lower() in {".png",".jpg",".jpeg",".webp",".gif",".zip"} or b"\0" in artifact_bytes[:4096]:
+            independently_binary += 1
+        else:
+            independently_text += 1; independently_text_bytes += len(artifact_bytes)
+    check(scope.get("artifact_files_observed")==len(all_files),"secret_observed_file_count")
+    check(scope.get("text_files_scanned")==independently_text and scope.get("binary_artifacts_skipped_as_nontext")==independently_binary,"secret_file_classification_counts")
+    check(scope.get("text_bytes_scanned")==independently_text_bytes,"secret_text_byte_count")
+    check(independently_text+independently_binary+len(excluded_secret_paths)==len(all_files),"secret_scope_partition")
+    required={f"{CANONICAL_NAME}/{x}" for x in ["gates/backend-focused.exit","gates/backend-focused.jsonl","gates/backend-race.exit","gates/backend-race.jsonl","gates/backend-full.exit","gates/backend-full.jsonl","gates/frontend-test.exit","gates/frontend-test.tap","runtime/browser-run.exit","runtime/mysql-runtime-security-query.exit","runtime/server-retention-before-cleanup.exit","runtime/server-retention-before-cleanup.json","cleanup/cleanup.exit","cleanup/cleanup-evidence.json","status/status-verify.exit","status/final-status-snapshot.json","browser/browser-acceptance.json","db/database-evidence.json","secret-scan.json","manifest.json"]}
+    if not a.probe_mode: required.add(f"{CANONICAL_NAME}/adversarial-manifest-tests.json")
+    check(required.issubset(actual_paths),"required_file_set")
+    canonical_exits={}
+    for path in all_files:
+        relative=path.relative_to(report); kind,_=classification(relative)
+        if kind=="canonical" and path.suffix==".exit":
+            try: canonical_exits[relative.as_posix()]=exit_file(path)
+            except Exception: canonical_exits[relative.as_posix()]="invalid"
+    check(bool(canonical_exits) and all(x==0 for x in canonical_exits.values()),"canonical_exit_files")
+    for relative in required:
+        if relative!=self_path: check((report/relative).is_file() and (report/relative).stat().st_size>0,"required_nonempty:"+relative)
+
+    run_defs=[
+        ("backend_focused","go test -json ./internal/migration ./internal/actionsecurity ./internal/service ./internal/dto ./internal/handler ./internal/router -run 'BusinessGroup|CreateAccount|AdminUserCreate|ActionOperation|AdminOperationResponse|DeleteUser' -count=1",str(backend),"private fixture env; gate schema and Redis DB 11","gates/backend-focused.exit"),
+        ("backend_race","go test -race -json ./internal/actionsecurity ./internal/service ./internal/handler -run 'CreateAccount|AdminUserCreate|ActionOperation|DeleteUser' -count=1",str(backend),"private fixture env; gate schema and Redis DB 11","gates/backend-race.exit"),
+        ("backend_full","go test -p 1 -json ./... -count=1",str(backend),"private fixture env; full schema and empty Redis DB 10; no global APP_ENV","gates/backend-full.exit"),
+        ("backend_build","go build ./...",str(backend),"no credentials","gates/backend-build.exit"),("backend_vet","go vet ./...",str(backend),"no credentials","gates/backend-vet.exit"),("backend_diff","git diff --check",str(backend),"no credentials","gates/backend-diff-check.exit"),
+        ("frontend_test","npm test",str(frontend),"A14 and A03 contract paths; no credentials","gates/frontend-test.exit"),("frontend_build","npm run build",str(frontend),"A14 and A03 contract paths; no credentials","gates/frontend-build.exit"),("frontend_diff","git diff --check",str(frontend),"no credentials","gates/frontend-diff-check.exit"),
+        ("browser_acceptance","node run.js /private/tmp/playwright-test-a03-final.js","/Users/xuzhihao/.codex/skills/playwright-skill","private runtime env; visible system Chrome; headless=false","runtime/browser-run.exit"),
+        ("database_evidence","python3 /private/tmp/a03-final-database-evidence.py",str(backend),"ordinary fixture user via private runtime env","runtime/database-evidence-run.exit"),
+        ("mysql_runtime_security_query","python3 /private/tmp/a03-final-mysql-security-query.py",str(backend),"MYSQL_PWD only in process environment; sanitized output","runtime/mysql-runtime-security-query.exit"),
+        ("resource_capture","docker ps/images/volume ls; constrained inspect; lsof exact ports",str(backend),"read-only container and listener identity before cleanup","runtime/identity-after.exit"),
+        ("server_retention_before_cleanup","read-only exact-port lsof, curl, and ps checks for STOPPED_AFTER_ACCEPTANCE plus then-retained fixture health",str(backend),"historical pre-cleanup check; values not recorded","runtime/server-retention-before-cleanup.exit"),
+        ("exact_cleanup","python3 scripts/final-close.py.txt guarded cleanup phase",str(canonical),"eight verified task containers; 34 known values and 8 container logs retained in memory only","cleanup/cleanup.exit"),
+        ("status_verify","python3 scripts/status-verify.py.txt",str(canonical),"no credentials; compares working status files with code-under-test HEAD","status/status-verify.exit"),
+    ]
+    runs=[{"id":i,"command":c,"cwd":cwd,"environment":env,"actual_exit":exit_file(canonical/e),"expected_exit":0,"head":heads} for i,c,cwd,env,e in run_defs]
+    runs += [{"id":"secret_scan","command":"python3 /private/tmp/a03-final-secret-scan.py","cwd":str(canonical),"environment":"34 known values in memory; excludes only two self outputs","actual_exit":0 if secret.get("status")=="PASS" else 1,"expected_exit":0,"head":heads},{"id":"manifest","command":"python3 /private/tmp/a03-final-manifest.py","cwd":str(canonical),"environment":"in-memory self-output closure","actual_exit":None,"expected_exit":0,"head":heads}]
+
+    artifacts=[]
+    for path in all_files:
+        relative=path.relative_to(report)
+        if relative.as_posix()==self_path: continue
+        data=path.read_bytes(); kind,run=classification(relative)
+        entry={"path":relative.as_posix(),"classification":kind,"run_id":run,"bytes":len(data),"nonempty":bool(data),"sha256":digest(data),"media":"binary" if path.suffix.lower() in {".png",".jpg",".jpeg",".webp",".gif",".zip"} else "text"}
+        if not data: entry["stdout_empty"]=True
+        artifacts.append(entry)
+    artifacts.append({"path":self_path,"classification":"canonical","run_id":"manifest","bytes":0,"nonempty":True,"sha256":None,"media":"text","self_hash_policy":"SHA-256 omitted because a manifest cannot contain its own digest; exact final byte length and in-memory secret closure are verified"})
+    check(all(x["classification"] in {"canonical","superseded"} for x in artifacts),"artifact_classification")
+
+    private_source_count,known=known_secrets(secret_payload); check(private_source_count==19 and len(known)==34,"closure_known_sources")
+    secret_bytes=(canonical/"secret-scan.json").read_bytes(); secret_closure=secret_counts(secret_bytes,known)
+    check(secret_closure["exact_known_secret_matches"]==0 and secret_closure["credential_pattern_matches"]==0,"secret_scan_self_closure")
+    result={"schema_version":2,"status":None,"validation_errors":None,"canonical_root":CANONICAL_NAME,"heads":{"expected":{"backend":EXPECTED_BE_HEAD,"frontend":EXPECTED_FE_HEAD},"actual":heads},"ledger":{"expected":EXPECTED_LEDGER,"validated_artifacts":[p.relative_to(report).as_posix() for p in ledger_paths],"source_record":"gates/migration-source-sha256.txt","plan":"docs/superpowers/plans/2026-09-06-a03-admin-user-create.md"},"runs":runs,"canonical_exit_files":canonical_exits,"artifacts":sorted(artifacts,key=lambda x:x["path"]),"secret_self_output_closure":{"policy":"Secret scan excludes only secret-scan.json and manifest.json; manifest generator scans both final outputs in memory. Manifest SHA-256 is self-excluded and exact byte length is fixed-point verified.","excluded_outputs":[f"{CANONICAL_NAME}/secret-scan.json",self_path],"known_secret_values_scanned":len(known),"private_secret_source_files_read_in_memory":private_source_count,"secret_scan_json":{"bytes":len(secret_bytes),"sha256":digest(secret_bytes),**secret_closure},"manifest_json":{"bytes":0,"sha256":None,"exact_known_secret_matches":0,"credential_pattern_matches":0,"stored_match_values":0}},"derived_test_counts":{"go":parsed_go,"frontend":tap_counts,"browser_scenarios":13,"database_checks":len(checks)}}
+    self_entry=next(x for x in result["artifacts"] if x["path"]==self_path); closure=result["secret_self_output_closure"]["manifest_json"]
+    def update():
+        result["status"]="PASS" if not errors else "FAIL"; result["validation_errors"]=sorted(set(errors)); result["counts"]={"artifacts":len(result["artifacts"]),"actual_files":len(actual_paths),"canonical":sum(x["classification"]=="canonical" for x in result["artifacts"]),"superseded":sum(x["classification"]=="superseded" for x in result["artifacts"]),"unclassified":sum(x["classification"] not in {"canonical","superseded"} for x in result["artifacts"]),"zero_byte":sum(x.get("stdout_empty",False) for x in result["artifacts"])}
+    final=b""
+    for _ in range(20):
+        update(); candidate=(json.dumps(result,indent=2,sort_keys=True)+"\n").encode(); size=len(candidate); self_entry["bytes"]=size; closure["bytes"]=size; closure.update(secret_counts(candidate,known)); final=(json.dumps(result,indent=2,sort_keys=True)+"\n").encode()
+        if len(final)==self_entry["bytes"]==closure["bytes"]: break
+    if closure["exact_known_secret_matches"] or closure["credential_pattern_matches"]:
+        errors.append("manifest_self_closure"); update(); final=(json.dumps(result,indent=2,sort_keys=True)+"\n").encode(); self_entry["bytes"]=len(final); closure["bytes"]=len(final); final=(json.dumps(result,indent=2,sort_keys=True)+"\n").encode()
+    output.write_bytes(final)
+    written=json_file(output); written_paths={x["path"] for x in written["artifacts"]}; disk_paths={p.relative_to(report).as_posix() for p in report.rglob("*") if p.is_file()}; post=[]
+    if written_paths!=disk_paths: post.append("post_file_set")
+    for entry in written["artifacts"]:
+        data=(report/entry["path"]).read_bytes()
+        if entry["path"]==self_path:
+            if entry["bytes"]!=len(data): post.append("post_self_size")
+        elif entry["bytes"]!=len(data) or entry["sha256"]!=digest(data): post.append("post_hash_size")
+    scan=secret_counts(output.read_bytes(),known)
+    if scan["exact_known_secret_matches"] or scan["credential_pattern_matches"]: post.append("post_self_secret")
+    if post: print("manifest=FAIL post_validation="+",".join(sorted(set(post)))); return 1
+    print(f"manifest={written['status']} artifacts={written['counts']['artifacts']} canonical={written['counts']['canonical']} superseded={written['counts']['superseded']} errors={len(written['validation_errors'])}")
+    return 0 if written["status"]=="PASS" else 1
+
+if __name__=="__main__": raise SystemExit(main())

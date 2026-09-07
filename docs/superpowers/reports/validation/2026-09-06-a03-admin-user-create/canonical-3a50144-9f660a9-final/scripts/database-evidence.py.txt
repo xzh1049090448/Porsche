@@ -1,0 +1,377 @@
+import json
+import os
+import re
+import subprocess
+from pathlib import Path
+from urllib.parse import urlparse
+
+container = os.environ["A03_MYSQL_NAME"]
+database = os.environ["A03_DATABASE_NAME"]
+url = urlparse(os.environ["A03_DATABASE_URL"])
+report = Path(os.environ["A03_REPORT_DIR"])
+
+if not re.fullmatch(r"a03_[A-Za-z0-9_]+_runtime_test", database):
+    raise RuntimeError("refusing non-runtime schema")
+if url.hostname != "127.0.0.1" or url.path != "/" + database:
+    raise RuntimeError("refusing non-owned database URL")
+
+security_query_artifact = report.parent / "runtime/mysql-runtime-security-query.tsv"
+security_lines = security_query_artifact.read_text().splitlines()
+sections = {}
+current_section = None
+for line in security_lines:
+    if line.startswith("[") and line.endswith("]"):
+        current_section = line[1:-1]
+        sections[current_section] = []
+    elif current_section is not None:
+        sections[current_section].append(line)
+if set(sections) != {"server_variables", "show_grants", "information_schema_privileges"}:
+    raise RuntimeError("invalid runtime security query artifact sections")
+if sections["server_variables"][:1] != ["mysql_version\tlog_bin\tlog_bin_trust_function_creators"] or len(sections["server_variables"]) != 2:
+    raise RuntimeError("invalid server variable query header")
+server_values = sections["server_variables"][1].split("\t")
+if len(server_values) != 3:
+    raise RuntimeError("invalid server variable query result")
+if not sections["show_grants"] or not sections["show_grants"][0].startswith("Grants for "):
+    raise RuntimeError("invalid SHOW GRANTS header")
+if sections["information_schema_privileges"][:1] != ["privilege_scope\tprivilege_type\tis_grantable"]:
+    raise RuntimeError("invalid information_schema privilege header")
+privilege_rows = [line.split("\t") for line in sections["information_schema_privileges"][1:] if line]
+if any(len(row) != 3 for row in privilege_rows):
+    raise RuntimeError("invalid information_schema privilege result")
+effective_rows = [row for row in privilege_rows if row[0] in ("GLOBAL", "SCHEMA:" + database)]
+effective_privileges = {row[1] for row in effective_rows}
+required_ordinary_ddl = {"SELECT", "INSERT", "UPDATE", "DELETE", "CREATE", "DROP", "REFERENCES", "INDEX", "ALTER"}
+derived_fixture_account = {
+    "ordinary_ddl": required_ordinary_ddl.issubset(effective_privileges),
+    "super": "SUPER" in effective_privileges,
+    "trigger": "TRIGGER" in effective_privileges,
+    "grant_option": any(row[2] == "YES" for row in effective_rows) or "GRANT OPTION" in effective_privileges,
+    "effective_privilege_count": len(effective_privileges),
+    "source": "runtime/mysql-runtime-security-query.tsv",
+}
+derived_server_security = {
+    "mysql_version": server_values[0],
+    "log_bin": int(server_values[1]),
+    "log_bin_trust_function_creators": int(server_values[2]),
+    "source": "runtime/mysql-runtime-security-query.tsv",
+}
+
+def run_sql(statement):
+    env = os.environ.copy()
+    env["MYSQL_PWD"] = url.password or ""
+    result = subprocess.run(
+        ["docker", "exec", "-i", "-e", "MYSQL_PWD", container, "mysql",
+         "-h127.0.0.1", "-u" + (url.username or ""), "-N", "-B", database],
+        input=statement.rstrip(";\n") + ";\n", env=env, text=True,
+        capture_output=True,
+    )
+    if result.returncode:
+        safe_error = (result.stderr or "").replace(url.password or "", "<redacted>").strip()
+        raise RuntimeError("disposable database query failed: " + safe_error[:500])
+    return result.stdout.rstrip("\n")
+
+def rows(statement):
+    out = run_sql(statement)
+    return [] if not out else [line.split("\t") for line in out.splitlines()]
+
+def integer(statement):
+    out = run_sql(statement).strip()
+    if not re.fullmatch(r"-?\d+", out):
+        raise RuntimeError("unexpected scalar query result")
+    return int(out)
+
+def q(value):
+    return "'" + value.replace("\\", "\\\\").replace("'", "''") + "'"
+
+def enum(value, mapping):
+    return mapping.get(int(value), "unknown") if value != "NULL" else None
+
+tag = os.environ["A03_ADMIN_USERNAME"].split("_")[-1]
+aliases = {
+    "root": os.environ["A03_ROOT_USERNAME"],
+    "created_admin": os.environ["A03_ADMIN_USERNAME"],
+    "ordinary_default": f"user_{tag}",
+    "double_submit": f"dbl_{tag}",
+    "tombstone_fixture": os.environ["A03_TOMBSTONE_USERNAME"],
+    "ambiguous_recovery": os.environ["A03_AMBIGUOUS_USERNAME"],
+    "deleted_replay": f"deleted_{tag}",
+    "operation_expired": f"expired_{tag}",
+    "denied_admin_creation": f"denyadm_{tag}",
+    "denied_non_default_plan": f"denyplan_{tag}",
+    "groups_pending": f"gpend_{tag}",
+    "groups_error": f"gerror_{tag}",
+    "groups_empty": f"gempty_{tag}",
+}
+
+user_evidence = {}
+for alias, username in aliases.items():
+    data = rows(
+        "SELECT COUNT(*),COALESCE(SUM(u.is_deleted=1),0),COALESCE(SUM(u.status=1),0),"
+        "COALESCE(SUM(u.status=2),0),COALESCE(SUM(u.role=1),0),COALESCE(SUM(u.role=10),0),"
+        "COALESCE(SUM(u.role=100),0),COALESCE(SUM(u.nickname IS NULL),0),"
+        "COALESCE(SUM(u.password_hash IS NULL),0),"
+        "COALESCE(SUM(g.group_key='default' AND g.status=1 AND g.is_deleted=0),0) "
+        "FROM users u LEFT JOIN business_groups g ON g.id=u.group_id "
+        f"WHERE BINARY u.username=BINARY {q(username)}"
+    )[0]
+    user_evidence[alias] = {
+        "rows": int(data[0]), "deleted": int(data[1]), "active_status": int(data[2]),
+        "disabled_status": int(data[3]), "ordinary_role": int(data[4]),
+        "admin_role": int(data[5]), "root_role": int(data[6]),
+        "nickname_null": int(data[7]), "password_hash_null": int(data[8]),
+        "active_default_group": int(data[9]),
+    }
+
+permission_rows = rows(
+    "SELECT h.policy_version,h.catalog_version,h.rule_count,o.capability,o.effect "
+    "FROM users u JOIN user_permission_heads h ON h.user_id=u.id AND h.is_deleted=0 "
+    "JOIN user_permission_overrides o ON o.user_id=u.id AND o.policy_version=h.policy_version AND o.is_deleted=0 "
+    f"WHERE BINARY u.username=BINARY {q(aliases['created_admin'])} ORDER BY o.capability"
+)
+capabilities = {7: "users.sessions.read", 9: "users.plan.change"}
+effects = {1: "inherit", 2: "allow", 3: "deny"}
+permission_evidence = {
+    "head_rows": integer(
+        "SELECT COUNT(*) FROM users u JOIN user_permission_heads h ON h.user_id=u.id AND h.is_deleted=0 "
+        f"WHERE BINARY u.username=BINARY {q(aliases['created_admin'])}"
+    ),
+    "policy_version": int(permission_rows[0][0]) if permission_rows else None,
+    "catalog_version": int(permission_rows[0][1]) if permission_rows else None,
+    "rule_count": int(permission_rows[0][2]) if permission_rows else None,
+    "overrides": [
+        {"capability": capabilities.get(int(row[3]), "unknown"), "effect": effects.get(int(row[4]), "unknown")}
+        for row in permission_rows
+    ],
+}
+
+operation_states = {1: "processing", 2: "succeeded", 3: "failed", 4: "pending_recovery", 5: "expired"}
+actions = {1: "users.create_admin", 6: "users.delete", 9: "users.create"}
+failures = {1: "action_rejected", 2: "target_version_conflict", 3: "policy_version_conflict", 4: "target_state_conflict", 5: "consumer_validation_failed"}
+result_kinds = {1: "none", 2: "user", 3: "public_content"}
+delivery_states = {1: "pending", 2: "delivered", 3: "dead"}
+
+operation_groups = []
+for row in rows(
+    "SELECT action,state,COALESCE(CAST(error_code AS CHAR),'NULL'),"
+    "COALESCE(CAST(result_kind AS CHAR),'NULL'),COALESCE(CAST(result_http_status AS CHAR),'NULL'),"
+    "is_deleted,COUNT(*) FROM admin_operations GROUP BY action,state,error_code,result_kind,result_http_status,is_deleted "
+    "ORDER BY action,state,error_code"
+):
+    operation_groups.append({
+        "action": actions.get(int(row[0]), "unknown"), "state": operation_states.get(int(row[1]), "unknown"),
+        "failure_code": enum(row[2], failures), "result_kind": enum(row[3], result_kinds),
+        "http_status": None if row[4] == "NULL" else int(row[4]), "is_deleted": int(row[5]), "count": int(row[6]),
+    })
+
+outbox_groups = []
+for row in rows(
+    "SELECT action,state,COALESCE(CAST(failure_code AS CHAR),'NULL'),"
+    "COALESCE(CAST(result_kind AS CHAR),'NULL'),delivery_state,is_deleted,COUNT(*) "
+    "FROM admin_action_outbox GROUP BY action,state,failure_code,result_kind,delivery_state,is_deleted "
+    "ORDER BY action,state,failure_code"
+):
+    outbox_groups.append({
+        "action": actions.get(int(row[0]), "unknown"), "terminal_state": operation_states.get(int(row[1]), "unknown"),
+        "failure_code": enum(row[2], failures), "result_kind": enum(row[3], result_kinds),
+        "delivery_state": delivery_states.get(int(row[4]), "unknown"), "is_deleted": int(row[5]), "count": int(row[6]),
+    })
+
+audit_groups = []
+for row in rows(
+    "SELECT action,JSON_UNQUOTE(JSON_EXTRACT(detail,'$.terminal_state')) AS terminal_state,"
+    "COALESCE(JSON_UNQUOTE(JSON_EXTRACT(detail,'$.failure_code')),'NULL'),COUNT(*) "
+    "FROM audit_logs WHERE action IN ('users.create','users.create_admin') "
+    "GROUP BY action,terminal_state,JSON_UNQUOTE(JSON_EXTRACT(detail,'$.failure_code')) "
+    "ORDER BY action,terminal_state"
+):
+    audit_groups.append({
+        "action": row[0], "terminal_state": row[1],
+        "failure_code": None if row[2] in ("NULL", "null") else row[2], "count": int(row[3]),
+    })
+
+audit_integrity = {
+    "create_rows": integer("SELECT COUNT(*) FROM audit_logs WHERE action IN ('users.create','users.create_admin')"),
+    "stable_action_failures": integer(
+        "SELECT COUNT(*) FROM audit_logs a JOIN admin_operations o "
+        "ON BINARY o.public_ref=BINARY JSON_UNQUOTE(JSON_EXTRACT(a.detail,'$.operation_ref')) "
+        "WHERE o.action IN (1,9) AND a.action <> CASE o.action WHEN 1 THEN 'users.create_admin' WHEN 9 THEN 'users.create' ELSE '' END"
+    ),
+    "operation_audit_cardinality_mismatch": integer(
+        "SELECT COUNT(*) FROM (SELECT o.id FROM admin_operations o LEFT JOIN audit_logs a "
+        "ON BINARY o.public_ref=BINARY JSON_UNQUOTE(JSON_EXTRACT(a.detail,'$.operation_ref')) "
+        "WHERE o.action IN (1,9) GROUP BY o.id HAVING COUNT(a.id)<>1) AS mismatches"
+    ),
+    "request_id_missing_or_invalid": integer(
+        "SELECT COUNT(*) FROM audit_logs WHERE action IN ('users.create','users.create_admin') "
+        "AND (JSON_TYPE(JSON_EXTRACT(detail,'$.request_id')) <> 'STRING' OR LENGTH(JSON_UNQUOTE(JSON_EXTRACT(detail,'$.request_id'))) = 0)"
+    ),
+    "operation_ref_missing_invalid_or_unbound": integer(
+        "SELECT COUNT(*) FROM audit_logs a LEFT JOIN admin_operations o "
+        "ON BINARY o.public_ref=BINARY JSON_UNQUOTE(JSON_EXTRACT(a.detail,'$.operation_ref')) "
+        "WHERE a.action IN ('users.create','users.create_admin') AND "
+        "(JSON_UNQUOTE(JSON_EXTRACT(a.detail,'$.operation_ref')) NOT REGEXP '^op_[A-Za-z0-9_-]{43}$' OR o.id IS NULL OR "
+        "a.action <> CASE o.action WHEN 1 THEN 'users.create_admin' WHEN 9 THEN 'users.create' ELSE '' END)"
+    ),
+    "terminal_or_failure_contract_mismatch": integer(
+        "SELECT COUNT(*) FROM audit_logs WHERE action IN ('users.create','users.create_admin') AND NOT ("
+        "(JSON_UNQUOTE(JSON_EXTRACT(detail,'$.terminal_state'))='succeeded' AND JSON_EXTRACT(detail,'$.failure_code')=CAST('null' AS JSON)) OR "
+        "(JSON_UNQUOTE(JSON_EXTRACT(detail,'$.terminal_state'))='failed' AND JSON_UNQUOTE(JSON_EXTRACT(detail,'$.failure_code')) IN ('action_rejected','consumer_validation_failed')))"
+    ),
+    "resource_detail_mismatch": integer(
+        "SELECT COUNT(*) FROM audit_logs a LEFT JOIN users u ON u.guid=CAST(JSON_UNQUOTE(JSON_EXTRACT(a.detail,'$.target_guid')) AS UNSIGNED) "
+        "WHERE a.action IN ('users.create','users.create_admin') AND NOT ("
+        "(JSON_UNQUOTE(JSON_EXTRACT(a.detail,'$.terminal_state'))='succeeded' AND u.id IS NOT NULL AND a.resource=CONCAT('users/',u.guid) "
+        "AND JSON_UNQUOTE(JSON_EXTRACT(a.detail,'$.group_key'))='default') OR "
+        "(JSON_UNQUOTE(JSON_EXTRACT(a.detail,'$.terminal_state'))='failed' AND a.resource='users' "
+        "AND JSON_EXTRACT(a.detail,'$.target_guid') IS NULL AND JSON_EXTRACT(a.detail,'$.group_key') IS NULL))"
+    ),
+    "sensitive_detail_key_matches": integer(
+        "SELECT COUNT(*) FROM audit_logs WHERE action IN ('users.create','users.create_admin') AND "
+        "LOWER(CAST(detail AS CHAR)) REGEXP '\"(password|current_password|ticket|idempotency[_-]?key|authorization|password_hash)\"[[:space:]]*:'"
+    ),
+}
+
+response_groups = []
+for row in rows(
+    "SELECT lifecycle_state,integrity_version,http_status,media_type,is_deleted,"
+    "SUM(target_guid IS NULL),SUM(response_hmac=REPEAT('0',64)),COUNT(*) "
+    "FROM admin_operation_responses GROUP BY lifecycle_state,integrity_version,http_status,media_type,is_deleted "
+    "ORDER BY lifecycle_state"
+):
+    response_groups.append({
+        "lifecycle": {1: "active", 2: "redacted"}.get(int(row[0]), "unknown"),
+        "integrity_version": int(row[1]), "http_status": int(row[2]), "media_type": row[3],
+        "is_deleted": int(row[4]), "target_guid_null": int(row[5]), "zero_hmac_sentinel": int(row[6]), "count": int(row[7]),
+    })
+
+response_integrity = {
+    "active_invalid_structure": integer(
+        "SELECT COUNT(*) FROM admin_operation_responses WHERE lifecycle_state=1 AND NOT (target_guid>0 AND is_deleted=0 "
+        "AND integrity_version=1 AND response_hmac IS NOT NULL AND OCTET_LENGTH(response_hmac)=64 AND response_hmac<>REPEAT('0',64) "
+        "AND http_status=201 AND media_type='application/json' AND body_sha256=SHA2(response_body,256))"
+    ),
+    "redacted_noncanonical_or_pii": integer(
+        "SELECT COUNT(*) FROM admin_operation_responses WHERE lifecycle_state=2 AND NOT (is_deleted=1 AND integrity_version=1 "
+        "AND OCTET_LENGTH(response_hmac)=64 AND http_status=201 AND media_type='application/json' AND response_body=X'7B7D' "
+        "AND body_sha256='44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a')"
+    ),
+    "deleted_replay_redacted_rows": integer(
+        "SELECT COUNT(*) FROM admin_operation_responses r JOIN users u ON u.guid=r.target_guid "
+        f"WHERE BINARY u.username=BINARY {q(aliases['deleted_replay'])} AND u.is_deleted=1 AND r.lifecycle_state=2 AND r.response_body=X'7B7D'"
+    ),
+    "deleted_replay_active_rows": integer(
+        "SELECT COUNT(*) FROM admin_operation_responses r JOIN users u ON u.guid=r.target_guid "
+        f"WHERE BINARY u.username=BINARY {q(aliases['deleted_replay'])} AND r.lifecycle_state=1"
+    ),
+    "expired_operation_active_response_rows": integer(
+        "SELECT COUNT(*) FROM admin_operation_responses r JOIN admin_operations o ON o.id=r.operation_id JOIN users u ON u.guid=r.target_guid "
+        f"WHERE BINARY u.username=BINARY {q(aliases['operation_expired'])} AND o.state=5 AND o.is_deleted=1 AND r.lifecycle_state=1"
+    ),
+}
+
+outbox_integrity = {
+    "rows": integer("SELECT COUNT(*) FROM admin_action_outbox"),
+    "binding_or_public_ref_mismatch": integer(
+        "SELECT COUNT(*) FROM admin_action_outbox b LEFT JOIN admin_operations o ON o.id=b.operation_id "
+        "WHERE o.id IS NULL OR BINARY b.public_ref<>BINARY o.public_ref OR b.action<>o.action "
+        "OR b.public_ref NOT REGEXP '^op_[A-Za-z0-9_-]{43}$'"
+    ),
+    "outcome_contract_mismatch": integer(
+        "SELECT COUNT(*) FROM admin_action_outbox WHERE NOT ("
+        "(state=2 AND failure_code IS NULL AND result_kind=2 AND result_guid>0) OR "
+        "(state=3 AND failure_code IN (1,5) AND result_kind IS NULL AND result_guid IS NULL))"
+    ),
+    "target_contract_mismatch": integer(
+        "SELECT COUNT(*) FROM admin_action_outbox WHERE NOT ("
+        "(action IN (1,9) AND target_kind=1 AND target_guid IS NULL) OR "
+        "(action=6 AND target_kind=2 AND target_guid>0))"
+    ),
+    "unexpected_deleted_rows": integer("SELECT COUNT(*) FROM admin_action_outbox WHERE is_deleted<>0"),
+}
+
+verification_groups = []
+for row in rows(
+    "SELECT action,SUM(consumed_at IS NOT NULL),SUM(is_deleted=1),COUNT(*) FROM admin_action_verifications GROUP BY action ORDER BY action"
+):
+    verification_groups.append({
+        "action": actions.get(int(row[0]), "unknown"), "consumed": int(row[1]), "deleted": int(row[2]), "count": int(row[3]),
+    })
+
+auth_event_names = {1:"registered",2:"login_succeeded",3:"refresh_succeeded",4:"refresh_replay_revoked",5:"logged_out",6:"session_revoked",7:"user_disabled",8:"user_deleted",9:"password_changed",10:"managed_user_updated"}
+auth_audit_groups = [
+    {"event": auth_event_names.get(int(row[0]), "unknown"), "count": int(row[1])}
+    for row in rows("SELECT event_type,COUNT(*) FROM auth_audit_events GROUP BY event_type ORDER BY event_type")
+]
+
+known_secret_names = [
+    "A03_ROOT_PASSWORD", "A03_ADMIN_PASSWORD", "A03_ORDINARY_PASSWORD", "JWT_SECRET_KEY",
+    "AUTH_HMAC_KEY", "ACTION_SECURITY_HMAC_KEY", "ADMIN_TOKEN", "METRICS_TOKEN",
+    "FIXED_LOGIN_PASSWORD", "JIEKOU_API_KEY",
+]
+known_secrets = sorted({os.environ.get(name, "") for name in known_secret_names if os.environ.get(name, "")}, key=len, reverse=True)
+secret_exact_or_substring_matches = 0
+for secret in known_secrets:
+    literal = q(secret)
+    secret_exact_or_substring_matches += integer(
+        "SELECT "
+        f"(SELECT COUNT(*) FROM users WHERE LOCATE({literal},COALESCE(password_hash,''))>0 OR LOCATE({literal},COALESCE(nickname,''))>0 OR LOCATE({literal},COALESCE(real_name,''))>0)+"
+        f"(SELECT COUNT(*) FROM audit_logs WHERE LOCATE({literal},CAST(detail AS CHAR))>0 OR LOCATE({literal},COALESCE(resource,''))>0 OR LOCATE({literal},COALESCE(ip,''))>0)+"
+        f"(SELECT COUNT(*) FROM admin_operation_responses WHERE LOCATE({literal},CAST(response_body AS CHAR))>0)+"
+        f"(SELECT COUNT(*) FROM auth_audit_events WHERE LOCATE({literal},COALESCE(user_agent,''))>0 OR LOCATE({literal},COALESCE(ip,''))>0)"
+    )
+
+opaque_plaintext_matches = integer(
+    "SELECT "
+    "(SELECT COUNT(*) FROM audit_logs WHERE CAST(detail AS CHAR) REGEXP '(av|ik)_[A-Za-z0-9_-]{43}')+"
+    "(SELECT COUNT(*) FROM admin_operation_responses WHERE CAST(response_body AS CHAR) REGEXP '(av|ik)_[A-Za-z0-9_-]{43}')+"
+    "(SELECT COUNT(*) FROM auth_audit_events WHERE COALESCE(user_agent,'') REGEXP '(av|ik)_[A-Za-z0-9_-]{43}')"
+)
+
+checks = {
+    "runtime_mysql_security_exact": derived_server_security["mysql_version"] == "8.4.11" and derived_server_security["log_bin"] == 1 and derived_server_security["log_bin_trust_function_creators"] == 0,
+    "fixture_privileges_ordinary_no_escalation": derived_fixture_account["ordinary_ddl"] and not derived_fixture_account["super"] and not derived_fixture_account["trigger"] and not derived_fixture_account["grant_option"],
+    "expected_present_user_rows": all(user_evidence[name]["rows"] == 1 for name in ["root","created_admin","ordinary_default","double_submit","tombstone_fixture","ambiguous_recovery","deleted_replay","operation_expired"]),
+    "expected_absent_user_rows": all(user_evidence[name]["rows"] == 0 for name in ["denied_admin_creation","denied_non_default_plan","groups_pending","groups_error","groups_empty"]),
+    "default_group_for_created_live_users": all(user_evidence[name]["active_default_group"] == 1 for name in ["created_admin","ordinary_default","double_submit","ambiguous_recovery","operation_expired"]),
+    "roles_exact": user_evidence["root"]["root_role"] == 1 and user_evidence["created_admin"]["admin_role"] == 1 and all(user_evidence[name]["ordinary_role"] == 1 for name in ["ordinary_default","double_submit","tombstone_fixture","ambiguous_recovery","deleted_replay","operation_expired"]),
+    "deleted_replay_user_pii_cleared": user_evidence["deleted_replay"]["deleted"] == 1 and user_evidence["deleted_replay"]["nickname_null"] == 1 and user_evidence["deleted_replay"]["password_hash_null"] == 1,
+    "tombstone_fixture_stable": user_evidence["tombstone_fixture"]["deleted"] == 1 and user_evidence["tombstone_fixture"]["password_hash_null"] == 1,
+    "admin_override_exact": permission_evidence["head_rows"] == 1 and permission_evidence["rule_count"] == 2 and permission_evidence["overrides"] == [
+        {"capability":"users.sessions.read","effect":"allow"}, {"capability":"users.plan.change","effect":"deny"}],
+    "audit_integrity": all(value == 0 for key, value in audit_integrity.items() if key != "create_rows") and audit_integrity["create_rows"] == 8,
+    "response_integrity": response_integrity["active_invalid_structure"] == 0 and response_integrity["redacted_noncanonical_or_pii"] == 0,
+    "outbox_integrity": outbox_integrity["rows"] == 9 and all(value == 0 for key, value in outbox_integrity.items() if key != "rows"),
+    "deleted_replay_response_only_redacted": response_integrity["deleted_replay_redacted_rows"] == 1 and response_integrity["deleted_replay_active_rows"] == 0,
+    "expired_response_remains_active": response_integrity["expired_operation_active_response_rows"] == 1,
+    "known_secret_db_matches_zero": secret_exact_or_substring_matches == 0,
+    "opaque_plaintext_db_matches_zero": opaque_plaintext_matches == 0,
+}
+
+result = {
+    "status": "PASS" if all(checks.values()) else "FAIL",
+    "schema_alias": "canonical_runtime_schema",
+    "database_endpoint": "127.0.0.1:55877",
+    "fixture_account": derived_fixture_account,
+    "server_security": derived_server_security,
+    "users": user_evidence,
+    "admin_permission_policy": permission_evidence,
+    "audit_logs": {"groups": audit_groups, "integrity": audit_integrity},
+    "admin_operations": {"groups": operation_groups},
+    "admin_action_outbox": {"groups": outbox_groups, "integrity": outbox_integrity},
+    "admin_operation_responses": {"groups": response_groups, "integrity": response_integrity},
+    "admin_action_verifications": {"groups": verification_groups},
+    "auth_audit_events": {"groups": auth_audit_groups},
+    "database_secret_scan": {
+        "known_secret_value_count": len(known_secrets),
+        "exact_or_substring_matches": secret_exact_or_substring_matches,
+        "opaque_ticket_or_idempotency_plaintext_matches": opaque_plaintext_matches,
+        "stored_match_values": 0,
+    },
+    "checks": checks,
+}
+(report.parent / "db" / "database-evidence.json").write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
+print(f"database_evidence={result['status']} checks={len(checks)} audit_rows={audit_integrity['create_rows']}")
+if result["status"] != "PASS":
+    print("failed_checks=" + ",".join(name for name, passed in checks.items() if not passed))
+    raise SystemExit(1)

@@ -1,0 +1,51 @@
+{
+  "checks": {
+    "all_exact_stops_succeeded": true,
+    "all_task_containers_auto_remove": true,
+    "application_listeners_zero": true,
+    "application_processes_zero": true,
+    "exact_task_container_allowlist": true,
+    "images_unchanged": true,
+    "task_containers_used_tmpfs_only": true,
+    "task_containers_zero": true,
+    "task_labels_zero": true,
+    "task_named_volumes_absent_before": true,
+    "task_named_volumes_zero": true,
+    "task_private_paths_zero": true,
+    "unrelated_containers_unchanged": true,
+    "volumes_unchanged": true
+  },
+  "commands": {
+    "container_remove": "AutoRemove=true removed each stopped container",
+    "container_stop": "docker stop --time 10 <verified-full-id>",
+    "private_remove": "Python unlink/rmtree after exact /private/tmp top-level name guard"
+  },
+  "comparison": {
+    "images_added": 0,
+    "images_removed": 0,
+    "unrelated_containers_added": 0,
+    "unrelated_containers_removed": 0,
+    "volumes_added": 0,
+    "volumes_removed": 0
+  },
+  "counts": {
+    "known_secret_sources_read_before_cleanup": 19,
+    "known_secret_values_held_in_memory": 34,
+    "private_paths_before": 230,
+    "task_container_logs_held_in_memory": 8,
+    "task_containers_before": 8
+  },
+  "observed_at_utc": "2026-09-07T17:15:34Z",
+  "production_touched": false,
+  "residuals": {
+    "listener_count": 0,
+    "private_path_count": 0,
+    "process_count": 0,
+    "task_container_count": 0,
+    "task_label_match_count": 0,
+    "task_named_volume_count": 0
+  },
+  "scope": "eight exact A03 Task12-labelled MySQL/Redis containers and A03-prefixed private temporary paths only; no prune or broad Docker removal",
+  "status": "PASS",
+  "unrelated_resources_changed": 0
+}

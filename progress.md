@@ -1,5 +1,13 @@
 # Porsche 开发进度
 
+## 2026-09-08：A03 创建用户/管理员本地联合切片限定通过
+
+- A03 仅本地联合切片由 `BLOCKED_NOT_IMPLEMENTED` 提升为 `PASS_LIMITED_SCOPE`；代码候选为后端 `3a50144e53268f6ef3ae704699ef9fa851e4a5ee`、前端 `9f660a9ca26f5738dd661652596a1e450ff34335`。Admin 仅可按 immutable omitted default 创建普通用户；Root 可创建普通用户/管理员并保存 allow/deny 覆盖。删除后重放返回稳定 410 `created_user_deleted` 且无 PII，`operation_expired` 与之区分。
+- 隔离环境为 MySQL 8.4.11、Redis 7.4，迁移账本 `0001`–`0010`。focused 为 673 terminal/610 leaf、race 为 476 terminal/427 leaf；serial full 为 1912 terminal PASS/1 SKIP、1739 leaf PASS/1 SKIP。唯一 skip 是显式 opt-in 的 `TestAdminUsersReadPerformance` 100k 性能夹具。前端 275/275、可见 Chrome 13/13、build/vet/diff 和三项代码/证据复审均通过。
+- `ACTION_SECURITY_HMAC_KEY` v1 没有 key ID/多 key verifier；仍有可重放的 post-0010 active snapshot 时禁止轮换，除非先交付单独批准的多 key 验证或原子全量 re-HMAC migration。
+- A03 专用 MySQL/Redis、私有环境/临时脚本已 exact cleanup，任务容器、标签、监听、PID、命名卷及私有文件残留均为 0；无关容器、镜像和卷保持不变。证据：`docs/superpowers/reports/validation/2026-09-06-a03-admin-user-create/canonical-3a50144-9f660a9-final/manifest.json`。
+- 本次不改变 A14 及其余 tracker 行。金额余额仍为 Mock 边界；真实 ledger/billing/recharge/refund/deduction、生产迁移、部署、生产验收和真实业务账号均 `NOT_RUN`。
+
 ## 2026-09-06：A12/A14 users.delete 本地联合切片验收通过
 
 - 仅 `users.delete` 切片在后端 `811213d557eea7b6b9523a584245252ba4dd7d80`、前端 `bace6d167b94b693abd6be4c720152dc0eb905bb` 获得三项独立复审 PASS 与本地联合验收 `PASS_LIMITED_SCOPE`；A12 只覆盖软删除、重复删除、用户名不可复用及凭据失效，不覆盖恢复写链；A14 只覆盖该动作的 ticket/idempotency/operation Query 与依赖失败关闭。

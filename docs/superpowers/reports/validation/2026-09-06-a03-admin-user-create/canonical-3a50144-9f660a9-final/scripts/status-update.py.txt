@@ -1,0 +1,182 @@
+# -*- coding: utf-8 -*-
+import copy
+import json
+from collections import Counter
+from pathlib import Path
+
+BE = Path("/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903")
+FE = Path("/Users/xuzhihao/code/Porsche-Web/.worktrees/admin-public-260903")
+BE_HEAD = "3a50144e53268f6ef3ae704699ef9fa851e4a5ee"
+FE_HEAD = "9f660a9ca26f5738dd661652596a1e450ff34335"
+CAN = "docs/superpowers/reports/validation/2026-09-06-a03-admin-user-create/canonical-3a50144-9f660a9-final"
+KEY = (
+    "ACTION_SECURITY_HMAC_KEY v1 lacks key ID/multi-key verification; rotation is prohibited "
+    "while replayable post-0010 active snapshots exist unless a separately approved multi-key "
+    "verifier or atomic full re-HMAC migration is delivered."
+)
+
+
+def write_json(path, data):
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+
+
+p = BE / "feature_list.json"
+d = json.loads(p.read_text())
+d["last_updated"] = "2026-09-08"
+feature = next(item for item in d["features"] if item["id"] == "go-017")
+a03 = next(item for item in feature["joint_acceptance_blockers"] if item["id"] == "A03")
+a03["status"] = "PASS_LIMITED_SCOPE"
+a03["accepted_candidate"] = {"backend": BE_HEAD, "frontend": FE_HEAD}
+feature["joint_acceptance_blocker_count"] = sum(
+    item["status"].startswith("BLOCKED") for item in feature["joint_acceptance_blockers"]
+)
+feature["active_production_consumers"] = 3
+feature["a03_joint_acceptance"] = {
+    "status": "PASS_LIMITED_SCOPE",
+    "code_under_test": {"backend": BE_HEAD, "frontend": FE_HEAD},
+    "environment": {"mysql": "8.4.11", "redis": "7.4", "migration_ledger": "0001-0010"},
+    "tests": {
+        "backend_focused": {"terminal_pass": 673, "leaf_pass": 610, "skips": 0},
+        "backend_race": {"terminal_pass": 476, "leaf_pass": 427, "skips": 0},
+        "backend_full": {"terminal_pass": 1912, "terminal_skip": 1, "leaf_pass": 1739, "leaf_skip": 1},
+        "frontend": {"tests": 275, "pass": 275, "skips": 0},
+        "browser_scenarios": 13,
+    },
+    "sole_skip": "TestAdminUsersReadPerformance: opt-in 100k synthetic-user performance fixture was outside this batch authorization",
+    "key_rotation_restriction": KEY,
+    "production": {"migration": "NOT_RUN", "deployment": "NOT_RUN", "business_accounts": "NOT_USED"},
+    "evidence": CAN + "/manifest.json",
+}
+feature["verification"].append(
+    "A03 Task12：MySQL 8.4.11 / Redis 7.4 隔离夹具、0001–0010、focused/race/serial full/build/vet/diff、前端275/275及可见Chrome 13场景通过；唯一skip为显式opt-in 100k性能夹具"
+)
+feature["evidence"].append(
+    "A03 users.create/users.create_admin：代码候选BE " + BE_HEAD + " / FE " + FE_HEAD
+    + "；canonical证据 " + CAN + "/manifest.json，三项代码复审与三项证据复审均PASS，exact cleanup为CLEANUP_PASS。"
+)
+feature["notes"] = (
+    "PASS_LIMITED_SUBSCOPE：B1-E内部安全原语及A03 users.create/users.create_admin本地联合切片已验证；"
+    "A03为PASS_LIMITED_SCOPE。ActiveActionRegistry当前3项（users.create、users.create_admin、users.delete）。"
+    "本次不改变A14及其余tracker行；仍有17个BLOCKED条目。生产迁移、部署、真实业务账号和完整PRD验收均未运行。"
+    + KEY
+)
+write_json(p, d)
+
+p = FE / "docs/agents/validation/joint-acceptance-20260904/acceptance-matrix.json"
+matrix = json.loads(p.read_text())
+matrix["generated_at"] = "2026-09-08T00:53:33+08:00"
+matrix["overall_status"] = "PARTIAL_ACCEPTANCE_11_LIMITED_15_BLOCKED"
+matrix["verdict"] = matrix["overall_status"]
+matrix["candidate"]["frontend_head"] = FE_HEAD
+matrix["candidate"]["backend_head"] = BE_HEAD
+matrix["code_under_test"] = {"backend": BE_HEAD, "frontend": FE_HEAD}
+a03 = next(item for item in matrix["items"] if item["id"] == "A03")
+a03["status"] = "PASS_LIMITED_SCOPE"
+a03.pop("blocker", None)
+a03["latest_evidence"] = (
+    "Admin仅能按immutable omitted default创建普通用户，Root可创建普通用户与管理员并保存allow/deny覆盖；"
+    "角色/套餐越权、重复提交、墓碑冲突、模糊响应Query恢复、default分组刷新/详情、删除后重放410无PII及"
+    "groups目录pending/error/empty零写均通过。"
+)
+a03["accepted_candidate"] = {"backend": BE_HEAD, "frontend": FE_HEAD}
+a03["environment"] = {"mysql": "8.4.11", "redis": "7.4", "migration_ledger": "0001-0010"}
+a03["test_counts"] = {
+    "backend_focused": "673 terminal / 610 leaf / 0 skip",
+    "backend_race": "476 terminal / 427 leaf / 0 skip",
+    "backend_full": "1912 terminal pass / 1 skip; 1739 leaf pass / 1 skip",
+    "frontend": "275/275",
+    "visible_chrome": "13/13",
+}
+a03["sole_skip"] = "TestAdminUsersReadPerformance：显式opt-in 100k synthetic-user performance fixture，本批未授权。"
+a03["key_rotation_restriction"] = KEY
+a03["scope_boundary"] = (
+    "仅本地A03创建切片；金额余额仍为Mock边界，真实ledger/billing/recharge/refund/deduction不在范围；"
+    "生产迁移、部署、生产验收及真实业务账号均NOT_RUN。"
+)
+a03["evidence_paths"] = [
+    "backend:" + CAN + "/manifest.json",
+    "backend:" + CAN + "/browser/browser-acceptance.json",
+    "backend:" + CAN + "/db/database-evidence.json",
+    "frontend:docs/agents/contracts/prd-260903-interface-draft.json",
+]
+counts = Counter(item["status"] for item in matrix["items"])
+blocked = sum(value for status, value in counts.items() if status.startswith("BLOCKED"))
+matrix["summary"] = {
+    "total": len(matrix["items"]),
+    "PASS_LIMITED_SCOPE": counts["PASS_LIMITED_SCOPE"],
+    "FAIL_LOCAL_DEV_ROUTE": counts["FAIL_LOCAL_DEV_ROUTE"],
+    "BLOCKED_NOT_IMPLEMENTED": counts["BLOCKED_NOT_IMPLEMENTED"],
+    "BLOCKED_PRODUCT": counts["BLOCKED_PRODUCT"],
+    "BLOCKED_ENV": counts["BLOCKED_ENV"],
+    "blocked_total": blocked,
+}
+matrix["approval"]["cleanup"] = "CLEANUP_PASS"
+matrix["a03_reviews"] = {
+    "spec_code": "PASS",
+    "quality_code": "PASS",
+    "security_code": "PASS",
+    "spec_evidence": "PASS",
+    "quality_evidence": "PASS",
+    "security_evidence": "PASS",
+}
+matrix["resources_retained"] = False
+matrix["acceptance_timeline"].append({
+    "at": "2026-09-08",
+    "status": matrix["overall_status"],
+    "counts": copy.deepcopy(matrix["summary"]),
+    "candidate": {"backend": BE_HEAD, "frontend": FE_HEAD},
+    "evidence": "backend:" + CAN + "/manifest.json",
+    "note": "仅A03从BLOCKED_NOT_IMPLEMENTED提升为PASS_LIMITED_SCOPE；A14及其余25项状态保持不变。金额仍是Mock边界；生产迁移、部署、生产验收与真实业务账号均NOT_RUN。A03专用fixture和私有临时文件已exact cleanup，应用监听仍为0。",
+})
+write_json(p, matrix)
+
+p = FE / "feature_list.json"
+d = json.loads(p.read_text())
+d["last_updated"] = "2026-09-08"
+web = next(item for item in d["features"] if item["id"] == "web-012")
+web["phase"] = "joint_acceptance_partial_11_limited_15_blocked"
+web["verification"].append(
+    "A03 Task12：BE " + BE_HEAD + " / FE " + FE_HEAD
+    + "；MySQL 8.4.11、Redis 7.4、ledger 0001–0010、后端focused/race/serial full/build/vet/diff、前端275/275及可见Chrome 13/13"
+)
+web["evidence"].append(
+    "2026-09-08：A03 users.create/users.create_admin本地联合切片经代码与证据spec/quality/security复审全部PASS，"
+    "提升为PASS_LIMITED_SCOPE；canonical manifest见backend:" + CAN
+    + "/manifest.json。唯一skip为TestAdminUsersReadPerformance显式opt-in 100k夹具。fixture及A03私有临时文件exact cleanup为PASS。"
+)
+web["notes"] = (
+    "当前权威本地结果为11 PASS_LIMITED_SCOPE、0 FAIL_LOCAL_DEV_ROUTE、13 BLOCKED_NOT_IMPLEMENTED、"
+    "1 BLOCKED_PRODUCT、1 BLOCKED_ENV，合计15项阻塞。仅A03本次提升；A14及其余25行保持原状态。"
+    "web-012继续in_progress。金额余额仍仅为Mock边界，真实ledger/billing/recharge/refund/deduction、生产迁移、"
+    "部署、生产验收和真实业务账号均NOT_RUN。" + KEY
+)
+write_json(p, d)
+
+be_section = """
+## 2026-09-08：A03 创建用户/管理员本地联合切片限定通过
+
+- A03 仅本地联合切片由 `BLOCKED_NOT_IMPLEMENTED` 提升为 `PASS_LIMITED_SCOPE`；代码候选为后端 `BE_HEAD`、前端 `FE_HEAD`。Admin 仅可按 immutable omitted default 创建普通用户；Root 可创建普通用户/管理员并保存 allow/deny 覆盖。删除后重放返回稳定 410 `created_user_deleted` 且无 PII，`operation_expired` 与之区分。
+- 隔离环境为 MySQL 8.4.11、Redis 7.4，迁移账本 `0001`–`0010`。focused 为 673 terminal/610 leaf、race 为 476 terminal/427 leaf；serial full 为 1912 terminal PASS/1 SKIP、1739 leaf PASS/1 SKIP。唯一 skip 是显式 opt-in 的 `TestAdminUsersReadPerformance` 100k 性能夹具。前端 275/275、可见 Chrome 13/13、build/vet/diff 和三项代码/证据复审均通过。
+- `ACTION_SECURITY_HMAC_KEY` v1 没有 key ID/多 key verifier；仍有可重放的 post-0010 active snapshot 时禁止轮换，除非先交付单独批准的多 key 验证或原子全量 re-HMAC migration。
+- A03 专用 MySQL/Redis、私有环境/临时脚本已 exact cleanup，任务容器、标签、监听、PID、命名卷及私有文件残留均为 0；无关容器、镜像和卷保持不变。证据：`CAN/manifest.json`。
+- 本次不改变 A14 及其余 tracker 行。金额余额仍为 Mock 边界；真实 ledger/billing/recharge/refund/deduction、生产迁移、部署、生产验收和真实业务账号均 `NOT_RUN`。
+""".replace("BE_HEAD", BE_HEAD).replace("FE_HEAD", FE_HEAD).replace("CAN", CAN)
+p = BE / "progress.md"
+text = p.read_text()
+marker = "# Porsche 开发进度\n"
+assert text.startswith(marker) and "A03 创建用户/管理员本地联合切片限定通过" not in text
+p.write_text(marker + be_section + text[len(marker):])
+
+fe_section = """
+## 2026-09-08：A03 创建用户/管理员本地联合切片限定通过
+
+- 联合矩阵仅将 A03 从 `BLOCKED_NOT_IMPLEMENTED` 提升为 `PASS_LIMITED_SCOPE`；代码候选为前端 `FE_HEAD`、后端 `BE_HEAD`。A14 及其余 25 行状态不变，当前为 11 `PASS_LIMITED_SCOPE`、0 `FAIL_LOCAL_DEV_ROUTE`、13 `BLOCKED_NOT_IMPLEMENTED`、1 `BLOCKED_PRODUCT`、1 `BLOCKED_ENV`，合计 15 项阻塞。
+- Admin 默认普通用户创建、Root 普通用户/管理员及 allow/deny 覆盖、重复提交单 POST、墓碑冲突脱敏、模糊响应 operation Query 恢复、default 分组刷新/列表/详情、删除后重放 410 无 PII、groups 目录 pending/error/empty 零写均通过。前端测试 275/275；可见 Chrome 13/13。后端 MySQL 8.4.11、Redis 7.4、迁移 `0001`–`0010`，focused 673/610、race 476/427、serial full 1912 PASS/1 SKIP（leaf 1739/1）；唯一 skip 为显式 opt-in 的 100k 性能夹具。
+- `ACTION_SECURITY_HMAC_KEY` v1 尚无 key ID/多 key verifier；仍有可重放的 post-0010 active snapshot 时禁止轮换，除非先交付单独批准的多 key 验证或原子全量 re-HMAC migration。
+- A03 专用 fixture、标签、监听、PID、命名卷及私有临时文件已 exact cleanup 为零，无关容器、镜像和卷不变。`web-012` 继续 `in_progress`；金额余额仍只允许 Mock，真实 ledger/billing/recharge/refund/deduction、生产迁移、部署、生产验收及真实业务账号均 `NOT_RUN`。
+""".replace("BE_HEAD", BE_HEAD).replace("FE_HEAD", FE_HEAD)
+p = FE / "progress.md"
+text = p.read_text()
+marker = "# 当前验证进度\n"
+assert text.startswith(marker) and "A03 创建用户/管理员本地联合切片限定通过" not in text
+p.write_text(marker + fe_section + text[len(marker):])

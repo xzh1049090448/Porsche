@@ -1,0 +1,28 @@
+
+> llm-aggregation-platform@1.0.0 dev
+> vite --host 127.0.0.1 --port 51295 --strictPort
+
+
+  VITE v6.4.3  ready in 188 ms
+
+  ➜  Local:   http://127.0.0.1:51295/
+  ➜  press h + enter to show help
+
+> llm-aggregation-platform@1.0.0 dev
+> vite --host 127.0.0.1 --port 51295 --strictPort
+
+error when starting dev server:
+Error: listen EPERM: operation not permitted 127.0.0.1:51295
+    at Server.setupListenHandle [as _listen2] (node:net:2145:21)
+    at listenInCluster (node:net:2224:12)
+    at node:net:2448:7
+    at process.processTicksAndRejections (node:internal/process/task_queues:90:21)
+
+> llm-aggregation-platform@1.0.0 dev
+> vite --host 127.0.0.1 --port 51295 --strictPort
+
+
+  VITE v6.4.3  ready in 215 ms
+
+  ➜  Local:   http://127.0.0.1:51295/
+  ➜  press h + enter to show help

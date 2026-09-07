@@ -1,0 +1,7 @@
+backend_head=3a50144e53268f6ef3ae704699ef9fa851e4a5ee
+frontend_head=9f660a9ca26f5738dd661652596a1e450ff34335
+go=go version go1.22.12 darwin/arm64
+node=v24.19.0
+npm=11.17.0
+playwright=1.61.1
+chrome=Google Chrome 152.0.7977.77 

@@ -1,0 +1,694 @@
+const { chromium } = require('playwright')
+const assert = require('node:assert/strict')
+const crypto = require('node:crypto')
+const fs = require('node:fs')
+const path = require('node:path')
+const { spawnSync } = require('node:child_process')
+
+const BASE = process.env.A03_BROWSER_BASE || 'https://127.0.0.1:8443'
+const REPORT = process.env.A03_REPORT_DIR
+const ROOT_USERNAME = process.env.A03_ROOT_USERNAME
+const ROOT_PASSWORD = process.env.A03_ROOT_PASSWORD
+const ADMIN_USERNAME = process.env.A03_ADMIN_USERNAME
+const ADMIN_PASSWORD = process.env.A03_ADMIN_PASSWORD
+const ORDINARY_PASSWORD = process.env.A03_ORDINARY_PASSWORD
+const TOMBSTONE_USERNAME = process.env.A03_TOMBSTONE_USERNAME
+const AMBIGUOUS_USERNAME = process.env.A03_AMBIGUOUS_USERNAME
+const MYSQL_NAME = process.env.A03_MYSQL_NAME
+const DATABASE_NAME = process.env.A03_DATABASE_NAME
+const DATABASE_URL = process.env.A03_DATABASE_URL
+for (const value of [REPORT, ROOT_USERNAME, ROOT_PASSWORD, ADMIN_USERNAME, ADMIN_PASSWORD, ORDINARY_PASSWORD, TOMBSTONE_USERNAME, AMBIGUOUS_USERNAME, MYSQL_NAME, DATABASE_NAME, DATABASE_URL]) {
+  if (!value) throw new Error('missing_browser_fixture_configuration')
+}
+
+const tag = ADMIN_USERNAME.split('_').pop()
+const ORDINARY_USERNAME = `user_${tag}`
+const DOUBLE_USERNAME = `dbl_${tag}`
+const DENY_ADMIN_USERNAME = `denyadm_${tag}`
+const DENY_PLAN_USERNAME = `denyplan_${tag}`
+const DELETED_USERNAME = `deleted_${tag}`
+const EXPIRY_USERNAME = `expired_${tag}`
+const secretValues = [ROOT_PASSWORD, ADMIN_PASSWORD, ORDINARY_PASSWORD]
+const dynamicSecrets = new Set()
+const requestSummary = []
+const requestUsernames = new Map()
+const consoleCounts = {}
+const consoleMessages = []
+const pageErrorMessages = []
+const browserWriteCounts = { root: 0, admin: 0 }
+let pageErrorCount = 0
+let latestAuthorization = null
+let stage = 'launch'
+
+function safePath(raw) {
+  const url = new URL(raw)
+  const pathname = url.pathname
+    .replace(/^\/admin\/v2\/users\/[1-9]\d{0,18}\/actions$/, '/admin/v2/users/:guid/actions')
+    .replace(/^\/admin\/v2\/users\/[1-9]\d{0,18}$/, '/admin/v2/users/:guid')
+  return pathname + (pathname === '/admin/v2/operations' ? url.search : '')
+}
+
+function relevant(raw) {
+  const pathname = new URL(raw).pathname
+  return pathname.startsWith('/admin/v2/') || pathname === '/api/v1/auth/login' || pathname === '/api/v1/auth/refresh'
+}
+
+function requestUsername(request) {
+  if (request.method() !== 'POST' || new URL(request.url()).pathname !== '/admin/v2/users') return null
+  try { return JSON.parse(request.postData() || '{}').username || null } catch { return null }
+}
+
+function aliasForUsername(value) {
+  return value === ADMIN_USERNAME ? 'created_admin'
+    : value === ORDINARY_USERNAME ? 'ordinary_default'
+      : value === DOUBLE_USERNAME ? 'double_submit'
+        : value === TOMBSTONE_USERNAME ? 'tombstone_conflict'
+      : value === AMBIGUOUS_USERNAME ? 'ambiguous_recovery'
+            : value === DELETED_USERNAME ? 'deleted_replay'
+              : value === EXPIRY_USERNAME ? 'operation_expired'
+            : value === DENY_PLAN_USERNAME ? 'denied_non_default_plan'
+              : value === DENY_ADMIN_USERNAME ? 'denied_admin_creation'
+                : null
+}
+
+function observe(page, actor) {
+  page.on('console', message => {
+    consoleCounts[message.type()] = (consoleCounts[message.type()] || 0) + 1
+    consoleMessages.push({ type: message.type(), text: message.text() })
+  })
+  page.on('pageerror', error => { pageErrorCount++; pageErrorMessages.push(String(error?.message || error)) })
+  page.on('request', request => {
+    const headers = request.headers()
+    const authorization = headers.authorization
+    if (authorization && relevant(request.url())) latestAuthorization = authorization
+    for (const name of ['authorization', 'idempotency-key', 'x-action-ticket']) {
+      if (headers[name]) dynamicSecrets.add(headers[name])
+    }
+    const pathname = new URL(request.url()).pathname
+    if (request.method() === 'POST' && (pathname === '/admin/v2/users' || pathname === '/admin/v2/action-verifications')) browserWriteCounts[actor]++
+    const username = requestUsername(request)
+    if (username) requestUsernames.set(request, username)
+  })
+  page.on('response', response => {
+    const request = response.request()
+    if (!relevant(response.url())) return
+    requestSummary.push({
+      actor,
+      method: request.method(),
+      path: safePath(response.url()),
+      status: response.status(),
+      username_alias: aliasForUsername(requestUsernames.get(request)) || undefined,
+      disposition: 'response',
+    })
+  })
+  page.on('requestfailed', request => {
+    if (!relevant(request.url())) return
+    requestSummary.push({
+      actor,
+      method: request.method(),
+      path: safePath(request.url()),
+      status: null,
+      username_alias: aliasForUsername(requestUsernames.get(request)) || undefined,
+      disposition: 'transport_failed',
+    })
+  })
+}
+
+async function login(page, username, password) {
+  await page.goto(`${BASE}/login`, { waitUntil: 'domcontentloaded' })
+  await page.getByPlaceholder('用户名', { exact: true }).fill(username)
+  await page.getByPlaceholder('密码', { exact: true }).fill(password)
+  await page.getByRole('button', { name: '登录', exact: true }).click()
+  await page.waitForURL(url => !url.pathname.endsWith('/login'), { timeout: 20000 })
+  await page.goto(`${BASE}/users`, { waitUntil: 'domcontentloaded' })
+  await page.getByRole('heading', { name: '用户管理', exact: true }).waitFor()
+  await page.getByRole('button', { name: '创建用户', exact: true }).waitFor()
+}
+
+function createDialog(page) {
+  return page.locator('.el-dialog').filter({ has: page.locator('.el-dialog__title', { hasText: '创建用户' }) }).last()
+}
+
+async function openCreate(page) {
+  const dialog = await openCreateRaw(page)
+  await dialog.getByRole('button', { name: '确认创建', exact: true }).click({ trial: true })
+  return dialog
+}
+
+async function openCreateRaw(page) {
+  await page.getByRole('button', { name: '创建用户', exact: true }).click()
+  const dialog = createDialog(page)
+  await dialog.waitFor({ state: 'visible' })
+  return dialog
+}
+
+async function fillCommon(dialog, username, nickname, password) {
+  await dialog.getByLabel('用户名', { exact: true }).fill(username)
+  await dialog.getByLabel('昵称（可选）', { exact: true }).fill(nickname)
+  await dialog.getByLabel('初始密码', { exact: true }).fill(password)
+  await dialog.getByLabel('确认初始密码', { exact: true }).fill(password)
+}
+
+async function chooseSelect(page, item, label) {
+  await item.locator('.el-select__wrapper').click()
+  const option = page.locator('.el-select-dropdown:visible .el-select-dropdown__item').filter({ hasText: label }).last()
+  await option.waitFor({ state: 'visible' })
+  await option.click({ force: true })
+  await item.getByText(label, { exact: true }).waitFor({ state: 'visible' })
+  await page.locator('.el-select-dropdown:visible').waitFor({ state: 'hidden' })
+}
+
+async function chooseFormSelect(page, dialog, formLabel, optionLabel) {
+  const input = dialog.getByLabel(formLabel, { exact: true })
+  const select = input.locator('xpath=ancestor::div[contains(concat(" ", normalize-space(@class), " "), " el-select ")][1]')
+  await select.locator('.el-select__wrapper').click()
+  const option = page.locator('.el-select-dropdown:visible .el-select-dropdown__item').filter({ hasText: optionLabel }).last()
+  await option.waitFor({ state: 'visible' })
+  await option.click({ force: true })
+  await dialog.getByText(optionLabel, { exact: true }).first().waitFor({ state: 'visible' })
+  await page.locator('.el-select-dropdown:visible').waitFor({ state: 'hidden' })
+}
+
+async function choosePermission(page, dialog, capability, effectLabel) {
+  const row = dialog.locator('.permission-row').filter({ hasText: capability }).first()
+  await row.waitFor({ state: 'visible' })
+  await chooseSelect(page, row, effectLabel)
+}
+
+async function submitAndWait(page, dialog, username, expectedStatus) {
+  const responsePromise = page.waitForResponse(response => {
+    const request = response.request()
+    return request.method() === 'POST' && new URL(response.url()).pathname === '/admin/v2/users' && requestUsername(request) === username
+  }, { timeout: 30000 })
+  await dialog.getByRole('button', { name: '确认创建', exact: true }).click()
+  const response = await responsePromise
+  assert.equal(response.status(), expectedStatus)
+  return response
+}
+
+async function waitRow(page, username) {
+  const row = page.locator('.el-table__row').filter({ hasText: username }).first()
+  await row.waitFor({ state: 'visible', timeout: 30000 })
+  return row
+}
+
+function newKey(prefix) {
+  const value = `${prefix}_${crypto.randomBytes(32).toString('base64url')}`
+  dynamicSecrets.add(value)
+  return value
+}
+
+function directSummary(actor, method, path, status, usernameAlias) {
+  requestSummary.push({ actor, method, path, status, username_alias: usernameAlias || undefined, disposition: 'direct_browser_context' })
+}
+
+function ordinaryCreateBody(username, nickname) {
+  return {
+    username,
+    nickname,
+    password: ORDINARY_PASSWORD,
+    role: 'user',
+    group_guid: null,
+    plan_type: 'free',
+    permission_overrides: [],
+  }
+}
+
+async function deletedReplayPrivacy(context, page) {
+  assert.ok(latestAuthorization?.startsWith('Bearer '), 'root_authorization_capture_missing')
+  dynamicSecrets.add(latestAuthorization)
+  const headers = { authorization: latestAuthorization, origin: BASE, 'content-type': 'application/json' }
+  const createKey = newKey('ik')
+  const body = ordinaryCreateBody(DELETED_USERNAME, 'Deleted Replay')
+  const createdResponse = await context.request.post(`${BASE}/admin/v2/users`, {
+    headers: { ...headers, 'idempotency-key': createKey }, data: body,
+  })
+  directSummary('root', 'POST', '/admin/v2/users', createdResponse.status(), 'deleted_replay')
+  assert.equal(createdResponse.status(), 201)
+  const created = await createdResponse.json()
+  assert.match(created.operation_ref, /^op_[A-Za-z0-9_-]{43}$/)
+  assert.match(created.user.guid, /^[1-9]\d{0,18}$/)
+  assert.equal(created.user.auth_version, 1)
+
+  const reason = 'canonical deleted replay privacy acceptance'
+  const issuedResponse = await context.request.post(`${BASE}/admin/v2/action-verifications`, {
+    headers,
+    data: {
+      action: 'users.delete',
+      intent: { target_guid: created.user.guid, expected_auth_version: created.user.auth_version, reason },
+      current_password: ROOT_PASSWORD,
+    },
+  })
+  directSummary('root', 'POST', '/admin/v2/action-verifications', issuedResponse.status())
+  assert.equal(issuedResponse.status(), 201)
+  const issued = await issuedResponse.json()
+  assert.match(issued.ticket, /^av_[A-Za-z0-9_-]{43}$/)
+  dynamicSecrets.add(issued.ticket)
+  const deleteKey = newKey('ik')
+  const deletedResponse = await context.request.post(`${BASE}/admin/v2/users/${created.user.guid}/actions`, {
+    headers: { ...headers, 'idempotency-key': deleteKey, 'x-action-ticket': issued.ticket },
+    data: { action: 'delete', expected_auth_version: created.user.auth_version, reason },
+  })
+  directSummary('root', 'POST', '/admin/v2/users/:guid/actions', deletedResponse.status())
+  assert.equal(deletedResponse.status(), 200)
+  const deleted = await deletedResponse.json()
+  assert.equal(deleted.user.status, 'deleted')
+
+  const replayResponse = await context.request.post(`${BASE}/admin/v2/users`, {
+    headers: { ...headers, 'idempotency-key': createKey }, data: body,
+  })
+  directSummary('root', 'POST', '/admin/v2/users', replayResponse.status(), 'deleted_replay')
+  assert.equal(replayResponse.status(), 410)
+  assert.equal(replayResponse.headers()['retry-after'], undefined)
+  const replayText = await replayResponse.text()
+  const replay = JSON.parse(replayText)
+  assert.deepEqual(Object.keys(replay), ['error'])
+  assert.deepEqual(Object.keys(replay.error).sort(), ['code', 'message', 'operation_ref', 'request_id', 'type'])
+  assert.equal(replay.error.code, 'created_user_deleted')
+  assert.equal(replay.error.operation_ref, created.operation_ref)
+  assert.equal(replayText.includes(DELETED_USERNAME), false)
+  assert.equal(replayText.includes('Deleted Replay'), false)
+  assert.equal(replayText.includes(created.user.guid), false)
+  assert.equal(/"(?:user|username|nickname|group|role|status)"\s*:/.test(replayText), false)
+  await page.screenshot({ path: path.join(REPORT, 'browser-context-after-deleted-replay.png'), fullPage: true })
+  return { status: 410, code: replay.error.code, operation_ref_preserved: true, pii_fields: 0, retry_after_present: false }
+}
+
+function accelerateOperationExpiry(publicRef) {
+  assert.match(publicRef, /^op_[A-Za-z0-9_-]{43}$/)
+  assert.match(DATABASE_NAME, /^a03_[A-Za-z0-9_]+_runtime_test$/)
+  const parsed = new URL(DATABASE_URL)
+  assert.equal(parsed.protocol, 'mysql:')
+  assert.equal(parsed.hostname, '127.0.0.1')
+  assert.equal(parsed.port, '55877')
+  assert.equal(parsed.pathname, `/${DATABASE_NAME}`)
+  const statement = `UPDATE admin_operations SET query_expires_at=1 WHERE BINARY public_ref=BINARY '${publicRef}' AND action=9 AND state=2 AND is_deleted=0; SELECT ROW_COUNT();`
+  const result = spawnSync('docker', [
+    'exec', '-e', 'MYSQL_PWD', MYSQL_NAME, 'mysql', '-h127.0.0.1',
+    `-u${decodeURIComponent(parsed.username)}`, '-N', '-B', DATABASE_NAME, '-e', statement,
+  ], { env: { ...process.env, MYSQL_PWD: decodeURIComponent(parsed.password) }, encoding: 'utf8' })
+  assert.equal(result.status, 0, 'expiry_acceleration_failed')
+  assert.equal(result.stdout.trim(), '1', 'expiry_acceleration_rows')
+}
+
+async function expiredOperationClassification(context) {
+  assert.ok(latestAuthorization?.startsWith('Bearer '), 'admin_authorization_capture_missing')
+  dynamicSecrets.add(latestAuthorization)
+  const headers = { authorization: latestAuthorization, origin: BASE, 'content-type': 'application/json' }
+  const createKey = newKey('ik')
+  const body = ordinaryCreateBody(EXPIRY_USERNAME, 'Expired Operation')
+  const createdResponse = await context.request.post(`${BASE}/admin/v2/users`, {
+    headers: { ...headers, 'idempotency-key': createKey }, data: body,
+  })
+  directSummary('admin', 'POST', '/admin/v2/users', createdResponse.status(), 'operation_expired')
+  assert.equal(createdResponse.status(), 201)
+  const created = await createdResponse.json()
+  accelerateOperationExpiry(created.operation_ref)
+
+  const queryResponse = await context.request.get(`${BASE}/admin/v2/operations?scope=users.create`, {
+    headers: { authorization: latestAuthorization, origin: BASE, 'idempotency-key': createKey },
+  })
+  directSummary('admin', 'GET', '/admin/v2/operations?scope=users.create', queryResponse.status())
+  assert.equal(queryResponse.status(), 410)
+  assert.equal(queryResponse.headers()['retry-after'], undefined)
+  const queryText = await queryResponse.text()
+  const queried = JSON.parse(queryText)
+  assert.deepEqual(Object.keys(queried), ['error'])
+  assert.deepEqual(Object.keys(queried.error).sort(), ['code', 'message', 'request_id', 'type'])
+  assert.equal(queried.error.code, 'operation_expired')
+  assert.equal(queryText.includes(EXPIRY_USERNAME), false)
+  assert.equal(/operation_ref/i.test(queryText), false)
+
+  const beginResponse = await context.request.post(`${BASE}/admin/v2/users`, {
+    headers: { ...headers, 'idempotency-key': createKey }, data: body,
+  })
+  directSummary('admin', 'POST', '/admin/v2/users', beginResponse.status(), 'operation_expired')
+  assert.equal(beginResponse.status(), 410)
+  assert.equal(beginResponse.headers()['retry-after'], undefined)
+  const beginText = await beginResponse.text()
+  const begun = JSON.parse(beginText)
+  assert.deepEqual(Object.keys(begun), ['error'])
+  assert.deepEqual(Object.keys(begun.error).sort(), ['code', 'message', 'request_id', 'type'])
+  assert.equal(begun.error.code, 'operation_expired')
+  assert.equal(beginText.includes(EXPIRY_USERNAME), false)
+  assert.equal(/operation_ref/i.test(beginText), false)
+  return { query_status: 410, begin_status: 410, code: 'operation_expired', operation_ref_present: false, retry_after_present: false, accelerated_rows: 1 }
+}
+
+async function groupDirectoryFailClosed(page) {
+  const pattern = '**/admin/v2/groups?status=active'
+  const results = {}
+  const button = dialog => dialog.getByRole('button', { name: '确认创建', exact: true })
+  const assertZeroWrite = async (dialog, before) => {
+    assert.equal(await button(dialog).isDisabled(), true)
+    await button(dialog).evaluate(element => element.click())
+    await page.waitForTimeout(100)
+    assert.equal(browserWriteCounts.admin, before)
+  }
+
+  let releasePending
+  let pendingReady
+  const hold = new Promise(resolve => { releasePending = resolve })
+  const ready = new Promise(resolve => { pendingReady = resolve })
+  const pendingRoute = async route => {
+    const response = await route.fetch()
+    pendingReady()
+    await hold
+    await route.fulfill({ response })
+  }
+  await page.route(pattern, pendingRoute)
+  let before = browserWriteCounts.admin
+  let dialog = await openCreateRaw(page)
+  await ready
+  await fillCommon(dialog, `gpend_${tag}`, 'Groups Pending', ORDINARY_PASSWORD)
+  await assertZeroWrite(dialog, before)
+  await page.screenshot({ path: path.join(REPORT, 'browser-groups-pending-zero-write.png'), fullPage: true })
+  releasePending()
+  await page.waitForFunction(element => !element.disabled, await button(dialog).elementHandle())
+  await dialog.getByRole('button', { name: '取消', exact: true }).click()
+  await dialog.waitFor({ state: 'hidden' })
+  await page.unroute(pattern, pendingRoute)
+  results.pending = { can_submit: false, create_or_verify_requests: 0 }
+
+  const errorRoute = route => route.fulfill({
+    status: 503, contentType: 'application/json',
+    body: JSON.stringify({ error: { type: 'unavailable', code: 'groups_unavailable', message: 'unavailable', request_id: 'fixture' } }),
+  })
+  await page.route(pattern, errorRoute)
+  before = browserWriteCounts.admin
+  dialog = await openCreateRaw(page)
+  await dialog.getByText('分组目录暂不可用，请重试。', { exact: true }).waitFor()
+  await fillCommon(dialog, `gerror_${tag}`, 'Groups Error', ORDINARY_PASSWORD)
+  await assertZeroWrite(dialog, before)
+  await page.screenshot({ path: path.join(REPORT, 'browser-groups-error-zero-write.png'), fullPage: true })
+  await dialog.getByRole('button', { name: '取消', exact: true }).click()
+  await dialog.waitFor({ state: 'hidden' })
+  await page.unroute(pattern, errorRoute)
+  results.error = { can_submit: false, create_or_verify_requests: 0 }
+
+  const emptyRoute = route => route.fulfill({ status: 200, contentType: 'application/json', body: '{"items":[]}' })
+  await page.route(pattern, emptyRoute)
+  before = browserWriteCounts.admin
+  dialog = await openCreateRaw(page)
+  await dialog.getByText('分组目录暂不可用，请重试。', { exact: true }).waitFor()
+  await fillCommon(dialog, `gempty_${tag}`, 'Groups Empty', ORDINARY_PASSWORD)
+  await assertZeroWrite(dialog, before)
+  await page.screenshot({ path: path.join(REPORT, 'browser-groups-empty-zero-write.png'), fullPage: true })
+  await dialog.getByRole('button', { name: '取消', exact: true }).click()
+  await dialog.waitFor({ state: 'hidden' })
+  await page.unroute(pattern, emptyRoute)
+  results.empty = { can_submit: false, create_or_verify_requests: 0 }
+  return results
+}
+
+async function directDenials(context) {
+  assert.ok(latestAuthorization && latestAuthorization.startsWith('Bearer '), 'authorization_capture_missing')
+  const commonHeaders = { authorization: latestAuthorization, origin: BASE, 'content-type': 'application/json' }
+  const adminDenied = await context.request.post(`${BASE}/admin/v2/action-verifications`, {
+    headers: commonHeaders,
+    data: {
+      action: 'users.create_admin',
+      intent: {
+        username: DENY_ADMIN_USERNAME,
+        nickname: 'Denied Admin',
+        password: ORDINARY_PASSWORD,
+        role: 'admin',
+        group_guid: null,
+        plan_type: 'free',
+        permission_overrides: [],
+      },
+      current_password: ADMIN_PASSWORD,
+    },
+  })
+  const adminBody = await adminDenied.json()
+  assert.equal(adminDenied.status(), 403)
+  assert.equal(adminBody?.error?.code, 'action_verification_rejected')
+  requestSummary.push({ actor: 'admin', method: 'POST', path: '/admin/v2/action-verifications', status: 403, username_alias: 'denied_admin_creation', disposition: 'direct_browser_context' })
+
+  const planDenied = await context.request.post(`${BASE}/admin/v2/users`, {
+    headers: { ...commonHeaders, 'idempotency-key': newKey('ik') },
+    data: {
+      username: DENY_PLAN_USERNAME,
+      nickname: 'Denied Plan',
+      password: ORDINARY_PASSWORD,
+      role: 'user',
+      group_guid: null,
+      plan_type: 'professional',
+      permission_overrides: [],
+    },
+  })
+  const planBody = await planDenied.json()
+  assert.equal(planDenied.status(), 403)
+  assert.equal(planBody?.error?.code, 'action_operation_rejected')
+  requestSummary.push({ actor: 'admin', method: 'POST', path: '/admin/v2/users', status: 403, username_alias: 'denied_non_default_plan', disposition: 'direct_browser_context' })
+  return {
+    admin_creation: { status: 403, code: adminBody.error.code },
+    non_default_plan: { status: 403, code: planBody.error.code },
+  }
+}
+
+;(async () => {
+  const browser = await chromium.launch({
+    headless: false,
+    executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+  })
+  let activePage = null
+  try {
+    stage = 'root_login'
+    const rootContext = await browser.newContext({ viewport: { width: 1440, height: 1000 }, ignoreHTTPSErrors: true })
+    const rootPage = await rootContext.newPage()
+    activePage = rootPage
+    observe(rootPage, 'root')
+    await login(rootPage, ROOT_USERNAME, ROOT_PASSWORD)
+
+    stage = 'root_create_admin'
+    let dialog = await openCreate(rootPage)
+    await chooseFormSelect(rootPage, dialog, '角色', '管理员')
+    await dialog.locator('.permission-row').filter({ hasText: 'users.sessions.read' }).waitFor({ state: 'visible' })
+    await fillCommon(dialog, ADMIN_USERNAME, 'Fixture Admin', ADMIN_PASSWORD)
+    await choosePermission(rootPage, dialog, 'users.sessions.read', '显式允许')
+    await choosePermission(rootPage, dialog, 'users.plan.change', '显式拒绝')
+    await dialog.getByLabel('当前操作者密码', { exact: true }).fill(ROOT_PASSWORD)
+    await rootPage.screenshot({ path: path.join(REPORT, 'browser-root-admin-overrides.png'), fullPage: true })
+    await submitAndWait(rootPage, dialog, ADMIN_USERNAME, 201)
+    await dialog.waitFor({ state: 'hidden', timeout: 30000 })
+    await waitRow(rootPage, ADMIN_USERNAME)
+    await rootPage.screenshot({ path: path.join(REPORT, 'browser-root-admin-created.png'), fullPage: true })
+
+    stage = 'deleted_replay_privacy'
+    const deletedReplay = await deletedReplayPrivacy(rootContext, rootPage)
+    await rootContext.close()
+
+    stage = 'admin_login_and_controls'
+    latestAuthorization = null
+    const adminContext = await browser.newContext({ viewport: { width: 1440, height: 1000 }, ignoreHTTPSErrors: true })
+    const adminPage = await adminContext.newPage()
+    activePage = adminPage
+    observe(adminPage, 'admin')
+    await login(adminPage, ADMIN_USERNAME, ADMIN_PASSWORD)
+    dialog = await openCreate(adminPage)
+    const roleInput = dialog.getByLabel('角色', { exact: true })
+    assert.equal(await roleInput.inputValue(), '普通用户')
+    assert.equal(await roleInput.isDisabled(), true)
+    const planSelect = dialog.getByLabel('套餐', { exact: true }).locator('xpath=ancestor::div[contains(concat(" ", normalize-space(@class), " "), " el-select ")][1]')
+    await planSelect.locator('.el-select__wrapper').click()
+    const professional = adminPage.locator('.el-select-dropdown:visible .el-select-dropdown__item').filter({ hasText: '专业版' }).last()
+    await professional.waitFor({ state: 'visible' })
+    assert.ok((await professional.getAttribute('aria-disabled')) === 'true' || (await professional.getAttribute('class') || '').includes('is-disabled'))
+    await adminPage.screenshot({ path: path.join(REPORT, 'browser-admin-denials.png'), fullPage: true })
+    await adminPage.keyboard.press('Escape')
+    const denials = await directDenials(adminContext)
+    await dialog.getByRole('button', { name: '取消', exact: true }).click()
+    await dialog.waitFor({ state: 'hidden' })
+
+    stage = 'groups_directory_fail_closed'
+    const groupsFailClosed = await groupDirectoryFailClosed(adminPage)
+
+    stage = 'admin_create_ordinary'
+    dialog = await openCreate(adminPage)
+    await fillCommon(dialog, ORDINARY_USERNAME, 'Ordinary Default', ORDINARY_PASSWORD)
+    await submitAndWait(adminPage, dialog, ORDINARY_USERNAME, 201)
+    await dialog.waitFor({ state: 'hidden', timeout: 30000 })
+    const ordinaryRow = await waitRow(adminPage, ORDINARY_USERNAME)
+    assert.ok((await ordinaryRow.innerText()).includes('default'))
+    await adminPage.screenshot({ path: path.join(REPORT, 'browser-admin-ordinary-created.png'), fullPage: true })
+
+    stage = 'double_submit'
+    dialog = await openCreate(adminPage)
+    await fillCommon(dialog, DOUBLE_USERNAME, 'Double Submit', ORDINARY_PASSWORD)
+    const doubleResponse = adminPage.waitForResponse(response => requestUsername(response.request()) === DOUBLE_USERNAME, { timeout: 30000 })
+    await dialog.getByRole('button', { name: '确认创建', exact: true }).evaluate(button => { button.click(); button.click() })
+    assert.equal((await doubleResponse).status(), 201)
+    await dialog.waitFor({ state: 'hidden', timeout: 30000 })
+    await waitRow(adminPage, DOUBLE_USERNAME)
+    assert.equal(requestSummary.filter(item => item.method === 'POST' && item.path === '/admin/v2/users' && item.username_alias === 'double_submit').length, 1)
+    await adminPage.screenshot({ path: path.join(REPORT, 'browser-double-submit.png'), fullPage: true })
+
+    stage = 'tombstone_conflict'
+    dialog = await openCreate(adminPage)
+    await fillCommon(dialog, TOMBSTONE_USERNAME, 'Conflict Probe', ORDINARY_PASSWORD)
+    const tombResponse = await submitAndWait(adminPage, dialog, TOMBSTONE_USERNAME, 409)
+    const tombBody = await tombResponse.json()
+    assert.deepEqual(Object.keys(tombBody).sort(), ['error'])
+    assert.deepEqual(Object.keys(tombBody.error).sort(), ['code', 'message', 'request_id', 'type'])
+    assert.equal(tombBody.error.code, 'username_conflict')
+    assert.equal(JSON.stringify(tombBody).includes(TOMBSTONE_USERNAME), false)
+    assert.equal(/guid|deleted|status|role/i.test(JSON.stringify(tombBody)), false)
+    await adminPage.getByText('该用户名已被占用，请更换后重试。', { exact: true }).waitFor({ state: 'visible' })
+    await adminPage.screenshot({ path: path.join(REPORT, 'browser-tombstone-conflict.png'), fullPage: true })
+    await dialog.getByRole('button', { name: '取消', exact: true }).click()
+    await dialog.waitFor({ state: 'hidden' })
+
+    stage = 'ambiguous_recovery'
+    dialog = await openCreate(adminPage)
+    await fillCommon(dialog, AMBIGUOUS_USERNAME, 'Ambiguous Recovery', ORDINARY_PASSWORD)
+    let faultInjected = false
+    const abortCommittedResponse = async route => {
+      if (requestUsername(route.request()) !== AMBIGUOUS_USERNAME) return route.continue()
+      const committed = await route.fetch()
+      assert.equal(committed.status(), 201)
+      faultInjected = true
+      await route.abort('failed')
+    }
+    await adminPage.route('**/admin/v2/users', abortCommittedResponse)
+    const dropped = adminPage.waitForEvent('requestfailed', {
+      predicate: request => requestUsername(request) === AMBIGUOUS_USERNAME,
+      timeout: 30000,
+    })
+    const queried = adminPage.waitForResponse(response => {
+      const url = new URL(response.url())
+      return response.request().method() === 'GET' && url.pathname === '/admin/v2/operations' && url.searchParams.get('scope') === 'users.create'
+    }, { timeout: 30000 })
+    await dialog.getByRole('button', { name: '确认创建', exact: true }).click()
+    const [, queryResponse] = await Promise.all([dropped, queried])
+    await adminPage.unroute('**/admin/v2/users', abortCommittedResponse)
+    assert.equal(faultInjected, true)
+    assert.equal(queryResponse.status(), 200)
+    await dialog.waitFor({ state: 'hidden', timeout: 30000 })
+    await waitRow(adminPage, AMBIGUOUS_USERNAME)
+    await adminPage.screenshot({ path: path.join(REPORT, 'browser-ambiguous-recovered.png'), fullPage: true })
+
+    stage = 'operation_expired_classification'
+    const operationExpired = await expiredOperationClassification(adminContext)
+
+    stage = 'hard_refresh_list_detail_group'
+    await adminPage.reload({ waitUntil: 'domcontentloaded' })
+    await adminPage.getByRole('heading', { name: '用户管理', exact: true }).waitFor({ timeout: 30000 })
+    const search = adminPage.getByPlaceholder('用户名、昵称或 GUID', { exact: true })
+    await search.fill(AMBIGUOUS_USERNAME)
+    await adminPage.getByRole('button', { name: '查询', exact: true }).click()
+    const refreshedRow = await waitRow(adminPage, AMBIGUOUS_USERNAME)
+    assert.ok((await refreshedRow.innerText()).includes('default'))
+    await adminPage.screenshot({ path: path.join(REPORT, 'browser-refresh-list-default-group.png'), fullPage: true })
+    await refreshedRow.getByRole('button', { name: '详情', exact: true }).click()
+    await adminPage.getByText('用户详情', { exact: true }).waitFor({ state: 'visible' })
+    await adminPage.getByText(AMBIGUOUS_USERNAME, { exact: true }).waitFor({ state: 'visible' })
+    const groupDescription = adminPage.locator('.el-descriptions').filter({ hasText: '分组' }).first().getByText('default', { exact: true })
+    await groupDescription.waitFor({ state: 'visible' })
+    await adminPage.screenshot({ path: path.join(REPORT, 'browser-group-detail.png'), fullPage: true })
+
+    stage = 'browser_secret_storage'
+    const storage = await adminPage.evaluate(() => ({
+      local: Object.entries(localStorage),
+      session: Object.entries(sessionStorage),
+      documentCookie: document.cookie,
+      passwordValues: [...document.querySelectorAll('input[type=password]')].map(input => input.value),
+      bodyText: document.body.innerText,
+    }))
+    for (const [, value] of [...storage.local, ...storage.session]) {
+      assert.equal(secretValues.some(secret => value.includes(secret)), false)
+      assert.equal(/(?:av|ik)_[A-Za-z0-9_-]{43}/.test(value), false)
+    }
+    assert.equal(secretValues.some(secret => storage.documentCookie.includes(secret)), false)
+    assert.equal(secretValues.some(secret => storage.bodyText.includes(secret)), false)
+    assert.equal(storage.passwordValues.some(Boolean), false)
+    const cookies = await adminContext.cookies()
+    const refreshCookies = cookies.filter(cookie => cookie.name === 'porsche_refresh')
+    assert.equal(refreshCookies.length, 1)
+    assert.equal(refreshCookies[0].httpOnly, true)
+    assert.equal(refreshCookies[0].secure, true)
+    assert.equal(storage.documentCookie.includes('porsche_refresh'), false)
+
+    const runtimeSecrets = [...secretValues, ...dynamicSecrets].filter(Boolean)
+    const runtimeConsoleText = [...consoleMessages.map(item => item.text), ...pageErrorMessages].join('\n')
+    const exactConsoleSecretMatches = runtimeSecrets.reduce((total, secret) => total + (runtimeConsoleText.includes(secret) ? 1 : 0), 0)
+    const consoleCredentialPatternMatches = [
+      /(?<![A-Za-z0-9_-])(?:av|ik)_[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])/,
+      /authorization\s*[:=]\s*bearer\s+[A-Za-z0-9._-]+/i,
+      /(?:password|current_password|ticket|idempotency-key|authorization)\s*[:=]\s*["']?[^\s"',}]+/i,
+    ].reduce((total, pattern) => total + (pattern.test(runtimeConsoleText) ? 1 : 0), 0)
+    assert.equal(exactConsoleSecretMatches, 0)
+    assert.equal(consoleCredentialPatternMatches, 0)
+    const consoleClassifications = {}
+    for (const item of consoleMessages.filter(item => item.type === 'error' || item.type === 'warning')) {
+      const category = /Failed to load resource|Request failed with status code/i.test(item.text)
+        ? 'expected_exercised_http_failure'
+        : /ERR_FAILED|Network Error|aborted/i.test(item.text)
+          ? 'expected_ambiguous_transport_failure'
+          : /Vue warn/i.test(item.text)
+            ? 'framework_warning'
+            : 'other_sanitized'
+      consoleClassifications[category] = (consoleClassifications[category] || 0) + 1
+    }
+
+    const result = {
+      status: 'PASS',
+      browser: 'chromium',
+      headless: false,
+      base_url: BASE,
+      scenarios: {
+        root_created_admin_with_overrides: [
+          { capability: 'users.sessions.read', effect: 'allow' },
+          { capability: 'users.plan.change', effect: 'deny' },
+        ],
+        deleted_replay_no_pii: deletedReplay,
+        admin_creation_denied: denials.admin_creation,
+        non_default_plan_denied: denials.non_default_plan,
+        groups_directory_fail_closed: groupsFailClosed,
+        admin_created_default_ordinary_user: true,
+        double_submit_post_count: 1,
+        tombstone_conflict: { status: 409, code: tombBody.error.code, disclosed_keys: Object.keys(tombBody.error).sort() },
+        ambiguous_transport_failure_recovered_by_operation_query: true,
+        ambiguous_fault_injection: 'playwright_route_fetch_then_abort_after_committed_201',
+        operation_expired_classification: operationExpired,
+        hard_refresh_list_group: 'default',
+        detail_group: 'default',
+      },
+      storage: {
+        local_storage_keys: storage.local.map(([key]) => key),
+        session_storage_keys: storage.session.map(([key]) => key),
+        password_fields_nonempty: 0,
+        refresh_cookie_count: 1,
+        refresh_cookie_http_only: true,
+        refresh_cookie_secure: true,
+        refresh_cookie_visible_to_document: false,
+      },
+      console_counts: consoleCounts,
+      console_classifications: consoleClassifications,
+      runtime_console_secret_scan: {
+        exact_known_secret_matches: exactConsoleSecretMatches,
+        credential_pattern_matches: consoleCredentialPatternMatches,
+        stored_console_message_values: 0,
+      },
+      page_error_count: pageErrorCount,
+    }
+    fs.writeFileSync(path.join(REPORT, 'browser-acceptance.json'), JSON.stringify(result, null, 2) + '\n')
+    fs.writeFileSync(path.join(REPORT, 'browser-request-summary.json'), JSON.stringify(requestSummary, null, 2) + '\n')
+    await adminContext.close()
+    console.log('browser_acceptance=PASS scenarios=13 headless=false')
+  } catch (error) {
+    try {
+      let safeMessage = String(error?.message || error?.name || 'browser_failure')
+      for (const value of [...secretValues, ROOT_USERNAME, ADMIN_USERNAME, ORDINARY_USERNAME, DOUBLE_USERNAME, TOMBSTONE_USERNAME, AMBIGUOUS_USERNAME, DENY_ADMIN_USERNAME, DENY_PLAN_USERNAME]) {
+        safeMessage = safeMessage.split(value).join('<fixture-value>')
+      }
+      safeMessage = safeMessage.replace(/(?:av|ik|op)_[A-Za-z0-9_-]+/g, '<opaque>')
+      fs.writeFileSync(path.join(REPORT, 'browser-acceptance-failure.json'), JSON.stringify({ status: 'FAIL', stage, error_name: error?.name || 'Error', error_message: safeMessage.slice(0, 2000) }, null, 2) + '\n')
+      if (activePage) await activePage.screenshot({ path: path.join(REPORT, `browser-failure-${stage}.png`), fullPage: true })
+    } catch {}
+    console.error(`browser_acceptance=FAIL stage=${stage}`)
+    process.exitCode = 1
+  } finally {
+    await browser.close()
+  }
+})()
