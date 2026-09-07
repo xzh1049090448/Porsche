@@ -9,7 +9,8 @@
 - 前端 FE01-FE03 已在独立 Porsche-Web 工作树完成字符簇播放、严格 SSE v2 解析和 generation 生命周期状态层；完整前端测试与构建通过。
 - 后端 BE01 增加严格 v2 请求投影和 SSE 编码原语；安全返工补齐输入/帧/整数边界、request ID 脱敏、编码器并发串行化，并在真实路由激活前以稳定 JSON 503 拒绝 v2，避免落入 legacy SSE。
 - 已批准：重复 generation 返回 409 + 权威状态且不重连/不二次调用上游；compare 每模型独立 assistant message GUID；取消/失败不扣 daily quota、上游成本另审计；Redis 不可用只影响 v2。
-- 当前实施计划：`docs/superpowers/plans/2026-09-07-platform-generation-registry.md`。真实 Redis CAS 验证只使用显式隔离 `TEST_REDIS_URL`；缺失时必须保留阻塞证据。
+- BE02 Redis generation registry 已完成：专用命名空间、24 小时 TTL、原子 claim/typed duplicate conflict、严格 seq/terminal、cancel/commit CAS、每模型唯一 assistant message GUID、稳定失败码与严格记录解码；AppState 独立装配且无 Redis 时仅保持 v2 不可用。真实 Redis race、全量 Go、vet、diff 及独立规格/安全复审通过，证据见 `docs/superpowers/reports/2026-09-08-platform-generation-registry.md`。
+- 下一阶段仍需单独计划并实现持久化事务、真实 v2 stream/status/cancel 路由与前后端联合验收；`go-008` 继续保持 `in_progress`。
 
 ## Refresh 与测试隔离修复完成（2026-09-03，开始于 2026-09-02）
 
