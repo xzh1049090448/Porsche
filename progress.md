@@ -2,7 +2,14 @@
 
 ## 当前唯一活动功能
 
-当前无实现中的功能。`go-007` 已完成本地修复和真实 MySQL/Redis 全量、重复、竞态验证，状态为 `passing`；尚未推送、合并或部署。`go-004` 仍待真实上游验收。
+`go-008` 平台聊天自适应逐字流式协议正在隔离工作树中实现。BE01 协议原语已完成本地提交、完整 Go 回归、race 与独立安全复审；BE02 Redis generation registry 按批准的重复请求、compare 消息、配额/成本和 Redis 503 决策进入测试先行开发。未激活 v2 路由，未推送、合并、部署、迁移或调用真实付费上游。`go-004` 仍待真实上游验收。
+
+## 平台聊天 SSE v2（2026-09-07，进行中）
+
+- 前端 FE01-FE03 已在独立 Porsche-Web 工作树完成字符簇播放、严格 SSE v2 解析和 generation 生命周期状态层；完整前端测试与构建通过。
+- 后端 BE01 增加严格 v2 请求投影和 SSE 编码原语；安全返工补齐输入/帧/整数边界、request ID 脱敏、编码器并发串行化，并在真实路由激活前以稳定 JSON 503 拒绝 v2，避免落入 legacy SSE。
+- 已批准：重复 generation 返回 409 + 权威状态且不重连/不二次调用上游；compare 每模型独立 assistant message GUID；取消/失败不扣 daily quota、上游成本另审计；Redis 不可用只影响 v2。
+- 当前实施计划：`docs/superpowers/plans/2026-09-07-platform-generation-registry.md`。真实 Redis CAS 验证只使用显式隔离 `TEST_REDIS_URL`；缺失时必须保留阻塞证据。
 
 ## Refresh 与测试隔离修复完成（2026-09-03，开始于 2026-09-02）
 

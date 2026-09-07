@@ -1,6 +1,6 @@
 {
   "project": "Porsche Go AI Gateway",
-  "last_updated": "2026-09-03",
+  "last_updated": "2026-09-07",
   "rules": {
     "single_active_feature": true,
     "passing_requires_evidence": true,
@@ -13,6 +13,25 @@
     "passing": "验证命令和证据均已记录。"
   },
   "features": [
+    {
+      "id": "go-008",
+      "priority": 1,
+      "area": "platform-chat-streaming-v2",
+      "title": "平台聊天真实 SSE 与前端自适应逐字播放",
+      "user_visible_behavior": "平台聊天以 generation_id 管理可取消、可查询、严格顺序的 SSE v2，并由前端按字符簇自适应播放。",
+      "status": "in_progress",
+      "verification": [
+        "前端 npm test 与 npm run build",
+        "后端 focused race、go test ./...、go vet ./... 与 git diff --check",
+        "显式隔离 TEST_REDIS_URL 下的 generation claim/CAS 竞态测试",
+        "最终本地浏览器与 API 联合验收"
+      ],
+      "evidence": [
+        "2026-09-07：前端 FE01-FE03 的字符簇播放、严格 SSE v2 parser 和 generation lifecycle 已提交；157 项测试与构建通过。",
+        "2026-09-07：后端 BE01 协议原语、边界加固、race 修复和未激活 v2 的稳定 503 门禁已提交；完整 Go 回归、focused race、vet、diff 与独立安全复审通过。"
+      ],
+      "notes": "BE02 Redis generation registry 开发中。未激活 v2 路由；未 push、merge、deploy、迁移或调用真实付费上游。"
+    },
     {
       "id": "go-007",
       "priority": 1,
