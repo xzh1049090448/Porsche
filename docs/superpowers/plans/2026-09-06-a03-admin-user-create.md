@@ -19,7 +19,7 @@
 - Do not run production migrations, deploy, push, create real business users, or activate actions before Task 7 constructs and validates their coherent consumer bundle.
 - A03 completion may update only A03 from `BLOCKED_NOT_IMPLEMENTED` to `PASS_LIMITED_SCOPE`; all unrelated acceptance rows retain their current state.
 
-**2026-09-07 remediation baseline:** The Task 2 references to 0007 describe the historical A03 group migration. Independently approved immutable-response changes added 0008, then 0009 for deletion-aware response HMAC and outbox outcome classification. The expiry-safe privacy remediation adds unreleased migration 0010 for a durable indexed and HMAC-bound response `target_guid` plus durable outbox `result_kind`. It normalizes every legacy redacted row, backfills only from an exact live success or an exact expired-operation/successful-outbox binding to a real user, fail-safe redacts every mismatched or unresolved active row, and requires every new active snapshot to have a positive target. Final migration acceptance therefore requires exactly 0001–0010. 0009 and 0010 use ordinary table DDL only: no trigger, `SUPER`, `log_bin_trust_function_creators`, production server-policy change, or mutation of 0001–0009 is allowed.
+**2026-09-07 remediation baseline:** The Task 2 references to 0007 describe the historical A03 group migration. Independently approved immutable-response changes added 0008, then 0009 for deletion-aware response HMAC and outbox outcome classification. The expiry-safe privacy remediation adds unreleased migration 0010 for a durable indexed and HMAC-bound response `target_guid` plus durable outbox `result_kind`. Because migration SQL cannot authenticate a runtime-key HMAC, it treats every pre-0010 active or redacted response as unverifiable: it optionally retains a target only through an exact live-success or expired-operation/successful-outbox diagnostic binding, then normalizes every old response to canonical `{}`, fixed digest/status/media, deleted lifecycle, and a zero-HMAC sentinel. Thus no pre-0010 PII or replayable `201` survives; an active target paired with a sentinel fails closed, while an already deleted target returns the stable no-PII `410 created_user_deleted`. Only post-0010 writes create active real-HMAC snapshots with a positive target. Final migration acceptance therefore requires exactly 0001–0010. 0009 and 0010 use ordinary table DDL only: no trigger, `SUPER`, `log_bin_trust_function_creators`, production server-policy change, or mutation of 0001–0009 is allowed.
 
 | Version | Immutable up checksum |
 |---|---|
@@ -32,7 +32,7 @@
 | 0007 | `b3c3351771fce2dbf5466d300cb92ffd5dbd183cffaff15671e46a8bc87e143e` |
 | 0008 | `21289da334e7ef4425f697c659e6f45227e88c4d86ac4c099867dd6895f666f2` |
 | 0009 | `4dc818d93180bb6777d2ec6d8318e728fe76add4c736a178f19b808ca2afedf7` |
-| 0010 | `1106bcaf5c44f85061296aae932e038bc319dfbdc111ac8610f7e52e03851323` |
+| 0010 | `b6ddd5b7088f1617b9831186e08da622f7d06cbe985707ef9f5524ffe6057780` |
 
 ## File map
 
@@ -694,7 +694,7 @@ Frontend: `git add docs/agents/validation/joint-acceptance-20260904/acceptance-m
 
 - [ ] Backend and frontend worktrees are clean.
 - [ ] Contract JSON and all status JSON parse successfully.
-- [ ] Migration ledger is exactly 0001–0010 and matches the remediation baseline checksums above; 0009 and 0010 pass on default MySQL 8.4 with the ordinary fixture DDL user and no trigger/server-policy exception. 0010 must prove all nine committed-prefix reruns, unconditional canonicalization of every legacy redacted row, exact live-operation and expired-outbox target backfill to a real user, the state/failure/action/ref/deleted/result-kind/result-GUID/operation-ID/target-contract mismatch matrix, actual-user deletion lookup, unresolved PII redaction, final target index/FK/CHECK, and isolated down/up dependency order.
+- [ ] Migration ledger is exactly 0001–0010 and matches the remediation baseline checksums above; 0009 and 0010 pass on default MySQL 8.4 with the ordinary fixture DDL user and no trigger/server-policy exception. 0010 must prove all nine committed-prefix reruns; unconditional canonicalization of every pre-0010 active and redacted row, including syntactically valid HMAC, corrupt HMAC, misbound marker, unresolved target and already-deleted target fixtures; exact diagnostic live-operation and expired-outbox target backfill; the state/failure/action/ref/deleted/result-kind/result-GUID/operation-ID/target-contract mismatch matrix; active-sentinel replay rejection; deleted-sentinel direct and HTTP 410 without a second delete or PII body read; wrong-existing-user marker isolation; final target index/FK/CHECK; and isolated down/up dependency order.
 - [ ] Production active registry is exactly `users.create`, `users.create_admin`, and `users.delete`.
 - [ ] Ordinary creation performs zero ticket verification; admin creation cannot execute without a valid bound ticket.
 - [ ] All atomic rollback, replay, concurrency, secret-lifecycle, and permission tests pass.

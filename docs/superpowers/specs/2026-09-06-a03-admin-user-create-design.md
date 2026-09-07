@@ -100,9 +100,9 @@
 
 终态成功响应由 `admin_operation_responses` 保存。每个新活跃快照都保存正数 `target_guid`；该字段不随 `admin_operations` 到期时清除结果字段，因此 operation 到期后仍能定位全部隐私快照。目标账户仍活跃、operation 尚在可查询期且快照完整时，同一 actor/session/action/key 的相同请求精确重放原 `201`；已到期的创建请求稳定返回 `410 operation_expired`，不会读取或返回保存的成功正文。A14 软删除目标账户时，必须在同一数据库事务内按 `target_guid` 把全部创建快照改为受控脱敏态；之后直接加载任一快照均返回 `410 created_user_deleted`，已到期请求仍返回安全的 `410 operation_expired`，两者都不返回原 username、nickname、GUID、角色、分组或任何旧响应片段。删除事务任一步失败时，账户软删除与全部快照脱敏一起回滚。
 
-快照使用 action-security 根密钥派生的独立 response key，以 HMAC v1 绑定 integrity version、lifecycle、operation ID/ref、action、terminal state、result kind、目标 GUID、HTTP status、media type 和完整 response body。为兼容 0009 已生成的 HMAC v1 字节，`target_guid` 的值继续编码在 HMAC payload 的 `result_guid` slot；直接修改 `target_guid` 同样无法通过验证。活跃 legacy v0 行不再允许重放；直接修改 target/body/digest/version/lifecycle 而不能同时生成有效 HMAC 时 fail closed。成功 outbox 是不随 operation 结果清理的创建标记；删除时 marker 与 snapshot 数量必须精确匹配，直接删除任一快照会因缺失而 fail closed；两者都为零才表示目标没有创建快照。
+快照使用 action-security 根密钥派生的独立 response key，以 HMAC v1 绑定 integrity version、lifecycle、operation ID/ref、action、terminal state、result kind、目标 GUID、HTTP status、media type 和完整 response body。为兼容 0009 已生成的 HMAC v1 字节，`target_guid` 的值继续编码在 HMAC payload 的 `result_guid` slot；直接修改 post-0010 活跃快照的 `target_guid` 同样无法通过验证。0010 不信任任何旧 HMAC 并清除全部旧正文；post-0010 活跃快照或 current-key redacted 快照若不能同时通过 marker、operation、digest 和 HMAC 验证则 fail closed。成功 outbox 是不随 operation 结果清理的创建标记：精确有效 marker 存在但 snapshot 缺失仍 fail closed；canonical pre-0010 sentinel 已无 PII，即使 marker 缺失或被错误绑定也可由删除事务安全接受，避免无关用户被错误 marker 阻塞。
 
-当前 HMAC v1 没有 key ID 或多 key verifier。只要仍有可能被重放或需要在删除时脱敏的活跃快照，就禁止轮换 `ACTION_SECURITY_HMAC_KEY`；必须先交付单独批准的 key ID/多 key 验证方案，或在同一受控事务中完成全量 re-HMAC migration。没有该生命周期支持的轮换会 fail closed，并会阻止依赖旧快照验证的删除。0009 和 0010 都不创建 trigger，也不要求 `SUPER`、`log_bin_trust_function_creators` 或其他生产服务器策略；应用是唯一受控脱敏写入者。
+当前 HMAC v1 没有 key ID 或多 key verifier。只要仍有可能被重放或需要 current-key 脱敏的 post-0010 活跃快照，就禁止轮换 `ACTION_SECURITY_HMAC_KEY`；必须先交付单独批准的 key ID/多 key 验证方案，或在同一受控事务中完成全量 re-HMAC migration。没有该生命周期支持的轮换会使这些活跃快照 fail closed。canonical pre-0010 sentinel 已清除 PII，不依赖旧 key 才能随目标安全删除或返回 deleted-target 410。0009 和 0010 都不创建 trigger，也不要求 `SUPER`、`log_bin_trust_function_creators` 或其他生产服务器策略；应用是唯一受控 post-0010 脱敏写入者。
 
 ### 2.4 创建表单分组选项
 
@@ -118,7 +118,7 @@ A03 新增前向迁移，遵守 `docs/conventions/database-standards.md`，不�
 
 0010 不修改 0009：它为快照增加 nullable `target_guid`，并为 outbox 增加 durable nullable `result_kind`。迁移只把 action、operation ID、public ref 完全相同且满足创建契约的成功 marker 分类为 `ResultUser`：活跃 operation 必须是未删除的成功 `users.create`/`users.create_admin`、ResultUser、正数且真实存在的 user GUID、201 与完整终态字段；已到期 operation 必须是已删除的 expired 终态、结果字段已清空，而 outbox 必须未删除、成功、无 failure、TargetNone、ResultUser、正数且真实存在的 user GUID。活跃路径仅从前一种 operation result 回填，已到期路径仅从后一种 outbox marker 回填；state、failure、action、ref、deleted、result kind、result GUID、operation ID 或 target contract 任一不匹配都不得关联目标。
 
-无论旧 body、digest、HMAC 或目标是否可解析，每个既有 redacted 行都会先改成 lifecycle redacted、固定 201/`application/json`、规范 `{}` body、固定 digest 与全零不可重放 sentinel HMAC。未获得严格目标绑定的活跃行以及结构或摘要不完整的活跃行随后 fail-safe 脱敏；严格绑定但不满足重放完整性的行保留真实 target 以确保实际用户删除仍能定位它，但不保留 PII。最后为 outbox outcome 加入 durable result-kind 约束，并增加 `(target_guid,lifecycle_state,is_deleted,id)` 索引、指向 `users.guid` 的 RESTRICT 外键；每个新活跃快照必须有正数 target 和 HMAC v1，redacted 响应必须精确为固定 201/JSON/`{}`/digest。runner 探测 response column、两列完成、outbox CHECK 完成与最终 response DDL，九条语句的每个已提交前缀均可重跑，数据阶段保持幂等，混合结构 fail closed。迁移和 verifier 只依赖普通表级 DDL 权限，并保留 0001–0009 的既有 checksum。
+迁移 SQL 无法验证应用持有的 current key，因此无论旧 lifecycle、body、digest、HMAC、严格 marker 或目标是否可解析，每个 pre-0010 response 都视为不可验证。0010 可先按前述严格规则回填 target 供诊断和 deleted-target 410；随后在最终约束前把每个 active/redacted 行原子改成 lifecycle redacted、`is_deleted=1`、固定 201/`application/json`、规范 `{}` body、固定 digest 与全零不可重放 sentinel HMAC。未获得严格目标绑定的行保持 `target_guid=NULL`，已经严格绑定的行可保留真实 target，但两类都不保留 PII，也不再提供旧 `201` 重放。最后为 outbox outcome 加入 durable result-kind 约束，并增加 `(target_guid,lifecycle_state,is_deleted,id)` 索引、指向 `users.guid` 的 RESTRICT 外键；只有 post-0010 新活跃快照可保存正数 target 和真实 HMAC v1，redacted 响应必须精确为固定 201/JSON/`{}`/digest。runner 探测 response column、两列完成、outbox CHECK 完成与最终 response DDL，九条语句的每个已提交前缀均可重跑，数据阶段保持幂等，混合结构 fail closed。迁移和 verifier 只依赖普通表级 DDL 权限，并保留 0001–0009 的既有 checksum。
 
 新增 `business_groups`：
 
@@ -149,7 +149,7 @@ A03 新增前向迁移，遵守 `docs/conventions/database-standards.md`，不�
 
 任何一步失败整体回滚，不留下用户、权限半状态、成功审计、成功 outbox 或终态成功 operation。若 commit 结果未知，返回 `503 operation_commit_unknown` 和 `operation_ref`，由 query/recovery 判定，不报告创建成功。
 
-A14 删除在锁定目标账户后，按成功创建 outbox marker 和 `admin_operation_responses.target_guid` 锁定所有相关记录，再锁定对应 operation 并验证 public ref、action、终态/到期形态、digest 和 HMAC。若 0010 已把可解析目标的 legacy 行改为 redacted `{}` 和全零 sentinel HMAC，删除事务必须用当前 key 生成 canonical redacted HMAC，并以 lifecycle/version/target/body/digest/sentinel 全部仍精确匹配为条件更新一行；影响行数不是 1 就整体回滚，不能跳过 sentinel。marker 与 snapshot 数量不等、任一记录缺失/篡改或任一写入失败都使删除事务 fail closed 并整体回滚；全部快照已经安全脱敏且 HMAC 可验证时允许幂等通过。
+A14 删除在锁定目标账户后，先锁定所有候选成功创建 outbox marker 和 `admin_operation_responses.target_guid` 记录，再锁定精确匹配 marker 的 operation。post-0010 active/current-key redacted 快照必须通过 public ref、action、终态/到期形态、digest 和 HMAC；active 快照缺少精确 marker、精确有效 marker 缺少 snapshot、任一记录篡改或任一写入失败都使事务 fail closed 并整体回滚。0010 canonical sentinel 必须精确为 redacted lifecycle、`is_deleted=1`、HMAC v1 metadata、全零 HMAC、201/JSON、固定空正文 digest 和有效 target；它已经无 PII，删除可在 marker/operation 精确时 guarded re-HMAC，也可在 marker 缺失或错误绑定时保持 sentinel 并继续，不得让错误 marker 阻塞无关或实际目标用户。目标已删除时，读取精确 sentinel metadata 后可直接返回 `410 created_user_deleted`，无需读取正文；目标仍 active 时同一 sentinel 只能 fail closed，不能返回 `201`。
 
 ## 5. 错误契约
 
@@ -194,7 +194,7 @@ A03 复用 A14 固定 `admin_action_error` envelope 和安全消息，不返回�
 - 用户/权限/审计/outbox/operation 的事务回滚注入测试。
 - 创建→operation Query 到期→删除、创建→Begin 到期→删除及到期/删除并发的真实 MySQL 测试，证明到期不丢失 durable target，删除与全部响应脱敏原子、删除后稳定 410 且无 PII。
 - response HMAC 的 target/body/status 等字段绑定、直接数据库 mutation/delete 拒绝、多 snapshot、脱敏回滚，以及 key/version 生命周期测试。
-- 0010 在默认 MySQL 8.4、普通 DDL 账号下的九个 committed-prefix 恢复、每个 redacted legacy 行无条件规范化、active/outbox 严格分路回填、outbox mismatch 矩阵和无法解析 PII fail-safe 脱敏测试。
+- 0010 在默认 MySQL 8.4、普通 DDL 账号下的九个 committed-prefix 恢复、每个 pre-0010 active/redacted 行无条件规范化、有效/损坏 HMAC、错误 marker、已删除目标、active/outbox 严格分路回填、outbox mismatch 矩阵、active sentinel fail closed、deleted sentinel direct/HTTP 410 和错误 existing-user marker 不阻塞删除测试。
 - hasher 注入计数与并发门禁：forbidden/rate-limited/replay 为 0，fresh 为 1，同一 operation 并发只允许 fresh owner 哈希一次。
 - 密码、ticket、幂等键、旧用户详情和依赖原文不进入日志/响应/持久化。
 - MySQL 8 与 Redis 7 隔离 fixture、focused race、全量 `go test ./...`、build、vet、migration ledger/verifier。
