@@ -42,7 +42,7 @@ func TestPlatformSSEV2EncoderAllowsInterleavedCompareModels(t *testing.T) {
 		t.Fatalf("interleaved frame failed: %v", encoder.Err())
 	}
 	want := "event: done\ndata: {\"generation_id\":\"550e8400-e29b-41d4-a716-446655440000\",\"status\":\"completed\",\"conversation_guid\":\"conversation-1\",\"total_tokens_used\":30,\"models\":{\"model-a\":{\"status\":\"completed\",\"tokens\":3},\"model-b\":{\"status\":\"failed\",\"code\":\"upstream_error\"}}}\n\n"
-	if got := string(encoder.DoneCompare("conversation-1", 30, map[string]int{"model-a": 3})); got != want {
+	if got := string(encoder.DoneCompare("conversation-1", 30, map[string]int64{"model-a": 3})); got != want {
 		t.Fatalf("compare done = %q\nwant = %q (err=%v)", got, want, encoder.Err())
 	}
 }
@@ -72,7 +72,7 @@ func TestPlatformSSEV2EncoderRejectsEmptyDeltaAndPrematureDone(t *testing.T) {
 	}
 
 	encoder, _ = NewPlatformSSEV2Encoder(sseV2GenerationID, []string{"model-a", "model-b"})
-	if encoder.Meta("conversation-1") == nil || encoder.ModelDone("model-a", 0) == nil || encoder.DoneCompare("conversation-1", 0, map[string]int{"model-a": 0}) != nil || !errors.Is(encoder.Err(), ErrPlatformSSEV2ModelsRunning) {
+	if encoder.Meta("conversation-1") == nil || encoder.ModelDone("model-a", 0) == nil || encoder.DoneCompare("conversation-1", 0, map[string]int64{"model-a": 0}) != nil || !errors.Is(encoder.Err(), ErrPlatformSSEV2ModelsRunning) {
 		t.Fatalf("premature done did not fail closed: %v", encoder.Err())
 	}
 }
@@ -147,5 +147,77 @@ func TestPlatformSSEV2HeadersAreExact(t *testing.T) {
 		if got := headers.Get(key); got != want {
 			t.Errorf("%s = %q, want %q", key, got, want)
 		}
+	}
+}
+
+func TestPlatformSSEV2EncoderRejectsNonCanonicalIdentifiersAndModelSets(t *testing.T) {
+	invalidGenerationIDs := []string{
+		"", "550E8400-E29B-41D4-A716-446655440000", "550e8400-e29b-41d4-a716-44665544000z",
+	}
+	for _, generationID := range invalidGenerationIDs {
+		if encoder, err := NewPlatformSSEV2Encoder(generationID, []string{"model-a"}); err == nil || encoder != nil {
+			t.Fatalf("NewPlatformSSEV2Encoder(%q) accepted invalid generation ID", generationID)
+		}
+	}
+	for _, models := range [][]string{
+		{" "}, {"model-a", "model-a"}, {"model-a", "model-b", "model-c", "model-d"},
+		{strings.Repeat("m", platformSSEV2MaxIdentifierBytes+1)},
+	} {
+		if encoder, err := NewPlatformSSEV2Encoder(sseV2GenerationID, models); err == nil || encoder != nil {
+			t.Fatalf("NewPlatformSSEV2Encoder(%q) accepted invalid models", models)
+		}
+	}
+
+	encoder, err := NewPlatformSSEV2Encoder(sseV2GenerationID, []string{"model-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if frame := encoder.Meta(" \t "); frame != nil || !errors.Is(encoder.Err(), ErrPlatformSSEV2InvalidEvent) {
+		t.Fatalf("blank conversation GUID = %q, err=%v", frame, encoder.Err())
+	}
+}
+
+func TestPlatformSSEV2EncoderBoundsCountersAndDeltaBytes(t *testing.T) {
+	encoder, err := NewPlatformSSEV2Encoder(sseV2GenerationID, []string{"model-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if encoder.Meta("conversation-1") == nil {
+		t.Fatal("meta failed")
+	}
+	if frame := encoder.Delta("model-a", 1, strings.Repeat("x", platformSSEV2MaxDeltaBytes+1)); frame != nil || !errors.Is(encoder.Err(), ErrPlatformSSEV2InvalidEvent) {
+		t.Fatalf("oversized delta = %q, err=%v", frame, encoder.Err())
+	}
+
+	encoder, _ = NewPlatformSSEV2Encoder(sseV2GenerationID, []string{"model-a"})
+	if encoder.Meta("conversation-1") == nil {
+		t.Fatal("meta failed")
+	}
+	encoder.states["model-a"].nextSeq = platformSSEV2MaxSafeInteger
+	if encoder.Delta("model-a", platformSSEV2MaxSafeInteger, "x") == nil {
+		t.Fatalf("max-safe seq rejected: %v", encoder.Err())
+	}
+	if encoder.ModelDone("model-a", platformSSEV2MaxSafeInteger) == nil || encoder.DoneSingle("conversation-1", platformSSEV2MaxSafeInteger+1, 0) != nil || !errors.Is(encoder.Err(), ErrPlatformSSEV2InvalidEvent) {
+		t.Fatalf("unsafe tokens were accepted: %v", encoder.Err())
+	}
+}
+
+func TestPlatformSSEV2EncoderSanitizesRequestIDsAndRequiresExactCompareTokenMap(t *testing.T) {
+	for _, requestID := range []string{"https://internal.example/?secret=x", "req\nsecret", strings.Repeat("x", 129)} {
+		encoder, _ := NewPlatformSSEV2Encoder(sseV2GenerationID, []string{"model-a"})
+		if encoder.Meta("conversation-1") == nil {
+			t.Fatal("meta failed")
+		}
+		if frame := string(encoder.Error("timeout", requestID)); strings.Contains(frame, "request_id") || strings.Contains(frame, requestID) {
+			t.Fatalf("unsafe request ID leaked: %q", frame)
+		}
+	}
+
+	encoder, _ := NewPlatformSSEV2Encoder(sseV2GenerationID, []string{"model-a", "model-b"})
+	if encoder.Meta("conversation-1") == nil || encoder.ModelDone("model-a", 0) == nil || encoder.ModelError("model-b", "timeout", "request-1") == nil {
+		t.Fatalf("terminal setup failed: %v", encoder.Err())
+	}
+	if frame := encoder.DoneCompare("conversation-1", 0, map[string]int64{"model-a": 0, "unexpected": 1}); frame != nil || !errors.Is(encoder.Err(), ErrPlatformSSEV2InvalidEvent) {
+		t.Fatalf("extra model token was accepted: %q, err=%v", frame, encoder.Err())
 	}
 }

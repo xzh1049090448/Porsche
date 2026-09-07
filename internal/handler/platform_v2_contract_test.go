@@ -52,6 +52,7 @@ func TestDecodePlatformRequestRejectsIncompleteOrInvalidV2Contract(t *testing.T)
 		"stream false":       strings.Replace(valid, `"stream":true`, `"stream":false`, 1),
 		"wrong version":      strings.Replace(valid, "platform-chat-sse.v2", "platform-chat-sse.v3", 1),
 		"malformed UUID":     strings.Replace(valid, platformV2GenerationID, "not-a-uuid", 1),
+		"uppercase UUID":     strings.Replace(valid, platformV2GenerationID, strings.ToUpper(platformV2GenerationID), 1),
 		"missing generation": strings.Replace(valid, `,"generation_id":"`+platformV2GenerationID+`"`, "", 1),
 		"version only":       strings.Replace(valid, `,"generation_id":"`+platformV2GenerationID+`"`, "", 1),
 		"ID only":            strings.Replace(valid, `,"stream_version":"platform-chat-sse.v2"`, "", 1),

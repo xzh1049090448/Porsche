@@ -58,3 +58,14 @@ Expected: all commands exit zero. Commit only the listed handler/service tests a
 ## Deferred
 
 Generation claim/CAS, Redis TTL, cancel/status routes, transactional persistence, context cancellation, actual v2 route activation, proxy configuration and real HTTPS acceptance require later plans and the outstanding product decisions.
+
+## Approved Follow-up Decisions
+
+On 2026-09-07 the user approved the following contract choices for later lifecycle tasks:
+
+- A duplicate `generation_id` POST returns HTTP 409 with the current authoritative state and never starts or reattaches an upstream stream.
+- Compare mode persists one independent `assistant_message_guid` per model.
+- Cancelled and failed generations do not consume daily call quota; incurred upstream cost is recorded through a separate audit boundary.
+- Redis unavailability fails only v2 requests with a stable 503 while legacy requests retain their current behavior.
+
+These decisions do not activate v2 routing in BE-01 and do not authorize deployment, migration, push, merge, or real paid model calls.
