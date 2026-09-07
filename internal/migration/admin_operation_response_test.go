@@ -5,15 +5,12 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"fmt"
-	"os"
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
-	"github.com/porsche/ai-gateway-go/internal/db"
 	"github.com/porsche/ai-gateway-go/internal/models"
-	"github.com/porsche/ai-gateway-go/internal/persistence"
+	"gorm.io/gorm"
 	"gorm.io/gorm/schema"
 )
 
@@ -141,21 +138,11 @@ func matchingAdminOperationResponseMetadata(contract businessGroupTableContract,
 }
 
 func TestAdminOperationResponseMigrationOnIsolatedMySQLIsRerunnable(t *testing.T) {
-	raw := strings.TrimSpace(os.Getenv("TEST_DATABASE_URL"))
-	if raw == "" {
-		t.Skip("requires explicit disposable TEST_DATABASE_URL; no fixture provision performed")
-	}
-	if !isTestDatabaseURL(raw) {
-		t.Fatal("TEST_DATABASE_URL must point to a database whose name ends in _test")
-	}
-	gdb, err := db.Open(raw, "test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	generator := persistence.NewSnowflake(29, persistence.SystemClock())
+	gdb := permissionSchemaDB(t)
+	next := sequentialGUID(29_000)
 	apply := func() {
 		t.Helper()
-		if err := Up(context.Background(), gdb, generator.Next, func() int64 { return time.Now().UTC().UnixMilli() }); err != nil {
+		if err := Up(context.Background(), gdb, next, func() int64 { return 1_900_000_000_000 }); err != nil {
 			t.Fatal(err)
 		}
 		if err := VerifyAdminOperationResponseSchema(context.Background(), gdb); err != nil {
@@ -175,4 +162,118 @@ func TestAdminOperationResponseMigrationOnIsolatedMySQLIsRerunnable(t *testing.T
 	if err := gdb.Raw("SELECT COUNT(*) FROM schema_migrations WHERE version = '0009' AND is_deleted = 0").Row().Scan(&ledgerCount); err != nil || ledgerCount != 1 {
 		t.Fatalf("0009 ledger count = %d (%v)", ledgerCount, err)
 	}
+}
+
+func TestAdminResponseIntegrityMigrationResumesEveryCommittedPrefix(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		prefix int
+	}{
+		{name: "response_alter_only", prefix: 1},
+		{name: "outbox_column", prefix: 2},
+		{name: "backfill", prefix: 3},
+		{name: "outcome_check", prefix: 4},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			gdb := permissionSchemaDB(t)
+			statements := prepareAdminResponseIntegrityPrefix(t, gdb)
+			for index := 0; index < tc.prefix; index++ {
+				if err := gdb.Exec(statements[index]).Error; err != nil {
+					t.Fatalf("apply committed prefix statement %d: %v", index+1, err)
+				}
+			}
+			calls := 0
+			if err := Up(context.Background(), gdb, func() int64 {
+				calls++
+				return 39_000 + int64(calls)
+			}, func() int64 { return 1_900_000_000_001 }); err != nil {
+				t.Fatalf("resume after %s: %v", tc.name, err)
+			}
+			if calls != 1 {
+				t.Fatalf("resume after %s allocated %d ledger GUIDs, want 1", tc.name, calls)
+			}
+			if err := Verify(context.Background(), gdb); err != nil {
+				t.Fatalf("verify resumed %s: %v", tc.name, err)
+			}
+			var failureCode sql.NullInt64
+			if err := gdb.Raw("SELECT failure_code FROM admin_action_outbox WHERE guid=38004").Row().Scan(&failureCode); err != nil || !failureCode.Valid || failureCode.Int64 != 2 {
+				t.Fatalf("resumed %s failure_code = %#v (%v), want 2", tc.name, failureCode, err)
+			}
+			calls = 0
+			if err := Up(context.Background(), gdb, func() int64 { calls++; return 49_000 }, func() int64 { return 1_900_000_000_002 }); err != nil || calls != 0 {
+				t.Fatalf("rerun completed %s err=%v GUID calls=%d", tc.name, err, calls)
+			}
+		})
+	}
+}
+
+func TestAdminResponseIntegrityMigrationRejectsNonPrefixPartialDDL(t *testing.T) {
+	gdb := permissionSchemaDB(t)
+	permissionUp(t, gdb)
+	migration := adminResponseIntegrityMigration(t)
+	if err := executeAdminOperationSafetyFixtureSQL(gdb, migration.DownSQL); err != nil {
+		t.Fatal(err)
+	}
+	if err := gdb.Exec("DELETE FROM schema_migrations WHERE version='0009'").Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := gdb.Exec("ALTER TABLE admin_operation_responses ADD COLUMN lifecycle_state INT NOT NULL DEFAULT 1 AFTER operation_id").Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := Up(context.Background(), gdb, sequentialGUID(59_000), func() int64 { return 1_900_000_000_003 }); err == nil {
+		t.Fatal("non-prefix partial 0009 response DDL was accepted")
+	}
+	assertMigrationLedgerCount(t, gdb, "0009", 0)
+}
+
+func prepareAdminResponseIntegrityPrefix(t *testing.T, gdb *gorm.DB) []string {
+	t.Helper()
+	permissionUp(t, gdb)
+	migration := adminResponseIntegrityMigration(t)
+	if err := executeAdminOperationSafetyFixtureSQL(gdb, migration.DownSQL); err != nil {
+		t.Fatal(err)
+	}
+	if err := gdb.Exec("DELETE FROM schema_migrations WHERE version='0009'").Error; err != nil {
+		t.Fatal(err)
+	}
+	insertMigrationUserWithDefaultGroup(t, gdb, 38_001, "integrity-prefix")
+	var userID int64
+	if err := gdb.Raw("SELECT id FROM users WHERE guid=38001").Row().Scan(&userID); err != nil || userID <= 0 {
+		t.Fatalf("read prefix user id=%d err=%v", userID, err)
+	}
+	if err := gdb.Exec(`INSERT INTO user_sessions (guid,sid,user_id,login_method,session_version,refresh_hmac,last_active_at,expires_at,created_at,updated_at,is_deleted) VALUES (38002,'00000000-0000-4000-8000-000000038002',?,1,1,?,1,2,1,1,0)`, userID, strings.Repeat("a", 64)).Error; err != nil {
+		t.Fatal(err)
+	}
+	var sessionID int64
+	if err := gdb.Raw("SELECT id FROM user_sessions WHERE guid=38002").Row().Scan(&sessionID); err != nil || sessionID <= 0 {
+		t.Fatalf("read prefix session id=%d err=%v", sessionID, err)
+	}
+	publicRef := "op_" + strings.Repeat("r", 43)
+	if err := gdb.Exec(`INSERT INTO admin_operations (guid,actor_user_id,actor_auth_version,session_id,action,idempotency_key_hmac,request_hmac,state,public_ref,finished_at,query_expires_at,error_code,result_http_status,created_at,updated_at,is_deleted) VALUES (38003,?,1,?,4,?,?,3,?,2,3,2,409,1,2,0)`, userID, sessionID, strings.Repeat("b", 64), strings.Repeat("c", 64), publicRef).Error; err != nil {
+		t.Fatal(err)
+	}
+	var operationID int64
+	if err := gdb.Raw("SELECT id FROM admin_operations WHERE guid=38003").Row().Scan(&operationID); err != nil || operationID <= 0 {
+		t.Fatalf("read prefix operation id=%d err=%v", operationID, err)
+	}
+	if err := gdb.Exec(`INSERT INTO admin_action_outbox (guid,created_at,updated_at,is_deleted,operation_id,public_ref,action,target_kind,state,delivery_state,available_at,attempt_count) VALUES (38004,1,2,0,?,?,4,1,3,1,2,0)`, operationID, publicRef).Error; err != nil {
+		t.Fatal(err)
+	}
+	statements := splitStatements(string(migration.UpSQL))
+	if len(statements) != 4 {
+		t.Fatalf("0009 statements=%d want=4", len(statements))
+	}
+	return statements
+}
+
+func adminResponseIntegrityMigration(t *testing.T) Migration {
+	t.Helper()
+	migrations, err := All()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(migrations) != 9 || migrations[8].Version != "0009" {
+		t.Fatalf("unexpected migrations: %#v", migrations)
+	}
+	return migrations[8]
 }

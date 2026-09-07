@@ -287,6 +287,11 @@ func executeAdminUserCreate(c *gin.Context, backend userManagementActionBackend,
 		return
 	}
 
+	// Begin owns the password carried by the canonical descriptor intent and its
+	// encoder clears that slice. Keep a separate backing array for the one
+	// permitted fresh-attempt hash after Begin reports ExecutionReady.
+	hashPassword := append([]byte(nil), request.Password...)
+	defer clear(hashPassword)
 	intent := adminUserCreateIntent(request)
 	defer clear(intent.Password)
 	request.ClearSecrets()
@@ -306,7 +311,8 @@ func executeAdminUserCreate(c *gin.Context, backend userManagementActionBackend,
 		writeAdminUserCreateView(c, backend, action, actor, identity, view)
 		return
 	}
-	passwordHash, err := backend.HashCreatePassword(intent.Password)
+	passwordHash, err := backend.HashCreatePassword(hashPassword)
+	clear(hashPassword)
 	clear(intent.Password)
 	intent.Password = nil
 	if err != nil || len(passwordHash) == 0 {

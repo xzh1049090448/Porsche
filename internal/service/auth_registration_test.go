@@ -423,6 +423,23 @@ func TestAdminUserCreateHashManagedCreationPassword(t *testing.T) {
 	}
 }
 
+func TestVerifyPasswordBytesAvoidsPlaintextStringAndRejectsNULSuffix(t *testing.T) {
+	password := []byte("Str0ng!pw")
+	hash, err := security.HashPasswordBytes(password)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clear(hash)
+	if !security.VerifyPasswordBytes(password, string(hash)) {
+		t.Fatal("byte password verification rejected the original password")
+	}
+	withNUL := append(append([]byte(nil), password...), 0)
+	defer clear(withNUL)
+	if security.VerifyPasswordBytes(withNUL, string(hash)) {
+		t.Fatal("byte password verification accepted a NUL-suffixed password")
+	}
+}
+
 func TestValidatePasswordRejectsInvalidUTF8(t *testing.T) {
 	invalidPassword := string([]byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff})
 	if err := ValidatePassword(invalidPassword); err == nil {

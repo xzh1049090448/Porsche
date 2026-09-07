@@ -3,6 +3,7 @@ package service
 import (
 	"bytes"
 	"context"
+	cryptorand "crypto/rand"
 	"database/sql"
 	"database/sql/driver"
 	"encoding/hex"
@@ -972,8 +973,7 @@ func TestActionVerificationIssuePersistsOnlyDigestsAndReissueSoftDeletes(t *test
 	}
 
 	client := &actionIssueRedisClient{actionRateEvalClient: newActionRateEvalClient()}
-	random := bytes.NewReader(append(bytes.Repeat([]byte{0x11}, 32), bytes.Repeat([]byte{0x22}, 32)...))
-	service := newTestActionVerificationService(t, db, client, &actionIssueClock{now: now}, random, func() int64 { return testSnowflake.Next() })
+	service := newTestActionVerificationService(t, db, client, &actionIssueClock{now: now}, cryptorand.Reader, func() int64 { return testSnowflake.Next() })
 	issue := func() (*IssuedVerification, []byte) {
 		password := []byte(passwordText)
 		result, err := service.Issue(context.Background(), VerificationIssue{

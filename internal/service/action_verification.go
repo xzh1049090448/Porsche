@@ -163,7 +163,7 @@ func (s *ActionVerificationService) Issue(ctx context.Context, in VerificationIs
 		clear(encoded)
 		intentHex := hex.EncodeToString(intentDigest[:])
 		clear(intentDigest[:])
-		passwordOK := identity.actor.PasswordHash != nil && security.VerifyPassword(string(in.CurrentPassword), *identity.actor.PasswordHash)
+		passwordOK := identity.actor.PasswordHash != nil && security.VerifyPasswordBytes(in.CurrentPassword, *identity.actor.PasswordHash)
 		clear(in.CurrentPassword)
 		if !passwordOK {
 			return ErrActionVerificationForbidden

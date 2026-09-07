@@ -51,6 +51,15 @@ func HashPasswordBytes(password []byte) ([]byte, error) {
 // VerifyPassword verifies only the project Argon2id encoding. Legacy bcrypt
 // values are deliberately not accepted by the username authentication path.
 func VerifyPassword(plain, hashed string) bool {
+	owned := []byte(plain)
+	defer clear(owned)
+	return VerifyPasswordBytes(owned, hashed)
+}
+
+// VerifyPasswordBytes verifies a caller-owned plaintext slice without making a
+// plaintext string copy. The caller remains responsible for clearing its
+// buffer on every path.
+func VerifyPasswordBytes(plain []byte, hashed string) bool {
 	parts := strings.Split(hashed, "$")
 	if len(parts) != 6 || parts[0] != "" || parts[1] != "argon2id" || parts[2] != "v=19" {
 		return false
@@ -62,13 +71,18 @@ func VerifyPassword(plain, hashed string) bool {
 	}
 	salt, err := base64.RawStdEncoding.DecodeString(parts[4])
 	if err != nil || len(salt) < argon2SaltLen {
+		clear(salt)
 		return false
 	}
+	defer clear(salt)
 	expected, err := base64.RawStdEncoding.DecodeString(parts[5])
 	if err != nil || len(expected) != int(argon2KeyLen) {
+		clear(expected)
 		return false
 	}
-	actual := argon2.IDKey([]byte(plain), salt, iterations, memory, threads, uint32(len(expected)))
+	defer clear(expected)
+	actual := argon2.IDKey(plain, salt, iterations, memory, threads, uint32(len(expected)))
+	defer clear(actual)
 	return subtle.ConstantTimeCompare(actual, expected) == 1
 }
 

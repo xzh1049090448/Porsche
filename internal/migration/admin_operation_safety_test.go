@@ -6,11 +6,9 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 	"testing"
 
-	projectdb "github.com/porsche/ai-gateway-go/internal/db"
 	"gorm.io/gorm"
 )
 
@@ -36,17 +34,10 @@ func TestAdminOperationSafetyFixturePreservesDependentRollbackOrder(t *testing.T
 }
 
 func TestAdminOperationSafetyRealMySQLDownUpAndVerifier(t *testing.T) {
-	raw := strings.TrimSpace(os.Getenv("TEST_DATABASE_URL"))
-	if raw == "" {
-		t.Skip("requires isolated TEST_DATABASE_URL MySQL fixture")
-	}
-	if !isTestDatabaseURL(raw) {
-		t.Fatal("TEST_DATABASE_URL must point to a dedicated *_test database")
-	}
-	gdb, err := projectdb.Open(raw, "test")
-	if err != nil {
-		t.Fatalf("open isolated MySQL fixture: %v", err)
-	}
+	// This test intentionally rolls back DDL. Keep those destructive checks in a
+	// test-owned empty child database so accepted redacted response rows in the
+	// caller's fixture can never be downgraded to the pre-0009 active-only shape.
+	gdb := permissionSchemaDB(t)
 	nextGUID := int64(9_050_000_000_000_000)
 	if err := Up(context.Background(), gdb, func() int64 {
 		nextGUID++

@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"sync"
@@ -12,7 +14,9 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/porsche/ai-gateway-go/internal/actionsecurity"
+	"github.com/porsche/ai-gateway-go/internal/app"
 	"github.com/porsche/ai-gateway-go/internal/config"
+	"github.com/porsche/ai-gateway-go/internal/db"
 	"github.com/porsche/ai-gateway-go/internal/models"
 	"github.com/porsche/ai-gateway-go/internal/security"
 	"github.com/porsche/ai-gateway-go/internal/service"
@@ -51,6 +55,9 @@ type scriptedUserManagementBackend struct {
 	beginIntent       actionsecurity.CreateAccountIntent
 	beginPassword     []byte
 	beginPasswordHash [sha256.Size]byte
+	hashPassword      []byte
+	hashPasswordHash  [sha256.Size]byte
+	hashErr           error
 	beginKeys         []string
 	beginTickets      []string
 	createAction      actionsecurity.Action
@@ -78,7 +85,10 @@ type concurrentUserCreateHashBackend struct {
 func (backend *concurrentUserCreateHashBackend) Issue(context.Context, service.VerificationIssue) (*service.IssuedVerification, error) {
 	return nil, service.ErrActionOperationUnavailable
 }
-func (backend *concurrentUserCreateHashBackend) Begin(_ context.Context, _ service.OperationBegin) (*service.OperationIdentity, *service.OperationView, error) {
+func (backend *concurrentUserCreateHashBackend) Begin(_ context.Context, begin service.OperationBegin) (*service.OperationIdentity, *service.OperationView, error) {
+	if intent, ok := begin.Intent.(actionsecurity.CreateAccountIntent); ok {
+		clear(intent.Password)
+	}
 	finished := int64(1_790_000_000_000)
 	switch backend.beginCalls.Add(1) {
 	case 1:
@@ -139,6 +149,9 @@ func (s *scriptedUserManagementBackend) Begin(_ context.Context, begin service.O
 	s.beginPasswordHash = sha256.Sum256(s.beginIntent.Password)
 	s.beginKeys = append([]string(nil), begin.IdempotencyKeyValues...)
 	s.beginTickets = append([]string(nil), begin.TicketValues...)
+	// Operation.Begin owns the descriptor password and may clear it while
+	// encoding. The HTTP adapter must retain a separate owned hashing copy.
+	clear(s.beginIntent.Password)
 	return s.identity, s.beginView, s.beginErr
 }
 
@@ -148,6 +161,11 @@ func (s *scriptedUserManagementBackend) ExecutionReady(*service.OperationIdentit
 
 func (s *scriptedUserManagementBackend) HashCreatePassword(password []byte) ([]byte, error) {
 	s.hashCalls++
+	s.hashPassword = password
+	s.hashPasswordHash = sha256.Sum256(password)
+	if s.hashErr != nil {
+		return nil, s.hashErr
+	}
 	return service.HashManagedCreationPasswordBytes(password)
 }
 
@@ -237,20 +255,80 @@ func TestAdminUserCreateOrdinaryUsesTicketlessActionHashAndExactDTO(t *testing.T
 	}
 	passwordDigest := sha256.Sum256([]byte(adminUserCreatePassword))
 	if backend.beginCalls != 1 || backend.beginAction != actionsecurity.ActionUsersCreate || len(backend.beginTickets) != 0 || backend.hashCalls != 1 ||
-		backend.beginPasswordHash != passwordDigest || backend.newCreateCalls != 1 || backend.createAction != actionsecurity.ActionUsersCreate ||
+		backend.beginPasswordHash != passwordDigest || backend.hashPasswordHash != passwordDigest || backend.newCreateCalls != 1 || backend.createAction != actionsecurity.ActionUsersCreate ||
 		backend.createIntent.Password != nil || backend.createIntent.Role != "user" || backend.createIntent.PlanType != int(models.PlanFree) ||
 		len(backend.createIntent.AllowedModels) != 0 || backend.createIntent.DailyCallLimit != 100 || len(backend.createIntent.Overrides) != 0 ||
 		!backend.createHashValid || backend.createMetadata.RequestID != "request-create-1" ||
 		backend.createMetadata.TrustedIP != "203.0.113.8" || backend.executeCalls != 1 || backend.outcomeCalls != 1 {
 		t.Fatal("ordinary create did not preserve the reviewed action, defaults, hash, metadata, and execution flow")
 	}
-	for _, secret := range [][]byte{backend.beginPassword, backend.createHash} {
+	for _, secret := range [][]byte{backend.beginPassword, backend.hashPassword, backend.createHash} {
 		for _, value := range secret {
 			if value != 0 {
 				t.Fatal("create handler retained an owned password buffer")
 			}
 		}
 	}
+}
+
+func TestAdminUserCreateRealHTTPPasswordSurvivesBeginEncoding(t *testing.T) {
+	state := realUserCreateHTTPState(t)
+	actorUsername := fmt.Sprintf("u%019d", platformTestSnowflake.Next())
+	actor, err := state.Auth.RegisterUsername(context.Background(), actorUsername, "Actor!Strong9", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := state.DB.Model(&models.User{}).Where("id = ?", actor.ID).Update("role", models.UserRoleAdmin).Error; err != nil {
+		t.Fatal(err)
+	}
+	actor.Role = models.UserRoleAdmin
+	access := platformJWT(t, state, actor)
+
+	engine := gin.New()
+	RegisterAuth(engine, state)
+	RegisterAdminUserManagementActions(engine, state)
+	username := fmt.Sprintf("u%019d", platformTestSnowflake.Next())
+	body := `{"username":"` + username + `","password":"` + adminUserCreatePassword + `","role":"user","group_guid":null,"plan_type":"free","permission_overrides":[]}`
+	create := performActionRequest(engine, http.MethodPost, "/admin/v2/users", body, http.Header{
+		"Authorization":   {"Bearer " + access},
+		"Content-Type":    {"application/json"},
+		"Idempotency-Key": {testActionKey},
+	})
+	if create.Code != http.StatusCreated {
+		t.Fatalf("real create status=%d body_length=%d", create.Code, create.Body.Len())
+	}
+	authHTTPLogin(t, engine, username, adminUserCreatePassword)
+	nulLogin := serveAuthRequest(engine, authJSONRequest(http.MethodPost, "/api/v1/auth/login", `{"username":"`+username+`","password":"`+adminUserCreatePassword+`\u0000"}`))
+	if nulLogin.Code != http.StatusUnauthorized {
+		t.Fatalf("NUL-suffixed password status=%d, want 401", nulLogin.Code)
+	}
+}
+
+func realUserCreateHTTPState(t *testing.T) *app.State {
+	t.Helper()
+	settings := platformTestSettings(t)
+	settings.RegisterEnabled = true
+	settings.PasswordRegisterEnabled = true
+	settings.PasswordLoginEnabled = true
+	settings.ActionSecurityHMACKey = bytes.Repeat([]byte{0x5a}, 32)
+	gdb, err := db.Open(settings.DatabaseURL, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	preparePlatformAuthSchema(t, gdb)
+	state, err := app.NewState(settings, gdb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sqlDB, err := gdb.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = state.AuthRedis.Close()
+		_ = sqlDB.Close()
+	})
+	return state
 }
 
 func TestAdminUserCreateAdminVerificationThenCreateUsesExactActionAndSeparateSecrets(t *testing.T) {
@@ -336,8 +414,8 @@ func TestAdminUserCreateRejectsForbiddenHeaderAndRoleCombinationsBeforeBegin(t *
 			backend := adminUserCreateBackend("user")
 			engine := newScriptedUserManagementEngine(t, backend, models.UserRoleRoot)
 			rec := performActionRequest(engine, http.MethodPost, test.path, test.body, test.headers)
-			if rec.Code != http.StatusBadRequest || backend.beginCalls != 0 {
-				t.Fatalf("status=%d begin_calls=%d body_length=%d", rec.Code, backend.beginCalls, rec.Body.Len())
+			if rec.Code != http.StatusBadRequest || backend.beginCalls != 0 || backend.hashCalls != 0 || backend.newCreateCalls != 0 {
+				t.Fatalf("status=%d begin/hash/new=%d/%d/%d body_length=%d", rec.Code, backend.beginCalls, backend.hashCalls, backend.newCreateCalls, rec.Body.Len())
 			}
 			response := decodeActionTestResponse[actionTestErrorEnvelope](t, rec)
 			if response.Error.Code != "invalid_admin_user_create_request" || rec.Header().Get("Cache-Control") != "no-store" || rec.Header().Get("X-Request-ID") == "" {
@@ -345,6 +423,18 @@ func TestAdminUserCreateRejectsForbiddenHeaderAndRoleCombinationsBeforeBegin(t *
 			}
 		})
 	}
+}
+
+func TestAdminUserCreateHashFailureClearsBothOwnedPasswordBuffers(t *testing.T) {
+	backend := adminUserCreateBackend("user")
+	backend.hashErr = errors.New("injected hash failure")
+	engine := newScriptedUserManagementEngine(t, backend, models.UserRoleAdmin)
+	rec := performActionRequest(engine, http.MethodPost, "/admin/v2/users", `{"username":"alice","password":"`+adminUserCreatePassword+`","role":"user"}`, http.Header{"Idempotency-Key": {testActionKey}})
+	if rec.Code != http.StatusBadRequest || backend.beginCalls != 1 || backend.hashCalls != 1 || backend.newCreateCalls != 0 || backend.executeCalls != 0 {
+		t.Fatalf("status/begin/hash/new/execute=%d/%d/%d/%d/%d", rec.Code, backend.beginCalls, backend.hashCalls, backend.newCreateCalls, backend.executeCalls)
+	}
+	assertClearedCreatePassword(t, backend.beginPassword)
+	assertClearedCreatePassword(t, backend.hashPassword)
 }
 
 func TestAdminUserCreateReplayAndA03FailureCodesDoNotReexecute(t *testing.T) {
@@ -375,6 +465,7 @@ func TestAdminUserCreateReplayAndA03FailureCodesDoNotReexecute(t *testing.T) {
 			if rec.Code != test.wantStatus || backend.hashCalls != 0 || backend.newCreateCalls != 0 || backend.executeCalls != 0 || backend.outcomeCalls != 1 {
 				t.Fatalf("status/new/execute/outcome=%d/%d/%d/%d", rec.Code, backend.newCreateCalls, backend.executeCalls, backend.outcomeCalls)
 			}
+			assertClearedCreatePassword(t, backend.beginPassword)
 			if test.wantStatus == http.StatusCreated {
 				if !bytes.Equal(rec.Body.Bytes(), backend.outcomeResponse.Body) || rec.Header().Get("Cache-Control") != "no-store" || rec.Header().Get("X-Request-ID") == "" {
 					t.Fatalf("replay body/header drift body=%q cache=%q request_id=%q", rec.Body.Bytes(), rec.Header().Get("Cache-Control"), rec.Header().Get("X-Request-ID"))
@@ -423,11 +514,21 @@ func TestAdminUserCreateRoleCapabilityAndDependencyOutcomesKeepSafeHeaders(t *te
 			if rec.Code != test.wantStatus || backend.beginCalls != 1 || backend.hashCalls != 0 || backend.newCreateCalls != 0 || rec.Header().Get("Retry-After") != test.wantRetry {
 				t.Fatalf("status/begin/new/retry=%d/%d/%d/%q", rec.Code, backend.beginCalls, backend.newCreateCalls, rec.Header().Get("Retry-After"))
 			}
+			assertClearedCreatePassword(t, backend.beginPassword)
 			response := decodeActionTestResponse[actionTestErrorEnvelope](t, rec)
 			if response.Error.Code != test.wantCode || response.Error.RequestID != "request-outcome" || rec.Header().Get("Cache-Control") != "no-store" || rec.Header().Get("X-Request-ID") != "request-outcome" {
 				t.Fatalf("code/request/cache/header=%q/%q/%q/%q", response.Error.Code, response.Error.RequestID, rec.Header().Get("Cache-Control"), rec.Header().Get("X-Request-ID"))
 			}
 		})
+	}
+}
+
+func assertClearedCreatePassword(t *testing.T, password []byte) {
+	t.Helper()
+	for _, value := range password {
+		if value != 0 {
+			t.Fatal("create handler retained a Begin password buffer")
+		}
 	}
 }
 

@@ -27,7 +27,8 @@ func TestAdminActionOutboxSchemaContract(t *testing.T) {
 		"is_deleted": {"int", true}, "operation_id": {"bigint", true},
 		"public_ref": {"char(46)", true}, "action": {"int", true},
 		"target_kind": {"int", true}, "target_guid": {"bigint", false},
-		"state": {"int", true}, "result_guid": {"bigint", false},
+		"state": {"int", true}, "failure_code": {"int", false},
+		"result_guid":    {"bigint", false},
 		"delivery_state": {"int", true}, "available_at": {"bigint", true},
 		"delivered_at": {"bigint", false}, "attempt_count": {"int", true},
 	}
