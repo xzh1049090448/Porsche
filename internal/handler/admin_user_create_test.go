@@ -497,6 +497,7 @@ func TestAdminUserCreateRoleCapabilityAndDependencyOutcomesKeepSafeHeaders(t *te
 		{"user actor denied ordinary", "user", models.UserRoleUser, service.ErrActionOperationForbidden, 403, "action_operation_rejected", ""},
 		{"admin denied administrator", "admin", models.UserRoleAdmin, service.ErrActionOperationForbidden, 403, "action_operation_rejected", ""},
 		{"users create capability denied", "user", models.UserRoleAdmin, service.ErrActionOperationForbidden, 403, "action_operation_rejected", ""},
+		{"expired create replay", "user", models.UserRoleRoot, service.ErrActionOperationExpired, 410, "operation_expired", ""},
 		{"inactive", "user", models.UserRoleRoot, service.ErrActionOperationInactive, 422, "action_inactive", ""},
 		{"rate limited", "user", models.UserRoleRoot, &service.RetryAfterError{Seconds: 9}, 429, "action_rate_limited", "9"},
 		{"dependency unavailable", "user", models.UserRoleRoot, service.ErrActionOperationUnavailable, 503, "action_dependency_unavailable", ""},
@@ -583,6 +584,36 @@ func TestAdminUserCreateQueryDispatchesOnlyExactCreateScopes(t *testing.T) {
 		if rec.Code != http.StatusBadRequest || backend.queryCalls != 0 {
 			t.Fatalf("path=%q status=%d calls=%d", path, rec.Code, backend.queryCalls)
 		}
+	}
+}
+
+func TestAdminUserCreateExpiredBeginAndQueryStayDistinctFromDeletedReplay(t *testing.T) {
+	for _, request := range []struct {
+		name   string
+		method string
+		path   string
+		body   string
+		setup  func(*scriptedUserManagementBackend)
+	}{
+		{name: "begin", method: http.MethodPost, path: "/admin/v2/users", body: `{"username":"alice","password":"` + adminUserCreatePassword + `","role":"user"}`, setup: func(backend *scriptedUserManagementBackend) { backend.beginErr = service.ErrActionOperationExpired }},
+		{name: "query", method: http.MethodGet, path: "/admin/v2/operations?scope=users.create", setup: func(backend *scriptedUserManagementBackend) { backend.queryErr = service.ErrActionOperationExpired }},
+	} {
+		t.Run(request.name, func(t *testing.T) {
+			backend := adminUserCreateBackend("user")
+			request.setup(backend)
+			engine := newScriptedUserManagementEngine(t, backend, models.UserRoleRoot)
+			rec := performActionRequest(engine, request.method, request.path, request.body, http.Header{"Idempotency-Key": {testActionKey}})
+			if rec.Code != http.StatusGone {
+				t.Fatalf("expired %s status=%d", request.name, rec.Code)
+			}
+			response := decodeActionTestResponse[actionTestErrorEnvelope](t, rec)
+			if response.Error.Code != "operation_expired" || response.Error.OperationRef != "" || strings.Contains(rec.Body.String(), "alice") {
+				t.Fatalf("expired %s response leaked or changed category: %q", request.name, rec.Body.String())
+			}
+			if backend.outcomeCalls != 0 {
+				t.Fatalf("expired %s loaded a create snapshot", request.name)
+			}
+		})
 	}
 }
 

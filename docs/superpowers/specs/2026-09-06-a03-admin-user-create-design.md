@@ -147,7 +147,7 @@ A03 新增前向迁移，遵守 `docs/conventions/database-standards.md`，不�
 
 任何一步失败整体回滚，不留下用户、权限半状态、成功审计、成功 outbox 或终态成功 operation。若 commit 结果未知，返回 `503 operation_commit_unknown` 和 `operation_ref`，由 query/recovery 判定，不报告创建成功。
 
-A14 删除在锁定目标账户后，按成功创建 outbox marker 和 `admin_operation_responses.target_guid` 锁定所有相关记录，再锁定对应 operation 并验证 public ref、action、终态/到期形态、digest 和 HMAC。marker 与 snapshot 数量不等、任一记录缺失/篡改或任一写入失败都使删除事务 fail closed 并整体回滚；全部快照已经安全脱敏时允许幂等通过。
+A14 删除在锁定目标账户后，按成功创建 outbox marker 和 `admin_operation_responses.target_guid` 锁定所有相关记录，再锁定对应 operation 并验证 public ref、action、终态/到期形态、digest 和 HMAC。若 0010 已把可解析目标的 legacy 行改为 redacted `{}` 和全零 sentinel HMAC，删除事务必须用当前 key 生成 canonical redacted HMAC，并以 lifecycle/version/target/body/digest/sentinel 全部仍精确匹配为条件更新一行；影响行数不是 1 就整体回滚，不能跳过 sentinel。marker 与 snapshot 数量不等、任一记录缺失/篡改或任一写入失败都使删除事务 fail closed 并整体回滚；全部快照已经安全脱敏且 HMAC 可验证时允许幂等通过。
 
 ## 5. 错误契约
 
@@ -159,7 +159,8 @@ A03 复用 A14 固定 `admin_action_error` envelope 和安全消息，不返回�
 - `404 action_group_not_found`：显式分组不存在、停用或不可见，统一安全响应。
 - `409 username_conflict`：用户名已被任何活动或墓碑账户占用；只返回冲突事实。
 - `409`：幂等、票据、actor/session/policy 漂移等沿用管理动作错误码。
-- `410 created_user_deleted`：原创建 operation 成功，但目标已按 A14 软删除；只返回安全错误和 operation ref，不读取或返回旧成功正文。
+- `410 operation_expired`：创建 operation 已超过查询保留期；Begin 和 operation query 都返回该分类，不加载快照、不带 operation ref 或旧成功正文。
+- `410 created_user_deleted`：仍可定位的成功创建目标已按 A14 软删除；终态 replay 只返回安全错误和 operation ref，不读取或返回旧成功正文。该分类与 `operation_expired` 保持可区分。
 - `422 action_inactive`：仅用于服务端尚未激活动作或部署版本不一致。
 - `429 action_rate_limited`：带整数秒 `Retry-After`。
 - `503 action_dependency_unavailable|operation_commit_unknown`：数据库、Redis、权限或提交状态不可安全判断。
