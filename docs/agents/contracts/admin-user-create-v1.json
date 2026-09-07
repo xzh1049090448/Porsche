@@ -203,6 +203,6 @@
     "policy_drift_recovery": "refresh current capability and directory data",
     "money": "no amount or balance input, query/localStorage mock toggle, ledger, recharge, refund, or deduction"
   },
-  "execution_order": "authenticate, enforce action rate limit, role and capability checks, and resolve idempotent terminal replay before Argon2; forbidden, rate-limited, and replay requests hash zero times; one fresh executable attempt hashes exactly once using owned byte slices and clears plaintext/hash without creating a password string",
+  "execution_order": "before Operation.Begin create two independent owned password byte backing arrays, one exclusively for descriptor encoding and one exclusively for a possible hash; authenticate, enforce action rate limit, role and capability checks, and resolve idempotent terminal replay before Argon2; Begin may clear only its descriptor copy; forbidden, rate-limited, error, and replay requests hash zero times and clear applicable buffers; only ExecutionReady hashes the independent copy exactly once, then clears both plaintext copies and the hash without creating a plaintext password string",
   "audit_outbox": "audit action is exactly users.create or users.create_admin and records terminal_state, redacted failure_code, request_id, operation_ref, and successful resource detail; outbox records terminal success/failure plus failure_code; neither persists password, ticket, idempotency key, hash, length, or fragment"
 }

@@ -112,7 +112,7 @@
 
 A03 新增前向迁移，遵守 `docs/conventions/database-standards.md`，不使用 AutoMigrate，不修改已发布 migration checksum。
 
-实际基线在 A03 实施期间已由独立批准的响应快照迁移推进至 0008；本修订新增 0009。0009 为快照增加 lifecycle、integrity version 和 response HMAC，为 outbox 增加脱敏 failure code 与成功/失败结果约束。迁移和 verifier 只依赖普通表级 DDL 权限，并保留 0001–0008 的既有 checksum。
+实际基线在 A03 实施期间已由独立批准的响应快照迁移推进至 0008；本修订新增 0009。0009 为快照增加 lifecycle、integrity version 和 response HMAC，为 outbox 增加脱敏 failure code 与成功/失败结果约束。runner 探测并只接受四条 DDL 的已提交前缀：response ALTER、outbox column、幂等 backfill、outcome CHECK；在每个前缀崩溃后重跑会从下一安全阶段恢复并在 CHECK 前重复 NULL-only backfill，任意非前缀混合结构 fail closed。迁移和 verifier 只依赖普通表级 DDL 权限，并保留 0001–0008 的既有 checksum。
 
 新增 `business_groups`：
 
@@ -134,7 +134,7 @@ A03 新增前向迁移，遵守 `docs/conventions/database-standards.md`，不�
 1. 锁定并重新核验 operation、票据（管理员创建）、actor、session 和 actor permission head/overrides。
 2. 解析并锁定目标分组；重新核验附加 plan/group 权限。
 3. 按规范化 username 查询包括墓碑的冲突记录；数据库永久唯一索引处理并发竞态。
-4. HTTP 解码只保留 caller-owned `[]byte` 密码并完成字节级强度校验。认证、action rate limit、角色/能力检查和幂等 terminal replay 先完成；replay、forbidden、rate-limited 与其他不可执行请求返回前执行零次 Argon2。只有 `ExecutionReady` 的 fresh attempt 在事务外哈希一次，随后清零明文与 hash 的 owned byte slice；该路径不创建 password string。
+4. HTTP 解码只保留 caller-owned `[]byte` 密码并完成字节级强度校验。在调用 `Operation.Begin` 前创建两个 backing array 完全独立的 owned byte slices：descriptor intent 独占一份并允许 Begin/encoder 清零，hash candidate 独占另一份。认证、action rate limit、角色/能力检查和幂等 terminal replay 先完成；replay、forbidden、rate-limited 与其他不可执行请求返回前执行零次 Argon2并清零适用 buffer。只有 `ExecutionReady` 的 fresh attempt 在事务外使用 hash candidate 哈希一次，随后清零两份明文与 hash；该路径及 action verification 不创建 plaintext password string。
 5. 创建 user，写 group/plan/模型范围/每日限制和安全默认值。
 6. 若为 admin，创建 permission head 与 canonical overrides。
 7. 写目标账户的注册安全事实，并写管理创建审计：操作者使用内部 user ID 关联，action 精确为 `users.create` 或 `users.create_admin`；resource/detail 记录 terminal state、脱敏 failure enum、成功时的目标 GUID/角色/分组/套餐/权限覆盖类别、原始 HTTP request ID 和 operation ref。不得记录密码“已设置”标志、内容、摘要或长度。
