@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"sync"
 )
 
 var (
@@ -46,6 +47,7 @@ type platformSSEV2ModelState struct {
 // database, Redis, HTTP, or upstream dependencies, so a future lifecycle can
 // write each returned frame then immediately Flush it.
 type PlatformSSEV2Encoder struct {
+	mu           sync.Mutex
 	generationID string
 	models       []string
 	states       map[string]*platformSSEV2ModelState
@@ -73,9 +75,15 @@ func NewPlatformSSEV2Encoder(generationID string, models []string) (*PlatformSSE
 	return &PlatformSSEV2Encoder{generationID: generationID, models: copyModels, states: states}, nil
 }
 
-func (e *PlatformSSEV2Encoder) Err() error { return e.err }
+func (e *PlatformSSEV2Encoder) Err() error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.err
+}
 
 func (e *PlatformSSEV2Encoder) Meta(conversationGUID string) []byte {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	if !platformSSEV2Identifier(conversationGUID) || e.metaSent {
 		return e.fail(ErrPlatformSSEV2InvalidEvent)
 	}
@@ -89,6 +97,8 @@ func (e *PlatformSSEV2Encoder) Meta(conversationGUID string) []byte {
 }
 
 func (e *PlatformSSEV2Encoder) Delta(model string, seq int64, delta string) []byte {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	state := e.readyModel(model)
 	if state == nil {
 		return nil
@@ -109,6 +119,8 @@ func (e *PlatformSSEV2Encoder) Delta(model string, seq int64, delta string) []by
 }
 
 func (e *PlatformSSEV2Encoder) ModelDone(model string, lastSeq int64) []byte {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	state := e.readyModel(model)
 	if state == nil {
 		return nil
@@ -125,6 +137,8 @@ func (e *PlatformSSEV2Encoder) ModelDone(model string, lastSeq int64) []byte {
 }
 
 func (e *PlatformSSEV2Encoder) ModelError(model, code, requestID string) []byte {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	state := e.readyModel(model)
 	if state == nil {
 		return nil
@@ -142,6 +156,8 @@ func (e *PlatformSSEV2Encoder) ModelError(model, code, requestID string) []byte 
 }
 
 func (e *PlatformSSEV2Encoder) DoneSingle(conversationGUID string, tokens, totalTokensUsed int64) []byte {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	if e.err != nil || e.terminal {
 		return e.fail(ErrPlatformSSEV2Terminal)
 	}
@@ -162,6 +178,8 @@ func (e *PlatformSSEV2Encoder) DoneSingle(conversationGUID string, tokens, total
 }
 
 func (e *PlatformSSEV2Encoder) DoneCompare(conversationGUID string, totalTokensUsed int64, modelTokens map[string]int64) []byte {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	if e.err != nil || e.terminal {
 		return e.fail(ErrPlatformSSEV2Terminal)
 	}
@@ -207,6 +225,8 @@ func (e *PlatformSSEV2Encoder) DoneCompare(conversationGUID string, totalTokensU
 }
 
 func (e *PlatformSSEV2Encoder) Error(code, requestID string) []byte {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	if e.err != nil || e.terminal || !e.metaSent {
 		return e.fail(ErrPlatformSSEV2Terminal)
 	}

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -220,4 +221,30 @@ func TestPlatformSSEV2EncoderSanitizesRequestIDsAndRequiresExactCompareTokenMap(
 	if frame := encoder.DoneCompare("conversation-1", 0, map[string]int64{"model-a": 0, "unexpected": 1}); frame != nil || !errors.Is(encoder.Err(), ErrPlatformSSEV2InvalidEvent) {
 		t.Fatalf("extra model token was accepted: %q, err=%v", frame, encoder.Err())
 	}
+}
+
+func TestPlatformSSEV2EncoderConcurrentDeltaAndTerminalIsRaceFree(t *testing.T) {
+	encoder, err := NewPlatformSSEV2Encoder(sseV2GenerationID, []string{"model-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if encoder.Meta("conversation-1") == nil {
+		t.Fatal("meta failed")
+	}
+
+	var workers sync.WaitGroup
+	for index := 0; index < 32; index++ {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			_ = encoder.Delta("model-a", 1, "delta")
+		}()
+	}
+	workers.Add(1)
+	go func() {
+		defer workers.Done()
+		_ = encoder.ModelDone("model-a", 1)
+	}()
+	workers.Wait()
+	_ = encoder.Err()
 }

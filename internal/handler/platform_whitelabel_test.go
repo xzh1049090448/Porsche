@@ -238,6 +238,28 @@ func TestPlatformStreamFailureBeforeFirstFrameReturnsJSON(t *testing.T) {
 	}
 }
 
+func TestPlatformV2StreamReturnsUnavailableWithoutCallingLegacyService(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	state := newPlatformWhiteLabelTestState(t)
+	user := platformTestUser("platform-v2-unavailable", nil)
+	if err := state.DB.Create(&user).Error; err != nil {
+		t.Fatal(err)
+	}
+	// A nil legacy service turns any accidental legacy dispatch into a panic;
+	// the inactive v2 contract must be rejected before that boundary.
+	state.Platform = nil
+	engine := gin.New()
+	RegisterPlatform(engine, state)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/platform/chat/completions", strings.NewReader(`{"model":"model-a","messages":[{"role":"user","content":"hi"}],"max_tokens":5,"stream":true,"stream_version":"platform-chat-sse.v2","generation_id":"550e8400-e29b-41d4-a716-446655440000"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+platformJWT(t, state, &user))
+	rec := httptest.NewRecorder()
+	engine.ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable || !strings.Contains(rec.Body.String(), `"code":"platform_stream_v2_unavailable"`) || strings.Contains(rec.Body.String(), "data:") {
+		t.Fatalf("expected inactive-v2 JSON 503 without legacy stream, status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestAdminHealthCheckRejectsConcurrentSameModel(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	state := newPlatformWhiteLabelTestState(t)

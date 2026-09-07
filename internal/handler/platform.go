@@ -47,6 +47,10 @@ func RegisterPlatform(r *gin.Engine, state *app.State) {
 			platformWhiteLabelError(c, err)
 			return
 		}
+		if body.StreamVersion == platformSSEV2Version {
+			platformSSEV2Unavailable(c)
+			return
+		}
 		params := body.toParams()
 		if body.MaxTokens == nil {
 			platformWhiteLabelError(c, &whitelabel.Error{Code: whitelabel.CodeMissingMaxTokens, Status: http.StatusBadRequest, Type: whitelabel.TypeInvalidRequest})
@@ -98,6 +102,10 @@ func RegisterPlatform(r *gin.Engine, state *app.State) {
 		var body platformCompareBody
 		if err := decodePlatformRequest(c, &body, true); err != nil {
 			platformWhiteLabelError(c, err)
+			return
+		}
+		if body.StreamVersion == platformSSEV2Version {
+			platformSSEV2Unavailable(c)
 			return
 		}
 		params := body.toParams()
@@ -257,6 +265,14 @@ func decodePlatformRequest(c *gin.Context, dest interface{}, compare bool) *whit
 }
 
 const platformSSEV2Version = "platform-chat-sse.v2"
+
+const platformSSEV2UnavailableCode whitelabel.Code = "platform_stream_v2_unavailable"
+
+// platformSSEV2Unavailable keeps the unimplemented lifecycle protocol from
+// falling through to legacy streaming until a later route explicitly wires it.
+func platformSSEV2Unavailable(c *gin.Context) {
+	platformWhiteLabelError(c, &whitelabel.Error{Code: platformSSEV2UnavailableCode, Status: http.StatusServiceUnavailable, Type: whitelabel.TypeAPI})
+}
 
 // validatePlatformSSEV2Request leaves legacy requests untouched. Once either
 // v2-only field is present, both controls must form a complete v2 request.
