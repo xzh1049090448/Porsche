@@ -303,6 +303,23 @@ func redactCreatedAccountResponse(ctx context.Context, tx *gorm.DB, targetGUID, 
 				clear(body)
 				return ErrActionOperationUnavailable
 			}
+			if migrationSentinel {
+				canonicalHMAC, sealed := createAccountResponseHMAC(crypto, operation, models.OperationResponseRedacted, targetGUID, response.HTTPStatus, response.MediaType, body)
+				if !sealed {
+					clear(body)
+					return ErrActionOperationUnavailable
+				}
+				updated := db.Unscoped().Model(&models.AdminOperationResponse{}).
+					Where("id = ? AND operation_id = ? AND target_guid = ? AND lifecycle_state = ? AND is_deleted = 1 AND integrity_version = ? AND response_hmac = ? AND http_status = ? AND media_type = ? AND response_body = ? AND body_sha256 = ?",
+						response.ID, operation.ID, targetGUID, models.OperationResponseRedacted, models.OperationResponseIntegrityHMACV1, *response.ResponseHMAC,
+						response.HTTPStatus, response.MediaType, body, response.BodySHA256).
+					Updates(map[string]any{"response_hmac": canonicalHMAC, "updated_at": now, "updated_by": actorID})
+				canonicalHMAC = ""
+				if updated.Error != nil || updated.RowsAffected != 1 {
+					clear(body)
+					return ErrActionOperationUnavailable
+				}
+			}
 			clear(body)
 			continue
 		default:

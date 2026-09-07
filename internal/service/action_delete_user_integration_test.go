@@ -36,7 +36,14 @@ type a14DeleteFixture struct {
 
 func openA14DeleteFixture(t *testing.T, now int64, role models.UserRole, allowDelete bool) *a14DeleteFixture {
 	t.Helper()
-	db := openTestMySQL(t)
+	return openA14DeleteFixtureOnDB(t, openTestMySQL(t), now, role, allowDelete)
+}
+
+func openA14DeleteFixtureOnDB(t *testing.T, db *gorm.DB, now int64, role models.UserRole, allowDelete bool) *a14DeleteFixture {
+	t.Helper()
+	if db == nil {
+		t.Fatal("delete fixture requires an isolated MySQL database")
+	}
 	if err := migration.Up(context.Background(), db, func() int64 { return testSnowflake.Next() }, func() int64 { return now }); err != nil {
 		t.Fatal(err)
 	}

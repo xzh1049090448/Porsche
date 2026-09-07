@@ -16,6 +16,7 @@ import (
 	"testing"
 
 	"github.com/porsche/ai-gateway-go/internal/actionsecurity"
+	"github.com/porsche/ai-gateway-go/internal/migration"
 	"github.com/porsche/ai-gateway-go/internal/models"
 	"github.com/porsche/ai-gateway-go/internal/security"
 	"gorm.io/gorm"
@@ -49,6 +50,14 @@ func openA03CreateServices(t *testing.T, now int64) (*a14DeleteFixture, *a03Crea
 		t.Skip("requires explicit disposable TEST_DATABASE_URL and TEST_REDIS_URL; no fixture provision performed")
 	}
 	f := openA14DeleteFixture(t, now, models.UserRoleRoot, false)
+	return f, openA03CreateServicesForFixture(t, f)
+}
+
+func openA03CreateServicesForFixture(t *testing.T, f *a14DeleteFixture) *a03CreateServices {
+	t.Helper()
+	if f == nil || f.db == nil || f.redis == nil {
+		t.Fatal("create services require an isolated delete fixture")
+	}
 	root, reason := actionsecurity.ParseRootKey(strings.TrimSpace(os.Getenv("ACTION_SECURITY_HMAC_KEY")))
 	if reason != "" {
 		t.Fatalf("invalid isolated action key: %s", reason)
@@ -92,7 +101,7 @@ func openA03CreateServices(t *testing.T, now int64) (*a14DeleteFixture, *a03Crea
 	if err != nil {
 		t.Fatal(err)
 	}
-	return f, &a03CreateServices{operations: operations, verifications: verifications, outbox: outbox, descriptors: descriptors, crypto: crypto}
+	return &a03CreateServices{operations: operations, verifications: verifications, outbox: outbox, descriptors: descriptors, crypto: crypto}
 }
 
 func (services *a03CreateServices) prepare(t *testing.T, f *a14DeleteFixture, base actionsecurity.CreateAccountIntent, plaintext, key string) (*OperationIdentity, *CreateAccountExecution) {
@@ -386,6 +395,184 @@ func TestCreateAccountRealExpiredOperationDeleteRedactsDurableTarget(t *testing.
 				t.Fatalf("expired idempotent HTTP path did not retain stable 410 = %#v/%#v/%v", gotIdentity, gotView, replayErr)
 			}
 		})
+	}
+}
+
+type resolvedLegacyCreateSentinelFixture struct {
+	deleteFixture *a14DeleteFixture
+	services      *a03CreateServices
+	identity      *OperationIdentity
+	operation     models.AdminOperation
+	target        models.User
+	response      models.AdminOperationResponse
+	username      string
+	nickname      string
+}
+
+func prepareResolvedLegacyCreateSentinel(t *testing.T, now int64) *resolvedLegacyCreateSentinelFixture {
+	t.Helper()
+	requireDefaultMySQLAffectedRows(t)
+	db := openRootTestMySQL(t)
+	if err := migration.Up(context.Background(), db, func() int64 { return testSnowflake.Next() }, func() int64 { return now }); err != nil {
+		t.Fatal(err)
+	}
+	actorIDStart := testSnowflake.Next()
+	if err := db.Exec(fmt.Sprintf("ALTER TABLE users AUTO_INCREMENT = %d", actorIDStart)).Error; err != nil {
+		t.Fatalf("isolate sentinel actor internal ID: %v", err)
+	}
+	f := openA14DeleteFixtureOnDB(t, db, now, models.UserRoleRoot, false)
+	services := openA03CreateServicesForFixture(t, f)
+	username := fixtureUsername(testSnowflake.Next())
+	nickname := "Migrated private snapshot"
+	base := actionsecurity.CreateAccountIntent{Username: username, Nickname: &nickname, Role: models.UserRoleUser.String(), PlanType: int(models.PlanFree), AllowedModels: []string{}, DailyCallLimit: 100}
+	identity, execution := services.prepare(t, f, base, "A03-Strong-Password!", newRealIdempotencyKey(t))
+	if view, err := services.operations.Execute(context.Background(), identity, execution, execution, services.outbox); err != nil || view == nil || view.Status != "succeeded" {
+		t.Fatalf("create before legacy migration = %#v/%v", view, err)
+	}
+	var operation models.AdminOperation
+	if err := db.Where("id = ?", identity.ID).First(&operation).Error; err != nil || operation.ResultGUID == nil {
+		t.Fatalf("legacy source operation = %#v/%v", operation, err)
+	}
+	var target models.User
+	if err := db.Where("guid = ?", *operation.ResultGUID).First(&target).Error; err != nil {
+		t.Fatal(err)
+	}
+	var response models.AdminOperationResponse
+	if err := db.Where("operation_id = ?", operation.ID).First(&response).Error; err != nil || !bytes.Contains(response.ResponseBody, []byte(username)) || !bytes.Contains(response.ResponseBody, []byte(nickname)) {
+		t.Fatalf("legacy source response = %#v/%v", response, err)
+	}
+	migrations, err := migration.All()
+	if err != nil || len(migrations) != 10 || migrations[9].Version != "0010" {
+		t.Fatalf("0010 migration = %d/%v", len(migrations), err)
+	}
+	if err := db.Exec(string(migrations[9].DownSQL)).Error; err != nil {
+		t.Fatalf("isolated 0010 down: %v", err)
+	}
+	if err := db.Exec("DELETE FROM schema_migrations WHERE version = '0010'").Error; err != nil {
+		t.Fatal(err)
+	}
+	if result := db.Table("admin_operation_responses").Where("id = ?", response.ID).
+		Updates(map[string]any{"integrity_version": models.OperationResponseIntegrityLegacySealed, "response_hmac": nil}); result.Error != nil || result.RowsAffected != 1 {
+		t.Fatalf("prepare resolved legacy response = %d/%v", result.RowsAffected, result.Error)
+	}
+	if err := migration.Up(context.Background(), db, func() int64 { return testSnowflake.Next() }, func() int64 { return now + 1 }); err != nil {
+		t.Fatalf("migrate resolved legacy response through 0010: %v", err)
+	}
+	if err := db.Unscoped().Where("id = ?", response.ID).First(&response).Error; err != nil || response.TargetGUID != target.Guid ||
+		response.LifecycleState != models.OperationResponseRedacted || response.IsDeleted != 1 || string(response.ResponseBody) != "{}" ||
+		response.ResponseHMAC == nil || *response.ResponseHMAC != strings.Repeat("0", sha256.Size*2) || bytes.Contains(response.ResponseBody, []byte(username)) || bytes.Contains(response.ResponseBody, []byte(nickname)) {
+		t.Fatalf("0010 resolved legacy sentinel = %#v/%v", response, err)
+	}
+	return &resolvedLegacyCreateSentinelFixture{deleteFixture: f, services: services, identity: identity, operation: operation, target: target, response: response, username: username, nickname: nickname}
+}
+
+func TestCreateAccountRealResolvedLegacySentinelDeleteReHMACsAndReturnsGone(t *testing.T) {
+	fixture := prepareResolvedLegacyCreateSentinel(t, 1_910_053_100_000)
+	f := fixture.deleteFixture
+	deleteIdentity, deleteIntent, _ := f.prepare(t, fixture.target, newRealIdempotencyKey(t))
+	deleteExecution, err := f.bundle.NewExecution(deleteIntent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view, err := f.bundle.Operations.Execute(context.Background(), deleteIdentity, deleteExecution, deleteExecution, f.bundle.Outbox); err != nil || view == nil || view.Status != "succeeded" {
+		t.Fatalf("delete migrated sentinel = %#v/%v", view, err)
+	}
+	var response models.AdminOperationResponse
+	if err := f.db.Unscoped().Where("id = ?", fixture.response.ID).First(&response).Error; err != nil || response.ResponseHMAC == nil ||
+		*response.ResponseHMAC == strings.Repeat("0", sha256.Size*2) || !bytes.Equal(response.ResponseBody, []byte("{}")) ||
+		bytes.Contains(response.ResponseBody, []byte(fixture.username)) || bytes.Contains(response.ResponseBody, []byte(fixture.nickname)) ||
+		!matchingCreateAccountResponseHMAC(fixture.services.crypto, fixture.operation, response) {
+		t.Fatalf("canonical migrated sentinel response = %#v/%v", response, err)
+	}
+	if got, err := fixture.services.operations.CreateAccountResponse(context.Background(), actionsecurity.ActionUsersCreate, f.actorAPI, fixture.identity.PublicRef); got != nil || !errors.Is(err, ErrCreatedAccountDeleted) {
+		t.Fatalf("direct migrated sentinel replay = %#v/%v", got, err)
+	}
+}
+
+func TestCreateAccountRealResolvedLegacySentinelReHMACRollback(t *testing.T) {
+	fixture := prepareResolvedLegacyCreateSentinel(t, 1_910_053_200_000)
+	f := fixture.deleteFixture
+	deleteIdentity, deleteIntent, _ := f.prepare(t, fixture.target, newRealIdempotencyKey(t))
+	hook := fmt.Sprintf("a03_sentinel_rehmac_rollback_%d", testSnowflake.Next())
+	var hits atomic.Int32
+	if err := f.db.Callback().Update().Before("gorm:update").Register(hook, func(tx *gorm.DB) {
+		if tx.Statement.Table == "admin_operation_responses" {
+			hits.Add(1)
+			tx.AddError(errors.New("isolated sentinel re-HMAC failure"))
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	remove := func() { _ = f.db.Callback().Update().Remove(hook) }
+	t.Cleanup(remove)
+	deleteExecution, _ := f.bundle.NewExecution(deleteIntent)
+	view, executeErr := f.bundle.Operations.Execute(context.Background(), deleteIdentity, deleteExecution, deleteExecution, f.bundle.Outbox)
+	remove()
+	if view != nil || !errors.Is(executeErr, ErrActionOperationUnavailable) || hits.Load() != 1 {
+		t.Fatalf("sentinel re-HMAC rollback = %#v/%v hits=%d", view, executeErr, hits.Load())
+	}
+	var user models.User
+	if err := f.db.Unscoped().Where("id = ?", fixture.target.ID).First(&user).Error; err != nil || user.IsDeleted != 0 || user.Nickname == nil || *user.Nickname != fixture.nickname {
+		t.Fatalf("sentinel rollback user = %#v/%v", user, err)
+	}
+	var response models.AdminOperationResponse
+	if err := f.db.Unscoped().Where("id = ?", fixture.response.ID).First(&response).Error; err != nil || response.ResponseHMAC == nil || *response.ResponseHMAC != strings.Repeat("0", sha256.Size*2) {
+		t.Fatalf("sentinel rollback response = %#v/%v", response, err)
+	}
+}
+
+func TestCreateAccountRealResolvedLegacySentinelConcurrentDeleteLeavesCanonicalHMAC(t *testing.T) {
+	fixture := prepareResolvedLegacyCreateSentinel(t, 1_910_053_300_000)
+	f := fixture.deleteFixture
+	type attempt struct {
+		identity  *OperationIdentity
+		execution *DeleteUserExecution
+	}
+	attempts := make([]attempt, 2)
+	for index := range attempts {
+		identity, intent, _ := f.prepare(t, fixture.target, newRealIdempotencyKey(t))
+		execution, err := f.bundle.NewExecution(intent)
+		if err != nil {
+			t.Fatal(err)
+		}
+		attempts[index] = attempt{identity: identity, execution: execution}
+	}
+	start := make(chan struct{})
+	type result struct {
+		view *OperationView
+		err  error
+	}
+	results := make(chan result, len(attempts))
+	var wait sync.WaitGroup
+	for _, current := range attempts {
+		wait.Add(1)
+		go func(current attempt) {
+			defer wait.Done()
+			<-start
+			view, err := f.bundle.Operations.Execute(context.Background(), current.identity, current.execution, current.execution, f.bundle.Outbox)
+			results <- result{view: view, err: err}
+		}(current)
+	}
+	close(start)
+	wait.Wait()
+	close(results)
+	succeeded := 0
+	for current := range results {
+		if current.err == nil && current.view != nil && current.view.Status == "succeeded" {
+			succeeded++
+			continue
+		}
+		if current.view != nil || current.err == nil {
+			t.Fatalf("unexpected concurrent sentinel delete = %#v/%v", current.view, current.err)
+		}
+	}
+	if succeeded != 1 {
+		t.Fatalf("concurrent sentinel delete successes=%d want=1", succeeded)
+	}
+	var response models.AdminOperationResponse
+	if err := f.db.Unscoped().Where("id = ?", fixture.response.ID).First(&response).Error; err != nil || response.ResponseHMAC == nil ||
+		*response.ResponseHMAC == strings.Repeat("0", sha256.Size*2) || !matchingCreateAccountResponseHMAC(fixture.services.crypto, fixture.operation, response) {
+		t.Fatalf("concurrent sentinel response = %#v/%v", response, err)
 	}
 }
 
