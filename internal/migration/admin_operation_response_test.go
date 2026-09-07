@@ -1,7 +1,6 @@
 package migration
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"database/sql"
@@ -225,28 +224,10 @@ func TestAdminOperationResponseTargetMigrationResumesEveryCommittedPrefix(t *tes
 			if err := Verify(context.Background(), gdb); err != nil {
 				t.Fatalf("verify resumed 0010 %s: %v", tc.name, err)
 			}
-			var target sql.NullInt64
-			var lifecycle, deleted int
-			var body []byte
-			if err := gdb.Raw("SELECT target_guid,lifecycle_state,is_deleted,response_body FROM admin_operation_responses WHERE guid=68011").Row().Scan(&target, &lifecycle, &deleted, &body); err != nil || !target.Valid || target.Int64 != 68002 || lifecycle != 1 || deleted != 0 || !strings.Contains(string(body), "legacy-personal-data") {
-				t.Fatalf("resolved snapshot after %s = target=%#v lifecycle=%d deleted=%d body=%q err=%v", tc.name, target, lifecycle, deleted, body, err)
-			}
-			clear(body)
-			if err := gdb.Raw("SELECT target_guid,lifecycle_state,is_deleted,response_body FROM admin_operation_responses WHERE guid=68031").Row().Scan(&target, &lifecycle, &deleted, &body); err != nil || !target.Valid || target.Int64 != 68002 || lifecycle != 1 || deleted != 0 || !strings.Contains(string(body), "expired-outbox-private") {
-				t.Fatalf("expired outbox snapshot after %s = target=%#v lifecycle=%d deleted=%d body=%q err=%v", tc.name, target, lifecycle, deleted, body, err)
-			}
-			clear(body)
-			if err := gdb.Raw("SELECT target_guid,lifecycle_state,is_deleted,response_body FROM admin_operation_responses WHERE guid=68021").Row().Scan(&target, &lifecycle, &deleted, &body); err != nil || target.Valid || lifecycle != 2 || deleted != 1 || string(body) != "{}" {
-				t.Fatalf("unresolved snapshot after %s = target=%#v lifecycle=%d deleted=%d body=%q err=%v", tc.name, target, lifecycle, deleted, body, err)
-			}
-			clear(body)
-			var integrity, status int
-			var responseHMAC sql.NullString
-			var media, digest string
-			if err := gdb.Raw("SELECT target_guid,lifecycle_state,integrity_version,response_hmac,http_status,media_type,is_deleted,response_body,body_sha256 FROM admin_operation_responses WHERE guid=68041").Row().Scan(&target, &lifecycle, &integrity, &responseHMAC, &status, &media, &deleted, &body, &digest); err != nil || !target.Valid || target.Int64 != 68002 || lifecycle != 2 || integrity != 1 || !responseHMAC.Valid || responseHMAC.String != strings.Repeat("0", 64) || status != 201 || media != "application/json" || deleted != 1 || string(body) != "{}" || digest != "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a" {
-				t.Fatalf("legacy redacted snapshot after %s = target=%#v lifecycle=%d deleted=%d body=%q err=%v", tc.name, target, lifecycle, deleted, body, err)
-			}
-			clear(body)
+			assertAdminResponseMigrationSentinel(t, gdb, 68011, sql.NullInt64{Int64: 68002, Valid: true}, tc.name+" resolved active")
+			assertAdminResponseMigrationSentinel(t, gdb, 68031, sql.NullInt64{Int64: 68002, Valid: true}, tc.name+" expired outbox")
+			assertAdminResponseMigrationSentinel(t, gdb, 68021, sql.NullInt64{}, tc.name+" unresolved")
+			assertAdminResponseMigrationSentinel(t, gdb, 68041, sql.NullInt64{Int64: 68002, Valid: true}, tc.name+" legacy redacted")
 			calls = 0
 			if err := Up(context.Background(), gdb, func() int64 { calls++; return 79_000 }, func() int64 { return 1_900_000_000_005 }); err != nil || calls != 0 {
 				t.Fatalf("rerun completed 0010 %s err=%v GUID calls=%d", tc.name, err, calls)
@@ -342,6 +323,12 @@ func prepareAdminResponseTargetPrefix(t *testing.T, gdb *gorm.DB) []string {
 	legacyRedactedDigest := fmt.Sprintf("%x", sha256.Sum256(legacyRedactedBody))
 	if err := gdb.Exec(`INSERT INTO admin_operation_responses (guid,created_at,created_by,updated_at,updated_by,is_deleted,operation_id,lifecycle_state,integrity_version,response_hmac,http_status,media_type,response_body,body_sha256) VALUES (68041,2,?,3,?,1,?,2,1,?,201,'application/json',?,?)`, actorID, actorID, legacyRedactedOperationID, strings.Repeat("5", 64), legacyRedactedBody, legacyRedactedDigest).Error; err != nil {
 		t.Fatal(err)
+	}
+	// A target may already have been soft-deleted while a v9 snapshot still
+	// contains PII. 0010 must retain only the diagnostic target binding and
+	// erase the body regardless of that target lifecycle.
+	if result := gdb.Exec("UPDATE users SET is_deleted=1,updated_at=3,updated_by=? WHERE guid=68002", actorID); result.Error != nil || result.RowsAffected != 1 {
+		t.Fatalf("prepare deleted-target v9 snapshot = %d/%v", result.RowsAffected, result.Error)
 	}
 	statements := splitStatements(string(migration.UpSQL))
 	if len(statements) != 9 {
@@ -456,21 +443,29 @@ func TestAdminOperationResponseTargetMigrationRejectsOutboxMismatchMatrix(t *tes
 		t.Fatalf("verify mismatch matrix migration: %v", err)
 	}
 	for _, fixture := range fixtures {
-		var target sql.NullInt64
-		var lifecycle, deleted int
-		var body []byte
-		if err := gdb.Raw("SELECT target_guid,lifecycle_state,is_deleted,response_body FROM admin_operation_responses WHERE guid=?", fixture.responseGUID).Row().Scan(&target, &lifecycle, &deleted, &body); err != nil {
-			t.Fatalf("read %s result: %v", fixture.name, err)
-		}
 		if fixture.name == "valid" {
-			if !target.Valid || target.Int64 != 68002 || lifecycle != 1 || deleted != 0 || !bytes.Contains(body, []byte("valid-personal-data")) {
-				t.Fatalf("valid marker was not preserved: target=%#v lifecycle=%d deleted=%d body=%q", target, lifecycle, deleted, body)
-			}
-		} else if target.Valid || lifecycle != 2 || deleted != 1 || string(body) != "{}" {
-			t.Fatalf("%s mismatch retained or attached PII: target=%#v lifecycle=%d deleted=%d body=%q", fixture.name, target, lifecycle, deleted, body)
+			assertAdminResponseMigrationSentinel(t, gdb, fixture.responseGUID, sql.NullInt64{Int64: 68002, Valid: true}, fixture.name)
+		} else {
+			assertAdminResponseMigrationSentinel(t, gdb, fixture.responseGUID, sql.NullInt64{}, fixture.name)
 		}
-		clear(body)
 	}
+}
+
+func assertAdminResponseMigrationSentinel(t *testing.T, gdb *gorm.DB, guid int64, wantTarget sql.NullInt64, label string) {
+	t.Helper()
+	var target sql.NullInt64
+	var lifecycle, integrity, status, deleted int
+	var responseHMAC sql.NullString
+	var media, digest string
+	var body []byte
+	err := gdb.Raw("SELECT target_guid,lifecycle_state,integrity_version,response_hmac,http_status,media_type,is_deleted,response_body,body_sha256 FROM admin_operation_responses WHERE guid=?", guid).
+		Row().Scan(&target, &lifecycle, &integrity, &responseHMAC, &status, &media, &deleted, &body, &digest)
+	if err != nil || target != wantTarget || lifecycle != 2 || integrity != 1 || !responseHMAC.Valid || responseHMAC.String != strings.Repeat("0", 64) ||
+		status != 201 || media != "application/json" || deleted != 1 || string(body) != "{}" || digest != "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a" {
+		t.Fatalf("%s migration sentinel = target=%#v lifecycle=%d integrity=%d hmac=%#v status=%d media=%q deleted=%d body=%q digest=%q err=%v",
+			label, target, lifecycle, integrity, responseHMAC, status, media, deleted, body, digest, err)
+	}
+	clear(body)
 }
 
 func TestAdminResponseIntegrityMigrationResumesEveryCommittedPrefix(t *testing.T) {

@@ -110,14 +110,7 @@ SET response.target_guid = CASE WHEN target.guid IS NULL THEN NULL ELSE response
     response.updated_at = GREATEST(response.updated_at, response.created_at),
     response.updated_by = COALESCE(response.updated_by, response.created_by, operation.actor_user_id)
 WHERE response.lifecycle_state = 1
-  AND response.is_deleted = 0
-  AND (
-    response.target_guid IS NULL OR response.target_guid <= 0 OR target.guid IS NULL OR
-    response.integrity_version <> 1 OR response.response_hmac IS NULL OR
-    response.response_hmac = REPEAT('0', 64) OR response.response_hmac NOT REGEXP '^[0-9a-f]{64}$' OR
-    response.http_status <> 201 OR response.media_type <> 'application/json' OR
-    response.body_sha256 <> LOWER(SHA2(response.response_body, 256))
-  );
+  AND response.is_deleted = 0;
 
 ALTER TABLE admin_action_outbox
   DROP CHECK chk_admin_action_outbox_outcome,

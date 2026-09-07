@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -17,6 +19,7 @@ import (
 	"github.com/porsche/ai-gateway-go/internal/app"
 	"github.com/porsche/ai-gateway-go/internal/config"
 	"github.com/porsche/ai-gateway-go/internal/db"
+	"github.com/porsche/ai-gateway-go/internal/migration"
 	"github.com/porsche/ai-gateway-go/internal/models"
 	"github.com/porsche/ai-gateway-go/internal/security"
 	"github.com/porsche/ai-gateway-go/internal/service"
@@ -329,6 +332,146 @@ func realUserCreateHTTPState(t *testing.T) *app.State {
 		_ = sqlDB.Close()
 	})
 	return state
+}
+
+func ownedRealUserCreateHTTPState(t *testing.T) *app.State {
+	t.Helper()
+	parent, err := db.Open(testDatabaseURL(t), "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	parentSQL, err := parent.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = parentSQL.Close() })
+	name := fmt.Sprintf("porsche_handler_%d_test", platformTestSnowflake.Next())
+	if err := parent.Exec("CREATE DATABASE `" + name + "`").Error; err != nil {
+		t.Fatalf("create owned handler database: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := parent.Exec("DROP DATABASE `" + name + "`").Error; err != nil {
+			t.Errorf("drop owned handler database: %v", err)
+		}
+	})
+	childURL, err := url.Parse(testDatabaseURL(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	childURL.Path, childURL.RawPath = "/"+name, ""
+	child, err := db.Open(childURL.String(), "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	childSQL, err := child.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = childSQL.Close() })
+	settings := platformTestSettings(t)
+	settings.DatabaseURL = childURL.String()
+	settings.RegisterEnabled = true
+	settings.PasswordRegisterEnabled = true
+	settings.PasswordLoginEnabled = true
+	settings.ActionSecurityHMACKey = bytes.Repeat([]byte{0x5a}, 32)
+	preparePlatformAuthSchema(t, child)
+	state, err := app.NewState(settings, child)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = state.AuthRedis.Close() })
+	return state
+}
+
+func TestAdminUserCreateRealHTTPDeletedPre0010SnapshotReplaysStableGone(t *testing.T) {
+	state := ownedRealUserCreateHTTPState(t)
+	actorUsername := fmt.Sprintf("u%019d", platformTestSnowflake.Next())
+	actorPassword := "Actor!Strong9"
+	actor, err := state.Auth.RegisterUsername(context.Background(), actorUsername, actorPassword, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := state.DB.Model(&models.User{}).Where("id = ?", actor.ID).Update("role", models.UserRoleRoot).Error; err != nil {
+		t.Fatal(err)
+	}
+	actor.Role = models.UserRoleRoot
+	access := platformJWT(t, state, actor)
+	engine := gin.New()
+	RegisterAuth(engine, state)
+	RegisterAdminUserManagementActions(engine, state)
+
+	username := fmt.Sprintf("u%019d", platformTestSnowflake.Next())
+	nickname := "Pre 0010 private nickname"
+	createKey := testActionKey
+	createBody := `{"username":"` + username + `","nickname":"` + nickname + `","password":"` + adminUserCreatePassword + `","role":"user","group_guid":null,"plan_type":"free","permission_overrides":[]}`
+	createHeaders := http.Header{"Authorization": {"Bearer " + access}, "Content-Type": {"application/json"}, "Idempotency-Key": {createKey}}
+	created := performActionRequest(engine, http.MethodPost, "/admin/v2/users", createBody, createHeaders)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("real pre-0010 create status=%d body_length=%d", created.Code, created.Body.Len())
+	}
+	var createdResponse struct {
+		OperationRef string `json:"operation_ref"`
+		User         struct {
+			GUID        string  `json:"guid"`
+			Username    string  `json:"username"`
+			Nickname    *string `json:"nickname"`
+			Email       *string `json:"email"`
+			Group       string  `json:"group"`
+			PlanType    string  `json:"plan_type"`
+			Role        string  `json:"role"`
+			Status      string  `json:"status"`
+			AuthVersion int     `json:"auth_version"`
+			CreatedAt   string  `json:"created_at"`
+			LastLoginAt *string `json:"last_login_at"`
+		} `json:"user"`
+		PermissionsVersion *string `json:"permissions_version"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(created.Body.Bytes()))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&createdResponse); err != nil {
+		t.Fatalf("decode real create response: %v", err)
+	}
+	verificationBody := fmt.Sprintf(`{"action":"users.delete","intent":{"target_guid":"%s","expected_auth_version":%d,"reason":"privacy lifecycle"},"current_password":"%s"}`, createdResponse.User.GUID, createdResponse.User.AuthVersion, actorPassword)
+	issued := performActionRequest(engine, http.MethodPost, "/admin/v2/action-verifications", verificationBody, http.Header{"Authorization": {"Bearer " + access}, "Content-Type": {"application/json"}})
+	if issued.Code != http.StatusCreated {
+		t.Fatalf("real pre-0010 delete verification status=%d body_length=%d", issued.Code, issued.Body.Len())
+	}
+	issuedResponse := decodeActionTestResponse[struct {
+		Ticket    string `json:"ticket"`
+		ExpiresAt int64  `json:"expires_at"`
+	}](t, issued)
+	deleted := performActionRequest(engine, http.MethodPost, "/admin/v2/users/"+createdResponse.User.GUID+"/actions",
+		fmt.Sprintf(`{"action":"delete","expected_auth_version":%d,"reason":"privacy lifecycle"}`, createdResponse.User.AuthVersion),
+		http.Header{"Authorization": {"Bearer " + access}, "Content-Type": {"application/json"}, "Idempotency-Key": {testActionKey}, "X-Action-Ticket": {issuedResponse.Ticket}})
+	if deleted.Code != http.StatusOK {
+		t.Fatalf("real pre-0010 delete status=%d body_length=%d", deleted.Code, deleted.Body.Len())
+	}
+
+	migrations, err := migration.All()
+	if err != nil || len(migrations) != 10 || migrations[9].Version != "0010" {
+		t.Fatalf("load 0010 for HTTP lifecycle = %d/%v", len(migrations), err)
+	}
+	for index, statement := range strings.Split(string(migrations[9].DownSQL), ";") {
+		if statement = strings.TrimSpace(statement); statement != "" {
+			if err := state.DB.Exec(statement).Error; err != nil {
+				t.Fatalf("isolated HTTP 0010 down statement %d: %v", index+1, err)
+			}
+		}
+	}
+	if err := state.DB.Exec("DELETE FROM schema_migrations WHERE version = '0010'").Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := migration.Up(context.Background(), state.DB, func() int64 { return platformTestSnowflake.Next() }, func() int64 { return 1_910_053_040_000 }); err != nil {
+		t.Fatalf("isolated HTTP 0010 up: %v", err)
+	}
+	replay := performActionRequest(engine, http.MethodPost, "/admin/v2/users", createBody, createHeaders)
+	if replay.Code != http.StatusGone || bytes.Contains(replay.Body.Bytes(), []byte(username)) || bytes.Contains(replay.Body.Bytes(), []byte(nickname)) {
+		t.Fatalf("deleted pre-0010 HTTP replay status=%d body_length=%d", replay.Code, replay.Body.Len())
+	}
+	replayError := decodeActionTestResponse[actionTestErrorEnvelope](t, replay)
+	if replayError.Error.Code != "created_user_deleted" || replayError.Error.OperationRef != createdResponse.OperationRef {
+		t.Fatalf("deleted pre-0010 HTTP replay code/ref=%q/%q", replayError.Error.Code, replayError.Error.OperationRef)
+	}
 }
 
 func TestAdminUserCreateAdminVerificationThenCreateUsesExactActionAndSeparateSecrets(t *testing.T) {

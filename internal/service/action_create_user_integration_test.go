@@ -410,6 +410,10 @@ type resolvedLegacyCreateSentinelFixture struct {
 }
 
 func prepareResolvedLegacyCreateSentinel(t *testing.T, now int64) *resolvedLegacyCreateSentinelFixture {
+	return prepareCreateSnapshotThrough0010(t, now, false, true)
+}
+
+func prepareCreateSnapshotThrough0010(t *testing.T, now int64, deleteBeforeMigration, invalidateHMAC bool) *resolvedLegacyCreateSentinelFixture {
 	t.Helper()
 	requireDefaultMySQLAffectedRows(t)
 	db := openRootTestMySQL(t)
@@ -441,6 +445,23 @@ func prepareResolvedLegacyCreateSentinel(t *testing.T, now int64) *resolvedLegac
 	if err := db.Where("operation_id = ?", operation.ID).First(&response).Error; err != nil || !bytes.Contains(response.ResponseBody, []byte(username)) || !bytes.Contains(response.ResponseBody, []byte(nickname)) {
 		t.Fatalf("legacy source response = %#v/%v", response, err)
 	}
+	if deleteBeforeMigration {
+		deleteIdentity, deleteIntent, _ := f.prepare(t, target, newRealIdempotencyKey(t))
+		deleteExecution, err := f.bundle.NewExecution(deleteIntent)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if view, err := f.bundle.Operations.Execute(context.Background(), deleteIdentity, deleteExecution, deleteExecution, f.bundle.Outbox); err != nil || view == nil || view.Status != "succeeded" {
+			t.Fatalf("delete before 0010 replay migration = %#v/%v", view, err)
+		}
+		if err := db.Unscoped().Where("id = ?", target.ID).First(&target).Error; err != nil || target.IsDeleted != 1 {
+			t.Fatalf("pre-0010 deleted target = %#v/%v", target, err)
+		}
+		if err := db.Unscoped().Where("id = ?", response.ID).First(&response).Error; err != nil || response.LifecycleState != models.OperationResponseRedacted ||
+			response.ResponseHMAC == nil || *response.ResponseHMAC == strings.Repeat("0", sha256.Size*2) || !matchingCreateAccountResponseHMAC(services.crypto, operation, response) {
+			t.Fatalf("pre-0010 deleted response is not a valid HMAC snapshot = %#v/%v", response, err)
+		}
+	}
 	migrations, err := migration.All()
 	if err != nil || len(migrations) != 10 || migrations[9].Version != "0010" {
 		t.Fatalf("0010 migration = %d/%v", len(migrations), err)
@@ -455,9 +476,11 @@ func prepareResolvedLegacyCreateSentinel(t *testing.T, now int64) *resolvedLegac
 	if err := db.Exec("DELETE FROM schema_migrations WHERE version = '0010'").Error; err != nil {
 		t.Fatal(err)
 	}
-	if result := db.Table("admin_operation_responses").Where("id = ?", response.ID).
-		Updates(map[string]any{"integrity_version": models.OperationResponseIntegrityLegacySealed, "response_hmac": nil}); result.Error != nil || result.RowsAffected != 1 {
-		t.Fatalf("prepare resolved legacy response = %d/%v", result.RowsAffected, result.Error)
+	if invalidateHMAC {
+		if result := db.Table("admin_operation_responses").Where("id = ?", response.ID).
+			Updates(map[string]any{"integrity_version": models.OperationResponseIntegrityLegacySealed, "response_hmac": nil}); result.Error != nil || result.RowsAffected != 1 {
+			t.Fatalf("prepare resolved legacy response = %d/%v", result.RowsAffected, result.Error)
+		}
 	}
 	if err := migration.Up(context.Background(), db, func() int64 { return testSnowflake.Next() }, func() int64 { return now + 1 }); err != nil {
 		t.Fatalf("migrate resolved legacy response through 0010: %v", err)
@@ -468,6 +491,52 @@ func prepareResolvedLegacyCreateSentinel(t *testing.T, now int64) *resolvedLegac
 		t.Fatalf("0010 resolved legacy sentinel = %#v/%v", response, err)
 	}
 	return &resolvedLegacyCreateSentinelFixture{deleteFixture: f, services: services, identity: identity, operation: operation, target: target, response: response, username: username, nickname: nickname}
+}
+
+func TestCreateAccountRealActiveValidHMACBecomesUnavailableSentinelAt0010(t *testing.T) {
+	fixture := prepareCreateSnapshotThrough0010(t, 1_910_053_010_000, false, false)
+	if fixture.target.IsDeleted != 0 || fixture.response.ResponseHMAC == nil || *fixture.response.ResponseHMAC != strings.Repeat("0", sha256.Size*2) {
+		t.Fatalf("active pre-0010 response was not reduced to a non-replayable sentinel: target=%#v response=%#v", fixture.target, fixture.response)
+	}
+	if got, err := fixture.services.operations.CreateAccountResponse(context.Background(), actionsecurity.ActionUsersCreate, fixture.deleteFixture.actorAPI, fixture.identity.PublicRef); got != nil || !errors.Is(err, ErrActionOperationUnavailable) {
+		t.Fatalf("active migration sentinel replay = %#v/%v, want unavailable", got, err)
+	}
+}
+
+func TestCreateAccountRealDeletedValidHMACBecomesGoneSentinelAt0010(t *testing.T) {
+	fixture := prepareCreateSnapshotThrough0010(t, 1_910_053_020_000, true, false)
+	if fixture.target.IsDeleted != 1 || fixture.response.ResponseHMAC == nil || *fixture.response.ResponseHMAC != strings.Repeat("0", sha256.Size*2) ||
+		!bytes.Equal(fixture.response.ResponseBody, []byte("{}")) || bytes.Contains(fixture.response.ResponseBody, []byte(fixture.username)) || bytes.Contains(fixture.response.ResponseBody, []byte(fixture.nickname)) {
+		t.Fatalf("deleted pre-0010 response was not reduced to a private sentinel: target=%#v response=%#v", fixture.target, fixture.response)
+	}
+	if got, err := fixture.services.operations.CreateAccountResponse(context.Background(), actionsecurity.ActionUsersCreate, fixture.deleteFixture.actorAPI, fixture.identity.PublicRef); got != nil || !errors.Is(err, ErrCreatedAccountDeleted) {
+		t.Fatalf("deleted migration sentinel replay = %#v/%v, want created-account-deleted", got, err)
+	}
+}
+
+func TestCreateAccountRealWrongExistingMarkerCannotBlockSentinelTargetDelete(t *testing.T) {
+	fixture := prepareCreateSnapshotThrough0010(t, 1_910_053_030_000, false, false)
+	if result := fixture.deleteFixture.db.Model(&models.AdminActionOutbox{}).Where("operation_id = ?", fixture.operation.ID).
+		Update("result_guid", fixture.deleteFixture.actor.Guid); result.Error != nil || result.RowsAffected != 1 {
+		t.Fatalf("misbind legacy marker to existing unrelated user = %d/%v", result.RowsAffected, result.Error)
+	}
+	deleteIdentity, deleteIntent, _ := fixture.deleteFixture.prepare(t, fixture.target, newRealIdempotencyKey(t))
+	deleteExecution, err := fixture.deleteFixture.bundle.NewExecution(deleteIntent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view, err := fixture.deleteFixture.bundle.Operations.Execute(context.Background(), deleteIdentity, deleteExecution, deleteExecution, fixture.deleteFixture.bundle.Outbox); err != nil || view == nil || view.Status != "succeeded" {
+		t.Fatalf("delete target with unrelated legacy marker = %#v/%v", view, err)
+	}
+	var target models.User
+	if err := fixture.deleteFixture.db.Unscoped().Where("id = ?", fixture.target.ID).First(&target).Error; err != nil || target.IsDeleted != 1 {
+		t.Fatalf("target after unrelated marker delete = %#v/%v", target, err)
+	}
+	var response models.AdminOperationResponse
+	if err := fixture.deleteFixture.db.Unscoped().Where("id = ?", fixture.response.ID).First(&response).Error; err != nil || response.LifecycleState != models.OperationResponseRedacted || response.IsDeleted != 1 ||
+		!bytes.Equal(response.ResponseBody, []byte("{}")) || bytes.Contains(response.ResponseBody, []byte(fixture.username)) || bytes.Contains(response.ResponseBody, []byte(fixture.nickname)) {
+		t.Fatalf("target response after unrelated marker delete = %#v/%v", response, err)
+	}
 }
 
 func TestCreateAccountRealResolvedLegacySentinelDeleteReHMACsAndReturnsGone(t *testing.T) {
