@@ -1,0 +1,151 @@
+package service
+
+import (
+	"errors"
+	"net/http"
+	"strings"
+	"testing"
+)
+
+const sseV2GenerationID = "550e8400-e29b-41d4-a716-446655440000"
+
+func TestPlatformSSEV2EncoderFramesSanitizedSingleStream(t *testing.T) {
+	encoder, err := NewPlatformSSEV2Encoder(sseV2GenerationID, []string{"model-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	frames := []struct {
+		got  []byte
+		want string
+	}{
+		{encoder.Meta("conversation-1"), "event: meta\ndata: {\"schema\":\"platform-chat-sse.v2\",\"generation_id\":\"550e8400-e29b-41d4-a716-446655440000\",\"conversation_guid\":\"conversation-1\",\"models\":[\"model-a\"]}\n\n"},
+		{encoder.Delta("model-a", 1, "hello"), "event: delta\ndata: {\"generation_id\":\"550e8400-e29b-41d4-a716-446655440000\",\"model\":\"model-a\",\"seq\":1,\"delta\":\"hello\"}\n\n"},
+		{encoder.ModelDone("model-a", 1), "event: model_done\ndata: {\"generation_id\":\"550e8400-e29b-41d4-a716-446655440000\",\"model\":\"model-a\",\"last_seq\":1}\n\n"},
+		{encoder.DoneSingle("conversation-1", 3, 30), "event: done\ndata: {\"generation_id\":\"550e8400-e29b-41d4-a716-446655440000\",\"status\":\"completed\",\"conversation_guid\":\"conversation-1\",\"tokens\":3,\"total_tokens_used\":30}\n\n"},
+	}
+	for _, frame := range frames {
+		if frame.got == nil {
+			t.Fatalf("frame error: %v", encoder.Err())
+		}
+		if got := string(frame.got); got != frame.want {
+			t.Fatalf("frame = %q\nwant  = %q", got, frame.want)
+		}
+	}
+}
+
+func TestPlatformSSEV2EncoderAllowsInterleavedCompareModels(t *testing.T) {
+	encoder, err := NewPlatformSSEV2Encoder(sseV2GenerationID, []string{"model-a", "model-b"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if encoder.Meta("conversation-1") == nil || encoder.Delta("model-b", 1, "b") == nil || encoder.Delta("model-a", 1, "a") == nil || encoder.ModelDone("model-a", 1) == nil || encoder.ModelError("model-b", "untrusted upstream detail", "request-1") == nil {
+		t.Fatalf("interleaved frame failed: %v", encoder.Err())
+	}
+	want := "event: done\ndata: {\"generation_id\":\"550e8400-e29b-41d4-a716-446655440000\",\"status\":\"completed\",\"conversation_guid\":\"conversation-1\",\"total_tokens_used\":30,\"models\":{\"model-a\":{\"status\":\"completed\",\"tokens\":3},\"model-b\":{\"status\":\"failed\",\"code\":\"upstream_error\"}}}\n\n"
+	if got := string(encoder.DoneCompare("conversation-1", 30, map[string]int{"model-a": 3})); got != want {
+		t.Fatalf("compare done = %q\nwant = %q (err=%v)", got, want, encoder.Err())
+	}
+}
+
+func TestPlatformSSEV2EncoderFailsClosedOnOrderingAndTerminalViolations(t *testing.T) {
+	encoder, err := NewPlatformSSEV2Encoder(sseV2GenerationID, []string{"model-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := encoder.Delta("model-a", 1, "before-meta"); got != nil || !errors.Is(encoder.Err(), ErrPlatformSSEV2MetaRequired) {
+		t.Fatalf("delta before meta = %q, err=%v", got, encoder.Err())
+	}
+	if got := encoder.Meta("conversation-1"); got != nil {
+		t.Fatalf("encoder emitted after failure: %q", got)
+	}
+
+	encoder, _ = NewPlatformSSEV2Encoder(sseV2GenerationID, []string{"model-a"})
+	if encoder.Meta("conversation-1") == nil || encoder.Delta("model-a", 2, "gap") != nil || !errors.Is(encoder.Err(), ErrPlatformSSEV2Sequence) {
+		t.Fatalf("sequence violation did not fail closed: %v", encoder.Err())
+	}
+}
+
+func TestPlatformSSEV2EncoderRejectsEmptyDeltaAndPrematureDone(t *testing.T) {
+	encoder, _ := NewPlatformSSEV2Encoder(sseV2GenerationID, []string{"model-a"})
+	if encoder.Meta("conversation-1") == nil || encoder.Delta("model-a", 1, "") != nil || !errors.Is(encoder.Err(), ErrPlatformSSEV2InvalidEvent) {
+		t.Fatalf("empty delta did not fail closed: %v", encoder.Err())
+	}
+
+	encoder, _ = NewPlatformSSEV2Encoder(sseV2GenerationID, []string{"model-a", "model-b"})
+	if encoder.Meta("conversation-1") == nil || encoder.ModelDone("model-a", 0) == nil || encoder.DoneCompare("conversation-1", 0, map[string]int{"model-a": 0}) != nil || !errors.Is(encoder.Err(), ErrPlatformSSEV2ModelsRunning) {
+		t.Fatalf("premature done did not fail closed: %v", encoder.Err())
+	}
+}
+
+func TestPlatformSSEV2EncoderFailsClosedForDuplicateUnknownAndPostTerminalEvents(t *testing.T) {
+	newEncoder := func() *PlatformSSEV2Encoder {
+		encoder, err := NewPlatformSSEV2Encoder(sseV2GenerationID, []string{"model-a"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if encoder.Meta("conversation-1") == nil {
+			t.Fatal("meta failed")
+		}
+		return encoder
+	}
+
+	encoder := newEncoder()
+	if encoder.Meta("conversation-1") != nil || !errors.Is(encoder.Err(), ErrPlatformSSEV2InvalidEvent) || encoder.Delta("model-a", 1, "after") != nil {
+		t.Fatalf("duplicate meta was not terminal: %v", encoder.Err())
+	}
+
+	encoder = newEncoder()
+	if encoder.Delta("unknown-model", 1, "x") != nil || !errors.Is(encoder.Err(), ErrPlatformSSEV2InvalidEvent) {
+		t.Fatalf("unknown model was accepted: %v", encoder.Err())
+	}
+
+	encoder = newEncoder()
+	if encoder.ModelDone("model-a", 0) == nil || encoder.Delta("model-a", 1, "after done") != nil || !errors.Is(encoder.Err(), ErrPlatformSSEV2InvalidEvent) {
+		t.Fatalf("post-model-terminal event was accepted: %v", encoder.Err())
+	}
+
+	encoder = newEncoder()
+	if encoder.ModelDone("model-a", 0) == nil || encoder.DoneSingle("conversation-1", 0, 0) == nil || encoder.DoneSingle("conversation-1", 0, 0) != nil || !errors.Is(encoder.Err(), ErrPlatformSSEV2Terminal) {
+		t.Fatalf("duplicate global terminal was accepted: %v", encoder.Err())
+	}
+}
+
+func TestPlatformSSEV2EncoderSanitizesErrorsAndNeverEmitsLegacyDone(t *testing.T) {
+	encoder, err := NewPlatformSSEV2Encoder(sseV2GenerationID, []string{"model-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if encoder.Meta("conversation-1") == nil {
+		t.Fatal("meta failed")
+	}
+	frame := string(encoder.ModelError("model-a", "https://internal.example/upstream?secret=leak", "request-1"))
+	if strings.Contains(frame, "internal.example") || strings.Contains(frame, "secret=") || strings.Contains(frame, "[DONE]") || !strings.Contains(frame, `"code":"upstream_error"`) {
+		t.Fatalf("model error leaked or used legacy terminal: %s", frame)
+	}
+	if encoder.DoneSingle("conversation-1", 0, 0) != nil {
+		t.Fatal("encoder emitted done after a failed model")
+	}
+
+	encoder, _ = NewPlatformSSEV2Encoder(sseV2GenerationID, []string{"model-a"})
+	if encoder.Meta("conversation-1") == nil {
+		t.Fatal("meta failed")
+	}
+	frame = string(encoder.Error("unknown provider response", "request-1"))
+	if strings.Contains(frame, "provider response") || strings.Contains(frame, "[DONE]") || !strings.Contains(frame, `"code":"upstream_error"`) {
+		t.Fatalf("global error leaked or used legacy terminal: %s", frame)
+	}
+}
+
+func TestPlatformSSEV2HeadersAreExact(t *testing.T) {
+	headers := make(http.Header)
+	SetPlatformSSEV2Headers(headers)
+	for key, want := range map[string]string{
+		"Content-Type":      "text/event-stream; charset=utf-8",
+		"Cache-Control":     "no-cache, no-transform",
+		"X-Accel-Buffering": "no",
+	} {
+		if got := headers.Get(key); got != want {
+			t.Errorf("%s = %q, want %q", key, got, want)
+		}
+	}
+}
