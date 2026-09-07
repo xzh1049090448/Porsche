@@ -46,6 +46,7 @@ type AdminActionOutbox struct {
 	TargetGUID    *int64                   `gorm:"column:target_guid;type:bigint" json:"-"`
 	State         AdminOperationState      `gorm:"column:state;type:int;not null" json:"-"`
 	FailureCode   *AdminOperationFailure   `gorm:"column:failure_code;type:int" json:"-"`
+	ResultKind    *AdminResultKind         `gorm:"column:result_kind;type:int" json:"-"`
 	ResultGUID    *int64                   `gorm:"column:result_guid;type:bigint" json:"-"`
 	DeliveryState AdminActionDeliveryState `gorm:"column:delivery_state;type:int;not null;default:1" json:"-"`
 	AvailableAt   int64                    `gorm:"column:available_at;type:bigint;not null" json:"-"`

@@ -232,7 +232,7 @@ func redactCreatedAccountResponse(ctx context.Context, tx *gorm.DB, targetGUID, 
 	actions := []int{int(actionsecurity.ActionUsersCreateAdmin), int(actionsecurity.ActionUsersCreate)}
 	var markers []models.AdminActionOutbox
 	if err := db.Clauses(clause.Locking{Strength: "UPDATE"}).Unscoped().
-		Select("id", "operation_id", "public_ref", "action", "state", "failure_code", "result_guid").
+		Select("id", "is_deleted", "operation_id", "public_ref", "action", "target_kind", "target_guid", "state", "failure_code", "result_kind", "result_guid").
 		Where("result_guid = ? AND state = ? AND action IN ?", targetGUID, models.OperationSucceeded, actions).
 		Order("operation_id ASC").Find(&markers).Error; err != nil {
 		return ErrActionOperationUnavailable
@@ -252,7 +252,7 @@ func redactCreatedAccountResponse(ctx context.Context, tx *gorm.DB, targetGUID, 
 	operationIDs := make([]int64, 0, len(markers))
 	markerByOperation := make(map[int64]models.AdminActionOutbox, len(markers))
 	for _, marker := range markers {
-		if marker.ID <= 0 || marker.OperationID <= 0 || marker.PublicRef == "" || marker.State != models.OperationSucceeded || marker.FailureCode != nil ||
+		if marker.ID <= 0 || marker.IsDeleted != 0 || marker.OperationID <= 0 || marker.PublicRef == "" || marker.TargetKind != int(actionsecurity.TargetNone) || marker.TargetGUID != nil || marker.State != models.OperationSucceeded || marker.FailureCode != nil || marker.ResultKind == nil || *marker.ResultKind != models.ResultUser ||
 			marker.ResultGUID == nil || *marker.ResultGUID != targetGUID || (marker.Action != int(actionsecurity.ActionUsersCreate) && marker.Action != int(actionsecurity.ActionUsersCreateAdmin)) {
 			return ErrActionOperationUnavailable
 		}

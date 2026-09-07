@@ -432,7 +432,7 @@ func configureDeleteConsumerCreateResponse(t *testing.T, script *deleteConsumerS
 	script.createOperations = []models.AdminOperation{operation}
 	actorID := int64(41)
 	script.createOutboxes = []models.AdminActionOutbox{{ID: 135, OperationID: operation.ID, PublicRef: operation.PublicRef, Action: operation.Action,
-		State: models.OperationSucceeded, ResultGUID: &resultGUID}}
+		TargetKind: int(actionsecurity.TargetNone), State: models.OperationSucceeded, ResultKind: &resultKind, ResultGUID: &resultGUID}}
 	script.createResponses = []models.AdminOperationResponse{{ID: 141, AuditFields: models.AuditFields{Guid: 1401, CreatedAt: finished, CreatedBy: &actorID, UpdatedAt: finished, UpdatedBy: &actorID, IsDeleted: 0}, OperationID: operation.ID, TargetGUID: resultGUID,
 		LifecycleState: models.OperationResponseActive, IntegrityVersion: models.OperationResponseIntegrityHMACV1, ResponseHMAC: &hmacValue,
 		HTTPStatus: resultStatus, MediaType: createAccountResponseMediaType, ResponseBody: body, BodySHA256: redactedCreateResponseSHA256}}
@@ -610,9 +610,9 @@ func (conn *deleteConsumerConn) QueryContext(_ context.Context, query string, ar
 	case "admin_action_outbox":
 		values := make([][]driver.Value, 0, len(conn.script.createOutboxes))
 		for _, row := range conn.script.createOutboxes {
-			values = append(values, []driver.Value{row.ID, row.OperationID, row.PublicRef, int64(row.Action), int64(row.State), row.FailureCode, row.ResultGUID})
+			values = append(values, []driver.Value{row.ID, int64(row.IsDeleted), row.OperationID, row.PublicRef, int64(row.Action), int64(row.TargetKind), row.TargetGUID, int64(row.State), row.FailureCode, row.ResultKind, row.ResultGUID})
 		}
-		return &deleteConsumerRows{columns: []string{"id", "operation_id", "public_ref", "action", "state", "failure_code", "result_guid"}, values: values}, nil
+		return &deleteConsumerRows{columns: []string{"id", "is_deleted", "operation_id", "public_ref", "action", "target_kind", "target_guid", "state", "failure_code", "result_kind", "result_guid"}, values: values}, nil
 	case "admin_operation_responses":
 		if strings.Contains(query, "SELECT `response_body`") || strings.Contains(query, "SELECT response_body") {
 			values := make([][]driver.Value, 0, len(conn.script.createResponses))

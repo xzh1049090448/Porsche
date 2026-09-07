@@ -176,12 +176,10 @@ func Up(ctx context.Context, db *gorm.DB, nextGUID func() int64, nowMillis func(
 						return err
 					}
 				}
-				if migration.Version == "0009" {
+				if migration.Version == "0010" {
 					if err := VerifyAdminActionOutboxSchema(ctx, conn); err != nil {
 						return err
 					}
-				}
-				if migration.Version == "0010" {
 					if err := VerifyAdminOperationResponseSchema(ctx, conn); err != nil {
 						return err
 					}
@@ -207,12 +205,10 @@ func Up(ctx context.Context, db *gorm.DB, nextGUID func() int64, nowMillis func(
 					}
 				}
 			}
-			if migration.Version == "0009" {
+			if migration.Version == "0010" {
 				if err := VerifyAdminActionOutboxSchema(ctx, conn); err != nil {
 					return err
 				}
-			}
-			if migration.Version == "0010" {
 				if err := VerifyAdminOperationResponseSchema(ctx, conn); err != nil {
 					return err
 				}

@@ -341,7 +341,7 @@ func TestAdminActionOutboxWriterPersistsExactPendingRow(t *testing.T) {
 		"updated_at": int64(8001), "updated_by": int64(41), "is_deleted": int64(0),
 		"operation_id": int64(31), "public_ref": deleteWriterPublicRef,
 		"action": int64(actionsecurity.ActionUsersDelete), "target_kind": int64(actionsecurity.TargetUser),
-		"target_guid": int64(6001), "state": int64(models.OperationSucceeded), "failure_code": nil, "result_guid": int64(6001),
+		"target_guid": int64(6001), "state": int64(models.OperationSucceeded), "failure_code": nil, "result_kind": models.ResultUser, "result_guid": int64(6001),
 		"delivery_state": int64(models.DeliveryPending), "available_at": int64(8001),
 		"delivered_at": nil, "attempt_count": int64(0),
 	}

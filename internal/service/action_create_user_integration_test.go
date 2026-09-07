@@ -445,8 +445,12 @@ func prepareResolvedLegacyCreateSentinel(t *testing.T, now int64) *resolvedLegac
 	if err != nil || len(migrations) != 10 || migrations[9].Version != "0010" {
 		t.Fatalf("0010 migration = %d/%v", len(migrations), err)
 	}
-	if err := db.Exec(string(migrations[9].DownSQL)).Error; err != nil {
-		t.Fatalf("isolated 0010 down: %v", err)
+	for index, statement := range strings.Split(string(migrations[9].DownSQL), ";") {
+		if statement = strings.TrimSpace(statement); statement != "" {
+			if err := db.Exec(statement).Error; err != nil {
+				t.Fatalf("isolated 0010 down statement %d: %v", index+1, err)
+			}
+		}
 	}
 	if err := db.Exec("DELETE FROM schema_migrations WHERE version = '0010'").Error; err != nil {
 		t.Fatal(err)

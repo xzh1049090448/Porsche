@@ -252,7 +252,7 @@ func TestCreateAccountWritersPersistRedactedManagementAuditAndResultOutbox(t *te
 	}
 	outboxRow := createAccountInsertValues(t, script.committedTableCall("admin_action_outbox", 0))
 	if outboxRow["guid"] != int64(9205) || outboxRow["operation_id"] != int64(31) || fmt.Sprint(outboxRow["action"]) != fmt.Sprint(actionsecurity.ActionUsersCreate) ||
-		fmt.Sprint(outboxRow["target_kind"]) != fmt.Sprint(actionsecurity.TargetNone) || outboxRow["target_guid"] != nil || outboxRow["result_guid"] != int64(9201) ||
+		fmt.Sprint(outboxRow["target_kind"]) != fmt.Sprint(actionsecurity.TargetNone) || outboxRow["target_guid"] != nil || fmt.Sprint(outboxRow["result_kind"]) != fmt.Sprint(models.ResultUser) || outboxRow["result_guid"] != int64(9201) ||
 		fmt.Sprint(outboxRow["failure_code"]) != "<nil>" || fmt.Sprint(outboxRow["delivery_state"]) != fmt.Sprint(models.DeliveryPending) {
 		t.Fatalf("create outbox = %#v", outboxRow)
 	}
@@ -357,7 +357,7 @@ func TestCreateAccountFailureTelemetryUsesStableActionStateAndRedactedFailure(t 
 		t.Fatalf("failure audit contains secret vocabulary: %s", encoded)
 	}
 	outboxRow := createAccountInsertValues(t, script.committedTableCall("admin_action_outbox", 0))
-	if fmt.Sprint(outboxRow["state"]) != fmt.Sprint(models.OperationFailed) || fmt.Sprint(outboxRow["failure_code"]) != fmt.Sprint(models.FailureActionRejected) || outboxRow["result_guid"] != nil {
+	if fmt.Sprint(outboxRow["state"]) != fmt.Sprint(models.OperationFailed) || fmt.Sprint(outboxRow["failure_code"]) != fmt.Sprint(models.FailureActionRejected) || fmt.Sprint(outboxRow["result_kind"]) != "<nil>" || outboxRow["result_guid"] != nil {
 		t.Fatalf("failure outbox = %#v", outboxRow)
 	}
 }

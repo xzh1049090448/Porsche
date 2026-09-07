@@ -75,7 +75,7 @@ func TestAdminActionOutboxMigrationContract(t *testing.T) {
 
 func TestAdminActionOutboxContractIsExact(t *testing.T) {
 	want := adminActionOutboxContract()
-	if want.name != "admin_action_outbox" || len(want.columns) != 19 || len(want.indexes) != 6 || len(want.foreignKeys) != 1 || len(want.checks) != 9 {
+	if want.name != "admin_action_outbox" || len(want.columns) != 20 || len(want.indexes) != 6 || len(want.foreignKeys) != 1 || len(want.checks) != 9 {
 		t.Fatalf("unexpected outbox contract: %#v", want)
 	}
 	valid := adminActionOutboxMetadataFromContract(want, "fixture")

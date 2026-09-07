@@ -1,6 +1,7 @@
 package migration
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"database/sql"
@@ -184,7 +185,13 @@ func TestAdminOperationResponseTargetMigrationContract(t *testing.T) {
 		t.Fatalf("missing 0010 response target migration: %#v", migrations)
 	}
 	up := strings.ToLower(string(migrations[9].UpSQL))
-	for _, fragment := range []string{"add column target_guid bigint null", "idx_admin_operation_responses_target", "fk_admin_operation_responses_target", "target_guid is not null", "response_body=x'7b7d'"} {
+	for _, fragment := range []string{
+		"add column target_guid bigint null", "add column result_kind int null", "idx_admin_operation_responses_target",
+		"fk_admin_operation_responses_target", "target_guid is not null", "response_body=x'7b7d'",
+		"response.lifecycle_state = 2", "response.http_status = 201", "response.media_type = 'application/json'",
+		"outbox.operation_id = operation.id", "outbox.action = operation.action", "outbox.public_ref = operation.public_ref",
+		"outbox.state = 2", "outbox.failure_code is null", "outbox.result_kind = 2", "outbox.result_guid > 0", "outbox.is_deleted = 0",
+	} {
 		if !strings.Contains(up, fragment) {
 			t.Errorf("0010 missing %q", fragment)
 		}
@@ -195,15 +202,11 @@ func TestAdminOperationResponseTargetMigrationContract(t *testing.T) {
 }
 
 func TestAdminOperationResponseTargetMigrationResumesEveryCommittedPrefix(t *testing.T) {
-	for _, tc := range []struct {
-		name   string
-		prefix int
-	}{
-		{name: "target_column", prefix: 1},
-		{name: "durable_backfill", prefix: 2},
-		{name: "fail_safe_redaction", prefix: 3},
-		{name: "constraint_and_indexes", prefix: 4},
-	} {
+	for prefix := 1; prefix <= 9; prefix++ {
+		tc := struct {
+			name   string
+			prefix int
+		}{name: fmt.Sprintf("committed_statement_%d", prefix), prefix: prefix}
 		t.Run(tc.name, func(t *testing.T) {
 			gdb := permissionSchemaDB(t)
 			statements := prepareAdminResponseTargetPrefix(t, gdb)
@@ -237,7 +240,10 @@ func TestAdminOperationResponseTargetMigrationResumesEveryCommittedPrefix(t *tes
 				t.Fatalf("unresolved snapshot after %s = target=%#v lifecycle=%d deleted=%d body=%q err=%v", tc.name, target, lifecycle, deleted, body, err)
 			}
 			clear(body)
-			if err := gdb.Raw("SELECT target_guid,lifecycle_state,is_deleted,response_body FROM admin_operation_responses WHERE guid=68041").Row().Scan(&target, &lifecycle, &deleted, &body); err != nil || target.Valid || lifecycle != 2 || deleted != 1 || string(body) != "{}" {
+			var integrity, status int
+			var responseHMAC sql.NullString
+			var media, digest string
+			if err := gdb.Raw("SELECT target_guid,lifecycle_state,integrity_version,response_hmac,http_status,media_type,is_deleted,response_body,body_sha256 FROM admin_operation_responses WHERE guid=68041").Row().Scan(&target, &lifecycle, &integrity, &responseHMAC, &status, &media, &deleted, &body, &digest); err != nil || !target.Valid || target.Int64 != 68002 || lifecycle != 2 || integrity != 1 || !responseHMAC.Valid || responseHMAC.String != strings.Repeat("0", 64) || status != 201 || media != "application/json" || deleted != 1 || string(body) != "{}" || digest != "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a" {
 				t.Fatalf("legacy redacted snapshot after %s = target=%#v lifecycle=%d deleted=%d body=%q err=%v", tc.name, target, lifecycle, deleted, body, err)
 			}
 			clear(body)
@@ -277,14 +283,14 @@ func prepareAdminResponseTargetPrefix(t *testing.T, gdb *gorm.DB) []string {
 		t.Fatalf("read 0010 session id=%d err=%v", sessionID, err)
 	}
 	activeRef := "op_" + strings.Repeat("t", 43)
-	if err := gdb.Exec(`INSERT INTO admin_operations (guid,actor_user_id,actor_auth_version,session_id,action,idempotency_key_hmac,request_hmac,state,public_ref,finished_at,query_expires_at,result_kind,result_guid,result_http_status,created_at,created_by,updated_at,updated_by,is_deleted) VALUES (68004,?,1,?,9,?,?,2,?,2,3,2,68002,201,1,?,2,?,0)`, actorID, sessionID, strings.Repeat("b", 64), strings.Repeat("c", 64), activeRef, actorID, actorID).Error; err != nil {
+	if err := gdb.Exec(`INSERT INTO admin_operations (guid,actor_user_id,actor_auth_version,session_id,action,idempotency_key_hmac,request_hmac,state,public_ref,finished_at,query_expires_at,result_kind,result_guid,result_http_status,created_at,created_by,updated_at,updated_by,is_deleted) VALUES (68004,?,1,?,1,?,?,2,?,2,3,2,68002,201,1,?,2,?,0)`, actorID, sessionID, strings.Repeat("b", 64), strings.Repeat("c", 64), activeRef, actorID, actorID).Error; err != nil {
 		t.Fatal(err)
 	}
 	var activeOperationID int64
 	if err := gdb.Raw("SELECT id FROM admin_operations WHERE guid=68004").Row().Scan(&activeOperationID); err != nil || activeOperationID <= 0 {
 		t.Fatal(err)
 	}
-	if err := gdb.Exec(`INSERT INTO admin_action_outbox (guid,created_at,created_by,updated_at,updated_by,is_deleted,operation_id,public_ref,action,target_kind,state,failure_code,result_guid,delivery_state,available_at,attempt_count) VALUES (68005,2,?,2,?,0,?,?,9,1,2,NULL,68002,1,2,0)`, actorID, actorID, activeOperationID, activeRef).Error; err != nil {
+	if err := gdb.Exec(`INSERT INTO admin_action_outbox (guid,created_at,created_by,updated_at,updated_by,is_deleted,operation_id,public_ref,action,target_kind,state,failure_code,result_guid,delivery_state,available_at,attempt_count) VALUES (68005,2,?,2,?,0,?,?,1,1,2,NULL,68002,1,2,0)`, actorID, actorID, activeOperationID, activeRef).Error; err != nil {
 		t.Fatal(err)
 	}
 	activeBody := []byte(`{"operation_ref":"` + activeRef + `","legacy":"legacy-personal-data"}`)
@@ -293,14 +299,14 @@ func prepareAdminResponseTargetPrefix(t *testing.T, gdb *gorm.DB) []string {
 		t.Fatal(err)
 	}
 	expiredRef := "op_" + strings.Repeat("u", 43)
-	if err := gdb.Exec(`INSERT INTO admin_operations (guid,actor_user_id,actor_auth_version,session_id,action,idempotency_key_hmac,request_hmac,state,public_ref,finished_at,query_expires_at,created_at,created_by,updated_at,updated_by,is_deleted) VALUES (68014,?,1,?,9,?,?,5,?,2,3,1,?,2,?,1)`, actorID, sessionID, strings.Repeat("e", 64), strings.Repeat("f", 64), expiredRef, actorID, actorID).Error; err != nil {
+	if err := gdb.Exec(`INSERT INTO admin_operations (guid,actor_user_id,actor_auth_version,session_id,action,idempotency_key_hmac,request_hmac,state,public_ref,finished_at,query_expires_at,created_at,created_by,updated_at,updated_by,is_deleted) VALUES (68014,?,1,?,1,?,?,5,?,2,3,1,?,2,?,1)`, actorID, sessionID, strings.Repeat("e", 64), strings.Repeat("f", 64), expiredRef, actorID, actorID).Error; err != nil {
 		t.Fatal(err)
 	}
 	var expiredOperationID int64
 	if err := gdb.Raw("SELECT id FROM admin_operations WHERE guid=68014").Row().Scan(&expiredOperationID); err != nil || expiredOperationID <= 0 {
 		t.Fatal(err)
 	}
-	if err := gdb.Exec(`INSERT INTO admin_action_outbox (guid,created_at,created_by,updated_at,updated_by,is_deleted,operation_id,public_ref,action,target_kind,state,failure_code,result_guid,delivery_state,available_at,attempt_count) VALUES (68015,2,?,2,?,0,?,?,9,1,2,NULL,68002,1,2,0)`, actorID, actorID, expiredOperationID, expiredRef).Error; err != nil {
+	if err := gdb.Exec(`INSERT INTO admin_action_outbox (guid,created_at,created_by,updated_at,updated_by,is_deleted,operation_id,public_ref,action,target_kind,state,failure_code,result_guid,delivery_state,available_at,attempt_count) VALUES (68015,2,?,2,?,0,?,?,1,1,2,NULL,68002,1,2,0)`, actorID, actorID, expiredOperationID, expiredRef).Error; err != nil {
 		t.Fatal(err)
 	}
 	expiredBody := []byte(`{"legacy":"expired-outbox-private"}`)
@@ -322,11 +328,14 @@ func prepareAdminResponseTargetPrefix(t *testing.T, gdb *gorm.DB) []string {
 		t.Fatal(err)
 	}
 	legacyRedactedRef := "op_" + strings.Repeat("w", 43)
-	if err := gdb.Exec(`INSERT INTO admin_operations (guid,actor_user_id,actor_auth_version,session_id,action,idempotency_key_hmac,request_hmac,state,public_ref,finished_at,query_expires_at,created_at,created_by,updated_at,updated_by,is_deleted) VALUES (68034,?,1,?,9,?,?,5,?,2,3,1,?,2,?,1)`, actorID, sessionID, strings.Repeat("8", 64), strings.Repeat("9", 64), legacyRedactedRef, actorID, actorID).Error; err != nil {
+	if err := gdb.Exec(`INSERT INTO admin_operations (guid,actor_user_id,actor_auth_version,session_id,action,idempotency_key_hmac,request_hmac,state,public_ref,finished_at,query_expires_at,created_at,created_by,updated_at,updated_by,is_deleted) VALUES (68034,?,1,?,1,?,?,5,?,2,3,1,?,2,?,1)`, actorID, sessionID, strings.Repeat("8", 64), strings.Repeat("9", 64), legacyRedactedRef, actorID, actorID).Error; err != nil {
 		t.Fatal(err)
 	}
 	var legacyRedactedOperationID int64
 	if err := gdb.Raw("SELECT id FROM admin_operations WHERE guid=68034").Row().Scan(&legacyRedactedOperationID); err != nil || legacyRedactedOperationID <= 0 {
+		t.Fatal(err)
+	}
+	if err := gdb.Exec(`INSERT INTO admin_action_outbox (guid,created_at,created_by,updated_at,updated_by,is_deleted,operation_id,public_ref,action,target_kind,state,failure_code,result_guid,delivery_state,available_at,attempt_count) VALUES (68035,2,?,2,?,0,?,?,1,1,2,NULL,68002,1,2,0)`, actorID, actorID, legacyRedactedOperationID, legacyRedactedRef).Error; err != nil {
 		t.Fatal(err)
 	}
 	legacyRedactedBody := []byte("PI")
@@ -335,10 +344,133 @@ func prepareAdminResponseTargetPrefix(t *testing.T, gdb *gorm.DB) []string {
 		t.Fatal(err)
 	}
 	statements := splitStatements(string(migration.UpSQL))
-	if len(statements) != 4 {
-		t.Fatalf("0010 statements=%d want=4", len(statements))
+	if len(statements) != 9 {
+		t.Fatalf("0010 statements=%d want=9", len(statements))
 	}
 	return statements
+}
+
+func TestAdminOperationResponseTargetMigrationRejectsOutboxMismatchMatrix(t *testing.T) {
+	gdb := permissionSchemaDB(t)
+	statements := prepareAdminResponseTargetPrefix(t, gdb)
+	for index := 0; index < 2; index++ {
+		if err := gdb.Exec(statements[index]).Error; err != nil {
+			t.Fatalf("apply 0010 schema prefix %d: %v", index+1, err)
+		}
+	}
+	var actorID, sessionID int64
+	if err := gdb.Raw("SELECT id FROM users WHERE guid=68001").Row().Scan(&actorID); err != nil || actorID <= 0 {
+		t.Fatalf("actor id=%d err=%v", actorID, err)
+	}
+	if err := gdb.Raw("SELECT id FROM user_sessions WHERE guid=68003").Row().Scan(&sessionID); err != nil || sessionID <= 0 {
+		t.Fatalf("session id=%d err=%v", sessionID, err)
+	}
+	type mismatchFixture struct {
+		name         string
+		responseGUID int64
+		operationID  int64
+		outboxID     int64
+		publicRef    string
+	}
+	names := []string{"valid", "operation_state", "failure", "action", "public_ref", "deleted", "result_kind", "result_guid", "operation_id", "target_contract"}
+	fixtures := make([]mismatchFixture, 0, len(names))
+	for index, name := range names {
+		base := int64(68100 + index*10)
+		publicRef := "op_" + fmt.Sprintf("%043d", base)
+		if err := gdb.Exec(`INSERT INTO admin_operations (guid,actor_user_id,actor_auth_version,session_id,action,idempotency_key_hmac,request_hmac,state,public_ref,finished_at,query_expires_at,created_at,created_by,updated_at,updated_by,is_deleted) VALUES (?, ?,1,?,1,?,?,5,?,2,3,1,?,2,?,1)`, base, actorID, sessionID, fmt.Sprintf("%064d", base), fmt.Sprintf("%064d", base+1), publicRef, actorID, actorID).Error; err != nil {
+			t.Fatalf("insert %s operation: %v", name, err)
+		}
+		var operationID int64
+		if err := gdb.Raw("SELECT id FROM admin_operations WHERE guid=?", base).Row().Scan(&operationID); err != nil || operationID <= 0 {
+			t.Fatalf("read %s operation=%d err=%v", name, operationID, err)
+		}
+		if err := gdb.Exec(`INSERT INTO admin_action_outbox (guid,created_at,created_by,updated_at,updated_by,is_deleted,operation_id,public_ref,action,target_kind,state,failure_code,result_kind,result_guid,delivery_state,available_at,attempt_count) VALUES (?,2,?,2,?,0,?,?,1,1,2,NULL,NULL,68002,1,2,0)`, base+1, actorID, actorID, operationID, publicRef).Error; err != nil {
+			t.Fatalf("insert %s outbox: %v", name, err)
+		}
+		var outboxID int64
+		if err := gdb.Raw("SELECT id FROM admin_action_outbox WHERE guid=?", base+1).Row().Scan(&outboxID); err != nil || outboxID <= 0 {
+			t.Fatalf("read %s outbox=%d err=%v", name, outboxID, err)
+		}
+		body := []byte(`{"private":"` + name + `-personal-data"}`)
+		digest := fmt.Sprintf("%x", sha256.Sum256(body))
+		if err := gdb.Exec(`INSERT INTO admin_operation_responses (guid,created_at,created_by,updated_at,updated_by,is_deleted,operation_id,target_guid,lifecycle_state,integrity_version,response_hmac,http_status,media_type,response_body,body_sha256) VALUES (?,2,?,2,?,0,?,NULL,1,1,?,201,'application/json',?,?)`, base+2, actorID, actorID, operationID, strings.Repeat("a", 64), body, digest).Error; err != nil {
+			clear(body)
+			t.Fatalf("insert %s response: %v", name, err)
+		}
+		clear(body)
+		fixtures = append(fixtures, mismatchFixture{name: name, responseGUID: base + 2, operationID: operationID, outboxID: outboxID, publicRef: publicRef})
+	}
+	byName := make(map[string]mismatchFixture, len(fixtures))
+	for _, fixture := range fixtures {
+		byName[fixture.name] = fixture
+	}
+	state := byName["operation_state"]
+	if err := gdb.Exec("UPDATE admin_operations SET state=3,error_code=1,result_http_status=409,is_deleted=0 WHERE id=?", state.operationID).Error; err != nil {
+		t.Fatal(err)
+	}
+	failure := byName["failure"]
+	if err := gdb.Exec("UPDATE admin_action_outbox SET state=3,failure_code=1,result_kind=NULL,result_guid=NULL WHERE id=?", failure.outboxID).Error; err != nil {
+		t.Fatal(err)
+	}
+	action := byName["action"]
+	if err := gdb.Exec("UPDATE admin_action_outbox SET action=9 WHERE id=?", action.outboxID).Error; err != nil {
+		t.Fatal(err)
+	}
+	publicRef := byName["public_ref"]
+	if err := gdb.Exec("UPDATE admin_action_outbox SET public_ref=? WHERE id=?", "op_"+strings.Repeat("z", 43), publicRef.outboxID).Error; err != nil {
+		t.Fatal(err)
+	}
+	deleted := byName["deleted"]
+	if err := gdb.Exec("UPDATE admin_action_outbox SET is_deleted=1 WHERE id=?", deleted.outboxID).Error; err != nil {
+		t.Fatal(err)
+	}
+	resultKind := byName["result_kind"]
+	if err := gdb.Exec("UPDATE admin_action_outbox SET result_kind=3 WHERE id=?", resultKind.outboxID).Error; err != nil {
+		t.Fatal(err)
+	}
+	resultGUID := byName["result_guid"]
+	if err := gdb.Exec("UPDATE admin_action_outbox SET result_guid=68999 WHERE id=?", resultGUID.outboxID).Error; err != nil {
+		t.Fatal(err)
+	}
+	operationID := byName["operation_id"]
+	otherRef := "op_" + strings.Repeat("y", 43)
+	if err := gdb.Exec(`INSERT INTO admin_operations (guid,actor_user_id,actor_auth_version,session_id,action,idempotency_key_hmac,request_hmac,state,public_ref,finished_at,query_expires_at,created_at,created_by,updated_at,updated_by,is_deleted) VALUES (68991,?,1,?,1,?,?,5,?,2,3,1,?,2,?,1)`, actorID, sessionID, strings.Repeat("0", 64), strings.Repeat("f", 64), otherRef, actorID, actorID).Error; err != nil {
+		t.Fatal(err)
+	}
+	var otherOperationID int64
+	if err := gdb.Raw("SELECT id FROM admin_operations WHERE guid=68991").Row().Scan(&otherOperationID); err != nil || otherOperationID <= 0 {
+		t.Fatal(err)
+	}
+	if err := gdb.Exec("UPDATE admin_action_outbox SET operation_id=?,public_ref=? WHERE id=?", otherOperationID, otherRef, operationID.outboxID).Error; err != nil {
+		t.Fatal(err)
+	}
+	targetContract := byName["target_contract"]
+	if err := gdb.Exec("UPDATE admin_action_outbox SET target_kind=2,target_guid=68002 WHERE id=?", targetContract.outboxID).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Up(context.Background(), gdb, sequentialGUID(89_000), func() int64 { return 1_900_000_000_006 }); err != nil {
+		t.Fatalf("migrate mismatch matrix: %v", err)
+	}
+	if err := Verify(context.Background(), gdb); err != nil {
+		t.Fatalf("verify mismatch matrix migration: %v", err)
+	}
+	for _, fixture := range fixtures {
+		var target sql.NullInt64
+		var lifecycle, deleted int
+		var body []byte
+		if err := gdb.Raw("SELECT target_guid,lifecycle_state,is_deleted,response_body FROM admin_operation_responses WHERE guid=?", fixture.responseGUID).Row().Scan(&target, &lifecycle, &deleted, &body); err != nil {
+			t.Fatalf("read %s result: %v", fixture.name, err)
+		}
+		if fixture.name == "valid" {
+			if !target.Valid || target.Int64 != 68002 || lifecycle != 1 || deleted != 0 || !bytes.Contains(body, []byte("valid-personal-data")) {
+				t.Fatalf("valid marker was not preserved: target=%#v lifecycle=%d deleted=%d body=%q", target, lifecycle, deleted, body)
+			}
+		} else if target.Valid || lifecycle != 2 || deleted != 1 || string(body) != "{}" {
+			t.Fatalf("%s mismatch retained or attached PII: target=%#v lifecycle=%d deleted=%d body=%q", fixture.name, target, lifecycle, deleted, body)
+		}
+		clear(body)
+	}
 }
 
 func TestAdminResponseIntegrityMigrationResumesEveryCommittedPrefix(t *testing.T) {

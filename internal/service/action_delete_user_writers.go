@@ -195,7 +195,7 @@ func (writer *AdminActionOutboxWriter) Write(ctx context.Context, tx *gorm.DB, e
 			UpdatedAt: event.OccurredAt, UpdatedBy: &actorID, IsDeleted: 0},
 		OperationID: binding.operationID, PublicRef: event.PublicRef, Action: int(event.Action),
 		TargetKind: int(event.TargetKind), TargetGUID: copyInt64(event.TargetGUID), State: event.State,
-		FailureCode: copyOperationFailure(event.Failure), ResultGUID: copyInt64(event.ResultGUID), DeliveryState: models.DeliveryPending, AvailableAt: event.OccurredAt,
+		FailureCode: copyOperationFailure(event.Failure), ResultKind: copyResultKind(event.ResultKind), ResultGUID: copyInt64(event.ResultGUID), DeliveryState: models.DeliveryPending, AvailableAt: event.OccurredAt,
 		DeliveredAt: nil, AttemptCount: 0,
 	}
 	if err := db.Create(&row).Error; err != nil {
