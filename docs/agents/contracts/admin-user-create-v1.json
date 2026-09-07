@@ -1,6 +1,6 @@
 {
   "contract": "admin-user-create-v1",
-  "revision": "2026-09-07-a03-v2",
+  "revision": "2026-09-07-a03-v3",
   "status": "AGREED_FOR_IMPLEMENTATION",
   "design_source": "docs/superpowers/specs/2026-09-06-a03-admin-user-create-design.md",
   "create": {
@@ -145,7 +145,17 @@
     "cross_session_reuse": {"status": 409, "code": "idempotency_cross_session"},
     "lost_response": "query the operation with the same scope; never automatically create a new key and replay",
     "pre_commit_failure": "return a stable error; ticket consumption and operation state use the existing recovery semantics",
-    "response_integrity": {"version": 1, "key": "independent response key derived from the action-security root key", "binding": ["integrity_version", "lifecycle", "operation_id", "operation_ref", "action", "terminal_state", "result_kind", "result_guid", "http_status", "media_type", "response_body"], "tamper_rule": "legacy active rows, direct body/digest/version/lifecycle mutation without a valid HMAC, direct snapshot deletion, and unsupported key rotation fail closed"}
+    "response_integrity": {
+      "version": 1,
+      "key": "independent response key derived from the action-security root key",
+      "binding": ["integrity_version", "lifecycle", "operation_id", "operation_ref", "action", "terminal_state", "result_kind", "result_guid", "http_status", "media_type", "response_body"],
+      "target_binding": "admin_operation_responses.target_guid is a durable positive target for every new active snapshot; HMAC v1 binds that same value in its backward-compatible result_guid slot",
+      "expiry_rule": "operation expiry may clear admin_operations.result_guid, but the durable response target remains available for privacy redaction; expired create requests return the stable operation-expired 410 and never expose the stored success body",
+      "deletion_lookup": "A14 locks every snapshot by target_guid independently of mutable operation result fields, validates each HMAC and matching successful outbox marker, and atomically redacts all snapshots with the user; a marker/response count mismatch fails closed while zero markers and zero snapshots means no create snapshot exists",
+      "migration": "0010 backfills target_guid from the active operation result or durable successful outbox marker; every unresolved active or legacy redacted snapshot is rewritten to canonical {} with no recoverable PII before the final target index, foreign key, and lifecycle CHECK",
+      "key_rotation": "rotation is prohibited while response snapshots that may require replay or delete redaction remain active unless a separately approved key-id, multi-key verification, or transactional re-HMAC migration is deployed; an unsupported rotated key fails closed",
+      "tamper_rule": "legacy active rows and direct target/body/digest/version/lifecycle mutation without a valid HMAC fail closed; direct snapshot deletion is detected by its durable successful outbox marker and fails closed"
+    }
   },
   "operation_query": {
     "method": "GET",

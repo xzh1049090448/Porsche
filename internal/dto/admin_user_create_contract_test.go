@@ -23,7 +23,7 @@ func TestAdminUserCreateContractExamples(t *testing.T) {
 		t.Fatal(err)
 	}
 	adminUserCreateRawExactKeys(t, document, "contract", "revision", "status", "design_source", "create", "action_ticket", "idempotency", "operation_query", "active_group_directory", "transaction", "errors", "frontend_security", "execution_order", "audit_outbox")
-	adminUserCreateRawValue(t, document, "2026-09-07-a03-v2", "revision")
+	adminUserCreateRawValue(t, document, "2026-09-07-a03-v3", "revision")
 
 	create := adminUserCreateRawObject(t, document, "create")
 	adminUserCreateRawValue(t, create, "POST", "method")
@@ -79,8 +79,14 @@ func TestAdminUserCreateContractExamples(t *testing.T) {
 	adminUserCreateRawValue(t, adminUserCreateRawObject(t, operationQuery, "request", "query_schema", "properties", "scope"), []any{"users.create", "users.create_admin"}, "enum")
 	adminUserCreateRawValue(t, adminUserCreateRawObject(t, document, "idempotency"), []any{"users.create", "users.create_admin"}, "operation_scopes")
 	integrity := adminUserCreateRawObject(t, document, "idempotency", "response_integrity")
+	adminUserCreateRawExactKeys(t, integrity, "version", "key", "binding", "target_binding", "expiry_rule", "deletion_lookup", "migration", "key_rotation", "tamper_rule")
 	adminUserCreateRawValue(t, integrity, json.Number("1"), "version")
 	adminUserCreateRawValue(t, integrity, []any{"integrity_version", "lifecycle", "operation_id", "operation_ref", "action", "terminal_state", "result_kind", "result_guid", "http_status", "media_type", "response_body"}, "binding")
+	adminUserCreateRawValue(t, integrity, "admin_operation_responses.target_guid is a durable positive target for every new active snapshot; HMAC v1 binds that same value in its backward-compatible result_guid slot", "target_binding")
+	adminUserCreateRawValue(t, integrity, "operation expiry may clear admin_operations.result_guid, but the durable response target remains available for privacy redaction; expired create requests return the stable operation-expired 410 and never expose the stored success body", "expiry_rule")
+	adminUserCreateRawValue(t, integrity, "A14 locks every snapshot by target_guid independently of mutable operation result fields, validates each HMAC and matching successful outbox marker, and atomically redacts all snapshots with the user; a marker/response count mismatch fails closed while zero markers and zero snapshots means no create snapshot exists", "deletion_lookup")
+	adminUserCreateRawValue(t, integrity, "0010 backfills target_guid from the active operation result or durable successful outbox marker; every unresolved active or legacy redacted snapshot is rewritten to canonical {} with no recoverable PII before the final target index, foreign key, and lifecycle CHECK", "migration")
+	adminUserCreateRawValue(t, integrity, "rotation is prohibited while response snapshots that may require replay or delete redaction remain active unless a separately approved key-id, multi-key verification, or transactional re-HMAC migration is deployed; an unsupported rotated key fails closed", "key_rotation")
 
 	groups := adminUserCreateRawObject(t, document, "active_group_directory")
 	adminUserCreateRawValue(t, groups, "GET", "method")
