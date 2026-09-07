@@ -69,7 +69,7 @@ func persistCreateAccountResponse(ctx context.Context, tx *gorm.DB, operation mo
 	actor := actorID
 	row := models.AdminOperationResponse{
 		AuditFields: models.AuditFields{Guid: guid, CreatedAt: now, CreatedBy: &actor, UpdatedAt: now, UpdatedBy: &actor},
-		OperationID: operation.ID, LifecycleState: models.OperationResponseActive,
+		OperationID: operation.ID, TargetGUID: user.Guid, LifecycleState: models.OperationResponseActive,
 		IntegrityVersion: models.OperationResponseIntegrityHMACV1, ResponseHMAC: &hmacValue,
 		HTTPStatus: http.StatusCreated, MediaType: createAccountResponseMediaType,
 		ResponseBody: append([]byte(nil), body...), BodySHA256: hex.EncodeToString(digest[:]),
@@ -92,26 +92,24 @@ func (s *ActionOperationService) CreateAccountResponse(ctx context.Context, acti
 	}
 	db := s.operationDB(ctx)
 	var operations []models.AdminOperation
-	if err := db.Where("public_ref = ? AND actor_user_id = ? AND actor_auth_version = ? AND action = ? AND is_deleted = 0", publicRef, actor.UserID, actor.AuthVersion, int(action)).Limit(2).Find(&operations).Error; err != nil || len(operations) != 1 {
+	if err := db.Unscoped().Where("public_ref = ? AND actor_user_id = ? AND actor_auth_version = ? AND action = ?", publicRef, actor.UserID, actor.AuthVersion, int(action)).Limit(2).Find(&operations).Error; err != nil || len(operations) != 1 {
 		return nil, ErrActionOperationUnavailable
 	}
 	operation := operations[0]
-	if operation.ID <= 0 || operation.PublicRef != publicRef || operation.State != models.OperationSucceeded || operation.FinishedAt == nil || operation.ErrorCode != nil ||
-		operation.ResultKind == nil || *operation.ResultKind != models.ResultUser || operation.ResultGUID == nil || *operation.ResultGUID <= 0 ||
-		operation.ResultHTTPStatus == nil || *operation.ResultHTTPStatus != http.StatusCreated {
+	if operation.ID <= 0 || operation.PublicRef != publicRef {
 		return nil, ErrActionOperationUnavailable
 	}
 	var responses []models.AdminOperationResponse
-	if err := db.Unscoped().Select("id", "guid", "created_at", "created_by", "updated_at", "updated_by", "is_deleted", "operation_id", "lifecycle_state", "integrity_version", "response_hmac", "http_status", "media_type", "body_sha256").
+	if err := db.Unscoped().Select("id", "guid", "created_at", "created_by", "updated_at", "updated_by", "is_deleted", "operation_id", "target_guid", "lifecycle_state", "integrity_version", "response_hmac", "http_status", "media_type", "body_sha256").
 		Where("operation_id = ?", operation.ID).Limit(2).Find(&responses).Error; err != nil || len(responses) != 1 {
 		return nil, ErrActionOperationUnavailable
 	}
 	response := responses[0]
-	if response.ID <= 0 || response.Guid <= 0 || response.OperationID != operation.ID {
+	if response.ID <= 0 || response.Guid <= 0 || response.OperationID != operation.ID || response.TargetGUID <= 0 || !validCreateResponseOperation(operation, response.TargetGUID) {
 		return nil, ErrActionOperationUnavailable
 	}
 	var target models.User
-	if err := db.Unscoped().Select("id", "guid", "is_deleted").Where("guid = ?", *operation.ResultGUID).First(&target).Error; err != nil || target.ID <= 0 || target.Guid != *operation.ResultGUID || (target.IsDeleted != 0 && target.IsDeleted != 1) {
+	if err := db.Unscoped().Select("id", "guid", "is_deleted").Where("guid = ?", response.TargetGUID).First(&target).Error; err != nil || target.ID <= 0 || target.Guid != response.TargetGUID || (target.IsDeleted != 0 && target.IsDeleted != 1) {
 		return nil, ErrActionOperationUnavailable
 	}
 	if target.IsDeleted == 1 {
@@ -133,7 +131,7 @@ func (s *ActionOperationService) CreateAccountResponse(ctx context.Context, acti
 		}
 		return nil, ErrCreatedAccountDeleted
 	}
-	if response.LifecycleState != models.OperationResponseActive || response.ID <= 0 || response.HTTPStatus != *operation.ResultHTTPStatus ||
+	if response.LifecycleState != models.OperationResponseActive || response.ID <= 0 || response.HTTPStatus != http.StatusCreated ||
 		response.MediaType != createAccountResponseMediaType || response.CreatedAt <= 0 || response.UpdatedAt != response.CreatedAt || response.IsDeleted != 0 {
 		return nil, ErrActionOperationUnavailable
 	}
@@ -144,7 +142,7 @@ func (s *ActionOperationService) CreateAccountResponse(ctx context.Context, acti
 	defer clear(body)
 	response.ResponseBody = body
 	if len(response.ResponseBody) < 2 || len(response.ResponseBody) > createAccountResponseBodyLimit || !matchingCreateAccountResponseDigest(response.ResponseBody, response.BodySHA256) ||
-		!validCreateAccountResponseBody(response.ResponseBody, publicRef, action, *operation.ResultGUID) {
+		!validCreateAccountResponseBody(response.ResponseBody, publicRef, action, response.TargetGUID) {
 		return nil, ErrActionOperationUnavailable
 	}
 	if response.IntegrityVersion != models.OperationResponseIntegrityHMACV1 || response.ResponseHMAC == nil || !matchingCreateAccountResponseHMAC(s.crypto, operation, response) {
@@ -199,10 +197,10 @@ func createAccountResponseHMAC(crypto *actionsecurity.Crypto, operation models.A
 }
 
 func matchingCreateAccountResponseHMAC(crypto *actionsecurity.Crypto, operation models.AdminOperation, response models.AdminOperationResponse) bool {
-	if response.ResponseHMAC == nil || len(*response.ResponseHMAC) != sha256.Size*2 {
+	if response.ResponseHMAC == nil || len(*response.ResponseHMAC) != sha256.Size*2 || response.TargetGUID <= 0 {
 		return false
 	}
-	want, ok := createAccountResponseHMAC(crypto, operation, response.LifecycleState, *operation.ResultGUID, response.HTTPStatus, response.MediaType, response.ResponseBody)
+	want, ok := createAccountResponseHMAC(crypto, operation, response.LifecycleState, response.TargetGUID, response.HTTPStatus, response.MediaType, response.ResponseBody)
 	if !ok {
 		return false
 	}
@@ -211,67 +209,123 @@ func matchingCreateAccountResponseHMAC(crypto *actionsecurity.Crypto, operation 
 	return match
 }
 
+func validCreateResponseOperation(operation models.AdminOperation, targetGUID int64) bool {
+	if operation.ID <= 0 || operation.PublicRef == "" || operation.FinishedAt == nil || operation.ErrorCode != nil || targetGUID <= 0 {
+		return false
+	}
+	switch operation.State {
+	case models.OperationSucceeded:
+		return operation.IsDeleted == 0 && operation.ResultKind != nil && *operation.ResultKind == models.ResultUser &&
+			operation.ResultGUID != nil && *operation.ResultGUID == targetGUID && operation.ResultHTTPStatus != nil && *operation.ResultHTTPStatus == http.StatusCreated
+	case models.OperationExpired:
+		return operation.IsDeleted == 1 && operation.ResultKind == nil && operation.ResultGUID == nil && operation.ResultHTTPStatus == nil
+	default:
+		return false
+	}
+}
+
 func redactCreatedAccountResponse(ctx context.Context, tx *gorm.DB, targetGUID, actorID, now int64, crypto *actionsecurity.Crypto) error {
 	if !validDeleteWriterTransaction(ctx, tx) || targetGUID <= 0 || actorID <= 0 || now <= 0 || crypto == nil {
 		return ErrActionOperationUnavailable
 	}
 	db := deleteWriterDB(ctx, tx)
-	var operations []models.AdminOperation
-	if err := db.Clauses(clause.Locking{Strength: "UPDATE"}).
-		Where("result_guid = ? AND state = ? AND action IN ? AND is_deleted = 0", targetGUID, models.OperationSucceeded,
-			[]int{int(actionsecurity.ActionUsersCreate), int(actionsecurity.ActionUsersCreateAdmin)}).
-		Order("id ASC").Limit(2).Find(&operations).Error; err != nil || len(operations) > 1 {
+	actions := []int{int(actionsecurity.ActionUsersCreateAdmin), int(actionsecurity.ActionUsersCreate)}
+	var markers []models.AdminActionOutbox
+	if err := db.Clauses(clause.Locking{Strength: "UPDATE"}).Unscoped().
+		Select("id", "operation_id", "public_ref", "action", "state", "failure_code", "result_guid").
+		Where("result_guid = ? AND state = ? AND action IN ?", targetGUID, models.OperationSucceeded, actions).
+		Order("operation_id ASC").Find(&markers).Error; err != nil {
 		return ErrActionOperationUnavailable
 	}
-	if len(operations) == 0 {
+	var responses []models.AdminOperationResponse
+	if err := db.Clauses(clause.Locking{Strength: "UPDATE"}).Unscoped().
+		Select("id", "guid", "created_at", "created_by", "updated_at", "updated_by", "is_deleted", "operation_id", "target_guid", "lifecycle_state", "integrity_version", "response_hmac", "http_status", "media_type", "body_sha256").
+		Where("target_guid = ?", targetGUID).Order("operation_id ASC").Find(&responses).Error; err != nil {
+		return ErrActionOperationUnavailable
+	}
+	if len(markers) == 0 && len(responses) == 0 {
 		return nil
 	}
-	operation := operations[0]
-	if operation.ID <= 0 || operation.PublicRef == "" || operation.FinishedAt == nil || operation.ErrorCode != nil ||
-		operation.ResultKind == nil || *operation.ResultKind != models.ResultUser || operation.ResultGUID == nil || *operation.ResultGUID != targetGUID ||
-		operation.ResultHTTPStatus == nil || *operation.ResultHTTPStatus != http.StatusCreated {
+	if len(markers) == 0 || len(markers) != len(responses) {
 		return ErrActionOperationUnavailable
 	}
-	var response models.AdminOperationResponse
+	operationIDs := make([]int64, 0, len(markers))
+	markerByOperation := make(map[int64]models.AdminActionOutbox, len(markers))
+	for _, marker := range markers {
+		if marker.ID <= 0 || marker.OperationID <= 0 || marker.PublicRef == "" || marker.State != models.OperationSucceeded || marker.FailureCode != nil ||
+			marker.ResultGUID == nil || *marker.ResultGUID != targetGUID || (marker.Action != int(actionsecurity.ActionUsersCreate) && marker.Action != int(actionsecurity.ActionUsersCreateAdmin)) {
+			return ErrActionOperationUnavailable
+		}
+		if _, duplicate := markerByOperation[marker.OperationID]; duplicate {
+			return ErrActionOperationUnavailable
+		}
+		markerByOperation[marker.OperationID] = marker
+		operationIDs = append(operationIDs, marker.OperationID)
+	}
+	var operations []models.AdminOperation
 	if err := db.Clauses(clause.Locking{Strength: "UPDATE"}).Unscoped().
-		Select("id", "guid", "created_at", "created_by", "updated_at", "updated_by", "is_deleted", "operation_id", "lifecycle_state", "integrity_version", "response_hmac", "http_status", "media_type", "body_sha256").
-		Where("operation_id = ?", operation.ID).First(&response).Error; err != nil ||
-		response.ID <= 0 || response.OperationID != operation.ID || response.LifecycleState != models.OperationResponseActive || response.IsDeleted != 0 ||
-		response.HTTPStatus != http.StatusCreated || response.MediaType != createAccountResponseMediaType {
+		Where("id IN ?", operationIDs).Order("id ASC").Find(&operations).Error; err != nil || len(operations) != len(operationIDs) {
 		return ErrActionOperationUnavailable
 	}
-	switch response.IntegrityVersion {
-	case models.OperationResponseIntegrityHMACV1:
+	operationByID := make(map[int64]models.AdminOperation, len(operations))
+	for _, operation := range operations {
+		marker, ok := markerByOperation[operation.ID]
+		if !ok || marker.PublicRef != operation.PublicRef || marker.Action != operation.Action || !validCreateResponseOperation(operation, targetGUID) {
+			return ErrActionOperationUnavailable
+		}
+		operationByID[operation.ID] = operation
+	}
+	for _, response := range responses {
+		operation, ok := operationByID[response.OperationID]
+		if !ok || response.ID <= 0 || response.TargetGUID != targetGUID || response.HTTPStatus != http.StatusCreated || response.MediaType != createAccountResponseMediaType ||
+			response.IntegrityVersion != models.OperationResponseIntegrityHMACV1 || response.ResponseHMAC == nil {
+			return ErrActionOperationUnavailable
+		}
 		body, ok := loadCreateAccountResponseBody(db, response.ID)
 		if !ok {
 			return ErrActionOperationUnavailable
 		}
-		defer clear(body)
 		response.ResponseBody = body
-		if response.ResponseHMAC == nil || !matchingCreateAccountResponseDigest(response.ResponseBody, response.BodySHA256) || !matchingCreateAccountResponseHMAC(crypto, operation, response) {
+		if !matchingCreateAccountResponseDigest(response.ResponseBody, response.BodySHA256) {
+			clear(body)
 			return ErrActionOperationUnavailable
 		}
-	case models.OperationResponseIntegrityLegacySealed:
-		if response.ResponseHMAC != nil {
+		switch response.LifecycleState {
+		case models.OperationResponseActive:
+			if response.IsDeleted != 0 || response.CreatedAt <= 0 || response.UpdatedAt != response.CreatedAt || !matchingCreateAccountResponseHMAC(crypto, operation, response) {
+				clear(body)
+				return ErrActionOperationUnavailable
+			}
+		case models.OperationResponseRedacted:
+			migrationSentinel := *response.ResponseHMAC == strings.Repeat("0", sha256.Size*2)
+			if response.IsDeleted != 1 || response.UpdatedAt < response.CreatedAt || response.UpdatedBy == nil || !bytes.Equal(body, []byte("{}")) ||
+				(!migrationSentinel && !matchingCreateAccountResponseHMAC(crypto, operation, response)) {
+				clear(body)
+				return ErrActionOperationUnavailable
+			}
+			clear(body)
+			continue
+		default:
+			clear(body)
 			return ErrActionOperationUnavailable
 		}
-	default:
-		return ErrActionOperationUnavailable
-	}
-	redactedBody := []byte("{}")
-	redactedHMAC, ok := createAccountResponseHMAC(crypto, operation, models.OperationResponseRedacted, targetGUID, http.StatusCreated, createAccountResponseMediaType, redactedBody)
-	if !ok {
-		return ErrActionOperationUnavailable
-	}
-	updated := db.Unscoped().Model(&models.AdminOperationResponse{}).
-		Where("id = ? AND operation_id = ? AND lifecycle_state = ? AND is_deleted = 0 AND integrity_version = ?", response.ID, operation.ID, models.OperationResponseActive, response.IntegrityVersion).
-		Updates(map[string]any{"lifecycle_state": models.OperationResponseRedacted, "integrity_version": models.OperationResponseIntegrityHMACV1,
-			"response_hmac": redactedHMAC, "response_body": redactedBody, "body_sha256": redactedCreateResponseSHA256,
-			"is_deleted": 1, "updated_at": now, "updated_by": actorID})
-	redactedHMAC = ""
-	clear(redactedBody)
-	if updated.Error != nil || updated.RowsAffected != 1 {
-		return ErrActionOperationUnavailable
+		redactedBody := []byte("{}")
+		redactedHMAC, sealed := createAccountResponseHMAC(crypto, operation, models.OperationResponseRedacted, targetGUID, http.StatusCreated, createAccountResponseMediaType, redactedBody)
+		clear(body)
+		if !sealed {
+			clear(redactedBody)
+			return ErrActionOperationUnavailable
+		}
+		updated := db.Unscoped().Model(&models.AdminOperationResponse{}).
+			Where("id = ? AND operation_id = ? AND target_guid = ? AND lifecycle_state = ? AND is_deleted = 0 AND integrity_version = ?", response.ID, operation.ID, targetGUID, models.OperationResponseActive, models.OperationResponseIntegrityHMACV1).
+			Updates(map[string]any{"lifecycle_state": models.OperationResponseRedacted, "integrity_version": models.OperationResponseIntegrityHMACV1,
+				"response_hmac": redactedHMAC, "response_body": redactedBody, "body_sha256": redactedCreateResponseSHA256,
+				"is_deleted": 1, "updated_at": now, "updated_by": actorID})
+		redactedHMAC = ""
+		clear(redactedBody)
+		if updated.Error != nil || updated.RowsAffected != 1 {
+			return ErrActionOperationUnavailable
+		}
 	}
 	return nil
 }

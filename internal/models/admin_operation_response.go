@@ -19,6 +19,7 @@ type AdminOperationResponse struct {
 	ID               int64 `gorm:"column:id;type:bigint;not null;primaryKey;autoIncrement" json:"-"`
 	AuditFields      `gorm:"embedded" json:"-"`
 	OperationID      int64                           `gorm:"column:operation_id;type:bigint;not null" json:"-"`
+	TargetGUID       int64                           `gorm:"column:target_guid;type:bigint" json:"-"`
 	LifecycleState   AdminOperationResponseLifecycle `gorm:"column:lifecycle_state;type:int;not null;default:1" json:"-"`
 	IntegrityVersion int                             `gorm:"column:integrity_version;type:int;not null;default:0" json:"-"`
 	ResponseHMAC     *string                         `gorm:"column:response_hmac;type:char(64)" json:"-"`

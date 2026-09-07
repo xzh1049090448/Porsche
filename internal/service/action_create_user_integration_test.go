@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	cryptorand "crypto/rand"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"net/http"
@@ -315,6 +316,250 @@ func TestCreateAccountRealDeleteRedactsSnapshotAndReplayReturnsGone(t *testing.T
 	}
 }
 
+func TestCreateAccountRealExpiredOperationDeleteRedactsDurableTarget(t *testing.T) {
+	for index, expireThrough := range []string{"query", "begin"} {
+		t.Run(expireThrough, func(t *testing.T) {
+			requireDefaultMySQLAffectedRows(t)
+			f, services := openA03CreateServices(t, 1_910_052_000_000+int64(index)*1_000_000)
+			username := fixtureUsername(testSnowflake.Next())
+			nickname := "Expired private snapshot"
+			key := newRealIdempotencyKey(t)
+			base := actionsecurity.CreateAccountIntent{Username: username, Nickname: &nickname, Role: models.UserRoleUser.String(), PlanType: int(models.PlanFree), AllowedModels: []string{}, DailyCallLimit: 100}
+			identity, execution := services.prepare(t, f, base, "A03-Strong-Password!", key)
+			if view, err := services.operations.Execute(context.Background(), identity, execution, execution, services.outbox); err != nil || view == nil || view.Status != "succeeded" {
+				t.Fatalf("create before expiry = %#v/%v", view, err)
+			}
+			var operation models.AdminOperation
+			if err := f.db.Where("id = ?", identity.ID).First(&operation).Error; err != nil || operation.ResultGUID == nil {
+				t.Fatalf("created operation = %#v/%v", operation, err)
+			}
+			var target models.User
+			if err := f.db.Where("guid = ?", *operation.ResultGUID).First(&target).Error; err != nil {
+				t.Fatal(err)
+			}
+			if result := f.db.Model(&models.Session{}).Where("id = ?", f.session.ID).Update("expires_at", operation.QueryExpiresAt+60_000); result.Error != nil || result.RowsAffected != 1 {
+				t.Fatalf("extend isolated actor session for retention expiry = %d/%v", result.RowsAffected, result.Error)
+			}
+			f.clock.Set(operation.QueryExpiresAt)
+			switch expireThrough {
+			case "query":
+				if got, err := services.operations.Query(context.Background(), actionsecurity.ActionUsersCreate, f.actorAPI, []string{key}); got != nil || !errors.Is(err, ErrActionOperationExpired) {
+					t.Fatalf("query expiry = %#v/%v", got, err)
+				}
+			case "begin":
+				replayIntent := base
+				replayIntent.Password = []byte("A03-Strong-Password!")
+				gotIdentity, gotView, err := services.operations.Begin(context.Background(), OperationBegin{Action: actionsecurity.ActionUsersCreate, Actor: f.actorAPI, IdempotencyKeyValues: []string{key}, Intent: replayIntent})
+				clear(replayIntent.Password)
+				if gotIdentity != nil || gotView != nil || !errors.Is(err, ErrActionOperationExpired) {
+					t.Fatalf("begin expiry = %#v/%#v/%v", gotIdentity, gotView, err)
+				}
+			}
+			if err := f.db.Unscoped().First(&operation, operation.ID).Error; err != nil || operation.State != models.OperationExpired || operation.IsDeleted != 1 || operation.ResultGUID != nil {
+				t.Fatalf("expired operation = %#v/%v", operation, err)
+			}
+			activeReplay, activeReplayErr := services.operations.CreateAccountResponse(context.Background(), actionsecurity.ActionUsersCreate, f.actorAPI, identity.PublicRef)
+			if activeReplayErr != nil || activeReplay == nil || activeReplay.HTTPStatus != http.StatusCreated || !bytes.Contains(activeReplay.Body, []byte(username)) {
+				t.Fatalf("active target response after operation expiry = %#v/%v", activeReplay, activeReplayErr)
+			}
+			clear(activeReplay.Body)
+			deleteIdentity, deleteIntent, _ := f.prepare(t, target, newRealIdempotencyKey(t))
+			deleteExecution, err := f.bundle.NewExecution(deleteIntent)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if view, err := f.bundle.Operations.Execute(context.Background(), deleteIdentity, deleteExecution, deleteExecution, f.bundle.Outbox); err != nil || view == nil || view.Status != "succeeded" {
+				t.Fatalf("delete after %s expiry = %#v/%v", expireThrough, view, err)
+			}
+			var response models.AdminOperationResponse
+			if err := f.db.Unscoped().Where("operation_id = ?", operation.ID).First(&response).Error; err != nil || response.TargetGUID != target.Guid || response.LifecycleState != models.OperationResponseRedacted || response.IsDeleted != 1 || !bytes.Equal(response.ResponseBody, []byte("{}")) || bytes.Contains(response.ResponseBody, []byte(username)) || bytes.Contains(response.ResponseBody, []byte(nickname)) {
+				t.Fatalf("expired redaction = %#v/%v", response, err)
+			}
+			if got, err := services.operations.CreateAccountResponse(context.Background(), actionsecurity.ActionUsersCreate, f.actorAPI, identity.PublicRef); got != nil || !errors.Is(err, ErrCreatedAccountDeleted) {
+				t.Fatalf("expired deleted replay = %#v/%v", got, err)
+			}
+			replayIntent := base
+			replayIntent.Password = []byte("A03-Strong-Password!")
+			gotIdentity, gotView, replayErr := services.operations.Begin(context.Background(), OperationBegin{Action: actionsecurity.ActionUsersCreate, Actor: f.actorAPI, IdempotencyKeyValues: []string{key}, Intent: replayIntent})
+			clear(replayIntent.Password)
+			if gotIdentity != nil || gotView != nil || !errors.Is(replayErr, ErrActionOperationExpired) {
+				t.Fatalf("expired idempotent HTTP path did not retain stable 410 = %#v/%#v/%v", gotIdentity, gotView, replayErr)
+			}
+		})
+	}
+}
+
+func TestCreateAccountRealRedactionFailureRollsBackDeletedUser(t *testing.T) {
+	requireDefaultMySQLAffectedRows(t)
+	f, services := openA03CreateServices(t, 1_910_054_500_000)
+	username := fixtureUsername(testSnowflake.Next())
+	nickname := "Rollback private snapshot"
+	base := actionsecurity.CreateAccountIntent{Username: username, Nickname: &nickname, Role: models.UserRoleUser.String(), PlanType: int(models.PlanFree), AllowedModels: []string{}, DailyCallLimit: 100}
+	identity, execution := services.prepare(t, f, base, "A03-Strong-Password!", newRealIdempotencyKey(t))
+	if view, err := services.operations.Execute(context.Background(), identity, execution, execution, services.outbox); err != nil || view == nil || view.Status != "succeeded" {
+		t.Fatalf("create before rollback probe = %#v/%v", view, err)
+	}
+	var operation models.AdminOperation
+	if err := f.db.Where("id = ?", identity.ID).First(&operation).Error; err != nil || operation.ResultGUID == nil {
+		t.Fatal(err)
+	}
+	var target models.User
+	if err := f.db.Where("guid = ?", *operation.ResultGUID).First(&target).Error; err != nil {
+		t.Fatal(err)
+	}
+	deleteIdentity, deleteIntent, _ := f.prepare(t, target, newRealIdempotencyKey(t))
+	hook := fmt.Sprintf("a03_redaction_rollback_%d", testSnowflake.Next())
+	var hits atomic.Int32
+	if err := f.db.Callback().Update().Before("gorm:update").Register(hook, func(tx *gorm.DB) {
+		if tx.Statement.Table == "admin_operation_responses" {
+			hits.Add(1)
+			tx.AddError(errors.New("isolated response redaction failure"))
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	remove := func() { _ = f.db.Callback().Update().Remove(hook) }
+	t.Cleanup(remove)
+	deleteExecution, _ := f.bundle.NewExecution(deleteIntent)
+	view, err := f.bundle.Operations.Execute(context.Background(), deleteIdentity, deleteExecution, deleteExecution, f.bundle.Outbox)
+	remove()
+	if view != nil || !errors.Is(err, ErrActionOperationUnavailable) || hits.Load() != 1 {
+		t.Fatalf("redaction rollback result = %#v/%v hits=%d", view, err, hits.Load())
+	}
+	var storedUser models.User
+	if err := f.db.Unscoped().First(&storedUser, target.ID).Error; err != nil || storedUser.IsDeleted != 0 || storedUser.Nickname == nil || *storedUser.Nickname != nickname || storedUser.PasswordHash == nil {
+		t.Fatalf("user changed despite redaction rollback = %#v/%v", storedUser, err)
+	}
+	var storedResponse models.AdminOperationResponse
+	if err := f.db.Where("operation_id = ?", operation.ID).First(&storedResponse).Error; err != nil || storedResponse.LifecycleState != models.OperationResponseActive || storedResponse.IsDeleted != 0 || !bytes.Contains(storedResponse.ResponseBody, []byte(username)) {
+		t.Fatalf("snapshot changed despite rollback = %#v/%v", storedResponse, err)
+	}
+}
+
+func TestCreateAccountRealExpiryAndDeleteConcurrencyRedactsOnce(t *testing.T) {
+	requireDefaultMySQLAffectedRows(t)
+	f, services := openA03CreateServices(t, 1_910_055_500_000)
+	username := fixtureUsername(testSnowflake.Next())
+	base := actionsecurity.CreateAccountIntent{Username: username, Role: models.UserRoleUser.String(), PlanType: int(models.PlanFree), AllowedModels: []string{}, DailyCallLimit: 100}
+	key := newRealIdempotencyKey(t)
+	identity, execution := services.prepare(t, f, base, "A03-Strong-Password!", key)
+	if view, err := services.operations.Execute(context.Background(), identity, execution, execution, services.outbox); err != nil || view == nil || view.Status != "succeeded" {
+		t.Fatalf("create before concurrent expiry = %#v/%v", view, err)
+	}
+	var createOperation models.AdminOperation
+	if err := f.db.Where("id = ?", identity.ID).First(&createOperation).Error; err != nil || createOperation.ResultGUID == nil {
+		t.Fatal(err)
+	}
+	var target models.User
+	if err := f.db.Where("guid = ?", *createOperation.ResultGUID).First(&target).Error; err != nil {
+		t.Fatal(err)
+	}
+	if result := f.db.Model(&models.Session{}).Where("id = ?", f.session.ID).Update("expires_at", createOperation.QueryExpiresAt+60_000); result.Error != nil || result.RowsAffected != 1 {
+		t.Fatal(result.Error)
+	}
+	f.clock.Set(createOperation.QueryExpiresAt)
+	deleteIdentity, deleteIntent, _ := f.prepare(t, target, newRealIdempotencyKey(t))
+	deleteExecution, _ := f.bundle.NewExecution(deleteIntent)
+	start := make(chan struct{})
+	var wait sync.WaitGroup
+	var expireErr, deleteErr error
+	var deleteView *OperationView
+	wait.Add(2)
+	go func() {
+		defer wait.Done()
+		<-start
+		_, expireErr = services.operations.Query(context.Background(), actionsecurity.ActionUsersCreate, f.actorAPI, []string{key})
+	}()
+	go func() {
+		defer wait.Done()
+		<-start
+		deleteView, deleteErr = f.bundle.Operations.Execute(context.Background(), deleteIdentity, deleteExecution, deleteExecution, f.bundle.Outbox)
+	}()
+	close(start)
+	wait.Wait()
+	if !errors.Is(expireErr, ErrActionOperationExpired) || deleteErr != nil || deleteView == nil || deleteView.Status != "succeeded" {
+		t.Fatalf("concurrent expiry/delete = expire:%v delete:%#v/%v", expireErr, deleteView, deleteErr)
+	}
+	var response models.AdminOperationResponse
+	if err := f.db.Unscoped().Where("operation_id = ?", createOperation.ID).First(&response).Error; err != nil || response.LifecycleState != models.OperationResponseRedacted || response.IsDeleted != 1 || string(response.ResponseBody) != "{}" {
+		t.Fatalf("concurrent redaction = %#v/%v", response, err)
+	}
+}
+
+func TestCreateAccountRealDeleteRedactsEverySnapshotForTarget(t *testing.T) {
+	requireDefaultMySQLAffectedRows(t)
+	f, services := openA03CreateServices(t, 1_910_056_500_000)
+	username := fixtureUsername(testSnowflake.Next())
+	base := actionsecurity.CreateAccountIntent{Username: username, Role: models.UserRoleUser.String(), PlanType: int(models.PlanFree), AllowedModels: []string{}, DailyCallLimit: 100}
+	identity, execution := services.prepare(t, f, base, "A03-Strong-Password!", newRealIdempotencyKey(t))
+	if view, err := services.operations.Execute(context.Background(), identity, execution, execution, services.outbox); err != nil || view == nil || view.Status != "succeeded" {
+		t.Fatalf("create before multi-snapshot = %#v/%v", view, err)
+	}
+	var operation models.AdminOperation
+	if err := f.db.Where("id = ?", identity.ID).First(&operation).Error; err != nil || operation.ResultGUID == nil {
+		t.Fatal(err)
+	}
+	var target models.User
+	if err := f.db.Where("guid = ?", *operation.ResultGUID).First(&target).Error; err != nil {
+		t.Fatal(err)
+	}
+	var originalResponse models.AdminOperationResponse
+	if err := f.db.Where("operation_id = ?", operation.ID).First(&originalResponse).Error; err != nil {
+		t.Fatal(err)
+	}
+	cloneOperation := operation
+	cloneOperation.ID = 0
+	cloneOperation.Guid = testSnowflake.Next()
+	cloneOperation.PublicRef = "op_" + fmt.Sprintf("%043d", testSnowflake.Next())
+	cloneOperation.IdempotencyKeyHMAC = strings.Repeat("2", 64)
+	cloneOperation.RequestHMAC = strings.Repeat("3", 64)
+	if err := f.db.Create(&cloneOperation).Error; err != nil {
+		t.Fatal(err)
+	}
+	var originalOutbox models.AdminActionOutbox
+	if err := f.db.Where("operation_id = ?", operation.ID).First(&originalOutbox).Error; err != nil {
+		t.Fatal(err)
+	}
+	cloneOutbox := originalOutbox
+	cloneOutbox.ID = 0
+	cloneOutbox.Guid = testSnowflake.Next()
+	cloneOutbox.OperationID = cloneOperation.ID
+	cloneOutbox.PublicRef = cloneOperation.PublicRef
+	if err := f.db.Create(&cloneOutbox).Error; err != nil {
+		t.Fatal(err)
+	}
+	cloneResponse := originalResponse
+	cloneResponse.ID = 0
+	cloneResponse.Guid = testSnowflake.Next()
+	cloneResponse.OperationID = cloneOperation.ID
+	cloneResponse.ResponseBody = bytes.Replace(cloneResponse.ResponseBody, []byte(operation.PublicRef), []byte(cloneOperation.PublicRef), 1)
+	digest := sha256.Sum256(cloneResponse.ResponseBody)
+	cloneResponse.BodySHA256 = fmt.Sprintf("%x", digest)
+	clear(digest[:])
+	mac, ok := createAccountResponseHMAC(services.crypto, cloneOperation, models.OperationResponseActive, target.Guid, http.StatusCreated, createAccountResponseMediaType, cloneResponse.ResponseBody)
+	if !ok {
+		t.Fatal("clone response HMAC")
+	}
+	cloneResponse.ResponseHMAC = &mac
+	if err := f.db.Create(&cloneResponse).Error; err != nil {
+		t.Fatal(err)
+	}
+	deleteIdentity, deleteIntent, _ := f.prepare(t, target, newRealIdempotencyKey(t))
+	deleteExecution, _ := f.bundle.NewExecution(deleteIntent)
+	if view, err := f.bundle.Operations.Execute(context.Background(), deleteIdentity, deleteExecution, deleteExecution, f.bundle.Outbox); err != nil || view == nil || view.Status != "succeeded" {
+		t.Fatalf("delete multi-snapshot = %#v/%v", view, err)
+	}
+	var redacted []models.AdminOperationResponse
+	if err := f.db.Unscoped().Where("target_guid = ?", target.Guid).Order("operation_id").Find(&redacted).Error; err != nil || len(redacted) != 2 {
+		t.Fatalf("multi-snapshot rows = %d/%v", len(redacted), err)
+	}
+	for _, response := range redacted {
+		if response.LifecycleState != models.OperationResponseRedacted || response.IsDeleted != 1 || string(response.ResponseBody) != "{}" || bytes.Contains(response.ResponseBody, []byte(username)) {
+			t.Fatalf("multi-snapshot retained PII = %#v", response)
+		}
+	}
+}
+
 func TestCreateAccountRealSnapshotRejectsDirectMutationAndRotatedKey(t *testing.T) {
 	requireDefaultMySQLAffectedRows(t)
 	f, services := openA03CreateServices(t, 1_910_060_000_000)
@@ -336,13 +581,14 @@ func TestCreateAccountRealSnapshotRejectsDirectMutationAndRotatedKey(t *testing.
 	if response.IntegrityVersion != models.OperationResponseIntegrityHMACV1 || response.ResponseHMAC == nil || len(*response.ResponseHMAC) != 64 {
 		t.Fatalf("unsealed HMAC response = %#v", response)
 	}
-	restore := map[string]any{"lifecycle_state": response.LifecycleState, "integrity_version": response.IntegrityVersion, "response_hmac": response.ResponseHMAC,
+	restore := map[string]any{"target_guid": response.TargetGUID, "lifecycle_state": response.LifecycleState, "integrity_version": response.IntegrityVersion, "response_hmac": response.ResponseHMAC,
 		"http_status": response.HTTPStatus, "media_type": response.MediaType, "response_body": response.ResponseBody, "body_sha256": response.BodySHA256,
 		"is_deleted": response.IsDeleted, "updated_at": response.UpdatedAt, "updated_by": response.UpdatedBy}
 	for name, update := range map[string]map[string]any{
+		"target":    {"target_guid": f.actor.Guid},
 		"body":      {"response_body": []byte("{}")},
 		"digest":    {"body_sha256": strings.Repeat("0", 64)},
-		"version":   {"integrity_version": models.OperationResponseIntegrityLegacySealed, "response_hmac": nil},
+		"hmac":      {"response_hmac": strings.Repeat("0", 64)},
 		"lifecycle": {"lifecycle_state": models.OperationResponseRedacted, "response_body": []byte("{}"), "body_sha256": redactedCreateResponseSHA256, "is_deleted": 1, "updated_at": response.UpdatedAt + 1, "updated_by": f.actor.ID},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -356,6 +602,9 @@ func TestCreateAccountRealSnapshotRejectsDirectMutationAndRotatedKey(t *testing.
 				t.Fatalf("restore valid fixture response = %d/%v", result.RowsAffected, result.Error)
 			}
 		})
+	}
+	if result := f.db.Unscoped().Model(&models.AdminOperationResponse{}).Where("id = ?", response.ID).UpdateColumns(map[string]any{"integrity_version": models.OperationResponseIntegrityLegacySealed, "response_hmac": nil}); result.Error == nil {
+		t.Fatal("schema accepted an active response without HMAC integrity")
 	}
 	current, err := services.operations.CreateAccountResponse(context.Background(), actionsecurity.ActionUsersCreate, f.actorAPI, identity.PublicRef)
 	if err != nil || current == nil || current.HTTPStatus != http.StatusCreated {

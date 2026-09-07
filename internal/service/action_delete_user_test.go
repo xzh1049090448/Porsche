@@ -52,7 +52,7 @@ func TestDeleteUserExecutionPersistsExactAtomicSoftDelete(t *testing.T) {
 	calls := script.committedCalls()
 	wantKinds := []string{
 		"query:users", "query:user_sessions", "query:gateway_api_tokens", "query:user_permission_heads", "query:user_permission_overrides",
-		"query:admin_operations",
+		"query:admin_action_outbox", "query:admin_operation_responses",
 		"exec:user_sessions", "exec:gateway_api_tokens", "exec:user_permission_heads", "exec:user_permission_overrides", "exec:users", "exec:auth_audit_events",
 	}
 	if got := deleteConsumerCallKinds(calls); fmt.Sprint(got) != fmt.Sprint(wantKinds) {
@@ -64,34 +64,36 @@ func TestDeleteUserExecutionPersistsExactAtomicSoftDelete(t *testing.T) {
 	assertDeleteConsumerQuery(t, calls[2], "SELECT `id` FROM `gateway_api_tokens` WHERE user_id = ? AND is_deleted = 0 AND status = ? AND (expires_at IS NULL OR expires_at > ?) ORDER BY id ASC", "FOR UPDATE")
 	assertDeleteConsumerQuery(t, calls[3], "SELECT `id` FROM `user_permission_heads` WHERE user_id = ? AND is_deleted = 0 ORDER BY id ASC", "FOR UPDATE")
 	assertDeleteConsumerQuery(t, calls[4], "SELECT `id` FROM `user_permission_overrides` WHERE user_id = ? AND is_deleted = 0 ORDER BY id ASC", "FOR UPDATE")
+	assertDeleteConsumerQuery(t, calls[5], "FROM `admin_action_outbox`", "result_guid = ?", "FOR UPDATE")
+	assertDeleteConsumerQuery(t, calls[6], "FROM `admin_operation_responses`", "target_guid = ?", "FOR UPDATE")
 	assertDeleteConsumerArgs(t, calls[0], int64(6_001), int64(1))
 	assertDeleteConsumerArgs(t, calls[1], int64(61))
 	assertDeleteConsumerArgs(t, calls[2], int64(61), int64(models.GatewayTokenActive), int64(8_001))
 	assertDeleteConsumerArgs(t, calls[3], int64(61))
 	assertDeleteConsumerArgs(t, calls[4], int64(61))
 
-	assertDeleteConsumerUpdate(t, calls[6], []string{"revoked_at", "session_version", "updated_at", "updated_by"},
+	assertDeleteConsumerUpdate(t, calls[7], []string{"revoked_at", "session_version", "updated_at", "updated_by"},
 		"WHERE user_id = ? AND is_deleted = 0 AND revoked_at IS NULL AND session_version < ?")
-	assertDeleteConsumerUpdate(t, calls[7], []string{"status", "updated_at", "updated_by"},
+	assertDeleteConsumerUpdate(t, calls[8], []string{"status", "updated_at", "updated_by"},
 		"WHERE user_id = ? AND is_deleted = 0 AND status = ? AND (expires_at IS NULL OR expires_at > ?)")
-	assertDeleteConsumerUpdate(t, calls[8], []string{"is_deleted", "updated_at", "updated_by"}, "WHERE user_id = ? AND is_deleted = 0")
 	assertDeleteConsumerUpdate(t, calls[9], []string{"is_deleted", "updated_at", "updated_by"}, "WHERE user_id = ? AND is_deleted = 0")
-	assertDeleteConsumerUpdate(t, calls[10], []string{
+	assertDeleteConsumerUpdate(t, calls[10], []string{"is_deleted", "updated_at", "updated_by"}, "WHERE user_id = ? AND is_deleted = 0")
+	assertDeleteConsumerUpdate(t, calls[11], []string{
 		"auth_version", "id_card_hash", "is_deleted", "is_verified", "nickname", "password_hash", "phone", "real_name", "status", "updated_at", "updated_by",
 	}, "WHERE id = ? AND guid = ? AND is_deleted = 0 AND auth_version = ? AND role = ? AND status = ?")
-	assertDeleteConsumerArgs(t, calls[6], int64(8_001), int64(8_001), int64(41), int64(61), int64(math.MaxInt32))
-	assertDeleteConsumerArgs(t, calls[7], int64(models.GatewayTokenRevoked), int64(8_001), int64(41), int64(61), int64(models.GatewayTokenActive), int64(8_001))
-	assertDeleteConsumerArgs(t, calls[8], int64(1), int64(8_001), int64(41), int64(61))
+	assertDeleteConsumerArgs(t, calls[7], int64(8_001), int64(8_001), int64(41), int64(61), int64(math.MaxInt32))
+	assertDeleteConsumerArgs(t, calls[8], int64(models.GatewayTokenRevoked), int64(8_001), int64(41), int64(61), int64(models.GatewayTokenActive), int64(8_001))
 	assertDeleteConsumerArgs(t, calls[9], int64(1), int64(8_001), int64(41), int64(61))
-	assertDeleteConsumerArgs(t, calls[10], nil, int64(1), false, nil, nil, nil, nil, int64(models.UserStatusDisabled), int64(8_001), int64(41),
+	assertDeleteConsumerArgs(t, calls[10], int64(1), int64(8_001), int64(41), int64(61))
+	assertDeleteConsumerArgs(t, calls[11], nil, int64(1), false, nil, nil, nil, nil, int64(models.UserStatusDisabled), int64(8_001), int64(41),
 		int64(61), int64(6_001), int64(7), int64(models.UserRoleUser), int64(models.UserStatusActive))
 	for _, preserved := range []string{"username", "guid", "role", "plan_type", "allowed_models", "created_at", "created_by", "last_login_at", "daily_call_limit", "daily_calls_used", "daily_calls_reset_at", "total_tokens_used"} {
-		if deleteConsumerSetColumns(calls[10].query)[preserved] {
-			t.Errorf("user update changed preserved column %q: %s", preserved, calls[10].query)
+		if deleteConsumerSetColumns(calls[11].query)[preserved] {
+			t.Errorf("user update changed preserved column %q: %s", preserved, calls[11].query)
 		}
 	}
 
-	audit := deleteConsumerInsertValues(t, calls[11])
+	audit := deleteConsumerInsertValues(t, calls[12])
 	wantAudit := map[string]any{
 		"guid": int64(7_001), "created_at": int64(8_001), "created_by": int64(41), "updated_at": int64(8_001), "updated_by": int64(41),
 		"is_deleted": int64(0), "user_id": int64(61), "session_guid": nil, "event_type": int64(models.AuthAuditEventUserDeleted),
@@ -428,7 +430,10 @@ func configureDeleteConsumerCreateResponse(t *testing.T, script *deleteConsumerS
 		t.Fatal("create response HMAC fixture failed")
 	}
 	script.createOperations = []models.AdminOperation{operation}
-	script.createResponses = []models.AdminOperationResponse{{ID: 141, AuditFields: models.AuditFields{IsDeleted: 0}, OperationID: operation.ID,
+	actorID := int64(41)
+	script.createOutboxes = []models.AdminActionOutbox{{ID: 135, OperationID: operation.ID, PublicRef: operation.PublicRef, Action: operation.Action,
+		State: models.OperationSucceeded, ResultGUID: &resultGUID}}
+	script.createResponses = []models.AdminOperationResponse{{ID: 141, AuditFields: models.AuditFields{Guid: 1401, CreatedAt: finished, CreatedBy: &actorID, UpdatedAt: finished, UpdatedBy: &actorID, IsDeleted: 0}, OperationID: operation.ID, TargetGUID: resultGUID,
 		LifecycleState: models.OperationResponseActive, IntegrityVersion: models.OperationResponseIntegrityHMACV1, ResponseHMAC: &hmacValue,
 		HTTPStatus: resultStatus, MediaType: createAccountResponseMediaType, ResponseBody: body, BodySHA256: redactedCreateResponseSHA256}}
 }
@@ -487,6 +492,7 @@ type deleteConsumerScript struct {
 	heads            []models.PermissionPolicyHead
 	overrides        []models.PermissionOverride
 	createOperations []models.AdminOperation
+	createOutboxes   []models.AdminActionOutbox
 	createResponses  []models.AdminOperationResponse
 	failQuery        string
 	failExec         string
@@ -601,12 +607,25 @@ func (conn *deleteConsumerConn) QueryContext(_ context.Context, query string, ar
 			values = append(values, []driver.Value{row.ID, row.PublicRef, int64(row.Action), int64(row.State), row.FinishedAt, row.ErrorCode, row.ResultKind, row.ResultGUID, row.ResultHTTPStatus, int64(row.IsDeleted)})
 		}
 		return &deleteConsumerRows{columns: []string{"id", "public_ref", "action", "state", "finished_at", "error_code", "result_kind", "result_guid", "result_http_status", "is_deleted"}, values: values}, nil
+	case "admin_action_outbox":
+		values := make([][]driver.Value, 0, len(conn.script.createOutboxes))
+		for _, row := range conn.script.createOutboxes {
+			values = append(values, []driver.Value{row.ID, row.OperationID, row.PublicRef, int64(row.Action), int64(row.State), row.FailureCode, row.ResultGUID})
+		}
+		return &deleteConsumerRows{columns: []string{"id", "operation_id", "public_ref", "action", "state", "failure_code", "result_guid"}, values: values}, nil
 	case "admin_operation_responses":
+		if strings.Contains(query, "SELECT `response_body`") || strings.Contains(query, "SELECT response_body") {
+			values := make([][]driver.Value, 0, len(conn.script.createResponses))
+			for _, row := range conn.script.createResponses {
+				values = append(values, []driver.Value{row.ResponseBody})
+			}
+			return &deleteConsumerRows{columns: []string{"response_body"}, values: values}, nil
+		}
 		values := make([][]driver.Value, 0, len(conn.script.createResponses))
 		for _, row := range conn.script.createResponses {
-			values = append(values, []driver.Value{row.ID, row.OperationID, int64(row.LifecycleState), int64(row.IntegrityVersion), row.ResponseHMAC, int64(row.HTTPStatus), row.MediaType, row.ResponseBody, row.BodySHA256, int64(row.IsDeleted)})
+			values = append(values, []driver.Value{row.ID, row.Guid, row.CreatedAt, row.CreatedBy, row.UpdatedAt, row.UpdatedBy, int64(row.IsDeleted), row.OperationID, row.TargetGUID, int64(row.LifecycleState), int64(row.IntegrityVersion), row.ResponseHMAC, int64(row.HTTPStatus), row.MediaType, row.BodySHA256})
 		}
-		return &deleteConsumerRows{columns: []string{"id", "operation_id", "lifecycle_state", "integrity_version", "response_hmac", "http_status", "media_type", "response_body", "body_sha256", "is_deleted"}, values: values}, nil
+		return &deleteConsumerRows{columns: []string{"id", "guid", "created_at", "created_by", "updated_at", "updated_by", "is_deleted", "operation_id", "target_guid", "lifecycle_state", "integrity_version", "response_hmac", "http_status", "media_type", "body_sha256"}, values: values}, nil
 	default:
 		return nil, fmt.Errorf("private unexpected query: %s", query)
 	}
@@ -700,7 +719,7 @@ func deleteConsumerRow(columns []string, values []driver.Value) *deleteConsumerR
 	return &deleteConsumerRows{columns: columns, values: [][]driver.Value{values}}
 }
 func deleteConsumerTable(query string) string {
-	for _, table := range []string{"admin_operation_responses", "admin_operations", "auth_audit_events", "user_permission_overrides", "user_permission_heads", "gateway_api_tokens", "user_sessions", "users"} {
+	for _, table := range []string{"admin_operation_responses", "admin_action_outbox", "admin_operations", "auth_audit_events", "user_permission_overrides", "user_permission_heads", "gateway_api_tokens", "user_sessions", "users"} {
 		if strings.Contains(query, "`"+table+"`") {
 			return table
 		}

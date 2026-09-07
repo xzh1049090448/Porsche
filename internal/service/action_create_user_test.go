@@ -110,7 +110,7 @@ func TestCreateAccountExecutionCreatesOrdinaryUserAndRegistrationAudit(t *testin
 		t.Fatalf("registration audit = %#v", audit)
 	}
 	response := createAccountInsertValues(t, script.committedTableCall("admin_operation_responses", 0))
-	if fmt.Sprint(response["guid"]) != "9003" || fmt.Sprint(response["operation_id"]) != "31" || fmt.Sprint(response["http_status"]) != "201" ||
+	if fmt.Sprint(response["guid"]) != "9003" || fmt.Sprint(response["operation_id"]) != "31" || fmt.Sprint(response["target_guid"]) != "9001" || fmt.Sprint(response["http_status"]) != "201" ||
 		fmt.Sprint(response["lifecycle_state"]) != fmt.Sprint(models.OperationResponseActive) || fmt.Sprint(response["integrity_version"]) != fmt.Sprint(models.OperationResponseIntegrityHMACV1) ||
 		len(fmt.Sprint(response["response_hmac"])) != 64 || response["media_type"] != createAccountResponseMediaType ||
 		!validCreateAccountResponseBody(response["response_body"].([]byte), deleteWriterPublicRef, actionsecurity.ActionUsersCreate, 9001) {
@@ -269,7 +269,7 @@ func TestCreateAccountResponseHMACBindsOperationActionResultStatusMediaAndBody(t
 	if !ok {
 		t.Fatal("HMAC setup failed")
 	}
-	response := models.AdminOperationResponse{OperationID: operation.ID, LifecycleState: models.OperationResponseActive,
+	response := models.AdminOperationResponse{OperationID: operation.ID, TargetGUID: resultGUID, LifecycleState: models.OperationResponseActive,
 		IntegrityVersion: models.OperationResponseIntegrityHMACV1, ResponseHMAC: &mac, HTTPStatus: http.StatusCreated,
 		MediaType: createAccountResponseMediaType, ResponseBody: append([]byte(nil), body...)}
 	if !matchingCreateAccountResponseHMAC(createAccountTestCrypto(t), operation, response) {
@@ -286,9 +286,8 @@ func TestCreateAccountResponseHMACBindsOperationActionResultStatusMediaAndBody(t
 		{"action", func(op *models.AdminOperation, _ *models.AdminOperationResponse) {
 			op.Action = int(actionsecurity.ActionUsersCreateAdmin)
 		}},
-		{"result", func(op *models.AdminOperation, _ *models.AdminOperationResponse) {
-			value := int64(9202)
-			op.ResultGUID = &value
+		{"target", func(_ *models.AdminOperation, got *models.AdminOperationResponse) {
+			got.TargetGUID++
 		}},
 		{"lifecycle", func(_ *models.AdminOperation, got *models.AdminOperationResponse) {
 			got.LifecycleState = models.OperationResponseRedacted

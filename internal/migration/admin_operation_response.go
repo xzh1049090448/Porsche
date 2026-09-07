@@ -24,6 +24,7 @@ func adminOperationResponseTableContract() businessGroupTableContract {
 			{name: "updated_by", columnType: "bigint", nullable: "YES"},
 			{name: "is_deleted", columnType: "int", nullable: "NO", defaultVal: sql.NullString{String: "0", Valid: true}},
 			{name: "operation_id", columnType: "bigint", nullable: "NO"},
+			{name: "target_guid", columnType: "bigint", nullable: "YES"},
 			{name: "lifecycle_state", columnType: "int", nullable: "NO", defaultVal: sql.NullString{String: "1", Valid: true}},
 			{name: "integrity_version", columnType: "int", nullable: "NO", defaultVal: sql.NullString{String: "0", Valid: true}},
 			{name: "response_hmac", columnType: "char(64)", nullable: "YES", characterSet: "ascii", collation: "ascii_bin"},
@@ -37,11 +38,12 @@ func adminOperationResponseTableContract() businessGroupTableContract {
 			{name: "uk_admin_operation_responses_guid", columns: []string{"guid"}, unique: true},
 			{name: "uk_admin_operation_responses_operation", columns: []string{"operation_id"}, unique: true},
 			{name: "idx_admin_operation_responses_active", columns: []string{"is_deleted", "created_at"}, unique: false},
+			{name: "idx_admin_operation_responses_target", columns: []string{"target_guid", "lifecycle_state", "is_deleted", "id"}, unique: false},
 		},
 		checks: []businessGroupCheckContract{
 			{name: "chk_admin_operation_responses_http", clause: "http_status = 201 AND media_type = 'application/json'", enforced: "YES"},
 			{name: "chk_admin_operation_responses_body", clause: "OCTET_LENGTH(response_body) BETWEEN 2 AND 4096 AND OCTET_LENGTH(body_sha256) = 64", enforced: "YES"},
-			{name: "chk_admin_operation_responses_lifecycle", clause: "(lifecycle_state = 1 AND is_deleted = 0 AND updated_at = created_at AND ((integrity_version = 0 AND response_hmac IS NULL) OR (integrity_version = 1 AND OCTET_LENGTH(response_hmac) = 64)) AND ((created_by IS NULL AND updated_by IS NULL) OR (created_by IS NOT NULL AND updated_by = created_by))) OR (lifecycle_state = 2 AND is_deleted = 1 AND integrity_version = 1 AND OCTET_LENGTH(response_hmac) = 64 AND OCTET_LENGTH(response_body) = 2 AND updated_at >= created_at AND updated_by IS NOT NULL)", enforced: "YES"},
+			{name: "chk_admin_operation_responses_lifecycle", clause: "(lifecycle_state = 1 AND target_guid IS NOT NULL AND target_guid > 0 AND is_deleted = 0 AND updated_at = created_at AND integrity_version = 1 AND OCTET_LENGTH(response_hmac) = 64 AND ((created_by IS NULL AND updated_by IS NULL) OR (created_by IS NOT NULL AND updated_by = created_by))) OR (lifecycle_state = 2 AND (target_guid IS NULL OR target_guid > 0) AND is_deleted = 1 AND integrity_version = 1 AND OCTET_LENGTH(response_hmac) = 64 AND response_body = X'7B7D' AND body_sha256 = '44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a' AND updated_at >= created_at AND updated_by IS NOT NULL)", enforced: "YES"},
 		},
 	}
 }
@@ -94,13 +96,25 @@ func matchesAdminOperationResponseContract(want businessGroupTableContract, got 
 			}
 		}
 	}
-	if len(got.foreignKeys) != 1 {
+	if len(got.foreignKeys) != 2 {
 		return false
 	}
-	fk := got.foreignKeys[0]
-	if fk.name != "fk_admin_operation_responses_operation" || fk.column != "operation_id" || fk.ordinal != 1 || fk.targetSchema != currentSchema ||
-		fk.targetTable != "admin_operations" || fk.targetColumn != "id" || !restrictRule(fk.deleteRule) || !restrictRule(fk.updateRule) {
-		return false
+	foreignKeys := make(map[string]businessGroupForeignKeyMetadata, len(got.foreignKeys))
+	for _, fk := range got.foreignKeys {
+		if _, duplicate := foreignKeys[fk.name]; duplicate {
+			return false
+		}
+		foreignKeys[fk.name] = fk
+	}
+	for name, expected := range map[string]struct{ column, table, target string }{
+		"fk_admin_operation_responses_operation": {"operation_id", "admin_operations", "id"},
+		"fk_admin_operation_responses_target":    {"target_guid", "users", "guid"},
+	} {
+		fk, ok := foreignKeys[name]
+		if !ok || fk.column != expected.column || fk.ordinal != 1 || fk.targetSchema != currentSchema || fk.targetTable != expected.table ||
+			fk.targetColumn != expected.target || !restrictRule(fk.deleteRule) || !restrictRule(fk.updateRule) {
+			return false
+		}
 	}
 	checks := make(map[string][]businessGroupCheckMetadata, len(want.checks))
 	for _, check := range got.checks {
@@ -201,6 +215,30 @@ func tokenizeAdminOperationResponseCheck(clause string) ([]adminOperationRespons
 		case '(', ')', ',':
 			tokens = append(tokens, adminOperationResponseCheckToken{kind: clause[pos], text: clause[pos : pos+1]})
 			pos++
+			continue
+		}
+		if (clause[pos] == 'x' || clause[pos] == 'X') && pos+1 < len(clause) && clause[pos+1] == '\'' {
+			end := pos + 2
+			for end < len(clause) && isASCIIHexDigit(clause[end]) {
+				end++
+			}
+			if end == pos+2 || (end-(pos+2))%2 != 0 || end >= len(clause) || clause[end] != '\'' {
+				return nil, false
+			}
+			tokens = append(tokens, adminOperationResponseCheckToken{kind: 'h', text: strings.ToLower(clause[pos+2 : end])})
+			pos = end + 1
+			continue
+		}
+		if clause[pos] == '0' && pos+2 < len(clause) && (clause[pos+1] == 'x' || clause[pos+1] == 'X') {
+			end := pos + 2
+			for end < len(clause) && isASCIIHexDigit(clause[end]) {
+				end++
+			}
+			if end == pos+2 || (end-(pos+2))%2 != 0 {
+				return nil, false
+			}
+			tokens = append(tokens, adminOperationResponseCheckToken{kind: 'h', text: strings.ToLower(clause[pos+2 : end])})
+			pos = end
 			continue
 		}
 		if isASCIIAlpha(clause[pos]) || clause[pos] == '_' {
@@ -344,6 +382,9 @@ func (p *adminOperationResponseCheckParser) parseScalar() (string, bool) {
 	}
 	token := p.tokens[p.pos]
 	switch token.kind {
+	case 'h':
+		p.pos++
+		return "hex(" + token.text + ")", true
 	case 'n':
 		p.pos++
 		value := strings.TrimLeft(token.text, "0")
@@ -414,6 +455,10 @@ func mergeAdminOperationResponseBoolean(kind string, left, right adminOperationR
 		children = append(children, right)
 	}
 	return adminOperationResponseCheckNode{kind: kind, children: children}
+}
+
+func isASCIIHexDigit(value byte) bool {
+	return isASCIIDigit(value) || value >= 'a' && value <= 'f' || value >= 'A' && value <= 'F'
 }
 
 func (node adminOperationResponseCheckNode) canonical() string {
