@@ -116,7 +116,9 @@ A03 新增前向迁移，遵守 `docs/conventions/database-standards.md`，不�
 
 实际基线在 A03 实施期间已由独立批准的响应快照迁移推进至 0008；安全修订新增 0009 和 0010。0009 为快照增加 lifecycle、integrity version 和 response HMAC，为 outbox 增加脱敏 failure code 与成功/失败结果约束。其 runner 探测并只接受四条 DDL 的已提交前缀：response ALTER、outbox column、幂等 backfill、outcome CHECK；在每个前缀崩溃后重跑会从下一安全阶段恢复并在 CHECK 前重复 NULL-only backfill，任意非前缀混合结构 fail closed。
 
-0010 不修改 0009：它为快照增加 nullable `target_guid`，先从仍保留的 operation result 回填，operation 已到期时改用成功 outbox 的 durable result marker。无法解析正数目标的活跃行以及无法解析目标的 legacy redacted 行在单条原子 UPDATE 中改为 lifecycle redacted、规范 `{}` body、固定 digest 和不可重放 sentinel HMAC，保证最终 CHECK 建立前已无可恢复 PII。最后增加 `(target_guid,lifecycle_state,is_deleted,id)` 索引、指向 `users.guid` 的 RESTRICT 外键，并要求每个新活跃快照都有正数 target 和 HMAC v1；redacted body 必须精确为 `{}` 及其固定 digest。runner 对已提交的 column/backfill/redaction/final-DDL 每个前缀均可重跑，数据阶段保持幂等，混合结构 fail closed。迁移和 verifier 只依赖普通表级 DDL 权限，并保留 0001–0009 的既有 checksum。
+0010 不修改 0009：它为快照增加 nullable `target_guid`，并为 outbox 增加 durable nullable `result_kind`。迁移只把 action、operation ID、public ref 完全相同且满足创建契约的成功 marker 分类为 `ResultUser`：活跃 operation 必须是未删除的成功 `users.create`/`users.create_admin`、ResultUser、正数且真实存在的 user GUID、201 与完整终态字段；已到期 operation 必须是已删除的 expired 终态、结果字段已清空，而 outbox 必须未删除、成功、无 failure、TargetNone、ResultUser、正数且真实存在的 user GUID。活跃路径仅从前一种 operation result 回填，已到期路径仅从后一种 outbox marker 回填；state、failure、action、ref、deleted、result kind、result GUID、operation ID 或 target contract 任一不匹配都不得关联目标。
+
+无论旧 body、digest、HMAC 或目标是否可解析，每个既有 redacted 行都会先改成 lifecycle redacted、固定 201/`application/json`、规范 `{}` body、固定 digest 与全零不可重放 sentinel HMAC。未获得严格目标绑定的活跃行以及结构或摘要不完整的活跃行随后 fail-safe 脱敏；严格绑定但不满足重放完整性的行保留真实 target 以确保实际用户删除仍能定位它，但不保留 PII。最后为 outbox outcome 加入 durable result-kind 约束，并增加 `(target_guid,lifecycle_state,is_deleted,id)` 索引、指向 `users.guid` 的 RESTRICT 外键；每个新活跃快照必须有正数 target 和 HMAC v1，redacted 响应必须精确为固定 201/JSON/`{}`/digest。runner 探测 response column、两列完成、outbox CHECK 完成与最终 response DDL，九条语句的每个已提交前缀均可重跑，数据阶段保持幂等，混合结构 fail closed。迁移和 verifier 只依赖普通表级 DDL 权限，并保留 0001–0009 的既有 checksum。
 
 新增 `business_groups`：
 
@@ -192,7 +194,7 @@ A03 复用 A14 固定 `admin_action_error` envelope 和安全消息，不返回�
 - 用户/权限/审计/outbox/operation 的事务回滚注入测试。
 - 创建→operation Query 到期→删除、创建→Begin 到期→删除及到期/删除并发的真实 MySQL 测试，证明到期不丢失 durable target，删除与全部响应脱敏原子、删除后稳定 410 且无 PII。
 - response HMAC 的 target/body/status 等字段绑定、直接数据库 mutation/delete 拒绝、多 snapshot、脱敏回滚，以及 key/version 生命周期测试。
-- 0010 在默认 MySQL 8.4、普通 DDL 账号下的每个 committed-prefix 恢复，active/outbox 回填和无法解析 PII fail-safe 脱敏测试。
+- 0010 在默认 MySQL 8.4、普通 DDL 账号下的九个 committed-prefix 恢复、每个 redacted legacy 行无条件规范化、active/outbox 严格分路回填、outbox mismatch 矩阵和无法解析 PII fail-safe 脱敏测试。
 - hasher 注入计数与并发门禁：forbidden/rate-limited/replay 为 0，fresh 为 1，同一 operation 并发只允许 fresh owner 哈希一次。
 - 密码、ticket、幂等键、旧用户详情和依赖原文不进入日志/响应/持久化。
 - MySQL 8 与 Redis 7 隔离 fixture、focused race、全量 `go test ./...`、build、vet、migration ledger/verifier。

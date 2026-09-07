@@ -19,7 +19,7 @@
 - Do not run production migrations, deploy, push, create real business users, or activate actions before Task 7 constructs and validates their coherent consumer bundle.
 - A03 completion may update only A03 from `BLOCKED_NOT_IMPLEMENTED` to `PASS_LIMITED_SCOPE`; all unrelated acceptance rows retain their current state.
 
-**2026-09-07 remediation baseline:** The Task 2 references to 0007 describe the historical A03 group migration. Independently approved immutable-response changes added 0008, then 0009 for deletion-aware response HMAC and outbox outcome classification. The expiry-safe privacy remediation adds immutable 0010 for a durable indexed and HMAC-bound response `target_guid`; it backfills from the operation result or durable successful outbox marker, fail-safe redacts unresolved PII, and requires every new active snapshot to have a positive target. Final migration acceptance therefore requires exactly 0001–0010. 0009 and 0010 use ordinary table DDL only: no trigger, `SUPER`, `log_bin_trust_function_creators`, production server-policy change, or mutation of 0001–0009 is allowed.
+**2026-09-07 remediation baseline:** The Task 2 references to 0007 describe the historical A03 group migration. Independently approved immutable-response changes added 0008, then 0009 for deletion-aware response HMAC and outbox outcome classification. The expiry-safe privacy remediation adds unreleased migration 0010 for a durable indexed and HMAC-bound response `target_guid` plus durable outbox `result_kind`. It normalizes every legacy redacted row, backfills only from an exact live success or an exact expired-operation/successful-outbox binding to a real user, fail-safe redacts every mismatched or unresolved active row, and requires every new active snapshot to have a positive target. Final migration acceptance therefore requires exactly 0001–0010. 0009 and 0010 use ordinary table DDL only: no trigger, `SUPER`, `log_bin_trust_function_creators`, production server-policy change, or mutation of 0001–0009 is allowed.
 
 | Version | Immutable up checksum |
 |---|---|
@@ -32,7 +32,7 @@
 | 0007 | `b3c3351771fce2dbf5466d300cb92ffd5dbd183cffaff15671e46a8bc87e143e` |
 | 0008 | `21289da334e7ef4425f697c659e6f45227e88c4d86ac4c099867dd6895f666f2` |
 | 0009 | `4dc818d93180bb6777d2ec6d8318e728fe76add4c736a178f19b808ca2afedf7` |
-| 0010 | `c853e488cdcb3c1e4bf8e61e57bf7f87ef5b53add54b6d67286097fb9880f669` |
+| 0010 | `1106bcaf5c44f85061296aae932e038bc319dfbdc111ac8610f7e52e03851323` |
 
 ## File map
 
@@ -694,7 +694,7 @@ Frontend: `git add docs/agents/validation/joint-acceptance-20260904/acceptance-m
 
 - [ ] Backend and frontend worktrees are clean.
 - [ ] Contract JSON and all status JSON parse successfully.
-- [ ] Migration ledger is exactly 0001–0010 and matches the remediation baseline checksums above; 0009 and 0010 pass on default MySQL 8.4 with the ordinary fixture DDL user and no trigger/server-policy exception. 0010 must prove every committed-prefix rerun, operation/outbox target backfill, unresolved PII redaction, final target index/FK/CHECK, and isolated down/up dependency order.
+- [ ] Migration ledger is exactly 0001–0010 and matches the remediation baseline checksums above; 0009 and 0010 pass on default MySQL 8.4 with the ordinary fixture DDL user and no trigger/server-policy exception. 0010 must prove all nine committed-prefix reruns, unconditional canonicalization of every legacy redacted row, exact live-operation and expired-outbox target backfill to a real user, the state/failure/action/ref/deleted/result-kind/result-GUID/operation-ID/target-contract mismatch matrix, actual-user deletion lookup, unresolved PII redaction, final target index/FK/CHECK, and isolated down/up dependency order.
 - [ ] Production active registry is exactly `users.create`, `users.create_admin`, and `users.delete`.
 - [ ] Ordinary creation performs zero ticket verification; admin creation cannot execute without a valid bound ticket.
 - [ ] All atomic rollback, replay, concurrency, secret-lifecycle, and permission tests pass.
