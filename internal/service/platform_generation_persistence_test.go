@@ -12,10 +12,13 @@ import (
 	"log"
 	"net/url"
 	"os"
+	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	mysqlDriver "github.com/go-sql-driver/mysql"
 	"github.com/porsche/ai-gateway-go/internal/db"
 	"github.com/porsche/ai-gateway-go/internal/migration"
 	"github.com/porsche/ai-gateway-go/internal/models"
@@ -1189,19 +1192,6 @@ func TestPlatformGenerationPersistenceRejectsEmptyUserMessageBeforeDependencies(
 			t.Fatalf("Finalize() error=%v, want invalid", err)
 		}
 	})
-	t.Run("compare mode", func(t *testing.T) {
-		compare := PlatformGenerationPersistenceInput{
-			UserID: 1, GenerationID: generationTestID, Mode: PlatformGenerationModeCompare,
-			Models: []string{"model-a", "model-b"}, UserMessage: "prompt", NowMillis: 1,
-			Results: []PlatformGenerationPersistenceResult{
-				{Model: "model-a", State: PlatformGenerationStateCompleted, Content: "a", Tokens: 1, Seq: 0},
-				{Model: "model-b", State: PlatformGenerationStateCompleted, Content: "b", Tokens: 1, Seq: 0},
-			},
-		}
-		if _, err := p.Finalize(context.Background(), &gorm.DB{}, compare); !errors.Is(err, ErrPlatformGenerationPersistenceInvalid) {
-			t.Fatalf("compare Finalize() error=%v, want invalid before dependencies", err)
-		}
-	})
 }
 
 func TestPlatformGenerationPersistenceSingleWriteFailuresRollbackEveryEffect(t *testing.T) {
@@ -1561,9 +1551,435 @@ func TestPlatformGenerationPersistenceCommitUnknownUsesBoundedIndependentContext
 	t.Run("not found maps operational error", func(t *testing.T) {
 		run(t, PlatformGenerationReceiptSnapshot{}, ErrPlatformGenerationPersistenceNotFound, errors.New("commit status unknown"), ErrPlatformGenerationPersistenceUnavailable)
 	})
+	t.Run("not found duplicate remains unavailable", func(t *testing.T) {
+		run(t, PlatformGenerationReceiptSnapshot{}, ErrPlatformGenerationPersistenceNotFound, &mysqlDriver.MySQLError{Number: 1062}, ErrPlatformGenerationPersistenceUnavailable)
+	})
 	t.Run("unavailable read wins", func(t *testing.T) {
 		run(t, PlatformGenerationReceiptSnapshot{}, ErrPlatformGenerationPersistenceUnavailable, ErrPlatformGenerationPersistenceQuota, ErrPlatformGenerationPersistenceUnavailable)
 	})
+}
+
+const (
+	platformCompareGenerationID = "550e8400-e29b-41d4-a716-446655440101"
+	platformQuotaGenerationOne  = "550e8400-e29b-41d4-a716-446655440102"
+	platformQuotaGenerationTwo  = "550e8400-e29b-41d4-a716-446655440103"
+)
+
+func (f platformGenerationFinalizationFixture) committingResults(t *testing.T, generationID string, mode PlatformGenerationMode, results []PlatformGenerationPersistenceResult) PlatformGenerationPersistenceInput {
+	t.Helper()
+	modelsInOrder := make([]string, len(results))
+	for index := range results {
+		modelsInOrder[index] = results[index].Model
+	}
+	claimTestGeneration(t, f.store, PlatformGenerationClaimInput{
+		UserID: f.user.ID, GenerationID: generationID, Mode: mode, Models: modelsInOrder, NowMillis: f.now,
+	})
+	for index, result := range results {
+		var err error
+		if result.State == PlatformGenerationStateCompleted {
+			_, err = f.store.MarkModelDone(context.Background(), f.user.ID, generationID, result.Model, result.Seq, f.now+int64(index)+1)
+		} else {
+			_, err = f.store.MarkModelFailed(context.Background(), f.user.ID, generationID, result.Model, result.ErrorCode, f.now+int64(index)+1)
+		}
+		if err != nil {
+			t.Fatalf("mark model %q terminal: %v", result.Model, err)
+		}
+	}
+	if _, err := f.store.BeginCommit(context.Background(), f.user.ID, generationID, f.now+int64(len(results))+1); err != nil {
+		t.Fatalf("begin compare commit: %v", err)
+	}
+	t.Cleanup(func() { _ = f.store.client.Del(context.Background(), f.store.key(f.user.ID, generationID)).Err() })
+	return PlatformGenerationPersistenceInput{
+		UserID: f.user.ID, GenerationID: generationID, Mode: mode, Models: modelsInOrder,
+		UserMessage: " compare prompt bytes ", Results: results, NowMillis: f.now + int64(len(results)) + 2,
+	}
+}
+
+func fullCompareResults() []PlatformGenerationPersistenceResult {
+	return []PlatformGenerationPersistenceResult{
+		{Model: "Model-A", State: PlatformGenerationStateCompleted, Content: "answer A", Tokens: 3, Seq: 0},
+		{Model: "model-a", State: PlatformGenerationStateCompleted, Content: "answer a", Tokens: 5, Seq: 0},
+		{Model: "model-c", State: PlatformGenerationStateCompleted, Content: "answer c", Tokens: 7, Seq: 0},
+	}
+}
+
+func partialCompareResults() []PlatformGenerationPersistenceResult {
+	return []PlatformGenerationPersistenceResult{
+		{Model: "Model-A", State: PlatformGenerationStateCompleted, Content: "answer A", Tokens: 7, Seq: 0},
+		{Model: "model-b", State: PlatformGenerationStateFailed, Tokens: 0, Seq: 0, ErrorCode: "timeout"},
+	}
+}
+
+func TestPlatformGenerationPersistenceFinalizesCompareWithIndependentMessages(t *testing.T) {
+	t.Run("dependency-free mode guard", func(t *testing.T) {
+		store, err := NewPlatformGenerationStore(redis.NewClient(&redis.Options{Addr: "127.0.0.1:1"}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = store.Close() })
+		p, err := NewPlatformGenerationPersistence(store)
+		if err != nil {
+			t.Fatal(err)
+		}
+		input := PlatformGenerationPersistenceInput{
+			UserID: 1, GenerationID: platformCompareGenerationID, Mode: PlatformGenerationModeCompare,
+			Models: []string{"model-a", "model-b"}, UserMessage: "prompt", NowMillis: 1,
+			Results: []PlatformGenerationPersistenceResult{
+				{Model: "model-a", State: PlatformGenerationStateCompleted, Content: "one", Tokens: 1},
+				{Model: "model-b", State: PlatformGenerationStateCompleted, Content: "two", Tokens: 2},
+			},
+		}
+		if _, err := p.Finalize(context.Background(), &gorm.DB{}, input); !errors.Is(err, ErrPlatformGenerationPersistenceUnavailable) {
+			t.Fatalf("valid compare rejected by dependency-free guard: %v", err)
+		}
+	})
+
+	f := openPlatformGenerationFinalizationFixture(t)
+	input := f.committingResults(t, platformCompareGenerationID, PlatformGenerationModeCompare, fullCompareResults())
+	p, err := NewPlatformGenerationPersistence(f.store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := p.Finalize(context.Background(), f.db, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if receipt.Mode != PlatformGenerationModeCompare || receipt.UserMessage != input.UserMessage ||
+		receipt.SuccessfulModelCount != 3 || receipt.DailyCallsCharged != 3 || receipt.TotalTokens != 15 ||
+		len(receipt.Results) != 3 {
+		t.Fatalf("unexpected compare receipt: %#v", receipt)
+	}
+	guids := make(map[string]struct{}, 3)
+	for index, result := range receipt.Results {
+		want := input.Results[index]
+		if result.Model != want.Model || result.State != want.State || result.Content != want.Content ||
+			result.Tokens != want.Tokens || result.ErrorCode != "" || result.AssistantMessageGUID == "" {
+			t.Fatalf("result[%d]=%#v, want input %#v", index, result, want)
+		}
+		if _, duplicate := guids[result.AssistantMessageGUID]; duplicate {
+			t.Fatalf("assistant GUID reused: %q", result.AssistantMessageGUID)
+		}
+		guids[result.AssistantMessageGUID] = struct{}{}
+	}
+	var messages []models.Message
+	if err := f.db.Order("id ASC").Find(&messages).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != 4 || messages[0].Role != models.MessageRoleUser || messages[0].Content != input.UserMessage {
+		t.Fatalf("unexpected compare messages: %#v", messages)
+	}
+	for index, message := range messages[1:] {
+		want := input.Results[index]
+		if message.Role != models.MessageRoleAssistant || message.Model == nil || *message.Model != want.Model ||
+			message.Content != want.Content || int64(message.Tokens) != want.Tokens || strings.Contains(message.Content, "__MULTI_MODEL__") ||
+			stringInt64(message.Guid) != receipt.Results[index].AssistantMessageGUID {
+			t.Fatalf("assistant[%d]=%#v, want independent result %#v", index, message, want)
+		}
+	}
+	var usage []models.UsageRecord
+	if err := f.db.Order("id ASC").Find(&usage).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(usage) != 3 {
+		t.Fatalf("usage count=%d, want one per successful model", len(usage))
+	}
+	for index, record := range usage {
+		want := input.Results[index]
+		if record.Model == nil || *record.Model != want.Model || int64(record.Tokens) != want.Tokens {
+			t.Fatalf("usage[%d]=%#v, want model/tokens from %#v", index, record, want)
+		}
+	}
+	assertPlatformGenerationFinalizationEffects(t, f, 1, 4, 3, 1, 3, 5, 25)
+}
+
+func TestPlatformGenerationPersistenceFinalizesPartialCompareWithoutChargingFailure(t *testing.T) {
+	f := openPlatformGenerationFinalizationFixture(t)
+	input := f.committingResults(t, platformCompareGenerationID, PlatformGenerationModeCompare, partialCompareResults())
+	p, err := NewPlatformGenerationPersistence(f.store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := p.Finalize(context.Background(), f.db, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if receipt.SuccessfulModelCount != 1 || receipt.DailyCallsCharged != 1 || receipt.TotalTokens != 7 || len(receipt.Results) != 2 {
+		t.Fatalf("unexpected partial receipt: %#v", receipt)
+	}
+	failed := receipt.Results[1]
+	if failed.Model != "model-b" || failed.State != PlatformGenerationStateFailed || failed.AssistantMessageGUID != "" ||
+		failed.Content != "" || failed.Tokens != 0 || failed.ErrorCode != "timeout" {
+		t.Fatalf("failed result persisted incorrectly: %#v", failed)
+	}
+	var messages []models.Message
+	if err := f.db.Order("id ASC").Find(&messages).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != 2 || messages[1].Model == nil || *messages[1].Model != input.Results[0].Model ||
+		stringInt64(messages[1].Guid) != receipt.Results[0].AssistantMessageGUID {
+		t.Fatalf("partial compare messages=%#v receipt=%#v", messages, receipt)
+	}
+	var usage []models.UsageRecord
+	if err := f.db.Find(&usage).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(usage) != 1 || usage[0].Model == nil || *usage[0].Model != input.Results[0].Model || int64(usage[0].Tokens) != input.Results[0].Tokens {
+		t.Fatalf("failed model was charged or successful usage malformed: %#v", usage)
+	}
+	assertPlatformGenerationFinalizationEffects(t, f, 1, 2, 1, 1, 2, 3, 17)
+}
+
+func TestPlatformGenerationPersistenceAllModelFailureWritesNothing(t *testing.T) {
+	store, err := NewPlatformGenerationStore(redis.NewClient(&redis.Options{Addr: "127.0.0.1:1"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	p := &PlatformGenerationPersistence{
+		generations: store,
+		loadReceipt: func(context.Context, *gorm.DB, int64, string) (PlatformGenerationReceiptSnapshot, error) {
+			panic("receipt dependency touched")
+		},
+		runTx: func(context.Context, *gorm.DB, string, func(*gorm.DB) error) error {
+			panic("transaction dependency touched")
+		},
+	}
+	input := PlatformGenerationPersistenceInput{
+		UserID: 1, GenerationID: platformCompareGenerationID, Mode: PlatformGenerationModeCompare,
+		Models: []string{"model-a", "model-b"}, UserMessage: "prompt", NowMillis: 1,
+		Results: []PlatformGenerationPersistenceResult{
+			{Model: "model-a", State: PlatformGenerationStateFailed, ErrorCode: "timeout"},
+			{Model: "model-b", State: PlatformGenerationStateFailed, ErrorCode: "upstream_error"},
+		},
+	}
+	if _, err := p.Finalize(context.Background(), &gorm.DB{}, input); !errors.Is(err, ErrPlatformGenerationPersistenceInvalid) {
+		t.Fatalf("Finalize() error=%v, want invalid before dependencies", err)
+	}
+}
+
+func TestPlatformGenerationPersistenceConcurrentDuplicateHasOneWinner(t *testing.T) {
+	f := openPlatformGenerationFinalizationFixture(t)
+	input := f.committingResults(t, platformCompareGenerationID, PlatformGenerationModeCompare, partialCompareResults())
+	p, err := NewPlatformGenerationPersistence(f.store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const workers = 8
+	snapshots := make([]PlatformGenerationReceiptSnapshot, workers)
+	errs := make([]error, workers)
+	var wg sync.WaitGroup
+	for index := range snapshots {
+		wg.Add(1)
+		go func(index int) {
+			defer wg.Done()
+			snapshots[index], errs[index] = p.Finalize(context.Background(), f.db, input)
+		}(index)
+	}
+	wg.Wait()
+	for index := range snapshots {
+		if errs[index] != nil {
+			t.Fatalf("worker %d: %v", index, errs[index])
+		}
+		if !reflect.DeepEqual(snapshots[0], snapshots[index]) {
+			t.Fatalf("worker %d snapshot differs:\nfirst=%#v\ngot=%#v", index, snapshots[0], snapshots[index])
+		}
+	}
+	assertPlatformGenerationFinalizationEffects(t, f, 1, 2, 1, 1, 2, 3, 17)
+}
+
+func TestPlatformGenerationPersistenceConflictingDuplicateIsRejected(t *testing.T) {
+	t.Run("mysql 1062 classifier", func(t *testing.T) {
+		wrapped := fmt.Errorf("wrapped: %w", &mysqlDriver.MySQLError{Number: 1062, Message: "private duplicate detail"})
+		if !isPlatformGenerationDuplicateKey(wrapped) || isPlatformGenerationDuplicateKey(&mysqlDriver.MySQLError{Number: 1213}) || isPlatformGenerationDuplicateKey(nil) {
+			t.Fatal("duplicate-key classifier rejected 1062 or accepted a non-duplicate")
+		}
+	})
+	for _, test := range []struct {
+		name    string
+		partial bool
+		mutate  func(*PlatformGenerationPersistenceInput)
+	}{
+		{"content", false, func(input *PlatformGenerationPersistenceInput) { input.Results[0].Content = "different answer" }},
+		{"tokens", false, func(input *PlatformGenerationPersistenceInput) { input.Results[0].Tokens++ }},
+		{"model", false, func(input *PlatformGenerationPersistenceInput) {
+			input.Models[0], input.Results[0].Model = "model-z", "model-z"
+		}},
+		{"error", true, func(input *PlatformGenerationPersistenceInput) { input.Results[1].ErrorCode = "upstream_error" }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := openPlatformGenerationFinalizationFixture(t)
+			results := fullCompareResults()
+			if test.partial {
+				results = partialCompareResults()
+			}
+			input := f.committingResults(t, platformCompareGenerationID, PlatformGenerationModeCompare, results)
+			p, err := NewPlatformGenerationPersistence(f.store)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := p.Finalize(context.Background(), f.db, input); err != nil {
+				t.Fatal(err)
+			}
+			test.mutate(&input)
+			if _, err := p.Finalize(context.Background(), f.db, input); !errors.Is(err, ErrPlatformGenerationPersistenceConflict) {
+				t.Fatalf("conflicting duplicate error=%v, want conflict", err)
+			}
+			if test.partial {
+				assertPlatformGenerationFinalizationEffects(t, f, 1, 2, 1, 1, 2, 3, 17)
+			} else {
+				assertPlatformGenerationFinalizationEffects(t, f, 1, 4, 3, 1, 3, 5, 25)
+			}
+		})
+	}
+}
+
+func TestPlatformGenerationPersistenceDuplicateRejectsDifferentUserMessage(t *testing.T) {
+	f := openPlatformGenerationFinalizationFixture(t)
+	input := f.committingResults(t, platformCompareGenerationID, PlatformGenerationModeCompare, partialCompareResults())
+	p, err := NewPlatformGenerationPersistence(f.store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Finalize(context.Background(), f.db, input); err != nil {
+		t.Fatal(err)
+	}
+	input.UserMessage = "different prompt bytes"
+	if _, err := p.Finalize(context.Background(), f.db, input); !errors.Is(err, ErrPlatformGenerationPersistenceConflict) {
+		t.Fatalf("different user message error=%v, want conflict", err)
+	}
+	assertPlatformGenerationFinalizationEffects(t, f, 1, 2, 1, 1, 2, 3, 17)
+}
+
+func TestPlatformGenerationPersistenceDuplicateIgnoresRetryTimestamp(t *testing.T) {
+	t.Run("pure matcher", func(t *testing.T) {
+		input := validPlatformGenerationPersistenceInput()
+		receipt := PlatformGenerationReceiptSnapshot{
+			UserID: input.UserID, GenerationID: input.GenerationID, Mode: input.Mode, ConversationGUID: 2,
+			UserMessage: input.UserMessage, SuccessfulModelCount: 1, DailyCallsCharged: 1, TotalTokens: 1, CommittedAtMillis: 7,
+			Results: []PlatformGenerationCommittedResult{{Model: "model-a", State: PlatformGenerationStateCompleted, AssistantMessageGUID: "3", Content: "answer", Tokens: 1}},
+		}
+		input.NowMillis = 99
+		input.Results[0].Seq = 42
+		if !platformReceiptMatchesInput(receipt, input) {
+			t.Fatal("receipt match incorrectly compared retry timestamp or Redis-only sequence")
+		}
+		conversationGUID := receipt.ConversationGUID
+		input.ConversationGUID = &conversationGUID
+		if !platformReceiptMatchesInput(receipt, input) {
+			t.Fatal("matching optional conversation rejected")
+		}
+		wrongConversationGUID := conversationGUID + 1
+		input.ConversationGUID = &wrongConversationGUID
+		if platformReceiptMatchesInput(receipt, input) {
+			t.Fatal("mismatched optional conversation accepted")
+		}
+		input.ConversationGUID = nil
+		for _, mutate := range []func(*PlatformGenerationPersistenceInput){
+			func(value *PlatformGenerationPersistenceInput) { value.UserMessage = "different" },
+			func(value *PlatformGenerationPersistenceInput) { value.Results[0].Model = "model-b" },
+			func(value *PlatformGenerationPersistenceInput) { value.Results[0].Content = "different" },
+			func(value *PlatformGenerationPersistenceInput) { value.Results[0].Tokens++ },
+			func(value *PlatformGenerationPersistenceInput) {
+				value.Results[0].State = PlatformGenerationStateFailed
+				value.Results[0].Content = ""
+				value.Results[0].Tokens = 0
+				value.Results[0].ErrorCode = "timeout"
+			},
+		} {
+			candidate := input
+			candidate.Models = append([]string(nil), input.Models...)
+			candidate.Results = append([]PlatformGenerationPersistenceResult(nil), input.Results...)
+			mutate(&candidate)
+			if platformReceiptMatchesInput(receipt, candidate) {
+				t.Fatal("receipt matcher accepted a changed idempotency field")
+			}
+		}
+	})
+	t.Run("integration", func(t *testing.T) {
+		f := openPlatformGenerationFinalizationFixture(t)
+		input := f.committingResults(t, platformCompareGenerationID, PlatformGenerationModeCompare, partialCompareResults())
+		p, err := NewPlatformGenerationPersistence(f.store)
+		if err != nil {
+			t.Fatal(err)
+		}
+		first, err := p.Finalize(context.Background(), f.db, input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		input.NowMillis += 100
+		retry, err := p.Finalize(context.Background(), f.db, input)
+		if err != nil || !reflect.DeepEqual(first, retry) || retry.CommittedAtMillis != first.CommittedAtMillis {
+			t.Fatalf("later retry=%#v error=%v, want original %#v", retry, err, first)
+		}
+		input.NowMillis = f.now + 1
+		if _, err := p.Finalize(context.Background(), f.db, input); !errors.Is(err, ErrPlatformGenerationPersistenceConflict) {
+			t.Fatalf("stale retry error=%v, want conflict", err)
+		}
+	})
+}
+
+func TestPlatformGenerationPersistenceQuotaRaceCannotOverrunLimit(t *testing.T) {
+	f := openPlatformGenerationFinalizationFixture(t)
+	if err := f.db.Model(&models.User{}).Where("id = ?", f.user.ID).Updates(map[string]any{"daily_calls_used": 4, "daily_call_limit": 5}).Error; err != nil {
+		t.Fatal(err)
+	}
+	f.user.DailyCallsUsed = 4
+	result := []PlatformGenerationPersistenceResult{{Model: "model-a", State: PlatformGenerationStateCompleted, Content: "answer", Tokens: 2, Seq: 0}}
+	inputs := []PlatformGenerationPersistenceInput{
+		f.committingResults(t, platformQuotaGenerationOne, PlatformGenerationModeSingle, result),
+		f.committingResults(t, platformQuotaGenerationTwo, PlatformGenerationModeSingle, result),
+	}
+	p, err := NewPlatformGenerationPersistence(f.store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	errs := make([]error, 2)
+	var wg sync.WaitGroup
+	for index := range inputs {
+		wg.Add(1)
+		go func(index int) {
+			defer wg.Done()
+			_, errs[index] = p.Finalize(context.Background(), f.db, inputs[index])
+		}(index)
+	}
+	wg.Wait()
+	successes, quota := 0, 0
+	for _, err := range errs {
+		switch {
+		case err == nil:
+			successes++
+		case errors.Is(err, ErrPlatformGenerationPersistenceQuota):
+			quota++
+		default:
+			t.Fatalf("unexpected quota race error: %v", err)
+		}
+	}
+	if successes != 1 || quota != 1 {
+		t.Fatalf("quota race successes/quota=%d/%d, want 1/1; errors=%v", successes, quota, errs)
+	}
+	assertPlatformGenerationFinalizationEffects(t, f, 1, 2, 1, 1, 1, 5, 12)
+}
+
+func TestPlatformGenerationPersistenceCommitUnknownResolvesFromReceipt(t *testing.T) {
+	f := openPlatformGenerationFinalizationFixture(t)
+	input := f.committingResults(t, platformCompareGenerationID, PlatformGenerationModeCompare, partialCompareResults())
+	p, err := NewPlatformGenerationPersistence(f.store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalRunTx := p.runTx
+	sentinel := errors.New("commit acknowledgement lost")
+	p.runTx = func(ctx context.Context, db *gorm.DB, lockName string, fn func(*gorm.DB) error) error {
+		if err := originalRunTx(ctx, db, lockName, fn); err != nil {
+			return err
+		}
+		return sentinel
+	}
+	receipt, err := p.Finalize(context.Background(), f.db, input)
+	if err != nil || !platformReceiptMatchesInput(receipt, input) {
+		t.Fatalf("commit-unknown receipt=%#v error=%v", receipt, err)
+	}
+	assertPlatformGenerationFinalizationEffects(t, f, 1, 2, 1, 1, 2, 3, 17)
 }
 
 func assertPlatformGenerationFinalizationEffects(t *testing.T, f platformGenerationFinalizationFixture, conversations, messages, usage, receipts, results int64, dailyCalls int, totalTokens int64) {

@@ -11,6 +11,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	mysqlDriver "github.com/go-sql-driver/mysql"
 	"github.com/porsche/ai-gateway-go/internal/models"
 	"github.com/porsche/ai-gateway-go/internal/persistence"
 	"gorm.io/gorm"
@@ -179,7 +180,8 @@ func validatePlatformGenerationPersistenceInput(input PlatformGenerationPersiste
 
 func (p *PlatformGenerationPersistence) Finalize(ctx context.Context, db *gorm.DB, input PlatformGenerationPersistenceInput) (PlatformGenerationReceiptSnapshot, error) {
 	if p == nil || p.generations == nil || p.runTx == nil || p.loadReceipt == nil || ctx == nil || db == nil ||
-		input.Mode != PlatformGenerationModeSingle || validatePlatformGenerationPersistenceInput(input) != nil {
+		(input.Mode != PlatformGenerationModeSingle && input.Mode != PlatformGenerationModeCompare) ||
+		validatePlatformGenerationPersistenceInput(input) != nil {
 		return PlatformGenerationReceiptSnapshot{}, ErrPlatformGenerationPersistenceInvalid
 	}
 
@@ -222,6 +224,9 @@ func (p *PlatformGenerationPersistence) resolveRunTxError(ctx context.Context, d
 		return PlatformGenerationReceiptSnapshot{}, ErrPlatformGenerationPersistenceIntegrity
 	}
 	if !errors.Is(readErr, ErrPlatformGenerationPersistenceNotFound) {
+		return PlatformGenerationReceiptSnapshot{}, ErrPlatformGenerationPersistenceUnavailable
+	}
+	if isPlatformGenerationDuplicateKey(runErr) {
 		return PlatformGenerationReceiptSnapshot{}, ErrPlatformGenerationPersistenceUnavailable
 	}
 	if errors.Is(runErr, ErrPlatformGenerationPersistenceQuota) ||
@@ -275,6 +280,11 @@ func platformReceiptMatchesInput(receipt PlatformGenerationReceiptSnapshot, inpu
 		}
 	}
 	return receipt.SuccessfulModelCount == successes && receipt.DailyCallsCharged == successes && receipt.TotalTokens == totalTokens
+}
+
+func isPlatformGenerationDuplicateKey(err error) bool {
+	var mysqlErr *mysqlDriver.MySQLError
+	return errors.As(err, &mysqlErr) && mysqlErr.Number == 1062
 }
 
 func persistPlatformGeneration(tx *gorm.DB, input PlatformGenerationPersistenceInput) error {
