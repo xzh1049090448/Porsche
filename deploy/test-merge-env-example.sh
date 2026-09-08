@@ -10,10 +10,16 @@ mkdir "$tool_bin"
 
 cat >"$tool_bin/flock" <<'EOF'
 #!/usr/bin/env python3
-import fcntl, sys
+import errno, fcntl, sys
 args = sys.argv[1:]
 fd = int(args[-1])
-fcntl.flock(fd, fcntl.LOCK_EX)
+flags = fcntl.LOCK_EX | (fcntl.LOCK_NB if '-n' in args else 0)
+try:
+    fcntl.flock(fd, flags)
+except OSError as exc:
+    if exc.errno in (errno.EACCES, errno.EAGAIN):
+        sys.exit(75)
+    raise
 EOF
 cat >"$tool_bin/cp" <<'EOF'
 #!/usr/bin/env bash
@@ -22,6 +28,7 @@ if [[ "${1:-}" == --version ]]; then printf 'cp (GNU coreutils) test compatibili
 source="${@: -2:1}"
 destination="${@: -1}"
 /bin/cp -p "$source" "$destination"
+if [[ "${MERGE_TEST_CP_WARNING:-}" == 1 ]]; then printf 'preservation warning without value\n' >&2; exit 0; fi
 if [[ -n "${MERGE_TEST_MUTATION:-}" && "$source" == "${MERGE_TEST_ENV:-}" && ! -e "${MERGE_TEST_STATE:-}" ]]; then
     : >"$MERGE_TEST_STATE"
     case "$MERGE_TEST_MUTATION" in
@@ -32,7 +39,13 @@ if [[ -n "${MERGE_TEST_MUTATION:-}" && "$source" == "${MERGE_TEST_ENV:-}" && ! -
     esac
 fi
 EOF
-chmod +x "$tool_bin/flock" "$tool_bin/cp"
+cat >"$tool_bin/mv" <<'EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+[[ -z "${MERGE_TEST_SYSTEM_MV_LOG:-}" ]] || printf 'system mv\n' >>"$MERGE_TEST_SYSTEM_MV_LOG"
+exec /bin/mv "$@"
+EOF
+chmod +x "$tool_bin/flock" "$tool_bin/cp" "$tool_bin/mv"
 
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 hash_file() {
@@ -44,7 +57,10 @@ hash_file() {
 }
 mode_for() { stat -f '%Lp' "$1" 2>/dev/null || stat -c '%a' "$1"; }
 owner_for() { stat -f '%u:%g' "$1" 2>/dev/null || stat -c '%u:%g' "$1"; }
-run_merge() { PATH="$tool_bin:$PATH" "$merge_script" "$@"; }
+run_merge() {
+    MERGE_ENV_EXAMPLE_TEST_MODE=1 MERGE_ENV_EXAMPLE_TEST_SYSTEM_DIR="$tool_bin" \
+        PATH="$tool_bin:$PATH" "$merge_script" "$@"
+}
 
 [[ -x "$merge_script" ]] || fail "merge script is missing or not executable: $merge_script"
 
@@ -142,14 +158,25 @@ printf 'WRITE_FAILURE_KEY=write-failure-secret-must-not-print\n' >"$fixture_dir/
 mkdir "$fixture_dir/mock-bin"
 cat >"$fixture_dir/mock-bin/mv" <<'EOF'
 #!/usr/bin/env bash
+printf 'malicious mv called\n' >>"$MERGE_TEST_MALICIOUS_MV_LOG"
 exit 73
 EOF
 chmod +x "$fixture_dir/mock-bin/mv"
 before="$(hash_file "$env_file")"
-if PATH="$fixture_dir/mock-bin:$PATH" run_merge "$fixture_dir/write-failure-example" "$env_file" >"$fixture_dir/write-failure.stdout" 2>"$fixture_dir/write-failure.stderr"; then fail 'simulated rename failure unexpectedly succeeded'; fi
-[[ "$(hash_file "$env_file")" == "$before" ]] || fail 'simulated rename failure changed env'
-! grep -Fq 'write-failure-secret-must-not-print' "$fixture_dir/write-failure.stdout" "$fixture_dir/write-failure.stderr" || fail 'write failure disclosed a value'
+MERGE_TEST_MALICIOUS_MV_LOG="$fixture_dir/malicious-mv.log" MERGE_TEST_SYSTEM_MV_LOG="$fixture_dir/system-mv.log" \
+    MERGE_ENV_EXAMPLE_TEST_MODE=1 MERGE_ENV_EXAMPLE_TEST_SYSTEM_DIR="$tool_bin" PATH="$fixture_dir/mock-bin:$tool_bin:$PATH" \
+    "$merge_script" "$fixture_dir/write-failure-example" "$env_file" >"$fixture_dir/write-failure.stdout" 2>"$fixture_dir/write-failure.stderr"
+[[ ! -e "$fixture_dir/malicious-mv.log" ]] || fail 'runtime PATH mv wrapper was invoked'
+[[ -s "$fixture_dir/system-mv.log" ]] || fail 'resolved system mv was not invoked'
+[[ "$(hash_file "$env_file")" != "$before" ]] || fail 'resolved system rename did not update env'
+! grep -Fq 'write-failure-secret-must-not-print' "$fixture_dir/write-failure.stdout" "$fixture_dir/write-failure.stderr" || fail 'rename diagnostics disclosed a value'
 [[ -z "$(find "$fixture_dir" -maxdepth 1 \( -name '*.merge.??????' -o -name '*.snapshot.??????' \) -print -quit)" ]] || fail 'temporary or snapshot file remained after failure'
+
+printf 'CP_WARNING_KEY=value\n' >"$fixture_dir/cp-warning.example"
+printf 'BASE=cp-warning-original\n' >"$fixture_dir/cp-warning.env"
+before="$(hash_file "$fixture_dir/cp-warning.env")"
+if MERGE_TEST_CP_WARNING=1 run_merge "$fixture_dir/cp-warning.example" "$fixture_dir/cp-warning.env" >"$fixture_dir/cp-warning.stdout" 2>"$fixture_dir/cp-warning.stderr"; then fail 'cp preservation warning unexpectedly succeeded'; fi
+[[ "$(hash_file "$fixture_dir/cp-warning.env")" == "$before" ]] || fail 'cp warning changed env'
 
 assert_concurrent_change_survives() {
     local kind="$1" race_env state before
@@ -179,13 +206,14 @@ printf 'BASE=original\n' >"$fixture_dir/concurrent.env"
 MERGE_TEST_MUTATION=pause MERGE_TEST_ENV="$fixture_dir/concurrent.env" MERGE_TEST_STATE="$fixture_dir/concurrent.state" \
     run_merge "$fixture_dir/concurrent-first.example" "$fixture_dir/concurrent.env" >"$fixture_dir/concurrent-first.stdout" 2>"$fixture_dir/concurrent-first.stderr" &
 first_pid=$!
-sleep 0.1
-run_merge "$fixture_dir/concurrent-second.example" "$fixture_dir/concurrent.env" >"$fixture_dir/concurrent-second.stdout" 2>"$fixture_dir/concurrent-second.stderr" &
-second_pid=$!
+for _ in {1..50}; do [[ -e "$fixture_dir/concurrent.state" ]] && break; sleep 0.02; done
+[[ -e "$fixture_dir/concurrent.state" ]] || fail 'first concurrent merge did not reach snapshot pause'
+before="$(hash_file "$fixture_dir/concurrent.env")"
+if run_merge "$fixture_dir/concurrent-second.example" "$fixture_dir/concurrent.env" >"$fixture_dir/concurrent-second.stdout" 2>"$fixture_dir/concurrent-second.stderr"; then fail 'lock contender unexpectedly succeeded'; fi
+[[ "$(hash_file "$fixture_dir/concurrent.env")" == "$before" ]] || fail 'lock contender changed env'
 wait "$first_pid" || fail 'first concurrent merge failed'
-wait "$second_pid" || fail 'second concurrent merge failed'
 grep -Fqx 'FIRST_KEY=one' "$fixture_dir/concurrent.env" || fail 'first concurrent key was lost'
-grep -Fqx 'SECOND_KEY=two' "$fixture_dir/concurrent.env" || fail 'second concurrent key was lost'
+! grep -Fqx 'SECOND_KEY=two' "$fixture_dir/concurrent.env" || fail 'failed lock contender wrote its key'
 
 if command -v xattr >/dev/null 2>&1 && xattr -w com.porsche.merge-test preserved "$fixture_dir/concurrent.env" 2>/dev/null; then
     printf 'XATTR_KEY=value\n' >"$fixture_dir/xattr.example"

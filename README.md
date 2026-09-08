@@ -170,6 +170,10 @@ assets, and reload Nginx:
 sudo /opt/Porsche/deploy/restart-all.sh
 ```
 
+During deployment, do not edit `.env` directly. Every supported `.env` writer
+must coordinate through the sibling `.<env-name>.merge.lock`; an uncoordinated
+edit is outside the supported deployment contract.
+
 This command has deliberately fixed production locations and does not accept
 arguments:
 
