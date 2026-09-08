@@ -171,8 +171,7 @@ func validatePlatformGenerationPersistenceInput(input PlatformGenerationPersiste
 }
 
 func (p *PlatformGenerationPersistence) Finalize(ctx context.Context, db *gorm.DB, input PlatformGenerationPersistenceInput) (PlatformGenerationReceiptSnapshot, error) {
-	if p == nil || p.generations == nil || p.runTx == nil || ctx == nil || db == nil ||
-		input.Mode != PlatformGenerationModeSingle || validatePlatformGenerationPersistenceInput(input) != nil {
+	if p == nil || p.generations == nil || p.runTx == nil || ctx == nil || db == nil || validatePlatformGenerationPersistenceInput(input) != nil {
 		return PlatformGenerationReceiptSnapshot{}, ErrPlatformGenerationPersistenceInvalid
 	}
 
@@ -182,6 +181,9 @@ func (p *PlatformGenerationPersistence) Finalize(ctx context.Context, db *gorm.D
 	}
 	if !platformPersistenceMatchesRedis(input, redisSnapshot) {
 		return PlatformGenerationReceiptSnapshot{}, ErrPlatformGenerationPersistenceConflict
+	}
+	if input.Mode != PlatformGenerationModeSingle {
+		return PlatformGenerationReceiptSnapshot{}, ErrPlatformGenerationPersistenceInvalid
 	}
 
 	if existing, loadErr := LoadPlatformGenerationReceipt(ctx, db, input.UserID, input.GenerationID); loadErr == nil {

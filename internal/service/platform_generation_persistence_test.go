@@ -920,6 +920,7 @@ func openPlatformGenerationFinalizationMySQL(t *testing.T) *gorm.DB {
 
 func (f platformGenerationFinalizationFixture) committingSingle(t *testing.T) PlatformGenerationPersistenceInput {
 	t.Helper()
+	input := f.singleInput()
 	claim := PlatformGenerationClaimInput{UserID: f.user.ID, GenerationID: generationTestID, Mode: PlatformGenerationModeSingle, Models: []string{"model-a"}, NowMillis: f.now}
 	claimTestGeneration(t, f.store, claim)
 	if _, err := f.store.MarkModelDone(context.Background(), f.user.ID, generationTestID, "model-a", 0, f.now+1); err != nil {
@@ -928,10 +929,21 @@ func (f platformGenerationFinalizationFixture) committingSingle(t *testing.T) Pl
 	if _, err := f.store.BeginCommit(context.Background(), f.user.ID, generationTestID, f.now+2); err != nil {
 		t.Fatalf("begin commit: %v", err)
 	}
+	return input
+}
+
+func (f platformGenerationFinalizationFixture) singleInput() PlatformGenerationPersistenceInput {
 	return PlatformGenerationPersistenceInput{
 		UserID: f.user.ID, GenerationID: generationTestID, Mode: PlatformGenerationModeSingle,
 		Models: []string{"model-a"}, UserMessage: "  exact user bytes  ", NowMillis: f.now + 3,
 		Results: []PlatformGenerationPersistenceResult{{Model: "model-a", State: PlatformGenerationStateCompleted, Content: "exact answer bytes", Tokens: 7}},
+	}
+}
+
+func (f platformGenerationFinalizationFixture) compareInput(modelsInOrder []string, results []PlatformGenerationPersistenceResult) PlatformGenerationPersistenceInput {
+	return PlatformGenerationPersistenceInput{
+		UserID: f.user.ID, GenerationID: generationTestID, Mode: PlatformGenerationModeCompare,
+		Models: modelsInOrder, UserMessage: "  exact user bytes  ", NowMillis: f.now + 3, Results: results,
 	}
 }
 
@@ -999,45 +1011,136 @@ func TestPlatformGenerationPersistenceFinalizesSingleAtomically(t *testing.T) {
 }
 
 func TestPlatformGenerationPersistenceRejectsRedisIdentityMismatchBeforeMySQL(t *testing.T) {
+	t.Run("pure ordered models", func(t *testing.T) {
+		input := PlatformGenerationPersistenceInput{
+			UserID: 1, GenerationID: generationTestID, Mode: PlatformGenerationModeCompare,
+			Models: []string{"model-a", "model-b"}, UserMessage: "prompt", NowMillis: 1,
+			Results: []PlatformGenerationPersistenceResult{
+				{Model: "model-a", State: PlatformGenerationStateCompleted, Content: "a", Tokens: 1},
+				{Model: "model-b", State: PlatformGenerationStateCompleted, Content: "b", Tokens: 1},
+			},
+		}
+		snapshot := PlatformGenerationSnapshot{
+			GenerationID: generationTestID, Mode: PlatformGenerationModeCompare,
+			Models: []string{"model-b", "model-a"}, State: PlatformGenerationStateCommitting,
+			ModelStates: map[string]PlatformGenerationModel{
+				"model-a": {State: PlatformGenerationStateCompleted},
+				"model-b": {State: PlatformGenerationStateCompleted},
+			},
+		}
+		if platformPersistenceMatchesRedis(input, snapshot) {
+			t.Fatal("reordered Redis models matched input")
+		}
+	})
+	t.Run("pure committing assistant guid", func(t *testing.T) {
+		input := validPlatformGenerationPersistenceInput()
+		snapshot := PlatformGenerationSnapshot{
+			GenerationID: generationTestID, Mode: PlatformGenerationModeSingle,
+			Models: []string{"model-a"}, State: PlatformGenerationStateCommitting,
+			ModelStates: map[string]PlatformGenerationModel{
+				"model-a": {State: PlatformGenerationStateCompleted, AssistantMessageGUID: "123"},
+			},
+		}
+		if platformPersistenceMatchesRedis(input, snapshot) {
+			t.Fatal("committing Redis snapshot with assistant GUID matched input")
+		}
+	})
+
 	for _, test := range []struct {
-		name   string
-		mutate func(*PlatformGenerationSnapshot)
+		name    string
+		prepare func(*testing.T, platformGenerationFinalizationFixture) PlatformGenerationPersistenceInput
 	}{
-		{"generation state", func(snapshot *PlatformGenerationSnapshot) { snapshot.State = PlatformGenerationStateRunning }},
-		{"mode", func(snapshot *PlatformGenerationSnapshot) { snapshot.Mode = PlatformGenerationModeCompare }},
-		{"ordered model", func(snapshot *PlatformGenerationSnapshot) { snapshot.Models[0] = "model-b" }},
-		{"terminal state", func(snapshot *PlatformGenerationSnapshot) {
-			state := snapshot.ModelStates["model-a"]
-			state.State = PlatformGenerationStateFailed
-			state.ErrorCode = "timeout"
-			snapshot.ModelStates["model-a"] = state
+		{"generation state", func(t *testing.T, f platformGenerationFinalizationFixture) PlatformGenerationPersistenceInput {
+			claimTestGeneration(t, f.store, PlatformGenerationClaimInput{UserID: f.user.ID, GenerationID: generationTestID, Mode: PlatformGenerationModeSingle, Models: []string{"model-a"}, NowMillis: f.now})
+			if _, err := f.store.MarkModelDone(context.Background(), f.user.ID, generationTestID, "model-a", 0, f.now+1); err != nil {
+				t.Fatal(err)
+			}
+			return f.singleInput()
 		}},
-		{"terminal error", func(snapshot *PlatformGenerationSnapshot) {
-			state := snapshot.ModelStates["model-a"]
-			state.ErrorCode = "timeout"
-			snapshot.ModelStates["model-a"] = state
+		{"mode and cardinality", func(t *testing.T, f platformGenerationFinalizationFixture) PlatformGenerationPersistenceInput {
+			models := []string{"model-a", "model-b"}
+			claimTestGeneration(t, f.store, PlatformGenerationClaimInput{UserID: f.user.ID, GenerationID: generationTestID, Mode: PlatformGenerationModeCompare, Models: models, NowMillis: f.now})
+			for _, model := range models {
+				if _, err := f.store.MarkModelDone(context.Background(), f.user.ID, generationTestID, model, 0, f.now+1); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := f.store.BeginCommit(context.Background(), f.user.ID, generationTestID, f.now+2); err != nil {
+				t.Fatal(err)
+			}
+			return f.singleInput()
 		}},
-		{"assistant guid", func(snapshot *PlatformGenerationSnapshot) {
-			state := snapshot.ModelStates["model-a"]
-			state.AssistantMessageGUID = "123"
-			snapshot.ModelStates["model-a"] = state
+		{"model order", func(t *testing.T, f platformGenerationFinalizationFixture) PlatformGenerationPersistenceInput {
+			redisModels := []string{"model-b", "model-a"}
+			claimTestGeneration(t, f.store, PlatformGenerationClaimInput{UserID: f.user.ID, GenerationID: generationTestID, Mode: PlatformGenerationModeCompare, Models: redisModels, NowMillis: f.now})
+			for _, model := range redisModels {
+				if _, err := f.store.MarkModelDone(context.Background(), f.user.ID, generationTestID, model, 0, f.now+1); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := f.store.BeginCommit(context.Background(), f.user.ID, generationTestID, f.now+2); err != nil {
+				t.Fatal(err)
+			}
+			return f.compareInput([]string{"model-a", "model-b"}, []PlatformGenerationPersistenceResult{
+				{Model: "model-a", State: PlatformGenerationStateCompleted, Content: "a", Tokens: 1},
+				{Model: "model-b", State: PlatformGenerationStateCompleted, Content: "b", Tokens: 1},
+			})
+		}},
+		{"model identity", func(t *testing.T, f platformGenerationFinalizationFixture) PlatformGenerationPersistenceInput {
+			claimTestGeneration(t, f.store, PlatformGenerationClaimInput{UserID: f.user.ID, GenerationID: generationTestID, Mode: PlatformGenerationModeSingle, Models: []string{"model-b"}, NowMillis: f.now})
+			if _, err := f.store.MarkModelDone(context.Background(), f.user.ID, generationTestID, "model-b", 0, f.now+1); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.store.BeginCommit(context.Background(), f.user.ID, generationTestID, f.now+2); err != nil {
+				t.Fatal(err)
+			}
+			return f.singleInput()
+		}},
+		{"terminal state", func(t *testing.T, f platformGenerationFinalizationFixture) PlatformGenerationPersistenceInput {
+			models := []string{"model-a", "model-b"}
+			claimTestGeneration(t, f.store, PlatformGenerationClaimInput{UserID: f.user.ID, GenerationID: generationTestID, Mode: PlatformGenerationModeCompare, Models: models, NowMillis: f.now})
+			if _, err := f.store.MarkModelFailed(context.Background(), f.user.ID, generationTestID, "model-a", "timeout", f.now+1); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.store.MarkModelDone(context.Background(), f.user.ID, generationTestID, "model-b", 0, f.now+1); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.store.BeginCommit(context.Background(), f.user.ID, generationTestID, f.now+2); err != nil {
+				t.Fatal(err)
+			}
+			return f.compareInput(models, []PlatformGenerationPersistenceResult{
+				{Model: "model-a", State: PlatformGenerationStateCompleted, Content: "a", Tokens: 1},
+				{Model: "model-b", State: PlatformGenerationStateCompleted, Content: "b", Tokens: 1},
+			})
+		}},
+		{"terminal error", func(t *testing.T, f platformGenerationFinalizationFixture) PlatformGenerationPersistenceInput {
+			models := []string{"model-a", "model-b"}
+			claimTestGeneration(t, f.store, PlatformGenerationClaimInput{UserID: f.user.ID, GenerationID: generationTestID, Mode: PlatformGenerationModeCompare, Models: models, NowMillis: f.now})
+			if _, err := f.store.MarkModelFailed(context.Background(), f.user.ID, generationTestID, "model-a", "timeout", f.now+1); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.store.MarkModelDone(context.Background(), f.user.ID, generationTestID, "model-b", 0, f.now+1); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.store.BeginCommit(context.Background(), f.user.ID, generationTestID, f.now+2); err != nil {
+				t.Fatal(err)
+			}
+			return f.compareInput(models, []PlatformGenerationPersistenceResult{
+				{Model: "model-a", State: PlatformGenerationStateFailed, ErrorCode: "upstream_error"},
+				{Model: "model-b", State: PlatformGenerationStateCompleted, Content: "b", Tokens: 1},
+			})
+		}},
+		{"completed non-committing with assistant guid", func(t *testing.T, f platformGenerationFinalizationFixture) PlatformGenerationPersistenceInput {
+			input := f.committingSingle(t)
+			if _, err := f.store.Complete(context.Background(), f.user.ID, generationTestID, map[string]string{"model-a": stringInt64(testSnowflake.Next())}, f.now+4); err != nil {
+				t.Fatal(err)
+			}
+			return input
 		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := openPlatformGenerationFinalizationFixture(t)
-			input := f.committingSingle(t)
-			snapshot, err := f.store.Get(context.Background(), f.user.ID, generationTestID)
-			if err != nil {
-				t.Fatal(err)
-			}
-			test.mutate(&snapshot)
-			encoded, err := encodePlatformGeneration(snapshot)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := f.store.client.Set(context.Background(), f.store.key(f.user.ID, generationTestID), encoded, platformGenerationTTL).Err(); err != nil {
-				t.Fatal(err)
-			}
+			input := test.prepare(t, f)
 			p, err := NewPlatformGenerationPersistence(f.store)
 			if err != nil {
 				t.Fatal(err)
@@ -1068,24 +1171,38 @@ func TestPlatformGenerationPersistenceRejectsEmptyUserMessageBeforeDependencies(
 
 func TestPlatformGenerationPersistenceSingleWriteFailuresRollbackEveryEffect(t *testing.T) {
 	faults := []struct {
-		name       string
-		operation  string
-		table      string
-		occurrence int
-		badReceipt bool
+		name                 string
+		operation            string
+		table                string
+		occurrence           int
+		badReceipt           bool
+		existingConversation bool
 	}{
-		{"conversation", "create", "conversations", 1, false},
-		{"user message", "create", "messages", 1, false},
-		{"assistant message", "create", "messages", 2, false},
-		{"usage", "create", "usage_records", 1, false},
-		{"user update", "update", "users", 1, false},
-		{"receipt bad user message reference", "create", "platform_chat_generation_receipts", 1, true},
-		{"result", "create", "platform_chat_generation_results", 1, false},
+		{"conversation", "create", "conversations", 1, false, false},
+		{"user message", "create", "messages", 1, false, false},
+		{"assistant message", "create", "messages", 2, false, false},
+		{"usage", "create", "usage_records", 1, false, false},
+		{"existing conversation title update", "update", "conversations", 1, false, true},
+		{"user update", "update", "users", 1, false, false},
+		{"receipt bad user message reference", "create", "platform_chat_generation_receipts", 1, true, false},
+		{"result", "create", "platform_chat_generation_results", 1, false, false},
 	}
 	for _, fault := range faults {
 		t.Run(fault.name, func(t *testing.T) {
 			f := openPlatformGenerationFinalizationFixture(t)
 			input := f.committingSingle(t)
+			var existing models.Conversation
+			if fault.existingConversation {
+				existing = models.Conversation{
+					AuditFields: models.AuditFields{Guid: testSnowflake.Next(), CreatedAt: f.now - 1000, CreatedBy: &f.user.ID, UpdatedAt: f.now - 1000, UpdatedBy: &f.user.ID},
+					UserID:      f.user.ID,
+					Title:       "新对话",
+				}
+				if err := f.db.Create(&existing).Error; err != nil {
+					t.Fatal(err)
+				}
+				input.ConversationGUID = &existing.Guid
+			}
 			hook := fmt.Sprintf("platform_single_fault_%d", testSnowflake.Next())
 			matches := 0
 			inject := func(tx *gorm.DB) {
@@ -1132,7 +1249,20 @@ func TestPlatformGenerationPersistenceSingleWriteFailuresRollbackEveryEffect(t *
 			if matches < fault.occurrence {
 				t.Fatalf("fault boundary not reached: matches=%d", matches)
 			}
-			assertPlatformGenerationFinalizationEffects(t, f, 0, 0, 0, 0, 0, 2, 10)
+			conversationCount := int64(0)
+			if fault.existingConversation {
+				conversationCount = 1
+			}
+			assertPlatformGenerationFinalizationEffects(t, f, conversationCount, 0, 0, 0, 0, 2, 10)
+			if fault.existingConversation {
+				var unchanged models.Conversation
+				if err := f.db.First(&unchanged, existing.ID).Error; err != nil {
+					t.Fatal(err)
+				}
+				if unchanged.Title != "新对话" || unchanged.UpdatedAt != existing.UpdatedAt || unchanged.UpdatedBy == nil || *unchanged.UpdatedBy != f.user.ID {
+					t.Fatalf("existing conversation changed despite rollback: before=%#v after=%#v", existing, unchanged)
+				}
+			}
 		})
 	}
 }
