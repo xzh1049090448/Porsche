@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"database/sql"
@@ -8,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/url"
 	"os"
 	"strings"
@@ -19,6 +21,7 @@ import (
 	"github.com/porsche/ai-gateway-go/internal/models"
 	"github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
+	gormlogger "gorm.io/gorm/logger"
 )
 
 func validPlatformGenerationPersistenceInput() PlatformGenerationPersistenceInput {
@@ -29,7 +32,7 @@ func validPlatformGenerationPersistenceInput() PlatformGenerationPersistenceInpu
 		Models:       []string{"model-a"},
 		UserMessage:  " keep whitespace byte-for-byte ",
 		Results: []PlatformGenerationPersistenceResult{{
-			Model: "model-a", State: PlatformGenerationStateCompleted, Content: "answer", Tokens: 1,
+			Model: "model-a", State: PlatformGenerationStateCompleted, Content: "answer", Tokens: 1, Seq: 0,
 		}},
 		NowMillis: 1,
 	}
@@ -49,15 +52,15 @@ func TestValidatePlatformGenerationPersistenceInputRejectsInvalidBeforeDependenc
 		{"invalid mode", func(input *PlatformGenerationPersistenceInput) { input.Mode = 99 }},
 		{"single cardinality", func(input *PlatformGenerationPersistenceInput) {
 			input.Models = []string{"model-a", "model-b"}
-			input.Results = append(input.Results, PlatformGenerationPersistenceResult{Model: "model-b", State: PlatformGenerationStateFailed, ErrorCode: "timeout"})
+			input.Results = append(input.Results, PlatformGenerationPersistenceResult{Model: "model-b", State: PlatformGenerationStateFailed, Seq: 0, ErrorCode: "timeout"})
 		}},
 		{"compare cardinality", func(input *PlatformGenerationPersistenceInput) { input.Mode = PlatformGenerationModeCompare }},
 		{"duplicate model", func(input *PlatformGenerationPersistenceInput) {
 			input.Mode = PlatformGenerationModeCompare
 			input.Models = []string{"model-a", "model-a"}
 			input.Results = []PlatformGenerationPersistenceResult{
-				{Model: "model-a", State: PlatformGenerationStateCompleted, Content: "one", Tokens: 1},
-				{Model: "model-a", State: PlatformGenerationStateFailed, ErrorCode: "timeout"},
+				{Model: "model-a", State: PlatformGenerationStateCompleted, Content: "one", Tokens: 1, Seq: 0},
+				{Model: "model-a", State: PlatformGenerationStateFailed, Seq: 0, ErrorCode: "timeout"},
 			}
 		}},
 		{"oversized model", func(input *PlatformGenerationPersistenceInput) {
@@ -79,51 +82,55 @@ func TestValidatePlatformGenerationPersistenceInputRejectsInvalidBeforeDependenc
 			input.Results[0].State = PlatformGenerationStateCancelled
 		}},
 		{"single failure", func(input *PlatformGenerationPersistenceInput) {
-			input.Results[0] = PlatformGenerationPersistenceResult{Model: "model-a", State: PlatformGenerationStateFailed, ErrorCode: "timeout"}
+			input.Results[0] = PlatformGenerationPersistenceResult{Model: "model-a", State: PlatformGenerationStateFailed, Seq: 0, ErrorCode: "timeout"}
 		}},
 		{"compare all failures", func(input *PlatformGenerationPersistenceInput) {
 			input.Mode = PlatformGenerationModeCompare
 			input.Models = []string{"model-a", "model-b"}
 			input.Results = []PlatformGenerationPersistenceResult{
-				{Model: "model-a", State: PlatformGenerationStateFailed, ErrorCode: "timeout"},
-				{Model: "model-b", State: PlatformGenerationStateFailed, ErrorCode: "upstream_error"},
+				{Model: "model-a", State: PlatformGenerationStateFailed, Seq: 0, ErrorCode: "timeout"},
+				{Model: "model-b", State: PlatformGenerationStateFailed, Seq: 0, ErrorCode: "upstream_error"},
 			}
 		}},
 		{"completed empty content", func(input *PlatformGenerationPersistenceInput) { input.Results[0].Content = "" }},
 		{"completed oversized content", func(input *PlatformGenerationPersistenceInput) { input.Results[0].Content = strings.Repeat("x", 65536) }},
 		{"completed negative tokens", func(input *PlatformGenerationPersistenceInput) { input.Results[0].Tokens = -1 }},
 		{"completed excessive tokens", func(input *PlatformGenerationPersistenceInput) { input.Results[0].Tokens = 1 << 31 }},
+		{"negative terminal seq", func(input *PlatformGenerationPersistenceInput) { input.Results[0].Seq = -1 }},
+		{"unsafe terminal seq", func(input *PlatformGenerationPersistenceInput) {
+			input.Results[0].Seq = platformSSEV2MaxSafeInteger + 1
+		}},
 		{"completed error code", func(input *PlatformGenerationPersistenceInput) { input.Results[0].ErrorCode = "timeout" }},
 		{"failed content", func(input *PlatformGenerationPersistenceInput) {
 			input.Mode = PlatformGenerationModeCompare
 			input.Models = []string{"model-a", "model-b"}
 			input.Results = []PlatformGenerationPersistenceResult{
-				{Model: "model-a", State: PlatformGenerationStateCompleted, Content: "one", Tokens: 1},
-				{Model: "model-b", State: PlatformGenerationStateFailed, Content: "partial", ErrorCode: "timeout"},
+				{Model: "model-a", State: PlatformGenerationStateCompleted, Content: "one", Tokens: 1, Seq: 0},
+				{Model: "model-b", State: PlatformGenerationStateFailed, Content: "partial", Seq: 0, ErrorCode: "timeout"},
 			}
 		}},
 		{"failed tokens", func(input *PlatformGenerationPersistenceInput) {
 			input.Mode = PlatformGenerationModeCompare
 			input.Models = []string{"model-a", "model-b"}
 			input.Results = []PlatformGenerationPersistenceResult{
-				{Model: "model-a", State: PlatformGenerationStateCompleted, Content: "one", Tokens: 1},
-				{Model: "model-b", State: PlatformGenerationStateFailed, Tokens: 1, ErrorCode: "timeout"},
+				{Model: "model-a", State: PlatformGenerationStateCompleted, Content: "one", Tokens: 1, Seq: 0},
+				{Model: "model-b", State: PlatformGenerationStateFailed, Tokens: 1, Seq: 0, ErrorCode: "timeout"},
 			}
 		}},
 		{"failed missing code", func(input *PlatformGenerationPersistenceInput) {
 			input.Mode = PlatformGenerationModeCompare
 			input.Models = []string{"model-a", "model-b"}
 			input.Results = []PlatformGenerationPersistenceResult{
-				{Model: "model-a", State: PlatformGenerationStateCompleted, Content: "one", Tokens: 1},
-				{Model: "model-b", State: PlatformGenerationStateFailed},
+				{Model: "model-a", State: PlatformGenerationStateCompleted, Content: "one", Tokens: 1, Seq: 0},
+				{Model: "model-b", State: PlatformGenerationStateFailed, Seq: 0},
 			}
 		}},
 		{"failed unstable code", func(input *PlatformGenerationPersistenceInput) {
 			input.Mode = PlatformGenerationModeCompare
 			input.Models = []string{"model-a", "model-b"}
 			input.Results = []PlatformGenerationPersistenceResult{
-				{Model: "model-a", State: PlatformGenerationStateCompleted, Content: "one", Tokens: 1},
-				{Model: "model-b", State: PlatformGenerationStateFailed, ErrorCode: "provider_secret"},
+				{Model: "model-a", State: PlatformGenerationStateCompleted, Content: "one", Tokens: 1, Seq: 0},
+				{Model: "model-b", State: PlatformGenerationStateFailed, Seq: 0, ErrorCode: "provider_secret"},
 			}
 		}},
 		{"empty user message", func(input *PlatformGenerationPersistenceInput) { input.UserMessage = "" }},
@@ -936,7 +943,7 @@ func (f platformGenerationFinalizationFixture) singleInput() PlatformGenerationP
 	return PlatformGenerationPersistenceInput{
 		UserID: f.user.ID, GenerationID: generationTestID, Mode: PlatformGenerationModeSingle,
 		Models: []string{"model-a"}, UserMessage: "  exact user bytes  ", NowMillis: f.now + 3,
-		Results: []PlatformGenerationPersistenceResult{{Model: "model-a", State: PlatformGenerationStateCompleted, Content: "exact answer bytes", Tokens: 7}},
+		Results: []PlatformGenerationPersistenceResult{{Model: "model-a", State: PlatformGenerationStateCompleted, Content: "exact answer bytes", Tokens: 7, Seq: 0}},
 	}
 }
 
@@ -1009,8 +1016,8 @@ func TestPlatformGenerationPersistenceRejectsRedisIdentityMismatchBeforeMySQL(t 
 			UserID: 1, GenerationID: generationTestID, Mode: PlatformGenerationModeCompare,
 			Models: []string{"model-a", "model-b"}, UserMessage: "prompt", NowMillis: 1,
 			Results: []PlatformGenerationPersistenceResult{
-				{Model: "model-a", State: PlatformGenerationStateCompleted, Content: "a", Tokens: 1},
-				{Model: "model-b", State: PlatformGenerationStateCompleted, Content: "b", Tokens: 1},
+				{Model: "model-a", State: PlatformGenerationStateCompleted, Content: "a", Tokens: 1, Seq: 0},
+				{Model: "model-b", State: PlatformGenerationStateCompleted, Content: "b", Tokens: 1, Seq: 0},
 			},
 		}
 		snapshot := PlatformGenerationSnapshot{
@@ -1044,8 +1051,8 @@ func TestPlatformGenerationPersistenceRejectsRedisIdentityMismatchBeforeMySQL(t 
 			UserID: 1, GenerationID: generationTestID, Mode: PlatformGenerationModeCompare,
 			Models: []string{"model-a", "model-b"}, UserMessage: "prompt", NowMillis: 1,
 			Results: []PlatformGenerationPersistenceResult{
-				{Model: "model-a", State: PlatformGenerationStateCompleted, Content: "a", Tokens: 1},
-				{Model: "model-b", State: PlatformGenerationStateCompleted, Content: "b", Tokens: 1},
+				{Model: "model-a", State: PlatformGenerationStateCompleted, Content: "a", Tokens: 1, Seq: 0},
+				{Model: "model-b", State: PlatformGenerationStateCompleted, Content: "b", Tokens: 1, Seq: 0},
 			},
 		}
 		snapshot := PlatformGenerationSnapshot{
@@ -1065,8 +1072,8 @@ func TestPlatformGenerationPersistenceRejectsRedisIdentityMismatchBeforeMySQL(t 
 			UserID: 1, GenerationID: generationTestID, Mode: PlatformGenerationModeCompare,
 			Models: []string{"model-a", "model-b"}, UserMessage: "prompt", NowMillis: 1,
 			Results: []PlatformGenerationPersistenceResult{
-				{Model: "model-a", State: PlatformGenerationStateFailed, ErrorCode: "upstream_error"},
-				{Model: "model-b", State: PlatformGenerationStateCompleted, Content: "b", Tokens: 1},
+				{Model: "model-a", State: PlatformGenerationStateFailed, Seq: 0, ErrorCode: "upstream_error"},
+				{Model: "model-b", State: PlatformGenerationStateCompleted, Content: "b", Tokens: 1, Seq: 0},
 			},
 		}
 		snapshot := PlatformGenerationSnapshot{
@@ -1092,6 +1099,30 @@ func TestPlatformGenerationPersistenceRejectsRedisIdentityMismatchBeforeMySQL(t 
 		}
 		if platformPersistenceMatchesRedis(input, snapshot) {
 			t.Fatal("committing Redis snapshot with assistant GUID matched input")
+		}
+	})
+	t.Run("pure terminal seq", func(t *testing.T) {
+		input := validPlatformGenerationPersistenceInput()
+		input.Results[0].Seq = 2
+		snapshot := PlatformGenerationSnapshot{
+			GenerationID: generationTestID, Mode: PlatformGenerationModeSingle,
+			Models: []string{"model-a"}, State: PlatformGenerationStateCommitting, CreatedAtMillis: 1, UpdatedAtMillis: 1,
+			ModelStates: map[string]PlatformGenerationModel{"model-a": {State: PlatformGenerationStateCompleted, Seq: 1}},
+		}
+		if platformPersistenceMatchesRedis(input, snapshot) {
+			t.Fatal("different terminal sequence matched input")
+		}
+	})
+	t.Run("pure stale Redis time", func(t *testing.T) {
+		input := validPlatformGenerationPersistenceInput()
+		input.NowMillis = 9
+		snapshot := PlatformGenerationSnapshot{
+			GenerationID: generationTestID, Mode: PlatformGenerationModeSingle,
+			Models: []string{"model-a"}, State: PlatformGenerationStateCommitting, CreatedAtMillis: 1, UpdatedAtMillis: 10,
+			ModelStates: map[string]PlatformGenerationModel{"model-a": {State: PlatformGenerationStateCompleted, Seq: input.Results[0].Seq}},
+		}
+		if platformPersistenceMatchesRedis(input, snapshot) {
+			t.Fatal("Redis snapshot newer than persistence input matched")
 		}
 	})
 
@@ -1145,7 +1176,7 @@ func TestPlatformGenerationPersistenceRejectsEmptyUserMessageBeforeDependencies(
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	p := &PlatformGenerationPersistence{generations: store, runTx: func(context.Context, *gorm.DB, string, func(*gorm.DB) error) error {
+	p := &PlatformGenerationPersistence{generations: store, loadReceipt: LoadPlatformGenerationReceipt, runTx: func(context.Context, *gorm.DB, string, func(*gorm.DB) error) error {
 		panic("transaction dependency touched")
 	}}
 	t.Run("empty user message", func(t *testing.T) {
@@ -1160,8 +1191,8 @@ func TestPlatformGenerationPersistenceRejectsEmptyUserMessageBeforeDependencies(
 			UserID: 1, GenerationID: generationTestID, Mode: PlatformGenerationModeCompare,
 			Models: []string{"model-a", "model-b"}, UserMessage: "prompt", NowMillis: 1,
 			Results: []PlatformGenerationPersistenceResult{
-				{Model: "model-a", State: PlatformGenerationStateCompleted, Content: "a", Tokens: 1},
-				{Model: "model-b", State: PlatformGenerationStateCompleted, Content: "b", Tokens: 1},
+				{Model: "model-a", State: PlatformGenerationStateCompleted, Content: "a", Tokens: 1, Seq: 0},
+				{Model: "model-b", State: PlatformGenerationStateCompleted, Content: "b", Tokens: 1, Seq: 0},
 			},
 		}
 		if _, err := p.Finalize(context.Background(), &gorm.DB{}, compare); !errors.Is(err, ErrPlatformGenerationPersistenceInvalid) {
@@ -1283,6 +1314,178 @@ func TestPlatformGenerationPersistenceSingleInsufficientQuotaRollsBack(t *testin
 		t.Fatalf("Finalize() error=%v, want quota", err)
 	}
 	assertPlatformGenerationFinalizationEffects(t, f, 0, 0, 0, 0, 0, 5, 10)
+}
+
+func TestPlatformGenerationPersistenceSingleRejectsStaleLockedRowsBeforeWrites(t *testing.T) {
+	for _, test := range []struct {
+		name                 string
+		existingConversation bool
+		makeStale            func(*testing.T, platformGenerationFinalizationFixture, PlatformGenerationPersistenceInput, *models.Conversation)
+	}{
+		{"user audit", false, func(t *testing.T, f platformGenerationFinalizationFixture, input PlatformGenerationPersistenceInput, _ *models.Conversation) {
+			if err := f.db.Model(&models.User{}).Where("id = ?", f.user.ID).Update("updated_at", input.NowMillis+1).Error; err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"daily reset timestamp", false, func(t *testing.T, f platformGenerationFinalizationFixture, input PlatformGenerationPersistenceInput, _ *models.Conversation) {
+			if err := f.db.Model(&models.User{}).Where("id = ?", f.user.ID).Update("daily_calls_reset_at", input.NowMillis+1).Error; err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"conversation audit", true, func(t *testing.T, f platformGenerationFinalizationFixture, input PlatformGenerationPersistenceInput, conversation *models.Conversation) {
+			if err := f.db.Model(&models.Conversation{}).Where("id = ?", conversation.ID).Update("updated_at", input.NowMillis+1).Error; err != nil {
+				t.Fatal(err)
+			}
+			conversation.UpdatedAt = input.NowMillis + 1
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := openPlatformGenerationFinalizationFixture(t)
+			input := f.committingSingle(t)
+			var conversation models.Conversation
+			if test.existingConversation {
+				conversation = models.Conversation{
+					AuditFields: models.AuditFields{Guid: testSnowflake.Next(), CreatedAt: f.now, CreatedBy: &f.user.ID, UpdatedAt: f.now, UpdatedBy: &f.user.ID},
+					UserID:      f.user.ID, Title: "新对话",
+				}
+				if err := f.db.Create(&conversation).Error; err != nil {
+					t.Fatal(err)
+				}
+				input.ConversationGUID = &conversation.Guid
+			}
+			test.makeStale(t, f, input, &conversation)
+			p, err := NewPlatformGenerationPersistence(f.store)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := p.Finalize(context.Background(), f.db, input); !errors.Is(err, ErrPlatformGenerationPersistenceConflict) {
+				t.Fatalf("Finalize() error=%v, want conflict", err)
+			}
+			conversationCount := int64(0)
+			if test.existingConversation {
+				conversationCount = 1
+			}
+			assertPlatformGenerationFinalizationEffects(t, f, conversationCount, 0, 0, 0, 0, 2, 10)
+		})
+	}
+}
+
+func TestPlatformGenerationPersistenceSingleAllowsEqualLockedTimestamps(t *testing.T) {
+	f := openPlatformGenerationFinalizationFixture(t)
+	input := f.committingSingle(t)
+	conversation := models.Conversation{
+		AuditFields: models.AuditFields{Guid: testSnowflake.Next(), CreatedAt: f.now, CreatedBy: &f.user.ID, UpdatedAt: input.NowMillis, UpdatedBy: &f.user.ID},
+		UserID:      f.user.ID,
+		Title:       "新对话",
+	}
+	if err := f.db.Create(&conversation).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.Model(&models.User{}).Where("id = ?", f.user.ID).Updates(map[string]any{
+		"updated_at": input.NowMillis, "daily_calls_reset_at": input.NowMillis,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	input.ConversationGUID = &conversation.Guid
+	p, err := NewPlatformGenerationPersistence(f.store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Finalize(context.Background(), f.db, input); err != nil {
+		t.Fatalf("equal locked timestamps rejected: %v", err)
+	}
+	assertPlatformGenerationFinalizationEffects(t, f, 1, 2, 1, 1, 1, 3, 17)
+}
+
+func TestPlatformGenerationPersistenceSingleWriteErrorsDoNotLogMessageContent(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		blockedText string
+	}{
+		{"user message", "TASK5PROMPTSENTINEL"},
+		{"assistant message", "TASK5ANSWERSENTINEL"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := openPlatformGenerationFinalizationFixture(t)
+			input := f.committingSingle(t)
+			input.UserMessage = "TASK5PROMPTSENTINEL"
+			input.Results[0].Content = "TASK5ANSWERSENTINEL"
+			constraint := fmt.Sprintf("chk_finalize_sensitive_%d", testSnowflake.Next())
+			if err := f.db.Exec(fmt.Sprintf("ALTER TABLE messages ADD CONSTRAINT %s CHECK (content <> '%s')", constraint, test.blockedText)).Error; err != nil {
+				t.Fatal(err)
+			}
+			var captured bytes.Buffer
+			captureLogger := gormlogger.New(log.New(&captured, "", 0), gormlogger.Config{
+				SlowThreshold: time.Nanosecond, LogLevel: gormlogger.Info, ParameterizedQueries: false, Colorful: false,
+			})
+			p, err := NewPlatformGenerationPersistence(f.store)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := p.Finalize(context.Background(), f.db.Session(&gorm.Session{Logger: captureLogger}), input); !errors.Is(err, ErrPlatformGenerationPersistenceUnavailable) {
+				t.Fatalf("Finalize() error=%v, want unavailable", err)
+			}
+			if output := captured.String(); strings.Contains(output, input.UserMessage) || strings.Contains(output, input.Results[0].Content) {
+				t.Fatalf("sensitive generation content reached GORM logs: %q", output)
+			}
+			assertPlatformGenerationFinalizationEffects(t, f, 0, 0, 0, 0, 0, 2, 10)
+		})
+	}
+}
+
+func TestPlatformGenerationPersistenceCommitUnknownUsesBoundedIndependentContextAndPreservesIntegrity(t *testing.T) {
+	caller, cancel := context.WithCancel(context.Background())
+	cancel()
+	input := validPlatformGenerationPersistenceInput()
+	matching := PlatformGenerationReceiptSnapshot{
+		UserID: input.UserID, GenerationID: input.GenerationID, Mode: input.Mode, ConversationGUID: 2,
+		UserMessage: input.UserMessage, SuccessfulModelCount: 1, DailyCallsCharged: 1, TotalTokens: 1, CommittedAtMillis: 1,
+		Results: []PlatformGenerationCommittedResult{{
+			Model: "model-a", State: PlatformGenerationStateCompleted, AssistantMessageGUID: "3", Content: "answer", Tokens: 1,
+		}},
+	}
+	run := func(t *testing.T, snapshot PlatformGenerationReceiptSnapshot, readErr, runErr, wantErr error) PlatformGenerationReceiptSnapshot {
+		t.Helper()
+		called := false
+		p := &PlatformGenerationPersistence{loadReceipt: func(ctx context.Context, _ *gorm.DB, _ int64, _ string) (PlatformGenerationReceiptSnapshot, error) {
+			called = true
+			if err := ctx.Err(); err != nil {
+				t.Fatalf("recovery inherited caller cancellation: %v", err)
+			}
+			deadline, ok := ctx.Deadline()
+			if !ok || time.Until(deadline) <= 0 || time.Until(deadline) > platformGenerationReceiptRecoveryTimeout {
+				t.Fatalf("recovery context deadline=%v ok=%v", deadline, ok)
+			}
+			return snapshot, readErr
+		}}
+		resolved, err := p.resolveRunTxError(caller, &gorm.DB{}, input, runErr)
+		if !called || !errors.Is(err, wantErr) || (wantErr == nil && err != nil) {
+			t.Fatalf("called=%v error=%v, want %v", called, err, wantErr)
+		}
+		return resolved
+	}
+	t.Run("matching receipt", func(t *testing.T) {
+		if got := run(t, matching, nil, errors.New("commit status unknown"), nil); got.GenerationID != input.GenerationID {
+			t.Fatalf("unexpected resolved receipt: %#v", got)
+		}
+	})
+	t.Run("mismatched receipt", func(t *testing.T) {
+		mismatched := matching
+		mismatched.UserMessage = "different"
+		run(t, mismatched, nil, errors.New("commit status unknown"), ErrPlatformGenerationPersistenceConflict)
+	})
+	t.Run("integrity", func(t *testing.T) {
+		run(t, PlatformGenerationReceiptSnapshot{}, ErrPlatformGenerationPersistenceIntegrity, errors.New("commit status unknown"), ErrPlatformGenerationPersistenceIntegrity)
+	})
+	t.Run("not found preserves typed error", func(t *testing.T) {
+		run(t, PlatformGenerationReceiptSnapshot{}, ErrPlatformGenerationPersistenceNotFound, ErrPlatformGenerationPersistenceQuota, ErrPlatformGenerationPersistenceQuota)
+	})
+	t.Run("not found maps operational error", func(t *testing.T) {
+		run(t, PlatformGenerationReceiptSnapshot{}, ErrPlatformGenerationPersistenceNotFound, errors.New("commit status unknown"), ErrPlatformGenerationPersistenceUnavailable)
+	})
+	t.Run("unavailable read wins", func(t *testing.T) {
+		run(t, PlatformGenerationReceiptSnapshot{}, ErrPlatformGenerationPersistenceUnavailable, ErrPlatformGenerationPersistenceQuota, ErrPlatformGenerationPersistenceUnavailable)
+	})
 }
 
 func assertPlatformGenerationFinalizationEffects(t *testing.T, f platformGenerationFinalizationFixture, conversations, messages, usage, receipts, results int64, dailyCalls int, totalTokens int64) {

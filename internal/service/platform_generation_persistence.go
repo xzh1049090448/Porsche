@@ -15,11 +15,13 @@ import (
 	"github.com/porsche/ai-gateway-go/internal/persistence"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
+	"gorm.io/gorm/logger"
 )
 
 const (
 	platformGenerationMessageTextMaxBytes        = 65535
 	platformGenerationAdvisoryLockReleaseTimeout = 2 * time.Second
+	platformGenerationReceiptRecoveryTimeout     = 2 * time.Second
 )
 
 var (
@@ -36,6 +38,7 @@ type PlatformGenerationPersistenceResult struct {
 	State     PlatformGenerationState
 	Content   string
 	Tokens    int64
+	Seq       int64
 	ErrorCode string
 }
 
@@ -73,10 +76,12 @@ type PlatformGenerationReceiptSnapshot struct {
 }
 
 type platformGenerationTxRunner func(context.Context, *gorm.DB, string, func(*gorm.DB) error) error
+type platformGenerationReceiptReader func(context.Context, *gorm.DB, int64, string) (PlatformGenerationReceiptSnapshot, error)
 
 type PlatformGenerationPersistence struct {
 	generations *PlatformGenerationStore
 	runTx       platformGenerationTxRunner
+	loadReceipt platformGenerationReceiptReader
 }
 
 func NewPlatformGenerationPersistence(generations *PlatformGenerationStore) (*PlatformGenerationPersistence, error) {
@@ -85,6 +90,7 @@ func NewPlatformGenerationPersistence(generations *PlatformGenerationStore) (*Pl
 	}
 	return &PlatformGenerationPersistence{
 		generations: generations,
+		loadReceipt: LoadPlatformGenerationReceipt,
 		runTx: func(ctx context.Context, db *gorm.DB, lockName string, fn func(*gorm.DB) error) error {
 			return withPlatformGenerationAdvisoryLock(ctx, db, lockName, func(conn *gorm.DB) error {
 				return conn.Transaction(fn)
@@ -144,7 +150,8 @@ func validatePlatformGenerationPersistenceInput(input PlatformGenerationPersiste
 		if result.Model != input.Models[index] || !platformSSEV2ModelIdentifier(result.Model) ||
 			!utf8.ValidString(result.Content) ||
 			len([]byte(result.Content)) > platformGenerationMessageTextMaxBytes ||
-			result.Tokens < 0 || result.Tokens > math.MaxInt32 {
+			result.Tokens < 0 || result.Tokens > math.MaxInt32 ||
+			result.Seq < 0 || !platformSSEV2SafeInteger(result.Seq) {
 			return ErrPlatformGenerationPersistenceInvalid
 		}
 		switch result.State {
@@ -171,7 +178,7 @@ func validatePlatformGenerationPersistenceInput(input PlatformGenerationPersiste
 }
 
 func (p *PlatformGenerationPersistence) Finalize(ctx context.Context, db *gorm.DB, input PlatformGenerationPersistenceInput) (PlatformGenerationReceiptSnapshot, error) {
-	if p == nil || p.generations == nil || p.runTx == nil || ctx == nil || db == nil ||
+	if p == nil || p.generations == nil || p.runTx == nil || p.loadReceipt == nil || ctx == nil || db == nil ||
 		input.Mode != PlatformGenerationModeSingle || validatePlatformGenerationPersistenceInput(input) != nil {
 		return PlatformGenerationReceiptSnapshot{}, ErrPlatformGenerationPersistenceInvalid
 	}
@@ -183,7 +190,7 @@ func (p *PlatformGenerationPersistence) Finalize(ctx context.Context, db *gorm.D
 	if !platformPersistenceMatchesRedis(input, redisSnapshot) {
 		return PlatformGenerationReceiptSnapshot{}, ErrPlatformGenerationPersistenceConflict
 	}
-	if existing, loadErr := LoadPlatformGenerationReceipt(ctx, db, input.UserID, input.GenerationID); loadErr == nil {
+	if existing, loadErr := p.loadReceipt(ctx, db, input.UserID, input.GenerationID); loadErr == nil {
 		if platformReceiptMatchesInput(existing, input) {
 			return existing, nil
 		}
@@ -193,36 +200,48 @@ func (p *PlatformGenerationPersistence) Finalize(ctx context.Context, db *gorm.D
 	}
 
 	err = p.runTx(ctx, db, platformGenerationAdvisoryLockName(input.UserID, input.GenerationID), func(tx *gorm.DB) error {
-		return persistPlatformGeneration(tx, input)
+		return persistPlatformGeneration(tx.Session(&gorm.Session{Logger: logger.Discard}), input)
 	})
 	if err == nil {
-		return LoadPlatformGenerationReceipt(ctx, db, input.UserID, input.GenerationID)
+		return p.loadReceipt(ctx, db, input.UserID, input.GenerationID)
 	}
+	return p.resolveRunTxError(ctx, db, input, err)
+}
 
-	resolved, readErr := LoadPlatformGenerationReceipt(context.WithoutCancel(ctx), db, input.UserID, input.GenerationID)
+func (p *PlatformGenerationPersistence) resolveRunTxError(ctx context.Context, db *gorm.DB, input PlatformGenerationPersistenceInput, runErr error) (PlatformGenerationReceiptSnapshot, error) {
+	recoveryCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), platformGenerationReceiptRecoveryTimeout)
+	defer cancel()
+	resolved, readErr := p.loadReceipt(recoveryCtx, db, input.UserID, input.GenerationID)
 	if readErr == nil {
 		if platformReceiptMatchesInput(resolved, input) {
 			return resolved, nil
 		}
 		return PlatformGenerationReceiptSnapshot{}, ErrPlatformGenerationPersistenceConflict
 	}
-	if errors.Is(err, ErrPlatformGenerationPersistenceQuota) ||
-		errors.Is(err, ErrPlatformGenerationPersistenceConflict) ||
-		errors.Is(err, ErrPlatformGenerationPersistenceInvalid) {
-		return PlatformGenerationReceiptSnapshot{}, err
+	if errors.Is(readErr, ErrPlatformGenerationPersistenceIntegrity) {
+		return PlatformGenerationReceiptSnapshot{}, ErrPlatformGenerationPersistenceIntegrity
+	}
+	if !errors.Is(readErr, ErrPlatformGenerationPersistenceNotFound) {
+		return PlatformGenerationReceiptSnapshot{}, ErrPlatformGenerationPersistenceUnavailable
+	}
+	if errors.Is(runErr, ErrPlatformGenerationPersistenceQuota) ||
+		errors.Is(runErr, ErrPlatformGenerationPersistenceConflict) ||
+		errors.Is(runErr, ErrPlatformGenerationPersistenceInvalid) {
+		return PlatformGenerationReceiptSnapshot{}, runErr
 	}
 	return PlatformGenerationReceiptSnapshot{}, ErrPlatformGenerationPersistenceUnavailable
 }
 
 func platformPersistenceMatchesRedis(input PlatformGenerationPersistenceInput, snapshot PlatformGenerationSnapshot) bool {
 	if snapshot.State != PlatformGenerationStateCommitting || snapshot.GenerationID != input.GenerationID ||
-		snapshot.Mode != input.Mode || len(snapshot.Models) != len(input.Models) || len(snapshot.ModelStates) != len(input.Models) {
+		snapshot.Mode != input.Mode || input.NowMillis < snapshot.UpdatedAtMillis ||
+		len(snapshot.Models) != len(input.Models) || len(snapshot.ModelStates) != len(input.Models) {
 		return false
 	}
 	for index, model := range input.Models {
 		state, ok := snapshot.ModelStates[model]
 		if !ok || snapshot.Models[index] != model || state.State != input.Results[index].State ||
-			state.AssistantMessageGUID != "" || state.ErrorCode != input.Results[index].ErrorCode {
+			state.Seq != input.Results[index].Seq || state.AssistantMessageGUID != "" || state.ErrorCode != input.Results[index].ErrorCode {
 			return false
 		}
 	}
@@ -272,6 +291,9 @@ func persistPlatformGeneration(tx *gorm.DB, input PlatformGenerationPersistenceI
 	if err != nil {
 		return err
 	}
+	if input.NowMillis < user.UpdatedAt || (user.DailyCallsResetAt != nil && input.NowMillis < *user.DailyCallsResetAt) {
+		return ErrPlatformGenerationPersistenceConflict
+	}
 
 	successes := 0
 	var totalTokens int64
@@ -306,6 +328,9 @@ func persistPlatformGeneration(tx *gorm.DB, input PlatformGenerationPersistenceI
 		}
 		if err != nil {
 			return err
+		}
+		if input.NowMillis < conversation.UpdatedAt {
+			return ErrPlatformGenerationPersistenceConflict
 		}
 	} else {
 		model := input.Models[0]
@@ -363,17 +388,28 @@ func persistPlatformGeneration(tx *gorm.DB, input PlatformGenerationPersistenceI
 		}
 	}
 
-	conversation.UpdatedAt = input.NowMillis
-	conversation.UpdatedBy = &input.UserID
-	if err := tx.Save(&conversation).Error; err != nil {
-		return err
+	conversationUpdate := tx.Model(&models.Conversation{}).
+		Where("id = ? AND user_id = ? AND is_deleted = 0", conversation.ID, input.UserID).
+		Updates(map[string]any{"title": conversation.Title, "updated_at": input.NowMillis, "updated_by": input.UserID})
+	if conversationUpdate.Error != nil {
+		return conversationUpdate.Error
+	}
+	if conversationUpdate.RowsAffected != 1 {
+		return ErrPlatformGenerationPersistenceConflict
 	}
 	user.DailyCallsUsed += successes
 	user.TotalTokensUsed += totalTokens
-	user.UpdatedAt = input.NowMillis
-	user.UpdatedBy = &input.UserID
-	if err := tx.Save(&user).Error; err != nil {
-		return err
+	userUpdate := tx.Model(&models.User{}).
+		Where("id = ? AND status = ? AND is_deleted = 0", user.ID, models.UserStatusActive).
+		Updates(map[string]any{
+			"daily_calls_used": user.DailyCallsUsed, "total_tokens_used": user.TotalTokensUsed,
+			"daily_calls_reset_at": user.DailyCallsResetAt, "updated_at": input.NowMillis, "updated_by": input.UserID,
+		})
+	if userUpdate.Error != nil {
+		return userUpdate.Error
+	}
+	if userUpdate.RowsAffected != 1 {
+		return ErrPlatformGenerationPersistenceConflict
 	}
 
 	receipt := models.PlatformChatGenerationReceipt{

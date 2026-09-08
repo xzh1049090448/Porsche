@@ -778,11 +778,13 @@ import (
 	"unicode/utf8"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
 
 const (
 	platformGenerationMessageTextMaxBytes         = 65535
 	platformGenerationAdvisoryLockReleaseTimeout = 2 * time.Second
+	platformGenerationReceiptRecoveryTimeout     = 2 * time.Second
 )
 
 var (
@@ -799,6 +801,7 @@ type PlatformGenerationPersistenceResult struct {
 	State     PlatformGenerationState
 	Content   string
 	Tokens    int64
+	Seq       int64
 	ErrorCode string
 }
 
@@ -836,10 +839,12 @@ type PlatformGenerationReceiptSnapshot struct {
 }
 
 type platformGenerationTxRunner func(context.Context, *gorm.DB, string, func(*gorm.DB) error) error
+type platformGenerationReceiptReader func(context.Context, *gorm.DB, int64, string) (PlatformGenerationReceiptSnapshot, error)
 
 type PlatformGenerationPersistence struct {
 	generations *PlatformGenerationStore
 	runTx       platformGenerationTxRunner
+	loadReceipt platformGenerationReceiptReader
 }
 
 func NewPlatformGenerationPersistence(generations *PlatformGenerationStore) (*PlatformGenerationPersistence, error) {
@@ -848,6 +853,7 @@ func NewPlatformGenerationPersistence(generations *PlatformGenerationStore) (*Pl
 	}
 	return &PlatformGenerationPersistence{
 		generations: generations,
+		loadReceipt: LoadPlatformGenerationReceipt,
 		runTx: func(ctx context.Context, db *gorm.DB, lockName string, fn func(*gorm.DB) error) error {
 			return withPlatformGenerationAdvisoryLock(ctx, db, lockName, func(conn *gorm.DB) error {
 				return conn.Transaction(fn)
@@ -907,7 +913,8 @@ func validatePlatformGenerationPersistenceInput(input PlatformGenerationPersiste
 		if result.Model != input.Models[index] || !platformSSEV2ModelIdentifier(result.Model) ||
 			!utf8.ValidString(result.Content) ||
 			len([]byte(result.Content)) > platformGenerationMessageTextMaxBytes ||
-			result.Tokens < 0 || result.Tokens > math.MaxInt32 {
+			result.Tokens < 0 || result.Tokens > math.MaxInt32 ||
+			result.Seq < 0 || !platformSSEV2SafeInteger(result.Seq) {
 			return ErrPlatformGenerationPersistenceInvalid
 		}
 		switch result.State {
@@ -1134,6 +1141,8 @@ git commit -m "feat(platform): read generation receipts safely"
 
 - Modify: `internal/service/platform_generation_persistence.go`
 - Modify: `internal/service/platform_generation_persistence_test.go`
+- Modify: `docs/superpowers/specs/2026-09-08-platform-generation-persistence-design.md`
+- Modify: `docs/superpowers/plans/2026-09-08-platform-generation-persistence.md`
 
 - [ ] **Step 1: Write RED single/fault tests**
 
@@ -1147,7 +1156,7 @@ func TestPlatformGenerationPersistenceSingleWriteFailuresRollbackEveryEffect(t *
 func TestPlatformGenerationPersistenceSingleInsufficientQuotaRollsBack(t *testing.T)
 ```
 
-The success test must claim a single generation, mark the model done, call `BeginCommit`, call `Finalize`, and assert one conversation, one non-empty user message, one assistant message, one usage record, one quota increment, exact total token increment, one receipt/result, `receipt.user_message_id` equal to that user-message row, and identical loaded user/assistant content plus assistant-message GUID. The empty-user-message test uses a store whose Redis address is deliberately unreachable and a transaction runner that panics if called; `Finalize` must return `ErrPlatformGenerationPersistenceInvalid` without either dependency being touched. The fault table must inject failure at conversation, user message, assistant message, usage, user update, receipt, and result boundaries and assert zero net rows/counter changes after each subtest. Include a receipt-insert failure caused by a bad `user_message_id` and prove it rolls back the entire transaction.
+The success test must claim a single generation, mark the model done, call `BeginCommit`, call `Finalize`, and assert one conversation, one non-empty user message, one assistant message, one usage record, one quota increment, exact total token increment, one receipt/result, `receipt.user_message_id` equal to that user-message row, and identical loaded user/assistant content plus assistant-message GUID. Every persistence result includes the final Redis `Seq`, which must match exactly but is not stored in the receipt schema. The empty-user-message and compare-mode tests use a store whose Redis address is deliberately unreachable and a transaction runner that panics if called; Task 5 `Finalize` must return `ErrPlatformGenerationPersistenceInvalid` without either dependency being touched. The fault table must inject failure at conversation create, user message, assistant message, usage, existing-conversation title/audit update, user update, receipt, and result boundaries and assert zero net rows/counter changes after each subtest. Include a receipt-insert failure caused by a bad `user_message_id` and prove it rolls back the entire transaction. Add stale Redis/user/reset/conversation timestamp cases, commit-unknown integrity/bounded-context coverage, and an interpolating slow/error GORM logger capture that proves unique prompt/answer sentinels never appear.
 
 - [ ] **Step 2: Run single tests and confirm RED**
 
@@ -1163,7 +1172,7 @@ Add the methods below to `platform_generation_persistence.go`. Keep all calls on
 
 ```go
 func (p *PlatformGenerationPersistence) Finalize(ctx context.Context, db *gorm.DB, input PlatformGenerationPersistenceInput) (PlatformGenerationReceiptSnapshot, error) {
-	if p == nil || p.generations == nil || p.runTx == nil || db == nil || validatePlatformGenerationPersistenceInput(input) != nil {
+	if p == nil || p.generations == nil || p.runTx == nil || p.loadReceipt == nil || ctx == nil || db == nil || input.Mode != PlatformGenerationModeSingle || validatePlatformGenerationPersistenceInput(input) != nil {
 		return PlatformGenerationReceiptSnapshot{}, ErrPlatformGenerationPersistenceInvalid
 	}
 	redisSnapshot, err := p.generations.Get(ctx, input.UserID, input.GenerationID)
@@ -1173,7 +1182,7 @@ func (p *PlatformGenerationPersistence) Finalize(ctx context.Context, db *gorm.D
 	if !platformPersistenceMatchesRedis(input, redisSnapshot) {
 		return PlatformGenerationReceiptSnapshot{}, ErrPlatformGenerationPersistenceConflict
 	}
-	if existing, err := LoadPlatformGenerationReceipt(ctx, db, input.UserID, input.GenerationID); err == nil {
+	if existing, err := p.loadReceipt(ctx, db, input.UserID, input.GenerationID); err == nil {
 		if platformReceiptMatchesInput(existing, input) {
 			return existing, nil
 		}
@@ -1181,16 +1190,24 @@ func (p *PlatformGenerationPersistence) Finalize(ctx context.Context, db *gorm.D
 	} else if !errors.Is(err, ErrPlatformGenerationPersistenceNotFound) {
 		return PlatformGenerationReceiptSnapshot{}, err
 	}
-	err = p.runTx(ctx, db, platformGenerationAdvisoryLockName(input.UserID, input.GenerationID), func(tx *gorm.DB) error { return persistPlatformGeneration(tx, input) })
+	err = p.runTx(ctx, db, platformGenerationAdvisoryLockName(input.UserID, input.GenerationID), func(tx *gorm.DB) error { return persistPlatformGeneration(tx.Session(&gorm.Session{Logger: logger.Discard}), input) })
 	if err == nil {
-		return LoadPlatformGenerationReceipt(ctx, db, input.UserID, input.GenerationID)
+		return p.loadReceipt(ctx, db, input.UserID, input.GenerationID)
 	}
-	resolved, readErr := LoadPlatformGenerationReceipt(context.WithoutCancel(ctx), db, input.UserID, input.GenerationID)
+	recoveryCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), platformGenerationReceiptRecoveryTimeout)
+	defer cancel()
+	resolved, readErr := p.loadReceipt(recoveryCtx, db, input.UserID, input.GenerationID)
 	if readErr == nil {
 		if platformReceiptMatchesInput(resolved, input) {
 			return resolved, nil
 		}
 		return PlatformGenerationReceiptSnapshot{}, ErrPlatformGenerationPersistenceConflict
+	}
+	if errors.Is(readErr, ErrPlatformGenerationPersistenceIntegrity) {
+		return PlatformGenerationReceiptSnapshot{}, ErrPlatformGenerationPersistenceIntegrity
+	}
+	if !errors.Is(readErr, ErrPlatformGenerationPersistenceNotFound) {
+		return PlatformGenerationReceiptSnapshot{}, ErrPlatformGenerationPersistenceUnavailable
 	}
 	if errors.Is(err, ErrPlatformGenerationPersistenceQuota) || errors.Is(err, ErrPlatformGenerationPersistenceConflict) || errors.Is(err, ErrPlatformGenerationPersistenceInvalid) {
 		return PlatformGenerationReceiptSnapshot{}, err
@@ -1199,12 +1216,12 @@ func (p *PlatformGenerationPersistence) Finalize(ctx context.Context, db *gorm.D
 }
 
 func platformPersistenceMatchesRedis(input PlatformGenerationPersistenceInput, snapshot PlatformGenerationSnapshot) bool {
-	if snapshot.State != PlatformGenerationStateCommitting || snapshot.GenerationID != input.GenerationID || snapshot.Mode != input.Mode || len(snapshot.Models) != len(input.Models) {
+	if snapshot.State != PlatformGenerationStateCommitting || snapshot.GenerationID != input.GenerationID || snapshot.Mode != input.Mode || input.NowMillis < snapshot.UpdatedAtMillis || len(snapshot.Models) != len(input.Models) {
 		return false
 	}
 	for i, model := range input.Models {
 		state, ok := snapshot.ModelStates[model]
-		if !ok || snapshot.Models[i] != model || state.State != input.Results[i].State || state.AssistantMessageGUID != "" || state.ErrorCode != input.Results[i].ErrorCode {
+		if !ok || snapshot.Models[i] != model || state.State != input.Results[i].State || state.Seq != input.Results[i].Seq || state.AssistantMessageGUID != "" || state.ErrorCode != input.Results[i].ErrorCode {
 			return false
 		}
 	}
@@ -1214,6 +1231,9 @@ func platformPersistenceMatchesRedis(input PlatformGenerationPersistenceInput, s
 func persistPlatformGeneration(tx *gorm.DB, input PlatformGenerationPersistenceInput) error {
 	var user models.User
 	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id=? AND status=? AND is_deleted=0", input.UserID, models.UserStatusActive).First(&user).Error; err != nil {
+		return ErrPlatformGenerationPersistenceConflict
+	}
+	if input.NowMillis < user.UpdatedAt || (user.DailyCallsResetAt != nil && input.NowMillis < *user.DailyCallsResetAt) {
 		return ErrPlatformGenerationPersistenceConflict
 	}
 	successes := 0
@@ -1231,6 +1251,9 @@ func persistPlatformGeneration(tx *gorm.DB, input PlatformGenerationPersistenceI
 	var conversation models.Conversation
 	if input.ConversationGUID != nil {
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("guid=? AND user_id=? AND is_deleted=0", *input.ConversationGUID, input.UserID).First(&conversation).Error; err != nil {
+			return ErrPlatformGenerationPersistenceConflict
+		}
+		if input.NowMillis < conversation.UpdatedAt {
 			return ErrPlatformGenerationPersistenceConflict
 		}
 	} else {
@@ -1263,17 +1286,26 @@ func persistPlatformGeneration(tx *gorm.DB, input PlatformGenerationPersistenceI
 			return err
 		}
 	}
-	conversation.UpdatedAt = input.NowMillis
-	conversation.UpdatedBy = &input.UserID
-	if err := tx.Save(&conversation).Error; err != nil {
-		return err
+	conversationUpdate := tx.Model(&models.Conversation{}).Where("id=? AND user_id=? AND is_deleted=0", conversation.ID, input.UserID).Updates(map[string]any{
+		"title": conversation.Title, "updated_at": input.NowMillis, "updated_by": input.UserID,
+	})
+	if conversationUpdate.Error != nil {
+		return conversationUpdate.Error
+	}
+	if conversationUpdate.RowsAffected != 1 {
+		return ErrPlatformGenerationPersistenceConflict
 	}
 	user.DailyCallsUsed += successes
 	user.TotalTokensUsed += totalTokens
-	user.UpdatedAt = input.NowMillis
-	user.UpdatedBy = &input.UserID
-	if err := tx.Save(&user).Error; err != nil {
-		return err
+	userUpdate := tx.Model(&models.User{}).Where("id=? AND status=? AND is_deleted=0", user.ID, models.UserStatusActive).Updates(map[string]any{
+		"daily_calls_used": user.DailyCallsUsed, "total_tokens_used": user.TotalTokensUsed,
+		"daily_calls_reset_at": user.DailyCallsResetAt, "updated_at": input.NowMillis, "updated_by": input.UserID,
+	})
+	if userUpdate.Error != nil {
+		return userUpdate.Error
+	}
+	if userUpdate.RowsAffected != 1 {
+		return ErrPlatformGenerationPersistenceConflict
 	}
 	receipt := models.PlatformChatGenerationReceipt{
 		AuditFields: platformPersistenceAudit(input.UserID, input.NowMillis), UserID: input.UserID,
@@ -1316,7 +1348,7 @@ func resetDailyAt(user *models.User, nowMillis int64) {
 }
 ```
 
-Add the required imports `time`, `gorm.io/gorm/clause`, `internal/models`, and `internal/persistence`. The finalizer and receipt-less recovery path must hold the same hashed per-generation MySQL advisory lock while resolving commit state. Implement `platformReceiptMatchesInput` by exact user-message bytes plus ordered mode/model/state/assistant-content/token/error comparison against the loaded receipt. It must not normalize or ignore conflicting fields, and it must not compare `CommittedAtMillis` with retry-local `NowMillis`.
+Add the required imports `time`, `gorm.io/gorm/clause`, `gorm.io/gorm/logger`, `internal/models`, and `internal/persistence`. The finalizer and receipt-less recovery path must hold the same hashed per-generation MySQL advisory lock while resolving commit state. Run the entire transaction through a silent GORM session so error and slow-query logging cannot interpolate prompt or assistant content; preserve the original returned database error without logging content in service code. Reject a transaction timestamp older than Redis `updated_at_ms`, the locked user's `updated_at` or non-null `daily_calls_reset_at`, or a locked existing conversation's `updated_at`; equal timestamps are allowed. Replace full-model `Save` calls with explicit field-only updates and active ownership predicates, requiring exactly one affected row. Implement `platformReceiptMatchesInput` by exact user-message bytes plus ordered mode/model/state/assistant-content/token/error comparison against the loaded receipt. `Seq` is deliberately excluded because it is a Redis precondition and has no durable receipt column. The matcher must not normalize or ignore conflicting durable fields, and it must not compare `CommittedAtMillis` with retry-local `NowMillis`. Commit-unknown receipt reads use the injected production reader under a short `WithoutCancel`-derived timeout, preserve a matching receipt as success, return mismatch as conflict and integrity as integrity, preserve typed quota/conflict/invalid only on not-found, and otherwise return unavailable.
 
 - [ ] **Step 4: Run single/fault tests and confirm GREEN**
 
