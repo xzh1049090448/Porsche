@@ -109,19 +109,53 @@ func TestAdminUserNicknameEditAuthorizationAndSetClear(t *testing.T) {
 }
 
 func TestAdminUserNicknameEditNoopDoesNotAudit(t *testing.T) {
-	ctx, service, _, _, target, claims := adminUserNicknameEditFixture(t, models.UserRoleAdmin, models.UserRoleUser)
-	input := AdminUserNicknameEditInput{ExpectedAuthVersion: target.AuthVersion}
-	if target.Nickname == nil {
-		input.ClearNickname = true
-	} else {
+	t.Run("nil", func(t *testing.T) {
+		ctx, service, _, _, target, claims := adminUserNicknameEditFixture(t, models.UserRoleAdmin, models.UserRoleUser)
+		if target.Nickname != nil {
+			t.Fatalf("fixture nickname = %#v, want nil", target.Nickname)
+		}
+		beforeVersion := target.AuthVersion
+		got, err := service.Edit(ctx, claims, target.Guid, AdminUserNicknameEditInput{ClearNickname: true, ExpectedAuthVersion: beforeVersion})
+		if err != nil || got == nil || got.Nickname != nil || got.AuthVersion != beforeVersion {
+			t.Fatalf("nil noop=%#v err=%v", got, err)
+		}
+		var stored models.User
+		if err := service.db.First(&stored, target.ID).Error; err != nil {
+			t.Fatal(err)
+		}
+		if stored.Nickname != nil || stored.AuthVersion != beforeVersion {
+			t.Fatalf("nil noop changed stored user: %#v", stored)
+		}
+		assertChangePasswordAuditCount(t, service.db, target.ID, models.AuthAuditEventManagedUserUpdated, 0)
+	})
+
+	t.Run("non_nil", func(t *testing.T) {
+		ctx, service, _, _, target, claims := adminUserNicknameEditFixture(t, models.UserRoleAdmin, models.UserRoleUser)
+		beforeVersion := target.AuthVersion
+		persisted := "existing nickname"
+		if err := service.db.Model(&models.User{}).Where("id = ?", target.ID).Update("nickname", persisted).Error; err != nil {
+			t.Fatal(err)
+		}
+		if err := service.db.First(target, target.ID).Error; err != nil {
+			t.Fatal(err)
+		}
+		if target.Nickname == nil || *target.Nickname != persisted || target.AuthVersion != beforeVersion {
+			t.Fatalf("persisted fixture = %#v", target)
+		}
 		nickname := *target.Nickname
-		input.Nickname = &nickname
-	}
-	got, err := service.Edit(ctx, claims, target.Guid, input)
-	if err != nil || got == nil {
-		t.Fatalf("noop=%#v err=%v", got, err)
-	}
-	assertChangePasswordAuditCount(t, service.db, target.ID, models.AuthAuditEventManagedUserUpdated, 0)
+		got, err := service.Edit(ctx, claims, target.Guid, AdminUserNicknameEditInput{Nickname: &nickname, ExpectedAuthVersion: beforeVersion})
+		if err != nil || got == nil || got.Nickname == nil || *got.Nickname != persisted || got.AuthVersion != beforeVersion {
+			t.Fatalf("non-nil noop=%#v err=%v", got, err)
+		}
+		var stored models.User
+		if err := service.db.First(&stored, target.ID).Error; err != nil {
+			t.Fatal(err)
+		}
+		if stored.Nickname == nil || *stored.Nickname != persisted || stored.AuthVersion != beforeVersion {
+			t.Fatalf("non-nil noop changed stored user: %#v", stored)
+		}
+		assertChangePasswordAuditCount(t, service.db, target.ID, models.AuthAuditEventManagedUserUpdated, 0)
+	})
 }
 
 func TestAdminUserNicknameEditRejectsHiddenForbiddenAndConflict(t *testing.T) {
