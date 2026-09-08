@@ -1,10 +1,10 @@
 # A08 managed-user role and permission writes design
 
-Status: `DRAFT_PENDING_WRITTEN_REVIEW`
+Status: `AGREED_FOR_IMPLEMENTATION`
 
 Chosen approach: mixed endpoint contract (user selection `1`, 2026-09-09)
 
-Contract revision: `2026-09-09-a08-v1-draft`
+Contract revision: `2026-09-09-a08-v1`
 
 ## Scope and acceptance boundary
 
@@ -167,4 +167,4 @@ Production migration, deployment and production acceptance remain `NOT_RUN` unti
 
 ## Written decisions still requiring review
 
-The selected mixed endpoint architecture is approved in principle by the user. Written review must still confirm the precise intent fields, operation stable-result expansion, same-policy 409 behavior, `inherit` omission in persistence, policy-head preservation on demotion and Gateway Key runtime acceptance. Until that review, this document remains a draft and implementation must not start.
+The user approved this written specification on 2026-09-09. The approval covers the precise intent fields, operation stable-result expansion, same-policy 409 behavior, `inherit` omission in persistence, policy-head preservation on demotion and Gateway Key runtime acceptance. Implementation must follow the paired TDD plan; external backend `project_manager` confirmation and final acceptance evidence remain separately pending.
