@@ -55,6 +55,24 @@ second_output="$(run_merge "$example" "$env_file")"
 [[ -z "$second_output" ]] || fail 'idempotent merge emitted output'
 [[ "$(hash_file "$env_file")" == "$first_hash" ]] || fail 'second merge changed bytes'
 
+cat >"$fixture_dir/comment-placeholders" <<'EOF'
+# EXACT_EMPTY=
+  # LEADING_SPACE=
+#NO_SPACE=
+#  TWO_SPACES=
+EOF
+printf '#\tTAB_SPACE=\n# TRAILING_SPACE= \n' >>"$fixture_dir/comment-placeholders"
+printf 'BASE=unchanged\n' >"$fixture_dir/comment-env"
+comment_output="$(run_merge "$fixture_dir/comment-placeholders" "$fixture_dir/comment-env")"
+[[ "$comment_output" == 'added environment key: EXACT_EMPTY' ]] || fail 'non-exact commented placeholders were recognized'
+[[ "$(cat "$fixture_dir/comment-env")" == $'BASE=unchanged\nEXACT_EMPTY=' ]] || fail 'comment placeholder parsing was not exact'
+
+printf 'NO_NEWLINE=old-bytes' >"$fixture_dir/no-newline-env"
+printf 'APPENDED=value\n' >"$fixture_dir/no-newline-example"
+run_merge "$fixture_dir/no-newline-example" "$fixture_dir/no-newline-env" >"$fixture_dir/no-newline.stdout"
+printf 'NO_NEWLINE=old-bytes\nAPPENDED=value\n' >"$fixture_dir/no-newline-expected"
+cmp -s "$fixture_dir/no-newline-expected" "$fixture_dir/no-newline-env" || fail 'missing-final-newline merge did not add exactly one separator newline'
+
 assert_rejected_unchanged() {
     local label="$1" bad_example="$2" before
     before="$(hash_file "$env_file")"
@@ -71,10 +89,20 @@ printf 'VALID=ok\nBAD-KEY=value-secret-must-not-print\n' >"$fixture_dir/malforme
 assert_rejected_unchanged malformed "$fixture_dir/malformed"
 ln -s "$example" "$fixture_dir/example-link"
 assert_rejected_unchanged example-symlink "$fixture_dir/example-link"
+mkdir "$fixture_dir/example-directory"
+assert_rejected_unchanged example-directory "$fixture_dir/example-directory"
+mkfifo "$fixture_dir/example-fifo"
+assert_rejected_unchanged example-fifo "$fixture_dir/example-fifo"
 ln -s "$env_file" "$fixture_dir/env-link"
 before="$(hash_file "$env_file")"
 if run_merge "$example" "$fixture_dir/env-link" >"$fixture_dir/env-link.stdout" 2>"$fixture_dir/env-link.stderr"; then fail 'env symlink unexpectedly succeeded'; fi
 [[ "$(hash_file "$env_file")" == "$before" ]] || fail 'env symlink rejection changed target'
+for nonregular_env in env-directory env-fifo; do
+    [[ "$nonregular_env" == env-directory ]] && mkdir "$fixture_dir/$nonregular_env" || mkfifo "$fixture_dir/$nonregular_env"
+    before="$(hash_file "$env_file")"
+    if run_merge "$example" "$fixture_dir/$nonregular_env" >"$fixture_dir/$nonregular_env.stdout" 2>"$fixture_dir/$nonregular_env.stderr"; then fail "$nonregular_env unexpectedly succeeded"; fi
+    [[ "$(hash_file "$env_file")" == "$before" ]] || fail "$nonregular_env rejection changed an existing env"
+done
 
 printf 'WRITE_FAILURE_KEY=write-failure-secret-must-not-print\n' >"$fixture_dir/write-failure-example"
 mkdir "$fixture_dir/mock-bin"
@@ -96,7 +124,9 @@ for invalid_args in zero one three relative; do
         three) args=("$example" "$env_file" "$env_file") ;;
         relative) args=("example" "$env_file") ;;
     esac
+    before="$(hash_file "$env_file")"
     if run_merge ${args[@]+"${args[@]}"} >"$fixture_dir/args.stdout" 2>"$fixture_dir/args.stderr"; then fail "$invalid_args arguments unexpectedly succeeded"; fi
+    [[ "$(hash_file "$env_file")" == "$before" ]] || fail "$invalid_args arguments changed env"
 done
 
 printf 'PASS: additive environment merge checks\n'

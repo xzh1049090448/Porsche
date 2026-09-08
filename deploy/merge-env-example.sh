@@ -14,6 +14,7 @@ env_path="$2"
 [[ -f "$env_path" && ! -L "$env_path" ]] || fail 'env must be a regular file'
 
 declare -a example_keys=() example_values=() env_keys=()
+commented_empty_pattern='^# ([A-Z][A-Z0-9_]*)=$'
 
 contains_key() {
     local wanted="$1" candidate
@@ -30,7 +31,7 @@ while IFS= read -r line || [[ -n "$line" ]]; do
     if [[ "$line" =~ ^[[:space:]]*(export[[:space:]]+)?([A-Z][A-Z0-9_]*)[[:space:]]*=(.*)$ ]]; then
         key="${BASH_REMATCH[2]}"
         value="${BASH_REMATCH[3]}"
-    elif [[ "$line" =~ ^[[:space:]]*#[[:space:]]([A-Z][A-Z0-9_]*)=$ ]]; then
+    elif [[ "$line" =~ $commented_empty_pattern ]]; then
         key="${BASH_REMATCH[1]}"
     elif [[ "$line" =~ ^[[:space:]]*$ || "$line" =~ ^[[:space:]]*# ]]; then
         continue
