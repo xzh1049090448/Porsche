@@ -160,7 +160,7 @@ kill "$holder_pid" 2>/dev/null || true; wait "$holder_pid" 2>/dev/null || true
 forbid 'git fetch'; forbid 'docker build'; forbid 'docker stop'
 
 writer_ready="$fixture/writer-ready"
-( exec 6>"$repo/.env.merge.lock"; python3 -c 'import fcntl,sys,time; fcntl.flock(6,fcntl.LOCK_EX); open(sys.argv[1],"w").close(); time.sleep(2)' "$writer_ready" ) & writer_pid=$!
+( exec 6>"$repo/..env.merge.lock"; python3 -c 'import fcntl,sys,time; fcntl.flock(6,fcntl.LOCK_EX); open(sys.argv[1],"w").close(); time.sleep(2)' "$writer_ready" ) & writer_pid=$!
 for _ in {1..50}; do [[ -e "$writer_ready" ]] && break; /bin/sleep 0.02; done
 if USE_REAL_FLOCK=1 REAL_FLOCK="$system_flock" run >"$fixture/writer-out" 2>"$fixture/writer-err"; then kill "$writer_pid" 2>/dev/null || true; wait "$writer_pid" 2>/dev/null || true; fail 'environment writer lock contention accepted'; fi
 kill "$writer_pid" 2>/dev/null || true; wait "$writer_pid" 2>/dev/null || true

@@ -40,6 +40,19 @@ EOF_M
 cat >"$bin/docker" <<'EOF_M'
 #!/usr/bin/env bash
 printf 'docker %s\n' "$*" >>"$COMMAND_LOG"
+if [[ "${1:-}" == build && "${ASSERT_ENV_LOCKS_HELD:-0}" == 1 ]]; then
+    python3 - "$BACKEND_ENV_LOCK" "$FRONTEND_ENV_LOCK" <<'PY'
+import fcntl, os, sys
+for path in sys.argv[1:]:
+    fd=os.open(path, os.O_WRONLY|os.O_CREAT, 0o600)
+    try:
+        try: fcntl.flock(fd, fcntl.LOCK_EX|fcntl.LOCK_NB)
+        except BlockingIOError: continue
+        raise SystemExit('environment sibling lock was not held: '+path)
+    finally: os.close(fd)
+PY
+    printf 'verified both environment sibling locks held\n' >>"$COMMAND_LOG"
+fi
 case "${1:-}" in image) printf '%s\n' "${MOCK_INSPECT_ID:-$EXPECTED_IMAGE_ID}";; run) [[ "${MOCK_CONFIG_RESULT:-success}" == success ]] || exit 85;; esac
 EOF_M
 cat >"$bin/npm" <<'EOF_M'
@@ -89,7 +102,7 @@ cp "$frontend/package-lock.json" "$seed/frontend/package-lock.json"
 cp "$frontend/.env.example" "$seed/frontend/.env.example"
 image_id="sha256:$(printf 'c%.0s' {1..64})"; revision="$(printf 'e%.0s' {1..40})"
 fail(){ echo "FAIL: $*" >&2; exit 1; }
-run(){ : >"$log"; PATH="$bin:$PATH" COMMAND_LOG="$log" EXPECTED_IMAGE_ID="$image_id" EXPECTED_REVISION="$revision" RESET_SEED="$seed" BACKEND_FIXTURE="$backend" FRONTEND_FIXTURE="$frontend" PORSCHE_RESTART_TEST_MODE=1 PORSCHE_RESTART_BACKEND_DIR="$backend" PORSCHE_RESTART_FRONTEND_DIR="$frontend" PORSCHE_RESTART_FRONTEND_ROOT="$root" PORSCHE_RESTART_LOCK_FILE="$tmp/full.lock" PORSCHE_RESTART_STAGE_PARENT="$tmp" "$backend/deploy/restart-all.sh"; }
+run(){ : >"$log"; PATH="$bin:$PATH" COMMAND_LOG="$log" EXPECTED_IMAGE_ID="$image_id" EXPECTED_REVISION="$revision" RESET_SEED="$seed" BACKEND_FIXTURE="$backend" FRONTEND_FIXTURE="$frontend" BACKEND_ENV_LOCK="$backend/..env.merge.lock" FRONTEND_ENV_LOCK="$frontend/..env.merge.lock" PORSCHE_RESTART_TEST_MODE=1 PORSCHE_RESTART_BACKEND_DIR="$backend" PORSCHE_RESTART_FRONTEND_DIR="$frontend" PORSCHE_RESTART_FRONTEND_ROOT="$root" PORSCHE_RESTART_LOCK_FILE="$tmp/full.lock" PORSCHE_RESTART_STAGE_PARENT="$tmp" "$backend/deploy/restart-all.sh"; }
 line(){ grep -Fn -- "$1" "$log" | head -1 | cut -d: -f1; }; require(){ grep -Fq -- "$1" "$log" || fail "missing $1"; }; forbid(){ ! grep -Fq -- "$1" "$log" || fail "unexpected $1"; }; before(){ local a b; a="$(line "$1")"; b="$(line "$2")"; [[ -n "$a" && -n "$b" && "$a" -lt "$b" ]] || fail "expected $1 before $2"; }
 assert_unchanged(){ grep -Fqx 'EXISTING=preserved' "$backend/.env"; grep -Fqx 'VITE_EXISTING=preserved' "$frontend/.env"; }
 run >"$tmp/out"
@@ -100,6 +113,21 @@ snapshot="$(grep -F 'docker run --rm --env-file ' "$log" | head -1 | sed -E 's/.
 require "docker run --rm --env-file $snapshot --network porsche-app --entrypoint /app/check-config $image_id"
 require 'npm ci'; require 'npm run build'; forbid 'npm install'; require "production-deploy.sh PREBUILT_IMAGE_ID=$image_id PREBUILT_SOURCE_REVISION=$revision ENV_SNAPSHOT=$snapshot RELEASE_LOCK_FD=9 APP_DOCKER_NETWORK=porsche-app"
 before 'flock -E 75 -n 9' 'merge-env-example.sh'; before 'git reset --hard origin/main' 'merge-env-example.sh'; before 'merge-env-example.sh' 'docker build'; before '--entrypoint /app/check-config' 'npm ci'; before 'npm ci' 'npm run build'; before 'npm run build' 'nginx -t'; before 'nginx -t' 'production-deploy.sh'; before 'production-deploy.sh' 'rsync --archive'; before 'rsync --archive' 'systemctl reload nginx'; assert_unchanged
+
+USE_REAL_FLOCK=1 REAL_FLOCK="$bin/kernel-flock" ASSERT_ENV_LOCKS_HELD=1 run >"$tmp/real-lock-window-out"
+require 'verified both environment sibling locks held'
+
+assert_external_env_lock_blocks(){
+    local lock_path="$1" label="$2" ready
+    ready="$tmp/$label-ready"
+    ( exec 6>"$lock_path"; python3 -c 'import fcntl,sys,time; fcntl.flock(6,fcntl.LOCK_EX); open(sys.argv[1],"w").close(); time.sleep(2)' "$ready" ) & local holder_pid=$!
+    for _ in {1..50}; do [[ -e "$ready" ]] && break; /bin/sleep 0.02; done
+    if USE_REAL_FLOCK=1 REAL_FLOCK="$bin/kernel-flock" run >"$tmp/$label-out" 2>"$tmp/$label-err"; then kill "$holder_pid" 2>/dev/null || true; wait "$holder_pid" 2>/dev/null || true; fail "$label sibling lock contention accepted"; fi
+    kill "$holder_pid" 2>/dev/null || true; wait "$holder_pid" 2>/dev/null || true
+    forbid 'docker build'; forbid 'npm ci'; forbid 'production-deploy.sh'
+}
+assert_external_env_lock_blocks "$backend/..env.merge.lock" backend-env
+assert_external_env_lock_blocks "$frontend/..env.merge.lock" frontend-env
 
 rm "$backend/.env.example" "$backend/deploy/merge-env-example.sh" "$backend/deploy/production-deploy.sh" \
    "$frontend/package.json" "$frontend/package-lock.json" "$frontend/.env.example"

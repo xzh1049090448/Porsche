@@ -45,7 +45,8 @@ else
     PREBUILT_SOURCE_REVISION="$(git rev-parse HEAD)"
     [[ -f "$repo_root/.env.example" && -x "$repo_root/deploy/merge-env-example.sh" ]] || { echo 'standalone deployment requires the environment template and merge command' >&2; exit 1; }
     "$repo_root/deploy/merge-env-example.sh" "$repo_root/.env.example" "$ENV_FILE"
-    exec 8>"$repo_root/.env.merge.lock"; flock -E 75 -n 8 || { echo 'environment file is being updated' >&2; exit 75; }
+    env_lock_path="$(dirname "$ENV_FILE")/.$(basename "$ENV_FILE").merge.lock"
+    exec 8>"$env_lock_path"; flock -E 75 -n 8 || { echo 'environment file is being updated' >&2; exit 75; }
     snapshot_path="$(mktemp "$repo_root/.env.release.XXXXXX")"; chmod 0600 "$snapshot_path"; cp "$ENV_FILE" "$snapshot_path"
     owns_snapshot=true
     trap cleanup_snapshot EXIT

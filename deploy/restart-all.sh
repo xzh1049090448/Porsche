@@ -70,8 +70,13 @@ done
 "$BACKEND_DIR/deploy/merge-env-example.sh" "$BACKEND_DIR/.env.example" "$BACKEND_DIR/.env"
 "$BACKEND_DIR/deploy/merge-env-example.sh" "$FRONTEND_DIR/.env.example" "$FRONTEND_DIR/.env"
 
-exec 8>"$BACKEND_DIR/.env.merge.lock"
+backend_env_lock="$(dirname "$BACKEND_DIR/.env")/.$(basename "$BACKEND_DIR/.env").merge.lock"
+frontend_env_lock="$(dirname "$FRONTEND_DIR/.env")/.$(basename "$FRONTEND_DIR/.env").merge.lock"
+# All release writers acquire environment locks in backend-then-frontend order.
+exec 8>"$backend_env_lock"
 flock -E 75 -n 8 || { echo 'backend environment file is being updated' >&2; exit 75; }
+exec 7>"$frontend_env_lock"
+flock -E 75 -n 7 || { echo 'frontend environment file is being updated' >&2; exit 75; }
 env_snapshot="$(mktemp "$BACKEND_DIR/.env.release.XXXXXX")"
 chmod 0600 "$env_snapshot"
 cp "$BACKEND_DIR/.env" "$env_snapshot"
@@ -107,6 +112,7 @@ nginx -t
 cleanup_env_snapshot
 env_snapshot=''
 exec 8>&-
+exec 7>&-
 
 stage_dir="$(mktemp -d "$STAGE_PARENT/.porsche-web-stage.XXXXXX")"
 backup_dir="$STAGE_PARENT/.porsche-web-backup.$$"
