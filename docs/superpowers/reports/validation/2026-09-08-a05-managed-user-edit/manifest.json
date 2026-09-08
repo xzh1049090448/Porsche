@@ -1,1 +1,68 @@
-{"schema_version":1,"slice":"A05 managed-user nickname edit","status":"BLOCKED","validated_at":"2026-09-08","supersedes":["r1","r2","r3","r4","r5","r6"],"runs":{"r5_backend_http":"PASS: service 40 records; DTO/handler/router 71 records; zero fail/skip; isolated HTTP matrix passed","r7_browser_gate":{"isolation":"new localhost-only MySQL8/Redis7 runtime, migration 0001-0010, Root/Admin/User fixtures","visible_browser":"STARTED","cookie_gate":"BLOCKED: porsche_refresh absent from context.cookies(localhost); required HttpOnly/Secure/Path cannot be verified","reload":"observed refresh 401 then 200 and editor visible; insufficient without required cookie"}},"stop_rule":"No token injection or cookie-security bypass; browser matrix not run.","privacy":"No secrets or user content recorded.","cleanup":{"result":"PASS after r7 exact resource cleanup"}}
+{
+  "schema_version": 1,
+  "slice": "A05 managed-user nickname edit",
+  "status": "PASS",
+  "scope": "local isolated joint acceptance only",
+  "supersedes": ["r1", "r2", "r3", "r4", "r5-browser-blocked", "r6", "r7", "r8", "r9"],
+  "candidates": {
+    "backend_evidence_head": "667639b7446724c5e3ea6109a3ec728d496a4027",
+    "backend_code_test": "6bb54007879adeb16a532d792ab471f16ee9100a",
+    "frontend_evidence_head": "c32bca8bc5dd6f7d8159ce9ce3106eb590799734",
+    "frontend_code": "5a41f5679c1c35e5c2850665db54ae83e58db436"
+  },
+  "runtime": {
+    "mysql": "8.0.46",
+    "redis": "7.4.11",
+    "migrations": 10,
+    "playwright": "1.61.1",
+    "chrome": "152.0.7977.77",
+    "same_origin_localhost": true,
+    "visible_browser": true,
+    "cookie_gate": {
+      "query_path": "/api/v1/auth/refresh",
+      "present_once": true,
+      "http_only": true,
+      "secure": true,
+      "same_site": "Lax",
+      "path": "/api/v1/auth"
+    }
+  },
+  "retained_r5": {
+    "service_records": 40,
+    "dto_handler_router_records": 71,
+    "failures": 0,
+    "skips": 0,
+    "http_operations": 10,
+    "result": "PASS"
+  },
+  "r10": {
+    "allowed_ui": "PASS",
+    "conflict_and_late_ownership": "PASS",
+    "visibility_and_denial": "PASS",
+    "http_adversarial_cases": 22,
+    "http_adversarial_result": "PASS",
+    "browser_privacy": "PASS",
+    "database_audit_privacy": "PASS",
+    "page_errors": 0,
+    "unexpected_console_errors": 0
+  },
+  "privacy": {
+    "evidence_contains_credentials_or_tokens": false,
+    "evidence_contains_authorization_or_cookie_values": false,
+    "evidence_contains_usernames_nicknames_or_user_internal_ids": false,
+    "audit_contains_nickname_or_payload": false
+  },
+  "cleanup": {
+    "exact_processes_stopped": true,
+    "exact_containers_removed": true,
+    "exact_network_removed": true,
+    "temporary_scripts_results_credentials_removed": true,
+    "listener_and_task_resource_residue": 0
+  },
+  "boundaries": {
+    "application_code_changed": false,
+    "tracker_changed": false,
+    "production_migration_or_deployment": false,
+    "production_data_touched": false
+  }
+}
