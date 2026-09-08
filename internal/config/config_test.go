@@ -2,8 +2,10 @@ package config
 
 import (
 	"encoding/base64"
+	"fmt"
 	"os"
 	"regexp"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -256,21 +258,9 @@ func TestEnvironmentExampleDocumentsEveryRuntimeSettingExactlyOnce(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	activeAssignment := regexp.MustCompile(`^([A-Z][A-Z0-9_]*)=`)
-	commentedAssignment := regexp.MustCompile(`^# ([A-Z][A-Z0-9_]*)=`)
-	counts := make(map[string]int, len(expected))
-	for _, line := range strings.Split(string(raw), "\n") {
-		if match := activeAssignment.FindStringSubmatch(line); match != nil {
-			counts[match[1]]++
-		}
-		if match := commentedAssignment.FindStringSubmatch(line); match != nil {
-			counts[match[1]]++
-		}
-	}
-	for _, key := range expected {
-		if counts[key] != 1 {
-			t.Errorf(".env.example records %s %d times, want exactly once", key, counts[key])
-		}
+	counts := discoverEnvironmentAssignments(string(raw))
+	for _, problem := range environmentAssignmentParityProblems(expected, counts) {
+		t.Error(problem)
 	}
 	if !strings.Contains(string(raw), "# ACTION_SECURITY_HMAC_KEY=\n") {
 		t.Error(".env.example must contain exact commented empty assignment # ACTION_SECURITY_HMAC_KEY=")
@@ -279,6 +269,66 @@ func TestEnvironmentExampleDocumentsEveryRuntimeSettingExactlyOnce(t *testing.T)
 	if validActionKey.Match(raw) {
 		t.Error(".env.example contains a valid action-security key")
 	}
+}
+
+func TestEnvironmentAssignmentParityRejectsSupportedDuplicateAndUnexpectedKey(t *testing.T) {
+	for _, tc := range []struct {
+		name, fixture string
+	}{
+		{name: "export duplicate", fixture: "PORT=8000\n export PORT = 9000\n"},
+		{name: "unexpected stale key", fixture: "PORT=8000\nUNEXPECTED_STALE_KEY=value\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if len(environmentAssignmentParityProblems([]string{"PORT"}, discoverEnvironmentAssignments(tc.fixture))) == 0 {
+				t.Fatal("environment assignment parity accepted invalid fixture")
+			}
+		})
+	}
+}
+
+func TestEnvironmentAssignmentDiscoveryIgnoresCommentProse(t *testing.T) {
+	fixture := "# Enabling PORT=9000 changes the listener.\n# PORT=\n # PORT=not-an-exact-placeholder\n"
+	counts := discoverEnvironmentAssignments(fixture)
+	if counts["PORT"] != 1 || len(counts) != 1 {
+		t.Fatalf("discovered assignments = %#v, want only exact commented placeholder", counts)
+	}
+}
+
+func discoverEnvironmentAssignments(raw string) map[string]int {
+	activeAssignment := regexp.MustCompile(`^[[:space:]]*(?:export[[:space:]]+)?([A-Z][A-Z0-9_]*)[[:space:]]*=`)
+	commentedAssignment := regexp.MustCompile(`^# ([A-Z][A-Z0-9_]*)=`)
+	counts := make(map[string]int)
+	for _, line := range strings.Split(raw, "\n") {
+		if match := activeAssignment.FindStringSubmatch(line); match != nil {
+			counts[match[1]]++
+		}
+		if match := commentedAssignment.FindStringSubmatch(line); match != nil {
+			counts[match[1]]++
+		}
+	}
+	return counts
+}
+
+func environmentAssignmentParityProblems(expected []string, counts map[string]int) []string {
+	var problems []string
+	expectedSet := make(map[string]struct{}, len(expected))
+	for _, key := range expected {
+		expectedSet[key] = struct{}{}
+		if counts[key] != 1 {
+			problems = append(problems, fmt.Sprintf("environment records %s %d times, want exactly once", key, counts[key]))
+		}
+	}
+	var unexpected []string
+	for key := range counts {
+		if _, ok := expectedSet[key]; !ok {
+			unexpected = append(unexpected, key)
+		}
+	}
+	sort.Strings(unexpected)
+	for _, key := range unexpected {
+		problems = append(problems, fmt.Sprintf("environment records unexpected runtime key %s", key))
+	}
+	return problems
 }
 
 func TestLoadRejectsProductionAuthSecretsAndOrigins(t *testing.T) {
