@@ -10,11 +10,19 @@ This hotfix changes only configuration documentation, production configuration v
 
 ## Backend configuration contract
 
-`.env.example` will document every runtime setting read by `internal/config/config.go`. `ACTION_SECURITY_HMAC_KEY` remains commented because development may omit it; its comment will state that staging and production require a freshly generated 32-byte value encoded as exactly 43 unpadded Base64URL characters. Real secrets will never be committed.
+`.env.example` will document every runtime setting read by `internal/config/config.go`. `ACTION_SECURITY_HMAC_KEY` remains an exact commented empty assignment (`# ACTION_SECURITY_HMAC_KEY=`) because development may omit it; its comment will state that staging and production require a freshly generated 32-byte value encoded as exactly 43 unpadded Base64URL characters. Real secrets will never be committed.
 
 Outside development, `FIXED_LOGIN_ENABLED` remains required to be false. `FIXED_LOGIN_PHONE` and `FIXED_LOGIN_PASSWORD` are development-only settings: an explicit declaration outside development is rejected, while their absence no longer forces operators to supply meaningless replacement values. This resolves the existing contradiction between `.env.example` and `validateProductionAuthSettings` without weakening the prohibition on fixed login.
 
 The backend will expose a configuration-check command that loads the same `config.Load()` path used by the server and exits before database, Redis, HTTP listener, or application construction. The command prints only a generic success message or the existing sanitized configuration error. `deploy/restart-all.sh` will run this check from the backend image with the production `.env` and `porsche-app` network before building the frontend or stopping the current application container.
+
+## Additive environment merge
+
+The backend will add a dedicated `deploy/merge-env-example.sh` command. `restart-all.sh` invokes it before production configuration validation. The command compares active assignments and exact commented empty assignments in `/opt/Porsche/.env.example` with active assignments in `/opt/Porsche/.env`, then appends only keys that are absent from `.env`. A commented empty template assignment becomes an active empty assignment when appended.
+
+Existing `.env` bytes, key order, comments, quoting, whitespace, duplicate declarations, and values remain untouched. A key already present anywhere as an assignment is never appended or replaced, including an existing empty value. Newly added ordinary settings receive the example value. A newly added secret or production-required value whose example is intentionally empty is appended as an empty assignment; the subsequent production preflight rejects it and stops the release until an operator supplies the value. The merge command never generates secrets.
+
+The command accepts exactly the two explicit file paths supplied by `restart-all.sh`, rejects symlinks and non-regular files, requires unique canonical example keys, and rejects malformed assignment syntax. `restart-all.sh` acquires the existing full-stack deployment lock before invoking it. The command writes through a same-directory temporary file, preserves the `.env` owner and mode, and atomically renames the completed file. Signals or write failures leave the original file in place. It reports only the names of appended keys and never prints values.
 
 ## Frontend production gate
 
@@ -28,7 +36,7 @@ Because `package-lock.json` is committed, `restart-all.sh` will replace `npm ins
 
 ## Failure ordering and rollback
 
-All new checks run before the current backend container is stopped and before frontend files are published. A configuration, Mock gate, lockfile, dependency, or build failure therefore leaves the existing production application and static site unchanged. Existing backend candidate health-check rollback remains responsible for failures after container replacement.
+All new checks run before the current backend container is stopped and before frontend files are published. The additive environment merge is the only preflight mutation and never changes an existing setting. A configuration, Mock gate, lockfile, dependency, or build failure therefore leaves the running production application and static site unchanged. Existing backend candidate health-check rollback remains responsible for failures after container replacement.
 
 The script continues to exclude database migration from deployment. Operators must back up the target database and run the forward migration separately before invoking the full-stack release.
 
@@ -39,6 +47,7 @@ Backend tests will first demonstrate these failures:
 - production accepts absent development-only fixed credentials but rejects either explicit credential variable;
 - the environment template omits no supported runtime setting and does not contain a real action-security secret;
 - the configuration-check command uses `config.Load()` and performs no service construction;
+- the environment merge appends missing keys once, preserves every existing line and value, treats empty existing assignments as present, never prints values, preserves file metadata, and leaves the original untouched for malformed templates and simulated write failure;
 - `restart-all.sh` refuses a missing frontend lockfile, runs the backend preflight before frontend installation, uses `npm ci`, and never invokes the old non-locking install.
 
 Frontend tests will first demonstrate these failures:
