@@ -3,7 +3,8 @@
 ## 2026-09-08：Ubuntu GNU stat 环境合并兼容性修复候选
 
 - 生产执行 `restart-all.sh` 时，`merge-env-example.sh` 在 Ubuntu GNU coreutils 8.32 误报 `candidate metadata changed`。根因是脚本尝试 BSD `stat -f <format>` 后再回退 GNU `stat -c`；GNU `stat -f` 会把格式参数当作文件名，并可能在失败前输出包含候选路径的文件系统信息，使不同临时文件的元数据哈希必然不同。
-- 修复改为启动时识别 GNU/BSD `stat`，每次元数据读取只执行对应平台语法。测试新增 GNU 行为模拟并先复现相同错误；环境合并、不可变生产部署、全栈重启和 Dockerfile 回归随后全部通过。
+- 清除生产 `.env` 中的 `ROOT_BOOTSTRAP_*` 后重试仍被配置预检拒绝；根因是 `.env.example` 把 one-shot 凭据写成活动空赋值，增量合并会在每次发布时重新加入。模板现改为仅供 one-shot 流程识别的文档标记，常规环境合并明确验证不会追加这些变量。
+- 修复改为启动时识别 GNU/BSD `stat`，每次元数据读取只执行对应平台语法。两项测试均先复现生产错误；环境合并、配置、不可变生产部署、全栈重启和 Dockerfile 回归随后全部通过。
 - 失败发生在原 `.env` 被替换前；本候选未读取或修改生产 `.env`，未部署、迁移、切换容器、发布静态文件或 reload Nginx。R02 保持 `BLOCKED_ENV`，待修复合并后重新执行生产发布与验收。
 
 ## 2026-09-08：生产发布预检 hotfix 本地候选
