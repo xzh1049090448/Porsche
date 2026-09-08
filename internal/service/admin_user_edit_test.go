@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"context"
 	"log"
-	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -69,7 +69,7 @@ func TestAdminUserNicknameEditAuthorizationAndSetClear(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx, service, redisStore, _, target, claims := adminUserNicknameEditFixture(t, tc.actor, tc.target)
 			before := *target
-			before.AllowedModels = append(models.JSONSlice(nil), target.AllowedModels...)
+			before.AllowedModels = slices.Clone(target.AllowedModels)
 			var beforeSession models.Session
 			if err := service.db.Where("sid = ?", claims.SessionSID).First(&beforeSession).Error; err != nil {
 				t.Fatal(err)
@@ -85,7 +85,7 @@ func TestAdminUserNicknameEditAuthorizationAndSetClear(t *testing.T) {
 				t.Fatal(err)
 			}
 			if stored.AuthVersion != beforeVersion || stored.Role != tc.target || stored.Status != before.Status || stored.PlanType != before.PlanType || stored.GroupID != before.GroupID ||
-				!reflect.DeepEqual(stored.AllowedModels, before.AllowedModels) || stored.DailyCallLimit != before.DailyCallLimit || stored.DailyCallsUsed != before.DailyCallsUsed ||
+				!slices.Equal(stored.AllowedModels, before.AllowedModels) || stored.DailyCallLimit != before.DailyCallLimit || stored.DailyCallsUsed != before.DailyCallsUsed ||
 				stored.TotalTokensUsed != before.TotalTokensUsed || stored.Username == nil != (before.Username == nil) || stored.CreatedAt != before.CreatedAt || stored.CreatedBy == nil != (before.CreatedBy == nil) {
 				t.Fatalf("security fields changed: %#v", stored)
 			}
@@ -110,7 +110,14 @@ func TestAdminUserNicknameEditAuthorizationAndSetClear(t *testing.T) {
 
 func TestAdminUserNicknameEditNoopDoesNotAudit(t *testing.T) {
 	ctx, service, _, _, target, claims := adminUserNicknameEditFixture(t, models.UserRoleAdmin, models.UserRoleUser)
-	got, err := service.Edit(ctx, claims, target.Guid, AdminUserNicknameEditInput{Nickname: target.Nickname, ExpectedAuthVersion: target.AuthVersion})
+	input := AdminUserNicknameEditInput{ExpectedAuthVersion: target.AuthVersion}
+	if target.Nickname == nil {
+		input.ClearNickname = true
+	} else {
+		nickname := *target.Nickname
+		input.Nickname = &nickname
+	}
+	got, err := service.Edit(ctx, claims, target.Guid, input)
 	if err != nil || got == nil {
 		t.Fatalf("noop=%#v err=%v", got, err)
 	}
