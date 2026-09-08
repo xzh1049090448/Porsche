@@ -206,8 +206,21 @@ func TestAdminUserNicknameEditConstructorAndInputFailClosed(t *testing.T) {
 	}
 }
 
-func TestAdminUserNicknameEditPureGuardsRunWithoutExternalFixtures(t *testing.T) {
+func TestAdminUserNicknameEditCorruptGORMFailsClosedWithoutPanic(t *testing.T) {
 	service := &AdminUserNicknameEditService{db: &gorm.DB{}, redis: &AuthRedis{}, now: func() int64 { return 100 }}
+	actor := AdminPermissionReadActor{UserID: 1, AuthVersion: 2, SessionSID: "11111111-2222-4333-8444-555555555555", SessionVersion: 3}
+	nickname := "valid"
+	got, err := service.Edit(context.Background(), actor, 2, AdminUserNicknameEditInput{Nickname: &nickname, ExpectedAuthVersion: 1})
+	if got != nil {
+		t.Fatalf("corrupt DB returned result: %#v", got)
+	}
+	if status, _ := StatusFromError(err); status != 503 {
+		t.Fatalf("corrupt DB status=%d err=%v", status, err)
+	}
+}
+
+func TestAdminUserNicknameEditPureGuardsRunWithoutExternalFixtures(t *testing.T) {
+	service := &AdminUserNicknameEditService{db: actionIssueDryDB(t), redis: &AuthRedis{}, now: func() int64 { return 100 }}
 	actor := AdminPermissionReadActor{UserID: 1, AuthVersion: 2, SessionSID: "11111111-2222-4333-8444-555555555555", SessionVersion: 3}
 	valid := "valid"
 	for _, tc := range []struct {

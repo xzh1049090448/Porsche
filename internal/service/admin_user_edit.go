@@ -147,7 +147,7 @@ func (s *AdminUserNicknameEditService) Edit(ctx context.Context, actor AdminPerm
 }
 
 func validateAdminUserNicknameEditCall(s *AdminUserNicknameEditService, ctx context.Context, actor AdminPermissionReadActor, targetGUID int64, input AdminUserNicknameEditInput) error {
-	if s == nil || s.db == nil || s.redis == nil || s.now == nil || ctx == nil {
+	if s == nil || s.db == nil || s.db.Config == nil || s.db.Statement == nil || s.db.Statement.ConnPool == nil || s.redis == nil || s.now == nil || ctx == nil {
 		return errUnavailable("管理员用户昵称更新暂不可用")
 	}
 	if actor.UserID <= 0 || actor.AuthVersion <= 0 || actor.SessionSID == "" || actor.SessionVersion <= 0 {

@@ -1,8 +1,11 @@
 package service
 
 import (
+	"context"
+	"database/sql"
 	"fmt"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -10,6 +13,77 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
+
+type actorLockSignalPool struct {
+	db     *sql.DB
+	issued chan struct{}
+	once   sync.Once
+}
+
+func (p *actorLockSignalPool) PrepareContext(ctx context.Context, query string) (*sql.Stmt, error) {
+	return p.db.PrepareContext(ctx, query)
+}
+func (p *actorLockSignalPool) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
+	return p.db.ExecContext(ctx, query, args...)
+}
+func (p *actorLockSignalPool) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
+	return p.db.QueryContext(ctx, query, args...)
+}
+func (p *actorLockSignalPool) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
+	return p.db.QueryRowContext(ctx, query, args...)
+}
+func (p *actorLockSignalPool) BeginTx(ctx context.Context, opts *sql.TxOptions) (gorm.ConnPool, error) {
+	tx, err := p.db.BeginTx(ctx, opts)
+	if err != nil {
+		return nil, err
+	}
+	return &actorLockSignalTx{Tx: tx, issued: p.issued, once: &p.once}, nil
+}
+
+type actorLockSignalTx struct {
+	*sql.Tx
+	issued chan struct{}
+	once   *sync.Once
+}
+
+func (tx *actorLockSignalTx) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
+	if strings.Contains(query, "FROM `users`") && strings.Contains(query, "id = ?") && strings.Contains(query, "FOR UPDATE") {
+		tx.once.Do(func() { close(tx.issued) })
+	}
+	return tx.Tx.QueryContext(ctx, query, args...)
+}
+
+func installActorLockSignal(t *testing.T, db *gorm.DB) (*gorm.DB, <-chan struct{}) {
+	t.Helper()
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	issued := make(chan struct{})
+	wrapped := db.Session(&gorm.Session{NewDB: true})
+	wrapped.Statement.ConnPool = &actorLockSignalPool{db: sqlDB, issued: issued}
+	return wrapped, issued
+}
+
+func TestAdminUserNicknameEditActorLockSignalObservesDriverQuery(t *testing.T) {
+	script, _, _ := actionIssueScriptFixture(t, 1_800_000_000_000)
+	db := openActionIssueScriptDB(t, script, nil)
+	wrapped, issued := installActorLockSignal(t, db)
+	done := make(chan error, 1)
+	go func() {
+		done <- wrapped.Transaction(func(tx *gorm.DB) error {
+			var actor models.User
+			return tx.Clauses(clause.Locking{Strength: "UPDATE"}).Select("id", "guid", "role", "status", "is_deleted", "auth_version").Where("id = ?", script.actor.ID).First(&actor).Error
+		})
+	}()
+	<-issued
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if script.begins != 1 || script.commits != 1 {
+		t.Fatalf("transaction counts=%d/%d", script.begins, script.commits)
+	}
+}
 
 func TestAdminUserNicknameEditRollsBackUpdateAuditAndCommitFailures(t *testing.T) {
 	for _, name := range []string{"user_update", "audit_insert", "commit"} {
@@ -77,15 +151,18 @@ func TestAdminUserNicknameEditConcurrentActorRaceFailsStaleOperation(t *testing.
 				_ = tx.Rollback()
 				t.Fatal(err)
 			}
-			started := make(chan struct{})
+			wrappedDB, actorSelectIssued := installActorLockSignal(t, service.db)
+			service.db = wrappedDB
 			result := make(chan error, 1)
 			go func() {
-				close(started)
 				nickname := "race"
 				_, err := service.Edit(ctx, claims, target.Guid, AdminUserNicknameEditInput{Nickname: &nickname, ExpectedAuthVersion: target.AuthVersion})
 				result <- err
 			}()
-			<-started
+			// The signal is emitted by the transaction's QueryContext immediately
+			// before the actor SELECT FOR UPDATE delegates to MySQL. Because tx
+			// already owns that row lock, the edit is now deterministically blocked.
+			<-actorSelectIssued
 			if race == "auth_version" {
 				if err := tx.Model(actor).Update("auth_version", actor.AuthVersion+1).Error; err != nil {
 					_ = tx.Rollback()
