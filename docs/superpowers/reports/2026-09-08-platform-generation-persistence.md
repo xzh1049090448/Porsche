@@ -32,7 +32,7 @@ Implementation and review RED cases additionally exposed and then fixed these bo
 - Reconciliation initially exposed wrapped database/Redis/release details. Unknown dependency failures are now reduced to the stable `platform generation persistence unavailable` sentinel while recognized typed domain errors retain their stable identity; tests reject leaked addresses and dependency text.
 - A compatibility guard was added for the configured example model allowlist so every exact model ID is valid UTF-8 and fits the 128-byte persistence column. A 129-byte fixture is explicitly rejected.
 
-The exact full-suite attempt with only `TEST_DATABASE_URL` and `TEST_REDIS_URL` did not pass: its first failure was `invalid isolated action key: missing`. It is classified as `FAIL_ENV_PREREQUISITE`, not a product or test pass. The succeeding fresh run supplied a one-use, locally valid test-only `ACTION_SECURITY_HMAC_KEY` without recording its value, recreated and fully migrated the same dedicated `*_test` database, and then ran the full suite.
+The exact full-suite attempt with only `TEST_DATABASE_URL` and `TEST_REDIS_URL` did not pass because the isolated action-key test prerequisite was absent. It is classified as `FAIL_ENV_PREREQUISITE`, not a product or test pass. The succeeding fresh run supplied a one-use, locally valid test-only `ACTION_SECURITY_HMAC_KEY` without recording its value, recreated and fully migrated the same dedicated `*_test` database, and then ran the full suite.
 
 ## GREEN evidence
 
@@ -45,7 +45,7 @@ internal/service    PASS  30.521s
 internal/app        PASS  1.974s
 ```
 
-Coverage includes 0011 schema, exact metadata verification, constraints and rerun behavior; case-distinct opaque model IDs; globally unique user-message receipt references; owned receipt hydration; exact duplicate input and conversation-provenance comparison; retry-timestamp independence; single/compare atomicity; per-model assistant messages; partial-failure accounting; transaction rollback; duplicate and quota races; commit-unknown resolution; malformed graph rejection; 30-second stale-commit reconciliation; Redis CAS/TTL preservation; stable error normalization; configured-model compatibility; fail-closed AppState wiring; and inactive v2 routes.
+Coverage includes 0011 schema, exact metadata verification, constraints and rerun behavior; case-distinct opaque model IDs; globally unique user-message receipt references; owned receipt hydration; exact duplicate input and conversation-provenance comparison; retry-timestamp independence; single/compare atomicity; per-model assistant messages; partial-failure accounting; transaction rollback; duplicate and quota races; commit-unknown resolution; malformed graph rejection; 30-second stale-commit reconciliation; Redis CAS/TTL preservation; stable error normalization; configured-model compatibility; fail-closed AppState wiring; and the inactive v2 behavior boundary.
 
 The fresh complete run, using the same explicit fixture pair, a fully migrated `porsche_generation_secfix_full_test` database, and the unrecorded test-only HMAC prerequisite, passed all packages. Observed package timings included:
 
@@ -56,7 +56,7 @@ internal/handler    PASS  25.695s
 all remaining Go packages PASS
 ```
 
-`go vet ./...`, `git diff --check`, tracker JSON parsing, and source checks for route inactivity all passed. The source checks confirmed that v2 completion/compare routes remain unregistered, generation GET/cancel remains unavailable, and the existing authenticated unavailable boundary is retained. This is not a claim that an HTTP stream or real upstream request was exercised.
+`go vet ./...`, `git diff --check`, tracker JSON parsing, and source checks for the HTTP boundary all passed. The two legacy completion/compare POST routes remain registered, but their v2 behavior branches are not activated and authenticated v2 requests receive the stable 503 response. Generation GET/cancel routes remain unregistered and return 404. This is not a claim that an HTTP stream or real upstream request was exercised.
 
 ## Review
 
