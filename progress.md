@@ -1,5 +1,12 @@
 # Porsche 开发进度
 
+## 2026-09-09：A07 managed-user credentials and entitlements 本地联合切片限定通过
+
+- A07 从 `BLOCKED_NOT_IMPLEMENTED` 提升为 `PASS_LIMITED_SCOPE`。代码候选后端 `a600a0815b5eab5203333755a2466788fe67d61a`、前端 `41648181ab42fb46fe7d45663e746121956b50b8`；canonical evidence commits 后端 `5d5a1e9ee230bcc42fe9fde8d3f9f7badf34b658`、前端 `39b79582110347ae11b95e58217b3afe3236b4f7`；合同 SHA-256 `9e1969b238911b6eee5b6aa85ed364e795a6854f0a026daac5d15e2ab78851be`。
+- 真实 MySQL 8.0.46 / Redis 7.4.11 的密码登录、旧 Access/Refresh、三会话审计、Key 保持、Bearer 套餐额度、并发及 Redis/SQL 回滚，后端全仓/build/vet，前端 395/395、生产构建、375/390 Chrome 与后端/前端/文档独立复审均通过。
+- 26 项当前为 14 `PASS_LIMITED_SCOPE`、10 `BLOCKED_NOT_IMPLEMENTED`、1 `BLOCKED_PRODUCT`、1 `BLOCKED_ENV`，共 12 项阻塞；`web-012` 继续 `in_progress`，phase 为 `joint_acceptance_partial_14_limited_12_blocked`。
+- `go-017` 历史 blocker count 保持 16，新增当前 blocker count 12；代码注册的 active consumer 为 4 项，不表示已部署生产。Gateway Key owner plan/quota 原子重载与消费仍为 `BLOCKED_NOT_IMPLEMENTED`。生产 migration、deploy、production acceptance、真实 business accounts 均 `NOT_RUN`；未获得外部后端 project_manager 书面确认。
+
 ## 2026-09-08：A06 managed-user status 本地联合切片限定通过
 
 - A06 从 `BLOCKED_NOT_IMPLEMENTED` 提升为 `PASS_LIMITED_SCOPE`。代码候选后端 `08617d400228c224fa2312583fde14f54f7a7686`、前端 `07c7b9e3caa5fe18bd69be74e71f577577943840`；canonical evidence commits 后端 `1677bc5384aa5968a213d6cae2efe62198b92964`、前端 `b62055245e2dc6d954a545caab2c02ee45fa3d3a`；合同 SHA-256 `c3662b25500879d67c6811fa270d4a6a39a44db812c7c493d6f02e535940b415`。
