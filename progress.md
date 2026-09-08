@@ -1,5 +1,12 @@
 # Porsche 开发进度
 
+## 2026-09-08：A06 managed-user status 本地联合切片限定通过
+
+- A06 从 `BLOCKED_NOT_IMPLEMENTED` 提升为 `PASS_LIMITED_SCOPE`。代码候选后端 `08617d400228c224fa2312583fde14f54f7a7686`、前端 `07c7b9e3caa5fe18bd69be74e71f577577943840`；canonical evidence commits 后端 `1677bc5384aa5968a213d6cae2efe62198b92964`、前端 `b62055245e2dc6d954a545caab2c02ee45fa3d3a`；合同 SHA-256 `c3662b25500879d67c6811fa270d4a6a39a44db812c7c493d6f02e535940b415`。
+- 真实 MySQL/Redis 状态迁移与旧 Access/Refresh/Key 失效、启用不恢复旧会话、focused race、no-fixture full、前端 364/364、真实挂载 13/13、生产构建、375/390 Chrome 布局及双端独立复审均通过。
+- 26 项当前为 13 `PASS_LIMITED_SCOPE`、11 `BLOCKED_NOT_IMPLEMENTED`、1 `BLOCKED_PRODUCT`、1 `BLOCKED_ENV`，共 13 项阻塞；`go-017` 历史 blocker count 保持 16。仅 A06 本次更新。
+- 生产 migration、deploy、production acceptance、真实 business accounts 均 `NOT_RUN`；拒绝管理动作审计仍为后续 PRD 残留，未获得外部后端 project_manager 书面确认。
+
 ## 2026-09-08：A05 managed-user nickname edit 本地联合切片限定通过
 
 - A05 从 `BLOCKED_NOT_IMPLEMENTED` 提升为 `PASS_LIMITED_SCOPE`。代码候选为后端 `6bb54007879adeb16a532d792ab471f16ee9100a`、前端 `5a41f5679c1c35e5c2850665db54ae83e58db436`；canonical evidence commits 为后端 `76e0d2f650989ffecd7519b0d042ec2696cd60a8`、前端 `34b23fc8d00771cd03b9072e00ceda40b421c6bd`；随后紧急合并头为后端 `bf53c6a98452f624a6061e9be7317f9f596ea908`、前端 `a93893bc4a8739ba158cf45c6f32779873d9b028`。
