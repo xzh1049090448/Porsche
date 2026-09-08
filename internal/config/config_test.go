@@ -257,13 +257,13 @@ func TestEnvironmentExampleDocumentsEveryRuntimeSettingExactlyOnce(t *testing.T)
 		t.Fatal(err)
 	}
 	activeAssignment := regexp.MustCompile(`^([A-Z][A-Z0-9_]*)=`)
-	commentedEmptyAssignment := regexp.MustCompile(`^# ([A-Z][A-Z0-9_]*)=$`)
+	commentedAssignment := regexp.MustCompile(`^# ([A-Z][A-Z0-9_]*)=`)
 	counts := make(map[string]int, len(expected))
 	for _, line := range strings.Split(string(raw), "\n") {
 		if match := activeAssignment.FindStringSubmatch(line); match != nil {
 			counts[match[1]]++
 		}
-		if match := commentedEmptyAssignment.FindStringSubmatch(line); match != nil {
+		if match := commentedAssignment.FindStringSubmatch(line); match != nil {
 			counts[match[1]]++
 		}
 	}
