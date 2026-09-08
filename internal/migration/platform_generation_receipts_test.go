@@ -89,6 +89,19 @@ func assertPlatformGenerationReceiptMigrationContract(t *testing.T) {
 			t.Errorf("0011 up missing %q", fragment)
 		}
 	}
+	for _, forbidden := range []string{
+		"timestamp",
+		"datetime",
+		"enum(",
+		"prompt",
+		"authorization",
+		"response_content",
+		"drop table",
+	} {
+		if strings.Contains(up, forbidden) {
+			t.Errorf("0011 up contains forbidden %q", forbidden)
+		}
+	}
 	if got := strings.Count(up, ") engine=innodb default charset=utf8mb4 collate=utf8mb4_unicode_ci;"); got != 2 {
 		t.Errorf("0011 up has %d required table option clauses, want 2", got)
 	}
