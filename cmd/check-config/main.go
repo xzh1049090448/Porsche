@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"io"
 	"os"
 
@@ -10,11 +9,21 @@ import (
 
 func run(stdout, stderr io.Writer) int {
 	if _, err := config.Load(); err != nil {
-		fmt.Fprintln(stderr, err)
+		if !writeLine(stderr, err.Error()) {
+			return 1
+		}
 		return 1
 	}
-	fmt.Fprintln(stdout, "configuration valid")
+	if !writeLine(stdout, "configuration valid") {
+		return 1
+	}
 	return 0
+}
+
+func writeLine(writer io.Writer, message string) bool {
+	line := message + "\n"
+	written, err := io.WriteString(writer, line)
+	return err == nil && written == len(line)
 }
 
 func main() {

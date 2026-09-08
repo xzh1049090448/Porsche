@@ -15,7 +15,8 @@ RUN CGO_ENABLED=0 GOOS=linux go build -o /out/server ./cmd/server \
 FROM alpine:3.20
 RUN apk add --no-cache ca-certificates
 WORKDIR /app
-COPY --from=builder /out/server /out/bootstrap-root /out/check-config ./
+COPY --from=builder /out/server /out/bootstrap-root ./
+COPY --from=builder /out/check-config /app/check-config
 ENV APP_ENV=production
 EXPOSE 8000
 CMD ["./server"]
