@@ -17,6 +17,7 @@ import (
 	"github.com/porsche/ai-gateway-go/internal/db"
 	"github.com/porsche/ai-gateway-go/internal/migration"
 	"github.com/porsche/ai-gateway-go/internal/models"
+	"github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
 )
 
@@ -824,4 +825,362 @@ func TestLoadPlatformGenerationReceiptRejectsMissingDeletedWrongRoleOrCrossConve
 
 func stringInt64(value int64) string {
 	return fmt.Sprintf("%d", value)
+}
+
+type platformGenerationFinalizationFixture struct {
+	db    *gorm.DB
+	store *PlatformGenerationStore
+	user  models.User
+	now   int64
+}
+
+func openPlatformGenerationFinalizationFixture(t *testing.T) platformGenerationFinalizationFixture {
+	t.Helper()
+	if strings.TrimSpace(os.Getenv("TEST_DATABASE_URL")) == "" || strings.TrimSpace(os.Getenv("TEST_REDIS_URL")) == "" {
+		t.Skip("BLOCKED_FIXTURE: requires TEST_DATABASE_URL and TEST_REDIS_URL")
+	}
+	gdb := openPlatformGenerationFinalizationMySQL(t)
+	store, client := openTestPlatformGenerationStore(t)
+	now := int64(1_900_000_000_000 + testSnowflake.Next()%10_000_000)
+	username := fixtureUsername(testSnowflake.Next())
+	user := models.User{
+		AuditFields:       models.AuditFields{Guid: testSnowflake.Next(), CreatedAt: now - 1000, UpdatedAt: now - 1000},
+		GroupID:           testDefaultBusinessGroupID(t, gdb),
+		Username:          &username,
+		Nickname:          &username,
+		AllowedModels:     models.JSONSlice{},
+		PlanType:          models.PlanFree,
+		Status:            models.UserStatusActive,
+		Role:              models.UserRoleUser,
+		AuthVersion:       1,
+		DailyCallLimit:    5,
+		DailyCallsUsed:    2,
+		TotalTokensUsed:   10,
+		DailyCallsResetAt: &now,
+	}
+	if err := gdb.Create(&user).Error; err != nil {
+		t.Fatalf("create finalization user: %v", err)
+	}
+	if err := client.Del(context.Background(), store.key(user.ID, generationTestID)).Err(); err != nil {
+		t.Fatalf("clear owned generation key: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Del(context.Background(), store.key(user.ID, generationTestID)).Err() })
+	return platformGenerationFinalizationFixture{db: gdb, store: store, user: user, now: now}
+}
+
+// openPlatformGenerationFinalizationMySQL deliberately reads only the explicit
+// disposable test URL. Task 5 must never inspect or fall back to DATABASE_URL.
+func openPlatformGenerationFinalizationMySQL(t *testing.T) *gorm.DB {
+	t.Helper()
+	raw := strings.TrimSpace(os.Getenv("TEST_DATABASE_URL"))
+	parsed, err := url.Parse(raw)
+	if err != nil || !strings.HasSuffix(strings.TrimPrefix(parsed.Path, "/"), "_test") {
+		t.Fatal("TEST_DATABASE_URL must target a database ending in _test")
+	}
+	parent, err := db.Open(raw, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	parentSQL, err := parent.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = parentSQL.Close() })
+
+	var token [12]byte
+	if _, err := rand.Read(token[:]); err != nil {
+		t.Fatal(err)
+	}
+	name := "porsche_finalize_" + hex.EncodeToString(token[:]) + "_test"
+	if err := parent.Exec("CREATE DATABASE `" + name + "`").Error; err != nil {
+		t.Fatalf("create owned finalization database: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := parent.Exec("DROP DATABASE `" + name + "`").Error; err != nil {
+			t.Errorf("drop owned finalization database: %v", err)
+		}
+	})
+
+	childURL := *parsed
+	childURL.Path, childURL.RawPath = "/"+name, ""
+	child, err := db.Open(childURL.String(), "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	childSQL, err := child.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = childSQL.Close() })
+	if err := migration.Up(context.Background(), child, testSnowflake.Next, func() int64 { return time.Now().UTC().UnixMilli() }); err != nil {
+		t.Fatalf("migrate owned finalization database: %v", err)
+	}
+	return child
+}
+
+func (f platformGenerationFinalizationFixture) committingSingle(t *testing.T) PlatformGenerationPersistenceInput {
+	t.Helper()
+	claim := PlatformGenerationClaimInput{UserID: f.user.ID, GenerationID: generationTestID, Mode: PlatformGenerationModeSingle, Models: []string{"model-a"}, NowMillis: f.now}
+	claimTestGeneration(t, f.store, claim)
+	if _, err := f.store.MarkModelDone(context.Background(), f.user.ID, generationTestID, "model-a", 0, f.now+1); err != nil {
+		t.Fatalf("mark model done: %v", err)
+	}
+	if _, err := f.store.BeginCommit(context.Background(), f.user.ID, generationTestID, f.now+2); err != nil {
+		t.Fatalf("begin commit: %v", err)
+	}
+	return PlatformGenerationPersistenceInput{
+		UserID: f.user.ID, GenerationID: generationTestID, Mode: PlatformGenerationModeSingle,
+		Models: []string{"model-a"}, UserMessage: "  exact user bytes  ", NowMillis: f.now + 3,
+		Results: []PlatformGenerationPersistenceResult{{Model: "model-a", State: PlatformGenerationStateCompleted, Content: "exact answer bytes", Tokens: 7}},
+	}
+}
+
+func TestPlatformGenerationPersistenceFinalizesSingleAtomically(t *testing.T) {
+	f := openPlatformGenerationFinalizationFixture(t)
+	input := f.committingSingle(t)
+	p, err := NewPlatformGenerationPersistence(f.store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := p.Finalize(context.Background(), f.db, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if receipt.UserID != input.UserID || receipt.GenerationID != input.GenerationID || receipt.Mode != input.Mode ||
+		receipt.UserMessage != input.UserMessage || receipt.SuccessfulModelCount != 1 || receipt.DailyCallsCharged != 1 ||
+		receipt.TotalTokens != 7 || receipt.CommittedAtMillis != input.NowMillis || len(receipt.Results) != 1 {
+		t.Fatalf("unexpected final receipt: %#v", receipt)
+	}
+	result := receipt.Results[0]
+	if result.Model != "model-a" || result.State != PlatformGenerationStateCompleted || result.Content != "exact answer bytes" ||
+		result.Tokens != 7 || result.ErrorCode != "" || result.AssistantMessageGUID == "" {
+		t.Fatalf("unexpected final result: %#v", result)
+	}
+	var conversation models.Conversation
+	if err := f.db.Where("guid = ? AND user_id = ? AND is_deleted = 0", receipt.ConversationGUID, f.user.ID).First(&conversation).Error; err != nil {
+		t.Fatal(err)
+	}
+	if conversation.Title != "exact user bytes" || conversation.Model == nil || *conversation.Model != "model-a" || conversation.UpdatedAt != input.NowMillis || conversation.UpdatedBy == nil || *conversation.UpdatedBy != f.user.ID {
+		t.Fatalf("unexpected conversation: %#v", conversation)
+	}
+	var messages []models.Message
+	if err := f.db.Where("conversation_id = ? AND is_deleted = 0", conversation.ID).Order("id ASC").Find(&messages).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != 2 || messages[0].Role != models.MessageRoleUser || messages[0].Content != input.UserMessage || messages[0].Content == "" ||
+		messages[1].Role != models.MessageRoleAssistant || messages[1].Content != input.Results[0].Content || messages[1].Model == nil || *messages[1].Model != "model-a" || messages[1].Tokens != 7 || stringInt64(messages[1].Guid) != result.AssistantMessageGUID {
+		t.Fatalf("unexpected messages: %#v", messages)
+	}
+	var usage []models.UsageRecord
+	if err := f.db.Where("user_id = ? AND is_deleted = 0", f.user.ID).Find(&usage).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(usage) != 1 || usage[0].RecordType != models.UsageRecordChat || usage[0].Tokens != 7 || usage[0].Model == nil || *usage[0].Model != "model-a" {
+		t.Fatalf("unexpected usage: %#v", usage)
+	}
+	var updated models.User
+	if err := f.db.First(&updated, f.user.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if updated.DailyCallsUsed != 3 || updated.TotalTokensUsed != 17 || updated.UpdatedAt != input.NowMillis || updated.UpdatedBy == nil || *updated.UpdatedBy != f.user.ID {
+		t.Fatalf("unexpected charged user: %#v", updated)
+	}
+	var parent models.PlatformChatGenerationReceipt
+	if err := f.db.Where("user_id = ? AND generation_id = ?", f.user.ID, generationTestID).First(&parent).Error; err != nil {
+		t.Fatal(err)
+	}
+	var persistedResults []models.PlatformChatGenerationResult
+	if err := f.db.Where("receipt_id = ?", parent.ID).Find(&persistedResults).Error; err != nil {
+		t.Fatal(err)
+	}
+	if parent.UserMessageID != messages[0].ID || len(persistedResults) != 1 || persistedResults[0].AssistantMessageID == nil || *persistedResults[0].AssistantMessageID != messages[1].ID {
+		t.Fatalf("receipt graph mismatch: parent=%#v results=%#v", parent, persistedResults)
+	}
+}
+
+func TestPlatformGenerationPersistenceRejectsRedisIdentityMismatchBeforeMySQL(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		mutate func(*PlatformGenerationSnapshot)
+	}{
+		{"generation state", func(snapshot *PlatformGenerationSnapshot) { snapshot.State = PlatformGenerationStateRunning }},
+		{"mode", func(snapshot *PlatformGenerationSnapshot) { snapshot.Mode = PlatformGenerationModeCompare }},
+		{"ordered model", func(snapshot *PlatformGenerationSnapshot) { snapshot.Models[0] = "model-b" }},
+		{"terminal state", func(snapshot *PlatformGenerationSnapshot) {
+			state := snapshot.ModelStates["model-a"]
+			state.State = PlatformGenerationStateFailed
+			state.ErrorCode = "timeout"
+			snapshot.ModelStates["model-a"] = state
+		}},
+		{"terminal error", func(snapshot *PlatformGenerationSnapshot) {
+			state := snapshot.ModelStates["model-a"]
+			state.ErrorCode = "timeout"
+			snapshot.ModelStates["model-a"] = state
+		}},
+		{"assistant guid", func(snapshot *PlatformGenerationSnapshot) {
+			state := snapshot.ModelStates["model-a"]
+			state.AssistantMessageGUID = "123"
+			snapshot.ModelStates["model-a"] = state
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := openPlatformGenerationFinalizationFixture(t)
+			input := f.committingSingle(t)
+			snapshot, err := f.store.Get(context.Background(), f.user.ID, generationTestID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			test.mutate(&snapshot)
+			encoded, err := encodePlatformGeneration(snapshot)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := f.store.client.Set(context.Background(), f.store.key(f.user.ID, generationTestID), encoded, platformGenerationTTL).Err(); err != nil {
+				t.Fatal(err)
+			}
+			p, err := NewPlatformGenerationPersistence(f.store)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := p.Finalize(context.Background(), f.db, input); !errors.Is(err, ErrPlatformGenerationPersistenceConflict) {
+				t.Fatalf("Finalize() error=%v, want conflict", err)
+			}
+			assertPlatformGenerationFinalizationEffects(t, f, 0, 0, 0, 0, 0, 2, 10)
+		})
+	}
+}
+
+func TestPlatformGenerationPersistenceRejectsEmptyUserMessageBeforeDependencies(t *testing.T) {
+	store, err := NewPlatformGenerationStore(redis.NewClient(&redis.Options{Addr: "127.0.0.1:1"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	p := &PlatformGenerationPersistence{generations: store, runTx: func(context.Context, *gorm.DB, string, func(*gorm.DB) error) error {
+		panic("transaction dependency touched")
+	}}
+	input := validPlatformGenerationPersistenceInput()
+	input.UserMessage = ""
+	if _, err := p.Finalize(context.Background(), &gorm.DB{}, input); !errors.Is(err, ErrPlatformGenerationPersistenceInvalid) {
+		t.Fatalf("Finalize() error=%v, want invalid", err)
+	}
+}
+
+func TestPlatformGenerationPersistenceSingleWriteFailuresRollbackEveryEffect(t *testing.T) {
+	faults := []struct {
+		name       string
+		operation  string
+		table      string
+		occurrence int
+		badReceipt bool
+	}{
+		{"conversation", "create", "conversations", 1, false},
+		{"user message", "create", "messages", 1, false},
+		{"assistant message", "create", "messages", 2, false},
+		{"usage", "create", "usage_records", 1, false},
+		{"user update", "update", "users", 1, false},
+		{"receipt bad user message reference", "create", "platform_chat_generation_receipts", 1, true},
+		{"result", "create", "platform_chat_generation_results", 1, false},
+	}
+	for _, fault := range faults {
+		t.Run(fault.name, func(t *testing.T) {
+			f := openPlatformGenerationFinalizationFixture(t)
+			input := f.committingSingle(t)
+			hook := fmt.Sprintf("platform_single_fault_%d", testSnowflake.Next())
+			matches := 0
+			inject := func(tx *gorm.DB) {
+				table := tx.Statement.Table
+				if table == "" && tx.Statement.Schema != nil {
+					table = tx.Statement.Schema.Table
+				}
+				if table != fault.table {
+					return
+				}
+				matches++
+				if matches != fault.occurrence {
+					return
+				}
+				if fault.badReceipt {
+					receipt, ok := tx.Statement.Dest.(*models.PlatformChatGenerationReceipt)
+					if !ok {
+						tx.AddError(errors.New("unexpected receipt destination"))
+						return
+					}
+					receipt.UserMessageID = int64(^uint64(0) >> 1)
+					return
+				}
+				tx.AddError(errors.New("isolated platform finalization write fault"))
+			}
+			if fault.operation == "update" {
+				if err := f.db.Callback().Update().Before("gorm:update").Register(hook, inject); err != nil {
+					t.Fatal(err)
+				}
+				defer f.db.Callback().Update().Remove(hook)
+			} else {
+				if err := f.db.Callback().Create().Before("gorm:create").Register(hook, inject); err != nil {
+					t.Fatal(err)
+				}
+				defer f.db.Callback().Create().Remove(hook)
+			}
+			p, err := NewPlatformGenerationPersistence(f.store)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := p.Finalize(context.Background(), f.db, input); !errors.Is(err, ErrPlatformGenerationPersistenceUnavailable) {
+				t.Fatalf("Finalize() error=%v, want unavailable", err)
+			}
+			if matches < fault.occurrence {
+				t.Fatalf("fault boundary not reached: matches=%d", matches)
+			}
+			assertPlatformGenerationFinalizationEffects(t, f, 0, 0, 0, 0, 0, 2, 10)
+		})
+	}
+}
+
+func TestPlatformGenerationPersistenceSingleInsufficientQuotaRollsBack(t *testing.T) {
+	f := openPlatformGenerationFinalizationFixture(t)
+	if err := f.db.Model(&models.User{}).Where("id = ?", f.user.ID).Updates(map[string]any{"daily_calls_used": 5, "daily_call_limit": 5}).Error; err != nil {
+		t.Fatal(err)
+	}
+	f.user.DailyCallsUsed = 5
+	input := f.committingSingle(t)
+	p, err := NewPlatformGenerationPersistence(f.store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Finalize(context.Background(), f.db, input); !errors.Is(err, ErrPlatformGenerationPersistenceQuota) {
+		t.Fatalf("Finalize() error=%v, want quota", err)
+	}
+	assertPlatformGenerationFinalizationEffects(t, f, 0, 0, 0, 0, 0, 5, 10)
+}
+
+func assertPlatformGenerationFinalizationEffects(t *testing.T, f platformGenerationFinalizationFixture, conversations, messages, usage, receipts, results int64, dailyCalls int, totalTokens int64) {
+	t.Helper()
+	counts := []struct {
+		name string
+		got  int64
+		want int64
+	}{
+		{name: "conversations", want: conversations},
+		{name: "messages", want: messages},
+		{name: "usage_records", want: usage},
+		{name: "platform_chat_generation_receipts", want: receipts},
+		{name: "platform_chat_generation_results", want: results},
+	}
+	modelsToCount := []any{&models.Conversation{}, &models.Message{}, &models.UsageRecord{}, &models.PlatformChatGenerationReceipt{}, &models.PlatformChatGenerationResult{}}
+	for index := range counts {
+		if err := f.db.Model(modelsToCount[index]).Count(&counts[index].got).Error; err != nil {
+			t.Fatal(err)
+		}
+		if counts[index].got != counts[index].want {
+			t.Fatalf("%s count=%d, want %d", counts[index].name, counts[index].got, counts[index].want)
+		}
+	}
+	var user models.User
+	if err := f.db.First(&user, f.user.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if user.DailyCallsUsed != dailyCalls || user.TotalTokensUsed != totalTokens {
+		t.Fatalf("user counters=%d/%d, want %d/%d", user.DailyCallsUsed, user.TotalTokensUsed, dailyCalls, totalTokens)
+	}
 }
