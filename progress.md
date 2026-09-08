@@ -5,6 +5,7 @@
 - 生产执行 `restart-all.sh` 时，`merge-env-example.sh` 在 Ubuntu GNU coreutils 8.32 误报 `candidate metadata changed`。根因是脚本尝试 BSD `stat -f <format>` 后再回退 GNU `stat -c`；GNU `stat -f` 会把格式参数当作文件名，并可能在失败前输出包含候选路径的文件系统信息，使不同临时文件的元数据哈希必然不同。
 - 清除生产 `.env` 中的 `ROOT_BOOTSTRAP_*` 后重试仍被配置预检拒绝；根因是 `.env.example` 把 one-shot 凭据写成活动空赋值，增量合并会在每次发布时重新加入。模板现改为仅供 one-shot 流程识别的文档标记，常规环境合并明确验证不会追加这些变量。
 - `FIXED_LOGIN_PHONE` 与 `FIXED_LOGIN_PASSWORD` 的精确注释空占位也会被同一合并规则追加，并在生产预检中被拒绝；两项现改为 development-only 文档标记。完整模板合并回归同时禁止 one-shot Root 与开发固定登录凭据进入生产运行时环境。
+- 生产配置与前端构建通过后，继承发布锁校验在 Ubuntu 继续误报 `inherited release lock descriptor does not match lock file`；同一 BSD-first `stat` 写法还影响环境快照 mode 与前端 staging filesystem ID。`production-deploy.sh` 和 `restart-all.sh` 现同样先识别 GNU/BSD，并分别覆盖锁 inode、快照 mode 与 device ID 的 GNU 行为回归。
 - 修复改为启动时识别 GNU/BSD `stat`，每次元数据读取只执行对应平台语法。两项测试均先复现生产错误；环境合并、配置、不可变生产部署、全栈重启和 Dockerfile 回归随后全部通过。
 - 失败发生在原 `.env` 被替换前；本候选未读取或修改生产 `.env`，未部署、迁移、切换容器、发布静态文件或 reload Nginx。R02 保持 `BLOCKED_ENV`，待修复合并后重新执行生产发布与验收。
 
