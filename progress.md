@@ -1,5 +1,12 @@
 # Porsche 开发进度
 
+## 2026-09-08：A05 managed-user nickname edit 本地联合切片限定通过
+
+- A05 从 `BLOCKED_NOT_IMPLEMENTED` 提升为 `PASS_LIMITED_SCOPE`。代码候选为后端 `6bb54007879adeb16a532d792ab471f16ee9100a`、前端 `5a41f5679c1c35e5c2850665db54ae83e58db436`；canonical evidence commits 为后端 `76e0d2f650989ffecd7519b0d042ec2696cd60a8`、前端 `34b23fc8d00771cd03b9072e00ceda40b421c6bd`；随后紧急合并头为后端 `bf53c6a98452f624a6061e9be7317f9f596ea908`、前端 `a93893bc4a8739ba158cf45c6f32779873d9b028`。
+- r5 后端 service 40、DTO/handler/router 71、真实 HTTP 10 项均通过；r10 可见浏览器允许路径、409/迟到 ownership、拒绝路径、22 项 adversarial HTTP、browser/database audit privacy 及 exact cleanup 均通过，残留为 0。
+- 本通过仅覆盖 managed-user nickname string/null PATCH；`auth_version` 不变化，不接入 generic action-ticket routes，不改变 legacy PUT。26 项当前为 12 `PASS_LIMITED_SCOPE`、12 `BLOCKED_NOT_IMPLEMENTED`、1 `BLOCKED_PRODUCT`、1 `BLOCKED_ENV`，共 14 项阻塞；`go-017` blocker count 为 16。
+- A14、金额 Mock 边界及密钥轮换限制保持不变。生产 migration、deploy、production acceptance 和真实 business accounts 均 `NOT_RUN`。
+
 ## 2026-09-08：Ubuntu GNU stat 环境合并兼容性修复候选
 
 - 生产执行 `restart-all.sh` 时，`merge-env-example.sh` 在 Ubuntu GNU coreutils 8.32 误报 `candidate metadata changed`。根因是脚本尝试 BSD `stat -f <format>` 后再回退 GNU `stat -c`；GNU `stat -f` 会把格式参数当作文件名，并可能在失败前输出包含候选路径的文件系统信息，使不同临时文件的元数据哈希必然不同。

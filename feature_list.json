@@ -22,7 +22,7 @@
       "acceptance_status": "limited_subscope",
       "a14_status": "BLOCKED_NOT_IMPLEMENTED",
       "active_production_consumers": 3,
-      "joint_acceptance_blocker_count": 17,
+      "joint_acceptance_blocker_count": 16,
       "joint_acceptance_blockers": [
         {
           "id": "A03",
@@ -34,7 +34,20 @@
         },
         {
           "id": "A05",
-          "status": "BLOCKED_NOT_IMPLEMENTED"
+          "status": "PASS_LIMITED_SCOPE",
+          "accepted_candidate": {
+            "backend": "6bb54007879adeb16a532d792ab471f16ee9100a",
+            "frontend": "5a41f5679c1c35e5c2850665db54ae83e58db436"
+          },
+          "canonical_evidence_commits": {
+            "backend": "76e0d2f650989ffecd7519b0d042ec2696cd60a8",
+            "frontend": "34b23fc8d00771cd03b9072e00ceda40b421c6bd"
+          },
+          "emergency_merge_heads": {
+            "backend": "bf53c6a98452f624a6061e9be7317f9f596ea908",
+            "frontend": "a93893bc4a8739ba158cf45c6f32779873d9b028"
+          },
+          "evidence": "backend:docs/superpowers/reports/validation/2026-09-08-a05-managed-user-edit/manifest.json"
         },
         {
           "id": "A06",
@@ -113,7 +126,8 @@
         "隔离 MySQL 8 / Redis 7 migration、真实 service、10点 Execute fault、并发、serial full、Action race、build/vet/diff/source/secret gates",
         "第三次独立 QA 对 HEAD 2408ee3ace6f1a2ff07645653aed354a0ca245fa 给出 QA_PASS；Task14 exact cleanup 已由 b18d22ef8d6683bdf6ef55a7369180b72cb75479 记录为 CLEANUP_PASS 和零残留",
         "Task15 clean-tree full/race/build/vet/diff/invariant gates通过；SPEC_PASS、IMPLEMENTATION_PASS、SECURITY_PASS由42d3487d018a174bbcb85aa1b71947d35e968a93归档",
-        "A03 Task12：MySQL 8.4.11 / Redis 7.4 隔离夹具、0001–0010、focused/race/serial full/build/vet/diff、前端275/275及可见Chrome 13场景通过；唯一skip为显式opt-in 100k性能夹具"
+        "A03 Task12：MySQL 8.4.11 / Redis 7.4 隔离夹具、0001–0010、focused/race/serial full/build/vet/diff、前端275/275及可见Chrome 13场景通过；唯一skip为显式opt-in 100k性能夹具",
+        "A05 Task8：BE/FE nickname-edit代码、r5 backend service/DTO/handler/router/HTTP及r10真实浏览器/adversarial/privacy/cleanup均通过"
       ],
       "evidence": [
         "Task 1–11 交付严格 external-value、用途隔离密钥、8个 inactive typed descriptors、canonical intent、0005 schema/verifier、Redis Lua limits、Issue/Begin/Query/Execute/lease/recovery/transaction primitives；冻结生产路由仍404，active consumer为0。",
@@ -122,9 +136,10 @@
         "公开报告 docs/superpowers/reports/2026-09-04-b1e-operation-safety-foundation.md；公开验证目录 manifest.json。",
         "Task14：exact cleanup提交b18d22ef8d6683bdf6ef55a7369180b72cb75479；容器ID/名称/label/端口/listener/进程/私有路径/任务卷残留均0，无关容器与卷不变，独立结论CLEANUP_PASS。",
         "Task15：无fixture全量780 pass events/695 leaf/285 skip events/0 fail，Action race232/204/26 skip/0 fail，build/vet/diff/invariant通过；三份最终评审与manifest由42d3487d018a174bbcb85aa1b71947d35e968a93归档。",
-        "A03 users.create/users.create_admin：代码候选BE 3a50144e53268f6ef3ae704699ef9fa851e4a5ee / FE 9f660a9ca26f5738dd661652596a1e450ff34335；canonical证据 docs/superpowers/reports/validation/2026-09-06-a03-admin-user-create/canonical-3a50144-9f660a9-final/manifest.json，三项代码复审与三项证据复审均PASS，exact cleanup为CLEANUP_PASS。"
+        "A03 users.create/users.create_admin：代码候选BE 3a50144e53268f6ef3ae704699ef9fa851e4a5ee / FE 9f660a9ca26f5738dd661652596a1e450ff34335；canonical证据 docs/superpowers/reports/validation/2026-09-06-a03-admin-user-create/canonical-3a50144-9f660a9-final/manifest.json，三项代码复审与三项证据复审均PASS，exact cleanup为CLEANUP_PASS。",
+        "A05 managed-user nickname edit：代码BE 6bb5400 / FE 5a41f56；canonical evidence commits BE 76e0d2f / FE 34b23fc；emergency merge heads BE bf53c6a / FE a93893b；本地联合切片PASS_LIMITED_SCOPE。"
       ],
-      "notes": "PASS_LIMITED_SUBSCOPE：B1-E内部安全原语及A03 users.create/users.create_admin本地联合切片已验证；A03为PASS_LIMITED_SCOPE。ActiveActionRegistry当前3项（users.create、users.create_admin、users.delete）。本次不改变A14及其余tracker行；仍有17个BLOCKED条目。生产迁移、部署、真实业务账号和完整PRD验收均未运行。ACTION_SECURITY_HMAC_KEY v1 lacks key ID/multi-key verification; rotation is prohibited while replayable post-0010 active snapshots exist unless a separately approved multi-key verifier or atomic full re-HMAC migration is delivered.",
+      "notes": "PASS_LIMITED_SUBSCOPE：B1-E内部安全原语、A03及A05本地联合切片已验证；A05为PASS_LIMITED_SCOPE。ActiveActionRegistry仍为3项（users.create、users.create_admin、users.delete）；A05 PATCH不属于action-ticket路由。A14及其他tracker行不变；仍有16个阻塞条目。金额余额仍仅为Mock边界。生产迁移、部署、生产验收和真实业务账号均NOT_RUN。ACTION_SECURITY_HMAC_KEY v1 lacks key ID/multi-key verification; rotation is prohibited while replayable post-0010 active snapshots exist unless a separately approved multi-key verifier or atomic full re-HMAC migration is delivered.",
       "a03_joint_acceptance": {
         "status": "PASS_LIMITED_SCOPE",
         "code_under_test": {
@@ -168,6 +183,37 @@
           "business_accounts": "NOT_USED"
         },
         "evidence": "docs/superpowers/reports/validation/2026-09-06-a03-admin-user-create/canonical-3a50144-9f660a9-final/manifest.json"
+      },
+      "a05_joint_acceptance": {
+        "status": "PASS_LIMITED_SCOPE",
+        "code_under_test": {
+          "backend": "6bb54007879adeb16a532d792ab471f16ee9100a",
+          "frontend": "5a41f5679c1c35e5c2850665db54ae83e58db436"
+        },
+        "canonical_evidence_commits": {
+          "backend": "76e0d2f650989ffecd7519b0d042ec2696cd60a8",
+          "frontend": "34b23fc8d00771cd03b9072e00ceda40b421c6bd"
+        },
+        "emergency_merge_heads": {
+          "backend": "bf53c6a98452f624a6061e9be7317f9f596ea908",
+          "frontend": "a93893bc4a8739ba158cf45c6f32779873d9b028"
+        },
+        "tests": {
+          "r5_backend_service": "40 records / 0 fail / 0 skip",
+          "r5_backend_dto_handler_router": "71 records / 0 fail / 0 skip",
+          "r5_real_http_operations": "10/10 PASS",
+          "r10_visible_browser": "allowed UI, conflict/late ownership, visibility/denial PASS",
+          "r10_http_adversarial": "22/22 PASS",
+          "r10_privacy": "browser and database audit privacy PASS",
+          "r10_cleanup": "exact processes/containers/network/private files removed; residue 0"
+        },
+        "production": {
+          "migration": "NOT_RUN",
+          "deployment": "NOT_RUN",
+          "business_accounts": "NOT_RUN"
+        },
+        "scope_boundary": "仅本地A05 managed-user nickname PATCH切片；只允许nickname string/null且auth_version保持不变。金额余额仍为Mock边界，A14范围不变；生产migration、deploy、production acceptance及真实business accounts均NOT_RUN。",
+        "evidence": "docs/superpowers/reports/validation/2026-09-08-a05-managed-user-edit/manifest.json"
       }
     },
     {
