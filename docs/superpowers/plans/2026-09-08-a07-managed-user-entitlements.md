@@ -29,14 +29,14 @@
 - Extend verification validation, execution factory, consumer, audit/outbox writers, operation bundle, and route dispatch atomically before activating the registry entry.
 - Decode independent HMAC and execution password buffers. Let canonical encoding clear only its HMAC buffer; transfer/hash the execution buffer only after execution readiness and clear it on construction failure, execute return, and panic-safe cleanup. Existing terminal operations must not allocate or hash an execution password.
 - Cover ticket/key/action/target/version/password/reason binding, replay, unknown commit query, concurrency, rollback, old/new login, sessions, Keys, and secret scans.
-- Cover active and disabled target reset semantics, the full global lock order, N session audit rows plus one password-change row, stable replay after later user mutations, result expiry, zero nested transactions/HTTP/arbitrary network access, and the sole injected Redis session-denial exception before SQL mutation.
+- Cover active and disabled target reset semantics, the full global lock order, N session audit rows plus one password-change row, stable replay after later user mutations, result expiry, zero nested transactions/HTTP/arbitrary network access, and the sole injected Redis session-denial exception before consumer or business SQL mutation; Redis failure must roll back the verification update and leave zero committed SQL facts.
 
 ### Task 4: Implement frontend adapters and owned workflows
 
 - Add strict group, plan, and reset-password adapters.
 - Add direct-PATCH state/coordinators for group and plan and verified-operation workflow for reset.
 - Implement the A14 lifecycle/visibility/expiry/Retry-After rules with the reset scope's exact seven-field Query response, including nullable target/version result fields. Implement exact action/entitlement error envelopes. After execute or Query success, perform one owned GET and reconcile only the stored resulting auth version; ambiguous direct PATCH refresh never claims success.
-- Keep every secret and action key in memory and clear on all settlements, close, ownership drift, and unmount.
+- Keep every secret and action key in memory. Clear passwords and tickets after every settlement, close, ownership drift, and unmount. Retain the original idempotency key while the reset is `processing` or `pending_recovery`, prevent a second submission, and clear it only after an explicit success, failure, conflict, or dispose/close.
 
 ### Task 5: Add accessible dialogs and UserDetail wiring
 
