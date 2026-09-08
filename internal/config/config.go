@@ -139,6 +139,9 @@ func Load() (*Settings, error) {
 	if err := rejectRootBootstrapEnvironment(appEnv); err != nil {
 		return nil, err
 	}
+	if err := rejectFixedLoginCredentialsEnvironment(appEnv); err != nil {
+		return nil, err
+	}
 	whiteLabel, err := ParseWhiteLabelSettings(
 		os.Getenv("UPSTREAM_REGION"),
 		os.Getenv("JIEKOU_API_KEY"),
@@ -383,9 +386,6 @@ func validateProductionAuthSettings(s *Settings) error {
 	if s.SMSDevMode {
 		return fmt.Errorf("SMS_DEV_MODE must be false outside development")
 	}
-	if s.FixedLoginPhone == "13800138000" || s.FixedLoginPassword == "Porsche@2026" {
-		return fmt.Errorf("FIXED_LOGIN_PHONE and FIXED_LOGIN_PASSWORD must not use development credentials in production")
-	}
 	if err := validateProductionAuthSecrets(s); err != nil {
 		return err
 	}
@@ -396,6 +396,19 @@ func validateProductionAuthSettings(s *Settings) error {
 		parsed, _ := url.Parse(origin)
 		if parsed.Scheme != "https" {
 			return fmt.Errorf("AUTH_TRUSTED_ORIGINS must contain only HTTPS origins in production")
+		}
+	}
+	return nil
+}
+
+func rejectFixedLoginCredentialsEnvironment(appEnv string) error {
+	if appEnv == "development" {
+		return nil
+	}
+	for _, entry := range os.Environ() {
+		key, _, _ := strings.Cut(entry, "=")
+		if key == "FIXED_LOGIN_PHONE" || key == "FIXED_LOGIN_PASSWORD" {
+			return fmt.Errorf("FIXED_LOGIN credentials are not allowed outside development")
 		}
 	}
 	return nil
