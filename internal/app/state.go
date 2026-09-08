@@ -14,22 +14,24 @@ import (
 )
 
 type State struct {
-	Settings              *config.Settings
-	DB                    *gorm.DB
-	Auth                  *service.AuthService
-	Billing               *service.BillingService
-	SMS                   *service.SMSService
-	Platform              *service.PlatformChatService
-	GatewayTokens         *service.GatewayTokenService
-	WhiteLabel            *whitelabel.WhiteLabelService
-	Audit                 *service.AuditService
-	AuthRedis             *service.AuthRedis
-	Sessions              *service.SessionService
-	ActionSecurityCrypto  *actionsecurity.Crypto
-	UserManagementActions *service.UserManagementActions
-	UserDeleteActions     *service.UserDeleteActions
-	ActionVerifications   *service.ActionVerificationService
-	HTTP                  *http.Client
+	Settings                      *config.Settings
+	DB                            *gorm.DB
+	Auth                          *service.AuthService
+	Billing                       *service.BillingService
+	SMS                           *service.SMSService
+	Platform                      *service.PlatformChatService
+	GatewayTokens                 *service.GatewayTokenService
+	WhiteLabel                    *whitelabel.WhiteLabelService
+	Audit                         *service.AuditService
+	AuthRedis                     *service.AuthRedis
+	PlatformGenerations           *service.PlatformGenerationStore
+	PlatformGenerationPersistence *service.PlatformGenerationPersistence
+	Sessions                      *service.SessionService
+	ActionSecurityCrypto          *actionsecurity.Crypto
+	UserManagementActions         *service.UserManagementActions
+	UserDeleteActions             *service.UserDeleteActions
+	ActionVerifications           *service.ActionVerificationService
+	HTTP                          *http.Client
 }
 
 func NewState(settings *config.Settings, db *gorm.DB) (*State, error) {
@@ -37,14 +39,16 @@ func NewState(settings *config.Settings, db *gorm.DB) (*State, error) {
 }
 
 type stateConstructors struct {
-	newAuthRedisFromURL      func(context.Context, string, string) (*service.AuthRedis, error)
-	newUserManagementActions func(*gorm.DB, *service.AuthRedis, *actionsecurity.Crypto) (*service.UserManagementActions, error)
+	newAuthRedisFromURL               func(context.Context, string, string) (*service.AuthRedis, error)
+	newPlatformGenerationStoreFromURL func(context.Context, string) (*service.PlatformGenerationStore, error)
+	newUserManagementActions          func(*gorm.DB, *service.AuthRedis, *actionsecurity.Crypto) (*service.UserManagementActions, error)
 }
 
 func defaultStateConstructors() stateConstructors {
 	return stateConstructors{
-		newAuthRedisFromURL:      service.NewAuthRedisFromURL,
-		newUserManagementActions: service.NewUserManagementActions,
+		newAuthRedisFromURL:               service.NewAuthRedisFromURL,
+		newPlatformGenerationStoreFromURL: service.NewPlatformGenerationStoreFromURL,
+		newUserManagementActions:          service.NewUserManagementActions,
 	}
 }
 
@@ -57,9 +61,15 @@ func newState(settings *config.Settings, db *gorm.DB, constructors stateConstruc
 		Audit:    service.NewAuditService(),
 		HTTP:     &http.Client{},
 	}
-	authRedisTransferred := false
+	dependenciesTransferred := false
 	defer func() {
-		if !authRedisTransferred && s.AuthRedis != nil {
+		if dependenciesTransferred {
+			return
+		}
+		if s.PlatformGenerations != nil {
+			_ = s.PlatformGenerations.Close()
+		}
+		if s.AuthRedis != nil {
 			_ = s.AuthRedis.Close()
 		}
 	}()
@@ -86,7 +96,7 @@ func newState(settings *config.Settings, db *gorm.DB, constructors stateConstruc
 	// dependency here ensures a configured Redis failure prevents future auth
 	// operations from silently falling back to non-revocable JWT behavior.
 	if strings.TrimSpace(settings.RedisURL) != "" {
-		if constructors.newAuthRedisFromURL == nil {
+		if constructors.newAuthRedisFromURL == nil || constructors.newPlatformGenerationStoreFromURL == nil {
 			return nil, service.ErrActionVerificationUnavailable
 		}
 		authRedis, err := constructors.newAuthRedisFromURL(context.Background(), settings.RedisURL, settings.AuthHMACKey)
@@ -94,6 +104,16 @@ func newState(settings *config.Settings, db *gorm.DB, constructors stateConstruc
 			return nil, err
 		}
 		s.AuthRedis = authRedis
+		generations, err := constructors.newPlatformGenerationStoreFromURL(context.Background(), settings.RedisURL)
+		if err != nil {
+			return nil, err
+		}
+		s.PlatformGenerations = generations
+		generationPersistence, err := service.NewPlatformGenerationPersistence(generations)
+		if err != nil {
+			return nil, err
+		}
+		s.PlatformGenerationPersistence = generationPersistence
 	}
 	s.Sessions = service.NewSessionService(db, s.AuthRedis, settings)
 	s.Auth.SetSessionService(s.Sessions)
@@ -122,6 +142,6 @@ func newState(settings *config.Settings, db *gorm.DB, constructors stateConstruc
 		WhiteLabel: s.WhiteLabel,
 	})
 
-	authRedisTransferred = true
+	dependenciesTransferred = true
 	return s, nil
 }

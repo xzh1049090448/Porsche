@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
 	"testing"
 
 	"github.com/porsche/ai-gateway-go/internal/actionsecurity"
@@ -26,6 +27,92 @@ func TestNewStateDoesNotBootstrapRootFromSettings(t *testing.T) {
 	if state == nil {
 		t.Fatal("NewState() returned nil state")
 	}
+}
+
+func TestNewStateLeavesGenerationStoreNilWithoutRedis(t *testing.T) {
+	state, err := NewState(&config.Settings{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.PlatformGenerations != nil {
+		t.Fatal("generation store enabled without Redis")
+	}
+}
+
+func TestNewStateWiresPlatformGenerationPersistenceWithRedis(t *testing.T) {
+	authClient := newStateCloseTrackingRedisClient()
+	generationClient := newStateCloseTrackingRedisClient()
+	constructors := defaultStateConstructors()
+	constructors.newAuthRedisFromURL = func(context.Context, string, string) (*service.AuthRedis, error) {
+		return service.NewAuthRedis(authClient, "state-test-auth-hmac-key")
+	}
+	constructors.newPlatformGenerationStoreFromURL = func(context.Context, string) (*service.PlatformGenerationStore, error) {
+		return service.NewPlatformGenerationStore(generationClient)
+	}
+
+	state, err := newState(&config.Settings{RedisURL: "redis://configured", AuthHMACKey: "configured"}, nil, constructors)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.PlatformGenerations == nil || state.PlatformGenerationPersistence == nil {
+		t.Fatalf("generation dependencies not wired: %#v", state)
+	}
+	if authClient.closes != 0 || generationClient.closes != 0 {
+		t.Fatalf("successful construction closed clients: auth=%d generation=%d", authClient.closes, generationClient.closes)
+	}
+	if err := state.PlatformGenerations.Close(); err != nil || generationClient.closes != 1 {
+		t.Fatalf("generation cleanup error/closes = %v/%d, want nil/1", err, generationClient.closes)
+	}
+	if err := state.AuthRedis.Close(); err != nil || authClient.closes != 1 {
+		t.Fatalf("auth cleanup error/closes = %v/%d, want nil/1", err, authClient.closes)
+	}
+}
+
+func TestNewStateLeavesPlatformGenerationPersistenceNilWithoutRedis(t *testing.T) {
+	constructors := defaultStateConstructors()
+	constructors.newAuthRedisFromURL = func(context.Context, string, string) (*service.AuthRedis, error) {
+		t.Fatal("auth Redis constructor called without Redis configuration")
+		return nil, nil
+	}
+	constructors.newPlatformGenerationStoreFromURL = func(context.Context, string) (*service.PlatformGenerationStore, error) {
+		t.Fatal("generation store constructor called without Redis configuration")
+		return nil, nil
+	}
+
+	state, err := newState(&config.Settings{}, nil, constructors)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.PlatformGenerations != nil || state.PlatformGenerationPersistence != nil {
+		t.Fatalf("generation dependencies enabled without Redis: %#v", state)
+	}
+}
+
+func TestNewStateFailsClosedForConfiguredInvalidRedis(t *testing.T) {
+	state, err := NewState(&config.Settings{RedisURL: "not-a-redis-url", AuthHMACKey: "test-auth-hmac-key-0123456789-ABCDEFGHIJKLMNOPQRSTUVWXYZ"}, nil)
+	if err == nil || state != nil {
+		t.Fatalf("NewState() state=%#v error=%v, want fail-closed Redis construction", state, err)
+	}
+}
+
+func TestNewStateWiresGenerationStoreWithTestRedis(t *testing.T) {
+	url := os.Getenv("TEST_REDIS_URL")
+	if url == "" {
+		t.Skip("BLOCKED_FIXTURE: requires TEST_REDIS_URL")
+	}
+	settings := &config.Settings{RedisURL: url, AuthHMACKey: "test-auth-hmac-key-0123456789-ABCDEFGHIJKLMNOPQRSTUVWXYZ"}
+	state, err := NewState(settings, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.AuthRedis == nil || state.PlatformGenerations == nil {
+		t.Fatalf("stores not independently initialized: %#v", state)
+	}
+	if err := state.PlatformGenerations.CheckAvailable(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	_ = state.PlatformGenerations.Close()
+	_ = state.AuthRedis.Close()
 }
 
 func TestNewStateActionSecurityConstructorLifecycle(t *testing.T) {
@@ -73,9 +160,13 @@ func TestNewStateAssignsCompleteCreateAccountActionsAndDeleteCompatibilityView(t
 	var gotAuthRedis *service.AuthRedis
 	var gotCrypto *actionsecurity.Crypto
 	client := newStateCloseTrackingRedisClient()
+	generationClient := newStateCloseTrackingRedisClient()
 	constructors := defaultStateConstructors()
 	constructors.newAuthRedisFromURL = func(context.Context, string, string) (*service.AuthRedis, error) {
 		return service.NewAuthRedis(client, "state-test-auth-hmac-key")
+	}
+	constructors.newPlatformGenerationStoreFromURL = func(context.Context, string) (*service.PlatformGenerationStore, error) {
+		return service.NewPlatformGenerationStore(generationClient)
 	}
 	constructors.newUserManagementActions = func(db *gorm.DB, authRedis *service.AuthRedis, crypto *actionsecurity.Crypto) (*service.UserManagementActions, error) {
 		gotDB, gotAuthRedis, gotCrypto = db, authRedis, crypto
@@ -96,8 +187,14 @@ func TestNewStateAssignsCompleteCreateAccountActionsAndDeleteCompatibilityView(t
 	if client.closes != 0 {
 		t.Fatalf("successful state construction closed owned Redis %d times", client.closes)
 	}
+	if generationClient.closes != 0 {
+		t.Fatalf("successful state construction closed owned generation Redis %d times", generationClient.closes)
+	}
 	if err := state.AuthRedis.Close(); err != nil || client.closes != 1 {
 		t.Fatalf("existing state Redis cleanup error/closes = %v/%d, want nil/1", err, client.closes)
+	}
+	if err := state.PlatformGenerations.Close(); err != nil || generationClient.closes != 1 {
+		t.Fatalf("existing generation Redis cleanup error/closes = %v/%d, want nil/1", err, generationClient.closes)
 	}
 	if !bytes.Equal(root, bytes.Repeat([]byte{0x43}, 32)) {
 		t.Fatal("NewState mutated configured root key")
@@ -131,9 +228,13 @@ func TestNewStateCreateAccountActionsFailureExposesNoCreateRouteDependency(t *te
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			client := newStateCloseTrackingRedisClient()
+			generationClient := newStateCloseTrackingRedisClient()
 			constructors := defaultStateConstructors()
 			constructors.newAuthRedisFromURL = func(context.Context, string, string) (*service.AuthRedis, error) {
 				return service.NewAuthRedis(client, "state-test-auth-hmac-key")
+			}
+			constructors.newPlatformGenerationStoreFromURL = func(context.Context, string) (*service.PlatformGenerationStore, error) {
+				return service.NewPlatformGenerationStore(generationClient)
 			}
 			constructors.newUserManagementActions = func(*gorm.DB, *service.AuthRedis, *actionsecurity.Crypto) (*service.UserManagementActions, error) {
 				bundle := complete()
@@ -148,6 +249,9 @@ func TestNewStateCreateAccountActionsFailureExposesNoCreateRouteDependency(t *te
 			}
 			if client.closes != 1 {
 				t.Fatalf("failed state construction closed owned Redis %d times, want 1", client.closes)
+			}
+			if generationClient.closes != 1 {
+				t.Fatalf("failed state construction closed owned generation Redis %d times, want 1", generationClient.closes)
 			}
 		})
 	}

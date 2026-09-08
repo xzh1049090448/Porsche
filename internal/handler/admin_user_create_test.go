@@ -448,7 +448,7 @@ func TestAdminUserCreateRealHTTPDeletedPre0010SnapshotReplaysStableGone(t *testi
 	}
 
 	migrations, err := migration.All()
-	if err != nil || len(migrations) != 10 || migrations[9].Version != "0010" {
+	if err != nil || len(migrations) != 11 || migrations[9].Version != "0010" || migrations[10].Version != "0011" {
 		t.Fatalf("load 0010 for HTTP lifecycle = %d/%v", len(migrations), err)
 	}
 	for index, statement := range strings.Split(string(migrations[9].DownSQL), ";") {

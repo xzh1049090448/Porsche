@@ -72,6 +72,12 @@ var adminOperationResponseTargetsUp []byte
 //go:embed sql/0010_admin_operation_response_targets.down.sql
 var adminOperationResponseTargetsDown []byte
 
+//go:embed sql/0011_platform_generation_receipts.up.sql
+var platformGenerationReceiptsUp []byte
+
+//go:embed sql/0011_platform_generation_receipts.down.sql
+var platformGenerationReceiptsDown []byte
+
 // Migration is an immutable, embedded schema version.
 type Migration struct {
 	Version string
@@ -98,6 +104,7 @@ func All() ([]Migration, error) {
 		{Version: "0008", UpSQL: adminOperationResponsesUp, DownSQL: adminOperationResponsesDown},
 		{Version: "0009", UpSQL: adminResponseIntegrityUp, DownSQL: adminResponseIntegrityDown},
 		{Version: "0010", UpSQL: adminOperationResponseTargetsUp, DownSQL: adminOperationResponseTargetsDown},
+		{Version: "0011", UpSQL: platformGenerationReceiptsUp, DownSQL: platformGenerationReceiptsDown},
 	}
 	sort.Slice(migrations, func(i, j int) bool { return migrations[i].Version < migrations[j].Version })
 	return migrations, nil
@@ -184,6 +191,11 @@ func Up(ctx context.Context, db *gorm.DB, nextGUID func() int64, nowMillis func(
 						return err
 					}
 				}
+				if migration.Version == "0011" {
+					if err := VerifyPlatformGenerationReceiptSchema(ctx, conn); err != nil {
+						return err
+					}
+				}
 				continue
 			}
 			if migration.Version == "0007" {
@@ -230,6 +242,11 @@ func Up(ctx context.Context, db *gorm.DB, nextGUID func() int64, nowMillis func(
 			}
 			if migration.Version == "0007" {
 				if err := VerifyBusinessGroupsSchema(ctx, conn); err != nil {
+					return err
+				}
+			}
+			if migration.Version == "0011" {
+				if err := VerifyPlatformGenerationReceiptSchema(ctx, conn); err != nil {
 					return err
 				}
 			}
@@ -290,7 +307,10 @@ func Verify(ctx context.Context, db *gorm.DB) error {
 	if err := VerifyBusinessGroupsSchema(ctx, db); err != nil {
 		return err
 	}
-	return VerifyAdminOperationResponseSchema(ctx, db)
+	if err := VerifyAdminOperationResponseSchema(ctx, db); err != nil {
+		return err
+	}
+	return VerifyPlatformGenerationReceiptSchema(ctx, db)
 }
 
 // VerifyApplied is the side-effect-free portion of Verify, kept separate so

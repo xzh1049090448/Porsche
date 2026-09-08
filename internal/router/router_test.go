@@ -78,6 +78,40 @@ func TestAdminUsersGroupDirectoryRouteIsRegistered(t *testing.T) {
 	}
 }
 
+func TestNewStateDoesNotRegisterGenerationRoutes(t *testing.T) {
+	settings := &config.Settings{AppEnv: "test", AllowedHosts: "example.com"}
+	engine := router.New(&app.State{Settings: settings})
+	wantExisting := []routeContract{
+		{http.MethodPost, "/api/v1/platform/chat/completions"},
+		{http.MethodPost, "/api/v1/platform/chat/compare"},
+	}
+	for _, want := range wantExisting {
+		count := 0
+		for _, route := range engine.Routes() {
+			if route.Method == want.Method && route.Path == want.Path {
+				count++
+			}
+		}
+		if count != 1 {
+			t.Fatalf("existing platform route %s %s count=%d, want 1", want.Method, want.Path, count)
+		}
+	}
+
+	for _, unregistered := range []routeContract{
+		{http.MethodGet, "/api/v1/platform/chat/generations/550e8400-e29b-41d4-a716-446655440000"},
+		{http.MethodPost, "/api/v1/platform/chat/generations/550e8400-e29b-41d4-a716-446655440000/cancel"},
+	} {
+		request := httptest.NewRequest(unregistered.Method, unregistered.Path, nil)
+		request.Host = "example.com"
+		request.Header.Set("Authorization", "Bearer syntactically-valid-test-token")
+		recorder := httptest.NewRecorder()
+		engine.ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusNotFound {
+			t.Fatalf("generation route %s %s status=%d body=%s, want 404", unregistered.Method, unregistered.Path, recorder.Code, recorder.Body.String())
+		}
+	}
+}
+
 func TestHostAllowlistAcceptsDomainAndRejectsDirectIPAddress(t *testing.T) {
 	state := newGatewayTestState(t)
 	state.Settings.AllowedHosts = "aiportcloud.com"

@@ -17,6 +17,17 @@
 
 ## 2026-09-08：A03 创建用户/管理员本地联合切片限定通过
 
+`go-018` 平台聊天自适应逐字流式协议正在隔离工作树中实现。BE01 协议原语已完成本地提交、完整 Go 回归、race 与独立安全复审；BE02 Redis generation registry 按批准的重复请求、compare 消息、配额/成本和 Redis 503 决策进入测试先行开发。未激活 v2 路由，未推送、合并、部署、迁移或调用真实付费上游。`go-004` 仍待真实上游验收。
+
+## 平台聊天 SSE v2（2026-09-07，进行中）
+
+- 前端 FE01-FE03 已在独立 Porsche-Web 工作树完成字符簇播放、严格 SSE v2 解析和 generation 生命周期状态层；完整前端测试与构建通过。
+- 后端 BE01 增加严格 v2 请求投影和 SSE 编码原语；安全返工补齐输入/帧/整数边界、request ID 脱敏、编码器并发串行化，并在真实路由激活前以稳定 JSON 503 拒绝 v2，避免落入 legacy SSE。
+- 已批准：重复 generation 返回 409 + 权威状态且不重连/不二次调用上游；compare 每模型独立 assistant message GUID；取消/失败不扣 daily quota、上游成本另审计；Redis 不可用只影响 v2。
+- BE02 Redis generation registry 已完成：专用命名空间、24 小时 TTL、原子 claim/typed duplicate conflict、严格 seq/terminal、cancel/commit CAS、每模型唯一 assistant message GUID、稳定失败码与严格记录解码；AppState 独立装配且无 Redis 时仅保持 v2 不可用。真实 Redis race、全量 Go、vet、diff 及独立规格/安全复审通过，证据见 `docs/superpowers/reports/2026-09-08-platform-generation-registry.md`。
+- BE03 generation persistence 已完成：0011 仅新增 receipt/result 双表；single/compare 成功交换在一个 MySQL 事务内写入会话、每模型独立消息、usage、quota/token 计数与 durable receipt，精确记录新建/既有会话来源，receipt-aware Redis reconciliation 覆盖 commit-unknown 与 30 秒 stale committing，并将依赖错误稳定脱敏。隔离 MySQL/Redis race 在补足一次性本地 test-only HMAC 前置后无 fixture skip 通过，fresh 全量 Go、vet、diff 与独立规格/实现/安全复审通过，证据见 `docs/superpowers/reports/2026-09-08-platform-generation-persistence.md`。v2 路由仍未激活，生产迁移、部署、push、merge 与真实上游均未执行。
+- 下一阶段仍需单独计划并实现 BE04 generation GET/cancel 与重启调度、BE05 single v2 stream、BE06 compare v2 stream 和前后端联合验收；`go-018` 继续保持 `in_progress`。
+
 - A03 仅本地联合切片由 `BLOCKED_NOT_IMPLEMENTED` 提升为 `PASS_LIMITED_SCOPE`；代码候选为后端 `3a50144e53268f6ef3ae704699ef9fa851e4a5ee`、前端 `9f660a9ca26f5738dd661652596a1e450ff34335`。Admin 仅可按 immutable omitted default 创建普通用户；Root 可创建普通用户/管理员并保存 allow/deny 覆盖。删除后重放返回稳定 410 `created_user_deleted` 且无 PII，`operation_expired` 与之区分。
 - 隔离环境为 MySQL 8.4.11、Redis 7.4，迁移账本 `0001`–`0010`。focused 为 673 terminal/610 leaf、race 为 476 terminal/427 leaf；serial full 为 1912 terminal PASS/1 SKIP、1739 leaf PASS/1 SKIP。唯一 skip 是显式 opt-in 的 `TestAdminUsersReadPerformance` 100k 性能夹具。前端 275/275、可见 Chrome 13/13、build/vet/diff 和三项代码/证据复审均通过。
 - `ACTION_SECURITY_HMAC_KEY` v1 没有 key ID/多 key verifier；仍有可重放的 post-0010 active snapshot 时禁止轮换，除非先交付单独批准的多 key 验证或原子全量 re-HMAC migration。

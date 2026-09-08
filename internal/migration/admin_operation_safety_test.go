@@ -49,7 +49,7 @@ func TestAdminOperationSafetyRealMySQLDownUpAndVerifier(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(migrations) != 10 || migrations[4].Version != "0005" || migrations[5].Version != "0006" || migrations[6].Version != "0007" || migrations[7].Version != "0008" || migrations[8].Version != "0009" || migrations[9].Version != "0010" {
+	if len(migrations) != 11 || migrations[4].Version != "0005" || migrations[5].Version != "0006" || migrations[6].Version != "0007" || migrations[7].Version != "0008" || migrations[8].Version != "0009" || migrations[9].Version != "0010" || migrations[10].Version != "0011" {
 		t.Fatalf("unexpected migration sequence: %#v", migrations)
 	}
 	rollback, restore, err := adminOperationSafetyFixtureDependencyOrder(migrations)
@@ -213,7 +213,7 @@ func TestAdminOperationSafetyMigrationContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(migrations) != 10 || migrations[4].Version != "0005" || migrations[5].Version != "0006" || migrations[6].Version != "0007" || migrations[7].Version != "0008" || migrations[8].Version != "0009" || migrations[9].Version != "0010" {
+	if len(migrations) != 11 || migrations[4].Version != "0005" || migrations[5].Version != "0006" || migrations[6].Version != "0007" || migrations[7].Version != "0008" || migrations[8].Version != "0009" || migrations[9].Version != "0010" || migrations[10].Version != "0011" {
 		t.Fatalf("admin operation safety migration 0005 is missing: %#v", migrations)
 	}
 
@@ -427,6 +427,7 @@ func TestMigrationSequencePreservesPublishedChecksums(t *testing.T) {
 		{"0008", "21289da334e7ef4425f697c659e6f45227e88c4d86ac4c099867dd6895f666f2"},
 		{"0009", "4dc818d93180bb6777d2ec6d8318e728fe76add4c736a178f19b808ca2afedf7"},
 		{"0010", "b6ddd5b7088f1617b9831186e08da622f7d06cbe985707ef9f5524ffe6057780"},
+		{"0011", "be6ea3beb18a64cf2a2e03b2730df5abbcc457900e9da6292eefee0dd15a2792"},
 	}
 	if len(want) != len(migrations) {
 		t.Fatalf("checksum list length = %d, migrations = %d", len(want), len(migrations))
