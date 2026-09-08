@@ -285,6 +285,40 @@ func TestWithPlatformGenerationAdvisoryLockUsesPinnedConnectionAndAlwaysReleases
 	}
 }
 
+func TestWithPlatformGenerationAdvisoryLockDoesNotLeakScalarStatementModel(t *testing.T) {
+	db := openPlatformGenerationAdvisoryLockMySQL(t)
+	lockName := platformGenerationAdvisoryLockName(99, generationTestID)
+	err := withPlatformGenerationAdvisoryLock(context.Background(), db, lockName, func(conn *gorm.DB) error {
+		if conn.Statement.Model != nil || conn.Statement.Dest != nil || conn.Statement.Table != "" {
+			t.Fatalf("callback inherited scalar statement: model=%T dest=%T table=%q", conn.Statement.Model, conn.Statement.Dest, conn.Statement.Table)
+		}
+		var callbackConnectionID int64
+		if err := conn.Raw("SELECT CONNECTION_ID()").Scan(&callbackConnectionID).Error; err != nil {
+			return err
+		}
+		contextual := conn.WithContext(context.Background())
+		if contextual.Statement.Model != nil || contextual.Statement.Dest != nil || contextual.Statement.Table != "" {
+			t.Fatalf("WithContext inherited scalar statement: model=%T dest=%T table=%q", contextual.Statement.Model, contextual.Statement.Dest, contextual.Statement.Table)
+		}
+		var contextConnectionID int64
+		if err := contextual.Raw("SELECT CONNECTION_ID()").Scan(&contextConnectionID).Error; err != nil {
+			return err
+		}
+		var lockOwner sql.NullInt64
+		if err := db.Raw("SELECT IS_USED_LOCK(?)", lockName).Scan(&lockOwner).Error; err != nil {
+			return err
+		}
+		if !lockOwner.Valid || lockOwner.Int64 != callbackConnectionID || contextConnectionID != callbackConnectionID {
+			t.Fatalf("lock owner=%#v callback connection=%d contextual connection=%d", lockOwner, callbackConnectionID, contextConnectionID)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertPlatformGenerationLockFree(t, db, lockName)
+}
+
 type platformGenerationReceiptFixture struct {
 	db                *gorm.DB
 	owner             models.User

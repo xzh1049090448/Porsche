@@ -14,9 +14,10 @@ import (
 )
 
 const (
-	platformGenerationPrefix         = "porsche:platform:generation:v2:"
-	platformGenerationTTL            = 24 * time.Hour
-	platformGenerationMaxRecordBytes = 32 << 10
+	platformGenerationPrefix            = "porsche:platform:generation:v2:"
+	platformGenerationTTL               = 24 * time.Hour
+	platformGenerationMaxRecordBytes    = 32 << 10
+	platformGenerationConvergenceWindow = 30 * time.Second
 )
 
 type PlatformGenerationMode int
@@ -323,6 +324,53 @@ func (s *PlatformGenerationStore) Complete(ctx context.Context, userID int64, ge
 		snapshot.State = PlatformGenerationStateCompleted
 		return nil
 	})
+}
+
+func (s *PlatformGenerationStore) ReconcileComplete(ctx context.Context, userID int64, generationID string, assistantMessageGUIDs map[string]string, nowMillis int64) (PlatformGenerationSnapshot, error) {
+	snapshot, err := s.Get(ctx, userID, generationID)
+	if err != nil {
+		return PlatformGenerationSnapshot{}, err
+	}
+	if snapshot.State == PlatformGenerationStateCompleted {
+		if platformGenerationGUIDMapMatches(snapshot, assistantMessageGUIDs) {
+			return snapshot, nil
+		}
+		return snapshot, ErrPlatformGenerationConflict
+	}
+	completed, completeErr := s.Complete(ctx, userID, generationID, assistantMessageGUIDs, nowMillis)
+	if errors.Is(completeErr, ErrPlatformGenerationConflict) && completed.State == PlatformGenerationStateCompleted && platformGenerationGUIDMapMatches(completed, assistantMessageGUIDs) {
+		return completed, nil
+	}
+	return completed, completeErr
+}
+
+func (s *PlatformGenerationStore) FailStaleCommit(ctx context.Context, userID int64, generationID, code string, nowMillis int64) (PlatformGenerationSnapshot, error) {
+	if !platformGenerationStableCode(code) {
+		return PlatformGenerationSnapshot{}, ErrPlatformGenerationInvalid
+	}
+	return s.mutate(ctx, userID, generationID, nowMillis, func(snapshot *PlatformGenerationSnapshot) error {
+		if snapshot.State != PlatformGenerationStateCommitting || nowMillis-snapshot.UpdatedAtMillis < platformGenerationConvergenceWindow.Milliseconds() {
+			return ErrPlatformGenerationConflict
+		}
+		snapshot.State = PlatformGenerationStateFailed
+		snapshot.ErrorCode = code
+		return nil
+	})
+}
+
+func platformGenerationGUIDMapMatches(snapshot PlatformGenerationSnapshot, expected map[string]string) bool {
+	count := 0
+	for _, model := range snapshot.Models {
+		state := snapshot.ModelStates[model]
+		if state.State != PlatformGenerationStateCompleted {
+			continue
+		}
+		count++
+		if expected[model] != state.AssistantMessageGUID {
+			return false
+		}
+	}
+	return count == len(expected)
 }
 
 func (s *PlatformGenerationStore) Fail(ctx context.Context, userID int64, generationID, code string, nowMillis int64) (PlatformGenerationSnapshot, error) {

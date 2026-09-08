@@ -111,11 +111,19 @@ func withPlatformGenerationAdvisoryLock(ctx context.Context, db *gorm.DB, lockNa
 	}
 	return db.WithContext(ctx).Connection(func(conn *gorm.DB) error {
 		var acquired sql.NullInt64
-		if err := conn.Raw("SELECT GET_LOCK(?, 5)", lockName).Scan(&acquired).Error; err != nil || !acquired.Valid || acquired.Int64 != 1 {
+		if err := platformGenerationPinnedSession(conn, ctx).Raw("SELECT GET_LOCK(?, 5)", lockName).Scan(&acquired).Error; err != nil || !acquired.Valid || acquired.Int64 != 1 {
 			return ErrPlatformGenerationPersistenceUnavailable
 		}
 		return runWithPlatformGenerationAdvisoryLockRelease(conn, lockName, fn)
 	})
+}
+
+// platformGenerationPinnedSession clears GORM statement metadata without
+// changing the pinned sql.Conn held by Connection. Raw Scan parses its scalar
+// destination as a model, so GET_LOCK, protected work, and RELEASE_LOCK must
+// never reuse the same Statement.
+func platformGenerationPinnedSession(conn *gorm.DB, ctx context.Context) *gorm.DB {
+	return conn.Session(&gorm.Session{NewDB: true, Context: ctx})
 }
 
 func runWithPlatformGenerationAdvisoryLockRelease(conn *gorm.DB, lockName string, fn func(*gorm.DB) error) (primaryErr error) {
@@ -123,12 +131,12 @@ func runWithPlatformGenerationAdvisoryLockRelease(conn *gorm.DB, lockName string
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), platformGenerationAdvisoryLockReleaseTimeout)
 		defer cancel()
 		var released sql.NullInt64
-		releaseErr := conn.WithContext(cleanupCtx).Raw("SELECT RELEASE_LOCK(?)", lockName).Scan(&released).Error
+		releaseErr := platformGenerationPinnedSession(conn, cleanupCtx).Raw("SELECT RELEASE_LOCK(?)", lockName).Scan(&released).Error
 		if primaryErr == nil && (releaseErr != nil || !released.Valid || released.Int64 != 1) {
 			primaryErr = ErrPlatformGenerationPersistenceUnavailable
 		}
 	}()
-	primaryErr = fn(conn)
+	primaryErr = fn(platformGenerationPinnedSession(conn, conn.Statement.Context))
 	return primaryErr
 }
 
@@ -202,6 +210,13 @@ func (p *PlatformGenerationPersistence) Finalize(ctx context.Context, db *gorm.D
 	}
 
 	err = p.runTx(ctx, db, platformGenerationAdvisoryLockName(input.UserID, input.GenerationID), func(tx *gorm.DB) error {
+		lockedSnapshot, getErr := p.generations.Get(ctx, input.UserID, input.GenerationID)
+		if getErr != nil {
+			return ErrPlatformGenerationPersistenceUnavailable
+		}
+		if !platformPersistenceMatchesRedis(input, lockedSnapshot) {
+			return ErrPlatformGenerationPersistenceConflict
+		}
 		return persistPlatformGeneration(tx.Session(&gorm.Session{Logger: logger.Discard}), input)
 	})
 	if err == nil {
