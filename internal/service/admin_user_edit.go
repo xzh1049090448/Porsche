@@ -236,11 +236,11 @@ func validateNicknameEditSession(session models.Session, actor AdminPermissionRe
 
 func lockNicknameEditPolicy(tx *gorm.DB, userID int64) ([]authz.Override, error) {
 	var headIDs []int64
-	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Model(&models.PermissionPolicyHead{}).Where("user_id = ?").Order("id ASC").Pluck("id", &headIDs).Error; err != nil {
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Model(&models.PermissionPolicyHead{}).Where("user_id = ?", userID).Order("id ASC").Pluck("id", &headIDs).Error; err != nil {
 		return nil, err
 	}
 	var ruleIDs []int64
-	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Model(&models.PermissionOverride{}).Where("user_id = ?").Order("id ASC").Pluck("id", &ruleIDs).Error; err != nil {
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Model(&models.PermissionOverride{}).Where("user_id = ?", userID).Order("id ASC").Pluck("id", &ruleIDs).Error; err != nil {
 		return nil, err
 	}
 	_, rules, err := readPermissionPolicyRows(tx, userID)

@@ -89,7 +89,11 @@ func TestAdminUserNicknameEditRollsBackUpdateAuditAndCommitFailures(t *testing.T
 	for _, name := range []string{"user_update", "audit_insert", "commit"} {
 		t.Run(name, func(t *testing.T) {
 			ctx, service, _, _, target, claims := adminUserNicknameEditFixture(t, models.UserRoleRoot, models.UserRoleUser)
-			original := *target.Nickname
+			var original *string
+			if target.Nickname != nil {
+				value := *target.Nickname
+				original = &value
+			}
 			var commitHit atomic.Bool
 			var constraint, table string
 			switch name {
@@ -127,7 +131,7 @@ func TestAdminUserNicknameEditRollsBackUpdateAuditAndCommitFailures(t *testing.T
 			if err := service.db.First(&stored, target.ID).Error; err != nil {
 				t.Fatal(err)
 			}
-			if stored.Nickname == nil || *stored.Nickname != original {
+			if !sameOptionalString(stored.Nickname, original) {
 				t.Fatalf("partial nickname commit: %#v", stored.Nickname)
 			}
 			assertChangePasswordAuditCount(t, service.db, target.ID, models.AuthAuditEventManagedUserUpdated, 0)

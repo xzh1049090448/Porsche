@@ -1,7 +1,9 @@
 package service
 
 import (
+	"bytes"
 	"context"
+	"log"
 	"reflect"
 	"strings"
 	"testing"
@@ -9,7 +11,23 @@ import (
 
 	"github.com/porsche/ai-gateway-go/internal/models"
 	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
+
+func TestLockNicknameEditPolicyBindsActorUserIDToEveryLockQuery(t *testing.T) {
+	db := actionIssueDryDB(t)
+	const actorUserID int64 = 4242
+	var output bytes.Buffer
+	db.Logger = logger.New(log.New(&output, "", 0), logger.Config{LogLevel: logger.Info, ParameterizedQueries: false})
+	_, _ = lockNicknameEditPolicy(db, actorUserID)
+	queries := output.String()
+	for _, table := range []string{"user_permission_heads", "user_permission_overrides"} {
+		line := "SELECT `id` FROM `" + table + "` WHERE user_id = 4242 ORDER BY id ASC FOR UPDATE"
+		if !strings.Contains(queries, line) {
+			t.Fatalf("%s lock did not bind actor user ID; SQL log:\n%s", table, queries)
+		}
+	}
+}
 
 func adminUserNicknameEditFixture(t *testing.T, actorRole, targetRole models.UserRole) (context.Context, *AdminUserNicknameEditService, *AuthRedis, *models.User, *models.User, AdminPermissionReadActor) {
 	t.Helper()
