@@ -69,16 +69,17 @@ func LoadPlatformGenerationReceipt(ctx context.Context, db *gorm.DB, userID int6
 	}
 
 	snapshot := PlatformGenerationReceiptSnapshot{
-		UserID:               receipt.UserID,
-		GenerationID:         receipt.GenerationID,
-		Mode:                 PlatformGenerationMode(receipt.Mode),
-		ConversationGUID:     conversation.Guid,
-		UserMessage:          userMessage.Content,
-		SuccessfulModelCount: receipt.SuccessfulModelCount,
-		DailyCallsCharged:    receipt.DailyCallsCharged,
-		TotalTokens:          receipt.TotalTokens,
-		CommittedAtMillis:    receipt.CommittedAt,
-		Results:              make([]PlatformGenerationCommittedResult, 0, len(rows)),
+		UserID:                        receipt.UserID,
+		GenerationID:                  receipt.GenerationID,
+		Mode:                          PlatformGenerationMode(receipt.Mode),
+		ConversationGUID:              conversation.Guid,
+		RequestedExistingConversation: receipt.RequestedExistingConversation == 1,
+		UserMessage:                   userMessage.Content,
+		SuccessfulModelCount:          receipt.SuccessfulModelCount,
+		DailyCallsCharged:             receipt.DailyCallsCharged,
+		TotalTokens:                   receipt.TotalTokens,
+		CommittedAtMillis:             receipt.CommittedAt,
+		Results:                       make([]PlatformGenerationCommittedResult, 0, len(rows)),
 	}
 	successes := 0
 	var totalTokens int64
@@ -117,6 +118,7 @@ func LoadPlatformGenerationReceipt(ctx context.Context, db *gorm.DB, userID int6
 func validPlatformGenerationReceiptParent(receipt models.PlatformChatGenerationReceipt, userID int64, generationID string) bool {
 	if receipt.ID <= 0 || receipt.Guid <= 0 || receipt.UserID != userID || receipt.GenerationID != generationID ||
 		receipt.ConversationID <= 0 || receipt.UserMessageID <= 0 ||
+		(receipt.RequestedExistingConversation != 0 && receipt.RequestedExistingConversation != 1) ||
 		receipt.SuccessfulModelCount < 1 || receipt.DailyCallsCharged != receipt.SuccessfulModelCount || receipt.TotalTokens < 0 ||
 		receipt.CommittedAt <= 0 || !platformSSEV2SafeInteger(receipt.CommittedAt) ||
 		receipt.CreatedAt <= 0 || receipt.UpdatedAt != receipt.CreatedAt ||

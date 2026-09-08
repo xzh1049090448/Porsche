@@ -4,6 +4,7 @@ CREATE TABLE platform_chat_generation_receipts (
   user_id BIGINT NOT NULL,
   generation_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
   mode INT NOT NULL,
+  requested_existing_conversation TINYINT NOT NULL,
   conversation_id BIGINT NOT NULL,
   user_message_id BIGINT NOT NULL,
   successful_model_count INT NOT NULL,
@@ -24,6 +25,7 @@ CREATE TABLE platform_chat_generation_receipts (
   CONSTRAINT fk_platform_chat_generation_receipts_conversation FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
   CONSTRAINT fk_platform_chat_generation_receipts_user_message FOREIGN KEY (user_message_id) REFERENCES messages(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
   CONSTRAINT chk_platform_chat_generation_receipts_mode CHECK (mode IN (1, 2)),
+  CONSTRAINT chk_platform_chat_generation_receipts_requested_conversation CHECK (requested_existing_conversation IN (0, 1)),
   CONSTRAINT chk_platform_chat_generation_receipts_counts CHECK (successful_model_count >= 1 AND daily_calls_charged = successful_model_count AND total_tokens >= 0),
   CONSTRAINT chk_platform_chat_generation_receipts_time CHECK (committed_at > 0 AND updated_at = created_at),
   CONSTRAINT chk_platform_chat_generation_receipts_deleted CHECK (is_deleted IN (0, 1))

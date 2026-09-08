@@ -144,6 +144,7 @@ CREATE TABLE platform_chat_generation_receipts (
   user_id BIGINT NOT NULL,
   generation_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
   mode INT NOT NULL,
+  requested_existing_conversation TINYINT NOT NULL,
   conversation_id BIGINT NOT NULL,
   user_message_id BIGINT NOT NULL,
   successful_model_count INT NOT NULL,
@@ -164,6 +165,7 @@ CREATE TABLE platform_chat_generation_receipts (
   CONSTRAINT fk_platform_chat_generation_receipts_conversation FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
   CONSTRAINT fk_platform_chat_generation_receipts_user_message FOREIGN KEY (user_message_id) REFERENCES messages(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
   CONSTRAINT chk_platform_chat_generation_receipts_mode CHECK (mode IN (1, 2)),
+  CONSTRAINT chk_platform_chat_generation_receipts_requested_conversation CHECK (requested_existing_conversation IN (0, 1)),
   CONSTRAINT chk_platform_chat_generation_receipts_counts CHECK (successful_model_count >= 1 AND daily_calls_charged = successful_model_count AND total_tokens >= 0),
   CONSTRAINT chk_platform_chat_generation_receipts_time CHECK (committed_at > 0 AND updated_at = created_at),
   CONSTRAINT chk_platform_chat_generation_receipts_deleted CHECK (is_deleted IN (0, 1))
@@ -726,6 +728,7 @@ type PlatformChatGenerationReceipt struct {
 	UserID               int64                         `gorm:"type:bigint;not null" json:"-"`
 	GenerationID         string                        `gorm:"size:36;not null" json:"generation_id"`
 	Mode                 PlatformGenerationReceiptMode `gorm:"type:int;not null" json:"mode"`
+	RequestedExistingConversation int                   `gorm:"type:tinyint;not null" json:"-"`
 	ConversationID       int64                         `gorm:"type:bigint;not null" json:"-"`
 	UserMessageID         int64                         `gorm:"type:bigint;not null" json:"-"`
 	SuccessfulModelCount int                           `gorm:"type:int;not null" json:"successful_model_count"`
@@ -1439,7 +1442,7 @@ Add these pure helpers and use them before/after the transaction:
 
 ```go
 func platformReceiptMatchesInput(receipt PlatformGenerationReceiptSnapshot, input PlatformGenerationPersistenceInput) bool {
-	if receipt.UserID != input.UserID || receipt.GenerationID != input.GenerationID || receipt.Mode != input.Mode || receipt.UserMessage != input.UserMessage || len(receipt.Results) != len(input.Results) {
+	if receipt.UserID != input.UserID || receipt.GenerationID != input.GenerationID || receipt.Mode != input.Mode || receipt.RequestedExistingConversation != (input.ConversationGUID != nil) || receipt.UserMessage != input.UserMessage || len(receipt.Results) != len(input.Results) {
 		return false
 	}
 	if input.ConversationGUID != nil && receipt.ConversationGUID != *input.ConversationGUID {
@@ -1460,7 +1463,7 @@ func isPlatformGenerationDuplicateKey(err error) bool {
 }
 ```
 
-Import `github.com/go-sql-driver/mysql`. A duplicate-key error from the receipt/result/user-message uniqueness boundary must cause a fresh `LoadPlatformGenerationReceipt`; it must never be mapped directly to success without full input comparison. Keep all model iteration ordered by `input.Models`, not by a Go map. Deliberately do not compare `receipt.CommittedAtMillis` to `input.NowMillis`: retries may use a later attempt timestamp, while `UserMessage` and all other immutable input fields must still match exactly.
+Import `github.com/go-sql-driver/mysql`. A duplicate-key error from the receipt/result/user-message uniqueness boundary must cause a fresh `LoadPlatformGenerationReceipt`; it must never be mapped directly to success without full input comparison. Keep all model iteration ordered by `input.Models`, not by a Go map. Deliberately do not compare `receipt.CommittedAtMillis` to `input.NowMillis`: retries may use a later attempt timestamp, while `UserMessage` and all other immutable input fields must still match exactly. Persist and compare the original conversation provenance in both directions: nil means the request asked to create a new conversation, non-nil means it named an existing conversation, and the latter also requires exact GUID equality.
 
 - [ ] **Step 4: Run race tests and confirm GREEN**
 

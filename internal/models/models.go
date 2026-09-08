@@ -471,15 +471,16 @@ type GatewayAPIToken struct {
 type PlatformChatGenerationReceipt struct {
 	ID int64 `gorm:"primaryKey;type:bigint" json:"-"`
 	AuditFields
-	UserID               int64                         `gorm:"type:bigint;not null" json:"-"`
-	GenerationID         string                        `gorm:"size:36;not null" json:"generation_id"`
-	Mode                 PlatformGenerationReceiptMode `gorm:"type:int;not null" json:"mode"`
-	ConversationID       int64                         `gorm:"type:bigint;not null" json:"-"`
-	UserMessageID        int64                         `gorm:"type:bigint;not null" json:"-"`
-	SuccessfulModelCount int                           `gorm:"type:int;not null" json:"successful_model_count"`
-	DailyCallsCharged    int                           `gorm:"type:int;not null" json:"daily_calls_charged"`
-	TotalTokens          int64                         `gorm:"type:bigint;not null" json:"total_tokens"`
-	CommittedAt          int64                         `gorm:"type:bigint;not null" json:"committed_at"`
+	UserID                        int64                         `gorm:"type:bigint;not null" json:"-"`
+	GenerationID                  string                        `gorm:"size:36;not null" json:"generation_id"`
+	Mode                          PlatformGenerationReceiptMode `gorm:"type:int;not null" json:"mode"`
+	RequestedExistingConversation int                           `gorm:"type:tinyint;not null" json:"-"`
+	ConversationID                int64                         `gorm:"type:bigint;not null" json:"-"`
+	UserMessageID                 int64                         `gorm:"type:bigint;not null" json:"-"`
+	SuccessfulModelCount          int                           `gorm:"type:int;not null" json:"successful_model_count"`
+	DailyCallsCharged             int                           `gorm:"type:int;not null" json:"daily_calls_charged"`
+	TotalTokens                   int64                         `gorm:"type:bigint;not null" json:"total_tokens"`
+	CommittedAt                   int64                         `gorm:"type:bigint;not null" json:"committed_at"`
 }
 
 func (PlatformChatGenerationReceipt) TableName() string {

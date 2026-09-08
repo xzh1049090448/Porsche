@@ -78,6 +78,7 @@ This parent row is written only inside a successful finalization transaction. It
 | `user_id` | `BIGINT NOT NULL` | Authenticated owner; references `users.id`. |
 | `generation_id` | `CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL` | Canonical lowercase client UUID used only with `user_id`. |
 | `mode` | `INT NOT NULL` | `1 = single`, `2 = compare`; values are permanent. |
+| `requested_existing_conversation` | `TINYINT NOT NULL` | `1` when the original request named an existing conversation; `0` when it requested creation of a new conversation. |
 | `conversation_id` | `BIGINT NOT NULL` | Internal reference to the committed conversation. |
 | `user_message_id` | `BIGINT NOT NULL` | Internal reference to the exchange's one committed user message. |
 | `successful_model_count` | `INT NOT NULL` | Number of successful model results; at least one. |
@@ -98,7 +99,7 @@ Required indexes and constraints:
 - index `(user_id, is_deleted, created_at)`;
 - index `(conversation_id, is_deleted)`;
 - foreign keys from `user_id` to `users.id`, `conversation_id` to `conversations.id`, and `user_message_id` to `messages.id`, all `ON DELETE RESTRICT ON UPDATE RESTRICT`;
-- checks that `mode IN (1,2)`, `successful_model_count >= 1`, `daily_calls_charged = successful_model_count`, `total_tokens >= 0`, `committed_at > 0`, and `is_deleted IN (0,1)`.
+- checks that `mode IN (1,2)`, `requested_existing_conversation IN (0,1)`, `successful_model_count >= 1`, `daily_calls_charged = successful_model_count`, `total_tokens >= 0`, `committed_at > 0`, and `is_deleted IN (0,1)`.
 
 The `(user_id, generation_id)` uniqueness is intentionally permanent. A client can always generate a new UUID, while allowing a logically deleted generation ID to be reused would break idempotency and recovery. This is not a “soft-delete then reusable” business identifier. The receipt stores only `user_message_id`, never user-message content; exact duplicate comparison loads that owned message through the receipt integrity graph.
 
@@ -224,14 +225,14 @@ BE05/BE06 must preserve the existing platform token contract when producing thes
 
 Concurrent or repeated finalizers may execute, but only one transaction can commit the unique receipt. If a candidate transaction loses the unique constraint race, all of its candidate writes roll back. Outside that failed transaction, the service loads and validates the winner's receipt and returns the same authoritative committed result without adding messages, usage records, quota, or token totals.
 
-A duplicate input with different user-message content, mode, model order, conversation, terminal statuses, assistant content, token values, or stable codes does not return the existing success as though it matched. It returns a typed idempotency conflict after comparing the immutable receipt identity and hydrated internal snapshot. User and assistant message content is compared only by loading owned referenced message rows inside the service; user-message content is retained only in the internal snapshot used for exact duplicate comparison and is never copied into the receipt, public DTO, Redis, log, or integrity error.
+A duplicate input with different user-message content, mode, model order, conversation provenance, terminal statuses, assistant content, token values, or stable codes does not return the existing success as though it matched. The receipt records whether the original request asked to create a new conversation or named an existing conversation. Matching is bidirectional: an existing-conversation request cannot retry as new, and a new-conversation request cannot retry by explicitly naming the conversation created by its first commit. For existing-conversation requests, the hydrated conversation GUID must also match exactly. A mismatch returns a typed idempotency conflict. User and assistant message content is compared only by loading owned referenced message rows inside the service; user-message content is retained only in the internal snapshot used for exact duplicate comparison and is never copied into the receipt, public DTO, Redis, log, or integrity error.
 
 Receipt reads require:
 
 - `receipt.user_id` equal to the authenticated internal user ID;
 - parent and children with `is_deleted = 0`;
 - `receipt.user_message_id` resolving to exactly one active message in the same conversation with `role = user`; the globally unique key prevents that message from backing another receipt;
-- parent `mode` resolving only to the permanent single/compare values, `successful_model_count >= 1`, `daily_calls_charged = successful_model_count`, `total_tokens >= 0`, and `committed_at` being a positive safe Unix-millisecond integer;
+- parent `mode` resolving only to the permanent single/compare values, `requested_existing_conversation` resolving only to `0` or `1`, `successful_model_count >= 1`, `daily_calls_charged = successful_model_count`, `total_tokens >= 0`, and `committed_at` being a positive safe Unix-millisecond integer;
 - exact child count and contiguous model indexes for the stored mode;
 - successful model count and token sum equal to the parent aggregates;
 - completed child message references resolving to active assistant messages in the same conversation with the same model and token count;
@@ -350,7 +351,7 @@ BE04 receives the following completed primitives from BE03:
 1. Load a validated committed receipt by authenticated `user_id + generation_id`.
 2. Hydrate completed single/compare result metadata and content from owned active message references, preserving model request order; retain the user-message body only in the internal snapshot used for duplicate comparison and never expose it through public status DTOs.
 3. Reconcile stale `committing` to `completed` from a receipt or to `failed` after the 30-second threshold when no receipt exists.
-4. Return typed not-found, unavailable, integrity, idempotency-conflict, quota, and persistence errors without raw dependency details.
+4. Return typed not-found, unavailable, integrity, idempotency-conflict, quota, and persistence errors without raw dependency details. Reconciliation normalizes Redis, advisory-lock, and CAS dependency failures to the exact stable persistence-unavailable sentinel, including failures before and inside the lock.
 5. Keep v2 persistence isolated from all legacy chat methods.
 
 BE04 will separately design and implement authenticated generation GET/cancel handlers, cancel-before-stream tombstones, `200/202` plus `Retry-After`, bounded waiting, and startup/periodic stale-state convergence. BE04 must not start an upstream call, reactivate an expired generation, or return unpersisted content.

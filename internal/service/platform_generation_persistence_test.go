@@ -163,12 +163,12 @@ func TestValidatePlatformGenerationPersistenceInputPreservesMessageBytes(t *test
 }
 
 func TestPlatformGenerationReceiptSnapshotHidesUserMessage(t *testing.T) {
-	encoded, err := json.Marshal(PlatformGenerationReceiptSnapshot{UserMessage: "secret prompt"})
+	encoded, err := json.Marshal(PlatformGenerationReceiptSnapshot{UserMessage: "secret prompt", RequestedExistingConversation: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(encoded), "secret prompt") || strings.Contains(string(encoded), "UserMessage") || strings.Contains(string(encoded), "user_message") {
-		t.Fatalf("user message leaked through snapshot JSON: %s", encoded)
+	if strings.Contains(string(encoded), "secret prompt") || strings.Contains(string(encoded), "UserMessage") || strings.Contains(string(encoded), "user_message") || strings.Contains(string(encoded), "RequestedExistingConversation") || strings.Contains(string(encoded), "requested_existing_conversation") {
+		t.Fatalf("internal receipt provenance leaked through snapshot JSON: %s", encoded)
 	}
 }
 
@@ -504,7 +504,7 @@ func seedPlatformGenerationReceiptOnDB(t *testing.T, mode PlatformGenerationMode
 	fixture.receipt = models.PlatformChatGenerationReceipt{
 		AuditFields: models.AuditFields{Guid: testSnowflake.Next(), CreatedAt: now, CreatedBy: &fixture.owner.ID, UpdatedAt: now, UpdatedBy: &fixture.owner.ID},
 		UserID:      fixture.owner.ID, GenerationID: generationTestID,
-		Mode: models.PlatformGenerationReceiptMode(mode), ConversationID: fixture.conversation.ID, UserMessageID: fixture.userMessage.ID,
+		Mode: models.PlatformGenerationReceiptMode(mode), RequestedExistingConversation: 1, ConversationID: fixture.conversation.ID, UserMessageID: fixture.userMessage.ID,
 		SuccessfulModelCount: successCount, DailyCallsCharged: successCount, TotalTokens: totalTokens, CommittedAt: now,
 	}
 	if err := gdb.Create(&fixture.receipt).Error; err != nil {
@@ -747,6 +747,7 @@ func TestLoadPlatformGenerationReceiptRejectsInvalidParentScalars(t *testing.T) 
 		value                    any
 	}{
 		{"mode", "chk_platform_chat_generation_receipts_mode", "mode", 3},
+		{"requested conversation provenance", "chk_platform_chat_generation_receipts_requested_conversation", "requested_existing_conversation", 2},
 		{"success count", "chk_platform_chat_generation_receipts_counts", "successful_model_count", 0},
 		{"daily count", "chk_platform_chat_generation_receipts_counts", "daily_calls_charged", 2},
 		{"negative tokens", "chk_platform_chat_generation_receipts_counts", "total_tokens", -1},
@@ -1980,7 +1981,8 @@ func TestPlatformGenerationPersistenceDuplicateIgnoresRetryTimestamp(t *testing.
 		input := validPlatformGenerationPersistenceInput()
 		receipt := PlatformGenerationReceiptSnapshot{
 			UserID: input.UserID, GenerationID: input.GenerationID, Mode: input.Mode, ConversationGUID: 2,
-			UserMessage: input.UserMessage, SuccessfulModelCount: 1, DailyCallsCharged: 1, TotalTokens: 1, CommittedAtMillis: 7,
+			RequestedExistingConversation: false,
+			UserMessage:                   input.UserMessage, SuccessfulModelCount: 1, DailyCallsCharged: 1, TotalTokens: 1, CommittedAtMillis: 7,
 			Results: []PlatformGenerationCommittedResult{{Model: "model-a", State: PlatformGenerationStateCompleted, AssistantMessageGUID: "3", Content: "answer", Tokens: 1}},
 		}
 		input.NowMillis = 99
@@ -1990,15 +1992,18 @@ func TestPlatformGenerationPersistenceDuplicateIgnoresRetryTimestamp(t *testing.
 		}
 		conversationGUID := receipt.ConversationGUID
 		input.ConversationGUID = &conversationGUID
-		if !platformReceiptMatchesInput(receipt, input) {
-			t.Fatal("matching optional conversation rejected")
-		}
-		wrongConversationGUID := conversationGUID + 1
-		input.ConversationGUID = &wrongConversationGUID
 		if platformReceiptMatchesInput(receipt, input) {
-			t.Fatal("mismatched optional conversation accepted")
+			t.Fatal("new-conversation receipt accepted an explicit retry of its resulting conversation")
+		}
+		receipt.RequestedExistingConversation = true
+		if !platformReceiptMatchesInput(receipt, input) {
+			t.Fatal("same existing-conversation request was not idempotent")
 		}
 		input.ConversationGUID = nil
+		if platformReceiptMatchesInput(receipt, input) {
+			t.Fatal("existing-conversation receipt accepted a retry requesting a new conversation")
+		}
+		receipt.RequestedExistingConversation = false
 		for _, mutate := range []func(*PlatformGenerationPersistenceInput){
 			func(value *PlatformGenerationPersistenceInput) { value.UserMessage = "different" },
 			func(value *PlatformGenerationPersistenceInput) { value.Results[0].Model = "model-b" },
@@ -2039,6 +2044,59 @@ func TestPlatformGenerationPersistenceDuplicateIgnoresRetryTimestamp(t *testing.
 		input.NowMillis = f.now + 1
 		if _, err := p.Finalize(context.Background(), f.db, input); !errors.Is(err, ErrPlatformGenerationPersistenceConflict) {
 			t.Fatalf("stale retry error=%v, want conflict", err)
+		}
+	})
+}
+
+func TestPlatformGenerationPersistenceDuplicateRequiresExactConversationProvenance(t *testing.T) {
+	t.Run("existing conversation cannot retry as new", func(t *testing.T) {
+		f := openPlatformGenerationFinalizationFixture(t)
+		conversation := models.Conversation{
+			AuditFields: models.AuditFields{Guid: testSnowflake.Next(), CreatedAt: f.now - 1, CreatedBy: &f.user.ID, UpdatedAt: f.now - 1, UpdatedBy: &f.user.ID},
+			UserID:      f.user.ID,
+			Title:       "existing",
+		}
+		if err := f.db.Create(&conversation).Error; err != nil {
+			t.Fatal(err)
+		}
+		input := f.committingSingle(t)
+		input.ConversationGUID = &conversation.Guid
+		p, err := NewPlatformGenerationPersistence(f.store)
+		if err != nil {
+			t.Fatal(err)
+		}
+		first, err := p.Finalize(context.Background(), f.db, input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		retry, err := p.Finalize(context.Background(), f.db, input)
+		if err != nil || !reflect.DeepEqual(first, retry) {
+			t.Fatalf("same existing-conversation retry=%#v error=%v, want %#v", retry, err, first)
+		}
+		input.ConversationGUID = nil
+		if _, err := p.Finalize(context.Background(), f.db, input); !errors.Is(err, ErrPlatformGenerationPersistenceConflict) {
+			t.Fatalf("existing-to-new retry error=%v, want conflict", err)
+		}
+	})
+
+	t.Run("new conversation cannot retry as explicit result", func(t *testing.T) {
+		f := openPlatformGenerationFinalizationFixture(t)
+		input := f.committingSingle(t)
+		p, err := NewPlatformGenerationPersistence(f.store)
+		if err != nil {
+			t.Fatal(err)
+		}
+		first, err := p.Finalize(context.Background(), f.db, input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		retry, err := p.Finalize(context.Background(), f.db, input)
+		if err != nil || !reflect.DeepEqual(first, retry) {
+			t.Fatalf("same new-conversation retry=%#v error=%v, want %#v", retry, err, first)
+		}
+		input.ConversationGUID = &first.ConversationGUID
+		if _, err := p.Finalize(context.Background(), f.db, input); !errors.Is(err, ErrPlatformGenerationPersistenceConflict) {
+			t.Fatalf("new-to-explicit-result retry error=%v, want conflict", err)
 		}
 	})
 }

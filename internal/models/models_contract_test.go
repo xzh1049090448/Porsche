@@ -195,16 +195,17 @@ func TestPlatformGenerationPersistenceModelsMatchExactContract(t *testing.T) {
 		fields map[string]expectedField
 	}{
 		{PlatformChatGenerationReceipt{}, map[string]expectedField{
-			"ID":                   {goType: reflect.TypeOf(int64(0)), dbName: "id", gorm: "primaryKey;type:bigint", json: "-"},
-			"UserID":               {goType: reflect.TypeOf(int64(0)), dbName: "user_id", gorm: "type:bigint;not null", json: "-", notNull: true},
-			"GenerationID":         {goType: reflect.TypeOf(""), dbName: "generation_id", gorm: "size:36;not null", json: "generation_id", size: 36, notNull: true},
-			"Mode":                 {goType: reflect.TypeOf(PlatformGenerationReceiptMode(0)), dbName: "mode", gorm: "type:int;not null", json: "mode", notNull: true},
-			"ConversationID":       {goType: reflect.TypeOf(int64(0)), dbName: "conversation_id", gorm: "type:bigint;not null", json: "-", notNull: true},
-			"UserMessageID":        {goType: reflect.TypeOf(int64(0)), dbName: "user_message_id", gorm: "type:bigint;not null", json: "-", notNull: true},
-			"SuccessfulModelCount": {goType: reflect.TypeOf(int(0)), dbName: "successful_model_count", gorm: "type:int;not null", json: "successful_model_count", notNull: true},
-			"DailyCallsCharged":    {goType: reflect.TypeOf(int(0)), dbName: "daily_calls_charged", gorm: "type:int;not null", json: "daily_calls_charged", notNull: true},
-			"TotalTokens":          {goType: reflect.TypeOf(int64(0)), dbName: "total_tokens", gorm: "type:bigint;not null", json: "total_tokens", notNull: true},
-			"CommittedAt":          {goType: reflect.TypeOf(int64(0)), dbName: "committed_at", gorm: "type:bigint;not null", json: "committed_at", notNull: true},
+			"ID":                            {goType: reflect.TypeOf(int64(0)), dbName: "id", gorm: "primaryKey;type:bigint", json: "-"},
+			"UserID":                        {goType: reflect.TypeOf(int64(0)), dbName: "user_id", gorm: "type:bigint;not null", json: "-", notNull: true},
+			"GenerationID":                  {goType: reflect.TypeOf(""), dbName: "generation_id", gorm: "size:36;not null", json: "generation_id", size: 36, notNull: true},
+			"Mode":                          {goType: reflect.TypeOf(PlatformGenerationReceiptMode(0)), dbName: "mode", gorm: "type:int;not null", json: "mode", notNull: true},
+			"RequestedExistingConversation": {goType: reflect.TypeOf(int(0)), dbName: "requested_existing_conversation", gorm: "type:tinyint;not null", json: "-", notNull: true},
+			"ConversationID":                {goType: reflect.TypeOf(int64(0)), dbName: "conversation_id", gorm: "type:bigint;not null", json: "-", notNull: true},
+			"UserMessageID":                 {goType: reflect.TypeOf(int64(0)), dbName: "user_message_id", gorm: "type:bigint;not null", json: "-", notNull: true},
+			"SuccessfulModelCount":          {goType: reflect.TypeOf(int(0)), dbName: "successful_model_count", gorm: "type:int;not null", json: "successful_model_count", notNull: true},
+			"DailyCallsCharged":             {goType: reflect.TypeOf(int(0)), dbName: "daily_calls_charged", gorm: "type:int;not null", json: "daily_calls_charged", notNull: true},
+			"TotalTokens":                   {goType: reflect.TypeOf(int64(0)), dbName: "total_tokens", gorm: "type:bigint;not null", json: "total_tokens", notNull: true},
+			"CommittedAt":                   {goType: reflect.TypeOf(int64(0)), dbName: "committed_at", gorm: "type:bigint;not null", json: "committed_at", notNull: true},
 		}},
 		{PlatformChatGenerationResult{}, map[string]expectedField{
 			"ID":                 {goType: reflect.TypeOf(int64(0)), dbName: "id", gorm: "primaryKey;type:bigint", json: "-"},
@@ -250,7 +251,7 @@ func TestPlatformGenerationPersistenceModelsMatchExactContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, forbidden := range []string{"\"id\"", "user_id", "conversation_id", "user_message_id", "receipt_id", "assistant_message_id"} {
+	for _, forbidden := range []string{"\"id\"", "user_id", "conversation_id", "user_message_id", "receipt_id", "assistant_message_id", "requested_existing_conversation"} {
 		if strings.Contains(string(encoded), forbidden) {
 			t.Fatalf("internal persistence ID leaked through JSON: %s", encoded)
 		}

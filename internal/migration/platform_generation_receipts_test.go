@@ -215,6 +215,10 @@ func TestVerifyPlatformGenerationReceiptSchemaRejectsEveryMetadataDrift(t *testi
 			"ALTER TABLE platform_chat_generation_receipts ADD CONSTRAINT fk_platform_chat_generation_receipts_user_message FOREIGN KEY (user_message_id) REFERENCES conversations(id) ON DELETE RESTRICT ON UPDATE RESTRICT",
 		}},
 		{name: "missing_check", ddl: []string{"ALTER TABLE platform_chat_generation_results DROP CHECK chk_platform_chat_generation_results_tokens"}},
+		{name: "requested_conversation_check", ddl: []string{
+			"ALTER TABLE platform_chat_generation_receipts DROP CHECK chk_platform_chat_generation_receipts_requested_conversation",
+			"ALTER TABLE platform_chat_generation_receipts ADD CONSTRAINT chk_platform_chat_generation_receipts_requested_conversation CHECK (requested_existing_conversation = 0)",
+		}},
 		{name: "renamed_check", ddl: []string{
 			"ALTER TABLE platform_chat_generation_results DROP CHECK chk_platform_chat_generation_results_tokens",
 			"ALTER TABLE platform_chat_generation_results ADD CONSTRAINT chk_platform_chat_generation_results_tokens_drifted CHECK (tokens >= 0)",
@@ -341,8 +345,8 @@ func seedPlatformGenerationReceiptFixture(t *testing.T, db *gorm.DB) platformGen
 		t.Fatal(err)
 	}
 	if err := db.Exec(`INSERT INTO platform_chat_generation_receipts
-      (guid,user_id,generation_id,mode,conversation_id,user_message_id,successful_model_count,daily_calls_charged,total_tokens,committed_at,created_at,updated_at,is_deleted)
-      VALUES (?,?,'21111111-1111-4111-8111-111111111111',1,?,?,1,1,17,?,?,?,0)`,
+		(guid,user_id,generation_id,mode,requested_existing_conversation,conversation_id,user_message_id,successful_model_count,daily_calls_charged,total_tokens,committed_at,created_at,updated_at,is_deleted)
+		VALUES (?,?,'21111111-1111-4111-8111-111111111111',1,1,?,?,1,1,17,?,?,?,0)`,
 		9_112_000_000_000_005, fixture.userID, fixture.conversationID, fixture.userMessageID, now, now, now).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -375,8 +379,8 @@ func TestPlatformGenerationReceiptUserMessageConstraints(t *testing.T) {
 	const now = int64(1_900_000_000_000)
 	insertReceipt := func(guid int64, generationID string, conversationID, userMessageID int64) error {
 		return db.Exec(`INSERT INTO platform_chat_generation_receipts
-        (guid,user_id,generation_id,mode,conversation_id,user_message_id,successful_model_count,daily_calls_charged,total_tokens,committed_at,created_at,updated_at,is_deleted)
-		VALUES (?,?,?,1,?,?,1,1,0,?,?,?,0)`, guid, fixture.userID, generationID, conversationID, userMessageID, now, now, now).Error
+		(guid,user_id,generation_id,mode,requested_existing_conversation,conversation_id,user_message_id,successful_model_count,daily_calls_charged,total_tokens,committed_at,created_at,updated_at,is_deleted)
+		VALUES (?,?,?,1,1,?,?,1,1,0,?,?,?,0)`, guid, fixture.userID, generationID, conversationID, userMessageID, now, now, now).Error
 	}
 	if err := insertReceipt(9_112_000_000_000_007, "31111111-1111-4111-8111-111111111111", fixture.secondConversationID, fixture.userMessageID); err == nil {
 		t.Fatal("global duplicate user_message_id in a different conversation was accepted")
@@ -399,8 +403,8 @@ func TestPlatformGenerationReceiptInvalidRowsAreRejected(t *testing.T) {
 		fixture := seedPlatformGenerationReceiptFixture(t, db)
 		const now = int64(1_900_000_000_000)
 		err := db.Exec(`INSERT INTO platform_chat_generation_receipts
-        (guid,user_id,generation_id,mode,conversation_id,user_message_id,successful_model_count,daily_calls_charged,total_tokens,committed_at,created_at,updated_at,is_deleted)
-		VALUES (?,?,?,1,?,?,0,0,0,?,?,?,0)`, 9_112_000_000_000_010, fixture.userID, "51111111-1111-4111-8111-111111111111", fixture.secondConversationID, fixture.secondUserMessageID, now, now, now).Error
+		(guid,user_id,generation_id,mode,requested_existing_conversation,conversation_id,user_message_id,successful_model_count,daily_calls_charged,total_tokens,committed_at,created_at,updated_at,is_deleted)
+		VALUES (?,?,?,1,1,?,?,0,0,0,?,?,?,0)`, 9_112_000_000_000_010, fixture.userID, "51111111-1111-4111-8111-111111111111", fixture.secondConversationID, fixture.secondUserMessageID, now, now, now).Error
 		if err == nil {
 			t.Fatal("receipt with successful_model_count=0 was accepted")
 		}
@@ -632,6 +636,7 @@ func assertPlatformGenerationReceiptMigrationContract(t *testing.T) {
 		"user_id bigint not null",
 		"generation_id char(36) character set ascii collate ascii_bin not null",
 		"mode int not null",
+		"requested_existing_conversation tinyint not null",
 		"conversation_id bigint not null",
 		"user_message_id bigint not null",
 		"successful_model_count int not null",
@@ -652,6 +657,7 @@ func assertPlatformGenerationReceiptMigrationContract(t *testing.T) {
 		"constraint fk_platform_chat_generation_receipts_conversation foreign key (conversation_id) references conversations(id) on delete restrict on update restrict",
 		"constraint fk_platform_chat_generation_receipts_user_message foreign key (user_message_id) references messages(id) on delete restrict on update restrict",
 		"constraint chk_platform_chat_generation_receipts_mode check (mode in (1, 2))",
+		"constraint chk_platform_chat_generation_receipts_requested_conversation check (requested_existing_conversation in (0, 1))",
 		"constraint chk_platform_chat_generation_receipts_counts check (successful_model_count >= 1 and daily_calls_charged = successful_model_count and total_tokens >= 0)",
 		"constraint chk_platform_chat_generation_receipts_time check (committed_at > 0 and updated_at = created_at)",
 		"constraint chk_platform_chat_generation_receipts_deleted check (is_deleted in (0, 1))",
@@ -746,8 +752,8 @@ func TestPlatformGenerationReceiptMigrationPreservesCaseDistinctModelsOnIsolated
 		t.Fatal(err)
 	}
 	if err := gdb.Exec(`INSERT INTO platform_chat_generation_receipts
-      (guid, user_id, generation_id, mode, conversation_id, user_message_id, successful_model_count, daily_calls_charged, total_tokens, committed_at, created_at, updated_at, is_deleted)
-      VALUES (?, ?, '11111111-1111-4111-8111-111111111111', 2, ?, ?, 1, 1, 0, ?, ?, ?, 0)`,
+		(guid, user_id, generation_id, mode, requested_existing_conversation, conversation_id, user_message_id, successful_model_count, daily_calls_charged, total_tokens, committed_at, created_at, updated_at, is_deleted)
+		VALUES (?, ?, '11111111-1111-4111-8111-111111111111', 2, 1, ?, ?, 1, 1, 0, ?, ?, ?, 0)`,
 		9_111_000_000_000_004, userID, conversationID, userMessageID, now, now, now).Error; err != nil {
 		t.Fatal(err)
 	}

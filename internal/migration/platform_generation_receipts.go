@@ -34,6 +34,7 @@ func platformGenerationReceiptTableContracts() []platformGenerationReceiptTableC
 					{name: "user_id", columnType: "bigint", nullable: "NO"},
 					{name: "generation_id", columnType: "char(36)", nullable: "NO", characterSet: "ascii", collation: "ascii_bin"},
 					{name: "mode", columnType: "int", nullable: "NO"},
+					{name: "requested_existing_conversation", columnType: "tinyint", nullable: "NO"},
 					{name: "conversation_id", columnType: "bigint", nullable: "NO"},
 					{name: "user_message_id", columnType: "bigint", nullable: "NO"},
 					{name: "successful_model_count", columnType: "int", nullable: "NO"},
@@ -56,6 +57,7 @@ func platformGenerationReceiptTableContracts() []platformGenerationReceiptTableC
 				},
 				checks: []businessGroupCheckContract{
 					{name: "chk_platform_chat_generation_receipts_mode", clause: "mode IN (1, 2)", enforced: "YES"},
+					{name: "chk_platform_chat_generation_receipts_requested_conversation", clause: "requested_existing_conversation IN (0, 1)", enforced: "YES"},
 					{name: "chk_platform_chat_generation_receipts_counts", clause: "successful_model_count >= 1 AND daily_calls_charged = successful_model_count AND total_tokens >= 0", enforced: "YES"},
 					{name: "chk_platform_chat_generation_receipts_time", clause: "committed_at > 0 AND updated_at = created_at", enforced: "YES"},
 					{name: "chk_platform_chat_generation_receipts_deleted", clause: "is_deleted IN (0, 1)", enforced: "YES"},

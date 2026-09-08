@@ -64,16 +64,17 @@ type PlatformGenerationCommittedResult struct {
 }
 
 type PlatformGenerationReceiptSnapshot struct {
-	UserID               int64
-	GenerationID         string
-	Mode                 PlatformGenerationMode
-	ConversationGUID     int64
-	UserMessage          string `json:"-"`
-	SuccessfulModelCount int
-	DailyCallsCharged    int
-	TotalTokens          int64
-	CommittedAtMillis    int64
-	Results              []PlatformGenerationCommittedResult
+	UserID                        int64
+	GenerationID                  string
+	Mode                          PlatformGenerationMode
+	ConversationGUID              int64
+	RequestedExistingConversation bool   `json:"-"`
+	UserMessage                   string `json:"-"`
+	SuccessfulModelCount          int
+	DailyCallsCharged             int
+	TotalTokens                   int64
+	CommittedAtMillis             int64
+	Results                       []PlatformGenerationCommittedResult
 }
 
 type platformGenerationLockRunner func(context.Context, *gorm.DB, string, func(*gorm.DB) error) error
@@ -268,6 +269,7 @@ func platformPersistenceMatchesRedis(input PlatformGenerationPersistenceInput, s
 
 func platformReceiptMatchesInput(receipt PlatformGenerationReceiptSnapshot, input PlatformGenerationPersistenceInput) bool {
 	if receipt.UserID != input.UserID || receipt.GenerationID != input.GenerationID || receipt.Mode != input.Mode ||
+		receipt.RequestedExistingConversation != (input.ConversationGUID != nil) ||
 		receipt.UserMessage != input.UserMessage || len(receipt.Results) != len(input.Results) {
 		return false
 	}
@@ -444,16 +446,17 @@ func persistPlatformGeneration(tx *gorm.DB, input PlatformGenerationPersistenceI
 	}
 
 	receipt := models.PlatformChatGenerationReceipt{
-		AuditFields:          platformPersistenceAudit(input.UserID, input.NowMillis),
-		UserID:               input.UserID,
-		GenerationID:         input.GenerationID,
-		Mode:                 models.PlatformGenerationReceiptMode(input.Mode),
-		ConversationID:       conversation.ID,
-		UserMessageID:        userMessage.ID,
-		SuccessfulModelCount: successes,
-		DailyCallsCharged:    successes,
-		TotalTokens:          totalTokens,
-		CommittedAt:          input.NowMillis,
+		AuditFields:                   platformPersistenceAudit(input.UserID, input.NowMillis),
+		UserID:                        input.UserID,
+		GenerationID:                  input.GenerationID,
+		Mode:                          models.PlatformGenerationReceiptMode(input.Mode),
+		RequestedExistingConversation: boolToPlatformGenerationInt(input.ConversationGUID != nil),
+		ConversationID:                conversation.ID,
+		UserMessageID:                 userMessage.ID,
+		SuccessfulModelCount:          successes,
+		DailyCallsCharged:             successes,
+		TotalTokens:                   totalTokens,
+		CommittedAt:                   input.NowMillis,
 	}
 	if err := tx.Create(&receipt).Error; err != nil {
 		return err
@@ -481,6 +484,13 @@ func persistPlatformGeneration(tx *gorm.DB, input PlatformGenerationPersistenceI
 		}
 	}
 	return nil
+}
+
+func boolToPlatformGenerationInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
 }
 
 func platformPersistenceAudit(userID, nowMillis int64) models.AuditFields {
