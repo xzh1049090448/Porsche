@@ -18,7 +18,11 @@ import (
 )
 
 func RegisterPlatform(r *gin.Engine, state *app.State) {
-	g := r.Group("/api/v1/platform", gatewayRequestID(), platformDiagnostics(), middleware.RequireUser(state), platformDiagnosticAuthenticated())
+	registerPlatformWithAuthentication(r, state, middleware.RequireUser(state))
+}
+
+func registerPlatformWithAuthentication(r *gin.Engine, state *app.State, authenticate gin.HandlerFunc) {
+	g := r.Group("/api/v1/platform", gatewayRequestID(), platformDiagnostics(), authenticate, platformDiagnosticAuthenticated())
 
 	g.GET("/models", func(c *gin.Context) {
 		if state.WhiteLabel == nil {
