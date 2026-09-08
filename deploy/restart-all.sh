@@ -34,6 +34,13 @@ for command_name in git docker npm rsync nginx systemctl flock cp chmod mv rm st
     }
 done
 
+stat_style=bsd
+stat_version="$(stat --version 2>/dev/null || true)"
+[[ "$stat_version" != *'GNU coreutils'* ]] || stat_style=gnu
+stat_device() {
+    if [[ "$stat_style" == gnu ]]; then stat -c '%d' "$1"; else stat -f '%d' "$1"; fi
+}
+
 for repository in "$BACKEND_DIR" "$FRONTEND_DIR"; do
     git -C "$repository" rev-parse --is-inside-work-tree >/dev/null 2>&1 || {
         echo "not a git work tree: $repository" >&2
@@ -132,7 +139,7 @@ rsync --archive --delete --delay-updates "$FRONTEND_DIR/dist/" "$stage_dir/"
 # Do not publish caller/build-tool umask into the Nginx document root.
 find "$stage_dir" -type d -exec chmod 0755 {} +
 find "$stage_dir" -type f -exec chmod 0644 {} +
-[[ "$(stat -f '%d' "$stage_dir" 2>/dev/null || stat -c '%d' "$stage_dir")" == "$(stat -f '%d' "$FRONTEND_ROOT" 2>/dev/null || stat -c '%d' "$FRONTEND_ROOT")" ]] || { echo 'frontend staging and live root must share a filesystem' >&2; exit 1; }
+[[ "$(stat_device "$stage_dir")" == "$(stat_device "$FRONTEND_ROOT")" ]] || { echo 'frontend staging and live root must share a filesystem' >&2; exit 1; }
 rm -rf -- "$backup_dir"
 mv -- "$FRONTEND_ROOT" "$backup_dir"
 live_backed_up=true

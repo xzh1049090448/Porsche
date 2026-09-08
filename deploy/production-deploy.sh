@@ -19,10 +19,19 @@ release_lock_default=/var/lock/porsche-full-stack.deploy.lock
 release_lock_fixture="$repo_root/.deploy-locks/porsche-full-stack.deploy.lock"
 LOCK_FILE="${LOCK_FILE:-$release_lock_default}"
 [[ "$LOCK_FILE" == "$release_lock_default" || "$LOCK_FILE" == "$release_lock_fixture" ]] || { echo 'LOCK_FILE must be the shared production release lock' >&2; exit 1; }
+stat_style=bsd
+stat_version="$(stat --version 2>/dev/null || true)"
+[[ "$stat_version" != *'GNU coreutils'* ]] || stat_style=gnu
+stat_inode() {
+    if [[ "$stat_style" == gnu ]]; then stat -L -c '%i' "$1"; else stat -L -f '%i' "$1"; fi
+}
+stat_mode() {
+    if [[ "$stat_style" == gnu ]]; then stat -c '%a' "$1"; else stat -f '%Lp' "$1"; fi
+}
 if [[ -n "${RELEASE_LOCK_FD:-}" ]]; then
     [[ "$RELEASE_LOCK_FD" =~ ^[0-9]+$ && -e "/dev/fd/$RELEASE_LOCK_FD" ]] || { echo 'invalid inherited release lock descriptor' >&2; exit 1; }
-    lock_identity="$(stat -L -f '%i' "$LOCK_FILE" 2>/dev/null || stat -L -c '%i' "$LOCK_FILE")"
-    fd_identity="$(stat -L -f '%i' "/dev/fd/$RELEASE_LOCK_FD" 2>/dev/null || stat -L -c '%i' "/dev/fd/$RELEASE_LOCK_FD")"
+    lock_identity="$(stat_inode "$LOCK_FILE")"
+    fd_identity="$(stat_inode "/dev/fd/$RELEASE_LOCK_FD")"
     [[ "$lock_identity" == "$fd_identity" ]] || { echo 'inherited release lock descriptor does not match lock file' >&2; exit 1; }
     flock -E 75 -n "$RELEASE_LOCK_FD" || { echo 'another production release is already running' >&2; exit 75; }
 else
@@ -37,7 +46,7 @@ if [[ "$prebuilt_was_set" == true ]]; then
     [[ "$PREBUILT_SOURCE_REVISION" =~ ^[0-9a-f]{40}$ ]] || { echo 'PREBUILT_SOURCE_REVISION must be a full Git commit' >&2; exit 1; }
     [[ "$(git rev-parse HEAD)" == "$PREBUILT_SOURCE_REVISION" ]] || { echo 'current checkout does not match PREBUILT_SOURCE_REVISION' >&2; exit 1; }
     [[ "$ENV_SNAPSHOT" == /* && -f "$ENV_SNAPSHOT" && ! -L "$ENV_SNAPSHOT" ]] || { echo 'prebuilt deployment requires an absolute regular ENV_SNAPSHOT' >&2; exit 1; }
-    snapshot_mode="$(stat -f '%Lp' "$ENV_SNAPSHOT" 2>/dev/null || stat -c '%a' "$ENV_SNAPSHOT")"
+    snapshot_mode="$(stat_mode "$ENV_SNAPSHOT")"
     [[ "$snapshot_mode" == 600 ]] || { echo 'ENV_SNAPSHOT must have mode 0600' >&2; exit 1; }
     snapshot_path="$ENV_SNAPSHOT"
 else

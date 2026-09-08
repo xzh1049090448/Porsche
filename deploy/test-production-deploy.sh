@@ -56,6 +56,29 @@ printf 'flock %s\n' "$*" >>"$COMMAND_LOG"
 [[ "${USE_REAL_FLOCK:-0}" != 1 ]] || exec "$REAL_FLOCK" "$@"
 [[ "${MOCK_FLOCK_RESULT:-success}" == success ]]
 EOF_M
+cat >"$bin/stat" <<'EOF_M'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+if [[ "${1:-}" == --version ]]; then printf 'stat (GNU coreutils) test compatibility wrapper\n'; exit 0; fi
+if [[ "${1:-}" == -L && "${2:-}" == -f ]]; then
+    printf 'File: %s\n' "${4:-missing}"
+    exit 1
+fi
+if [[ "${1:-}" == -L && "${2:-}" == -c ]]; then
+    case "${3:-}" in
+        '%i') exec /usr/bin/stat -f '%i' "${4}" ;;
+        '%a') exec /usr/bin/stat -f '%Lp' "${4}" ;;
+    esac
+fi
+if [[ "${1:-}" == -f ]]; then
+    printf 'File: %s\n' "${3:-missing}"
+    exit 1
+fi
+if [[ "${1:-}" == -c && "${2:-}" == '%a' ]]; then
+    exec /usr/bin/stat -f '%Lp' "${3}"
+fi
+exit 64
+EOF_M
 cat >"$bin/kernel-flock" <<'EOF_M'
 #!/usr/bin/env python3
 import fcntl, os, sys
