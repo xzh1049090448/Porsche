@@ -64,7 +64,7 @@ func assertPlatformGenerationReceiptMigrationContract(t *testing.T) {
 		"create table platform_chat_generation_results",
 		"receipt_id bigint not null",
 		"model_index int not null",
-		"model varchar(128) not null",
+		"model varchar(128) character set utf8mb4 collate utf8mb4_bin not null",
 		"status int not null",
 		"assistant_message_id bigint null",
 		"tokens bigint not null default 0",
@@ -118,5 +118,58 @@ func assertPlatformGenerationReceiptMigrationContract(t *testing.T) {
 	}
 	if child > parent {
 		t.Fatal("0011 down must drop results before receipts")
+	}
+}
+
+func TestPlatformGenerationReceiptMigrationPreservesCaseDistinctModelsOnIsolatedMySQL(t *testing.T) {
+	gdb := permissionSchemaDB(t)
+	permissionUp(t, gdb)
+
+	const now = int64(1_900_000_000_000)
+	if err := gdb.Exec(`INSERT INTO users (guid, allowed_models, created_at, updated_at, is_deleted) VALUES (?, '[]', ?, ?, 0)`, 9_111_000_000_000_001, now, now).Error; err != nil {
+		t.Fatal(err)
+	}
+	var userID int64
+	if err := gdb.Raw("SELECT id FROM users WHERE guid = ?", 9_111_000_000_000_001).Row().Scan(&userID); err != nil {
+		t.Fatal(err)
+	}
+	if err := gdb.Exec(`INSERT INTO conversations (guid, user_id, created_at, updated_at, is_deleted) VALUES (?, ?, ?, ?, 0)`, 9_111_000_000_000_002, userID, now, now).Error; err != nil {
+		t.Fatal(err)
+	}
+	var conversationID int64
+	if err := gdb.Raw("SELECT id FROM conversations WHERE guid = ?", 9_111_000_000_000_002).Row().Scan(&conversationID); err != nil {
+		t.Fatal(err)
+	}
+	if err := gdb.Exec(`INSERT INTO messages (guid, conversation_id, role, content, created_at, updated_at, is_deleted) VALUES (?, ?, 1, 'case-sensitive model fixture', ?, ?, 0)`, 9_111_000_000_000_003, conversationID, now, now).Error; err != nil {
+		t.Fatal(err)
+	}
+	var userMessageID int64
+	if err := gdb.Raw("SELECT id FROM messages WHERE guid = ?", 9_111_000_000_000_003).Row().Scan(&userMessageID); err != nil {
+		t.Fatal(err)
+	}
+	if err := gdb.Exec(`INSERT INTO platform_chat_generation_receipts
+      (guid, user_id, generation_id, mode, conversation_id, user_message_id, successful_model_count, daily_calls_charged, total_tokens, committed_at, created_at, updated_at, is_deleted)
+      VALUES (?, ?, '11111111-1111-4111-8111-111111111111', 2, ?, ?, 1, 1, 0, ?, ?, ?, 0)`,
+		9_111_000_000_000_004, userID, conversationID, userMessageID, now, now, now).Error; err != nil {
+		t.Fatal(err)
+	}
+	var receiptID int64
+	if err := gdb.Raw("SELECT id FROM platform_chat_generation_receipts WHERE guid = ?", 9_111_000_000_000_004).Row().Scan(&receiptID); err != nil {
+		t.Fatal(err)
+	}
+	for index, model := range []string{"model-a", "MODEL-A"} {
+		if err := gdb.Exec(`INSERT INTO platform_chat_generation_results
+          (guid, receipt_id, model_index, model, status, tokens, error_code, created_at, updated_at, is_deleted)
+          VALUES (?, ?, ?, ?, 2, 0, 'upstream_failed', ?, ?, 0)`,
+			9_111_000_000_000_005+int64(index), receiptID, index, model, now, now).Error; err != nil {
+			t.Fatalf("insert case-distinct model %q: %v", model, err)
+		}
+	}
+	var count int64
+	if err := gdb.Raw("SELECT COUNT(*) FROM platform_chat_generation_results WHERE receipt_id = ?", receiptID).Row().Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 2 {
+		t.Fatalf("case-distinct model result count = %d, want 2", count)
 	}
 }

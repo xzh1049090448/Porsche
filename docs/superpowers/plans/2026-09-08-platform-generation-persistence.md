@@ -96,7 +96,7 @@ func TestPlatformGenerationReceiptMigrationContract(t *testing.T) {
 		"unique key uk_platform_chat_generation_receipts_user_message (user_message_id)",
 		"foreign key (user_message_id) references messages(id) on delete restrict on update restrict",
 		"create table platform_chat_generation_results",
-		"model varchar(128) not null",
+		"model varchar(128) character set utf8mb4 collate utf8mb4_bin not null",
 		"unique key uk_platform_chat_generation_results_model (receipt_id, model)",
 		"unique key uk_platform_chat_generation_results_position (receipt_id, model_index)",
 		"foreign key (assistant_message_id) references messages(id)",
@@ -118,6 +118,8 @@ func TestPlatformGenerationReceiptMigrationContract(t *testing.T) {
 	}
 }
 ```
+
+Also add `TestPlatformGenerationReceiptMigrationPreservesCaseDistinctModelsOnIsolatedMySQL` in the same test file. It must use `permissionSchemaDB`, which reads only an explicit dedicated `TEST_DATABASE_URL` ending in `_test` and otherwise reports `SKIP`. Apply all migrations in the test-owned child database, insert one receipt, then prove its unique `(receipt_id, model)` index accepts two result rows whose opaque model IDs are `model-a` and `MODEL-A`.
 
 Update every exact migration-count assertion found by the listed `rg` command to expect eleven migrations ending at `0011`; retain all prior positional checks for `0001`-`0010`.
 
@@ -172,7 +174,7 @@ CREATE TABLE platform_chat_generation_results (
   guid BIGINT NOT NULL,
   receipt_id BIGINT NOT NULL,
   model_index INT NOT NULL,
-  model VARCHAR(128) NOT NULL,
+  model VARCHAR(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
   status INT NOT NULL,
   assistant_message_id BIGINT NULL,
   tokens BIGINT NOT NULL DEFAULT 0,
@@ -233,9 +235,10 @@ Run:
 
 ```bash
 GOCACHE=/private/tmp/porsche-chat-streaming-go-cache go test ./internal/migration -run 'TestPlatformGenerationReceiptMigrationContract|TestEmbeddedMigrations|Test.*MigrationContract' -count=1
+GOCACHE=/private/tmp/porsche-chat-streaming-go-cache go test ./internal/migration -run TestPlatformGenerationReceiptMigrationPreservesCaseDistinctModelsOnIsolatedMySQL -count=1 -v
 ```
 
-Expected: PASS with no changed checksum expectation for `0001`-`0010`.
+Expected: the static suite passes with no changed checksum expectation for `0001`-`0010`. The real MySQL constraint test passes when an explicit isolated fixture is available, or reports an explicit fixture `SKIP`; it must never fall back to production credentials.
 
 - [ ] **Step 6: Commit the migration contract**
 
@@ -364,7 +367,7 @@ func platformGenerationReceiptContracts() []platformGenerationTableContract {
 		requiredPlatformGenerationColumn("is_deleted", "int"),
 	}
 	resultColumns[0].extra = "auto_increment"
-	resultColumns[4].characterSet, resultColumns[4].collation = "utf8mb4", "utf8mb4_unicode_ci"
+	resultColumns[4].characterSet, resultColumns[4].collation = "utf8mb4", "utf8mb4_bin"
 	resultColumns[7].defaultVal = sql.NullString{String: "0", Valid: true}
 	resultColumns[8].characterSet, resultColumns[8].collation = "utf8mb4", "utf8mb4_unicode_ci"
 	resultColumns[13].defaultVal = sql.NullString{String: "0", Valid: true}

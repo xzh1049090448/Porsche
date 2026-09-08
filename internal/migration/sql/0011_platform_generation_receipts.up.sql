@@ -34,7 +34,7 @@ CREATE TABLE platform_chat_generation_results (
   guid BIGINT NOT NULL,
   receipt_id BIGINT NOT NULL,
   model_index INT NOT NULL,
-  model VARCHAR(128) NOT NULL,
+  model VARCHAR(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
   status INT NOT NULL,
   assistant_message_id BIGINT NULL,
   tokens BIGINT NOT NULL DEFAULT 0,

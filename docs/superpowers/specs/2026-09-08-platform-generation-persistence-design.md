@@ -112,7 +112,7 @@ This child table records one row for every requested model in original request o
 | `guid` | `BIGINT NOT NULL` | Server-generated snowflake business identifier. |
 | `receipt_id` | `BIGINT NOT NULL` | Internal parent receipt reference. |
 | `model_index` | `INT NOT NULL` | Zero-based request order. |
-| `model` | `VARCHAR(128) NOT NULL` | Validated model identifier from the claimed Redis identity; v2 rejects values over 128 UTF-8 bytes before Redis or MySQL. |
+| `model` | `VARCHAR(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL` | Validated opaque, case-sensitive model identifier from the claimed Redis identity; v2 rejects values over 128 UTF-8 bytes before Redis or MySQL. |
 | `status` | `INT NOT NULL` | `1 = completed`, `2 = failed`; values are permanent. |
 | `assistant_message_id` | `BIGINT NULL` | Successful result's internal message reference. |
 | `tokens` | `BIGINT NOT NULL DEFAULT 0` | Successful result token count; zero for failed results. |
@@ -127,7 +127,7 @@ Required indexes and constraints:
 
 - unique `guid`;
 - unique `(receipt_id, model_index)`;
-- unique `(receipt_id, model)`;
+- unique `(receipt_id, model)` under binary `utf8mb4_bin` comparison so case-distinct opaque model IDs remain distinct;
 - unique nullable `assistant_message_id`, so one message cannot prove two results;
 - index `(receipt_id, is_deleted)`;
 - foreign keys from `receipt_id` to the parent receipt and `assistant_message_id` to `messages.id`, both `ON DELETE RESTRICT`;
@@ -139,7 +139,7 @@ For single mode there is exactly one result at index zero and it must be complet
 
 ### 5.3 Migration behavior
 
-`0011` is additive and forward-only. Its up migration creates the parent before the child. It uses explicit table and constraint names, `utf8mb4` for normal text, ASCII binary comparison for canonical generation UUIDs, and the repository's existing InnoDB conventions.
+`0011` is additive and forward-only. Its up migration creates the parent before the child. It uses explicit table and constraint names, `utf8mb4` for normal text, binary `utf8mb4_bin` comparison for opaque case-sensitive model IDs, ASCII binary comparison for canonical generation UUIDs, and the repository's existing InnoDB conventions. The result table itself retains the repository default `utf8mb4_unicode_ci` collation; only its `model` column overrides that default.
 
 The down migration exists only for disposable test rollback and drops the child before the parent. Production recovery remains a separately approved forward migration; BE03 does not authorize destructive production rollback.
 
