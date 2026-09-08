@@ -344,6 +344,26 @@ func TestBusinessGroupMarkerMustSplitExactlyOnce(t *testing.T) {
 	}
 }
 
+func newSequentialMigrationGUIDGenerator(start int64, calls *int) func() int64 {
+	return func() int64 {
+		(*calls)++
+		return start + int64(*calls)
+	}
+}
+
+func TestSequentialMigrationGUIDGeneratorContinuesPastCurrentTail(t *testing.T) {
+	calls := 0
+	nextGUID := newSequentialMigrationGUIDGenerator(7200, &calls)
+	for want := int64(7201); want <= 7207; want++ {
+		if got := nextGUID(); got != want {
+			t.Fatalf("next GUID = %d, want %d", got, want)
+		}
+	}
+	if calls != 7 {
+		t.Fatalf("GUID calls = %d, want 7", calls)
+	}
+}
+
 func TestBusinessGroupMigrationOnIsolatedMySQL(t *testing.T) {
 	if strings.TrimSpace(os.Getenv("TEST_DATABASE_URL")) == "" {
 		t.Skip("TEST_DATABASE_URL is not set; isolated MySQL business group migration test skipped")
@@ -378,15 +398,10 @@ func TestBusinessGroupMigrationOnIsolatedMySQL(t *testing.T) {
 		insertMigrationUser(t, gdb, 7101, "biz-group-active", 0)
 		insertMigrationUser(t, gdb, 7102, "biz-group-tombstone", 1)
 
-		allocated := []int64{7201, 7202, 7203, 7204, 7205, 7206}
 		calls := 0
-		nextGUID := func() int64 {
-			value := allocated[calls]
-			calls++
-			return value
-		}
+		nextGUID := newSequentialMigrationGUIDGenerator(7200, &calls)
 		if err := Up(context.Background(), gdb, nextGUID, func() int64 { return 1_700_000_000_007 }); err != nil {
-			t.Fatalf("apply 0007: %v", err)
+			t.Fatalf("apply 0007-0011: %v", err)
 		}
 		if calls != 6 {
 			t.Fatalf("GUID calls = %d, want default group plus 0007, 0008, 0009, 0010, and 0011 ledgers", calls)
