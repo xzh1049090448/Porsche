@@ -1,9 +1,14 @@
 package service
 
 import (
+	"context"
+	"fmt"
 	"testing"
+	"time"
 
+	"github.com/porsche/ai-gateway-go/internal/config"
 	"github.com/porsche/ai-gateway-go/internal/models"
+	"github.com/porsche/ai-gateway-go/internal/security"
 	"gorm.io/gorm"
 )
 
@@ -110,6 +115,126 @@ func TestAdminUserEntitlementRejectsConflictsWithoutRevocation(t *testing.T) {
 			}
 			if revoked, checkErr := redisStore.IsSessionRevoked(ctx, issued.Session.SID); checkErr != nil || revoked {
 				t.Fatalf("conflict revoked session=%t err=%v", revoked, checkErr)
+			}
+		})
+	}
+}
+
+func TestAdminUserPlanChangeControlsBearerAccessRuntimeQuota(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		beforePlan models.PlanType
+		plan       models.PlanType
+		used       int
+		calls      int
+		wantStatus int
+	}{
+		{name: "free_enforces_100", beforePlan: models.PlanProfessional, plan: models.PlanFree, used: 99, calls: 2, wantStatus: 429},
+		{name: "professional_is_unlimited", beforePlan: models.PlanFree, plan: models.PlanProfessional, used: 100, calls: 2},
+		{name: "enterprise_is_unlimited", beforePlan: models.PlanFree, plan: models.PlanEnterprise, used: 100, calls: 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, edit, redisStore, actorUser, target, actor := adminUserNicknameEditFixture(t, models.UserRoleAdmin, models.UserRoleUser)
+			grantAdminUserEntitlementCapabilities(t, edit.db, *actorUser)
+			now := time.Now().UTC().UnixMilli()
+			if err := edit.db.Model(target).Updates(map[string]any{"plan_type": tc.beforePlan, "daily_calls_used": tc.used, "daily_calls_reset_at": now}).Error; err != nil {
+				t.Fatal(err)
+			}
+			result, err := NewAdminUserEntitlementService(edit.db, redisStore).ChangePlan(ctx, actor, target.Guid, AdminUserPlanChangeInput{PlanType: tc.plan, Reason: "runtime quota", ExpectedAuthVersion: target.AuthVersion, RequestID: "a07-runtime-" + tc.name})
+			if err != nil || result == nil || result.PlanType != tc.plan.String() {
+				t.Fatalf("ChangePlan result=%#v err=%v", result, err)
+			}
+			var runtimeUser models.User
+			if err := edit.db.First(&runtimeUser, target.ID).Error; err != nil {
+				t.Fatal(err)
+			}
+			sessions := NewSessionService(edit.db, redisStore, testSessionSettings())
+			issued, err := sessions.Create(ctx, &runtimeUser, SessionCreateInput{LoginMethod: models.LoginMethodPassword, IP: "198.51.100.81"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			access, err := security.CreateAccessToken(fmt.Sprint(runtimeUser.Guid), "a07-runtime-jwt", 5, map[string]interface{}{"sid": issued.Session.SID, "sv": issued.Session.SessionVersion, "av": runtimeUser.AuthVersion, "role": int(runtimeUser.Role)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			claims, err := security.DecodeAccessToken(access, "a07-runtime-jwt")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := sessions.Validate(ctx, claims["sid"].(string), runtimeUser.ID, int(claims["sv"].(float64)), int(claims["av"].(float64))); err != nil {
+				t.Fatalf("Bearer Access validation: %v", err)
+			}
+			billing := NewBillingService(&config.Settings{})
+			var consumeErr error
+			for range tc.calls {
+				consumeErr = billing.CheckAndConsumeCall(edit.db, &runtimeUser, 1)
+				if consumeErr != nil {
+					break
+				}
+			}
+			gotStatus := 0
+			if consumeErr != nil {
+				gotStatus, _ = StatusFromError(consumeErr)
+			}
+			if gotStatus != tc.wantStatus {
+				t.Fatalf("runtime quota status=%d err=%v want=%d", gotStatus, consumeErr, tc.wantStatus)
+			}
+		})
+	}
+}
+
+func TestAdminUserEntitlementConcurrentStaleVersionCommitsOneMutation(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		run  func(*AdminUserEntitlementService, AdminPermissionReadActor, *models.User, models.BusinessGroup, string) (*UserReadDTO, error)
+	}{
+		{name: "plan", run: func(service *AdminUserEntitlementService, actor AdminPermissionReadActor, target *models.User, _ models.BusinessGroup, requestID string) (*UserReadDTO, error) {
+			return service.ChangePlan(context.Background(), actor, target.Guid, AdminUserPlanChangeInput{PlanType: models.PlanProfessional, Reason: "concurrent plan", ExpectedAuthVersion: target.AuthVersion, RequestID: requestID})
+		}},
+		{name: "group", run: func(service *AdminUserEntitlementService, actor AdminPermissionReadActor, target *models.User, group models.BusinessGroup, requestID string) (*UserReadDTO, error) {
+			return service.ChangeGroup(context.Background(), actor, target.Guid, AdminUserGroupChangeInput{GroupGUID: group.Guid, Reason: "concurrent group", ExpectedAuthVersion: target.AuthVersion, RequestID: requestID})
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, edit, redisStore, actorUser, target, actor := adminUserNicknameEditFixture(t, models.UserRoleAdmin, models.UserRoleUser)
+			grantAdminUserEntitlementCapabilities(t, edit.db, *actorUser)
+			group := models.BusinessGroup{AuditFields: testAuditFields(), Key: "concurrent-" + tc.name, DisplayName: "Concurrent " + tc.name, Status: models.BusinessGroupStatusActive}
+			if err := edit.db.Create(&group).Error; err != nil {
+				t.Fatal(err)
+			}
+			service := NewAdminUserEntitlementService(edit.db, redisStore)
+			start := make(chan struct{})
+			results := make(chan error, 2)
+			requestIDs := [2]string{newRealIdempotencyKey(t), newRealIdempotencyKey(t)}
+			for index := range 2 {
+				go func(requestID string) {
+					<-start
+					result, err := tc.run(service, actor, target, group, requestID)
+					if err == nil && result == nil {
+						err = fmt.Errorf("nil successful entitlement result")
+					}
+					results <- err
+				}(requestIDs[index])
+			}
+			close(start)
+			successes, conflicts := 0, 0
+			for range 2 {
+				err := <-results
+				switch {
+				case err == nil:
+					successes++
+				case AdminUserEntitlementConflictCode(err) == "auth_version_conflict":
+					conflicts++
+				default:
+					t.Fatalf("concurrent result err=%v", err)
+				}
+			}
+			if successes != 1 || conflicts != 1 {
+				t.Fatalf("success/conflict=%d/%d want=1/1", successes, conflicts)
+			}
+			var stored models.User
+			if err := edit.db.First(&stored, target.ID).Error; err != nil || stored.AuthVersion != target.AuthVersion+1 {
+				t.Fatalf("stored=%#v err=%v", stored, err)
 			}
 		})
 	}
