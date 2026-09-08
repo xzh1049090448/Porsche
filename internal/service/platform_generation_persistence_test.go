@@ -15,6 +15,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1216,7 +1217,7 @@ func TestPlatformGenerationPersistenceRejectsEmptyUserMessageBeforeDependencies(
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	p := &PlatformGenerationPersistence{generations: store, loadReceipt: LoadPlatformGenerationReceipt, runTx: func(context.Context, *gorm.DB, string, func(*gorm.DB) error) error {
+	p := &PlatformGenerationPersistence{generations: store, loadReceipt: LoadPlatformGenerationReceipt, runLocked: func(context.Context, *gorm.DB, string, func(*gorm.DB) error) error {
 		panic("transaction dependency touched")
 	}}
 	t.Run("empty user message", func(t *testing.T) {
@@ -1226,6 +1227,96 @@ func TestPlatformGenerationPersistenceRejectsEmptyUserMessageBeforeDependencies(
 			t.Fatalf("Finalize() error=%v, want invalid", err)
 		}
 	})
+}
+
+type platformGenerationBeginObserver struct {
+	gorm.ConnPool
+	beginner gorm.TxBeginner
+	began    *atomic.Bool
+}
+
+func (o *platformGenerationBeginObserver) BeginTx(ctx context.Context, options *sql.TxOptions) (*sql.Tx, error) {
+	o.began.Store(true)
+	return o.beginner.BeginTx(ctx, options)
+}
+
+type platformGenerationRedisOrderHook struct {
+	gets                atomic.Int32
+	transactionBegan    *atomic.Bool
+	recheckAfterBeginTx atomic.Bool
+}
+
+func (h *platformGenerationRedisOrderHook) DialHook(next redis.DialHook) redis.DialHook {
+	return next
+}
+
+func (h *platformGenerationRedisOrderHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
+	return func(ctx context.Context, command redis.Cmder) error {
+		if command.Name() == "get" && h.gets.Add(1) == 2 && h.transactionBegan.Load() {
+			h.recheckAfterBeginTx.Store(true)
+		}
+		return next(ctx, command)
+	}
+}
+
+func (h *platformGenerationRedisOrderHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+	return next
+}
+
+func TestPlatformGenerationPersistenceRechecksRedisBeforeBeginningTransaction(t *testing.T) {
+	f := openPlatformGenerationFinalizationFixture(t)
+	input := f.committingSingle(t)
+	p, err := NewPlatformGenerationPersistence(f.store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, ok := f.store.client.(*redis.Client)
+	if !ok {
+		t.Fatalf("fixture Redis client type=%T", f.store.client)
+	}
+	var began atomic.Bool
+	var persistenceQueryObserved atomic.Bool
+	var persistenceQueryInsideTx atomic.Bool
+	callbackName := fmt.Sprintf("platform_generation_tx_order_%d", testSnowflake.Next())
+	if err := f.db.Callback().Query().Before("gorm:query").Register(callbackName, func(tx *gorm.DB) {
+		if tx.Statement.Table == "users" {
+			persistenceQueryObserved.Store(true)
+			_, inside := tx.Statement.ConnPool.(gorm.TxCommitter)
+			persistenceQueryInsideTx.Store(inside)
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = f.db.Callback().Query().Remove(callbackName) })
+	hook := &platformGenerationRedisOrderHook{transactionBegan: &began}
+	client.AddHook(hook)
+	p.runLocked = func(ctx context.Context, db *gorm.DB, lockName string, fn func(*gorm.DB) error) error {
+		return withPlatformGenerationAdvisoryLock(ctx, db, lockName, func(conn *gorm.DB) error {
+			beginner, ok := conn.Statement.ConnPool.(gorm.TxBeginner)
+			if !ok {
+				return errors.New("pinned connection cannot begin transaction")
+			}
+			observed := platformGenerationPinnedSession(conn, ctx)
+			observed.Statement.ConnPool = &platformGenerationBeginObserver{ConnPool: conn.Statement.ConnPool, beginner: beginner, began: &began}
+			return fn(observed)
+		})
+	}
+
+	if _, err := p.Finalize(context.Background(), f.db, input); err != nil {
+		t.Fatal(err)
+	}
+	if hook.gets.Load() != 2 {
+		t.Fatalf("Redis GET count=%d, want initial read plus locked recheck", hook.gets.Load())
+	}
+	if hook.recheckAfterBeginTx.Load() {
+		t.Fatal("locked Redis recheck ran after BeginTx")
+	}
+	if !began.Load() {
+		t.Fatal("Finalize did not begin its SQL transaction after the Redis recheck")
+	}
+	if !persistenceQueryObserved.Load() || !persistenceQueryInsideTx.Load() {
+		t.Fatalf("persistence query observed/inside transaction=%v/%v, want true/true", persistenceQueryObserved.Load(), persistenceQueryInsideTx.Load())
+	}
 }
 
 func TestPlatformGenerationPersistenceSingleWriteFailuresRollbackEveryEffect(t *testing.T) {
@@ -1774,7 +1865,7 @@ func TestPlatformGenerationPersistenceAllModelFailureWritesNothing(t *testing.T)
 		loadReceipt: func(context.Context, *gorm.DB, int64, string) (PlatformGenerationReceiptSnapshot, error) {
 			panic("receipt dependency touched")
 		},
-		runTx: func(context.Context, *gorm.DB, string, func(*gorm.DB) error) error {
+		runLocked: func(context.Context, *gorm.DB, string, func(*gorm.DB) error) error {
 			panic("transaction dependency touched")
 		},
 	}
@@ -2001,10 +2092,10 @@ func TestPlatformGenerationPersistenceCommitUnknownResolvesFromReceipt(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	originalRunTx := p.runTx
+	originalRunLocked := p.runLocked
 	sentinel := errors.New("commit acknowledgement lost")
-	p.runTx = func(ctx context.Context, db *gorm.DB, lockName string, fn func(*gorm.DB) error) error {
-		if err := originalRunTx(ctx, db, lockName, fn); err != nil {
+	p.runLocked = func(ctx context.Context, db *gorm.DB, lockName string, fn func(*gorm.DB) error) error {
+		if err := originalRunLocked(ctx, db, lockName, fn); err != nil {
 			return err
 		}
 		return sentinel

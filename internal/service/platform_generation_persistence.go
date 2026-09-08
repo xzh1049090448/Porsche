@@ -76,12 +76,12 @@ type PlatformGenerationReceiptSnapshot struct {
 	Results              []PlatformGenerationCommittedResult
 }
 
-type platformGenerationTxRunner func(context.Context, *gorm.DB, string, func(*gorm.DB) error) error
+type platformGenerationLockRunner func(context.Context, *gorm.DB, string, func(*gorm.DB) error) error
 type platformGenerationReceiptReader func(context.Context, *gorm.DB, int64, string) (PlatformGenerationReceiptSnapshot, error)
 
 type PlatformGenerationPersistence struct {
 	generations *PlatformGenerationStore
-	runTx       platformGenerationTxRunner
+	runLocked   platformGenerationLockRunner
 	loadReceipt platformGenerationReceiptReader
 }
 
@@ -92,11 +92,7 @@ func NewPlatformGenerationPersistence(generations *PlatformGenerationStore) (*Pl
 	return &PlatformGenerationPersistence{
 		generations: generations,
 		loadReceipt: LoadPlatformGenerationReceipt,
-		runTx: func(ctx context.Context, db *gorm.DB, lockName string, fn func(*gorm.DB) error) error {
-			return withPlatformGenerationAdvisoryLock(ctx, db, lockName, func(conn *gorm.DB) error {
-				return conn.Transaction(fn)
-			})
-		},
+		runLocked:   withPlatformGenerationAdvisoryLock,
 	}, nil
 }
 
@@ -187,7 +183,7 @@ func validatePlatformGenerationPersistenceInput(input PlatformGenerationPersiste
 }
 
 func (p *PlatformGenerationPersistence) Finalize(ctx context.Context, db *gorm.DB, input PlatformGenerationPersistenceInput) (PlatformGenerationReceiptSnapshot, error) {
-	if p == nil || p.generations == nil || p.runTx == nil || p.loadReceipt == nil || ctx == nil || db == nil ||
+	if p == nil || p.generations == nil || p.runLocked == nil || p.loadReceipt == nil || ctx == nil || db == nil ||
 		(input.Mode != PlatformGenerationModeSingle && input.Mode != PlatformGenerationModeCompare) ||
 		validatePlatformGenerationPersistenceInput(input) != nil {
 		return PlatformGenerationReceiptSnapshot{}, ErrPlatformGenerationPersistenceInvalid
@@ -209,7 +205,7 @@ func (p *PlatformGenerationPersistence) Finalize(ctx context.Context, db *gorm.D
 		return PlatformGenerationReceiptSnapshot{}, loadErr
 	}
 
-	err = p.runTx(ctx, db, platformGenerationAdvisoryLockName(input.UserID, input.GenerationID), func(tx *gorm.DB) error {
+	err = p.runLocked(ctx, db, platformGenerationAdvisoryLockName(input.UserID, input.GenerationID), func(conn *gorm.DB) error {
 		lockedSnapshot, getErr := p.generations.Get(ctx, input.UserID, input.GenerationID)
 		if getErr != nil {
 			return ErrPlatformGenerationPersistenceUnavailable
@@ -217,7 +213,9 @@ func (p *PlatformGenerationPersistence) Finalize(ctx context.Context, db *gorm.D
 		if !platformPersistenceMatchesRedis(input, lockedSnapshot) {
 			return ErrPlatformGenerationPersistenceConflict
 		}
-		return persistPlatformGeneration(tx.Session(&gorm.Session{Logger: logger.Discard}), input)
+		return conn.Transaction(func(tx *gorm.DB) error {
+			return persistPlatformGeneration(tx.Session(&gorm.Session{Logger: logger.Discard}), input)
+		})
 	})
 	if err == nil {
 		return p.loadReceipt(ctx, db, input.UserID, input.GenerationID)

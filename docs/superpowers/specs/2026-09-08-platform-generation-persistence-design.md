@@ -166,7 +166,7 @@ The client cannot supply conversation IDs, message IDs, receipt GUIDs, audit fie
 
 ## 7. Transaction boundary and lock order
 
-Finalization serializes one `user_id + generation_id` through a deterministic MySQL advisory lock. `GET_LOCK` and the transaction callback use one pinned GORM connection. Release is always attempted on that same connection using a short, bounded context derived from `context.Background()`, so caller cancellation cannot strand cleanup indefinitely. A callback error remains the primary result even if cleanup also fails; after a successful callback, a release error or a `0`/`NULL` release result fails closed as persistence unavailable.
+Finalization serializes one `user_id + generation_id` through a deterministic MySQL advisory lock. `GET_LOCK`, the locked Redis identity recheck, the SQL transaction, and `RELEASE_LOCK` use one pinned physical connection through independent clean GORM sessions. After acquiring the advisory lock and before beginning the SQL transaction, finalization re-reads Redis and requires the generation to remain the same matching `committing` snapshot. A reconciliation winner that already changed Redis to `failed` or `completed` therefore returns conflict without opening a SQL transaction. Only a successful locked recheck is allowed to call `db.Transaction`. Release is always attempted on that same connection using a short, bounded context derived from `context.Background()`, so caller cancellation cannot strand cleanup indefinitely. A callback error remains the primary result even if cleanup also fails; after a successful callback, a release error or a `0`/`NULL` release result fails closed as persistence unavailable.
 
 The complete SQL effect occurs in one `db.Transaction` callback. The fixed lock/write order is:
 
@@ -262,6 +262,8 @@ BE03 may extend the BE02 store with narrowly typed reconciliation transitions:
 - idempotent acceptance of an already identical `completed` snapshot.
 
 Those transitions retain BE02 ownership, CAS, TTL, identity, strict decoding, and sensitive-data exclusions. They do not scan or run automatically in BE03. Scheduling and HTTP exposure belong to BE04.
+
+When a reconciliation mutation loses a CAS race, the store returns the authoritative nonzero snapshot alongside the typed error. Reconciliation returns that resolved snapshot rather than the stale pre-lock read. Errors that occur before any mutation can resolve an authoritative snapshot, including receipt-reader, advisory-lock, and database failures, return the original pre-lock Redis snapshot alongside the error.
 
 ## 12. Failure and cancellation behavior
 

@@ -838,12 +838,12 @@ type PlatformGenerationReceiptSnapshot struct {
 	Results              []PlatformGenerationCommittedResult
 }
 
-type platformGenerationTxRunner func(context.Context, *gorm.DB, string, func(*gorm.DB) error) error
+type platformGenerationLockRunner func(context.Context, *gorm.DB, string, func(*gorm.DB) error) error
 type platformGenerationReceiptReader func(context.Context, *gorm.DB, int64, string) (PlatformGenerationReceiptSnapshot, error)
 
 type PlatformGenerationPersistence struct {
 	generations *PlatformGenerationStore
-	runTx       platformGenerationTxRunner
+	runLocked   platformGenerationLockRunner
 	loadReceipt platformGenerationReceiptReader
 }
 
@@ -854,11 +854,7 @@ func NewPlatformGenerationPersistence(generations *PlatformGenerationStore) (*Pl
 	return &PlatformGenerationPersistence{
 		generations: generations,
 		loadReceipt: LoadPlatformGenerationReceipt,
-		runTx: func(ctx context.Context, db *gorm.DB, lockName string, fn func(*gorm.DB) error) error {
-			return withPlatformGenerationAdvisoryLock(ctx, db, lockName, func(conn *gorm.DB) error {
-				return conn.Transaction(fn)
-			})
-		},
+		runLocked:   withPlatformGenerationAdvisoryLock,
 	}, nil
 }
 
@@ -1172,7 +1168,7 @@ Add the methods below to `platform_generation_persistence.go`. Keep all calls on
 
 ```go
 func (p *PlatformGenerationPersistence) Finalize(ctx context.Context, db *gorm.DB, input PlatformGenerationPersistenceInput) (PlatformGenerationReceiptSnapshot, error) {
-	if p == nil || p.generations == nil || p.runTx == nil || p.loadReceipt == nil || ctx == nil || db == nil || input.Mode != PlatformGenerationModeSingle || validatePlatformGenerationPersistenceInput(input) != nil {
+	if p == nil || p.generations == nil || p.runLocked == nil || p.loadReceipt == nil || ctx == nil || db == nil || input.Mode != PlatformGenerationModeSingle || validatePlatformGenerationPersistenceInput(input) != nil {
 		return PlatformGenerationReceiptSnapshot{}, ErrPlatformGenerationPersistenceInvalid
 	}
 	redisSnapshot, err := p.generations.Get(ctx, input.UserID, input.GenerationID)
@@ -1190,7 +1186,18 @@ func (p *PlatformGenerationPersistence) Finalize(ctx context.Context, db *gorm.D
 	} else if !errors.Is(err, ErrPlatformGenerationPersistenceNotFound) {
 		return PlatformGenerationReceiptSnapshot{}, err
 	}
-	err = p.runTx(ctx, db, platformGenerationAdvisoryLockName(input.UserID, input.GenerationID), func(tx *gorm.DB) error { return persistPlatformGeneration(tx.Session(&gorm.Session{Logger: logger.Discard}), input) })
+	err = p.runLocked(ctx, db, platformGenerationAdvisoryLockName(input.UserID, input.GenerationID), func(conn *gorm.DB) error {
+		lockedSnapshot, getErr := p.generations.Get(ctx, input.UserID, input.GenerationID)
+		if getErr != nil {
+			return ErrPlatformGenerationPersistenceUnavailable
+		}
+		if !platformPersistenceMatchesRedis(input, lockedSnapshot) {
+			return ErrPlatformGenerationPersistenceConflict
+		}
+		return conn.Transaction(func(tx *gorm.DB) error {
+			return persistPlatformGeneration(tx.Session(&gorm.Session{Logger: logger.Discard}), input)
+		})
+	})
 	if err == nil {
 		return p.loadReceipt(ctx, db, input.UserID, input.GenerationID)
 	}
@@ -1399,11 +1406,11 @@ func TestPlatformGenerationPersistenceCommitUnknownResolvesFromReceipt(t *testin
 
 The compare success assertions must prove two or three distinct assistant message GUIDs, no content prefixed by `__MULTI_MODEL__`, one user message, one usage row per success, original model order in the receipt, and exact aggregate counters. Partial compare must prove failed models have no message/usage/quota/tokens and retain only an allowlisted stable code.
 
-The duplicate test must launch eight finalizers for one owner/generation and assert one receipt, one globally referenced user message, one assistant message per successful model, one quota charge set, and eight equivalent returned snapshots. The different-user-message test reuses every field except `UserMessage` and must return `ErrPlatformGenerationPersistenceConflict` without writes. The retry-timestamp test changes only `NowMillis`; it must return the existing receipt because commit time is an outcome, not immutable request identity. The quota race must use distinct generation IDs for a free user with one remaining call and assert exactly one commit. The commit-unknown test replaces `runTx` with:
+The duplicate test must launch eight finalizers for one owner/generation and assert one receipt, one globally referenced user message, one assistant message per successful model, one quota charge set, and eight equivalent returned snapshots. The different-user-message test reuses every field except `UserMessage` and must return `ErrPlatformGenerationPersistenceConflict` without writes. The retry-timestamp test changes only `NowMillis`; it must return the existing receipt because commit time is an outcome, not immutable request identity. The quota race must use distinct generation IDs for a free user with one remaining call and assert exactly one commit. A deterministic transaction-order test must instrument `BeginTx` and the persistence query callback, proving that the locked Redis recheck completes before `BeginTx`, that persistence queries execute inside the transaction, and that both use the advisory lock's pinned physical connection. The commit-unknown test replaces `runLocked` with:
 
 ```go
-persistence.runTx = func(ctx context.Context, db *gorm.DB, lockName string, fn func(*gorm.DB) error) error {
-	if err := withPlatformGenerationAdvisoryLock(ctx, db, lockName, func(conn *gorm.DB) error { return conn.Transaction(fn) }); err != nil {
+persistence.runLocked = func(ctx context.Context, db *gorm.DB, lockName string, fn func(*gorm.DB) error) error {
+	if err := withPlatformGenerationAdvisoryLock(ctx, db, lockName, fn); err != nil {
 		return err
 	}
 	return errors.New("simulated lost commit acknowledgement")
@@ -1560,6 +1567,8 @@ func TestReconcilePlatformGenerationFailsReceiptlessStaleCommit(t *testing.T)
 func TestReconcilePlatformGenerationDoesNotFailFreshCommit(t *testing.T)
 func TestReconcilePlatformGenerationReceiptWinsCASRace(t *testing.T)
 func TestReconcilePlatformGenerationRedisUnavailableDoesNotReplayMySQL(t *testing.T)
+func TestReconcilePlatformGenerationReturnsCompletedAuthoritativeConflict(t *testing.T)
+func TestReconcilePlatformGenerationReturnsAuthoritativeStaleFailCASLoser(t *testing.T)
 ```
 
 The invalid-user-message test marks the receipt's referenced user message deleted after commit, calls reconciliation, expects `ErrPlatformGenerationPersistenceIntegrity`, and proves Redis remains `committing`. No reconciliation path may copy `receipt.UserMessage` into Redis; it may derive only the successful model-to-assistant-GUID map from the validated receipt.
@@ -1590,6 +1599,7 @@ func ReconcilePlatformGeneration(ctx context.Context, db *gorm.DB, store *Platfo
 		return current, nil
 	}
 	var resolved PlatformGenerationSnapshot
+	resolvedAuthoritativeOnError := false
 	err = withPlatformGenerationAdvisoryLock(ctx, db, platformGenerationAdvisoryLockName(userID, generationID), func(conn *gorm.DB) error {
 		receipt, receiptErr := LoadPlatformGenerationReceipt(ctx, conn, userID, generationID)
 		if receiptErr == nil {
@@ -1600,15 +1610,20 @@ func ReconcilePlatformGeneration(ctx context.Context, db *gorm.DB, store *Platfo
 				}
 			}
 			resolved, receiptErr = store.ReconcileComplete(ctx, userID, generationID, guids, nowMillis)
+			resolvedAuthoritativeOnError = receiptErr != nil && resolved.GenerationID != ""
 			return receiptErr
 		}
 		if !errors.Is(receiptErr, ErrPlatformGenerationPersistenceNotFound) {
 			return receiptErr
 		}
 		resolved, receiptErr = store.FailStaleCommit(ctx, userID, generationID, "internal_error", nowMillis)
+		resolvedAuthoritativeOnError = receiptErr != nil && resolved.GenerationID != ""
 		return receiptErr
 	})
 	if err != nil {
+		if resolvedAuthoritativeOnError {
+			return resolved, err
+		}
 		return current, err
 	}
 	return resolved, nil

@@ -102,6 +102,53 @@ func TestReconcilePlatformGenerationDoesNotFailFreshCommit(t *testing.T) {
 	}
 }
 
+func TestReconcilePlatformGenerationReturnsCompletedAuthoritativeConflict(t *testing.T) {
+	f := openPlatformGenerationFinalizationFixture(t)
+	input := f.committingSingle(t)
+	p, err := NewPlatformGenerationPersistence(f.store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := p.Finalize(context.Background(), f.db, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	competingGUID := stringInt64(testSnowflake.Next())
+	if competingGUID == receipt.Results[0].AssistantMessageGUID {
+		t.Fatal("fixture generated duplicate competing GUID")
+	}
+
+	snapshot, err := reconcilePlatformGeneration(context.Background(), f.db, f.store, input.UserID, input.GenerationID, input.NowMillis+1, func(_ context.Context, _ *gorm.DB, _ string, fn func(*gorm.DB) error) error {
+		if _, completeErr := f.store.Complete(context.Background(), input.UserID, input.GenerationID, map[string]string{"model-a": competingGUID}, input.NowMillis+1); completeErr != nil {
+			return completeErr
+		}
+		return fn(f.db)
+	})
+	if !errors.Is(err, ErrPlatformGenerationConflict) || snapshot.State != PlatformGenerationStateCompleted || snapshot.ModelStates["model-a"].AssistantMessageGUID != competingGUID {
+		t.Fatalf("authoritative completed conflict=%#v error=%v", snapshot, err)
+	}
+}
+
+func TestReconcilePlatformGenerationReturnsAuthoritativeStaleFailCASLoser(t *testing.T) {
+	f := openPlatformGenerationFinalizationFixture(t)
+	input := f.committingSingle(t)
+	competingGUID := stringInt64(testSnowflake.Next())
+	committing, err := f.store.Get(context.Background(), input.UserID, input.GenerationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	snapshot, err := reconcilePlatformGeneration(context.Background(), f.db, f.store, input.UserID, input.GenerationID, committing.UpdatedAtMillis+platformGenerationConvergenceWindow.Milliseconds(), func(_ context.Context, _ *gorm.DB, _ string, fn func(*gorm.DB) error) error {
+		if _, completeErr := f.store.Complete(context.Background(), input.UserID, input.GenerationID, map[string]string{"model-a": competingGUID}, committing.UpdatedAtMillis+1); completeErr != nil {
+			return completeErr
+		}
+		return fn(f.db)
+	})
+	if !errors.Is(err, ErrPlatformGenerationConflict) || snapshot.State != PlatformGenerationStateCompleted || snapshot.ModelStates["model-a"].AssistantMessageGUID != competingGUID {
+		t.Fatalf("authoritative stale-fail loser=%#v error=%v", snapshot, err)
+	}
+}
+
 func TestReconcilePlatformGenerationReceiptWinsCASRace(t *testing.T) {
 	t.Run("stale failure wins before SQL", func(t *testing.T) {
 		f := openPlatformGenerationFinalizationFixture(t)
@@ -112,10 +159,10 @@ func TestReconcilePlatformGenerationReceiptWinsCASRace(t *testing.T) {
 		}
 		prechecked := make(chan struct{})
 		allowLock := make(chan struct{})
-		p.runTx = func(ctx context.Context, db *gorm.DB, lockName string, fn func(*gorm.DB) error) error {
+		p.runLocked = func(ctx context.Context, db *gorm.DB, lockName string, fn func(*gorm.DB) error) error {
 			close(prechecked)
 			<-allowLock
-			return withPlatformGenerationAdvisoryLock(ctx, db, lockName, func(conn *gorm.DB) error { return conn.Transaction(fn) })
+			return withPlatformGenerationAdvisoryLock(ctx, db, lockName, fn)
 		}
 		finalizeErr := make(chan error, 1)
 		go func() {
@@ -147,11 +194,11 @@ func TestReconcilePlatformGenerationReceiptWinsCASRace(t *testing.T) {
 		}
 		lockHeld := make(chan struct{})
 		allowCommit := make(chan struct{})
-		p.runTx = func(ctx context.Context, db *gorm.DB, lockName string, fn func(*gorm.DB) error) error {
+		p.runLocked = func(ctx context.Context, db *gorm.DB, lockName string, fn func(*gorm.DB) error) error {
 			return withPlatformGenerationAdvisoryLock(ctx, db, lockName, func(conn *gorm.DB) error {
 				close(lockHeld)
 				<-allowCommit
-				return conn.Transaction(fn)
+				return fn(conn)
 			})
 		}
 		finalizeErr := make(chan error, 1)
