@@ -1,0 +1,5 @@
+mysql: [Warning] Using a password on the command line interface can be insecure.
+EXPLAIN
+-> Aggregate: count(0)  (cost=652 rows=1) (actual time=312..312 rows=1 loops=1)\n    -> Filter: ((users.guid <> -1) and (users.`role` in (1,10)) and (users.`status` in (1,2)))  (cost=602 rows=495) (actual time=0.519..307 rows=100000 loops=1)\n        -> Index lookup on users using idx_users_active_updated (is_deleted=0), with index condition: (users.id <> -1)  (cost=602 rows=49518) (actual time=0.515..290 rows=100001 loops=1)\n
+EXPLAIN
+-> Limit: 20 row(s)  (cost=602 rows=20) (actual time=0.0861..0.0898 rows=20 loops=1)\n    -> Filter: ((users.is_deleted = 0) and (users.`role` in (1,10)) and (users.`status` in (1,2)))  (cost=602 rows=495) (actual time=0.0857..0.0885 rows=20 loops=1)\n        -> Index range scan on users using uk_users_guid over (guid < -1) OR (-1 < guid) (reverse), with index condition: ((users.id <> -1) and (users.guid <> -1))  (cost=602 rows=49519) (actual time=0.0838..0.0862 rows=21 loops=1)\n

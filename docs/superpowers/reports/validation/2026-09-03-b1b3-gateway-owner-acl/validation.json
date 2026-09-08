@@ -1,0 +1,43 @@
+{
+  "feature": "go-014",
+  "status": "passing",
+  "scope": "local Gateway Key owner ACL constraint; no new schema/migration implementation; existing migrations applied only to the authorized disposable fixture; no production operation",
+  "tdd": {
+    "pure_behavior_red": "nil GatewayTokenService panicked before fail-closed handling",
+    "integration_behavior_red": "initial fixture had no users table before assertion; later explicit user migration authorization resolved this precondition"
+  },
+  "checks": {
+    "pure_service": "pass: nil service, raw ACL validation, zero principal and defensive copies",
+    "build": "pass with TEST_DATABASE_URL, TEST_REDIS_URL and RUN_START_COMMAND cleared",
+    "vet": "pass with TEST_DATABASE_URL, TEST_REDIS_URL and RUN_START_COMMAND cleared",
+    "diff_check": "pass"
+  },
+  "integration": {
+    "migration": "user explicitly authorized existing 0001-0003 only on disposable porsche_b1b3_17884390752a356ab0_test; completed successfully",
+    "writer_real_mysql": "owner freshness, raw token/owner ACL matrix, same-millisecond update, deleted owner, and service callback injections passed",
+    "injection_note": "callback failures are test-connection GORM injections, not real MySQL server-failure evidence",
+    "writer_full_early": {"test_pass": 531, "test_fail": 0, "test_skip": 0, "package_pass": 15, "package_no_test_files": 4},
+    "final_independent": {"test_pass": 544, "test_fail": 0, "test_skip": 0, "package_pass": 15, "package_no_test_files": 4, "race": "service 1.803s; handler 2.383s", "result": "VERDICT PASS; Critical/High/Medium/Low all zero", "raw_output": "final-full-test.jsonl", "report": "final-security-report.txt", "hashes": "final-sha256.txt"}
+  },
+  "fixture": "final review complete: exact task-owned disposable MySQL8/Redis7 AutoRemove/tmpfs/loopback containers were stopped by verified ID; task-label query is empty and private fixture env/meta/script were removed; no volumes or shared objects touched",
+  "historical_partial_review": {
+    "role": "permission_snapshot_verify",
+    "verdict": "PARTIAL",
+    "findings": "Critical/High/Medium/Low: none observed in bounded static and pure-test review",
+    "evidence": "2 pure service top-level tests with 9 parser subtests; 1 principal matrix with 8 subtests; 1 nil-service HTTP 503 probe; build/vet/diff pass",
+    "not_run": "historical pre-migration bounded review only",
+    "archive": ["independent-security-report.txt", "gateway_unavailable_probe_test.go.txt", "gateway_principal_matrix_probe_test.go.txt"]
+  },
+  "independent_review": {
+    "role": "permission_snapshot_verify",
+    "verdict": "PASS",
+    "findings": "Critical/High/Medium/Low: 0",
+    "test_pass": 544,
+    "test_fail": 0,
+    "test_skip": 0,
+    "package_pass": 15,
+    "package_no_test_files": 4,
+    "artifacts": ["final-full-test.jsonl", "final-security-report.txt", "final-sha256.txt"]
+  },
+  "production": "not authorized"
+}

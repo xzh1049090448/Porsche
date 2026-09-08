@@ -1,0 +1,100 @@
+# B1-C admin authorization read APIs: independent static/no-fixture verification
+
+Scope: frozen B1-C production paths only. This review did not modify the repository, create a fixture, run migrations, or access a database/Redis instance. Per the task boundary, all TEST_* and RUN_START_COMMAND variables were unset for executable checks. This is therefore a static/pure-test review, not a full integration acceptance.
+
+## SECURITY_REPORT
+
+- CRITICAL: 0
+- HIGH: 0
+- MEDIUM: 0
+- LOW: 0
+- Deferred environmental validation: real MySQL/Redis transaction, lock, freshness, policy-corruption, and actual authenticated HTTP tests are NOT_RUN because this task explicitly forbids fixture/database use.
+
+No actionable static security defect was found in the frozen hashes. In particular, the shared `readPermissionPolicyRows` still rejects orphan history, invalid/deleted heads, versions/catalog/count mismatches and invalid rows; disabled Admin detail is projected through `authz.ProjectAdminPolicy`, rather than an active authorization evaluator; the service starts an owned READ COMMITTED transaction and holds actor -> optional target -> session SHARE locks through the Redis revocation barrier and commit; and the route group applies request ID plus no-store before RequireUser. The PM's confirmed hidden-target ordering was used: hidden/missing/deleted/self/known Root-or-User target returns the uniform 404 before target corruption classification, and session/Redis checks precede role/target result return.
+
+### Check: frozen source identity, formatting, and diff whitespace
+
+Command run:
+  git diff --check
+  gofmt -d internal/service/admin_permission_read.go internal/service/permission_snapshot.go internal/authz/evaluator.go internal/authz/admin_display.go internal/middleware/middleware.go internal/dto/admin_permissions.go internal/handler/admin_authz.go internal/router/router.go
+  shasum -a 256 internal/service/admin_permission_read.go internal/service/permission_snapshot.go internal/authz/evaluator.go internal/authz/admin_display.go internal/middleware/middleware.go internal/dto/admin_permissions.go internal/handler/admin_authz.go internal/router/router.go
+
+Output observed:
+  git diff --check: no output, exit 0
+  gofmt diff: 0 bytes, exit 0
+  1ddb8282b7b537299d7c77cc5789dffd029e84c77bd372f897111c74c19e2225  internal/service/admin_permission_read.go
+  76572a3c7d5c99c530afe0998b149adcc7cdb7205f4d6b5598b5ec19a0c2b014  internal/service/permission_snapshot.go
+  f87b9d7d733e35d17e717b5e37a845d5f91a1afb522ea916bb0e3ad4363ca21f  internal/authz/evaluator.go
+  91e4cdfed1318f2a5f3d2984f18048703434062259217e26e32066e9593af3e5  internal/authz/admin_display.go
+  619a25a4a3f03962783ff660591a45e0405e848d7c061b79fb73fc40063d55a1  internal/middleware/middleware.go
+  98b9bef5980752b88d7ed36ae59d0cdfa1d92efb7848a27c62a3e542a5ee34ac  internal/dto/admin_permissions.go
+  4cba7ccdc02e2d8d3e0e004bafb35114000150d6110401a7f1a1cb2e79501b62  internal/handler/admin_authz.go
+  13aaedd626eb1125d1f36e2ab6027cb1ff080c901dad666c8c56f788ae80d468  internal/router/router.go
+
+Result: PASS
+
+### Check: pure service and handler contract tests with DB fixture disabled
+
+Command run:
+  env -u TEST_DATABASE_URL -u TEST_REDIS_URL -u RUN_START_COMMAND GOCACHE=/private/tmp/porsche-go-build-cache go test -json -p 1 ./internal/service ./internal/handler -run '^(TestAdminPermission.*|TestAdminAuthzHTTPAuthenticationEnvelopeWithoutFixture)$' -count=1
+
+Output observed:
+  ok  github.com/porsche/ai-gateway-go/internal/service  0.395s
+  ok  github.com/porsche/ai-gateway-go/internal/handler  0.847s
+  JSON leaf tests: 18 PASS, 34 SKIP, 0 FAIL.
+  Service: 17 PASS / 34 SKIP; handler: 1 PASS / 0 SKIP.
+  All 34 skips are the DB-specific `adminReadFixture` leaves, each requiring explicitly supplied TEST_DATABASE_URL and TEST_REDIS_URL. They were not counted as passed.
+
+The executed pure coverage includes 24-entry catalog shape, positive canonical GUID parsing and boundaries, active/disabled display projection, corrupt override rejection, unavailable root input rejection, actor/session stale/disabled/deleted/foreign/unknown-version classification, and request-ID/no-store/minimal 401 envelope on both routes.
+
+Result: PASS for the executable pure subset; DB coverage deliberately NOT_RUN.
+
+### Check: focused race detector with DB fixture disabled
+
+Command run:
+  env -u TEST_DATABASE_URL -u TEST_REDIS_URL -u RUN_START_COMMAND GOCACHE=/private/tmp/porsche-go-build-cache go test -race -p 1 ./internal/service ./internal/handler -run '^(TestAdminPermission.*|TestAdminAuthzHTTPAuthenticationEnvelopeWithoutFixture)$' -count=1
+
+Output observed:
+  ok  github.com/porsche/ai-gateway-go/internal/service  1.528s
+  ok  github.com/porsche/ai-gateway-go/internal/handler  1.564s
+
+Result: PASS. No race reported in the pure executable subset; fixture leaves remain skipped by design.
+
+### Check: independent adversarial HTTP overlay probe
+
+Command run:
+  env -u TEST_DATABASE_URL -u TEST_REDIS_URL -u RUN_START_COMMAND GOCACHE=/private/tmp/porsche-go-build-cache go test -overlay=/private/tmp/porsche-b1c-static-verification/independent-probe/overlay.json -json -p 1 ./internal/handler -run '^TestIndependentAdminAuthzNoFixtureProbe$' -count=1
+
+Output observed:
+  --- PASS: TestIndependentAdminAuthzNoFixtureProbe (0.00s)
+  ok  github.com/porsche/ai-gateway-go/internal/handler  0.936s
+
+The temporary overlay test sends unauthenticated requests to the actual registered catalog route and an adversarial noncanonical detail path (`/admin/v2/users/01/permissions`). It verifies authentication remains first (401), the group already emitted `Cache-Control: no-store` and preserves a caller-supplied valid X-Request-ID, and the error JSON contains only a nonempty `detail` field. The overlay replaces a test source only in the compiler; the project tree was not written.
+
+Result: PASS
+
+### Check: build and vet
+
+Command run:
+  env -u TEST_DATABASE_URL -u TEST_REDIS_URL -u RUN_START_COMMAND GOCACHE=/private/tmp/porsche-go-build-cache go build ./...
+  env -u TEST_DATABASE_URL -u TEST_REDIS_URL -u RUN_START_COMMAND GOCACHE=/private/tmp/porsche-go-build-cache go vet ./...
+
+Output observed:
+  go build: no output, exit 0
+  go vet: no output, exit 0
+
+Result: PASS
+
+## Required follow-up for final acceptance
+
+Run the existing real-fixture B1-C tests on an explicitly authorized disposable MySQL/Redis target. This review did not execute the 34 skipped leaves that exercise SQL SHARE-lock ordering, transaction commit/error handling, Redis barrier/failure, persisted policy corruption/history, live actor/target/session matrices, or authenticated HTTP route/DTO behavior. Until that occurs, these results must not be interpreted as a full B1-C integration pass.
+
+Artifacts (no credentials):
+- /private/tmp/porsche-b1c-static-verification/focused-pure.json
+- /private/tmp/porsche-b1c-static-verification/focused-pure-race.txt
+- /private/tmp/porsche-b1c-static-verification/independent-probe/overlay.json
+- /private/tmp/porsche-b1c-static-verification/independent-probe/admin_authz_overlay_test.go
+- /private/tmp/porsche-b1c-static-verification/independent-probe.json
+- /private/tmp/porsche-b1c-static-verification/final-shasum.txt
+
+VERDICT: PARTIAL

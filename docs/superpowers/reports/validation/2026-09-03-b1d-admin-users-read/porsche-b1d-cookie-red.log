@@ -1,0 +1,4 @@
+# github.com/porsche/ai-gateway-go/internal/handler [github.com/porsche/ai-gateway-go/internal/handler.test]
+internal/handler/admin_users_read_test.go:31:3: undefined: respondIssuedAuth
+FAIL	github.com/porsche/ai-gateway-go/internal/handler [build failed]
+FAIL

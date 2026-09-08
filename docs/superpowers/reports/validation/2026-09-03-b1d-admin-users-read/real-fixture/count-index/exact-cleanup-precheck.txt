@@ -1,0 +1,3 @@
+mysql identity: exact match; AutoRemove=true; tmpfs=/tmp,/var/lib/mysql; mounts=one read-only task-private bind; named volumes=none
+redis identity: exact match; AutoRemove=true; tmpfs=/data; mounts=one read-only task-private bind; named volumes=none
+label inventory: exactly two expected IDs

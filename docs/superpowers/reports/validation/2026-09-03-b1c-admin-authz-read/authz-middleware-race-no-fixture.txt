@@ -1,0 +1,2 @@
+ok  	github.com/porsche/ai-gateway-go/internal/authz	1.518s
+ok  	github.com/porsche/ai-gateway-go/internal/middleware	1.502s

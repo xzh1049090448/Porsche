@@ -1,0 +1,36 @@
+{
+  "utc": "2026-09-03T07:48:51.086974+00:00",
+  "containers": [
+    {
+      "id": "1665e1118c949441909d8478bd1a88a7b058d5c02d8465701ee586d463ce9ef6",
+      "name": "/ai-gateway-go",
+      "image": "sha256:2bc6b866911f439545bd3128bf8af24e640b3922706c024651d3a7d2d15096d0",
+      "running": true
+    },
+    {
+      "id": "13ada4aa4f1e4460265d778f3447957ea854b234b542e509ffcf6668ef7b3031",
+      "name": "/ai-gateway-go-acceptance-rollback-1788421597814285207",
+      "image": "sha256:cb42daed3581c51a5e6f5ac5a237bec4b4e0c3540afb61d36acb27592dc2947f",
+      "running": false
+    },
+    {
+      "id": "9425ea244ad71944ef78474cc405208fbbbe7eb22fdffd2b81e269d328d85b0c",
+      "name": "/ai-gateway-go-acceptance-rollback-1788416221798672629",
+      "image": "sha256:a69cfdab1cc8e18056286ae3991669d37515994041664b3fed5b6290ac602316",
+      "running": false
+    },
+    {
+      "id": "d2de587030c3055d4c4e913c3d0a1052297294810e6a4047b81b710edfe0b56b",
+      "name": "/ai-gateway-go-acceptance-rollback-1788414605780771454",
+      "image": "sha256:31abaeb16799f1bfad6501cf7d765ea443d5682561bbeed3f74255c8d8733b9a",
+      "running": false
+    }
+  ],
+  "rootRuntimeKeyAbsent": true,
+  "runtimePrivateSnapshotAbsent": true,
+  "sourceHealth": 200,
+  "publicHealth": 200,
+  "frontendUnchanged": true,
+  "frontendAsset": "/assets/index-i7ZWPv9J.js",
+  "frontendAssetSHA256": "7c133cb1197c701cc6288d2718384c92f8b4b24a15fd13d821f3930d8bf09033"
+}

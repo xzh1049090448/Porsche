@@ -1,0 +1,25 @@
+{
+  "sourceRevision": "ad3f5b4416854353ebb2b3647ae4b2a809b4a05c",
+  "requestIdSHA256": "b9477e5517ce1f52f9a503eb9a50e592320ac0e48a187d10bdc4ee51e6b2fba6",
+  "backendProjectManager": {
+    "role": "backend_m3_alignment",
+    "release": "PASS",
+    "normalSSETermination": "PASS limited to attempt4",
+    "overallM3": "PARTIAL",
+    "method": "Read-only evidence review; no independent live execution"
+  },
+  "independentQuality": {
+    "role": "p0_quality_review",
+    "normalSSETermination": "PASS limited to attempt4",
+    "overallM3": "PARTIAL",
+    "method": "Read-only evidence and harness review; no live requests or credential access"
+  },
+  "frontendCoordinator": "Accepts the same scoped evidence; does not sign overall M3",
+  "limitations": [
+    "Previous object rejection not reproduced or root-caused",
+    "Streaming error, cancellation and EOF cases not covered",
+    "4 of 4 generation requests consumed; no extra call authorized",
+    "Extractor unknown/unknown on success is a missing-field default, not a rejection",
+    "Prior 98 local DB/Redis fixture skips remain skips"
+  ]
+}

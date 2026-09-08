@@ -1,0 +1,2 @@
+zsh: no matches found: http://127.0.0.1:15173/admin/v2/users?page_size=20
+request_not_sent=yes

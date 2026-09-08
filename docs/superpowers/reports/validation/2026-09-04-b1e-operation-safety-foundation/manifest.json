@@ -1,0 +1,217 @@
+{
+  "schema_version": 1,
+  "scope": "public validation evidence files only; manifest self-excluded",
+  "baseline_head": "e41e39decea2afb87b036baf165f24d400ca7aa6",
+  "b1e_status": "limited_subscope",
+  "a14_status": "BLOCKED_NOT_IMPLEMENTED",
+  "active_production_consumers": 0,
+  "joint_acceptance_blockers": 18,
+  "review_verdict": "B1E_LIMITED_SUBSCOPE_PASS",
+  "evidence": [
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-04-b1e-operation-safety-foundation/baseline.md",
+      "sha256": "3582ae3ed4daf4c6d662b52c0292593ad907a418da7c6b6deaeac26d236ff727",
+      "producing_commit": "c4b04063fd4ac6acb5eb281953becba57faec87e",
+      "redaction_status": "public_redacted",
+      "reviewer_verdict": "NOT_APPLICABLE_BASELINE"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-04-b1e-operation-safety-foundation/fixture-plan.md",
+      "sha256": "463aa47deaaf82cdb2343a20f98a4c737f30df7377670fe5637ad1e8cdc11173",
+      "producing_commit": "e41e39decea2afb87b036baf165f24d400ca7aa6",
+      "redaction_status": "public_redacted",
+      "reviewer_verdict": "QA_PASS"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-04-b1e-operation-safety-foundation/fixture-identity.json",
+      "sha256": "4a523f44c4def15b64415954ad7cc011c8f99b9fb96b70279b3f838769d122ec",
+      "producing_commit": "e41e39decea2afb87b036baf165f24d400ca7aa6",
+      "redaction_status": "public_redacted",
+      "reviewer_verdict": "QA_PASS"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-04-b1e-operation-safety-foundation/migration-ledger.txt",
+      "sha256": "4ed648e90e5b58c1c77701682be9e97a24ec316dce095dedc4afcdbda7b80857",
+      "producing_commit": "e41e39decea2afb87b036baf165f24d400ca7aa6",
+      "redaction_status": "public_redacted",
+      "reviewer_verdict": "QA_PASS"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-04-b1e-operation-safety-foundation/fixture-results.json",
+      "sha256": "1a80757fee89e2c629c8628e4933c6e479b48a437fa6864c3659e800e66bcbf0",
+      "producing_commit": "e41e39decea2afb87b036baf165f24d400ca7aa6",
+      "redaction_status": "public_redacted_aggregate_counts_and_hashes_only",
+      "reviewer_verdict": "QA_PASS"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-04-b1e-operation-safety-foundation/secret-scan.txt",
+      "sha256": "719335779d3aca54de0f7dce06e380c5f4637d312f27ef61db1a46603f7dda92",
+      "producing_commit": "e41e39decea2afb87b036baf165f24d400ca7aa6",
+      "redaction_status": "public_redacted_counts_only",
+      "reviewer_verdict": "QA_PASS"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-04-b1e-operation-safety-foundation/pm-spec-review.md",
+      "sha256": "524ce180c7de60692abf12324f21084db86d9b3685c082b70103c5f759ddb470",
+      "producing_commit": "SELF_COMMIT",
+      "producing_commit_subject": "docs: refresh B1-E final reviews after status correction",
+      "reviewed_head": "440d6b54aa3179c920d333c86b477c41c61c253b",
+      "redaction_status": "public_redacted",
+      "review_type": "pm_spec",
+      "reviewer_verdict": "SPEC_PASS"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-04-b1e-operation-safety-foundation/implementation-review.md",
+      "sha256": "8a7d63be71a7f716930a26c16d550866653b64a5a72669f8b9e14b739f9d610a",
+      "producing_commit": "SELF_COMMIT",
+      "producing_commit_subject": "docs: refresh B1-E final reviews after status correction",
+      "reviewed_head": "440d6b54aa3179c920d333c86b477c41c61c253b",
+      "redaction_status": "public_redacted",
+      "review_type": "implementation",
+      "reviewer_verdict": "IMPLEMENTATION_PASS"
+    },
+    {
+      "path": "docs/superpowers/reports/validation/2026-09-04-b1e-operation-safety-foundation/security-review.md",
+      "sha256": "272d99da1cbeda5ab8a561e145f349491511f5e905ea8e4edcb827fdae84cd36",
+      "producing_commit": "SELF_COMMIT",
+      "producing_commit_subject": "docs: refresh B1-E final reviews after status correction",
+      "reviewed_head": "440d6b54aa3179c920d333c86b477c41c61c253b",
+      "redaction_status": "public_redacted",
+      "review_type": "security",
+      "reviewer_verdict": "SECURITY_PASS"
+    }
+  ],
+  "manifest_self_excluded": true,
+  "private_artifacts_listed_or_hashed": false,
+  "exclusions": [
+    "private secret files",
+    "private raw test logs",
+    "private independent-review signature files"
+  ],
+  "production_claims": false,
+  "frontend_claims": false,
+  "deployment_claims": false,
+  "cleanup": {
+    "status": "CLEANUP_PASS",
+    "public_evidence_path": "docs/superpowers/reports/validation/2026-09-04-b1e-operation-safety-foundation/cleanup.json",
+    "artifact_sha256": "eab9d747025635cc45e24e96732eef2b26f8acf22e7bbeb5a42ad9e8310a2a3e",
+    "producing_commit": "SELF_COMMIT",
+    "producing_commit_subject": "test: record B1-E exact fixture cleanup",
+    "redaction_status": "public_redacted_hashes_and_counts_only",
+    "reviewer_verdict": "CLEANUP_PASS",
+    "review_artifact_file_sha256": "60e60d0e267ca3e52b6f52d76abf100570530efb7e2ced70996bff6f4f12822e",
+    "review_artifact_canonical_self_sha256": "57b01488d7b860adfed99947322ed0724f04eacb74914249cfd7f51ca85d30a4",
+    "transcript_sha256": "2f27f0ef7dabd3f87e3e67f02ace5108ee1aba17cda7bd07699a8dbfa08b03cd",
+    "zero_residual": true,
+    "unrelated_resources_unchanged": true,
+    "initial_aggregate_retry_then_bounded_read_only_pass": true,
+    "resource_mutations_after_retry": 0
+  },
+  "fixture_retained_alive": false,
+  "task15_started": true,
+  "final_reviewed_head": "440d6b54aa3179c920d333c86b477c41c61c253b",
+  "review_verdicts": {
+    "pm_spec": "SPEC_PASS",
+    "implementation": "IMPLEMENTATION_PASS",
+    "security": "SECURITY_PASS",
+    "cleanup": "CLEANUP_PASS",
+    "task12_fixture_qa": "QA_PASS"
+  },
+  "task15_final_gates": {
+    "environment": {
+      "TEST_DATABASE_URL": "UNSET",
+      "TEST_REDIS_URL": "UNSET",
+      "fixture_recreated": false
+    },
+    "serial_full": {
+      "command": "env -u TEST_DATABASE_URL -u TEST_REDIS_URL go test -p 1 ./... -count=1",
+      "exit_code": 0,
+      "pass_events": 780,
+      "leaf_pass": 695,
+      "skip_events": 285,
+      "leaf_skip": 283,
+      "fixture_skip_events": 284,
+      "fixture_leaf_skip": 282,
+      "fixture_skip_breakdown": {
+        "mysql_and_redis_leaf": 69,
+        "mysql_leaf": 167,
+        "redis_leaf": 46
+      },
+      "explicit_performance_skip_events": 1,
+      "fail_events": 0,
+      "package_pass": 16,
+      "package_skip": 4,
+      "package_fail": 0
+    },
+    "serial_full_environment_history": [
+      {
+        "classification": "SANDBOX_LOOPBACK_BIND_DENIED",
+        "result": "FAIL_ENVIRONMENT",
+        "product_failure": false,
+        "followup": "same command with authorized loopback access",
+        "followup_result": "PASS"
+      }
+    ],
+    "action_race": {
+      "command": "env -u TEST_DATABASE_URL -u TEST_REDIS_URL go test -race ./internal/actionsecurity ./internal/service -run Action -count=1",
+      "exit_code": 0,
+      "pass_events": 232,
+      "leaf_pass": 204,
+      "skip_events": 26,
+      "leaf_skip": 26,
+      "fixture_skip_breakdown": {
+        "mysql": 24,
+        "redis": 2
+      },
+      "fail_events": 0,
+      "package_pass": 2,
+      "package_skip": 0,
+      "package_fail": 0
+    },
+    "build": {
+      "command": "go build ./...",
+      "exit_code": 0,
+      "verdict": "PASS"
+    },
+    "vet": {
+      "command": "go vet ./...",
+      "exit_code": 0,
+      "verdict": "PASS"
+    },
+    "diff_check": {
+      "command": "git diff --check",
+      "exit_code": 0,
+      "verdict": "PASS"
+    },
+    "status": {
+      "command": "git status --short",
+      "exit_code": 0,
+      "lines": 0,
+      "verdict": "CLEAN"
+    },
+    "invariants": {
+      "production_test_noop_or_2147483000_refs": 0,
+      "frozen_post_get_route_registrations": 0,
+      "active_action_registry_declaration": "PRESENT",
+      "inactive_action_descriptors_declaration": "PRESENT",
+      "resolve_active_action_declaration": "PRESENT",
+      "json_parse": "PASS",
+      "cleanup_artifact_hash": "PASS",
+      "cleanup_residual_counts": 0,
+      "unrelated_resources_unchanged": true
+    }
+  },
+  "task15_completed": true,
+  "review_history": {
+    "initial_review_artifact_commit": "42d3487d018a174bbcb85aa1b71947d35e968a93",
+    "omission": "the initial three reviews did not detect stale current-status claims that still described the Task12 fixture as alive or Task14 cleanup as pending",
+    "detected_by": "root final self-audit",
+    "status_correction_commit": "440d6b54aa3179c920d333c86b477c41c61c253b",
+    "correction": "four current status documents now distinguish the historical Task12 retained snapshot from current Task14 CLEANUP_PASS and zero residuals",
+    "current_rereview": {
+      "pm_spec": "SPEC_PASS",
+      "implementation": "IMPLEMENTATION_PASS",
+      "security": "SECURITY_PASS"
+    }
+  }
+}

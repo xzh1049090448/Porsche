@@ -1,0 +1,46 @@
+{
+  "maximumRequests": 4,
+  "maxTokensPerRequest": 32,
+  "attempts": [
+    {
+      "number": 1,
+      "case": "normal",
+      "model": "gpt-5.4-nano",
+      "max_tokens": 32,
+      "sentAt": "2026-09-03T04:30:49.890Z"
+    },
+    {
+      "number": 2,
+      "case": "diagnostic-attempt2",
+      "model": "gpt-5.4-nano",
+      "max_tokens": 32,
+      "sentAt": "2026-09-03T05:51:52.161Z"
+    },
+    {
+      "number": 3,
+      "case": "diagnostic-attempt3",
+      "model": "gpt-5.4-nano",
+      "max_tokens": 32,
+      "sentAt": "2026-09-03T06:17:57.135Z"
+    },
+    {
+      "number": 4,
+      "case": "diagnostic-attempt4",
+      "model": "gpt-5.4-nano",
+      "max_tokens": 32,
+      "sentAt": "2026-09-03T07:47:35.588Z"
+    }
+  ],
+  "authorizationUpdates": [
+    {
+      "recordedAt": "2026-09-03T07:22:53Z",
+      "userInstruction": "增加调用预算",
+      "previousMaximumRequests": 3,
+      "addedRequests": 1,
+      "newMaximumRequests": 4,
+      "model": "gpt-5.4-nano",
+      "maxTokensPerRequest": 32,
+      "scope": "One additional diagnostic generation; no automatic replay. Minimum increment chosen because user did not specify quantity."
+    }
+  ]
+}

@@ -1,0 +1,626 @@
+package dto
+
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"strconv"
+	"strings"
+	"unicode/utf16"
+	"unicode/utf8"
+)
+
+const UserDeleteBodyLimit int64 = 4 * 1024
+
+var (
+	ErrUserDeleteInvalidBody    = errors.New("invalid user delete request")
+	ErrUserDeleteBodyTooLarge   = errors.New("user delete request body too large")
+	ErrUserDeleteInactiveAction = errors.New("inactive user delete action")
+)
+
+type IssueUserDeleteRequest struct {
+	Action          string `json:"action"`
+	TargetGUID      int64  `json:"target_guid"`
+	ExpectedVersion int    `json:"expected_auth_version"`
+	Reason          string `json:"reason"`
+	Password        []byte `json:"-"`
+}
+
+func (request IssueUserDeleteRequest) String() string {
+	return request.redactedString()
+}
+
+func (request IssueUserDeleteRequest) Format(state fmt.State, _ rune) {
+	_, _ = io.WriteString(state, request.redactedString())
+}
+
+func (request IssueUserDeleteRequest) redactedString() string {
+	return fmt.Sprintf("IssueUserDeleteRequest{Action:%q TargetGUID:%d ExpectedVersion:%d Reason:%q Password:<redacted>}", request.Action, request.TargetGUID, request.ExpectedVersion, request.Reason)
+}
+
+type ExecuteUserDeleteRequest struct {
+	ExpectedVersion int    `json:"expected_auth_version"`
+	Reason          string `json:"reason"`
+}
+
+type UserDeleteIssueResponse struct {
+	Ticket    string `json:"ticket"`
+	ExpiresAt int64  `json:"expires_at"`
+}
+
+type UserDeleteResponseUser struct {
+	GUID   string `json:"guid"`
+	Status string `json:"status"`
+}
+
+type DeleteUserResponse struct {
+	OperationRef string                 `json:"operation_ref"`
+	User         UserDeleteResponseUser `json:"user"`
+}
+
+type UserDeleteQueryResponse struct {
+	OperationRef string  `json:"operation_ref"`
+	Scope        string  `json:"scope"`
+	Status       string  `json:"status"`
+	FinishedAt   *int64  `json:"finished_at"`
+	FailureCode  *string `json:"failure_code"`
+}
+
+type userDeleteIssueWire struct {
+	Action   json.RawMessage
+	Intent   json.RawMessage
+	Password json.RawMessage
+}
+
+type userDeleteIntentWire struct {
+	TargetGUID      json.RawMessage
+	ExpectedVersion json.RawMessage
+	Reason          json.RawMessage
+}
+
+type userDeleteExecuteWire struct {
+	Action          json.RawMessage
+	ExpectedVersion json.RawMessage
+	Reason          json.RawMessage
+}
+
+func DecodeUserDeleteIssue(body io.Reader) (IssueUserDeleteRequest, error) {
+	raw, err := readUserDeleteBody(body)
+	if err != nil {
+		return IssueUserDeleteRequest{}, err
+	}
+	defer clear(raw)
+	top, err := scanExactUserDeleteObject(raw, "action", "intent", "current_password")
+	if err != nil {
+		return IssueUserDeleteRequest{}, ErrUserDeleteInvalidBody
+	}
+	intentFields, err := scanExactUserDeleteObject(top[1], "target_guid", "expected_auth_version", "reason")
+	if err != nil {
+		return IssueUserDeleteRequest{}, ErrUserDeleteInvalidBody
+	}
+	wire := userDeleteIssueWire{Action: top[0], Intent: top[1], Password: top[2]}
+	intent := userDeleteIntentWire{TargetGUID: intentFields[0], ExpectedVersion: intentFields[1], Reason: intentFields[2]}
+	action, ok := decodeUserDeleteString(wire.Action)
+	if !ok {
+		return IssueUserDeleteRequest{}, ErrUserDeleteInvalidBody
+	}
+	if action != "users.delete" {
+		return IssueUserDeleteRequest{}, ErrUserDeleteInactiveAction
+	}
+	targetRaw, ok := decodeUserDeleteString(intent.TargetGUID)
+	if !ok {
+		return IssueUserDeleteRequest{}, ErrUserDeleteInvalidBody
+	}
+	targetGUID, ok := parseCanonicalPositiveInt64(targetRaw)
+	if !ok {
+		return IssueUserDeleteRequest{}, ErrUserDeleteInvalidBody
+	}
+	version, ok := parseUserDeleteVersion(intent.ExpectedVersion)
+	if !ok {
+		return IssueUserDeleteRequest{}, ErrUserDeleteInvalidBody
+	}
+	reasonRaw, ok := decodeUserDeleteString(intent.Reason)
+	if !ok {
+		return IssueUserDeleteRequest{}, ErrUserDeleteInvalidBody
+	}
+	reason, ok := normalizeUserDeleteReason(reasonRaw)
+	if !ok {
+		return IssueUserDeleteRequest{}, ErrUserDeleteInvalidBody
+	}
+	password, ok := decodeOwnedUserDeleteJSONString(wire.Password)
+	if !ok || len(password) == 0 {
+		clear(password)
+		return IssueUserDeleteRequest{}, ErrUserDeleteInvalidBody
+	}
+	return IssueUserDeleteRequest{Action: action, TargetGUID: targetGUID, ExpectedVersion: version, Reason: reason, Password: password}, nil
+}
+
+func DecodeUserDeleteExecute(body io.Reader) (ExecuteUserDeleteRequest, error) {
+	raw, err := readUserDeleteBody(body)
+	if err != nil {
+		return ExecuteUserDeleteRequest{}, err
+	}
+	defer clear(raw)
+	top, err := scanExactUserDeleteObject(raw, "action", "expected_auth_version", "reason")
+	if err != nil {
+		return ExecuteUserDeleteRequest{}, ErrUserDeleteInvalidBody
+	}
+	wire := userDeleteExecuteWire{Action: top[0], ExpectedVersion: top[1], Reason: top[2]}
+	action, ok := decodeUserDeleteString(wire.Action)
+	if !ok {
+		return ExecuteUserDeleteRequest{}, ErrUserDeleteInvalidBody
+	}
+	if action != "delete" {
+		return ExecuteUserDeleteRequest{}, ErrUserDeleteInactiveAction
+	}
+	version, ok := parseUserDeleteVersion(wire.ExpectedVersion)
+	if !ok {
+		return ExecuteUserDeleteRequest{}, ErrUserDeleteInvalidBody
+	}
+	reasonRaw, ok := decodeUserDeleteString(wire.Reason)
+	if !ok {
+		return ExecuteUserDeleteRequest{}, ErrUserDeleteInvalidBody
+	}
+	reason, ok := normalizeUserDeleteReason(reasonRaw)
+	if !ok {
+		return ExecuteUserDeleteRequest{}, ErrUserDeleteInvalidBody
+	}
+	return ExecuteUserDeleteRequest{ExpectedVersion: version, Reason: reason}, nil
+}
+
+func readUserDeleteBody(body io.Reader) ([]byte, error) {
+	if body == nil {
+		return nil, ErrUserDeleteInvalidBody
+	}
+	raw, err := io.ReadAll(io.LimitReader(body, UserDeleteBodyLimit+1))
+	if err != nil {
+		var maxBytesError *http.MaxBytesError
+		if errors.As(err, &maxBytesError) {
+			clear(raw)
+			return nil, ErrUserDeleteBodyTooLarge
+		}
+		clear(raw)
+		return nil, ErrUserDeleteInvalidBody
+	}
+	if int64(len(raw)) > UserDeleteBodyLimit {
+		clear(raw)
+		return nil, ErrUserDeleteBodyTooLarge
+	}
+	return raw, nil
+}
+
+func scanExactUserDeleteObject(raw []byte, keys ...string) ([]json.RawMessage, error) {
+	if !utf8.Valid(raw) {
+		return nil, ErrUserDeleteInvalidBody
+	}
+	values, end, err := scanExactUserDeleteObjectAt(raw, 0, keys)
+	if err != nil || skipUserDeleteSpace(raw, end) != len(raw) {
+		return nil, ErrUserDeleteInvalidBody
+	}
+	return values, nil
+}
+
+func scanExactUserDeleteObjectAt(raw []byte, offset int, keys []string) ([]json.RawMessage, int, error) {
+	offset = skipUserDeleteSpace(raw, offset)
+	if offset >= len(raw) || raw[offset] != '{' {
+		return nil, offset, ErrUserDeleteInvalidBody
+	}
+	offset++
+	values := make([]json.RawMessage, len(keys))
+	seen := make([]bool, len(keys))
+	offset = skipUserDeleteSpace(raw, offset)
+	if offset >= len(raw) || raw[offset] == '}' {
+		if offset < len(raw) && raw[offset] == '}' && len(keys) == 0 {
+			return values, offset + 1, nil
+		}
+		return nil, offset, ErrUserDeleteInvalidBody
+	}
+	for {
+		if offset >= len(raw) || raw[offset] == '}' {
+			return nil, offset, ErrUserDeleteInvalidBody
+		}
+		keyStart := offset
+		keyEnd, err := skipUserDeleteJSONString(raw, keyStart)
+		if err != nil {
+			return nil, offset, err
+		}
+		keyBytes := raw[keyStart+1 : keyEnd-1]
+		for _, value := range keyBytes {
+			if value == '\\' {
+				return nil, offset, ErrUserDeleteInvalidBody
+			}
+		}
+		keyIndex := exactUserDeleteKeyIndex(keyBytes, keys)
+		if keyIndex < 0 || seen[keyIndex] {
+			return nil, offset, ErrUserDeleteInvalidBody
+		}
+		seen[keyIndex] = true
+		offset = skipUserDeleteSpace(raw, keyEnd)
+		if offset >= len(raw) || raw[offset] != ':' {
+			return nil, offset, ErrUserDeleteInvalidBody
+		}
+		valueStart := skipUserDeleteSpace(raw, offset+1)
+		valueEnd, err := skipUserDeleteValue(raw, valueStart)
+		if err != nil {
+			return nil, offset, err
+		}
+		values[keyIndex] = raw[valueStart:valueEnd]
+		offset = skipUserDeleteSpace(raw, valueEnd)
+		if offset >= len(raw) {
+			return nil, offset, ErrUserDeleteInvalidBody
+		}
+		switch raw[offset] {
+		case ',':
+			offset = skipUserDeleteSpace(raw, offset+1)
+		case '}':
+			for _, present := range seen {
+				if !present {
+					return nil, offset, ErrUserDeleteInvalidBody
+				}
+			}
+			return values, offset + 1, nil
+		default:
+			return nil, offset, ErrUserDeleteInvalidBody
+		}
+	}
+}
+
+func exactUserDeleteKeyIndex(raw []byte, keys []string) int {
+	for index, key := range keys {
+		if len(raw) != len(key) {
+			continue
+		}
+		match := true
+		for i := range raw {
+			if raw[i] != key[i] {
+				match = false
+				break
+			}
+		}
+		if match {
+			return index
+		}
+	}
+	return -1
+}
+
+func skipUserDeleteSpace(raw []byte, offset int) int {
+	for offset < len(raw) {
+		switch raw[offset] {
+		case ' ', '\t', '\n', '\r':
+			offset++
+		default:
+			return offset
+		}
+	}
+	return offset
+}
+
+func skipUserDeleteValue(raw []byte, offset int) (int, error) {
+	if offset >= len(raw) {
+		return offset, ErrUserDeleteInvalidBody
+	}
+	switch raw[offset] {
+	case '"':
+		return skipUserDeleteJSONString(raw, offset)
+	case '{':
+		return skipUserDeleteObject(raw, offset)
+	case '[':
+		return skipUserDeleteArray(raw, offset)
+	case 't':
+		return skipUserDeleteLiteral(raw, offset, "true")
+	case 'f':
+		return skipUserDeleteLiteral(raw, offset, "false")
+	case 'n':
+		return skipUserDeleteLiteral(raw, offset, "null")
+	default:
+		return skipUserDeleteNumber(raw, offset)
+	}
+}
+
+func skipUserDeleteObject(raw []byte, offset int) (int, error) {
+	offset++
+	offset = skipUserDeleteSpace(raw, offset)
+	if offset < len(raw) && raw[offset] == '}' {
+		return offset + 1, nil
+	}
+	for {
+		var err error
+		offset, err = skipUserDeleteJSONString(raw, offset)
+		if err != nil {
+			return offset, err
+		}
+		offset = skipUserDeleteSpace(raw, offset)
+		if offset >= len(raw) || raw[offset] != ':' {
+			return offset, ErrUserDeleteInvalidBody
+		}
+		offset = skipUserDeleteSpace(raw, offset+1)
+		offset, err = skipUserDeleteValue(raw, offset)
+		if err != nil {
+			return offset, err
+		}
+		offset = skipUserDeleteSpace(raw, offset)
+		if offset >= len(raw) {
+			return offset, ErrUserDeleteInvalidBody
+		}
+		switch raw[offset] {
+		case ',':
+			offset = skipUserDeleteSpace(raw, offset+1)
+		case '}':
+			return offset + 1, nil
+		default:
+			return offset, ErrUserDeleteInvalidBody
+		}
+	}
+}
+
+func skipUserDeleteArray(raw []byte, offset int) (int, error) {
+	offset++
+	offset = skipUserDeleteSpace(raw, offset)
+	if offset < len(raw) && raw[offset] == ']' {
+		return offset + 1, nil
+	}
+	for {
+		var err error
+		offset, err = skipUserDeleteValue(raw, offset)
+		if err != nil {
+			return offset, err
+		}
+		offset = skipUserDeleteSpace(raw, offset)
+		if offset >= len(raw) {
+			return offset, ErrUserDeleteInvalidBody
+		}
+		switch raw[offset] {
+		case ',':
+			offset = skipUserDeleteSpace(raw, offset+1)
+		case ']':
+			return offset + 1, nil
+		default:
+			return offset, ErrUserDeleteInvalidBody
+		}
+	}
+}
+
+func skipUserDeleteJSONString(raw []byte, offset int) (int, error) {
+	if offset >= len(raw) || raw[offset] != '"' {
+		return offset, ErrUserDeleteInvalidBody
+	}
+	for offset++; offset < len(raw); offset++ {
+		value := raw[offset]
+		switch {
+		case value == '"':
+			return offset + 1, nil
+		case value < 0x20:
+			return offset, ErrUserDeleteInvalidBody
+		case value == '\\':
+			offset++
+			if offset >= len(raw) {
+				return offset, ErrUserDeleteInvalidBody
+			}
+			switch raw[offset] {
+			case '"', '\\', '/', 'b', 'f', 'n', 'r', 't':
+			case 'u':
+				codePoint, ok := parseUserDeleteHex4(raw, offset+1)
+				if !ok {
+					return offset, ErrUserDeleteInvalidBody
+				}
+				offset += 4
+				if codePoint >= 0xd800 && codePoint <= 0xdbff {
+					if offset+6 >= len(raw) || raw[offset+1] != '\\' || raw[offset+2] != 'u' {
+						return offset, ErrUserDeleteInvalidBody
+					}
+					low, ok := parseUserDeleteHex4(raw, offset+3)
+					if !ok || low < 0xdc00 || low > 0xdfff {
+						return offset, ErrUserDeleteInvalidBody
+					}
+					offset += 6
+				} else if codePoint >= 0xdc00 && codePoint <= 0xdfff {
+					return offset, ErrUserDeleteInvalidBody
+				}
+			default:
+				return offset, ErrUserDeleteInvalidBody
+			}
+		case value >= utf8.RuneSelf:
+			_, size := utf8.DecodeRune(raw[offset:])
+			if size == 1 {
+				return offset, ErrUserDeleteInvalidBody
+			}
+			offset += size - 1
+		}
+	}
+	return offset, ErrUserDeleteInvalidBody
+}
+
+func skipUserDeleteLiteral(raw []byte, offset int, literal string) (int, error) {
+	if offset+len(literal) > len(raw) {
+		return offset, ErrUserDeleteInvalidBody
+	}
+	for index := range literal {
+		if raw[offset+index] != literal[index] {
+			return offset, ErrUserDeleteInvalidBody
+		}
+	}
+	return offset + len(literal), nil
+}
+
+func skipUserDeleteNumber(raw []byte, offset int) (int, error) {
+	start := offset
+	if offset < len(raw) && raw[offset] == '-' {
+		offset++
+	}
+	if offset >= len(raw) {
+		return start, ErrUserDeleteInvalidBody
+	}
+	if raw[offset] == '0' {
+		offset++
+	} else if raw[offset] >= '1' && raw[offset] <= '9' {
+		for offset < len(raw) && raw[offset] >= '0' && raw[offset] <= '9' {
+			offset++
+		}
+	} else {
+		return start, ErrUserDeleteInvalidBody
+	}
+	if offset < len(raw) && raw[offset] == '.' {
+		offset++
+		fractionStart := offset
+		for offset < len(raw) && raw[offset] >= '0' && raw[offset] <= '9' {
+			offset++
+		}
+		if offset == fractionStart {
+			return start, ErrUserDeleteInvalidBody
+		}
+	}
+	if offset < len(raw) && (raw[offset] == 'e' || raw[offset] == 'E') {
+		offset++
+		if offset < len(raw) && (raw[offset] == '+' || raw[offset] == '-') {
+			offset++
+		}
+		exponentStart := offset
+		for offset < len(raw) && raw[offset] >= '0' && raw[offset] <= '9' {
+			offset++
+		}
+		if offset == exponentStart {
+			return start, ErrUserDeleteInvalidBody
+		}
+	}
+	return offset, nil
+}
+
+func decodeUserDeleteString(raw json.RawMessage) (string, bool) {
+	var value string
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return "", false
+	}
+	return value, true
+}
+
+func decodeOwnedUserDeleteJSONString(raw json.RawMessage) ([]byte, bool) {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) < 2 || raw[0] != '"' || raw[len(raw)-1] != '"' || !utf8.Valid(raw) {
+		return nil, false
+	}
+	decoded := make([]byte, 0, len(raw)-2)
+	for i := 1; i < len(raw)-1; i++ {
+		value := raw[i]
+		switch {
+		case value == '"' || value < 0x20:
+			clear(decoded)
+			return nil, false
+		case value == '\\':
+			i++
+			if i >= len(raw)-1 {
+				clear(decoded)
+				return nil, false
+			}
+			switch raw[i] {
+			case '"', '\\', '/':
+				decoded = append(decoded, raw[i])
+			case 'b':
+				decoded = append(decoded, '\b')
+			case 'f':
+				decoded = append(decoded, '\f')
+			case 'n':
+				decoded = append(decoded, '\n')
+			case 'r':
+				decoded = append(decoded, '\r')
+			case 't':
+				decoded = append(decoded, '\t')
+			case 'u':
+				codePoint, ok := parseUserDeleteHex4(raw, i+1)
+				if !ok {
+					clear(decoded)
+					return nil, false
+				}
+				i += 4
+				r := rune(codePoint)
+				if codePoint >= 0xd800 && codePoint <= 0xdbff {
+					if i+6 >= len(raw) || raw[i+1] != '\\' || raw[i+2] != 'u' {
+						clear(decoded)
+						return nil, false
+					}
+					low, ok := parseUserDeleteHex4(raw, i+3)
+					if !ok || low < 0xdc00 || low > 0xdfff {
+						clear(decoded)
+						return nil, false
+					}
+					r = utf16.DecodeRune(r, rune(low))
+					i += 6
+				} else if codePoint >= 0xdc00 && codePoint <= 0xdfff {
+					clear(decoded)
+					return nil, false
+				}
+				decoded = utf8.AppendRune(decoded, r)
+			default:
+				clear(decoded)
+				return nil, false
+			}
+		case value < utf8.RuneSelf:
+			decoded = append(decoded, value)
+		default:
+			_, size := utf8.DecodeRune(raw[i : len(raw)-1])
+			if size == 1 {
+				clear(decoded)
+				return nil, false
+			}
+			decoded = append(decoded, raw[i:i+size]...)
+			i += size - 1
+		}
+	}
+	return decoded, true
+}
+
+func parseCanonicalPositiveInt64(raw string) (int64, bool) {
+	if raw == "" || raw[0] < '1' || raw[0] > '9' {
+		return 0, false
+	}
+	for i := 1; i < len(raw); i++ {
+		if raw[i] < '0' || raw[i] > '9' {
+			return 0, false
+		}
+	}
+	value, err := strconv.ParseInt(raw, 10, 64)
+	return value, err == nil && value > 0
+}
+
+func parseUserDeleteVersion(raw json.RawMessage) (int, bool) {
+	if len(raw) == 0 {
+		return 0, false
+	}
+	for _, value := range raw {
+		if value < '0' || value > '9' {
+			return 0, false
+		}
+	}
+	parsed, err := strconv.ParseInt(string(raw), 10, 32)
+	return int(parsed), err == nil && parsed > 0
+}
+
+func normalizeUserDeleteReason(raw string) (string, bool) {
+	normalized := strings.TrimSpace(raw)
+	count := utf8.RuneCountInString(normalized)
+	return normalized, utf8.ValidString(normalized) && count >= 1 && count <= 200
+}
+
+func parseUserDeleteHex4(raw []byte, start int) (uint16, bool) {
+	if start+4 > len(raw) {
+		return 0, false
+	}
+	var value uint16
+	for _, digit := range raw[start : start+4] {
+		value <<= 4
+		switch {
+		case digit >= '0' && digit <= '9':
+			value += uint16(digit - '0')
+		case digit >= 'a' && digit <= 'f':
+			value += uint16(digit-'a') + 10
+		case digit >= 'A' && digit <= 'F':
+			value += uint16(digit-'A') + 10
+		default:
+			return 0, false
+		}
+	}
+	return value, true
+}

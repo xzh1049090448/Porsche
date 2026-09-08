@@ -1,11 +1,95 @@
 package config
 
 import (
+	"encoding/base64"
 	"os"
 	"regexp"
 	"strings"
 	"testing"
 )
+
+func TestLoadActionSecurityRootKey(t *testing.T) {
+	validBytes := []byte("action-security-root-key-32-byte")
+	valid := base64.RawURLEncoding.EncodeToString(validBytes)
+	for _, tc := range []struct {
+		name, env, raw, wantReason string
+		declared                   bool
+	}{
+		{name: "production valid", env: "production", raw: valid, declared: true},
+		{name: "staging valid", env: "staging", raw: valid, declared: true},
+		{name: "production missing", env: "production", wantReason: "missing"},
+		{name: "staging missing", env: "staging", wantReason: "missing"},
+		{name: "development omitted", env: "development"},
+		{name: "test omitted", env: "test"},
+		{name: "development declared empty", env: "development", raw: "", declared: true, wantReason: "missing"},
+		{name: "development declared invalid", env: "development", raw: "short", declared: true, wantReason: "invalid_length"},
+		{name: "test declared invalid", env: "test", raw: "not valid", declared: true, wantReason: "invalid_length"},
+		{name: "staging declared invalid", env: "staging", raw: "not valid", declared: true, wantReason: "invalid_length"},
+		{name: "production invalid encoding", env: "production", raw: valid[:42] + "+", declared: true, wantReason: "invalid_encoding"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			setLoadTestEnvironment(t)
+			t.Setenv("APP_ENV", tc.env)
+			if tc.env != "development" {
+				setSafeProductionAuthEnvironment(t)
+				t.Setenv("APP_ENV", tc.env)
+			}
+			unsetEnvironment(t, "ACTION_SECURITY_HMAC_KEY")
+			if tc.declared {
+				t.Setenv("ACTION_SECURITY_HMAC_KEY", tc.raw)
+			}
+			got, err := Load()
+			if tc.wantReason != "" {
+				if err == nil || err.Error() != "ACTION_SECURITY_HMAC_KEY: "+tc.wantReason {
+					t.Fatalf("Load() error = %v, want redacted reason %q", err, tc.wantReason)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Load() error = %v", err)
+			}
+			if tc.declared {
+				if base64.RawURLEncoding.EncodeToString(got.ActionSecurityHMACKey) != valid {
+					t.Fatal("Load() did not store decoded action-security key bytes")
+				}
+			} else if got.ActionSecurityHMACKey != nil {
+				t.Fatal("Load() populated an omitted optional action-security key")
+			}
+		})
+	}
+}
+
+func TestActionSecurityRootKeyReuseChecksAllSecrets(t *testing.T) {
+	calls := 0
+	compare := func(_, _ []byte) int {
+		calls++
+		if calls == 1 {
+			return 1
+		}
+		return 0
+	}
+	if !actionSecurityRootKeyReused([]byte("root"), []byte("auth"), []byte("jwt"), []byte("upstream"), compare) {
+		t.Fatal("actionSecurityRootKeyReused() did not retain the first match")
+	}
+	if calls != 3 {
+		t.Fatalf("constant-time comparisons = %d, want 3", calls)
+	}
+}
+
+func TestLoadActionSecurityRootKeyRejectsReuse(t *testing.T) {
+	for _, name := range []string{"AUTH_HMAC_KEY", "JWT_SECRET_KEY", "JIEKOU_API_KEY"} {
+		t.Run(name, func(t *testing.T) {
+			setSafeProductionAuthEnvironment(t)
+			reused := []byte("distinct-auth-key-material-12345")
+			t.Setenv(name, string(reused))
+			t.Setenv("ACTION_SECURITY_HMAC_KEY", base64.RawURLEncoding.EncodeToString(reused))
+			_, err := Load()
+			if err == nil || err.Error() != "ACTION_SECURITY_HMAC_KEY: key_reuse" {
+				t.Fatalf("Load() error = %v, want redacted key_reuse", err)
+			}
+		})
+	}
+}
 
 func TestValidateRootBootstrapCredentials(t *testing.T) {
 	for _, tc := range []struct {
@@ -91,6 +175,7 @@ func TestLoadRejectsNonMySQLDatabaseURL(t *testing.T) {
 func TestLoadRejectsUnsafeAuthProductionConfiguration(t *testing.T) {
 	setLoadTestEnvironment(t)
 	t.Setenv("APP_ENV", "production")
+	t.Setenv("ACTION_SECURITY_HMAC_KEY", base64.RawURLEncoding.EncodeToString([]byte("action-security-root-key-32-byte")))
 	t.Setenv("REGISTER_ENABLED", "true")
 	t.Setenv("REDIS_URL", "")
 
@@ -447,6 +532,26 @@ func setSafeProductionAuthEnvironment(t *testing.T) {
 	t.Setenv("FIXED_LOGIN_PHONE", "disabled")
 	t.Setenv("FIXED_LOGIN_PASSWORD", "disabled")
 	t.Setenv("SMS_DEV_MODE", "false")
+	t.Setenv("ACTION_SECURITY_HMAC_KEY", base64.RawURLEncoding.EncodeToString([]byte("action-security-root-key-32-byte")))
+}
+
+func unsetEnvironment(t *testing.T, key string) {
+	t.Helper()
+	value, existed := os.LookupEnv(key)
+	if err := os.Unsetenv(key); err != nil {
+		t.Fatalf("os.Unsetenv(%q) error = %v", key, err)
+	}
+	t.Cleanup(func() {
+		if existed {
+			if err := os.Setenv(key, value); err != nil {
+				t.Errorf("os.Setenv(%q) error = %v", key, err)
+			}
+			return
+		}
+		if err := os.Unsetenv(key); err != nil {
+			t.Errorf("os.Unsetenv(%q) error = %v", key, err)
+		}
+	})
 }
 
 func clearRootBootstrapEnvironment(t *testing.T) {

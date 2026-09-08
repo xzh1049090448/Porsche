@@ -1,0 +1,6 @@
+{
+  "status": "FAIL",
+  "stage": "hard_refresh_list_detail_group",
+  "error_name": "TimeoutError",
+  "error_message": "locator.waitFor: Timeout 30000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('.el-descriptions__cell').filter({ hasText: '分组' }).filter({ hasText: 'default' }).first() to be visible\u001b[22m\n"
+}

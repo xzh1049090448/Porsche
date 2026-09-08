@@ -1,0 +1,45 @@
+import json
+import os
+import re
+import subprocess
+from pathlib import Path
+from urllib.parse import urlparse
+
+url = urlparse(os.environ["A03_DATABASE_URL"])
+container = os.environ["A03_MYSQL_NAME"]
+database = os.environ["A03_DATABASE_NAME"]
+canonical = Path(os.environ["A03_REPORT_DIR"]).parent
+if url.hostname != "127.0.0.1" or url.path != "/" + database or not re.fullmatch(r"a03_[A-Za-z0-9_]+_runtime_test", database):
+    raise RuntimeError("refusing non-owned runtime fixture")
+
+queries = [
+    ("server_variables", "SELECT VERSION() AS mysql_version, @@log_bin AS log_bin, @@log_bin_trust_function_creators AS log_bin_trust_function_creators"),
+    ("show_grants", "SHOW GRANTS FOR CURRENT_USER()"),
+    ("information_schema_privileges", "SELECT 'GLOBAL' AS privilege_scope, privilege_type, is_grantable FROM information_schema.user_privileges WHERE grantee=CONCAT(CHAR(39),SUBSTRING_INDEX(CURRENT_USER(),'@',1),CHAR(39),'@',CHAR(39),SUBSTRING_INDEX(CURRENT_USER(),'@',-1),CHAR(39)) UNION ALL SELECT CONCAT('SCHEMA:',table_schema) AS privilege_scope, privilege_type, is_grantable FROM information_schema.schema_privileges WHERE grantee=CONCAT(CHAR(39),SUBSTRING_INDEX(CURRENT_USER(),'@',1),CHAR(39),'@',CHAR(39),SUBSTRING_INDEX(CURRENT_USER(),'@',-1),CHAR(39)) ORDER BY privilege_scope, privilege_type"),
+]
+
+env = os.environ.copy()
+env["MYSQL_PWD"] = url.password or ""
+parts = []
+for label, query in queries:
+    result = subprocess.run(
+        ["docker", "exec", "-i", "-e", "MYSQL_PWD", container, "mysql", "-h127.0.0.1",
+         "-u" + (url.username or ""), "--batch", database],
+        input=query + ";\n", env=env, text=True, capture_output=True,
+    )
+    if result.returncode:
+        raise RuntimeError("fixture security query failed")
+    parts.extend([f"[{label}]", result.stdout.rstrip("\n")])
+
+artifact = canonical / "runtime/mysql-runtime-security-query.tsv"
+artifact.write_text("\n".join(parts) + "\n")
+command = {
+    "command": "docker exec -i -e MYSQL_PWD <task-mysql-container> mysql -h127.0.0.1 -u<ordinary-fixture-user> --batch <runtime-schema>; queries: SELECT VERSION(), @@log_bin, @@log_bin_trust_function_creators; SHOW GRANTS FOR CURRENT_USER(); information_schema user/schema privileges",
+    "cwd": "/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903",
+    "environment": "MYSQL_PWD passed only through process environment from private 0600 runtime env; credential and values not written",
+    "exit": 0,
+    "output": "runtime/mysql-runtime-security-query.tsv",
+    "column_headers": True,
+}
+(canonical / "runtime/mysql-runtime-security-query-command.json").write_text(json.dumps(command, indent=2, sort_keys=True) + "\n")
+print("mysql_runtime_security_query=PASS sections=3 headers=true")

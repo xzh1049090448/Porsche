@@ -1,0 +1,37 @@
+{
+  "case": "valid-SSE-diagnostic-attempt2",
+  "status": "FAIL",
+  "usageBefore": {
+    "daily_call_limit": 100,
+    "daily_calls_used": 1,
+    "plan_type": "free",
+    "remaining_daily_calls": 99,
+    "total_tokens_used": 0
+  },
+  "httpStatus": 503,
+  "contentType": "application/json; charset=utf-8",
+  "requestIdSHA256": "4ed7b4be451d0305984aa08804c903cc499be8c31e7f43f51e323412f2a7ebd1",
+  "requestIdPresent": true,
+  "postCount": 1,
+  "refreshCount": 0,
+  "stream": {
+    "events": []
+  },
+  "errorCode": "gateway_upstream_unavailable",
+  "failure": "valid SSE returned HTTP 503",
+  "usageAfter": {
+    "status": 200,
+    "daily_call_limit": 100,
+    "daily_calls_used": 2,
+    "plan_type": "free",
+    "remaining_daily_calls": 98,
+    "total_tokens_used": 0
+  },
+  "cleanup": [
+    {
+      "resource": "test-conversation",
+      "status": 200
+    }
+  ],
+  "logout": 204
+}

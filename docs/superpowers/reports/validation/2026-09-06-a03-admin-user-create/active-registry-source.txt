@@ -1,0 +1,10 @@
+internal/service/action_create_user_bundle.go:89:			return newDeleteUserExecution(descriptorByAction[actionsecurity.ActionUsersDelete], intent, nextGUID, clock)
+internal/service/action_create_user_bundle.go:93:			if !ok || (action != actionsecurity.ActionUsersCreate && action != actionsecurity.ActionUsersCreateAdmin) {
+internal/actionsecurity/registry.go:8:	{ActionUsersCreateAdmin, "users.create_admin", "users.create", true, true, false, TargetNone, encodeCreateAdminAny},
+internal/actionsecurity/registry.go:13:	{ActionUsersDelete, "users.delete", "users.delete", false, true, false, TargetUser, encodeDeleteUserAny},
+internal/actionsecurity/registry.go:16:	{ActionUsersCreate, "users.create", "users.create", false, false, false, TargetNone, encodeCreateAny},
+internal/actionsecurity/registry.go:20:	ActionUsersCreateAdmin,
+internal/actionsecurity/registry.go:25:	ActionUsersDelete,
+internal/actionsecurity/registry.go:28:	ActionUsersCreate,
+internal/actionsecurity/registry.go:31:var futureActionOrder = [...]Action{ActionUsersCreate, ActionUsersCreateAdmin, ActionUsersDelete}
+internal/actionsecurity/registry.go:32:var activeActionOrder = [...]Action{ActionUsersCreate, ActionUsersCreateAdmin, ActionUsersDelete}

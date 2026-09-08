@@ -1,0 +1,4 @@
+ok  	github.com/porsche/ai-gateway-go/internal/service	1.668s
+ok  	github.com/porsche/ai-gateway-go/internal/handler	1.949s
+ok  	github.com/porsche/ai-gateway-go/internal/authz	2.316s [no tests to run]
+ok  	github.com/porsche/ai-gateway-go/internal/middleware	2.763s [no tests to run]

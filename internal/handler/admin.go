@@ -2,6 +2,7 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strconv"
@@ -21,75 +22,26 @@ func RegisterOpenAIChat(r *gin.Engine, state *app.State) {
 }
 
 func RegisterAdminUsers(r *gin.Engine, state *app.State) {
+	registerLegacyAdminUsersRead(r, state)
 	g := r.Group("/admin/users", middleware.RequireAdmin(state))
-	g.GET("", func(c *gin.Context) {
-		actor := middleware.CurrentUser(c)
-		skip := parseUintQuery(c, "skip", 0)
-		limit := parseUintQuery(c, "limit", 50)
-		status := c.Query("status")
-		q := state.DB.Where("is_deleted = 0 AND role < ?", actor.Role).Order("created_at desc").Offset(skip).Limit(limit)
-		if status != "" {
-			parsed, ok := models.ParseUserStatus(status)
-			if !ok {
-				httpx.AbortJSON(c, http.StatusUnprocessableEntity, "无效用户状态")
-				return
-			}
-			q = q.Where("status = ?", parsed)
-		}
-		var users []models.User
-		if err := q.Find(&users).Error; err != nil {
-			httpx.AbortJSON(c, http.StatusInternalServerError, "读取用户失败")
-			return
-		}
-		out := make([]map[string]interface{}, 0, len(users))
-		for i := range users {
-			out = append(out, dto.AdminUser(&users[i]))
-		}
-		c.JSON(http.StatusOK, out)
-	})
-	g.GET("/:guid", func(c *gin.Context) {
-		id, _ := strconv.ParseUint(c.Param("guid"), 10, 64)
-		var user models.User
-		if err := state.DB.Where("guid = ? AND is_deleted = 0", id).First(&user).Error; err != nil {
-			httpx.AbortJSON(c, http.StatusNotFound, "用户不存在")
-			return
-		}
-		if err := service.CanManageUser(middleware.CurrentUser(c), &user); err != nil {
-			code, message := service.StatusFromError(err)
-			httpx.AbortJSON(c, code, message)
-			return
-		}
-		c.JSON(http.StatusOK, dto.AdminUser(&user))
-	})
-	// DELETE creates a tombstone through AuthService; the handler never issues
-	// a database write and Root/equal-role protection remains service-owned.
-	g.DELETE("/:guid", func(c *gin.Context) {
+	// DELETE is retired after admin authentication. Route middleware is kept
+	// local so legacy PUT behavior remains unchanged.
+	g.DELETE("/:guid", gatewayRequestID(), adminUserActionNoStore, legacyAdminUserDeleteGone)
+	g.PUT("/:guid", func(c *gin.Context) {
 		guid, err := strconv.ParseInt(c.Param("guid"), 10, 64)
 		if err != nil || guid <= 0 {
 			httpx.AbortJSON(c, http.StatusBadRequest, "无效用户标识")
 			return
 		}
-		var target models.User
-		if err := state.DB.Where("guid = ? AND is_deleted = 0", guid).First(&target).Error; err != nil {
-			httpx.AbortJSON(c, http.StatusNotFound, "用户不存在")
+		body, err := decodeAdminUserUpdate(c.Request.Body)
+		if errors.Is(err, errAdminUserUpdateTooLarge) {
+			httpx.AbortJSON(c, http.StatusRequestEntityTooLarge, "请求体过大")
 			return
 		}
-		if err := state.Auth.SoftDeleteUser(c.Request.Context(), middleware.CurrentUserID(c), target.ID); err != nil {
-			code, message := service.StatusFromError(err)
-			httpx.AbortJSON(c, code, message)
+		if err != nil {
+			httpx.AbortJSON(c, http.StatusBadRequest, "无效请求体")
 			return
 		}
-		c.Status(http.StatusNoContent)
-	})
-	g.PUT("/:guid", func(c *gin.Context) {
-		guid, _ := strconv.ParseInt(c.Param("guid"), 10, 64)
-		var body struct {
-			Status         *string  `json:"status"`
-			PlanType       *string  `json:"plan_type"`
-			AllowedModels  []string `json:"allowed_models"`
-			DailyCallLimit *int     `json:"daily_call_limit"`
-		}
-		_ = c.ShouldBindJSON(&body)
 		input := service.ManagedUserUpdateInput{}
 		if body.Status != nil {
 			status, ok := models.ParseUserStatus(*body.Status)
@@ -108,7 +60,7 @@ func RegisterAdminUsers(r *gin.Engine, state *app.State) {
 			input.PlanType = &plan
 		}
 		if body.AllowedModels != nil {
-			allowedModels := models.JSONSlice(body.AllowedModels)
+			allowedModels := models.JSONSlice(*body.AllowedModels)
 			input.AllowedModels = &allowedModels
 		}
 		if body.DailyCallLimit != nil {
@@ -122,25 +74,24 @@ func RegisterAdminUsers(r *gin.Engine, state *app.State) {
 		}
 		c.JSON(http.StatusOK, dto.AdminUser(user))
 	})
-	g.GET("/:guid/behavior", func(c *gin.Context) {
-		id, _ := strconv.ParseUint(c.Param("guid"), 10, 64)
-		var user models.User
-		if err := state.DB.Where("guid = ? AND is_deleted = 0", id).First(&user).Error; err != nil {
-			httpx.AbortJSON(c, http.StatusNotFound, "用户不存在")
-			return
-		}
-		if err := service.CanManageUser(middleware.CurrentUser(c), &user); err != nil {
-			code, message := service.StatusFromError(err)
-			httpx.AbortJSON(c, code, message)
-			return
-		}
-		behavior, err := service.UserBehavior(state.DB, user.ID)
-		if err != nil {
-			httpx.AbortJSON(c, http.StatusInternalServerError, "读取用户行为失败")
-			return
-		}
-		c.JSON(http.StatusOK, behavior)
-	})
+
+}
+
+const legacyAdminUserDeleteGoneMessage = "Use the verified v2 user delete action flow."
+
+// legacyAdminUserDeleteGone deliberately has no access to the request target
+// or application state. Authentication has already completed in the route
+// group, and every legacy delete request receives the same safe response.
+func legacyAdminUserDeleteGone(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
+	requestID := c.Writer.Header().Get("X-Request-ID")
+	if requestID == "" {
+		requestID = "unavailable"
+		c.Header("X-Request-ID", requestID)
+	}
+	c.AbortWithStatusJSON(http.StatusGone, adminUserActionErrorEnvelope{Error: adminUserActionErrorBody{
+		Code: "legacy_user_delete_gone", Message: legacyAdminUserDeleteGoneMessage, Type: "admin_action_error", RequestID: requestID,
+	}})
 }
 
 var alertConfigs = []map[string]interface{}{

@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <script type="module" src="/@vite/client"></script>
+
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/png" href="/logo.png" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>中国大模型聚合平台</title>
+    <script>
+      (function () {
+        try {
+          var themeRaw = localStorage.getItem('llm_platform_uiTheme');
+          document.documentElement.dataset.theme = themeRaw ? JSON.parse(themeRaw) : 'light';
+          if (document.documentElement.dataset.theme !== 'dark') {
+            document.documentElement.dataset.theme = 'light';
+          }
+        } catch (e) {
+          document.documentElement.dataset.theme = 'light';
+        }
+        try {
+          var localeRaw = localStorage.getItem('llm_platform_uiLocale');
+          var locale = localeRaw ? JSON.parse(localeRaw) : 'zh';
+          document.documentElement.lang = locale === 'en' ? 'en' : 'zh-CN';
+          document.title = locale === 'en' ? 'China LLM Hub' : '中国大模型聚合平台';
+        } catch (e) {
+          document.documentElement.lang = 'zh-CN';
+        }
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

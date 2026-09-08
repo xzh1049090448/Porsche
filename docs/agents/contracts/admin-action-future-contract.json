@@ -1,0 +1,357 @@
+{
+  "status": "active_users_delete_contract",
+  "production_observation": {
+    "registered_routes": [
+      {
+        "method": "POST",
+        "path": "/admin/v2/action-verifications"
+      },
+      {
+        "method": "POST",
+        "path": "/admin/v2/users/:guid/actions"
+      },
+      {
+        "method": "GET",
+        "path": "/admin/v2/operations?scope=users.delete"
+      }
+    ],
+    "only_users_delete_active": true,
+    "other_action_routes": "unregistered"
+  },
+  "implementation": {
+    "handler_exists": true,
+    "backend_route_exists": true,
+    "frontend_client_exists": false
+  },
+  "v2_user_read": {
+    "locations": [
+      "admin_users_list.items[].auth_version",
+      "admin_user_detail.auth_version"
+    ],
+    "auth_version": "integer_1_to_2147483647",
+    "client_writable": false,
+    "legacy_shapes_changed": false
+  },
+  "endpoints": {
+    "issue": {
+      "method": "POST",
+      "path": "/admin/v2/action-verifications",
+      "request_headers": {
+        "Idempotency-Key": "forbidden",
+        "X-Action-Ticket": "forbidden"
+      },
+      "response_headers": {
+        "Cache-Control": "no-store",
+        "X-Request-ID": "required_non_empty"
+      },
+      "body_limit_bytes": 4096,
+      "body_rule": "one_exact_json_object_no_unknown_duplicate_or_trailing_fields",
+      "field_rules": {
+        "target_guid": "canonical_positive_signed_int64_decimal_string",
+        "expected_auth_version": "integer_1_to_2147483647",
+        "reason": "unicode_trimmed_1_to_200_code_points",
+        "current_password": "required_owned_bytes_cleared_after_use"
+      },
+      "request_example": {
+        "action": "users.delete",
+        "intent": {
+          "target_guid": "123456789012345678",
+          "expected_auth_version": 7,
+          "reason": "duplicate account"
+        },
+        "current_password": "example-only-not-a-secret"
+      },
+      "response_status": 201,
+      "response_example": {
+        "ticket": "av_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "expires_at": 1790000300000
+      },
+      "ticket_ttl_seconds": 300,
+      "post_replay_count": 0
+    },
+    "execute": {
+      "method": "POST",
+      "path": "/admin/v2/users/:guid/actions",
+      "request_headers": {
+        "Idempotency-Key": "required_exactly_one_unique_original",
+        "X-Action-Ticket": "required_exactly_one"
+      },
+      "response_headers": {
+        "Cache-Control": "no-store",
+        "X-Request-ID": "required_non_empty"
+      },
+      "body_limit_bytes": 4096,
+      "body_rule": "one_exact_json_object_no_unknown_duplicate_or_trailing_fields",
+      "field_rules": {
+        "path_guid": "canonical_positive_signed_int64_decimal_string",
+        "action": "exact_lowercase_delete",
+        "expected_auth_version": "integer_1_to_2147483647",
+        "reason": "unicode_trimmed_1_to_200_code_points"
+      },
+      "request_example": {
+        "action": "delete",
+        "expected_auth_version": 7,
+        "reason": "duplicate account"
+      },
+      "response_status": 200,
+      "response_example": {
+        "operation_ref": "op_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "user": {
+          "guid": "123456789012345678",
+          "status": "deleted"
+        }
+      },
+      "success_semantics": "committed_terminal_only_with_operation_ref",
+      "processing_response_allowed": false,
+      "post_replay_count": 0
+    },
+    "query": {
+      "method": "GET",
+      "path": "/admin/v2/operations?scope=users.delete",
+      "request_headers": {
+        "Idempotency-Key": "required_exactly_one_original",
+        "X-Action-Ticket": "forbidden"
+      },
+      "response_headers": {
+        "Cache-Control": "no-store",
+        "X-Request-ID": "required_non_empty",
+        "Retry-After": "processing_only_integer_seconds_1_to_30"
+      },
+      "query_rule": "exact_literal_scope_users.delete_no_other_query_parameters",
+      "response_status": 200,
+      "response_examples": {
+        "processing": {
+          "operation_ref": "op_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+          "scope": "users.delete",
+          "status": "processing",
+          "finished_at": null,
+          "failure_code": null
+        },
+        "succeeded": {
+          "operation_ref": "op_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+          "scope": "users.delete",
+          "status": "succeeded",
+          "finished_at": 1790000000000,
+          "failure_code": null
+        },
+        "failed": {
+          "operation_ref": "op_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+          "scope": "users.delete",
+          "status": "failed",
+          "finished_at": 1790000000000,
+          "failure_code": "target_version_conflict"
+        },
+        "pending_recovery": {
+          "operation_ref": "op_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+          "scope": "users.delete",
+          "status": "pending_recovery",
+          "finished_at": null,
+          "failure_code": null
+        }
+      },
+      "get_replay_after_refresh": 1,
+      "requires_exact_adapter": true,
+      "requires_original_scope_key": true,
+      "triggers_callback": false,
+      "consumes_begin_rate_limit": false
+    },
+    "legacy_delete": {
+      "method": "DELETE",
+      "path": "/admin/users/:guid",
+      "request_headers": {
+        "Idempotency-Key": "ignored_no_effect",
+        "X-Action-Ticket": "ignored_no_effect"
+      },
+      "response_headers": {
+        "Cache-Control": "no-store",
+        "X-Request-ID": "required_non_empty"
+      },
+      "response_status": 410,
+      "response_example": {
+        "error": {
+          "code": "legacy_user_delete_gone",
+          "message": "Use the verified v2 user delete action flow.",
+          "type": "admin_action_error",
+          "request_id": "req-contract-example-legacy"
+        }
+      },
+      "target_lookup": false,
+      "database_or_redis_write": false
+    }
+  },
+  "operation_statuses": [
+    "processing",
+    "succeeded",
+    "failed",
+    "pending_recovery"
+  ],
+  "failure_codes": [
+    "action_rejected",
+    "target_version_conflict",
+    "policy_version_conflict",
+    "target_state_conflict",
+    "consumer_validation_failed"
+  ],
+  "error_contract": {
+    "envelope_example": {
+      "error": {
+        "code": "idempotency_conflict",
+        "message": "请求无法完成",
+        "type": "admin_action_error",
+        "request_id": "req-contract-example-1"
+      }
+    },
+    "commit_unknown_example": {
+      "error": {
+        "code": "operation_commit_unknown",
+        "message": "请求无法完成",
+        "type": "admin_action_error",
+        "request_id": "req-contract-example-2",
+        "operation_ref": "op_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+      }
+    },
+    "required_fields": [
+      "code",
+      "message",
+      "type",
+      "request_id"
+    ],
+    "fixed_message": "请求无法完成",
+    "fixed_type": "admin_action_error",
+    "prohibited_fields": [
+      "target",
+      "ticket",
+      "idempotency_key",
+      "digest",
+      "internal_id",
+      "dependency_raw_text"
+    ],
+    "operation_ref_rule": "only_operation_commit_unknown",
+    "http_statuses": [
+      {
+        "status": 400,
+        "codes": [
+          "invalid_admin_action_request"
+        ],
+        "envelope": "admin_action_error",
+        "retry_after": "forbidden"
+      },
+      {
+        "status": 401,
+        "codes": [],
+        "envelope": "legacy_detail",
+        "retry_after": "forbidden",
+        "category": "existing_authentication_failure",
+        "body_shape": {
+          "required_fields": [
+            "detail"
+          ],
+          "additional_fields": false
+        },
+        "details": [
+          "未登录",
+          "Token无效或已过期"
+        ]
+      },
+      {
+        "status": 403,
+        "codes": [
+          "action_verification_rejected",
+          "action_operation_rejected"
+        ],
+        "envelope": "admin_action_error",
+        "retry_after": "forbidden"
+      },
+      {
+        "status": 404,
+        "codes": [
+          "action_target_not_found",
+          "action_operation_not_found"
+        ],
+        "envelope": "admin_action_error",
+        "retry_after": "forbidden"
+      },
+      {
+        "status": 409,
+        "codes": [
+          "action_verification_conflict",
+          "idempotency_conflict",
+          "idempotency_cross_session",
+          "action_rejected",
+          "target_version_conflict",
+          "policy_version_conflict",
+          "target_state_conflict",
+          "consumer_validation_failed"
+        ],
+        "envelope": "admin_action_error",
+        "retry_after": "forbidden"
+      },
+      {
+        "status": 410,
+        "codes": [
+          "operation_expired"
+        ],
+        "envelope": "admin_action_error",
+        "retry_after": "forbidden"
+      },
+      {
+        "status": 422,
+        "codes": [
+          "action_inactive"
+        ],
+        "envelope": "admin_action_error",
+        "retry_after": "forbidden"
+      },
+      {
+        "status": 429,
+        "codes": [
+          "action_rate_limited"
+        ],
+        "envelope": "admin_action_error",
+        "retry_after": "required_integer_seconds_minimum_1"
+      },
+      {
+        "status": 503,
+        "codes": [
+          "action_dependency_unavailable",
+          "operation_commit_unknown"
+        ],
+        "envelope": "admin_action_error",
+        "retry_after": "forbidden"
+      }
+    ]
+  },
+  "frontend": {
+    "memory_only": [
+      "ticket",
+      "idempotency_key",
+      "unknown_state"
+    ],
+    "storage_prohibitions": [
+      "localStorage",
+      "sessionStorage",
+      "URL",
+      "analytics",
+      "ordinary_logs"
+    ],
+    "post_replay_count": 0,
+    "query_get_after_refresh_max": 1,
+    "unload_recovery": false
+  },
+  "security_properties": {
+    "scope": "users.delete",
+    "sensitivePostAutoReplay": false,
+    "clientPersistence": "memory_only",
+    "reasonPersistence": [
+      "audit_logs.detail"
+    ],
+    "legacyDeleteStatus": 410
+  },
+  "acceptance": {
+    "internal_foundation_is_http_acceptance": false,
+    "contract_callable": true,
+    "frontend_connected": false,
+    "contract_accepted": true,
+    "statement": "The users.delete backend HTTP contract is active and frozen; frontend implementation remains pending."
+  }
+}

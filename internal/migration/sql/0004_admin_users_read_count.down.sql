@@ -1,0 +1,2 @@
+-- Forward-only: preserve migration evidence and avoid unreviewed production DDL.
+-- Removing this index requires a separately reviewed forward migration 0005.

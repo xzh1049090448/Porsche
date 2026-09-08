@@ -1,0 +1,110 @@
+package handler
+
+import (
+    "context"
+    "crypto/rand"
+    "encoding/hex"
+    "net/http"
+    "net/http/httptest"
+    "net/url"
+    "os"
+    "strconv"
+    "strings"
+    "testing"
+
+    "github.com/gin-gonic/gin"
+    projectdb "github.com/porsche/ai-gateway-go/internal/db"
+    "github.com/porsche/ai-gateway-go/internal/models"
+)
+
+func independentAdminHTTPChildURL(t *testing.T) string {
+    t.Helper()
+    raw := strings.TrimSpace(os.Getenv("TEST_DATABASE_URL"))
+    parsed, err := url.Parse(raw)
+    if err != nil || !strings.HasSuffix(strings.TrimPrefix(parsed.Path, "/"), "_test") {
+        t.Fatal("authorized disposable TEST_DATABASE_URL is required")
+    }
+    parent, err := projectdb.Open(raw, "test")
+    if err != nil { t.Fatal(err) }
+    parentSQL, err := parent.DB()
+    if err != nil { t.Fatal(err) }
+    t.Cleanup(func() { _ = parentSQL.Close() })
+    var token [12]byte
+    if _, err := rand.Read(token[:]); err != nil { t.Fatal(err) }
+    name := "porsche_b1b2_http_" + hex.EncodeToString(token[:]) + "_test"
+    if err := parent.Exec("CREATE DATABASE `" + name + "`").Error; err != nil { t.Fatal(err) }
+    t.Cleanup(func() {
+        if err := parent.Exec("DROP DATABASE `" + name + "`").Error; err != nil {
+            t.Errorf("drop independent child database: %v", err)
+        }
+    })
+    parsed.Path, parsed.RawPath = "/"+name, ""
+    return parsed.String()
+}
+
+func TestIndependentHTTPStrictDecoderNoPartialWritesAndBoundary(t *testing.T) {
+    gin.SetMode(gin.TestMode)
+    t.Setenv("TEST_DATABASE_URL", independentAdminHTTPChildURL(t))
+    state := authHTTPTestState(t)
+    stateSQL, err := state.DB.DB()
+    if err != nil { t.Fatal(err) }
+    t.Cleanup(func() { _ = stateSQL.Close() })
+
+    actor := platformTestUser("independent-admin", nil)
+    actor.Role = models.UserRoleAdmin
+    target := platformTestUser("independent-target", models.JSONSlice{"original-model"})
+    if err := state.DB.Create(&actor).Error; err != nil { t.Fatal(err) }
+    if err := state.DB.Create(&target).Error; err != nil { t.Fatal(err) }
+    actorAccess := platformJWT(t, state, &actor)
+    _ = platformJWT(t, state, &target)
+
+    engine := gin.New()
+    RegisterAdminUsers(engine, state)
+    call := func(body string) *httptest.ResponseRecorder {
+        req := httptest.NewRequest(http.MethodPut, "/admin/users/"+strconv.FormatInt(target.Guid, 10), strings.NewReader(body))
+        req.Header.Set("Content-Type", "application/json")
+        req.Header.Set("Authorization", "Bearer "+actorAccess)
+        rec := httptest.NewRecorder()
+        engine.ServeHTTP(rec, req)
+        return rec
+    }
+    assertState := func(wantVersion int, wantEvents int, wantRevoked bool, wantACLBytes int) {
+        t.Helper()
+        var stored models.User
+        if err := state.DB.Where("id = ? AND is_deleted = 0", target.ID).First(&stored).Error; err != nil { t.Fatal(err) }
+        var session models.Session
+        if err := state.DB.Where("user_id = ? AND is_deleted = 0", target.ID).First(&session).Error; err != nil { t.Fatal(err) }
+        var events int64
+        if err := state.DB.Model(&models.AuthAuditEvent{}).Where("user_id = ? AND event_type = ? AND is_deleted = 0", target.ID, models.AuthAuditEventManagedUserUpdated).Count(&events).Error; err != nil { t.Fatal(err) }
+        if stored.PlanType != models.PlanFree || stored.AuthVersion != wantVersion || int(events) != wantEvents || (session.RevokedAt != nil) != wantRevoked || len(stored.AllowedModels) != 1 || len(stored.AllowedModels[0]) != wantACLBytes {
+            t.Fatalf("unexpected persisted state: plan=%v version=%d events=%d revoked=%t acl-count=%d acl-bytes=%d", stored.PlanType, stored.AuthVersion, events, session.RevokedAt != nil, len(stored.AllowedModels), func() int { if len(stored.AllowedModels)==0 { return -1 }; return len(stored.AllowedModels[0]) }())
+        }
+    }
+
+    if rec := call(`{"plan_type":"professional","allowed_models":[null]}`); rec.Code != http.StatusBadRequest {
+        t.Fatalf("late invalid ACL status=%d body=%s, want 400", rec.Code, rec.Body.String())
+    }
+    assertState(target.AuthVersion, 0, false, len("original-model"))
+    if rec := call(`{"plan_type":"free","\u0070lan_type":"professional"}`); rec.Code != http.StatusBadRequest {
+        t.Fatalf("escaped duplicate status=%d body=%s, want 400", rec.Code, rec.Body.String())
+    }
+    assertState(target.AuthVersion, 0, false, len("original-model"))
+    if rec := call(`{"status": null, "plan_type": null, "allowed_models": null, "daily_call_limit": null}`); rec.Code != http.StatusOK {
+        t.Fatalf("whitespace null no-op status=%d body=%s, want 200", rec.Code, rec.Body.String())
+    }
+    assertState(target.AuthVersion, 0, false, len("original-model"))
+
+    const limit = 64 << 10
+    prefix, suffix := `{"allowed_models":["`, `"]}`
+    boundary := prefix + strings.Repeat("m", limit-len(prefix)-len(suffix)) + suffix
+    if len(boundary) != limit { t.Fatalf("boundary body length=%d", len(boundary)) }
+    if rec := call(boundary); rec.Code != http.StatusOK {
+        t.Fatalf("exact 64KiB status=%d body=%s, want 200", rec.Code, rec.Body.String())
+    }
+    assertState(target.AuthVersion+1, 1, true, limit-len(prefix)-len(suffix))
+    if rec := call(boundary+" "); rec.Code != http.StatusRequestEntityTooLarge {
+        t.Fatalf("64KiB+1 status=%d body=%s, want 413", rec.Code, rec.Body.String())
+    }
+    assertState(target.AuthVersion+1, 1, true, limit-len(prefix)-len(suffix))
+    _ = context.Background()
+}

@@ -1,0 +1,7 @@
+table_name	index_name	stat_name	stat_value	bytes
+b1d_h3_index_build	idx_users_admin_read_count	n_leaf_pages	157	2572288
+b1d_h3_index_build	idx_users_admin_read_count	size	225	3686400
+users	idx_users_admin_read_count	n_leaf_pages	158	2588672
+users	idx_users_admin_read_count	size	161	2637824
+pending_metadata_locks
+0

@@ -1,0 +1,11 @@
+Exact cleanup verification (2026-09-04)
+========================================
+
+- MySQL full ID: no such object.
+- Redis full ID: no such object.
+- Exact MySQL and Redis names: zero inventory rows.
+- task label codex.task=b1d-joint-acceptance-260904: zero inventory rows.
+- TCP 15173, 18080, 61998 and 62001: no connections or listeners.
+- /private/tmp/porsche-joint-acceptance-260904-td1FYO: absent.
+
+Result: PASS. Exact resources, sessions, ports, and private credential directory are cleaned.

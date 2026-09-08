@@ -1,0 +1,27 @@
+total_users	matching_users
+100001	100000
+EXPLAIN
+-> Aggregate: count(0)  (cost=652 rows=1) (actual time=203..203 rows=1 loops=1)
+    -> Filter: ((users.guid <> -1) and (users.`role` in (1,10)) and (users.`status` in (1,2)))  (cost=602 rows=497) (actual time=0.234..198 rows=100000 loops=1)
+        -> Index lookup on users using idx_users_active_updated (is_deleted=0), with index condition: (users.id <> -1)  (cost=602 rows=49680) (actual time=0.231..185 rows=100001 loops=1)
+
+EXPLAIN
+-> Limit: 20 row(s)  (cost=602 rows=20) (actual time=0.117..0.12 rows=20 loops=1)
+    -> Filter: ((users.is_deleted = 0) and (users.`role` in (1,10)) and (users.`status` in (1,2)))  (cost=602 rows=497) (actual time=0.116..0.118 rows=20 loops=1)
+        -> Index range scan on users using uk_users_guid over (guid < -1) OR (-1 < guid) (reverse), with index condition: ((users.id <> -1) and (users.guid <> -1))  (cost=602 rows=49681) (actual time=0.113..0.115 rows=21 loops=1)
+
+EXPLAIN
+-> Sort: paged.guid DESC  (actual time=0.658..0.659 rows=20 loops=1)
+    -> Stream results  (cost=4.75 rows=20) (actual time=0.54..0.544 rows=20 loops=1)
+        -> Nested loop left join  (cost=4.75 rows=20) (actual time=0.537..0.539 rows=20 loops=1)
+            -> Rows fetched before execution  (cost=0..0 rows=1) (actual time=0..42e-6 rows=1 loops=1)
+            -> Table scan on paged  (cost=574..4.75 rows=20) (actual time=0.462..0.464 rows=20 loops=1)
+                -> Materialize CTE paged  (cost=604..604 rows=20) (actual time=0.459..0.459 rows=20 loops=1)
+                    -> Limit: 20 row(s)  (cost=602 rows=20) (actual time=0.35..0.355 rows=20 loops=1)
+                        -> Filter: ((users.is_deleted = 0) and (users.`role` in (1,10)) and (users.`status` in (1,2)))  (cost=602 rows=497) (actual time=0.349..0.353 rows=20 loops=1)
+                            -> Index range scan on users using uk_users_guid over (guid < -1) OR (-1 < guid) (reverse), with index condition: ((users.id <> -1) and (users.guid <> -1))  (cost=602 rows=49681) (actual time=0.345..0.349 rows=21 loops=1)
+
+Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_part	Packed	Null	Index_type	Comment	Index_comment	Visible	Expression
+users	1	idx_users_admin_read_count	1	is_deleted	A	1	NULL	NULL		BTREE			YES	NULL
+users	1	idx_users_admin_read_count	2	role	A	1	NULL	NULL		BTREE			YES	NULL
+users	1	idx_users_admin_read_count	3	status	A	1	NULL	NULL		BTREE			YES	NULL

@@ -9,6 +9,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/porsche/ai-gateway-go/internal/app"
+	"github.com/porsche/ai-gateway-go/internal/diagnostics"
 	"github.com/porsche/ai-gateway-go/internal/httpx"
 	"github.com/porsche/ai-gateway-go/internal/middleware"
 	"github.com/porsche/ai-gateway-go/internal/models"
@@ -17,7 +18,7 @@ import (
 )
 
 func RegisterPlatform(r *gin.Engine, state *app.State) {
-	g := r.Group("/api/v1/platform", gatewayRequestID(), middleware.RequireUser(state))
+	g := r.Group("/api/v1/platform", gatewayRequestID(), platformDiagnostics(), middleware.RequireUser(state), platformDiagnosticAuthenticated())
 
 	g.GET("/models", func(c *gin.Context) {
 		if state.WhiteLabel == nil {
@@ -41,9 +42,12 @@ func RegisterPlatform(r *gin.Engine, state *app.State) {
 	})
 
 	g.POST("/chat/completions", func(c *gin.Context) {
+		trace := diagnostics.From(c.Request.Context())
+		validationEnd := trace.Begin(diagnostics.Validation)
 		user := middleware.CurrentUser(c)
 		var body platformChatBody
 		if err := decodePlatformRequest(c, &body, false); err != nil {
+			validationEnd(diagnostics.Invalid)
 			platformWhiteLabelError(c, err)
 			return
 		}
@@ -53,13 +57,22 @@ func RegisterPlatform(r *gin.Engine, state *app.State) {
 		}
 		params := body.toParams()
 		if body.MaxTokens == nil {
+			validationEnd(diagnostics.Invalid)
 			platformWhiteLabelError(c, &whitelabel.Error{Code: whitelabel.CodeMissingMaxTokens, Status: http.StatusBadRequest, Type: whitelabel.TypeInvalidRequest})
 			return
 		}
+		validationEnd(diagnostics.OK)
+		catalogEnd := trace.Begin(diagnostics.Catalog)
 		if err := platformAuthorizeModels(c, state, user, []string{params.Model}); err != nil {
+			reason := diagnostics.Rejected
+			if err.Code == whitelabel.CodeGatewayUpstreamUnavailable {
+				reason = diagnostics.Unavailable
+			}
+			catalogEnd(reason)
 			platformWhiteLabelError(c, err)
 			return
 		}
+		catalogEnd(diagnostics.OK)
 		if body.Stream {
 			started := false
 			err := state.Platform.Stream(c.Request.Context(), state.DB, user, params, func(b []byte) error {

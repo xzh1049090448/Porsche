@@ -1,0 +1,177 @@
+package authz_test
+
+import (
+	"errors"
+	"sync"
+	"testing"
+
+	"github.com/porsche/ai-gateway-go/internal/authz"
+	"github.com/porsche/ai-gateway-go/internal/models"
+)
+
+func externalAccount(id int64, role models.UserRole) authz.Account {
+	return authz.Account{
+		ID: id, GUID: id + 10000, Role: role, Status: models.UserStatusActive,
+	}
+}
+
+func expectDecision(t *testing.T, got, want authz.Decision, context string) {
+	t.Helper()
+	if got != want {
+		t.Fatalf("%s: got %v, want %v", context, got, want)
+	}
+}
+
+func contains(names []string, want string) bool {
+	for _, name := range names {
+		if name == want {
+			return true
+		}
+	}
+	return false
+}
+
+func TestExternalConsumerAdversarialContract(t *testing.T) {
+	target := externalAccount(2, models.UserRoleUser)
+
+	var nilEvaluator *authz.Evaluator
+	var zeroEvaluator authz.Evaluator
+	expectDecision(t, nilEvaluator.User("users.read", target), authz.Denied, "nil User")
+	expectDecision(t, nilEvaluator.Create(models.UserRoleUser), authz.Denied, "nil Create")
+	expectDecision(t, nilEvaluator.Collection("users.read", false), authz.Denied, "nil Collection")
+	expectDecision(t, nilEvaluator.Resource("groups.read"), authz.Denied, "nil Resource")
+	if len(nilEvaluator.CapabilityNames()) != 0 || len(zeroEvaluator.CapabilityNames()) != 0 {
+		t.Fatal("nil or zero evaluator exposed a capability projection")
+	}
+
+	invalidActors := []authz.Account{
+		{},
+		{ID: 1, GUID: 1, Role: models.UserRoleAdmin, Status: models.UserStatusDisabled},
+		{ID: 1, GUID: 1, Role: models.UserRoleAdmin, Status: models.UserStatusActive, IsDeleted: 1},
+		{ID: 1, GUID: 1, Role: models.UserRole(99), Status: models.UserStatusActive},
+	}
+	for i, actor := range invalidActors {
+		if _, err := authz.NewEvaluator(actor, nil); !errors.Is(err, authz.ErrInvalidActor) {
+			t.Fatalf("invalid actor %d: got %v, want ErrInvalidActor", i, err)
+		}
+	}
+
+	admin := externalAccount(1, models.UserRoleAdmin)
+	for _, rules := range [][]authz.Override{
+		{{Capability: "unknown", Effect: authz.Allow}},
+		{{Capability: "users.promote", Effect: authz.Allow}},
+		{{Capability: "users.quota.adjust", Effect: authz.Allow}},
+		{{Capability: "users.read", Effect: authz.Allow}, {Capability: "users.read", Effect: authz.Deny}},
+		{{Capability: "users.read", Effect: authz.Effect("bad")}},
+	} {
+		if _, err := authz.NewEvaluator(admin, rules); !errors.Is(err, authz.ErrInvalidOverrides) {
+			t.Fatalf("invalid override accepted: %#v, err=%v", rules, err)
+		}
+	}
+	if _, err := authz.NewEvaluator(externalAccount(3, models.UserRoleRoot), []authz.Override{{Capability: "users.read", Effect: authz.Allow}}); !errors.Is(err, authz.ErrInvalidOverrides) {
+		t.Fatalf("Root override must be rejected, got %v", err)
+	}
+	if _, err := authz.NewEvaluator(externalAccount(4, models.UserRoleUser), []authz.Override{{Capability: "users.read", Effect: authz.Allow}}); !errors.Is(err, authz.ErrInvalidOverrides) {
+		t.Fatalf("User override must be rejected, got %v", err)
+	}
+	ordinary, err := authz.NewEvaluator(externalAccount(4, models.UserRoleUser), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectDecision(t, ordinary.User("users.read", target), authz.Denied, "ordinary user default")
+	if len(ordinary.CapabilityNames()) != 0 {
+		t.Fatal("ordinary user gained a management projection")
+	}
+
+	inherited, err := authz.NewEvaluator(externalAccount(5, models.UserRoleAdmin), []authz.Override{{Capability: "users.reset_password", Effect: authz.Inherit}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectDecision(t, inherited.User("users.reset_password", target), authz.Denied, "inherit uses admin default")
+	deniedDefault, err := authz.NewEvaluator(externalAccount(5, models.UserRoleAdmin), []authz.Override{{Capability: "users.read", Effect: authz.Deny}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectDecision(t, deniedDefault.User("users.read", target), authz.Denied, "explicit deny overrides admin default")
+
+	rules := []authz.Override{{Capability: "users.reset_password", Effect: authz.Allow}, {Capability: "users.deleted.read", Effect: authz.Allow}}
+	evaluator, err := authz.NewEvaluator(admin, rules)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rules[0].Effect = authz.Deny
+	admin.Status = models.UserStatusDisabled
+	expectDecision(t, evaluator.User("users.reset_password", target), authz.Allowed, "mutated caller snapshots")
+
+	selfByGUID := externalAccount(9, models.UserRoleUser)
+	selfByGUID.GUID = 10001
+	for label, protected := range map[string]authz.Account{
+		"self GUID": selfByGUID,
+		"peer":     externalAccount(8, models.UserRoleAdmin),
+		"Root":     externalAccount(7, models.UserRoleRoot),
+	} {
+		expectDecision(t, evaluator.User("users.reset_password", protected), authz.Hidden, label+" target")
+	}
+
+	deleted := externalAccount(6, models.UserRoleUser)
+	deleted.IsDeleted = 1
+	expectDecision(t, evaluator.User("users.deleted.read", deleted), authz.Allowed, "tombstone read")
+	expectDecision(t, evaluator.User("users.delete", deleted), authz.Denied, "tombstone mutation")
+
+	root, err := authz.NewEvaluator(externalAccount(10, models.UserRoleRoot), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectDecision(t, root.Resource("users.edit"), authz.Denied, "wrong Resource entrypoint")
+	expectDecision(t, root.User("public_content.edit", target), authz.Denied, "wrong User entrypoint")
+	expectDecision(t, root.Collection("groups.read", false), authz.Denied, "wrong Collection entrypoint")
+	expectDecision(t, root.User("users.quota.adjust", target), authz.Denied, "unavailable capability")
+	expectDecision(t, root.User("users.promote", target), authz.Allowed, "Root-only capability for Root")
+	expectDecision(t, root.Create(models.UserRoleRoot), authz.Denied, "Root creation")
+	expectDecision(t, root.User("users.read", externalAccount(11, models.UserRoleRoot)), authz.Hidden, "Root peer target")
+
+	catalog := authz.Catalog()
+	if len(catalog) != 24 || catalog[0].Name == "" {
+		t.Fatalf("unexpected external catalog shape: %d", len(catalog))
+	}
+	first := catalog[0].Name
+	catalog[0].Name = "attacker.changed"
+	if authz.Catalog()[0].Name != first {
+		t.Fatal("Catalog caller mutation changed later catalog output")
+	}
+	projection := root.CapabilityNames()
+	if !contains(projection, "groups.write") || contains(projection, "users.quota.adjust") {
+		t.Fatalf("Root projection violates root-only/unavailable boundary: %v", projection)
+	}
+	projection[0] = "attacker.changed"
+	if contains(root.CapabilityNames(), "attacker.changed") {
+		t.Fatal("CapabilityNames caller mutation changed evaluator projection")
+	}
+}
+
+func TestExternalConsumerConcurrentReads(t *testing.T) {
+	root, err := authz.NewEvaluator(externalAccount(20, models.UserRoleRoot), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := externalAccount(21, models.UserRoleUser)
+	var wait sync.WaitGroup
+	errCh := make(chan string, 32)
+	for i := 0; i < 32; i++ {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			for j := 0; j < 500; j++ {
+				if root.User("users.read", target) != authz.Allowed || root.Resource("groups.write") != authz.Allowed || len(root.CapabilityNames()) != 23 {
+					errCh <- "concurrent exported API decision mismatch"
+					return
+				}
+			}
+		}()
+	}
+	wait.Wait()
+	close(errCh)
+	for err := range errCh {
+		t.Fatal(err)
+	}
+}

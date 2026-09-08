@@ -1,0 +1,23 @@
+{
+  "leaf": {
+    "pass": 1739,
+    "skip": 1
+  },
+  "leaf_skips": [
+    {
+      "package": "github.com/porsche/ai-gateway-go/internal/handler",
+      "reason": "admin_users_read_performance_test.go:24: NOT_RUN: opt-in 100k synthetic-user performance fixture requires this batch authorization",
+      "test": "TestAdminUsersReadPerformance"
+    }
+  ],
+  "packages": {
+    "pass": 16,
+    "skip": 5
+  },
+  "parse_failures": [],
+  "source": "backend-full.jsonl",
+  "terminal": {
+    "pass": 1912,
+    "skip": 1
+  }
+}

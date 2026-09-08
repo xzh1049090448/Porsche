@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/porsche/ai-gateway-go/internal/actionsecurity"
 	"github.com/porsche/ai-gateway-go/internal/config"
 	"github.com/porsche/ai-gateway-go/internal/persistence"
 	"github.com/porsche/ai-gateway-go/internal/service"
@@ -13,22 +14,44 @@ import (
 )
 
 type State struct {
-	Settings            *config.Settings
-	DB                  *gorm.DB
-	Auth                *service.AuthService
-	Billing             *service.BillingService
-	SMS                 *service.SMSService
-	Platform            *service.PlatformChatService
-	GatewayTokens       *service.GatewayTokenService
-	WhiteLabel          *whitelabel.WhiteLabelService
-	Audit               *service.AuditService
-	AuthRedis           *service.AuthRedis
-	PlatformGenerations *service.PlatformGenerationStore
-	Sessions            *service.SessionService
-	HTTP                *http.Client
+	Settings              *config.Settings
+	DB                    *gorm.DB
+	Auth                  *service.AuthService
+	Billing               *service.BillingService
+	SMS                   *service.SMSService
+	Platform              *service.PlatformChatService
+	GatewayTokens         *service.GatewayTokenService
+	WhiteLabel            *whitelabel.WhiteLabelService
+	Audit                 *service.AuditService
+	AuthRedis             *service.AuthRedis
+	PlatformGenerations   *service.PlatformGenerationStore
+	Sessions              *service.SessionService
+	ActionSecurityCrypto  *actionsecurity.Crypto
+	UserManagementActions *service.UserManagementActions
+	UserDeleteActions     *service.UserDeleteActions
+	ActionVerifications   *service.ActionVerificationService
+	HTTP                  *http.Client
 }
 
 func NewState(settings *config.Settings, db *gorm.DB) (*State, error) {
+	return newState(settings, db, defaultStateConstructors())
+}
+
+type stateConstructors struct {
+	newAuthRedisFromURL               func(context.Context, string, string) (*service.AuthRedis, error)
+	newPlatformGenerationStoreFromURL func(context.Context, string) (*service.PlatformGenerationStore, error)
+	newUserManagementActions          func(*gorm.DB, *service.AuthRedis, *actionsecurity.Crypto) (*service.UserManagementActions, error)
+}
+
+func defaultStateConstructors() stateConstructors {
+	return stateConstructors{
+		newAuthRedisFromURL:               service.NewAuthRedisFromURL,
+		newPlatformGenerationStoreFromURL: service.NewPlatformGenerationStoreFromURL,
+		newUserManagementActions:          service.NewUserManagementActions,
+	}
+}
+
+func newState(settings *config.Settings, db *gorm.DB, constructors stateConstructors) (*State, error) {
 	persistence.ConfigureSnowflake(settings.SnowflakeNodeID)
 	s := &State{
 		Settings: settings,
@@ -36,6 +59,25 @@ func NewState(settings *config.Settings, db *gorm.DB) (*State, error) {
 		SMS:      service.NewSMSService(settings),
 		Audit:    service.NewAuditService(),
 		HTTP:     &http.Client{},
+	}
+	dependenciesTransferred := false
+	defer func() {
+		if dependenciesTransferred {
+			return
+		}
+		if s.PlatformGenerations != nil {
+			_ = s.PlatformGenerations.Close()
+		}
+		if s.AuthRedis != nil {
+			_ = s.AuthRedis.Close()
+		}
+	}()
+	if len(settings.ActionSecurityHMACKey) > 0 {
+		actionCrypto, err := actionsecurity.NewCrypto(settings.ActionSecurityHMACKey)
+		if err != nil {
+			return nil, err
+		}
+		s.ActionSecurityCrypto = actionCrypto
 	}
 	s.Billing = service.NewBillingService(settings)
 	// Legacy tests can construct Settings directly; production Settings are
@@ -53,20 +95,40 @@ func NewState(settings *config.Settings, db *gorm.DB) (*State, error) {
 	// dependency here ensures a configured Redis failure prevents future auth
 	// operations from silently falling back to non-revocable JWT behavior.
 	if strings.TrimSpace(settings.RedisURL) != "" {
-		authRedis, err := service.NewAuthRedisFromURL(context.Background(), settings.RedisURL, settings.AuthHMACKey)
+		if constructors.newAuthRedisFromURL == nil || constructors.newPlatformGenerationStoreFromURL == nil {
+			return nil, service.ErrActionVerificationUnavailable
+		}
+		authRedis, err := constructors.newAuthRedisFromURL(context.Background(), settings.RedisURL, settings.AuthHMACKey)
 		if err != nil {
 			return nil, err
 		}
 		s.AuthRedis = authRedis
-		generations, err := service.NewPlatformGenerationStoreFromURL(context.Background(), settings.RedisURL)
+		generations, err := constructors.newPlatformGenerationStoreFromURL(context.Background(), settings.RedisURL)
 		if err != nil {
-			_ = authRedis.Close()
 			return nil, err
 		}
 		s.PlatformGenerations = generations
 	}
 	s.Sessions = service.NewSessionService(db, s.AuthRedis, settings)
 	s.Auth.SetSessionService(s.Sessions)
+	if s.ActionSecurityCrypto != nil {
+		if db == nil || s.AuthRedis == nil || constructors.newUserManagementActions == nil {
+			return nil, service.ErrActionVerificationUnavailable
+		}
+		userManagementActions, err := constructors.newUserManagementActions(db, s.AuthRedis, s.ActionSecurityCrypto)
+		if err != nil || userManagementActions == nil || userManagementActions.Verifications == nil ||
+			userManagementActions.Operations == nil || userManagementActions.DeleteOutbox == nil || userManagementActions.CreateOutbox == nil ||
+			userManagementActions.NewDeleteExecution == nil || userManagementActions.NewCreateExecution == nil {
+			return nil, service.ErrActionVerificationUnavailable
+		}
+		userDeleteActions := userManagementActions.DeleteActions()
+		if userDeleteActions == nil {
+			return nil, service.ErrActionVerificationUnavailable
+		}
+		s.UserManagementActions = userManagementActions
+		s.UserDeleteActions = userDeleteActions
+		s.ActionVerifications = userManagementActions.Verifications
+	}
 	s.Platform = service.NewPlatformChatService(service.PlatformDeps{
 		Settings:   settings,
 		DB:         db,
@@ -74,5 +136,6 @@ func NewState(settings *config.Settings, db *gorm.DB) (*State, error) {
 		WhiteLabel: s.WhiteLabel,
 	})
 
+	dependenciesTransferred = true
 	return s, nil
 }

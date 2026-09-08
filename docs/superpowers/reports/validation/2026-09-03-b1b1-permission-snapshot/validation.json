@@ -1,0 +1,43 @@
+{
+  "feature": "go-012",
+  "status": "passing",
+  "scope": "local permission-policy migration and read-only snapshot loader",
+  "focused_service": {
+    "command": "go test ./internal/service -run '^TestPermission' -count=1",
+    "result": "pass",
+    "skip": 0,
+    "evidence": "real isolated MySQL fixture; empty versioned head baseline, corrupt policy, actor/root/context, commit failure, and dual-root lock tests"
+  },
+  "full_fixture_run": {
+    "command": "go test -p 1 ./... -count=1 -json",
+    "test_pass": 456,
+    "test_skip": 0,
+    "test_fail": 0,
+    "package_pass": 15,
+    "package_skip_no_test_files": 4,
+    "package_fail": 0,
+    "raw_output": "/private/tmp/porsche-b1b1-full-test.json"
+  },
+  "build": "pass",
+  "vet": "pass",
+  "diff_check": "pass",
+  "migration_guard": "missing fixture skips; unsafe non-empty target rejects; isolated fixture matrix passes without skips",
+  "pm_spec_review": "pass",
+  "independent_review": "pass; permission_snapshot_verify; no Critical/High/Medium/Low; reader-before-writer FOR SHARE probe passed",
+  "production": "not authorized"
+  ,"hashes": {
+    "0001_up":"2da41ffd07c44d45cb05a705f867db2f2b8f01defb519000197dedce9998aedd",
+    "0001_down":"28d0be4cc99fce8a09c22f1c3403a355f029e1743b8bb985943fac4a9a94a55e",
+    "0002_up":"58712428ca668fb1fea0943d71a2209b2e7faf26de043d870195a033ac0f413c",
+    "0002_down":"2a60cebd1fa1c59a546a6f7a0e252e7cd5e3cbf13e67958bdfbf09389ab0523a",
+    "b1a_evaluator":"7df94e9ceaa4920526abc444764727801d1a5bbebbd98f56b10f095d44023c6e",
+    "b1a_tests":"a7ccfecdf6a9ed7ea4331e61b05e20a2958aaee9da632adeaed8fffb4ab0b63d",
+    "0003_up":"31c49d9bb1f171d9ea6caab49714d9de05552b8f6e9cb73f2989760efd0a015c",
+    "0003_down":"3b6432e0ed9144b85c3a95bc0b90c6150a46e9eaf80e59581c5d0c2d818d0444",
+    "runner":"40b4de857ca675d65eab872ce9804e2eb4fa939be9869e126a7d959e60806af6",
+    "schema_verifier":"d50ec8212f5a926e3a0f14b906bd2e76d436a861f2cfb439996ad02f7345b725",
+    "models":"22d011d5c6dcc029c04fc0084f887fd7baca2aac5c21b8a04d796664d11b3c6f",
+    "loader":"ae268495de68e043d09c6d6b362e326c87e84c8df2c7293cd8184557ec660e57",
+    "loader_tests":"25700c52a6da60f648c9ebb057d7c9552c01338bdae648ddd4267feb1bd25177"
+  }
+}

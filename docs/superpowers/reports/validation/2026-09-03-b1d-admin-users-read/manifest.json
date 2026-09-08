@@ -1,0 +1,801 @@
+{
+  "batch": "B1-D r1",
+  "date": "2026-09-04",
+  "status": "PASS_LIMITED_SCOPE_CLEANUP_COMPLETE",
+  "verdict": "PASS_LIMITED_SCOPE",
+  "head": "aec1619ee710c80cd71dbe529660e2d12b3fda7b",
+  "scope": "two v2 reads, three legacy read adapters, four auth permission projections",
+  "production_sha256": {
+    "internal/service/admin_users_query.go": "7898587e03f3db2805a4ab526415f46a5af5f8c601467b346d5d4ae160920ac6",
+    "internal/service/admin_users_projection.go": "6f04f0f38711bf7a62dc084d4f975066b22c41e6f94bfddc7181276e7ebad78b",
+    "internal/service/admin_users_read.go": "7a20df0cb257feb393f930b0d006fc88795acbc0b9dead2784f5ae3b61d4f715",
+    "internal/service/auth_session.go": "fdb2b231c3e570407689db079b1a47ad4b8853b4c6bfe81603e0ee7e0c1590e6",
+    "internal/handler/admin_users_read.go": "b40c3ad76f18e6fa61ed4c1af601d157ff460bc5c70326c7edb08c9ef7392097",
+    "internal/handler/auth_projection.go": "14f3816c50d758b8877c772b532c8002448e096c51798e50cf2672df333ad04b",
+    "internal/handler/admin.go": "b59a0fad2676634b2744043e4265f934488e594fc0d52720aa9bf13124f06b0f",
+    "internal/handler/auth_users.go": "93ecf82a0cc492678069dd732579ed2415450bce76d6a6f411db771aa3867e36",
+    "internal/router/router.go": "27286e1d44796456327bd9cbf623e0eb87d98e402065ed19564b0108fc3972ef"
+  },
+  "artifacts_sha256": {
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/porsche-b1d-full-no-fixture.jsonl": "424a09106add0801617927fa23626702e58b4ba5681538684615ecf079284a54",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/porsche-b1d-race-no-fixture.jsonl": "b9016d59be6c24f1cc923c523f6ef69601db3351cbdd3fd4039f9d80e09e52f9",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/porsche-b1d-build.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/porsche-b1d-vet.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/porsche-b1d-pure-red.log": "c0320cc67b8d518ea211efff85df8c23e32aaab9aaeefb612b8dd9e513a87190",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/porsche-b1d-pure-green.log": "6429202352aac38464e30a6090fd6a6712d213eaf0f9e1d8a19f2374d39ec073",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/porsche-b1d-handler-red.log": "2105c5003d460bc96395f7cae2f594b860d0d78e790880150a9e42fb30c9e0d6",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/porsche-b1d-handler-green.log": "8b3a9b8efa11cb326682013e91cd6850df53c090f50d3cf831608f394e737e2a",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/porsche-b1d-cookie-red.log": "9bba2b824f2262bd7db1b3419b501b47838b50a8f894819b100184c3fba58183",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/porsche-b1d-cookie-green.log": "4f270e653bdabd3c0d2f783331b3f723fd44d9d2dcc5e7bb62952542897d41a2",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/porsche-b1d-legacy-red.log": "cef60e68cc07bf774f59752b2a2e237ca31749ec31e915368558914b172fc742",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/porsche-b1d-focused-pure.log": "5ab2d34c3e6ca9abde717cd667f357c26b1483c05a903f7f5f0f5957453d6bc1",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/fixture-lifecycle-plan.md": "350da68be0c2870aeea75dd36cfc0605d858e0b98eee2ecc000186a932a357d3",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/security-review.md": "86c210b0ef053e888edfe1aa68e39c12aebd68692c6e8e36e4746e5728bf9505",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/porsche-b1d-performance-response-red.log": "da5a3c769f23a5f6a18784fa714a763e282dbe3fbc686608c6843451c1b0a440",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/porsche-b1d-performance-response-focused.jsonl": "78144e2356bbd9000a131a522b19165d8e34c02bfeb24bf74114dd7689fab00d",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/README.md": "10cef8b8341a227033739bc22917b2a32ef18160dde3b29873bd122297aa26b3",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/build.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/counts.json": "46bf21f642f8148bc7766940073a875f7a9714184779e196e4487c74af1959fe",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/diff-check.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/final-db-and-redis-reset.log": "da2e61415c1f7b1f4a005dfa64503b21ec4a935aa8282f03bd839e32db2ea269",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/final-fresh-db-reset.log": "da2e61415c1f7b1f4a005dfa64503b21ec4a935aa8282f03bd839e32db2ea269",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/final-redis-reset.log": "a12b7cb43c9d9134b5bb1b35e9096b66775d9e92e7611d1cc92b02edd6782a87",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/focused-handler.jsonl": "274650d176166943b01773500b8db5e7efd9ffa90d023ef97144a01011246792",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/focused-initial-fixture-bug.jsonl": "c58e948e6fb8b4b1310ae0c7dfa7aa3dbd3815f6a8352bdadc4d8fd162ff113a",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/focused-parallel-package-fail.jsonl": "e875c654226b6b8568b8e3a5e11dd1ef1f4863e95f544c970ee86413c4902775",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/focused-service.jsonl": "151ffa32cc456d74b9f8fbdcd6d0248c2d6aea305f7c083f7951d6f53aeb5cb5",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/fresh-db-reset.log": "da2e61415c1f7b1f4a005dfa64503b21ec4a935aa8282f03bd839e32db2ea269",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/full-before-performance-fixture-fix.jsonl": "e26fbe8375843c2a30c7270cced64c4445d4a4b2fd3c735ef37629b6f70fd55a",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/full-initial-stale-assertion-and-dirty-fixture.jsonl": "dda8f4e031826ceeef0d803fc1c0484116893d8e5c593f32cf1b386d3fd78581",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/full-mysql-only-reset-redis-counter-fail.jsonl": "a3369d866972f67968441ebc4c2f519ba7dd59f2fe172eb7e1808564ef972244",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/full.jsonl": "1a17980c68b4de14b102e310ae941c576a5d05cbe3a156e1e94b6b7a44175485",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/migration-final-clean-both.log": "380eeea5bb381d31a247966324511d9d1fedc7fe2905d5a2d86db2c01d566862",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/migration-final.log": "380eeea5bb381d31a247966324511d9d1fedc7fe2905d5a2d86db2c01d566862",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/migration-fresh-full.log": "380eeea5bb381d31a247966324511d9d1fedc7fe2905d5a2d86db2c01d566862",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/migration-qa-window.log": "380eeea5bb381d31a247966324511d9d1fedc7fe2905d5a2d86db2c01d566862",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/migration-status.log": "380eeea5bb381d31a247966324511d9d1fedc7fe2905d5a2d86db2c01d566862",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/migration-up.log": "380eeea5bb381d31a247966324511d9d1fedc7fe2905d5a2d86db2c01d566862",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/performance-before-final-qa-window.log": "ffe753d8a2ced4efc3b5d7bdf332747f2037c346a43aa35a1e0d46e6bcc0423d",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/performance-initial.log": "2d8f41ea667ca5770576f52c03f40651f985a8c76745983fdc268040b34d1864",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/performance.log": "773168a6be48b9470f3d18df8b868b64661d12e8f38920352a669b7a22d2469b",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/production-hashes.sha256": "c182f388dedaa0c49560bc48de9f9d472fcef87c0c8aab4674c023bc3da90de2",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/qa-window-db-reset.log": "da2e61415c1f7b1f4a005dfa64503b21ec4a935aa8282f03bd839e32db2ea269",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/qa-window-redis-reset.log": "a12b7cb43c9d9134b5bb1b35e9096b66775d9e92e7611d1cc92b02edd6782a87",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/race-handler.jsonl": "e6cc941172ca2bdfc98a9b3e259c784fa407cb1098ce129a9220f40e7810dabe",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/race-service.jsonl": "ecde408466ee18ae87170b44ac8e6d0b37553e21e947c7f55f471e23c2b15512",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/resource-ledger.md": "35cf7df66fe45d5fbc1893239c99468ccb770d147ffb47eef53eee0b4e76e626",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/stale-404-contract-focused-dirty-after-full-fail.jsonl": "373cddb01f460172c2a8514df310146fc10de048feec605479c51e12408ea7ee",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/stale-404-contract-focused.jsonl": "04e3ba86b4235991d8e01974048be21d3fee28f95f60c6858642e6875842bde4",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/vet.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/commands.md": "a1f7243ba722d8c77fc70f7cf396978f4a1cd0be202ca7111130ec88f2d1015c",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa/SECURITY_REPORT.md": "c437e87412809960217f54046dd1420093ffe9abaf969bf116da621d9ea36356",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa/build.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa/diff-check.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa/evidence-hygiene.txt": "0b98843240a0b1a2384483206c02be8968dd809eb73838820be24cb7d6d6aeb9",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa/final-diff-check.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa/final-production-hashes.sha256": "b713540a8965081ad745100a96d93d9ec9e41aabc9869206da003370a4ad389e",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa/focused-handler.jsonl": "2718ea66e3a09ecbe71682a468e7f638450dfeb37e057514784fbdb21d092247",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa/focused-service.jsonl": "97f278103352bc528a7ef2ce823cd2dfd929d45dcebd3bb9d02b1361fd1dabe8",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa/full.jsonl": "ef44b6aee64315a320e2dba8145ccf41d95b5d711c08823bce303ee90f971672",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa/ledger.md": "1be611e87b9b50b4c71cd097071ab4f14c8b5be168a44e59c6b298f70769ae2f",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa/migration-full.log": "380eeea5bb381d31a247966324511d9d1fedc7fe2905d5a2d86db2c01d566862",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa/migration-performance-repro.log": "380eeea5bb381d31a247966324511d9d1fedc7fe2905d5a2d86db2c01d566862",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa/migration-performance-third.log": "380eeea5bb381d31a247966324511d9d1fedc7fe2905d5a2d86db2c01d566862",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa/migration-performance.log": "380eeea5bb381d31a247966324511d9d1fedc7fe2905d5a2d86db2c01d566862",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa/migration-race-handler.log": "380eeea5bb381d31a247966324511d9d1fedc7fe2905d5a2d86db2c01d566862",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa/migration-race.log": "380eeea5bb381d31a247966324511d9d1fedc7fe2905d5a2d86db2c01d566862",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa/migration-status.log": "380eeea5bb381d31a247966324511d9d1fedc7fe2905d5a2d86db2c01d566862",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa/migration-up.log": "380eeea5bb381d31a247966324511d9d1fedc7fe2905d5a2d86db2c01d566862",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa/mysql-query-components.txt": "56ed8f8dce08d0a96b516572a8634db54d5b315ab0f12beb24a72e0b29e934c3",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa/mysql-query-plan.txt": "a6e51fb0c54a153497773ac6c9ba24bf5d0b2dff1c78b5880d5821a15f8c3733",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa/performance-repro.log": "6ab15eff08b3d92c4339cff27e1feda3b149919182f9c69cc1405c6acc3c73a7",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa/performance-third.log": "f924ccfebcb1e7ee6b2056583414aec96f4c3b0f3e3cd95dd17191ba792c5690",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa/performance.log": "4aeb0295da58ec1d981e07fd30f290ca7fed37a032de1e2ae39e5e50289a1a3f",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa/race-handler.jsonl": "90cf0e003dadc372e113f36a222b7e2345481ea3d07b3f4983213449151bfd2d",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa/race-service.jsonl": "f0dfa263e53305f50c7f72a79cda1c700d027e3e627d3c6d672c537b87f953df",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa/vet.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "docs/superpowers/plans/2026-09-04-b1d-admin-users-count-index-plan.md": "627d3551b67d45c5506716c50736daaa9f632cdac8538c548940d1cb668212b9",
+    "docs/superpowers/reports/2026-09-03-b1d-admin-users-read.md": "1ccad851a1f9e387c79b132034d7423f1b4d6f0efe137181a5dc225c2b2c48b8",
+    "progress.md": "f2400ccef5725a889a7d17b0da06df6cc8f570577dcbc7e99af77612e2cf6311",
+    "feature_list.json": "7f66d387a3fa1940004395c7031a8dba60ae8014be7d057a2fc41481a19e3978",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/README.md": "3524ccacb2bf20ed87b14b5dd5e1762526f27bd88fdd6a403bf19d36784592bb",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/before-explain-components.txt": "56ed8f8dce08d0a96b516572a8634db54d5b315ab0f12beb24a72e0b29e934c3",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/before-query-plan.txt": "a6e51fb0c54a153497773ac6c9ba24bf5d0b2dff1c78b5880d5821a15f8c3733",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/build.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/counts.json": "cfb276531fed70fefd316fea1d84d4bdf056a4ebff3eaee312530b14775725ab",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/diff-check.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/focused-handler.jsonl": "e1551d7de21c59a3ec7861a2d5c83cd6b3a0b53233d2c9547826dd77413bba58",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/focused-service.jsonl": "dd313254edf65efbafc506233f3e3836023fc1b2047b37d53f89bced1178907a",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/full.jsonl": "b1081908cb97bbf598f7db0d13c168135f9911ae462d94d01c24b20ada6d687f",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/migration-focused-initial-verifier-fail.jsonl": "095a971f83a47bd87d49abb5df8e47ae3c598d1966fa1ff0939f6c379db3b93b",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/migration-focused.jsonl": "afd01ef4ded99b181c5380783572a4659931859332d6bbff7d7a71eb387eec2a",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/migration-full.log": "813bc27cca79c1c3c2ab1579f1a88523b2f1aac1866d03ef73289c3c8082c433",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/migration-status.log": "380eeea5bb381d31a247966324511d9d1fedc7fe2905d5a2d86db2c01d566862",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/migration-up-initial-verifier-scan-fail.log": "5fb4055f13f81049a93de1fb82fa1dbd578b1ee55efc117cb1171257f436c104",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/migration-up.log": "813bc27cca79c1c3c2ab1579f1a88523b2f1aac1866d03ef73289c3c8082c433",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/migration-wall.txt": "6d4c071c30c27169f8f4bb1605efd6c9a35da5e6070910b480140daa3e5d84d9",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/perf-1-explain.txt": "e2a19fb0fa5766b71b672fad9e54e8e4cadd66f88a1f125818cf9db60f4473c7",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/perf-1-migration.log": "813bc27cca79c1c3c2ab1579f1a88523b2f1aac1866d03ef73289c3c8082c433",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/perf-1.exit": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/perf-1.log": "03ea40227f3b644ba360e1706948751306cd0f3300e40b98b6d904d93ca84371",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/race-handler.jsonl": "c8f5408f4b2956e58c8064e2e383ad8240b7c11e8810de497dc265250c9ed92b",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/race-service.jsonl": "91519c56f865376389867e1dbdffc1ff8c8e86f3c3ed7e1f2ca9d6faa749bf8c",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/show-index-and-locks.txt": "5b50aa12b1f4df526e60204a72f554cac2a7f5d2fd9f9ba3378d98dc639329cc",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/tdd-green-pure-2.log": "b0260704443d1d19b7d7085bcf49d6f71b91946332cf326087ab7cc41d00f80f",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/tdd-green-pure.log": "5ea9ac1a82ea5a0ca824b59cf84c4d302f0b6c3b7ac60814d2fcd36f145c637e",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/tdd-red.log": "fd460021f8a071b597b1e0f7ec274bb4127a1d9e46b32c7805d0aa891f35e96b",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/vet.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/analyze-current-after.txt": "4fb4ae81ea1d8daf0bdcba0c95c5d104644dbdad9e8aff42dc0b51cc240c1cde",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/analyze-current-before.txt": "eca9e348d790e145b2c5949fab23216a62fba66366375ef58756b57b8d92e993",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/analyze-current-time.txt": "90e1289d2ecb80d0cef458ad0eed4767a5cb8e4afe76fc0e93fb492c5dc0e7a0",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/analyze-current.log": "9b79bb18f04f1bb32c6e8653ebb721d088674a93365ed7ff6e42311d0571598b",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h1-use-index-count-explain.txt": "49a3e97fb59f161b6bdf5f841e5670c55fa5763d9a425d5e293d7f748d0e240d",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h1-use-index-output-and-explain.txt": "5a232e0da4be4a8bd9026e30c94fa1e4feabe110379ab80d56e4206598faa25e",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h2-force-index-output-and-explain.txt": "ba86e5e7490dcc793c2722ead4116849f03ceefd0524f602977b8693cc36692f",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-ignore-active-updated-overlay-initial-env-not-exported.log": "6b683934a379868e4be79cf9fec712b567ec1a0ab08cbbe4464bc61af8f3d965",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-ignore-active-updated-overlay.log": "35cb0d2ed5423f05c17e034c743e34bcedd210b34df0f1df54171e932cb20bef",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-overlay-test.go.txt": "26cc246073be0f0d7d2bb5ab90f19511768e0a1a476f1c183523c59cbc6f372d",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-build.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-cost-build-seed-time.txt": "8a8a9a78925ecbcad773f685f95e344295cafd9284dcaf89492cd0145f65d91e",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-cost-build-seed.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-cost-index-build-time.txt": "35fdc32c6095323cbf756bdf9dcaeb75eb7c10c8f7953df19faef4233f7a3e65",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-cost-index-build.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-cost-index-size-and-locks.txt": "80cd38dfb7c4b1a0720a0e2e8d437f0ecd9545c53f5bffe8635848bb3cd82ee8",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-cost-results-and-cleanup.log": "2fc5e51ad7dd9d9652ee99162b7169bb9d71413b39f867a398a1bb79749dbe5a",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-cost-setup.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-cost-write-setup.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-cost-write-with-insert-time.txt": "c655d1eac5323d122f10c9d7bc4dfc4957812cfa25e154f687bfcc0fa5bba712",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-cost-write-with-insert.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-cost-write-with-soft-delete-time.txt": "048e6d2aca26db26f47359e1db27f51edcaf676c15eb9a84e9a436e58633e551",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-cost-write-with-soft-delete.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-cost-write-with-status-role-time.txt": "048e6d2aca26db26f47359e1db27f51edcaf676c15eb9a84e9a436e58633e551",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-cost-write-with-status-role.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-cost-write-without-insert-time.txt": "5821e55c28a0788144ad5f556409f20780b4362f2eece5fbd5aad5bb11edf85d",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-cost-write-without-insert.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-cost-write-without-soft-delete-time.txt": "6107a3d506ea9534cbaf9d77358841aa5a86842cdd2b9d31694a1b4d5649277f",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-cost-write-without-soft-delete.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-cost-write-without-status-role-time.txt": "fccfbf33e9368d8a083349527c65d023f55fd44a2dc2e49f4999ec4290544545",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-cost-write-without-status-role.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-diff-check.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-final-db-reset.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-final-full.jsonl": "ec89e3f259876c66fc79bf99ceecf5ef6385571a3015eb90cb9d77fa66fddae2",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-final-migration.log": "813bc27cca79c1c3c2ab1579f1a88523b2f1aac1866d03ef73289c3c8082c433",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-final-redis-reset.log": "a12b7cb43c9d9134b5bb1b35e9096b66775d9e92e7611d1cc92b02edd6782a87",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-focused-handler.jsonl": "ed9d439cabd3b4acbd98ab29e0ee5805e9092b67d094ac7114808c04852f6006",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-focused-service.jsonl": "31ceb72bd3fc9b38d2d71d7f5a5230aa18042830cceba399e3f2a2104ce6ff6f",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-full-db-reset.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-full-migration.log": "813bc27cca79c1c3c2ab1579f1a88523b2f1aac1866d03ef73289c3c8082c433",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-full-redis-reset.log": "a12b7cb43c9d9134b5bb1b35e9096b66775d9e92e7611d1cc92b02edd6782a87",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-full.jsonl": "7038e74d3c02162904d9ff7f7223b1f0f40a1016f9e632208a7e107357531efb",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-perf-1-db-reset.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-perf-1-migration.log": "813bc27cca79c1c3c2ab1579f1a88523b2f1aac1866d03ef73289c3c8082c433",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-perf-1-redis-reset.log": "a12b7cb43c9d9134b5bb1b35e9096b66775d9e92e7611d1cc92b02edd6782a87",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-perf-1.exit": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-perf-1.log": "d42ce658745b7ea32bed238293c728131deb8770d80dae174d42de23c9c60da1",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-perf-2-db-reset.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-perf-2-migration.log": "813bc27cca79c1c3c2ab1579f1a88523b2f1aac1866d03ef73289c3c8082c433",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-perf-2-redis-reset.log": "a12b7cb43c9d9134b5bb1b35e9096b66775d9e92e7611d1cc92b02edd6782a87",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-perf-2.exit": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-perf-2.log": "d2df33ad8bd6f222da7fc0adf84e925743f4fd2ae0ab748a075e90cb4d5e728b",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-perf-3-db-reset.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-perf-3-migration.log": "813bc27cca79c1c3c2ab1579f1a88523b2f1aac1866d03ef73289c3c8082c433",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-perf-3-redis-reset.log": "a12b7cb43c9d9134b5bb1b35e9096b66775d9e92e7611d1cc92b02edd6782a87",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-perf-3.exit": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-perf-3.log": "5978f979e508f5badd9b67f28649fb087c7b524843511a169b00a1c663757f62",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-post-performance-explain.log": "f8f8e3332ad794e3d7346be892486dac9844ad4b55253901cae01abddcf87028",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-race-handler.jsonl": "1e68864c7f366bd1766320267d1dc8f24092cf9fc0a0bee071cd68b9aae04342",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-race-service.jsonl": "685a413a0331508d8f065f72356f1241802a7ec95d36e373cf944181bb856d8b",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/h3-vet.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/tdd-h3-green-pure.log": "e7d1ffdb2185cd214345142b3bc226932ea95a16af90aa3aa1d434c476748886",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/tdd-h3-red.log": "b49caa39384e7b0af87f77e611b2b1b07453c69518020cd063b6a3ca949846f8",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/exact-cleanup-container-verification.txt": "e6ecb17b7e078bf09e0aeab431c2e1d99ffeb771f62afb6edc06b7e5dc3b7d5d",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/exact-cleanup-precheck.txt": "209c8a4732d2430fc6ffad98990db5cc93593a6f7475b8f77fd097ede386b1ed",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/exact-cleanup-private-path-verification.txt": "bdf731ce45dfa4037cc67b37f41836eb6d419179c8371e82b35b7abbc6b81f4b",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/count-index/exact-cleanup-stop.txt": "8a2df9ad87a6e065e5408faa2a157b4859584af4cdbc27174bf1e2368c349bf3",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa-h3/SECURITY_REPORT.md": "09f89d3758ce4ce5122541d7bf4d785e68a50ce2834a6095bdb1d949380dcfb1",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa-h3/build.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa-h3/diff-check.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa-h3/dynamic-contract.log": "b528cdb753d6f276fd0cecae51f7d1bba36b867a1743d7a41cf0f149c2d5b97d",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa-h3/evidence-hygiene.txt": "0b98843240a0b1a2384483206c02be8968dd809eb73838820be24cb7d6d6aeb9",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa-h3/final-diff-check.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa-h3/final-hashes.sha256": "1bd8c68866021c2ef09cfb7417a2d345f71b1348aa0357458c670d93b007b7f3",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa-h3/focused-handler.jsonl": "33c871431dcf27b6407a85e87a9f023f3f1cd18d12f735064bde1459a8134269",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa-h3/focused-service-migration.jsonl": "a4214458cac3562cdd99cb3b977e0b2637b5d32eee44800127ac8c6bee5dddbd",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa-h3/full.jsonl": "ec872a6e97b536196315d5d75686ba8c16944838d37514e8943f7c0a94a9e4b3",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa-h3/ledger.md": "045857a958ffda9a658394a52bd9a4b71dd2b1218432c35383fea8c4cfbb3a21",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa-h3/migration-full.log": "813bc27cca79c1c3c2ab1579f1a88523b2f1aac1866d03ef73289c3c8082c433",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa-h3/migration-race.log": "813bc27cca79c1c3c2ab1579f1a88523b2f1aac1866d03ef73289c3c8082c433",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa-h3/migration-status.log": "813bc27cca79c1c3c2ab1579f1a88523b2f1aac1866d03ef73289c3c8082c433",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa-h3/migration-up.log": "813bc27cca79c1c3c2ab1579f1a88523b2f1aac1866d03ef73289c3c8082c433",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa-h3/perf-1-migration.log": "813bc27cca79c1c3c2ab1579f1a88523b2f1aac1866d03ef73289c3c8082c433",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa-h3/perf-1.log": "6052e3a75718685c740bd7e7a891a40c2ff89f5e4eeef459c0e80ca6b47e46fd",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa-h3/perf-2-migration.log": "813bc27cca79c1c3c2ab1579f1a88523b2f1aac1866d03ef73289c3c8082c433",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa-h3/perf-2.log": "9ba92b64143f5c1d285fa65d1ac5a83d093c00c5adab64ac90a02188164449ea",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa-h3/perf-3-migration.log": "813bc27cca79c1c3c2ab1579f1a88523b2f1aac1866d03ef73289c3c8082c433",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa-h3/perf-3.log": "bba1ec0128b8aad2158ab3c97b51ddc14df2d1b985e72c6d1c14ce4f9057310e",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa-h3/post-perf-query-plan.txt": "86eb471b7f4edfbcb6fecc3b11ce4a9e072d0469ad16f3b8e86cbd7787062b9c",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa-h3/race-handler.jsonl": "5903c074d297e6a5fe2b8a465a5fc2309747d010a9d11e9dbe484299a2f3d24c",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa-h3/race-service.jsonl": "a8c05786e03c52d3ad480f52544222c4c68b687131fe7b1415107e9f55fcfb23",
+    "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa-h3/vet.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "results": {
+    "full": {
+      "test_events": {
+        "pass": 386,
+        "skip": 258
+      },
+      "leaf_tests": {
+        "pass": 342,
+        "skip": 256
+      },
+      "package_events": {
+        "pass": 15,
+        "skip": 4
+      },
+      "exit_code": 0
+    },
+    "focused_race": {
+      "test_events": {
+        "skip": 29,
+        "pass": 30
+      },
+      "leaf_tests": {
+        "skip": 29,
+        "pass": 21
+      },
+      "package_events": {
+        "pass": 2
+      },
+      "exit_code": 0
+    },
+    "performance_response_test_update": {
+      "date": "2026-09-04",
+      "scope": "test-only response validation after latency timer",
+      "test_events": {
+        "skip": 29,
+        "pass": 31
+      },
+      "exit_code": 0,
+      "performance_fixture": "NOT_RUN",
+      "full_rerun": "NOT_RUN: production unchanged; prior full result retained",
+      "race_rerun": "NOT_RUN: test-only response assertion; prior race result retained"
+    },
+    "real_fixture": {
+      "focused_service": {
+        "test_events": {
+          "pass": 46,
+          "skip": 0,
+          "fail": 0
+        },
+        "leaf_tests": {
+          "pass": 42,
+          "skip": 0,
+          "fail": 0
+        },
+        "exit_code": 0
+      },
+      "focused_handler": {
+        "test_events": {
+          "pass": 17,
+          "skip": 0,
+          "fail": 0
+        },
+        "leaf_tests": {
+          "pass": 8,
+          "skip": 0,
+          "fail": 0
+        },
+        "exit_code": 0
+      },
+      "race_service": {
+        "test_events": {
+          "pass": 46,
+          "skip": 0,
+          "fail": 0
+        },
+        "leaf_tests": {
+          "pass": 42,
+          "skip": 0,
+          "fail": 0
+        },
+        "exit_code": 0
+      },
+      "race_handler": {
+        "test_events": {
+          "pass": 17,
+          "skip": 0,
+          "fail": 0
+        },
+        "leaf_tests": {
+          "pass": 8,
+          "skip": 0,
+          "fail": 0
+        },
+        "exit_code": 0
+      },
+      "fresh_serial_full": {
+        "test_events": {
+          "pass": 691,
+          "skip": 1,
+          "fail": 0
+        },
+        "leaf_tests": {
+          "pass": 631,
+          "skip": 1,
+          "fail": 0
+        },
+        "package_events": {
+          "pass": 15,
+          "skip_no_tests": 4,
+          "fail": 0
+        },
+        "exit_code": 0
+      },
+      "stale_404_contract_focused": {
+        "test_events": {
+          "pass": 6,
+          "skip": 0,
+          "fail": 0
+        },
+        "leaf_tests": {
+          "pass": 5,
+          "skip": 0,
+          "fail": 0
+        },
+        "exit_code": 0
+      },
+      "performance": {
+        "synthetic_users": 100000,
+        "concurrency": 10,
+        "requests_per_worker": 20,
+        "measured_requests": 200,
+        "page_size": 20,
+        "first_application_read_ms": 96.89,
+        "warm_p95_ms": 340.023,
+        "threshold_ms": 500,
+        "exit_code": 0
+      }
+    },
+    "independent_real_fixture": {
+      "focused_service": {
+        "test_events": {
+          "pass": 46,
+          "skip": 0,
+          "fail": 0
+        },
+        "leaf_tests": {
+          "pass": 42,
+          "skip": 0,
+          "fail": 0
+        },
+        "exit_code": 0
+      },
+      "focused_handler": {
+        "test_events": {
+          "pass": 17,
+          "skip": 0,
+          "fail": 0
+        },
+        "leaf_tests": {
+          "pass": 8,
+          "skip": 0,
+          "fail": 0
+        },
+        "exit_code": 0
+      },
+      "race_service": {
+        "test_events": {
+          "pass": 46,
+          "skip": 0,
+          "fail": 0
+        },
+        "leaf_tests": {
+          "pass": 42,
+          "skip": 0,
+          "fail": 0
+        },
+        "exit_code": 0
+      },
+      "race_handler": {
+        "test_events": {
+          "pass": 17,
+          "skip": 0,
+          "fail": 0
+        },
+        "leaf_tests": {
+          "pass": 8,
+          "skip": 0,
+          "fail": 0
+        },
+        "exit_code": 0
+      },
+      "fresh_serial_full": {
+        "test_events": {
+          "pass": 691,
+          "skip": 1,
+          "fail": 0
+        },
+        "leaf_tests": {
+          "pass": 631,
+          "skip": 1,
+          "fail": 0
+        },
+        "package_events": {
+          "pass": 15,
+          "skip_no_tests": 4,
+          "fail": 0
+        },
+        "exit_code": 0
+      },
+      "build_vet_diff": {
+        "build": 0,
+        "vet": 0,
+        "diff_check": 0
+      },
+      "security_findings": {
+        "critical": 0,
+        "high": 0,
+        "medium": 0,
+        "low": 0
+      },
+      "overall": "PARTIAL_PERFORMANCE_BLOCKED"
+    },
+    "count_index_authorized_run": {
+      "migration_focused": {
+        "terminal_pass": 20,
+        "leaf_pass": 18,
+        "skip": 0,
+        "fail": 0,
+        "exit_code": 0
+      },
+      "focused_service": {
+        "terminal_pass": 46,
+        "leaf_pass": 42,
+        "skip": 0,
+        "fail": 0,
+        "exit_code": 0
+      },
+      "focused_handler": {
+        "terminal_pass": 17,
+        "leaf_pass": 8,
+        "skip": 0,
+        "fail": 0,
+        "exit_code": 0
+      },
+      "race_service": {
+        "terminal_pass": 46,
+        "leaf_pass": 42,
+        "skip": 0,
+        "fail": 0,
+        "exit_code": 0
+      },
+      "race_handler": {
+        "terminal_pass": 17,
+        "leaf_pass": 8,
+        "skip": 0,
+        "fail": 0,
+        "exit_code": 0
+      },
+      "fresh_serial_full": {
+        "terminal_pass": 692,
+        "leaf_pass": 632,
+        "test_skip": 1,
+        "fail": 0,
+        "package_pass": 15,
+        "package_no_test_skip": 4,
+        "exit_code": 0
+      },
+      "build_vet_diff": {
+        "build": 0,
+        "vet": 0,
+        "diff_check": 0
+      },
+      "performance_run_1": {
+        "first_application_read_ms": 90.669,
+        "warm_p95_ms": 470.646,
+        "threshold_ms": 500,
+        "numeric_result": "PASS",
+        "chosen_count_index": "idx_users_active_updated",
+        "count_rows_scanned": 100001,
+        "count_actual_ms": 203,
+        "optimizer_result": "FAIL_OLD_INDEX_SELECTED"
+      },
+      "performance_runs_2_and_3": "NOT_RUN_AFTER_ANALYZE_STILL_SELECTED_OLD_INDEX",
+      "cost_sampling": "NOT_RUN_AFTER_ANALYZE_STILL_SELECTED_OLD_INDEX",
+      "disk_cold": "NOT_RUN",
+      "overall": "WRITER_PASS_PENDING_INDEPENDENT_QA_AND_EXACT_CLEANUP",
+      "analyze_current_fixture": {
+        "result": "OK",
+        "wall_seconds": 0.1,
+        "matching_users": 100000,
+        "total_users": 100001,
+        "chosen_count_index_before": "idx_users_active_updated",
+        "chosen_count_index_after": "idx_users_active_updated",
+        "count_rows_scanned_before": 100001,
+        "count_rows_scanned_after": 100001,
+        "count_actual_ms_before": 106,
+        "count_actual_ms_after": 148,
+        "page_actual_ms_after": 0.054,
+        "new_index_cardinality_after": [
+          1,
+          1,
+          1
+        ],
+        "optimizer_result": "FAIL_OLD_INDEX_STILL_SELECTED"
+      },
+      "read_only_hint_experiment": {
+        "outputs_equal": true,
+        "total": 100000,
+        "page_items": 20,
+        "b0": {
+          "access": "idx_users_active_updated",
+          "rows_read": 100001,
+          "rows_output": 100000,
+          "actual_ms": 112
+        },
+        "h1_use_index": {
+          "access": "table_scan",
+          "rows_read": 100001,
+          "rows_output": 100000,
+          "actual_ms": 37.9,
+          "selected_new_index": false
+        },
+        "h2_force_index": {
+          "access": "idx_users_admin_read_count",
+          "rows_output": 100000,
+          "actual_ms": 184,
+          "selected_new_index": true
+        },
+        "paged_access": "uk_users_guid",
+        "synthetic_distribution_limit": "nearly all rows are is_deleted=0, role=user, status=active",
+        "dynamic_predicate_risk": "direct counted query duplicates placeholders for deleted, role/status, escaped LIKE, optional exact GUID OR; single source and exhaustive equivalence tests required",
+        "conclusion": "QUERY_AND_INDEX_REDESIGN_REQUIRED"
+      },
+      "h3_ignore_active_updated": {
+        "predicate_source": "usersReadWhere",
+        "arguments": "copied_from_same_result",
+        "outputs_equal": true,
+        "total": 100000,
+        "page_items": 20,
+        "page_access": "uk_users_guid",
+        "b0_explain": {
+          "access": "idx_users_active_updated",
+          "rows_read": 100001,
+          "rows_output": 100000,
+          "actual_ms": 77.2
+        },
+        "h3_explain": {
+          "access": "PRIMARY",
+          "rows_read": 100001,
+          "rows_output": 100000,
+          "actual_ms": 30.5
+        },
+        "b0_wall_ms_7": {
+          "min": 65.115,
+          "median": 67.241,
+          "mean": 68.572,
+          "max": 75.007
+        },
+        "h3_wall_ms_7": {
+          "min": 23.317,
+          "median": 24.042,
+          "mean": 26.938,
+          "max": 33.421
+        },
+        "result": "PROMISING_READ_ONLY_PENDING_QUERY_REVIEW_AND_FRESH_HTTP_PERFORMANCE"
+      },
+      "h3_implementation": {
+        "production_file_sha256": "7a20df0cb257feb393f930b0d006fc88795acbc0b9dead2784f5ae3b61d4f715",
+        "tdd": "compile RED then GREEN",
+        "focused_service": {
+          "terminal_pass": 46,
+          "leaf_pass": 42,
+          "fail": 0,
+          "skip": 0
+        },
+        "focused_handler": {
+          "terminal_pass": 18,
+          "leaf_pass": 9,
+          "fail": 0,
+          "skip": 1
+        },
+        "race_service": {
+          "terminal_pass": 46,
+          "leaf_pass": 42,
+          "fail": 0,
+          "skip": 0
+        },
+        "race_handler": {
+          "terminal_pass": 18,
+          "leaf_pass": 9,
+          "fail": 0,
+          "skip": 1
+        },
+        "fresh_full": {
+          "terminal_pass": 693,
+          "leaf_pass": 633,
+          "fail": 0,
+          "test_skip": 1,
+          "package_pass": 15,
+          "package_no_test_skip": 4
+        },
+        "build_vet_diff": {
+          "build": 0,
+          "vet": 0,
+          "diff_check": 0
+        }
+      },
+      "fresh_performance_after_h3": [
+        {
+          "run": 1,
+          "analyze_ms": 4.652,
+          "first_ms": 35.218,
+          "warm_p95_ms": 77.817,
+          "result": "PASS"
+        },
+        {
+          "run": 2,
+          "analyze_ms": 4.48,
+          "first_ms": 35.101,
+          "warm_p95_ms": 75.512,
+          "result": "PASS"
+        },
+        {
+          "run": 3,
+          "analyze_ms": 4.652,
+          "first_ms": 36.317,
+          "warm_p95_ms": 74.71,
+          "result": "PASS"
+        }
+      ],
+      "cost_sample": {
+        "index_build_100001_rows_seconds": 0.16,
+        "users_index_size_bytes": 2637824,
+        "insert_10000_with_without_seconds": [
+          0.19,
+          0.17
+        ],
+        "soft_delete_5000_with_without_seconds": [
+          0.13,
+          0.12
+        ],
+        "status_role_update_5000_with_without_seconds": [
+          0.13,
+          0.09
+        ],
+        "temporary_tables_cleaned": true
+      }
+    }
+  },
+  "build": {
+    "exit_code": 0
+  },
+  "vet": {
+    "exit_code": 0
+  },
+  "diff_check": {
+    "exit_code": 0
+  },
+  "real_database": "PASS: independent functional/security/integration gates on isolated MySQL 8.0.46 and Redis 7.4.11",
+  "performance_warm": "PASS: writer and independent QA each completed three fresh runs below 500ms",
+  "performance_disk_cold": "NOT_RUN: seeding warmed database",
+  "reviews": {
+    "pm": "H3 implementation evidence ready for PM/independent QA handoff",
+    "independent_quality": {
+      "status": "PARTIAL_PERFORMANCE_BLOCKED",
+      "reviewer": "independent real-fixture QA",
+      "date": "2026-09-04",
+      "functional_security_integration": "PASS",
+      "findings": {
+        "critical": 0,
+        "high": 0,
+        "medium": 0,
+        "low": 0
+      },
+      "production_hashes": "9 matched",
+      "performance_100k": "FAIL: 2 of 3 fresh warm-P95 runs exceeded 500ms",
+      "report": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa/SECURITY_REPORT.md"
+    },
+    "independent_h3": {
+      "status": "PASS",
+      "report": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/real-fixture/independent-qa-h3/SECURITY_REPORT.md",
+      "security_findings": {
+        "critical": 0,
+        "high": 0,
+        "medium": 0,
+        "low": 0
+      },
+      "fresh_performance_p95_ms": [
+        113.688,
+        76.997,
+        78.737
+      ],
+      "full": "693 terminal / 633 leaf PASS, 1 opt-in performance SKIP, 0 FAIL"
+    }
+  },
+  "fixture": {
+    "status": "CLEANED",
+    "plan": "docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/fixture-lifecycle-plan.md",
+    "task_label": "codex.task=b1d-admin-users-read-260904",
+    "database": "porsche_b1d_admin_users_260904_test",
+    "mysql_container_id": "94e8463c0411eeceb4b31d3a5ff78f9da715eec937e7d3cd4e48b5fd25680fcd",
+    "mysql_image": "sha256:7dcddc01f13bab2f15cde676d44d01f61fc9f99fe7785e86196dfc07d358ae2b",
+    "mysql_version": "8.0.46",
+    "mysql_loopback_port": 60366,
+    "redis_container_id": "2711acfbc9aa7b3784b0b7b81854645b5c8f740e170bf7cb5c7290eaff3ebad0",
+    "redis_image": "sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf",
+    "redis_version": "7.4.11",
+    "redis_loopback_port": 60488,
+    "auto_remove": true,
+    "named_volumes": false,
+    "cleanup": "COMPLETE: exact IDs/names absent, label residual 0, exact private path absent; no prune or volume removal",
+    "mysql_container_id_status": "ABSENT",
+    "redis_container_id_status": "ABSENT"
+  },
+  "test_sources_sha256": {
+    "internal/handler/admin_users_read_performance_test.go": "1c9d3ba48bb0f19e5d28b39afbf886f7e273a91c879b6a142df7a387e5f4b190",
+    "internal/service/admin_users_read_db_test.go": "ffd8cee3084967f43e13afc8269c12e81360990b70fd9967180e5c3e957dd067",
+    "internal/handler/admin_users_auth_test.go": "6b488efd1732c49edee254e771cbe11e42a7876d1781c06e61fedff6f9ae3589",
+    "internal/handler/auth_sessions_integration_test.go": "3598a13e09a21ac10aac78c536ee5f5f8f45c4dc58ad9293e49aafd2764bff91",
+    "internal/service/admin_users_read_test.go": "80d90c10459fb09d1ce054bd5554295f298bf01121a96b3b13247d3ed7bf00c0"
+  },
+  "performance_investigation": {
+    "shape": {
+      "synthetic_users": 100000,
+      "concurrency": 10,
+      "requests_per_worker": 20,
+      "page_size": 20,
+      "fresh_each_run": true
+    },
+    "runs_ms": [
+      {
+        "warm_p95": 633.956,
+        "result": "FAIL"
+      },
+      {
+        "warm_p95": 466.753,
+        "result": "PASS"
+      },
+      {
+        "warm_p95": 504.793,
+        "result": "FAIL"
+      }
+    ],
+    "threshold_ms": 500,
+    "root_cause": {
+      "exact_count_rows_scanned": 100001,
+      "exact_count_actual_ms": 312,
+      "page_actual_ms": 0.09,
+      "chosen_count_index": "idx_users_active_updated"
+    },
+    "conclusion": "PERFORMANCE_BLOCKED"
+  },
+  "next_plan": "docs/superpowers/plans/2026-09-04-b1d-admin-users-count-index-plan.md",
+  "migration_change_sha256": {
+    "internal/migration/runner.go": "d52e1f85b5e2c422c0d974d986a899999f522bdf92cff707e22aa97726ba7022",
+    "internal/migration/runner_test.go": "265f7d19ad065ceab1e44bb4d9c4f9196830f2072101c94d9fec16cb8eeedc22",
+    "internal/migration/admin_users_read_count.go": "31e4d7fe5eca16feda845f5c6e1aa47c5a92228c8098102ff0eaa043afd0aba0",
+    "internal/migration/permission_schema_test.go": "1f53589b9b895487f6ba5aeff20082d7ee3b1e583062f0130deb9aaffb03b383",
+    "internal/migration/sql/0004_admin_users_read_count.up.sql": "44b5caba0473162c239e6b3035e6d9067e3af0b35e998a79c827a1424621494e",
+    "internal/migration/sql/0004_admin_users_read_count.down.sql": "e96a7838447073004e1fcca34eea77f88bf24d37d2997e5c4837fcb87ed8db91"
+  },
+  "count_index_followup": {
+    "migration": "0004 idx_users_admin_read_count(is_deleted,role,status)",
+    "applied_environment": "isolated retained fixture only",
+    "production_authorized": false,
+    "show_index": "PASS: nonunique columns in exact order",
+    "ledger_checksum": "44b5caba0473162c239e6b3035e6d9067e3af0b35e998a79c827a1424621494e",
+    "optimizer": "H3 IGNORE idx_users_active_updated chose PRIMARY and improved 7 repeated count timings; did not use 0004",
+    "next": "bounded B1-D slice complete; production/FE-BE/full-PRD scopes require separate work",
+    "independent_qa": "PASS",
+    "cleanup": "COMPLETE",
+    "analyze_table": {
+      "result": "OK",
+      "wall_seconds": 0.1,
+      "old_index_still_selected": true
+    }
+  },
+  "previous_production_sha256": {
+    "internal/service/admin_users_read.go": "24ea60c8c6ff16385adb7334f82215ad859ce55b3856aa036b63d0be2920eafd"
+  }
+}

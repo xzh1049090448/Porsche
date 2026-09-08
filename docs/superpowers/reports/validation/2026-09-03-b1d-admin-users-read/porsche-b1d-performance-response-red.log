@@ -1,0 +1,5 @@
+# github.com/porsche/ai-gateway-go/internal/handler [github.com/porsche/ai-gateway-go/internal/handler.test]
+internal/handler/admin_users_read_performance_test.go:89:6: undefined: validAdminUsersPerformancePage
+internal/handler/admin_users_read_performance_test.go:93:36: undefined: validAdminUsersPerformancePage
+FAIL	github.com/porsche/ai-gateway-go/internal/handler [build failed]
+FAIL

@@ -1,0 +1,2 @@
+a03-task12-redis-20260907182125-bfacc639	Up 6 hours	127.0.0.1:55878->6379/tcp
+a03-task12-mysql-20260907182125-bfacc639	Up 6 hours	127.0.0.1:55877->3306/tcp

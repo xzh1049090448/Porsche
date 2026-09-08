@@ -1,0 +1,6 @@
+username	role	status	is_deleted	guid
+joint_admin	10	1	0	354115046348460032
+joint_deleted	1	1	1	354115047443173376
+joint_disabled	1	2	0	354115047107629056
+joint_root	100	1	0	354114146742042624
+joint_user	1	1	0	354115046784667648

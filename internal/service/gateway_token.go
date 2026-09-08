@@ -3,8 +3,10 @@ package service
 import (
 	"crypto/rand"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -14,6 +16,7 @@ import (
 	"github.com/porsche/ai-gateway-go/internal/models"
 	"github.com/porsche/ai-gateway-go/internal/persistence"
 	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
 
 type GatewayTokenError string
@@ -25,6 +28,8 @@ const (
 	GatewayTokenExpired     GatewayTokenError = "gateway_token_expired"
 	GatewayTokenIPDenied    GatewayTokenError = "gateway_ip_not_allowed"
 	GatewayTokenModelDenied GatewayTokenError = "gateway_model_not_allowed"
+	// GatewayTokenUnavailable deliberately collapses storage/decode failures.
+	GatewayTokenUnavailable GatewayTokenError = "gateway_authentication_unavailable"
 )
 
 func (e GatewayTokenError) Error() string { return string(e) }
@@ -155,14 +160,76 @@ func (s *GatewayTokenService) Revoke(userID, id int64) error {
 	return nil
 }
 
+// GatewayTokenPrincipal is valid only for the request that loaded it. Its
+// allowlists are deliberately private so callers cannot mutate authorization
+// state; accessors always return independent copies.
+type GatewayTokenPrincipal struct {
+	valid              bool
+	token              models.GatewayAPIToken
+	keyAllowedModels   models.JSONSlice
+	ownerAllowedModels models.JSONSlice
+}
+
+func (p *GatewayTokenPrincipal) AllowsModel(model string) bool {
+	return p != nil && p.valid && model != "" && modelAllowed(p.keyAllowedModels, model) && modelAllowed(p.ownerAllowedModels, model)
+}
+
+func (p *GatewayTokenPrincipal) KeyAllowedModels() models.JSONSlice {
+	if p == nil || !p.valid {
+		return nil
+	}
+	return cloneJSONSlice(p.keyAllowedModels)
+}
+
+func (p *GatewayTokenPrincipal) OwnerAllowedModels() models.JSONSlice {
+	if p == nil || !p.valid {
+		return nil
+	}
+	return cloneJSONSlice(p.ownerAllowedModels)
+}
+
+func (p *GatewayTokenPrincipal) Token() *models.GatewayAPIToken {
+	if p == nil || !p.valid {
+		return nil
+	}
+	token := p.token
+	token.AllowedModels = cloneJSONSlice(p.keyAllowedModels)
+	token.IPAllowlist = cloneJSONSlice(p.token.IPAllowlist)
+	return &token
+}
+
+// Authenticate keeps the existing token API while delegating all checks to
+// AuthenticatePrincipal. It returns the token's persisted ACL, never an ACL
+// intersection.
 func (s *GatewayTokenService) Authenticate(secret, ip, model string, now time.Time) (*models.GatewayAPIToken, error) {
+	principal, err := s.AuthenticatePrincipal(secret, ip, model, now)
+	if err != nil {
+		return nil, err
+	}
+	return principal.Token(), nil
+}
+
+// AuthenticatePrincipal reloads both persisted ACLs for each request. A blank
+// model establishes identity only; it is not a model authorization decision.
+func (s *GatewayTokenService) AuthenticatePrincipal(secret, ip, model string, now time.Time) (*GatewayTokenPrincipal, error) {
+	if s == nil || s.db == nil {
+		return nil, GatewayTokenUnavailable
+	}
+	db := s.db.Session(&gorm.Session{Logger: logger.Discard})
 	if !strings.HasPrefix(secret, "sk-gw-") {
 		return nil, GatewayTokenInvalid
 	}
-	var token models.GatewayAPIToken
-	if err := s.db.Where("token_hash = ? AND is_deleted = 0", gatewayTokenHash(secret)).First(&token).Error; err != nil {
-		return nil, GatewayTokenInvalid
+	var tokenRow struct {
+		models.GatewayAPIToken
+		RawAllowedModels sql.NullString `gorm:"column:raw_allowed_models"`
 	}
+	if err := db.Table("gateway_api_tokens").Select("gateway_api_tokens.*, allowed_models AS raw_allowed_models").Where("token_hash = ? AND is_deleted = 0", gatewayTokenHash(secret)).First(&tokenRow).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, GatewayTokenInvalid
+		}
+		return nil, GatewayTokenUnavailable
+	}
+	token := tokenRow.GatewayAPIToken
 	switch token.Status {
 	case models.GatewayTokenActive:
 	case models.GatewayTokenDisabled:
@@ -175,21 +242,66 @@ func (s *GatewayTokenService) Authenticate(secret, ip, model string, now time.Ti
 	if token.ExpiresAt != nil && *token.ExpiresAt <= now.UTC().UnixMilli() {
 		return nil, GatewayTokenExpired
 	}
-	var owner models.User
-	if err := s.db.Select("id", "status").Where("id = ? AND is_deleted = 0", token.UserID).First(&owner).Error; err != nil || !owner.Status.IsActive() {
+	keyAllowed, err := parseGatewayAllowedModels(tokenRow.RawAllowedModels)
+	if err != nil {
+		return nil, GatewayTokenUnavailable
+	}
+	var owner struct {
+		ID            int64
+		Status        models.UserStatus
+		AllowedModels sql.NullString `gorm:"column:allowed_models"`
+	}
+	if err := db.Table("users").Select("id", "status", "allowed_models").Where("id = ? AND is_deleted = 0", token.UserID).First(&owner).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, GatewayTokenDisabled
+		}
+		return nil, GatewayTokenUnavailable
+	}
+	if !owner.Status.IsActive() {
 		return nil, GatewayTokenDisabled
+	}
+	ownerAllowed, err := parseGatewayAllowedModels(owner.AllowedModels)
+	if err != nil {
+		return nil, GatewayTokenUnavailable
 	}
 	if !ipAllowed(token.IPAllowlist, ip) {
 		return nil, GatewayTokenIPDenied
 	}
-	if model != "" && !modelAllowed(token.AllowedModels, model) {
+	if model != "" && (!modelAllowed(keyAllowed, model) || !modelAllowed(ownerAllowed, model)) {
 		return nil, GatewayTokenModelDenied
 	}
 	lastUsedAt := now.UTC().UnixMilli()
-	if err := s.db.Model(&token).Where("id = ? AND is_deleted = 0", token.ID).Updates(map[string]interface{}{"last_used_at": lastUsedAt, "updated_at": lastUsedAt, "updated_by": token.UserID}).Error; err != nil {
-		return nil, fmt.Errorf("record gateway token use: %w", err)
+	if err := db.Model(&token).Where("id = ? AND is_deleted = 0", token.ID).Updates(map[string]interface{}{"last_used_at": lastUsedAt, "updated_at": lastUsedAt, "updated_by": token.UserID}).Error; err != nil {
+		return nil, GatewayTokenUnavailable
 	}
-	return &token, nil
+	token.AllowedModels = cloneJSONSlice(keyAllowed)
+	return &GatewayTokenPrincipal{valid: true, token: token, keyAllowedModels: cloneJSONSlice(keyAllowed), ownerAllowedModels: cloneJSONSlice(ownerAllowed)}, nil
+}
+
+func parseGatewayAllowedModels(raw sql.NullString) (models.JSONSlice, error) {
+	if !raw.Valid || raw.String == "null" {
+		return models.JSONSlice{}, nil
+	}
+	var values []json.RawMessage
+	if err := json.Unmarshal([]byte(raw.String), &values); err != nil {
+		return nil, err
+	}
+	allowed := make(models.JSONSlice, 0, len(values))
+	for _, value := range values {
+		var model string
+		if len(value) == 0 || string(value) == "null" || json.Unmarshal(value, &model) != nil || model == "" {
+			return nil, errors.New("invalid gateway allowed_models")
+		}
+		allowed = append(allowed, model)
+	}
+	return allowed, nil
+}
+
+func cloneJSONSlice(in models.JSONSlice) models.JSONSlice {
+	if in == nil {
+		return nil
+	}
+	return append(models.JSONSlice(nil), in...)
 }
 
 func generateGatewaySecret() (string, error) {

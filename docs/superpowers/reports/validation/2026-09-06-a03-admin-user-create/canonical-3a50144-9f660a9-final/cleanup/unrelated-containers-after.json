@@ -1,0 +1,173 @@
+[
+  {
+    "auto_remove": false,
+    "configured_image": "postgres:18-alpine",
+    "id": "5964bc0e0e3ab1f34be2bb62ce00287b62140aa57ffebccc9ff9d62cd515d166",
+    "image_id": "sha256:d3e1620b530c944afa6e887d22eb899824da68e19c52024bf98f5220c88a65b2",
+    "labels": {
+      "com.docker.compose.config-hash": "64d81a7193450efe0047e9d3886e5e517bd2a800e1a9aa1fbea83b908bf7b312",
+      "com.docker.compose.container-number": "1",
+      "com.docker.compose.depends_on": "",
+      "com.docker.compose.image": "sha256:d3e1620b530c944afa6e887d22eb899824da68e19c52024bf98f5220c88a65b2",
+      "com.docker.compose.oneoff": "False",
+      "com.docker.compose.project": "deploy",
+      "com.docker.compose.project.config_files": "/Users/xuzhihao/code/sub2api/deploy/docker-compose.local.yml",
+      "com.docker.compose.project.working_dir": "/Users/xuzhihao/code/sub2api/deploy",
+      "com.docker.compose.service": "postgres",
+      "com.docker.compose.version": "5.4.0"
+    },
+    "mounts": [
+      {
+        "Destination": "/var/lib/postgresql",
+        "Driver": "local",
+        "Mode": "",
+        "Name": "45e756be06fd978249db30cccc71f3f914702b74a714afc981a42bd681d514d1",
+        "Propagation": "",
+        "RW": true,
+        "Source": "/var/lib/docker/volumes/45e756be06fd978249db30cccc71f3f914702b74a714afc981a42bd681d514d1/_data",
+        "Type": "volume"
+      },
+      {
+        "Destination": "/var/lib/postgresql/data",
+        "Mode": "rw,Z",
+        "Propagation": "rprivate",
+        "RW": true,
+        "Source": "/Users/xuzhihao/code/sub2api/deploy/postgres_data",
+        "Type": "bind"
+      }
+    ],
+    "name": "sub2api-postgres",
+    "ports": {},
+    "state": "exited",
+    "tmpfs": {}
+  },
+  {
+    "auto_remove": false,
+    "configured_image": "mysql:8.0",
+    "id": "8cbc801a8e0ad5f37f12577bf03439e371659e914cff0690dda25eb4e4b94ada",
+    "image_id": "sha256:7dcddc01f13bab2f15cde676d44d01f61fc9f99fe7785e86196dfc07d358ae2b",
+    "labels": {},
+    "mounts": [
+      {
+        "Destination": "/var/lib/mysql",
+        "Driver": "local",
+        "Mode": "z",
+        "Name": "porsche-mysql-test-data",
+        "Propagation": "",
+        "RW": true,
+        "Source": "/var/lib/docker/volumes/porsche-mysql-test-data/_data",
+        "Type": "volume"
+      }
+    ],
+    "name": "porsche-mysql-test",
+    "ports": {
+      "3306/tcp": [
+        {
+          "HostIp": "127.0.0.1",
+          "HostPort": "3307"
+        }
+      ]
+    },
+    "state": "running",
+    "tmpfs": {}
+  },
+  {
+    "auto_remove": false,
+    "configured_image": "redis:8-alpine",
+    "id": "a0f434cea08f6f708d922c2096945235fb27c73e0ff28e4ca5f9ddf71ed34261",
+    "image_id": "sha256:becdda6c7f4b3fb42e42fd7f120bbf5c54c4caaaf16f26da24e4563d2c1f0576",
+    "labels": {
+      "com.docker.compose.config-hash": "b29f14ccf83cebf0919a4096b464aa4edcd2f162cb8a6093e172b03160a828cc",
+      "com.docker.compose.container-number": "1",
+      "com.docker.compose.depends_on": "",
+      "com.docker.compose.image": "sha256:becdda6c7f4b3fb42e42fd7f120bbf5c54c4caaaf16f26da24e4563d2c1f0576",
+      "com.docker.compose.oneoff": "False",
+      "com.docker.compose.project": "deploy",
+      "com.docker.compose.project.config_files": "/Users/xuzhihao/code/sub2api/deploy/docker-compose.local.yml",
+      "com.docker.compose.project.working_dir": "/Users/xuzhihao/code/sub2api/deploy",
+      "com.docker.compose.service": "redis",
+      "com.docker.compose.version": "5.4.0"
+    },
+    "mounts": [
+      {
+        "Destination": "/data",
+        "Mode": "rw,Z",
+        "Propagation": "rprivate",
+        "RW": true,
+        "Source": "/Users/xuzhihao/code/sub2api/deploy/redis_data",
+        "Type": "bind"
+      }
+    ],
+    "name": "sub2api-redis",
+    "ports": {},
+    "state": "exited",
+    "tmpfs": {}
+  },
+  {
+    "auto_remove": false,
+    "configured_image": "weishaw/sub2api:latest",
+    "id": "d4d9874053d448150360b0e0e2594f749283e3d30cb112c6c6693f06d2b34c47",
+    "image_id": "sha256:cff6bc3ed1a6eba7ea240bad8637cf12856161a4efb98be0882c2fa7aff371e3",
+    "labels": {
+      "com.docker.compose.config-hash": "3659a327da7096986485946c4203d9a839942716c8b536cb8fd4f7bbb85004c8",
+      "com.docker.compose.container-number": "1",
+      "com.docker.compose.depends_on": "postgres:service_healthy:false,redis:service_healthy:false",
+      "com.docker.compose.image": "sha256:cff6bc3ed1a6eba7ea240bad8637cf12856161a4efb98be0882c2fa7aff371e3",
+      "com.docker.compose.oneoff": "False",
+      "com.docker.compose.project": "deploy",
+      "com.docker.compose.project.config_files": "/Users/xuzhihao/code/sub2api/deploy/docker-compose.local.yml",
+      "com.docker.compose.project.working_dir": "/Users/xuzhihao/code/sub2api/deploy",
+      "com.docker.compose.service": "sub2api",
+      "com.docker.compose.version": "5.4.0",
+      "description": "Sub2API - AI API Gateway Platform",
+      "maintainer": "Wei-Shaw <github.com/Wei-Shaw>",
+      "org.opencontainers.image.revision": "e8cb019fabf8b55199436229044cbf9aa7a82564",
+      "org.opencontainers.image.source": "https://github.com/Wei-Shaw/sub2api",
+      "org.opencontainers.image.version": "0.1.183"
+    },
+    "mounts": [
+      {
+        "Destination": "/app/data",
+        "Mode": "rw,Z",
+        "Propagation": "rprivate",
+        "RW": true,
+        "Source": "/Users/xuzhihao/code/sub2api/deploy/data",
+        "Type": "bind"
+      }
+    ],
+    "name": "sub2api",
+    "ports": {},
+    "state": "exited",
+    "tmpfs": {}
+  },
+  {
+    "auto_remove": false,
+    "configured_image": "redis:7-alpine",
+    "id": "ef49a5a080dffbec7e863f0827b56181add4e9057a79c1e2aad68d4f7b129780",
+    "image_id": "sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf",
+    "labels": {},
+    "mounts": [
+      {
+        "Destination": "/data",
+        "Driver": "local",
+        "Mode": "",
+        "Name": "5e825c446c048fba4496be325cdfd8ce1d9ab9626c281cacbdee6624ba7dc7dd",
+        "Propagation": "",
+        "RW": true,
+        "Source": "/var/lib/docker/volumes/5e825c446c048fba4496be325cdfd8ce1d9ab9626c281cacbdee6624ba7dc7dd/_data",
+        "Type": "volume"
+      }
+    ],
+    "name": "porsche-redis-test",
+    "ports": {
+      "6379/tcp": [
+        {
+          "HostIp": "127.0.0.1",
+          "HostPort": "6379"
+        }
+      ]
+    },
+    "state": "running",
+    "tmpfs": {}
+  }
+]

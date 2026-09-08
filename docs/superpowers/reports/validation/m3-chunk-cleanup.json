@@ -1,0 +1,10 @@
+{
+  "ownedContainerIds": {
+    "mysql": "6cccef601e29fbb77f3420a124b4850549f015bbee83018cd937baa3de5fa7ae",
+    "redis": "0716c03e3ac0607545af258f903bba21e8b8052393594ea25bc745ab89e787ee"
+  },
+  "label": "m3-chunk-validation-20260903",
+  "containersRemoved": true,
+  "testCredentialFilesRemoved": true,
+  "productionAccessed": false
+}

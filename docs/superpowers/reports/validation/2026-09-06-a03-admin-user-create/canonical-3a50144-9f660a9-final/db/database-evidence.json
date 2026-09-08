@@ -1,0 +1,436 @@
+{
+  "admin_action_outbox": {
+    "groups": [
+      {
+        "action": "users.create_admin",
+        "count": 1,
+        "delivery_state": "pending",
+        "failure_code": null,
+        "is_deleted": 0,
+        "result_kind": "user",
+        "terminal_state": "succeeded"
+      },
+      {
+        "action": "users.delete",
+        "count": 1,
+        "delivery_state": "pending",
+        "failure_code": null,
+        "is_deleted": 0,
+        "result_kind": "user",
+        "terminal_state": "succeeded"
+      },
+      {
+        "action": "users.create",
+        "count": 5,
+        "delivery_state": "pending",
+        "failure_code": null,
+        "is_deleted": 0,
+        "result_kind": "user",
+        "terminal_state": "succeeded"
+      },
+      {
+        "action": "users.create",
+        "count": 1,
+        "delivery_state": "pending",
+        "failure_code": "action_rejected",
+        "is_deleted": 0,
+        "result_kind": null,
+        "terminal_state": "failed"
+      },
+      {
+        "action": "users.create",
+        "count": 1,
+        "delivery_state": "pending",
+        "failure_code": "consumer_validation_failed",
+        "is_deleted": 0,
+        "result_kind": null,
+        "terminal_state": "failed"
+      }
+    ],
+    "integrity": {
+      "binding_or_public_ref_mismatch": 0,
+      "outcome_contract_mismatch": 0,
+      "rows": 9,
+      "target_contract_mismatch": 0,
+      "unexpected_deleted_rows": 0
+    }
+  },
+  "admin_action_verifications": {
+    "groups": [
+      {
+        "action": "users.create_admin",
+        "consumed": 1,
+        "count": 1,
+        "deleted": 1
+      },
+      {
+        "action": "users.delete",
+        "consumed": 1,
+        "count": 1,
+        "deleted": 1
+      }
+    ]
+  },
+  "admin_operation_responses": {
+    "groups": [
+      {
+        "count": 5,
+        "http_status": 201,
+        "integrity_version": 1,
+        "is_deleted": 0,
+        "lifecycle": "active",
+        "media_type": "application/json",
+        "target_guid_null": 0,
+        "zero_hmac_sentinel": 0
+      },
+      {
+        "count": 1,
+        "http_status": 201,
+        "integrity_version": 1,
+        "is_deleted": 1,
+        "lifecycle": "redacted",
+        "media_type": "application/json",
+        "target_guid_null": 0,
+        "zero_hmac_sentinel": 0
+      }
+    ],
+    "integrity": {
+      "active_invalid_structure": 0,
+      "deleted_replay_active_rows": 0,
+      "deleted_replay_redacted_rows": 1,
+      "expired_operation_active_response_rows": 1,
+      "redacted_noncanonical_or_pii": 0
+    }
+  },
+  "admin_operations": {
+    "groups": [
+      {
+        "action": "users.create_admin",
+        "count": 1,
+        "failure_code": null,
+        "http_status": 201,
+        "is_deleted": 0,
+        "result_kind": "user",
+        "state": "succeeded"
+      },
+      {
+        "action": "users.delete",
+        "count": 1,
+        "failure_code": null,
+        "http_status": 200,
+        "is_deleted": 0,
+        "result_kind": "user",
+        "state": "succeeded"
+      },
+      {
+        "action": "users.create",
+        "count": 4,
+        "failure_code": null,
+        "http_status": 201,
+        "is_deleted": 0,
+        "result_kind": "user",
+        "state": "succeeded"
+      },
+      {
+        "action": "users.create",
+        "count": 1,
+        "failure_code": "action_rejected",
+        "http_status": 403,
+        "is_deleted": 0,
+        "result_kind": null,
+        "state": "failed"
+      },
+      {
+        "action": "users.create",
+        "count": 1,
+        "failure_code": "consumer_validation_failed",
+        "http_status": 409,
+        "is_deleted": 0,
+        "result_kind": null,
+        "state": "failed"
+      },
+      {
+        "action": "users.create",
+        "count": 1,
+        "failure_code": null,
+        "http_status": null,
+        "is_deleted": 1,
+        "result_kind": null,
+        "state": "expired"
+      }
+    ]
+  },
+  "admin_permission_policy": {
+    "catalog_version": 1,
+    "head_rows": 1,
+    "overrides": [
+      {
+        "capability": "users.sessions.read",
+        "effect": "allow"
+      },
+      {
+        "capability": "users.plan.change",
+        "effect": "deny"
+      }
+    ],
+    "policy_version": 1,
+    "rule_count": 2
+  },
+  "audit_logs": {
+    "groups": [
+      {
+        "action": "users.create",
+        "count": 1,
+        "failure_code": "action_rejected",
+        "terminal_state": "failed"
+      },
+      {
+        "action": "users.create",
+        "count": 1,
+        "failure_code": "consumer_validation_failed",
+        "terminal_state": "failed"
+      },
+      {
+        "action": "users.create",
+        "count": 5,
+        "failure_code": null,
+        "terminal_state": "succeeded"
+      },
+      {
+        "action": "users.create_admin",
+        "count": 1,
+        "failure_code": null,
+        "terminal_state": "succeeded"
+      }
+    ],
+    "integrity": {
+      "create_rows": 8,
+      "operation_audit_cardinality_mismatch": 0,
+      "operation_ref_missing_invalid_or_unbound": 0,
+      "request_id_missing_or_invalid": 0,
+      "resource_detail_mismatch": 0,
+      "sensitive_detail_key_matches": 0,
+      "stable_action_failures": 0,
+      "terminal_or_failure_contract_mismatch": 0
+    }
+  },
+  "auth_audit_events": {
+    "groups": [
+      {
+        "count": 8,
+        "event": "registered"
+      },
+      {
+        "count": 2,
+        "event": "login_succeeded"
+      },
+      {
+        "count": 3,
+        "event": "refresh_succeeded"
+      },
+      {
+        "count": 1,
+        "event": "user_deleted"
+      }
+    ]
+  },
+  "checks": {
+    "admin_override_exact": true,
+    "audit_integrity": true,
+    "default_group_for_created_live_users": true,
+    "deleted_replay_response_only_redacted": true,
+    "deleted_replay_user_pii_cleared": true,
+    "expected_absent_user_rows": true,
+    "expected_present_user_rows": true,
+    "expired_response_remains_active": true,
+    "fixture_privileges_ordinary_no_escalation": true,
+    "known_secret_db_matches_zero": true,
+    "opaque_plaintext_db_matches_zero": true,
+    "outbox_integrity": true,
+    "response_integrity": true,
+    "roles_exact": true,
+    "runtime_mysql_security_exact": true,
+    "tombstone_fixture_stable": true
+  },
+  "database_endpoint": "127.0.0.1:55877",
+  "database_secret_scan": {
+    "exact_or_substring_matches": 0,
+    "known_secret_value_count": 10,
+    "opaque_ticket_or_idempotency_plaintext_matches": 0,
+    "stored_match_values": 0
+  },
+  "fixture_account": {
+    "effective_privilege_count": 9,
+    "grant_option": false,
+    "ordinary_ddl": true,
+    "source": "runtime/mysql-runtime-security-query.tsv",
+    "super": false,
+    "trigger": false
+  },
+  "schema_alias": "canonical_runtime_schema",
+  "server_security": {
+    "log_bin": 1,
+    "log_bin_trust_function_creators": 0,
+    "mysql_version": "8.4.11",
+    "source": "runtime/mysql-runtime-security-query.tsv"
+  },
+  "status": "PASS",
+  "users": {
+    "ambiguous_recovery": {
+      "active_default_group": 1,
+      "active_status": 1,
+      "admin_role": 0,
+      "deleted": 0,
+      "disabled_status": 0,
+      "nickname_null": 0,
+      "ordinary_role": 1,
+      "password_hash_null": 0,
+      "root_role": 0,
+      "rows": 1
+    },
+    "created_admin": {
+      "active_default_group": 1,
+      "active_status": 1,
+      "admin_role": 1,
+      "deleted": 0,
+      "disabled_status": 0,
+      "nickname_null": 0,
+      "ordinary_role": 0,
+      "password_hash_null": 0,
+      "root_role": 0,
+      "rows": 1
+    },
+    "deleted_replay": {
+      "active_default_group": 1,
+      "active_status": 0,
+      "admin_role": 0,
+      "deleted": 1,
+      "disabled_status": 1,
+      "nickname_null": 1,
+      "ordinary_role": 1,
+      "password_hash_null": 1,
+      "root_role": 0,
+      "rows": 1
+    },
+    "denied_admin_creation": {
+      "active_default_group": 0,
+      "active_status": 0,
+      "admin_role": 0,
+      "deleted": 0,
+      "disabled_status": 0,
+      "nickname_null": 0,
+      "ordinary_role": 0,
+      "password_hash_null": 0,
+      "root_role": 0,
+      "rows": 0
+    },
+    "denied_non_default_plan": {
+      "active_default_group": 0,
+      "active_status": 0,
+      "admin_role": 0,
+      "deleted": 0,
+      "disabled_status": 0,
+      "nickname_null": 0,
+      "ordinary_role": 0,
+      "password_hash_null": 0,
+      "root_role": 0,
+      "rows": 0
+    },
+    "double_submit": {
+      "active_default_group": 1,
+      "active_status": 1,
+      "admin_role": 0,
+      "deleted": 0,
+      "disabled_status": 0,
+      "nickname_null": 0,
+      "ordinary_role": 1,
+      "password_hash_null": 0,
+      "root_role": 0,
+      "rows": 1
+    },
+    "groups_empty": {
+      "active_default_group": 0,
+      "active_status": 0,
+      "admin_role": 0,
+      "deleted": 0,
+      "disabled_status": 0,
+      "nickname_null": 0,
+      "ordinary_role": 0,
+      "password_hash_null": 0,
+      "root_role": 0,
+      "rows": 0
+    },
+    "groups_error": {
+      "active_default_group": 0,
+      "active_status": 0,
+      "admin_role": 0,
+      "deleted": 0,
+      "disabled_status": 0,
+      "nickname_null": 0,
+      "ordinary_role": 0,
+      "password_hash_null": 0,
+      "root_role": 0,
+      "rows": 0
+    },
+    "groups_pending": {
+      "active_default_group": 0,
+      "active_status": 0,
+      "admin_role": 0,
+      "deleted": 0,
+      "disabled_status": 0,
+      "nickname_null": 0,
+      "ordinary_role": 0,
+      "password_hash_null": 0,
+      "root_role": 0,
+      "rows": 0
+    },
+    "operation_expired": {
+      "active_default_group": 1,
+      "active_status": 1,
+      "admin_role": 0,
+      "deleted": 0,
+      "disabled_status": 0,
+      "nickname_null": 0,
+      "ordinary_role": 1,
+      "password_hash_null": 0,
+      "root_role": 0,
+      "rows": 1
+    },
+    "ordinary_default": {
+      "active_default_group": 1,
+      "active_status": 1,
+      "admin_role": 0,
+      "deleted": 0,
+      "disabled_status": 0,
+      "nickname_null": 0,
+      "ordinary_role": 1,
+      "password_hash_null": 0,
+      "root_role": 0,
+      "rows": 1
+    },
+    "root": {
+      "active_default_group": 1,
+      "active_status": 1,
+      "admin_role": 0,
+      "deleted": 0,
+      "disabled_status": 0,
+      "nickname_null": 0,
+      "ordinary_role": 0,
+      "password_hash_null": 0,
+      "root_role": 1,
+      "rows": 1
+    },
+    "tombstone_fixture": {
+      "active_default_group": 1,
+      "active_status": 0,
+      "admin_role": 0,
+      "deleted": 1,
+      "disabled_status": 1,
+      "nickname_null": 0,
+      "ordinary_role": 1,
+      "password_hash_null": 1,
+      "root_role": 0,
+      "rows": 1
+    }
+  }
+}

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/porsche/ai-gateway-go/internal/config"
+	"github.com/porsche/ai-gateway-go/internal/diagnostics"
 	"github.com/porsche/ai-gateway-go/internal/models"
 	"github.com/porsche/ai-gateway-go/internal/whitelabel"
 	"gorm.io/gorm"
@@ -286,9 +287,18 @@ func (p *PlatformChatService) Compare(ctx context.Context, db *gorm.DB, user *mo
 }
 
 func (p *PlatformChatService) Stream(ctx context.Context, db *gorm.DB, user *models.User, params ChatParams, write func([]byte) error) error {
+	trace := diagnostics.From(ctx)
+	end := trace.Begin(diagnostics.Quota)
 	if err := p.deps.Billing.CheckAndConsumeCall(db, user, 1); err != nil {
+		reason := diagnostics.Database
+		if businessErr, ok := err.(*HTTPError); ok && businessErr.Status == 429 {
+			reason = diagnostics.Rejected
+		}
+		end(reason)
 		return err
 	}
+	end(diagnostics.OK)
+	trace.Mark(diagnostics.DailyCallSaved)
 	if len(user.AllowedModels) > 0 && !containsStr(user.AllowedModels, params.Model) {
 		return errForbidden("当前账号无权使用该模型")
 	}
@@ -299,24 +309,39 @@ func (p *PlatformChatService) Stream(ctx context.Context, db *gorm.DB, user *mod
 		conv *models.Conversation
 		err  error
 	)
+	end = trace.Begin(diagnostics.Conversation)
 	if params.ConversationGUID != nil {
 		conv, err = conversationByGUID(db, user, *params.ConversationGUID)
 	} else {
 		conv, err = CreateConversation(db, user, "", params.Model)
 	}
 	if err != nil {
+		reason := diagnostics.Database
+		if _, ok := err.(*HTTPError); ok {
+			reason = diagnostics.Rejected
+		}
+		end(reason)
 		return err
 	}
+	end(diagnostics.OK)
+	trace.Mark(diagnostics.ConversationReady)
 	if last := lastUserMessage(trimmed); last != "" {
+		end = trace.Begin(diagnostics.UserMessage)
 		if _, err := AddMessage(db, conv, "user", last, "", 0); err != nil {
+			end(diagnostics.Database)
 			return err
 		}
+		end(diagnostics.OK)
+		trace.Mark(diagnostics.UserMessageSaved)
 		if conv.Title == "新对话" {
+			end = trace.Begin(diagnostics.Title)
 			conv.Title = truncateTitle(last)
 			stampUpdate(&conv.AuditFields, conv.UserID)
 			if err := db.Save(conv).Error; err != nil {
+				end(diagnostics.Database)
 				return err
 			}
+			end(diagnostics.OK)
 		}
 	}
 
@@ -333,6 +358,7 @@ func (p *PlatformChatService) Stream(ctx context.Context, db *gorm.DB, user *mod
 				return err
 			}
 			metaSent = true
+			trace.Mark(diagnostics.FirstFrame)
 		}
 		return write(frame)
 	}
@@ -344,43 +370,64 @@ func (p *PlatformChatService) Stream(ctx context.Context, db *gorm.DB, user *mod
 		MaxTokens:   params.MaxTokens,
 		Stream:      true,
 	}
+	end = trace.Begin(diagnostics.Serialization)
 	payload, marshalErr := whiteLabelPayload(params.WhiteLabelBody, body)
 	if marshalErr != nil {
+		end(diagnostics.Invalid)
 		return marshalErr
 	}
+	end(diagnostics.OK)
 	resp, upstreamErr := p.deps.WhiteLabel.Chat(ctx, payload)
 	if upstreamErr != nil {
 		return upstreamErr
 	}
 	defer resp.Body.Close()
 	var content strings.Builder
-	streamErr := p.deps.WhiteLabel.ProjectChatCompletionSSE(resp.Body, params.Model, func(frame []byte) error {
+	streamErr := p.deps.WhiteLabel.ProjectChatCompletionSSEContext(ctx, resp.Body, params.Model, func(frame []byte) error {
 		content.WriteString(parseSSEDelta(frame))
 		return emitFrame(frame)
 	})
 	if streamErr != nil {
 		return streamErr
 	}
-	return p.finishPlatformStream(db, user, conv, params, content.String(), write)
+	return p.finishPlatformStream(ctx, db, user, conv, params, content.String(), write)
 }
 
 // finishPlatformStream keeps the pre-existing conversation and usage
 // semantics after either legacy or white-label SSE delivers a final response.
-func (p *PlatformChatService) finishPlatformStream(db *gorm.DB, user *models.User, conv *models.Conversation, params ChatParams, content string, write func([]byte) error) error {
+func (p *PlatformChatService) finishPlatformStream(ctx context.Context, db *gorm.DB, user *models.User, conv *models.Conversation, params ChatParams, content string, write func([]byte) error) error {
+	trace := diagnostics.From(ctx)
+	end := trace.Begin(diagnostics.Assistant)
 	tokens := len(content) / 2
 	if tokens < 1 && content != "" {
 		tokens = 1
 	}
 	if _, err := AddMessage(db, conv, "assistant", content, params.Model, tokens); err != nil {
+		end(diagnostics.Database)
 		return err
 	}
+	end(diagnostics.OK)
+	end = trace.Begin(diagnostics.Usage)
 	user.TotalTokensUsed += int64(tokens)
 	stampUpdate(&user.AuditFields, user.ID)
 	if err := db.Save(user).Error; err != nil {
+		end(diagnostics.Database)
 		return err
 	}
+	end(diagnostics.OK)
+	trace.Mark(diagnostics.FinalSaved)
 	done, _ := json.Marshal(map[string]interface{}{"type": "done", "tokens": tokens, "total_tokens_used": user.TotalTokensUsed})
-	return write([]byte(fmt.Sprintf("data: %s\n\n", done)))
+	end = trace.Begin(diagnostics.FinalWrite)
+	err := write([]byte(fmt.Sprintf("data: %s\n\n", done)))
+	reason := diagnostics.OK
+	if err != nil {
+		reason = diagnostics.Write
+		if ctx.Err() != nil {
+			reason = diagnostics.NetworkReason(ctx.Err())
+		}
+	}
+	end(reason)
+	return err
 }
 
 // CompareStream emits model_chunk SSE events while each selected model responds,

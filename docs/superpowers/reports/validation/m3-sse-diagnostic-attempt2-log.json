@@ -1,0 +1,87 @@
+{
+  "event": "platform_chat_diagnostic",
+  "trace_id": "ba65e3a75a02002c4847809cdfcfc7d1",
+  "request_id_sha256": "4ed7b4be451d0305984aa08804c903cc499be8c31e7f43f51e323412f2a7ebd1",
+  "utc": "2026-09-03T05:51:54.287215608Z",
+  "route": "/api/v1/platform/chat/completions",
+  "method": "POST",
+  "vcs_revision": "04ed72806f5ca139d219d166452e0473ba5bf1a1",
+  "vcs_modified": "false",
+  "duration_ms": 1741.061142,
+  "http_status": 503,
+  "upstream_http_status": 200,
+  "upstream_request_attempted": true,
+  "upstream_response_received": true,
+  "first_frame_emitted": false,
+  "daily_call_saved": true,
+  "conversation_ready": true,
+  "user_message_saved": true,
+  "final_saved": false,
+  "stages": {
+    "assistant_save": {
+      "state": "not_run",
+      "reason": "none",
+      "duration_ms": 0
+    },
+    "authentication": {
+      "state": "success",
+      "reason": "none",
+      "duration_ms": 4.910318
+    },
+    "conversation_lookup_create": {
+      "state": "success",
+      "reason": "none",
+      "duration_ms": 1.816001
+    },
+    "final_write": {
+      "state": "not_run",
+      "reason": "none",
+      "duration_ms": 0
+    },
+    "model_catalog_acl": {
+      "state": "success",
+      "reason": "none",
+      "duration_ms": 0.048033
+    },
+    "quota_persist": {
+      "state": "success",
+      "reason": "none",
+      "duration_ms": 7.779559
+    },
+    "serialization": {
+      "state": "success",
+      "reason": "none",
+      "duration_ms": 0.169375
+    },
+    "sse_stream": {
+      "state": "failed",
+      "reason": "malformed_chunk",
+      "duration_ms": 0.246404
+    },
+    "title_save": {
+      "state": "success",
+      "reason": "none",
+      "duration_ms": 4.612029
+    },
+    "upstream_connect": {
+      "state": "success",
+      "reason": "none",
+      "duration_ms": 1711.713458
+    },
+    "usage_save": {
+      "state": "not_run",
+      "reason": "none",
+      "duration_ms": 0
+    },
+    "user_message_save": {
+      "state": "success",
+      "reason": "none",
+      "duration_ms": 8.937206
+    },
+    "validation": {
+      "state": "success",
+      "reason": "none",
+      "duration_ms": 0.376446
+    }
+  }
+}

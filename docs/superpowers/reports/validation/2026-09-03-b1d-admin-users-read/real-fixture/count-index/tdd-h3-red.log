@@ -1,0 +1,4 @@
+# github.com/porsche/ai-gateway-go/internal/service [github.com/porsche/ai-gateway-go/internal/service.test]
+internal/service/admin_users_read_test.go:111:22: undefined: adminUsersListStatement
+FAIL	github.com/porsche/ai-gateway-go/internal/service [build failed]
+FAIL

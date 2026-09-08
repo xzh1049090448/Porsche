@@ -1,0 +1,6 @@
+reason=reset runtime after Chrome transport auto-retried a deliberately dropped response
+before_user_rows=6
+before_redis_keys=7
+after_bootstrap_user_rows=1
+after_redis_keys=0
+test_schema_preserved=true

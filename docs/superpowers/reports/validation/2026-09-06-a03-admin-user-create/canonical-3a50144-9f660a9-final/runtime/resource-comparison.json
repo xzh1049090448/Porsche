@@ -1,0 +1,18 @@
+{
+  "application_server_state": "STOPPED_AFTER_ACCEPTANCE",
+  "cleanup_evidence": "cleanup/cleanup-evidence.json",
+  "images_added": 0,
+  "images_removed": 0,
+  "status": "PASS",
+  "task_application_server_listeners_current": 0,
+  "task_containers_before": 8,
+  "task_containers_current": 0,
+  "task_label_matches_current": 0,
+  "task_named_volumes_current": 0,
+  "task_private_paths_current": 0,
+  "task_processes_current": 0,
+  "unrelated_containers_added": 0,
+  "unrelated_containers_removed": 0,
+  "volumes_added": 0,
+  "volumes_removed": 0
+}

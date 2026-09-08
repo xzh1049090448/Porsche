@@ -1,0 +1,107 @@
+{
+  "status": "PASS",
+  "browser": "chromium",
+  "headless": false,
+  "base_url": "https://127.0.0.1:51296",
+  "scenarios": {
+    "root_created_admin_with_overrides": [
+      {
+        "capability": "users.sessions.read",
+        "effect": "allow"
+      },
+      {
+        "capability": "users.plan.change",
+        "effect": "deny"
+      }
+    ],
+    "deleted_replay_no_pii": {
+      "status": 410,
+      "code": "created_user_deleted",
+      "operation_ref_preserved": true,
+      "pii_fields": 0,
+      "retry_after_present": false,
+      "wire_evidence": [
+        "browser/browser-acceptance.json",
+        "browser/browser-request-summary.json",
+        "scripts/playwright-browser.js.txt"
+      ],
+      "context_screenshot": "browser/browser-context-after-deleted-replay.png",
+      "context_screenshot_scope": "UI context after API acceptance; does not display or prove the wire 410 body"
+    },
+    "admin_creation_denied": {
+      "status": 403,
+      "code": "action_verification_rejected"
+    },
+    "non_default_plan_denied": {
+      "status": 403,
+      "code": "action_operation_rejected"
+    },
+    "groups_directory_fail_closed": {
+      "pending": {
+        "can_submit": false,
+        "create_or_verify_requests": 0
+      },
+      "error": {
+        "can_submit": false,
+        "create_or_verify_requests": 0
+      },
+      "empty": {
+        "can_submit": false,
+        "create_or_verify_requests": 0
+      }
+    },
+    "admin_created_default_ordinary_user": true,
+    "double_submit_post_count": 1,
+    "tombstone_conflict": {
+      "status": 409,
+      "code": "username_conflict",
+      "disclosed_keys": [
+        "code",
+        "message",
+        "request_id",
+        "type"
+      ]
+    },
+    "ambiguous_transport_failure_recovered_by_operation_query": true,
+    "ambiguous_fault_injection": "playwright_route_fetch_then_abort_after_committed_201",
+    "operation_expired_classification": {
+      "query_status": 410,
+      "begin_status": 410,
+      "code": "operation_expired",
+      "operation_ref_present": false,
+      "retry_after_present": false,
+      "accelerated_rows": 1
+    },
+    "hard_refresh_list_group": "default",
+    "detail_group": "default"
+  },
+  "storage": {
+    "local_storage_keys": [
+      "llm_platform_compareModelIds",
+      "llm_platform_compareMode",
+      "llm_platform_selectedModel",
+      "llm_platform_selectedScenario",
+      "llm_platform_modelParams",
+      "porsche_auth_coordination_v1"
+    ],
+    "session_storage_keys": [],
+    "password_fields_nonempty": 0,
+    "refresh_cookie_count": 1,
+    "refresh_cookie_http_only": true,
+    "refresh_cookie_secure": true,
+    "refresh_cookie_visible_to_document": false
+  },
+  "console_counts": {
+    "debug": 5,
+    "error": 5
+  },
+  "console_classifications": {
+    "expected_exercised_http_failure": 5
+  },
+  "runtime_console_secret_scan": {
+    "exact_known_secret_matches": 0,
+    "credential_pattern_matches": 0,
+    "stored_console_message_values": 0
+  },
+  "page_error_count": 0
+}

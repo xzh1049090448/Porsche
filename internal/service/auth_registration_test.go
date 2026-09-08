@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"strings"
@@ -30,9 +31,9 @@ func TestNormalizeUsernameTrimsAndEnforcesLength(t *testing.T) {
 	}
 }
 
-func TestUsernameRegistrationPermanentlyReservesTrimmedUsername(t *testing.T) {
-	redisStore := openTestAuthRedis(t)
+func TestPost0007UsernameRegistrationUsesDefaultGroupAndReservesUsername(t *testing.T) {
 	db := openTestMySQL(t)
+	redisStore := openTestAuthRedis(t)
 	prepareAuthRegistrationSchema(t, db)
 	auth := NewAuthService(&config.Settings{RegisterEnabled: true, PasswordRegisterEnabled: true}, nil, db)
 	auth.SetSessionService(NewSessionService(db, redisStore, testSessionSettings()))
@@ -44,6 +45,7 @@ func TestUsernameRegistrationPermanentlyReservesTrimmedUsername(t *testing.T) {
 	if created.Username == nil || *created.Username != username || created.Phone != nil || created.PasswordHash == nil || !strings.HasPrefix(*created.PasswordHash, "$argon2id$") {
 		t.Fatalf("unsafe username registration result: %#v", created)
 	}
+	assertUserCanonicalDefaultGroup(t, db, created)
 	if err := db.Model(&models.User{}).Where("id = ?", created.ID).Updates(map[string]any{"is_deleted": 1}).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +142,7 @@ func equalStringPointer(left, right *string) bool {
 	return *left == *right
 }
 
-func TestRootBootstrapCreatesOnlyTheFirstRoot(t *testing.T) {
+func TestPost0007RootBootstrapUsesDefaultGroupAndCreatesOnlyFirstRoot(t *testing.T) {
 	db := openRootTestMySQL(t)
 	prepareAuthRegistrationSchema(t, db)
 	settings := &config.Settings{RootBootstrapUsername: "initial_root", RootBootstrapPassword: "Str0ng!Root1"}
@@ -149,6 +151,7 @@ func TestRootBootstrapCreatesOnlyTheFirstRoot(t *testing.T) {
 	if err != nil || root == nil || root.Role != models.UserRoleRoot {
 		t.Fatalf("bootstrap root = %#v, %v", root, err)
 	}
+	assertUserCanonicalDefaultGroup(t, db, root)
 	if settings.RootBootstrapUsername != "" || settings.RootBootstrapPassword != "" {
 		t.Fatal("successful bootstrap values remained reusable")
 	}
@@ -168,7 +171,7 @@ func TestRootBootstrapDoesNotReplaceTombstonedRoot(t *testing.T) {
 	prepareAuthRegistrationSchema(t, db)
 	username := "retired_root"
 	now := persistence.NowMillis()
-	retired := &models.User{AuditFields: models.AuditFields{Guid: testSnowflake.Next(), CreatedAt: now, UpdatedAt: now, IsDeleted: 1}, Username: &username, Nickname: &username, PlanType: models.PlanFree, Status: models.UserStatusDisabled, Role: models.UserRoleRoot, AuthVersion: 2, AllowedModels: models.JSONSlice{}}
+	retired := &models.User{AuditFields: models.AuditFields{Guid: testSnowflake.Next(), CreatedAt: now, UpdatedAt: now, IsDeleted: 1}, GroupID: testDefaultBusinessGroupID(t, db), Username: &username, Nickname: &username, PlanType: models.PlanFree, Status: models.UserStatusDisabled, Role: models.UserRoleRoot, AuthVersion: 2, AllowedModels: models.JSONSlice{}}
 	if err := db.Create(retired).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -341,7 +344,7 @@ func TestLoginUsernameRejectsDisabledAndSoftDeletedUser(t *testing.T) {
 	}
 	username := fixtureUsername(testSnowflake.Next())
 	now := persistence.NowMillis()
-	user := &models.User{AuditFields: models.AuditFields{Guid: testSnowflake.Next(), CreatedAt: now, UpdatedAt: now}, Username: &username, PasswordHash: &hash, Status: models.UserStatusDisabled, Role: models.UserRoleUser, AuthVersion: 1, PlanType: models.PlanFree, AllowedModels: models.JSONSlice{}}
+	user := &models.User{AuditFields: models.AuditFields{Guid: testSnowflake.Next(), CreatedAt: now, UpdatedAt: now}, GroupID: testDefaultBusinessGroupID(t, db), Username: &username, PasswordHash: &hash, Status: models.UserStatusDisabled, Role: models.UserRoleUser, AuthVersion: 1, PlanType: models.PlanFree, AllowedModels: models.JSONSlice{}}
 	if err := db.Create(user).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -388,5 +391,66 @@ func TestPasswordUsesArgon2idAndRejectsWeakPassword(t *testing.T) {
 	}
 	if !security.VerifyPassword("Str0ng!pw", hash) || security.VerifyPassword("wrong-password", hash) {
 		t.Fatal("Argon2id password verification contract failed")
+	}
+}
+
+func TestAdminUserCreateNormalizeManagedUserNickname(t *testing.T) {
+	nickname, err := NormalizeManagedUserNickname("  管理用户  ")
+	if err != nil || nickname != "管理用户" {
+		t.Fatalf("nickname=%q err=%v", nickname, err)
+	}
+	for _, invalid := range []string{"   ", strings.Repeat("界", 65)} {
+		if _, err := NormalizeManagedUserNickname(invalid); err == nil {
+			t.Fatalf("NormalizeManagedUserNickname(%q) unexpectedly succeeded", invalid)
+		}
+	}
+
+}
+
+func TestAdminUserCreateHashManagedCreationPassword(t *testing.T) {
+	password := []byte("Str0ng!pw")
+	original := append([]byte(nil), password...)
+	hash, err := HashManagedCreationPasswordBytes(password)
+	if err != nil || len(hash) == 0 || bytes.Equal(hash, password) || !security.VerifyPassword(string(original), string(hash)) {
+		t.Fatal("managed password hash contract failed")
+	}
+	if !bytes.Equal(password, original) {
+		t.Fatal("managed byte hasher mutated caller password")
+	}
+	clear(hash)
+	if _, err := HashManagedCreationPasswordBytes([]byte("password")); err == nil {
+		t.Fatal("managed password hash accepted weak password")
+	}
+}
+
+func TestVerifyPasswordBytesAvoidsPlaintextStringAndRejectsNULSuffix(t *testing.T) {
+	password := []byte("Str0ng!pw")
+	hash, err := security.HashPasswordBytes(password)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clear(hash)
+	if !security.VerifyPasswordBytes(password, string(hash)) {
+		t.Fatal("byte password verification rejected the original password")
+	}
+	withNUL := append(append([]byte(nil), password...), 0)
+	defer clear(withNUL)
+	if security.VerifyPasswordBytes(withNUL, string(hash)) {
+		t.Fatal("byte password verification accepted a NUL-suffixed password")
+	}
+}
+
+func TestValidatePasswordRejectsInvalidUTF8(t *testing.T) {
+	invalidPassword := string([]byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff})
+	if err := ValidatePassword(invalidPassword); err == nil {
+		t.Fatal("ValidatePassword accepted invalid UTF-8")
+	}
+}
+
+func TestAdminUserCreateHashManagedCreationPasswordRejectsInvalidUTF8(t *testing.T) {
+	invalidPassword := []byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff}
+	hash, err := HashManagedCreationPasswordBytes(invalidPassword)
+	if err == nil || hash != nil {
+		t.Fatal("managed password hash accepted invalid UTF-8")
 	}
 }

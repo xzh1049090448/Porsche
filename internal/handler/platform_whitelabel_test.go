@@ -32,7 +32,7 @@ func (f platformRoundTripper) RoundTrip(req *http.Request) (*http.Response, erro
 func TestPlatformModelsUseWhiteLabelCatalogAndUserACL(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	state := newPlatformWhiteLabelTestState(t)
-	user := platformTestUser("13900139003", models.JSONSlice{"model-a"})
+	user := platformTestUser(t, state, "13900139003", models.JSONSlice{"model-a"})
 	if err := state.DB.Create(&user).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +55,7 @@ func TestPlatformModelsUseWhiteLabelCatalogAndUserACL(t *testing.T) {
 func TestPlatformRejectsLegacyJWTWithoutSessionClaims(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	state := newPlatformWhiteLabelTestState(t)
-	user := platformTestUser("legacy-platform-user", models.JSONSlice{"model-a"})
+	user := platformTestUser(t, state, "legacy-platform-user", models.JSONSlice{"model-a"})
 	if err := state.DB.Create(&user).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -77,7 +77,7 @@ func TestPlatformRejectsLegacyJWTWithoutSessionClaims(t *testing.T) {
 func TestPlatformModelDetailHidesUnauthorizedAs404(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	state := newPlatformWhiteLabelTestState(t)
-	user := platformTestUser("13900139004", models.JSONSlice{"model-a"})
+	user := platformTestUser(t, state, "13900139004", models.JSONSlice{"model-a"})
 	if err := state.DB.Create(&user).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -127,7 +127,7 @@ func TestPlatformDetailRoutePreservesLegacyDetailModelID(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	const modelID = "detail"
 	state, detailCalls := newSlashPlatformWhiteLabelTestState(t, modelID)
-	user := platformTestUser("13900139008", models.JSONSlice{modelID})
+	user := platformTestUser(t, state, "13900139008", models.JSONSlice{modelID})
 	if err := state.DB.Create(&user).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -149,7 +149,7 @@ func TestPlatformSlashModelDetailUsesQueryIDAndUserACL(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	const modelID = "zai-org/glm-5.1"
 	state, detailCalls := newSlashPlatformWhiteLabelTestState(t, modelID)
-	user := platformTestUser("13900139006", models.JSONSlice{modelID})
+	user := platformTestUser(t, state, "13900139006", models.JSONSlice{modelID})
 	if err := state.DB.Create(&user).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -171,7 +171,7 @@ func TestPlatformSlashModelDetailDoesNotCallUpstreamWhenUserDenied(t *testing.T)
 	gin.SetMode(gin.TestMode)
 	const modelID = "zai-org/glm-5.1"
 	state, detailCalls := newSlashPlatformWhiteLabelTestState(t, modelID)
-	user := platformTestUser("13900139007", models.JSONSlice{"model-a"})
+	user := platformTestUser(t, state, "13900139007", models.JSONSlice{"model-a"})
 	if err := state.DB.Create(&user).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -193,7 +193,7 @@ func TestPlatformMalformedOrDuplicateDetailQueryDoesNotCallUpstream(t *testing.T
 	gin.SetMode(gin.TestMode)
 	const modelID = "zai-org/glm-5.1"
 	state, detailCalls := newSlashPlatformWhiteLabelTestState(t, modelID)
-	user := platformTestUser("13900139009", models.JSONSlice{modelID})
+	user := platformTestUser(t, state, "13900139009", models.JSONSlice{modelID})
 	if err := state.DB.Create(&user).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -219,7 +219,7 @@ func TestPlatformMalformedOrDuplicateDetailQueryDoesNotCallUpstream(t *testing.T
 func TestPlatformStreamFailureBeforeFirstFrameReturnsJSON(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	state := newPlatformWhiteLabelTestState(t)
-	user := platformTestUser("13900139005", nil)
+	user := platformTestUser(t, state, "13900139005", nil)
 	if err := state.DB.Create(&user).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -241,7 +241,7 @@ func TestPlatformStreamFailureBeforeFirstFrameReturnsJSON(t *testing.T) {
 func TestPlatformV2StreamReturnsUnavailableWithoutCallingLegacyService(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	state := newPlatformWhiteLabelTestState(t)
-	user := platformTestUser("platform-v2-unavailable", nil)
+	user := platformTestUser(t, state, "platform-v2-unavailable", nil)
 	if err := state.DB.Create(&user).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -264,7 +264,7 @@ func TestAdminHealthCheckRejectsConcurrentSameModel(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	state := newPlatformWhiteLabelTestState(t)
 	state.Settings.AdminToken = "admin-test"
-	admin := platformTestUser("admin-health-check", nil)
+	admin := platformTestUser(t, state, "admin-health-check", nil)
 	admin.Role = models.UserRoleAdmin
 	if err := state.DB.Create(&admin).Error; err != nil {
 		t.Fatal(err)
@@ -434,13 +434,15 @@ func preparePlatformAuthSchema(t *testing.T, gdb *gorm.DB) {
 
 var platformTestSnowflake = persistence.NewSnowflake(os.Getpid()%1024, persistence.SystemClock())
 
-func platformTestUser(_ string, allowed models.JSONSlice) models.User {
+func platformTestUser(t *testing.T, state *app.State, _ string, allowed models.JSONSlice) models.User {
+	t.Helper()
 	now := time.Now().UTC().UnixMilli()
 	if allowed == nil {
 		allowed = models.JSONSlice{}
 	}
 	return models.User{
 		AuditFields:   models.AuditFields{Guid: platformTestSnowflake.Next(), CreatedAt: now, UpdatedAt: now, IsDeleted: 0},
+		GroupID:       platformTestDefaultBusinessGroupID(t, state),
 		Phone:         platformTestPhone(),
 		Status:        models.UserStatusActive,
 		Role:          models.UserRoleUser,
@@ -448,6 +450,21 @@ func platformTestUser(_ string, allowed models.JSONSlice) models.User {
 		PlanType:      models.PlanFree,
 		AllowedModels: allowed,
 	}
+}
+
+func platformTestDefaultBusinessGroupID(t *testing.T, state *app.State) int64 {
+	t.Helper()
+	var groups []models.BusinessGroup
+	if state == nil || state.DB == nil {
+		t.Fatal("platform test state has no database")
+	}
+	if err := state.DB.Where("group_key = ? AND is_deleted = 0", "default").Order("id ASC").Find(&groups).Error; err != nil {
+		t.Fatalf("load platform default business group: %v", err)
+	}
+	if len(groups) != 1 || groups[0].ID <= 0 || groups[0].Guid <= 0 || groups[0].Key != "default" || groups[0].Status != models.BusinessGroupStatusActive || groups[0].IsDeleted != 0 {
+		t.Fatalf("invalid platform default business group: %#v", groups)
+	}
+	return groups[0].ID
 }
 
 // platformTestPhone keeps handler fixtures isolated even when MySQL data from

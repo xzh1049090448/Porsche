@@ -1,0 +1,4 @@
+temp_mode=drwx------ temp_path=/tmp/a03-task12-0010-20260907182125-bfacc639
+export TEST_DATABASE_URL='mysql://<redacted>@127.0.0.1:55877/a03_20260907182125bfacc639_canonical_3a50144_test?charset=utf8mb4'
+export TEST_REDIS_URL='redis://127.0.0.1:55878/11'
+export ACTION_SECURITY_HMAC_KEY=<redacted>

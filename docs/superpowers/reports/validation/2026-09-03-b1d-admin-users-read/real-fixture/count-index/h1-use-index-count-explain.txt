@@ -1,0 +1,16 @@
+experiment
+B0_COUNT_EXPLAIN
+EXPLAIN
+-> Aggregate: count(0)  (cost=652 rows=1) (actual time=112..112 rows=1 loops=1)
+    -> Filter: ((users.guid <> -1) and (users.`role` in (1,10)) and (users.`status` in (1,2)))  (cost=602 rows=495) (actual time=0.976..109 rows=100000 loops=1)
+        -> Index lookup on users using idx_users_active_updated (is_deleted=0), with index condition: (users.id <> -1)  (cost=602 rows=49518) (actual time=0.97..101 rows=100001 loops=1)
+
+experiment
+H1_COUNT_EXPLAIN
+EXPLAIN
+-> Aggregate: count(0)  (cost=14545 rows=1) (actual time=37.9..37.9 rows=1 loops=1)
+    -> Filter: ((users.is_deleted = 0) and (users.id <> -1) and (users.guid <> -1) and (users.`role` in (1,10)) and (users.`status` in (1,2)))  (cost=10088 rows=44573) (actual time=0.0228..34.6 rows=100000 loops=1)
+        -> Table scan on users  (cost=10088 rows=99036) (actual time=0.0218..23.4 rows=100001 loops=1)
+
+experiment	b0_total	h1_total
+B0_H1_TOTALS	100000	100000

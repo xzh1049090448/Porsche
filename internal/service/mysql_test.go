@@ -25,13 +25,37 @@ func testAuditFields() models.AuditFields {
 	return models.AuditFields{Guid: testSnowflake.Next(), CreatedAt: now, UpdatedAt: now, IsDeleted: 0}
 }
 
-func testUser(_ string) models.User {
+func testUser(t *testing.T, db *gorm.DB, _ string) models.User {
+	t.Helper()
 	return models.User{
 		AuditFields:   testAuditFields(),
+		GroupID:       testDefaultBusinessGroupID(t, db),
 		Phone:         testPhonePointer(),
 		Status:        models.UserStatusActive,
 		PlanType:      models.PlanFree,
 		AllowedModels: models.JSONSlice{},
+	}
+}
+
+func testDefaultBusinessGroupID(t *testing.T, db *gorm.DB) int64 {
+	t.Helper()
+	var groups []models.BusinessGroup
+	if err := db.Where("group_key = ? AND is_deleted = 0", "default").Order("id ASC").Find(&groups).Error; err != nil {
+		t.Fatalf("load default business group: %v", err)
+	}
+	if len(groups) != 1 || groups[0].ID <= 0 || groups[0].Guid <= 0 || groups[0].Key != "default" || groups[0].Status != models.BusinessGroupStatusActive || groups[0].IsDeleted != 0 {
+		t.Fatalf("invalid default business group fixture: %#v", groups)
+	}
+	return groups[0].ID
+}
+
+func assertUserCanonicalDefaultGroup(t *testing.T, db *gorm.DB, user *models.User) {
+	t.Helper()
+	if user == nil || user.GroupID <= 0 {
+		t.Fatalf("user has invalid group association: %#v", user)
+	}
+	if want := testDefaultBusinessGroupID(t, db); user.GroupID != want {
+		t.Fatalf("user group_id = %d, want canonical default %d", user.GroupID, want)
 	}
 }
 

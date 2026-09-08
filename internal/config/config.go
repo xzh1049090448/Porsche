@@ -1,6 +1,7 @@
 package config
 
 import (
+	"crypto/subtle"
 	"fmt"
 	"net/url"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/joho/godotenv"
+	"github.com/porsche/ai-gateway-go/internal/actionsecurity"
 )
 
 type Settings struct {
@@ -38,6 +40,7 @@ type Settings struct {
 	RootBootstrapUsername    string
 	RootBootstrapPassword    string
 	AuthHMACKey              string
+	ActionSecurityHMACKey    []byte
 	FixedLoginEnabled        bool
 	FixedLoginPhone          string
 	FixedLoginPassword       string
@@ -220,6 +223,9 @@ func Load() (*Settings, error) {
 		AnalyticsTokenPricePer1K: getEnvFloat("ANALYTICS_TOKEN_PRICE_PER_1K", 1),
 		WhiteLabel:               whiteLabel,
 	}
+	if err := loadActionSecurityRootKey(s); err != nil {
+		return nil, err
+	}
 	trustedOrigins, err := parseTrustedOrigins(os.Getenv("AUTH_TRUSTED_ORIGINS"))
 	if err != nil {
 		return nil, err
@@ -247,6 +253,39 @@ func Load() (*Settings, error) {
 	}
 
 	return s, nil
+}
+
+func loadActionSecurityRootKey(s *Settings) error {
+	raw, declared := os.LookupEnv("ACTION_SECURITY_HMAC_KEY")
+	if !declared {
+		if s.AppEnv == "production" || s.AppEnv == "staging" {
+			return fmt.Errorf("ACTION_SECURITY_HMAC_KEY: %s", actionsecurity.KeyMissing)
+		}
+		return nil
+	}
+	decoded, reason := actionsecurity.ParseRootKey(raw)
+	if reason != "" {
+		return fmt.Errorf("ACTION_SECURITY_HMAC_KEY: %s", reason)
+	}
+	defer clear(decoded)
+	if actionSecurityRootKeyReused(
+		decoded,
+		[]byte(s.AuthHMACKey),
+		[]byte(s.JWTSecretKey),
+		[]byte(s.WhiteLabel.APIKey),
+		subtle.ConstantTimeCompare,
+	) {
+		return fmt.Errorf("ACTION_SECURITY_HMAC_KEY: %s", actionsecurity.KeyReuse)
+	}
+	s.ActionSecurityHMACKey = append([]byte(nil), decoded...)
+	return nil
+}
+
+func actionSecurityRootKeyReused(decoded, auth, jwt, upstream []byte, compare func([]byte, []byte) int) bool {
+	authReuse := compare(decoded, auth)
+	jwtReuse := compare(decoded, jwt)
+	upstreamReuse := compare(decoded, upstream)
+	return authReuse|jwtReuse|upstreamReuse == 1
 }
 
 // loadAppEnv normalizes the deployment environment before configuration

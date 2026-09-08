@@ -1,0 +1,100 @@
+# B1-C admin authorization read APIs: independent real-fixture verification
+
+Scope: the eight frozen B1-C production files were independently re-hashed before and after execution. Tests used only the explicitly authorized disposable fixture: `porsche_b1c_admin_authz_260903_test` on its documented loopback MySQL/Redis containers. No migration was run, no fixture container was stopped/removed, and no repository file was modified.
+
+## SECURITY_REPORT
+
+- CRITICAL: 0
+- HIGH: 0
+- MEDIUM: 0
+- LOW: 0
+
+No actionable defect was found. The previous static review is still applicable because all eight production hashes remain unchanged. This real run independently exercises the fresh actor/target/session SQL sequence, strict shared policy-reader failures, Redis barrier/failure, commit/error paths, HTTP role/target/query/DTO envelopes, and snapshot regression/locking tests.
+
+### Check: fixture identity and frozen source identity
+
+Command run:
+  cat docs/superpowers/reports/validation/2026-09-03-b1c-admin-authz-read/real-fixture/fixture-identity.json
+  shasum -a 256 internal/service/admin_permission_read.go internal/service/permission_snapshot.go internal/authz/evaluator.go internal/authz/admin_display.go internal/middleware/middleware.go internal/dto/admin_permissions.go internal/handler/admin_authz.go internal/router/router.go
+  git diff --check
+
+Output observed:
+  Fixture document: task `b1c-admin-authz-read-260903`; database `porsche_b1c_admin_authz_260903_test`; MySQL 8.0.46 at documented loopback port 64128; Redis 7.4.11 at documented loopback port 64139; phase `ready`.
+  `adminReadFixture` also issues `SELECT DATABASE()` and requires the explicit configured database name before each service DB test proceeds.
+  All eight hashes match the frozen values:
+  1ddb8282b7b537299d7c77cc5789dffd029e84c77bd372f897111c74c19e2225  internal/service/admin_permission_read.go
+  76572a3c7d5c99c530afe0998b149adcc7cdb7205f4d6b5598b5ec19a0c2b014  internal/service/permission_snapshot.go
+  f87b9d7d733e35d17e717b5e37a845d5f91a1afb522ea916bb0e3ad4363ca21f  internal/authz/evaluator.go
+  91e4cdfed1318f2a5f3d2984f18048703434062259217e26e32066e9593af3e5  internal/authz/admin_display.go
+  619a25a4a3f03962783ff660591a45e0405e848d7c061b79fb73fc40063d55a1  internal/middleware/middleware.go
+  98b9bef5980752b88d7ed36ae59d0cdfa1d92efb7848a27c62a3e542a5ee34ac  internal/dto/admin_permissions.go
+  4cba7ccdc02e2d8d3e0e004bafb35114000150d6110401a7f1a1cb2e79501b62  internal/handler/admin_authz.go
+  13aaedd626eb1125d1f36e2ab6027cb1ff080c901dad666c8c56f788ae80d468  internal/router/router.go
+  `git diff --check`: no output, exit 0.
+
+Result: PASS
+
+### Check: real B1-C service, HTTP, and shared snapshot regression suite
+
+Command run:
+  unset APP_ENV SNOWFLAKE_NODE_ID DATABASE_URL REDIS_URL RUN_START_COMMAND
+  set -a; source /private/tmp/porsche-b1c-private-xtp4rk9y/fixture.env; set +a
+  GOCACHE=/private/tmp/porsche-go-build-cache go test -json -p 1 ./internal/service ./internal/handler -run '^(TestAdminPermission.*|TestAdminAuthz.*|TestPermission.*)$' -count=1
+
+Output observed:
+  JSON leaf tests: 96 PASS, 0 FAIL, 0 SKIP.
+  `internal/service`: 72 PASS, 0 FAIL, 0 SKIP; package PASS.
+  `internal/handler`: 24 PASS, 0 FAIL, 0 SKIP; package PASS.
+
+Executed top-level coverage includes `TestAdminPermissionDBReadPolicyAndRoleMatrix`, corrupt-head/row/orphan tests, fresh actor/session/Redis tests, transaction/commit and lock-order tests, writer serialization, all B1-C HTTP catalog/detail/target/query/policy/authentication tests, and the existing `TestPermission*` strict snapshot/dual-root locking regressions.
+
+The first non-escalated attempt was blocked before MySQL connection by the sandbox (`dial tcp 127.0.0.1:64128: connect: operation not permitted`); it was neither an implementation failure nor counted as a test result. The identical command above was then run with the approved loopback permission and passed.
+
+Result: PASS
+
+### Check: real-fixture race detector
+
+Command run:
+  unset APP_ENV SNOWFLAKE_NODE_ID DATABASE_URL REDIS_URL RUN_START_COMMAND
+  set -a; source /private/tmp/porsche-b1c-private-xtp4rk9y/fixture.env; set +a
+  GOCACHE=/private/tmp/porsche-go-build-cache go test -race -json -p 1 ./internal/service ./internal/handler -run '^(TestAdminPermission.*|TestAdminAuthz.*|TestPermission.*)$' -count=1
+
+Output observed:
+  JSON leaf tests: 96 PASS, 0 FAIL, 0 SKIP.
+  `internal/service`: 72 PASS; `internal/handler`: 24 PASS; both packages PASS.
+  No race detector finding was emitted.
+
+Result: PASS
+
+### Check: independent authenticated HTTP adversarial boundary probe
+
+Command run:
+  unset APP_ENV SNOWFLAKE_NODE_ID DATABASE_URL REDIS_URL RUN_START_COMMAND
+  set -a; source /private/tmp/porsche-b1c-private-xtp4rk9y/fixture.env; set +a
+  GOCACHE=/private/tmp/porsche-go-build-cache go test -overlay=/private/tmp/porsche-b1c-independent-real/adversarial-http-probe/overlay.json -json -p 1 ./internal/handler -run '^TestIndependentAdminAuthzHTTPBoundaryProbe$' -count=1
+
+Output observed:
+  --- PASS: TestIndependentAdminAuthzHTTPBoundaryProbe (0.07s)
+  ok  github.com/porsche/ai-gateway-go/internal/handler  0.620s
+  JSON leaf tests: 1 PASS, 0 FAIL, 0 SKIP.
+
+The temporary compiler overlay creates a fresh authenticated Root and Admin target on the authorized fixture, then sends real registered-route requests. It proves that an authenticated request rejects catalog query parameters, leading-zero/signed/overflow detail GUIDs, and detail query parameters as fixed 400 minimal error envelopes. It also verifies preserved caller X-Request-ID, `Cache-Control: no-store`, and a normal Admin detail response afterward. The probe source stays under `/private/tmp`; no repository test file was added or altered.
+
+Result: PASS
+
+### Prior static gates retained
+
+The no-fixture independent review already ran `go build ./...`, `go vet ./...`, `gofmt -d` (zero-byte diff), and the pure/race tests. They are retained as evidence because the production hashes above did not change. See `/private/tmp/porsche-b1c-static-verification/security-report.txt`.
+
+## Artifacts (redacted; no credentials)
+
+- /private/tmp/porsche-b1c-independent-real/focused.jsonl
+- /private/tmp/porsche-b1c-independent-real/focused-race.jsonl
+- /private/tmp/porsche-b1c-independent-real/adversarial-http-probe.jsonl
+- /private/tmp/porsche-b1c-independent-real/adversarial-http-probe/overlay.json
+- /private/tmp/porsche-b1c-independent-real/adversarial-http-probe/admin_authz_overlay.go.txt
+- /private/tmp/porsche-b1c-independent-real/security-report.txt
+
+Fixture tests are complete; the fixture may now be cleaned up by the coordinating owner.
+
+VERDICT: PASS

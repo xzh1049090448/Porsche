@@ -1,0 +1,5 @@
+=== RUN   TestAdminUsersReadPerformance
+    admin_users_read_performance_test.go:86: synthetic_users=100000 concurrency=10 page_size=20 measured_requests=200 first_application_read_ms=96.890 warm_p95_ms=340.023 os=darwin arch=arm64 logical_cpu=12 cache=database_warmed_by_seeding_first_application_read_not_disk_cold
+--- PASS: TestAdminUsersReadPerformance (11.85s)
+PASS
+ok  	github.com/porsche/ai-gateway-go/internal/handler	12.302s

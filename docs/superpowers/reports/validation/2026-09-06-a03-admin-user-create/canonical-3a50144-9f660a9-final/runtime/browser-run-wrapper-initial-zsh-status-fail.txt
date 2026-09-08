@@ -1,0 +1,5 @@
+classification=superseded_harness_wrapper_failure
+browser_child_result=PASS
+cause=zsh_reserved_read_only_variable_used_after_child_completion
+replacement_exit_artifact=runtime/browser-run.exit
+secret_values_recorded=0
