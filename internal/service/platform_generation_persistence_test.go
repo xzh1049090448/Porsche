@@ -673,7 +673,7 @@ func TestLoadPlatformGenerationReceiptRejectsInvalidParentScalars(t *testing.T) 
 		name, constraint, column string
 		value                    any
 	}{
-		{"mode", "chk_platform_chat_generation_receipts_mode", "mode", 99},
+		{"mode", "chk_platform_chat_generation_receipts_mode", "mode", 3},
 		{"success count", "chk_platform_chat_generation_receipts_counts", "successful_model_count", 0},
 		{"daily count", "chk_platform_chat_generation_receipts_counts", "daily_calls_charged", 2},
 		{"negative tokens", "chk_platform_chat_generation_receipts_counts", "total_tokens", -1},
