@@ -143,8 +143,8 @@ comment_output="$(run_merge "$fixture_dir/comment-placeholders" "$fixture_dir/co
 
 printf 'EXISTING_OPERATOR_VALUE=preserved\n' >"$fixture_dir/runtime-env"
 run_merge "$script_dir/../.env.example" "$fixture_dir/runtime-env" >"$fixture_dir/runtime.stdout"
-if grep -Eq '^[[:space:]]*(export[[:space:]]+)?ROOT_BOOTSTRAP_[A-Z0-9_]*[[:space:]]*=' "$fixture_dir/runtime-env"; then
-    fail 'runtime example merge added one-shot root bootstrap variables'
+if grep -Eq '^[[:space:]]*(export[[:space:]]+)?(ROOT_BOOTSTRAP_[A-Z0-9_]*|FIXED_LOGIN_(PHONE|PASSWORD))[[:space:]]*=' "$fixture_dir/runtime-env"; then
+    fail 'runtime example merge added environment-scoped credentials'
 fi
 
 printf 'NO_NEWLINE=old-bytes' >"$fixture_dir/no-newline-env"
