@@ -43,14 +43,6 @@ func RegisterAdminUsers(r *gin.Engine, state *app.State) {
 			return
 		}
 		input := service.ManagedUserUpdateInput{}
-		if body.Status != nil {
-			status, ok := models.ParseUserStatus(*body.Status)
-			if !ok {
-				httpx.AbortJSON(c, http.StatusUnprocessableEntity, "无效用户状态")
-				return
-			}
-			input.Status = &status
-		}
 		if body.PlanType != nil {
 			plan, ok := models.ParsePlanType(*body.PlanType)
 			if !ok {

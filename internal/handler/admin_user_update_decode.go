@@ -12,12 +12,12 @@ import (
 const adminUserUpdateBodyLimit = 64 << 10
 
 var (
-	errInvalidAdminUserUpdateJSON = errors.New("invalid admin user update JSON")
-	errAdminUserUpdateTooLarge    = errors.New("admin user update body too large")
+	errInvalidAdminUserUpdateJSON   = errors.New("invalid admin user update JSON")
+	errAdminUserUpdateTooLarge      = errors.New("admin user update body too large")
+	errAdminUserUpdateStatusRetired = errors.New("admin user update status field is retired")
 )
 
 type adminUserUpdateRequest struct {
-	Status         *string
 	PlanType       *string
 	AllowedModels  *[]string
 	DailyCallLimit *int
@@ -77,14 +77,10 @@ func decodeAdminUserUpdate(body io.Reader) (adminUserUpdateRequest, error) {
 		return adminUserUpdateRequest{}, errInvalidAdminUserUpdateJSON
 	}
 
-	request := adminUserUpdateRequest{}
-	if value, ok := raw["status"]; ok && !bytes.Equal(value, []byte("null")) {
-		var parsed string
-		if err := json.Unmarshal(value, &parsed); err != nil {
-			return adminUserUpdateRequest{}, errInvalidAdminUserUpdateJSON
-		}
-		request.Status = &parsed
+	if _, hasStatus := raw["status"]; hasStatus {
+		return adminUserUpdateRequest{}, errAdminUserUpdateStatusRetired
 	}
+	request := adminUserUpdateRequest{}
 	if value, ok := raw["plan_type"]; ok && !bytes.Equal(value, []byte("null")) {
 		var parsed string
 		if err := json.Unmarshal(value, &parsed); err != nil {

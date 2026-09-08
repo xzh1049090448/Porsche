@@ -120,6 +120,29 @@ func TestAdminUserNicknameEditRouteIsRegisteredExactlyOnceBehindAuthentication(t
 	}
 }
 
+func TestAdminUserStatusRouteIsRegisteredExactlyOnceBehindAuthentication(t *testing.T) {
+	settings := &config.Settings{AppEnv: "test", AllowedHosts: "example.com", JWTSecretKey: "test-secret"}
+	engine := router.New(&app.State{Settings: settings, DB: &gorm.DB{}, Sessions: &service.SessionService{}})
+	count := 0
+	for _, route := range engine.Routes() {
+		if route.Method == http.MethodPatch && route.Path == "/admin/v2/users/:guid/status" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("PATCH status route count=%d, want 1", count)
+	}
+	request := httptest.NewRequest(http.MethodPatch, "/admin/v2/users/123/status", strings.NewReader(`{"status":"disabled","reason":"review","expected_auth_version":1}`))
+	request.Host = "example.com"
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-Request-ID", "route-a06-auth")
+	recorder := httptest.NewRecorder()
+	engine.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusUnauthorized || recorder.Header().Get("Cache-Control") != "no-store" || recorder.Header().Get("X-Request-ID") != "route-a06-auth" || !strings.Contains(recorder.Body.String(), `"kind":"admin_user_status_error"`) {
+		t.Fatalf("status/headers/body=%d/%q/%q/%s", recorder.Code, recorder.Header().Get("Cache-Control"), recorder.Header().Get("X-Request-ID"), recorder.Body.String())
+	}
+}
+
 func TestHostAllowlistAcceptsDomainAndRejectsDirectIPAddress(t *testing.T) {
 	state := newGatewayTestState(t)
 	state.Settings.AllowedHosts = "aiportcloud.com"
@@ -547,6 +570,7 @@ var preB1ERouteInventory = []routeContract{
 	{http.MethodGet, "/admin/v2/users"},
 	{http.MethodGet, "/admin/v2/users/:guid"},
 	{http.MethodPatch, "/admin/v2/users/:guid"},
+	{http.MethodPatch, "/admin/v2/users/:guid/status"},
 	{http.MethodGet, "/admin/v2/users/:guid/permissions"},
 	{http.MethodPost, "/api/v1/auth/login"},
 	{http.MethodPost, "/api/v1/auth/login/code"},

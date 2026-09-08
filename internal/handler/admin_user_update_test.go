@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -10,6 +11,18 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/porsche/ai-gateway-go/internal/models"
 )
+
+func TestDecodeAdminUserUpdateRetiresStatusBeforeLegacyMutation(t *testing.T) {
+	for _, body := range []string{
+		`{"status":"disabled"}`,
+		`{"status":null}`,
+		`{"plan_type":"professional","status":"active"}`,
+	} {
+		if _, err := decodeAdminUserUpdate(strings.NewReader(body)); !errors.Is(err, errAdminUserUpdateStatusRetired) {
+			t.Fatalf("body=%s error=%v", body, err)
+		}
+	}
+}
 
 // TestAdminUserUpdateRejectsMalformedOrOutOfContractJSON exercises the real
 // protected PUT route. Every rejected payload must leave the target's account
@@ -27,6 +40,9 @@ func TestAdminUserUpdateRejectsMalformedOrOutOfContractJSON(t *testing.T) {
 		{name: "unknown-role", body: `{"role":"root"}`, wantStatus: http.StatusBadRequest},
 		{name: "unknown-permissions", body: `{"permissions":["users.promote"]}`, wantStatus: http.StatusBadRequest},
 		{name: "unknown-money", body: `{"amount":1}`, wantStatus: http.StatusBadRequest},
+		{name: "retired-status-only", body: `{"status":"disabled"}`, wantStatus: http.StatusBadRequest},
+		{name: "retired-status-null", body: `{"status":null}`, wantStatus: http.StatusBadRequest},
+		{name: "retired-status-mixed", body: `{"status":"active","plan_type":"professional"}`, wantStatus: http.StatusBadRequest},
 		{name: "duplicate-key", body: `{"status":"active","status":"disabled"}`, wantStatus: http.StatusBadRequest},
 		{name: "case-alias", body: `{"Status":"active"}`, wantStatus: http.StatusBadRequest},
 		{name: "trailing-json", body: `{"status":"active"} {}`, wantStatus: http.StatusBadRequest},
@@ -38,7 +54,7 @@ func TestAdminUserUpdateRejectsMalformedOrOutOfContractJSON(t *testing.T) {
 		{name: "daily-limit-wrong-type", body: `{"daily_call_limit":"1"}`, wantStatus: http.StatusBadRequest},
 		{name: "daily-limit-negative", body: `{"daily_call_limit":-1}`, wantStatus: http.StatusBadRequest},
 		{name: "daily-limit-over-int32", body: `{"daily_call_limit":2147483648}`, wantStatus: http.StatusBadRequest},
-		{name: "unknown-status-enum", body: `{"status":"paused"}`, wantStatus: http.StatusUnprocessableEntity},
+		{name: "unknown-status-enum", body: `{"status":"paused"}`, wantStatus: http.StatusBadRequest},
 		{name: "unknown-plan-enum", body: `{"plan_type":"gold"}`, wantStatus: http.StatusUnprocessableEntity},
 		{name: "over-64-kib", body: `{"status":"active","padding":"` + strings.Repeat("x", 64*1024) + `"}`, wantStatus: http.StatusRequestEntityTooLarge},
 	} {
@@ -143,8 +159,8 @@ func TestAdminUserUpdateNoOpAndAuthenticationPreconditions(t *testing.T) {
 	access := platformJWT(t, state, &actor)
 	for _, body := range []string{
 		`{}`,
-		`{"status":null,"plan_type":null,"allowed_models":null,"daily_call_limit":null}`,
-		`{"status":"active","plan_type":"free","allowed_models":["model-a","model-a"],"daily_call_limit":17}`,
+		`{"plan_type":null,"allowed_models":null,"daily_call_limit":null}`,
+		`{"plan_type":"free","allowed_models":["model-a","model-a"],"daily_call_limit":17}`,
 	} {
 		req := httptest.NewRequest(http.MethodPut, "/admin/users/"+strconv.FormatInt(target.Guid, 10), strings.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
