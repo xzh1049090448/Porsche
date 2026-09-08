@@ -42,30 +42,54 @@ for repository in "$BACKEND_DIR" "$FRONTEND_DIR"; do
 done
 
 [[ -f "$BACKEND_DIR/.env" ]] || { echo "missing backend environment file: $BACKEND_DIR/.env" >&2; exit 1; }
+[[ -f "$BACKEND_DIR/.env.example" ]] || { echo "missing backend environment example: $BACKEND_DIR/.env.example" >&2; exit 1; }
+[[ -x "$BACKEND_DIR/deploy/merge-env-example.sh" ]] || { echo "missing environment merge script" >&2; exit 1; }
 [[ -f "$FRONTEND_DIR/package.json" ]] || { echo "missing frontend package.json: $FRONTEND_DIR/package.json" >&2; exit 1; }
+[[ -f "$FRONTEND_DIR/package-lock.json" ]] || { echo "missing frontend package-lock.json: $FRONTEND_DIR/package-lock.json" >&2; exit 1; }
+[[ -f "$FRONTEND_DIR/.env" ]] || { echo "missing frontend environment file: $FRONTEND_DIR/.env" >&2; exit 1; }
+[[ -f "$FRONTEND_DIR/.env.example" ]] || { echo "missing frontend environment example: $FRONTEND_DIR/.env.example" >&2; exit 1; }
 [[ -x "$BACKEND_DIR/deploy/production-deploy.sh" ]] || { echo "missing backend deployment script" >&2; exit 1; }
 docker network inspect "$APP_DOCKER_NETWORK" >/dev/null
 
 exec 9>"$LOCK_FILE"
 flock -E 75 -n 9
 
-(
-    cd "$FRONTEND_DIR"
+for repository in "$BACKEND_DIR" "$FRONTEND_DIR"; do
+    (
+    cd "$repository"
     git diff --quiet
     git diff --cached --quiet
     git fetch origin main
     git switch main
     git reset --hard origin/main
-    npm install --package-lock=false
+    )
+done
+
+"$BACKEND_DIR/deploy/merge-env-example.sh" "$BACKEND_DIR/.env.example" "$BACKEND_DIR/.env"
+"$BACKEND_DIR/deploy/merge-env-example.sh" "$FRONTEND_DIR/.env.example" "$FRONTEND_DIR/.env"
+
+candidate_tag='ai-gateway-go:release-candidate'
+docker build --tag "$candidate_tag" "$BACKEND_DIR"
+candidate_image_id="$(docker image inspect --format '{{.Id}}' "$candidate_tag")"
+if [[ ! "$candidate_image_id" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+    echo 'backend candidate did not resolve to an immutable sha256 image ID' >&2
+    exit 1
+fi
+docker run --rm --env-file "$BACKEND_DIR/.env" --network "$APP_DOCKER_NETWORK" \
+    --entrypoint ./check-config "$candidate_image_id"
+
+(
+    cd "$FRONTEND_DIR"
+    npm ci
     npm run build
 )
 
+nginx -t
+
 (
     cd "$BACKEND_DIR"
-    APP_DOCKER_NETWORK="$APP_DOCKER_NETWORK" ./deploy/production-deploy.sh
+    APP_DOCKER_NETWORK="$APP_DOCKER_NETWORK" PREBUILT_IMAGE_ID="$candidate_image_id" ./deploy/production-deploy.sh
 )
-
-nginx -t
 
 stage_dir="$(mktemp -d "$STAGE_PARENT/.porsche-web-stage.XXXXXX")"
 cleanup_stage() {

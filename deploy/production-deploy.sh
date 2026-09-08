@@ -15,6 +15,11 @@ if [[ ${APP_DOCKER_NETWORK+x} ]]; then
     network_was_set=true
 fi
 APP_DOCKER_NETWORK="${APP_DOCKER_NETWORK:-}"
+prebuilt_was_set=false
+if [[ ${PREBUILT_IMAGE_ID+x} ]]; then
+    prebuilt_was_set=true
+fi
+PREBUILT_IMAGE_ID="${PREBUILT_IMAGE_ID:-}"
 
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 ENV_FILE="$repo_root/.env"
@@ -120,6 +125,35 @@ if [[ -n "$APP_DOCKER_NETWORK" ]]; then
     network_args=(--network "$APP_DOCKER_NETWORK")
 fi
 
+image_id_pattern='^sha256:[0-9a-f]{64}$'
+if [[ "$prebuilt_was_set" == true ]]; then
+    if [[ ! "$PREBUILT_IMAGE_ID" =~ $image_id_pattern ]]; then
+        echo 'PREBUILT_IMAGE_ID must be an immutable sha256 image ID' >&2
+        exit 1
+    fi
+    inspected_image_id="$(docker image inspect --format '{{.Id}}' "$PREBUILT_IMAGE_ID")"
+    if [[ "$inspected_image_id" != "$PREBUILT_IMAGE_ID" ]]; then
+        echo 'PREBUILT_IMAGE_ID does not match the inspected image' >&2
+        exit 1
+    fi
+    candidate_image_id="$PREBUILT_IMAGE_ID"
+else
+    docker build --tag "$IMAGE_NAME" .
+    candidate_image_id="$(docker image inspect --format '{{.Id}}' "$IMAGE_NAME")"
+    if [[ ! "$candidate_image_id" =~ $image_id_pattern ]]; then
+        echo 'built image did not resolve to an immutable sha256 image ID' >&2
+        exit 1
+    fi
+fi
+
+if [[ -n "$APP_DOCKER_NETWORK" ]]; then
+    docker run --rm --env-file "$ENV_FILE" --network "$APP_DOCKER_NETWORK" \
+        --entrypoint ./check-config "$candidate_image_id"
+else
+    docker run --rm --env-file "$ENV_FILE" \
+        --entrypoint ./check-config "$candidate_image_id"
+fi
+
 rollback_name="${APP_NAME}-rollback-$$"
 had_previous=false
 new_attempted=false
@@ -146,7 +180,6 @@ restore_previous() {
 }
 trap restore_previous EXIT
 
-docker build --tag "$IMAGE_NAME" .
 if docker container inspect -- "$APP_NAME" >/dev/null 2>&1; then
     had_previous=true
     docker stop -- "$APP_NAME" >/dev/null
@@ -156,10 +189,10 @@ fi
 new_attempted=true
 if [[ -n "$APP_DOCKER_NETWORK" ]]; then
     container_id="$(docker run -d --name "$APP_NAME" --env-file "$ENV_FILE" \
-        --publish "127.0.0.1:${HOST_PORT}:8000" "${network_args[@]}" "$IMAGE_NAME")"
+        --publish "127.0.0.1:${HOST_PORT}:8000" "${network_args[@]}" "$candidate_image_id")"
 else
     container_id="$(docker run -d --name "$APP_NAME" --env-file "$ENV_FILE" \
-        --publish "127.0.0.1:${HOST_PORT}:8000" "$IMAGE_NAME")"
+        --publish "127.0.0.1:${HOST_PORT}:8000" "$candidate_image_id")"
 fi
 
 healthy=false
