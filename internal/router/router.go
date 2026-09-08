@@ -36,6 +36,7 @@ func New(state *app.State) *gin.Engine {
 	handler.RegisterAdminAuthz(r, state)
 	handler.RegisterAdminUsersRead(r, state)
 	handler.RegisterAdminGroupsRead(r, state)
+	handler.RegisterAdminUserEdit(r, state)
 	handler.RegisterAdminUserManagementActions(r, state)
 	handler.RegisterAdminLogs(r, state)
 	handler.RegisterAdminDashboard(r, state)

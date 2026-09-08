@@ -78,6 +78,28 @@ func TestAdminUsersGroupDirectoryRouteIsRegistered(t *testing.T) {
 	}
 }
 
+func TestAdminUserNicknameEditRouteIsRegisteredExactlyOnceBehindAuthentication(t *testing.T) {
+	settings := &config.Settings{AppEnv: "test", AllowedHosts: "example.com"}
+	engine := router.New(&app.State{Settings: settings})
+	count := 0
+	for _, route := range engine.Routes() {
+		if route.Method == http.MethodPatch && route.Path == "/admin/v2/users/:guid" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("PATCH route count=%d, want 1", count)
+	}
+	request := httptest.NewRequest(http.MethodPatch, "/admin/v2/users/123", strings.NewReader(`{"nickname":"x","expected_auth_version":1}`))
+	request.Host = "example.com"
+	request.Header.Set("X-Request-ID", "route-auth-first")
+	recorder := httptest.NewRecorder()
+	engine.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusUnauthorized || recorder.Header().Get("Cache-Control") != "no-store" || recorder.Header().Get("X-Request-ID") != "route-auth-first" {
+		t.Fatalf("unauthenticated route status/headers=%d/%q/%q body=%s", recorder.Code, recorder.Header().Get("Cache-Control"), recorder.Header().Get("X-Request-ID"), recorder.Body.String())
+	}
+}
+
 func TestHostAllowlistAcceptsDomainAndRejectsDirectIPAddress(t *testing.T) {
 	state := newGatewayTestState(t)
 	state.Settings.AllowedHosts = "aiportcloud.com"
@@ -504,6 +526,7 @@ var preB1ERouteInventory = []routeContract{
 	{http.MethodGet, "/admin/v2/groups"},
 	{http.MethodGet, "/admin/v2/users"},
 	{http.MethodGet, "/admin/v2/users/:guid"},
+	{http.MethodPatch, "/admin/v2/users/:guid"},
 	{http.MethodGet, "/admin/v2/users/:guid/permissions"},
 	{http.MethodPost, "/api/v1/auth/login"},
 	{http.MethodPost, "/api/v1/auth/login/code"},
