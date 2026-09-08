@@ -270,6 +270,11 @@ func TestEnvironmentExampleDocumentsEveryRuntimeSettingExactlyOnce(t *testing.T)
 			t.Errorf(".env.example must document %s as one-shot only", key)
 		}
 	}
+	for _, key := range []string{"FIXED_LOGIN_PHONE", "FIXED_LOGIN_PASSWORD"} {
+		if !strings.Contains(string(raw), "# development only: "+key+"\n") {
+			t.Errorf(".env.example must document %s as development only", key)
+		}
+	}
 	validActionKey := regexp.MustCompile(`(?m)^#? ?ACTION_SECURITY_HMAC_KEY=[A-Za-z0-9_-]{43}$`)
 	if validActionKey.Match(raw) {
 		t.Error(".env.example contains a valid action-security key")
@@ -303,6 +308,7 @@ func discoverEnvironmentAssignments(raw string) map[string]int {
 	activeAssignment := regexp.MustCompile(`^[[:space:]]*(?:export[[:space:]]+)?([A-Z][A-Z0-9_]*)[[:space:]]*=`)
 	commentedAssignment := regexp.MustCompile(`^# ([A-Z][A-Z0-9_]*)=`)
 	oneShotDocumentation := regexp.MustCompile(`^# one-shot only: ([A-Z][A-Z0-9_]*)$`)
+	developmentOnlyDocumentation := regexp.MustCompile(`^# development only: ([A-Z][A-Z0-9_]*)$`)
 	counts := make(map[string]int)
 	for _, line := range strings.Split(raw, "\n") {
 		if match := activeAssignment.FindStringSubmatch(line); match != nil {
@@ -312,6 +318,9 @@ func discoverEnvironmentAssignments(raw string) map[string]int {
 			counts[match[1]]++
 		}
 		if match := oneShotDocumentation.FindStringSubmatch(line); match != nil {
+			counts[match[1]]++
+		}
+		if match := developmentOnlyDocumentation.FindStringSubmatch(line); match != nil {
 			counts[match[1]]++
 		}
 	}
