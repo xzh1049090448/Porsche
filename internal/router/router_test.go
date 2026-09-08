@@ -23,6 +23,7 @@ import (
 	"github.com/porsche/ai-gateway-go/internal/security"
 	"github.com/porsche/ai-gateway-go/internal/service"
 	"github.com/porsche/ai-gateway-go/internal/whitelabel"
+	"gorm.io/gorm"
 )
 
 func TestHealthOK(t *testing.T) {
@@ -79,8 +80,8 @@ func TestAdminUsersGroupDirectoryRouteIsRegistered(t *testing.T) {
 }
 
 func TestAdminUserNicknameEditRouteIsRegisteredExactlyOnceBehindAuthentication(t *testing.T) {
-	settings := &config.Settings{AppEnv: "test", AllowedHosts: "example.com"}
-	engine := router.New(&app.State{Settings: settings})
+	settings := &config.Settings{AppEnv: "test", AllowedHosts: "example.com", JWTSecretKey: "test-secret"}
+	engine := router.New(&app.State{Settings: settings, DB: &gorm.DB{}, Sessions: &service.SessionService{}})
 	count := 0
 	for _, route := range engine.Routes() {
 		if route.Method == http.MethodPatch && route.Path == "/admin/v2/users/:guid" {
@@ -90,13 +91,32 @@ func TestAdminUserNicknameEditRouteIsRegisteredExactlyOnceBehindAuthentication(t
 	if count != 1 {
 		t.Fatalf("PATCH route count=%d, want 1", count)
 	}
-	request := httptest.NewRequest(http.MethodPatch, "/admin/v2/users/123", strings.NewReader(`{"nickname":"x","expected_auth_version":1}`))
-	request.Host = "example.com"
-	request.Header.Set("X-Request-ID", "route-auth-first")
-	recorder := httptest.NewRecorder()
-	engine.ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusUnauthorized || recorder.Header().Get("Cache-Control") != "no-store" || recorder.Header().Get("X-Request-ID") != "route-auth-first" {
-		t.Fatalf("unauthenticated route status/headers=%d/%q/%q body=%s", recorder.Code, recorder.Header().Get("Cache-Control"), recorder.Header().Get("X-Request-ID"), recorder.Body.String())
+	for _, authorization := range []string{"", "Bearer malformed-token"} {
+		request := httptest.NewRequest(http.MethodPatch, "/admin/v2/users/123", strings.NewReader(`{"nickname":"x","expected_auth_version":1}`))
+		request.Host = "example.com"
+		request.Header.Set("X-Request-ID", "route-auth-first")
+		if authorization != "" {
+			request.Header.Set("Authorization", authorization)
+		}
+		recorder := httptest.NewRecorder()
+		engine.ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusUnauthorized || recorder.Header().Get("Cache-Control") != "no-store" || recorder.Header().Get("X-Request-ID") != "route-auth-first" {
+			t.Fatalf("authorization=%q status/headers=%d/%q/%q body=%s", authorization, recorder.Code, recorder.Header().Get("Cache-Control"), recorder.Header().Get("X-Request-ID"), recorder.Body.String())
+		}
+		var envelope struct {
+			Error struct {
+				Code      string `json:"code"`
+				Message   string `json:"message"`
+				Kind      string `json:"kind"`
+				RequestID string `json:"request_id"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal(recorder.Body.Bytes(), &envelope); err != nil {
+			t.Fatal(err)
+		}
+		if envelope.Error.Code != "authentication_invalid" || envelope.Error.Message != "请求无法完成" || envelope.Error.Kind != "admin_user_edit_error" || envelope.Error.RequestID != "route-auth-first" {
+			t.Fatalf("authorization=%q unexpected A05 authentication envelope: %#v body=%s", authorization, envelope, recorder.Body.String())
+		}
 	}
 }
 

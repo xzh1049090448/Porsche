@@ -48,6 +48,22 @@ func RequireUser(state *app.State) gin.HandlerFunc {
 	}
 }
 
+// RequireUserWithErrorWriter runs the same authentication checks as
+// RequireUser while allowing a route family to keep its frozen public error
+// envelope. The writer receives the existing safe detail but must terminate
+// the request itself.
+func RequireUserWithErrorWriter(state *app.State, writeError func(*gin.Context, string)) gin.HandlerFunc {
+	if writeError == nil {
+		writeError = func(c *gin.Context, detail string) { httpx.AbortJSON(c, http.StatusUnauthorized, detail) }
+	}
+	return func(c *gin.Context) {
+		if !authenticateUserWithErrorWriter(c, state, writeError) {
+			return
+		}
+		c.Next()
+	}
+}
+
 // RequireAdmin accepts only an authenticated server session whose persisted
 // role is at least Admin; it deliberately has no ADMIN_TOKEN bypass.
 func RequireAdmin(state *app.State) gin.HandlerFunc {
@@ -105,27 +121,34 @@ func hasAnalyticsAccess(user *models.User) bool {
 func HasAnalyticsAccess(user *models.User) bool { return hasAnalyticsAccess(user) }
 
 func authenticateUser(c *gin.Context, state *app.State) bool {
+	return authenticateUserWithErrorWriter(c, state, func(c *gin.Context, detail string) {
+		httpx.AbortJSON(c, http.StatusUnauthorized, detail)
+	})
+}
+
+func authenticateUserWithErrorWriter(c *gin.Context, state *app.State, writeError func(*gin.Context, string)) bool {
 	if state == nil || state.Settings == nil || state.DB == nil || state.Sessions == nil {
-		httpx.AbortJSON(c, http.StatusUnauthorized, "Token无效或已过期")
+		writeError(c, "Token无效或已过期")
 		return false
 	}
-	token, ok := httpx.RequireBearer(c)
-	if !ok {
+	token := httpx.BearerToken(c)
+	if token == "" {
+		writeError(c, "未登录")
 		return false
 	}
 	claims, err := security.DecodeAccessToken(token, state.Settings.JWTSecretKey)
 	sessionClaims, ok := parseSessionClaims(claims)
 	if err != nil || !ok {
-		httpx.AbortJSON(c, http.StatusUnauthorized, "Token无效或已过期")
+		writeError(c, "Token无效或已过期")
 		return false
 	}
 	var user models.User
 	if err := state.DB.Where("guid = ? AND is_deleted = 0", sessionClaims.UserGUID).First(&user).Error; err != nil || !user.Status.IsActive() || user.AuthVersion != sessionClaims.AuthVersion || user.Role != sessionClaims.Role {
-		httpx.AbortJSON(c, http.StatusUnauthorized, "Token无效或已过期")
+		writeError(c, "Token无效或已过期")
 		return false
 	}
 	if _, err := state.Sessions.Validate(c.Request.Context(), sessionClaims.SID, user.ID, sessionClaims.SessionVersion, sessionClaims.AuthVersion); err != nil {
-		httpx.AbortJSON(c, http.StatusUnauthorized, "Token无效或已过期")
+		writeError(c, "Token无效或已过期")
 		return false
 	}
 	c.Set(ContextUserID, user.ID)

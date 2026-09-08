@@ -45,12 +45,34 @@ func adminUserEditTestEngine(backend adminUserEditBackend) *gin.Engine {
 }
 
 func performAdminUserEditRequest(engine http.Handler, path, body string) *httptest.ResponseRecorder {
+	return performAdminUserEditRequestWithContentType(engine, path, body, "application/json")
+}
+
+func performAdminUserEditRequestWithContentType(engine http.Handler, path, body, contentType string) *httptest.ResponseRecorder {
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPatch, path, strings.NewReader(body))
-	request.Header.Set("Content-Type", "application/json")
+	if contentType != "" {
+		request.Header.Set("Content-Type", contentType)
+	}
 	request.Header.Set("X-Request-ID", "a05-request")
 	engine.ServeHTTP(recorder, request)
 	return recorder
+}
+
+func TestAdminUserEditContentTypeRejectsMalformedParametersBeforeService(t *testing.T) {
+	for _, contentType := range []string{"", "text/plain", "application/json; definitely-not-a-parameter"} {
+		backend := &recordingAdminUserEditBackend{}
+		recorder := performAdminUserEditRequestWithContentType(adminUserEditTestEngine(backend), "/admin/v2/users/123", `{"nickname":null,"expected_auth_version":1}`, contentType)
+		assertAdminUserEditError(t, recorder, http.StatusBadRequest)
+		if backend.calls != 0 {
+			t.Fatalf("backend called for invalid Content-Type %q", contentType)
+		}
+	}
+	backend := &recordingAdminUserEditBackend{result: &service.UserReadDTO{}}
+	recorder := performAdminUserEditRequestWithContentType(adminUserEditTestEngine(backend), "/admin/v2/users/123", `{"nickname":null,"expected_auth_version":1}`, "application/json; charset=utf-8")
+	if recorder.Code != http.StatusOK || backend.calls != 1 {
+		t.Fatalf("legal JSON Content-Type status=%d calls=%d body=%s", recorder.Code, backend.calls, recorder.Body.String())
+	}
 }
 
 func TestAdminUserEditSuccessUsesDedicatedBackendOnceAndExactDTO(t *testing.T) {
@@ -143,14 +165,14 @@ func assertAdminUserEditError(t *testing.T, recorder *httptest.ResponseRecorder,
 		Error struct {
 			Code      string `json:"code"`
 			Message   string `json:"message"`
-			Type      string `json:"type"`
+			Kind      string `json:"kind"`
 			RequestID string `json:"request_id"`
 		} `json:"error"`
 	}
 	if err := json.Unmarshal(recorder.Body.Bytes(), &envelope); err != nil {
 		t.Fatal(err)
 	}
-	if envelope.Error.Code == "" || envelope.Error.Message != "请求无法完成" || envelope.Error.Type != "admin_user_edit_error" || envelope.Error.RequestID != "a05-request" {
+	if envelope.Error.Code == "" || envelope.Error.Message != "请求无法完成" || envelope.Error.Kind != "admin_user_edit_error" || envelope.Error.RequestID != "a05-request" {
 		t.Fatalf("unsafe or unstable error envelope: %#v", envelope)
 	}
 }

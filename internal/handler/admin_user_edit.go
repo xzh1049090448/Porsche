@@ -3,8 +3,8 @@ package handler
 import (
 	"context"
 	"errors"
+	"mime"
 	"net/http"
-	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/porsche/ai-gateway-go/internal/app"
@@ -21,7 +21,9 @@ type adminUserEditBackend interface {
 // deliberately separate from both the legacy PUT writer and action-ticket
 // routes.
 func RegisterAdminUserEdit(router *gin.Engine, state *app.State) {
-	group := router.Group("/admin/v2", gatewayRequestID(), adminUserActionNoStore, middleware.RequireUser(state))
+	group := router.Group("/admin/v2", gatewayRequestID(), adminUserActionNoStore, middleware.RequireUserWithErrorWriter(state, func(c *gin.Context, _ string) {
+		adminUserEditFixedError(c, http.StatusUnauthorized, "authentication_invalid")
+	}))
 	registerAdminUserEditRoute(group, service.NewAdminUserNicknameEditService(state.DB, state.AuthRedis))
 }
 
@@ -61,14 +63,14 @@ func registerAdminUserEditRoute(group *gin.RouterGroup, backend adminUserEditBac
 }
 
 func adminUserEditJSONContentType(raw string) bool {
-	mediaType := strings.TrimSpace(strings.SplitN(raw, ";", 2)[0])
-	return strings.EqualFold(mediaType, "application/json")
+	mediaType, _, err := mime.ParseMediaType(raw)
+	return err == nil && mediaType == "application/json"
 }
 
 type adminUserEditErrorBody struct {
 	Code      string `json:"code"`
 	Message   string `json:"message"`
-	Type      string `json:"type"`
+	Kind      string `json:"kind"`
 	RequestID string `json:"request_id"`
 }
 
@@ -103,6 +105,6 @@ func adminUserEditFixedError(c *gin.Context, status int, code string) {
 		c.Header("X-Request-ID", requestID)
 	}
 	c.AbortWithStatusJSON(status, adminUserEditErrorEnvelope{Error: adminUserEditErrorBody{
-		Code: code, Message: "请求无法完成", Type: "admin_user_edit_error", RequestID: requestID,
+		Code: code, Message: "请求无法完成", Kind: "admin_user_edit_error", RequestID: requestID,
 	}})
 }
