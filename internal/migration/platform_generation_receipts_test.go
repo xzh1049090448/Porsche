@@ -126,7 +126,11 @@ func TestPlatformGenerationReceiptMigrationPreservesCaseDistinctModelsOnIsolated
 	permissionUp(t, gdb)
 
 	const now = int64(1_900_000_000_000)
-	if err := gdb.Exec(`INSERT INTO users (guid, allowed_models, created_at, updated_at, is_deleted) VALUES (?, '[]', ?, ?, 0)`, 9_111_000_000_000_001, now, now).Error; err != nil {
+	var groupID int64
+	if err := gdb.Raw("SELECT id FROM business_groups WHERE BINARY group_key = BINARY 'default' AND status = 1 AND is_deleted = 0").Row().Scan(&groupID); err != nil || groupID <= 0 {
+		t.Fatalf("load active default business group: id=%d err=%v", groupID, err)
+	}
+	if err := gdb.Exec(`INSERT INTO users (guid, group_id, allowed_models, created_at, updated_at, is_deleted) VALUES (?, ?, '[]', ?, ?, 0)`, 9_111_000_000_000_001, groupID, now, now).Error; err != nil {
 		t.Fatal(err)
 	}
 	var userID int64
