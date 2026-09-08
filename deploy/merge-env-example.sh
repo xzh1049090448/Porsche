@@ -10,8 +10,60 @@ fail() {
 example_path="$1"
 env_path="$2"
 [[ "$example_path" == /* && "$env_path" == /* ]] || fail 'paths must be absolute'
+
+env_dir="$(cd -- "$(dirname -- "$env_path")" && pwd)" || fail 'env directory is unavailable'
+env_name="$(basename -- "$env_path")"
+lock_path="$env_dir/.$env_name.merge.lock"
+umask 077
+exec 8>"$lock_path" || fail 'cannot open merge lock'
+flock -x 8 || fail 'cannot acquire merge lock'
+
 [[ -f "$example_path" && ! -L "$example_path" ]] || fail 'example must be a regular file'
 [[ -f "$env_path" && ! -L "$env_path" ]] || fail 'env must be a regular file'
+cp --version 2>/dev/null | grep -Fq 'GNU coreutils' || fail 'full metadata copy is unavailable'
+
+file_identity() {
+    stat -f '%d:%i:%u:%g:%Lp' "$1" 2>/dev/null || stat -c '%d:%i:%u:%g:%a' "$1" 2>/dev/null
+}
+
+digest_stream() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum | awk '{print $1}'
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 | awk '{print $1}'
+    else
+        fail 'metadata digest is unavailable'
+    fi
+}
+
+metadata_fingerprint() {
+    local path="$1" attribute
+    {
+        stat -f '%u:%g:%Lp' "$path" 2>/dev/null || stat -c '%u:%g:%a' "$path" 2>/dev/null
+        if command -v getfacl >/dev/null 2>&1; then
+            getfacl -cp -- "$path" 2>/dev/null || return 1
+        fi
+        if command -v getfattr >/dev/null 2>&1; then
+            getfattr -d -m- --absolute-names -- "$path" 2>/dev/null | sed '1d' || return 1
+        elif command -v xattr >/dev/null 2>&1; then
+            while IFS= read -r attribute; do
+                printf '%s\0' "$attribute"
+                xattr -px "$attribute" "$path" 2>/dev/null || return 1
+            done < <(xattr "$path" 2>/dev/null) || return 1
+        fi
+    } | digest_stream
+}
+
+initial_identity="$(file_identity "$env_path")" || fail 'cannot inspect env metadata'
+snapshot_path="$(mktemp "$env_dir/$env_name.snapshot.XXXXXX")"
+temp_path="$(mktemp "$env_dir/$env_name.merge.XXXXXX")"
+cleanup() {
+    [[ -z "${snapshot_path:-}" ]] || rm -f -- "$snapshot_path"
+    [[ -z "${temp_path:-}" ]] || rm -f -- "$temp_path"
+}
+trap cleanup EXIT HUP INT TERM
+cp --preserve=all --no-dereference -- "$env_path" "$snapshot_path" || fail 'cannot preserve env snapshot metadata'
+snapshot_metadata="$(metadata_fingerprint "$snapshot_path")" || fail 'cannot fingerprint env metadata'
 
 declare -a example_keys=() example_values=() env_keys=()
 commented_empty_pattern='^# ([A-Z][A-Z0-9_]*)=$'
@@ -48,7 +100,7 @@ while IFS= read -r line || [[ -n "$line" ]]; do
     if [[ "$line" =~ ^[[:space:]]*(export[[:space:]]+)?([A-Z][A-Z0-9_]*)[[:space:]]*= ]]; then
         env_keys+=("${BASH_REMATCH[2]}")
     fi
-done <"$env_path"
+done <"$snapshot_path"
 
 declare -a added_keys=()
 for index in "${!example_keys[@]}"; do
@@ -58,17 +110,9 @@ done
 
 (( ${#added_keys[@]} > 0 )) || exit 0
 
-env_dir="$(cd -- "$(dirname -- "$env_path")" && pwd)"
-env_name="$(basename -- "$env_path")"
-temp_path="$(mktemp "$env_dir/$env_name.merge.XXXXXX")"
-cleanup() { [[ -z "${temp_path:-}" ]] || rm -f -- "$temp_path"; }
-trap cleanup EXIT HUP INT TERM
+cp --preserve=all --no-dereference -- "$snapshot_path" "$temp_path" || fail 'cannot preserve candidate metadata'
 
-mode="$(stat -f '%Lp' "$env_path" 2>/dev/null || stat -c '%a' "$env_path")"
-owner="$(stat -f '%u:%g' "$env_path" 2>/dev/null || stat -c '%u:%g' "$env_path")"
-cat -- "$env_path" >"$temp_path"
-
-if [[ -s "$env_path" ]] && [[ "$(tail -c 1 "$env_path" | wc -l | tr -d ' ')" == 0 ]]; then
+if [[ -s "$snapshot_path" ]] && [[ "$(tail -c 1 "$snapshot_path" | wc -l | tr -d ' ')" == 0 ]]; then
     printf '\n' >>"$temp_path"
 fi
 
@@ -79,11 +123,15 @@ for index in "${!example_keys[@]}"; do
     fi
 done
 
-chmod "$mode" "$temp_path"
-temp_owner="$(stat -f '%u:%g' "$temp_path" 2>/dev/null || stat -c '%u:%g' "$temp_path")"
-[[ "$temp_owner" == "$owner" ]] || chown "$owner" "$temp_path"
+[[ "$(metadata_fingerprint "$temp_path")" == "$snapshot_metadata" ]] || fail 'candidate metadata changed'
+[[ -f "$env_path" && ! -L "$env_path" ]] || fail 'env path changed during merge'
+[[ "$(file_identity "$env_path")" == "$initial_identity" ]] || fail 'env identity changed during merge'
+cmp -s -- "$env_path" "$snapshot_path" || fail 'env content changed during merge'
+[[ "$(metadata_fingerprint "$env_path")" == "$snapshot_metadata" ]] || fail 'env metadata changed during merge'
 mv -f -- "$temp_path" "$env_path"
 temp_path=''
+rm -f -- "$snapshot_path"
+snapshot_path=''
 
 for key in "${added_keys[@]}"; do
     printf 'added environment key: %s\n' "$key"
