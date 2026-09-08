@@ -64,6 +64,9 @@ func LoadPlatformGenerationReceipt(ctx context.Context, db *gorm.DB, userID int6
 	if !validPlatformGenerationReceiptCardinality(receipt.Mode, len(rows)) {
 		return PlatformGenerationReceiptSnapshot{}, ErrPlatformGenerationPersistenceIntegrity
 	}
+	if !validPlatformGenerationReceiptResultSet(rows, receipt.ID, receipt.UserID) {
+		return PlatformGenerationReceiptSnapshot{}, ErrPlatformGenerationPersistenceIntegrity
+	}
 
 	snapshot := PlatformGenerationReceiptSnapshot{
 		UserID:               receipt.UserID,
@@ -77,29 +80,12 @@ func LoadPlatformGenerationReceipt(ctx context.Context, db *gorm.DB, userID int6
 		CommittedAtMillis:    receipt.CommittedAt,
 		Results:              make([]PlatformGenerationCommittedResult, 0, len(rows)),
 	}
-	seenModels := make(map[string]struct{}, len(rows))
-	seenAssistantMessages := make(map[int64]struct{}, len(rows))
 	successes := 0
 	var totalTokens int64
-	for index, row := range rows {
-		if !validPlatformGenerationReceiptResultIdentity(row, receipt.ID, receipt.UserID, index) {
-			return PlatformGenerationReceiptSnapshot{}, ErrPlatformGenerationPersistenceIntegrity
-		}
-		if _, duplicate := seenModels[row.Model]; duplicate {
-			return PlatformGenerationReceiptSnapshot{}, ErrPlatformGenerationPersistenceIntegrity
-		}
-		seenModels[row.Model] = struct{}{}
-
+	for _, row := range rows {
 		result := PlatformGenerationCommittedResult{Model: row.Model}
 		switch row.Status {
 		case models.PlatformGenerationResultCompleted:
-			if row.AssistantMessageID == nil || *row.AssistantMessageID <= 0 || row.ErrorCode != nil || row.Tokens < 0 || row.Tokens > math.MaxInt32 {
-				return PlatformGenerationReceiptSnapshot{}, ErrPlatformGenerationPersistenceIntegrity
-			}
-			if _, duplicate := seenAssistantMessages[*row.AssistantMessageID]; duplicate {
-				return PlatformGenerationReceiptSnapshot{}, ErrPlatformGenerationPersistenceIntegrity
-			}
-			seenAssistantMessages[*row.AssistantMessageID] = struct{}{}
 			var assistant models.Message
 			if err := db.WithContext(ctx).
 				Where("id = ? AND conversation_id = ? AND is_deleted = 0", *row.AssistantMessageID, receipt.ConversationID).
@@ -116,13 +102,8 @@ func LoadPlatformGenerationReceipt(ctx context.Context, db *gorm.DB, userID int6
 			successes++
 			totalTokens += row.Tokens
 		case models.PlatformGenerationResultFailed:
-			if row.AssistantMessageID != nil || row.Tokens != 0 || row.ErrorCode == nil || !platformGenerationStableCode(*row.ErrorCode) {
-				return PlatformGenerationReceiptSnapshot{}, ErrPlatformGenerationPersistenceIntegrity
-			}
 			result.State = PlatformGenerationStateFailed
 			result.ErrorCode = *row.ErrorCode
-		default:
-			return PlatformGenerationReceiptSnapshot{}, ErrPlatformGenerationPersistenceIntegrity
 		}
 		snapshot.Results = append(snapshot.Results, result)
 	}
@@ -167,6 +148,39 @@ func validPlatformGenerationReceiptResultIdentity(row models.PlatformChatGenerat
 	return row.ID > 0 && row.Guid > 0 && row.ReceiptID == receiptID && row.ModelIndex == index &&
 		platformSSEV2ModelIdentifier(row.Model) && row.CreatedAt > 0 && row.UpdatedAt == row.CreatedAt &&
 		row.CreatedBy != nil && *row.CreatedBy == userID && row.UpdatedBy != nil && *row.UpdatedBy == userID
+}
+
+// validPlatformGenerationReceiptResultSet validates every row-local and
+// cross-row invariant before the reader follows any assistant message ID.
+func validPlatformGenerationReceiptResultSet(rows []models.PlatformChatGenerationResult, receiptID, userID int64) bool {
+	seenModels := make(map[string]struct{}, len(rows))
+	seenAssistantMessages := make(map[int64]struct{}, len(rows))
+	for index, row := range rows {
+		if !validPlatformGenerationReceiptResultIdentity(row, receiptID, userID, index) {
+			return false
+		}
+		if _, duplicate := seenModels[row.Model]; duplicate {
+			return false
+		}
+		seenModels[row.Model] = struct{}{}
+		switch row.Status {
+		case models.PlatformGenerationResultCompleted:
+			if row.AssistantMessageID == nil || *row.AssistantMessageID <= 0 || row.ErrorCode != nil || row.Tokens < 0 || row.Tokens > math.MaxInt32 {
+				return false
+			}
+			if _, duplicate := seenAssistantMessages[*row.AssistantMessageID]; duplicate {
+				return false
+			}
+			seenAssistantMessages[*row.AssistantMessageID] = struct{}{}
+		case models.PlatformGenerationResultFailed:
+			if row.AssistantMessageID != nil || row.Tokens != 0 || row.ErrorCode == nil || !platformGenerationStableCode(*row.ErrorCode) {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func validPlatformGenerationReceiptAssistantMessage(message models.Message, row models.PlatformChatGenerationResult) bool {

@@ -286,7 +286,7 @@ type platformGenerationReceiptFixture struct {
 	results           []models.PlatformChatGenerationResult
 }
 
-func openPlatformGenerationReceiptMySQL(t *testing.T) *gorm.DB {
+func openPlatformGenerationPersistenceMySQL(t *testing.T) *gorm.DB {
 	t.Helper()
 	raw := strings.TrimSpace(os.Getenv("TEST_DATABASE_URL"))
 	if raw == "" {
@@ -295,15 +295,30 @@ func openPlatformGenerationReceiptMySQL(t *testing.T) *gorm.DB {
 	if err := validateTestDatabaseURL(raw, os.Getenv("DATABASE_URL")); err != nil {
 		t.Fatal(err)
 	}
-	parent, err := db.Open(raw, "test")
+	parsed, err := url.Parse(raw)
+	if err != nil || !strings.HasSuffix(strings.TrimPrefix(parsed.Path, "/"), "_test") {
+		t.Fatal("TEST_DATABASE_URL must target a database ending in _test")
+	}
+	gdb, err := db.Open(raw, "test")
 	if err != nil {
 		t.Fatal(err)
 	}
-	parentSQL, err := parent.DB()
+	sqlDB, err := gdb.DB()
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = parentSQL.Close() })
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	now := time.Now().UTC().UnixMilli()
+	if err := migration.Up(context.Background(), gdb, testSnowflake.Next, func() int64 { return now }); err != nil {
+		t.Fatalf("migrate receipt test database: %v", err)
+	}
+	return gdb
+}
+
+func openPlatformGenerationReceiptSchemaMySQL(t *testing.T) *gorm.DB {
+	t.Helper()
+	parent := openPlatformGenerationPersistenceMySQL(t)
+	raw := strings.TrimSpace(os.Getenv("TEST_DATABASE_URL"))
 
 	var token [12]byte
 	if _, err := rand.Read(token[:]); err != nil {
@@ -342,7 +357,22 @@ func openPlatformGenerationReceiptMySQL(t *testing.T) *gorm.DB {
 
 func seedPlatformGenerationReceipt(t *testing.T, mode PlatformGenerationMode) platformGenerationReceiptFixture {
 	t.Helper()
-	gdb := openPlatformGenerationReceiptMySQL(t)
+	gdb := openPlatformGenerationPersistenceMySQL(t)
+	tx := gdb.Begin()
+	if tx.Error != nil {
+		t.Fatalf("begin receipt fixture transaction: %v", tx.Error)
+	}
+	t.Cleanup(func() { _ = tx.Rollback().Error })
+	return seedPlatformGenerationReceiptOnDB(t, mode, tx)
+}
+
+func seedPlatformGenerationReceiptSchema(t *testing.T, mode PlatformGenerationMode) platformGenerationReceiptFixture {
+	t.Helper()
+	return seedPlatformGenerationReceiptOnDB(t, mode, openPlatformGenerationReceiptSchemaMySQL(t))
+}
+
+func seedPlatformGenerationReceiptOnDB(t *testing.T, mode PlatformGenerationMode, gdb *gorm.DB) platformGenerationReceiptFixture {
+	t.Helper()
 	now := int64(1_800_000_000_000)
 	var group models.BusinessGroup
 	if err := gdb.Where("group_key = ? AND is_deleted = 0", "default").First(&group).Error; err != nil {
@@ -524,76 +554,59 @@ func TestLoadPlatformGenerationReceiptRejectsMalformedGraph(t *testing.T) {
 	}
 
 	tests := []struct {
-		name   string
-		mutate func(*testing.T, platformGenerationReceiptFixture)
+		name        string
+		freshSchema bool
+		mutate      func(*testing.T, platformGenerationReceiptFixture)
 	}{
-		{"deleted conversation", func(t *testing.T, f platformGenerationReceiptFixture) {
+		{"deleted conversation", false, func(t *testing.T, f platformGenerationReceiptFixture) {
 			if err := f.db.Model(&models.Conversation{}).Where("id = ?", f.conversation.ID).Update("is_deleted", 1).Error; err != nil {
 				t.Fatal(err)
 			}
 		}},
-		{"conversation owner mismatch", func(t *testing.T, f platformGenerationReceiptFixture) {
+		{"conversation owner mismatch", false, func(t *testing.T, f platformGenerationReceiptFixture) {
 			if err := f.db.Model(&models.Conversation{}).Where("id = ?", f.conversation.ID).Update("user_id", f.other.ID).Error; err != nil {
 				t.Fatal(err)
 			}
 		}},
-		{"receipt audit owner mismatch", func(t *testing.T, f platformGenerationReceiptFixture) {
+		{"receipt audit owner mismatch", false, func(t *testing.T, f platformGenerationReceiptFixture) {
 			if err := f.db.Model(&models.PlatformChatGenerationReceipt{}).Where("id = ?", f.receipt.ID).Update("updated_by", f.other.ID).Error; err != nil {
 				t.Fatal(err)
 			}
 		}},
-		{"result audit owner mismatch", func(t *testing.T, f platformGenerationReceiptFixture) {
+		{"result audit owner mismatch", false, func(t *testing.T, f platformGenerationReceiptFixture) {
 			if err := f.db.Model(&models.PlatformChatGenerationResult{}).Where("id = ?", f.results[0].ID).Update("created_by", f.other.ID).Error; err != nil {
 				t.Fatal(err)
 			}
 		}},
-		{"noncontiguous index", func(t *testing.T, f platformGenerationReceiptFixture) {
-			if err := f.db.Exec("ALTER TABLE platform_chat_generation_results DROP INDEX uk_platform_chat_generation_results_position").Error; err != nil {
-				t.Fatal(err)
-			}
+		{"noncontiguous index", false, func(t *testing.T, f platformGenerationReceiptFixture) {
 			if err := f.db.Model(&models.PlatformChatGenerationResult{}).Where("id = ?", f.results[2].ID).Update("model_index", 4).Error; err != nil {
 				t.Fatal(err)
 			}
 		}},
-		{"duplicate model", func(t *testing.T, f platformGenerationReceiptFixture) {
+		{"duplicate model", true, func(t *testing.T, f platformGenerationReceiptFixture) {
 			if err := f.db.Exec("ALTER TABLE platform_chat_generation_results DROP INDEX uk_platform_chat_generation_results_model").Error; err != nil {
 				t.Fatal(err)
 			}
 			if err := f.db.Model(&models.PlatformChatGenerationResult{}).Where("id = ?", f.results[2].ID).Update("model", f.results[0].Model).Error; err != nil {
 				t.Fatal(err)
 			}
-		}},
-		{"duplicate assistant reference", func(t *testing.T, f platformGenerationReceiptFixture) {
-			if err := f.db.Exec("ALTER TABLE platform_chat_generation_results DROP INDEX uk_platform_chat_generation_results_message").Error; err != nil {
-				t.Fatal(err)
-			}
-			if err := f.db.Model(&models.PlatformChatGenerationResult{}).Where("id = ?", f.results[2].ID).Update("assistant_message_id", f.results[0].AssistantMessageID).Error; err != nil {
+			if err := f.db.Model(&models.Message{}).Where("id = ?", f.assistantMessages[1].ID).Update("model", f.results[0].Model).Error; err != nil {
 				t.Fatal(err)
 			}
 		}},
-		{"unknown status", func(t *testing.T, f platformGenerationReceiptFixture) {
+		{"unknown status", true, func(t *testing.T, f platformGenerationReceiptFixture) {
 			dropReceiptConstraint(t, f, "platform_chat_generation_results", "chk_platform_chat_generation_results_status")
 			dropReceiptConstraint(t, f, "platform_chat_generation_results", "chk_platform_chat_generation_results_shape")
 			if err := f.db.Model(&models.PlatformChatGenerationResult{}).Where("id = ?", f.results[1].ID).Update("status", 99).Error; err != nil {
 				t.Fatal(err)
 			}
 		}},
-		{"failed unstable code", func(t *testing.T, f platformGenerationReceiptFixture) {
+		{"failed unstable code", false, func(t *testing.T, f platformGenerationReceiptFixture) {
 			if err := f.db.Model(&models.PlatformChatGenerationResult{}).Where("id = ?", f.results[1].ID).Update("error_code", "secret-provider-detail").Error; err != nil {
 				t.Fatal(err)
 			}
 		}},
-		{"excessive completed tokens", func(t *testing.T, f platformGenerationReceiptFixture) {
-			if err := f.db.Model(&models.PlatformChatGenerationResult{}).Where("id = ?", f.results[0].ID).Update("tokens", int64(1)<<31).Error; err != nil {
-				t.Fatal(err)
-			}
-		}},
-		{"invalid model", func(t *testing.T, f platformGenerationReceiptFixture) {
-			if err := f.db.Model(&models.PlatformChatGenerationResult{}).Where("id = ?", f.results[0].ID).Update("model", " model-a").Error; err != nil {
-				t.Fatal(err)
-			}
-		}},
-		{"extra result", func(t *testing.T, f platformGenerationReceiptFixture) {
+		{"extra result", false, func(t *testing.T, f platformGenerationReceiptFixture) {
 			code := "timeout"
 			row := models.PlatformChatGenerationResult{
 				AuditFields: models.AuditFields{Guid: testSnowflake.Next(), CreatedAt: f.receipt.CreatedAt, CreatedBy: &f.owner.ID, UpdatedAt: f.receipt.CreatedAt, UpdatedBy: &f.owner.ID},
@@ -603,7 +616,7 @@ func TestLoadPlatformGenerationReceiptRejectsMalformedGraph(t *testing.T) {
 				t.Fatal(err)
 			}
 		}},
-		{"completed has error", func(t *testing.T, f platformGenerationReceiptFixture) {
+		{"completed has error", true, func(t *testing.T, f platformGenerationReceiptFixture) {
 			dropReceiptConstraint(t, f, "platform_chat_generation_results", "chk_platform_chat_generation_results_shape")
 			if err := f.db.Model(&models.PlatformChatGenerationResult{}).Where("id = ?", f.results[0].ID).Update("error_code", "timeout").Error; err != nil {
 				t.Fatal(err)
@@ -612,9 +625,45 @@ func TestLoadPlatformGenerationReceiptRejectsMalformedGraph(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			fixture := seedPlatformGenerationReceipt(t, PlatformGenerationModeCompare)
+			var fixture platformGenerationReceiptFixture
+			if test.freshSchema {
+				fixture = seedPlatformGenerationReceiptSchema(t, PlatformGenerationModeCompare)
+			} else {
+				fixture = seedPlatformGenerationReceipt(t, PlatformGenerationModeCompare)
+			}
 			test.mutate(t, fixture)
 			requireReceiptIntegrity(t, fixture)
+		})
+	}
+}
+
+func TestPlatformGenerationReceiptResultSetValidationIsolatesRowGuards(t *testing.T) {
+	ownerID, receiptID := int64(41), int64(42)
+	assistantOne, assistantTwo := int64(51), int64(52)
+	validRows := []models.PlatformChatGenerationResult{
+		{ID: 1, AuditFields: models.AuditFields{Guid: 101, CreatedAt: 10, CreatedBy: &ownerID, UpdatedAt: 10, UpdatedBy: &ownerID}, ReceiptID: receiptID, ModelIndex: 0, Model: "model-a", Status: models.PlatformGenerationResultCompleted, AssistantMessageID: &assistantOne, Tokens: 1},
+		{ID: 2, AuditFields: models.AuditFields{Guid: 102, CreatedAt: 10, CreatedBy: &ownerID, UpdatedAt: 10, UpdatedBy: &ownerID}, ReceiptID: receiptID, ModelIndex: 1, Model: "model-b", Status: models.PlatformGenerationResultCompleted, AssistantMessageID: &assistantTwo, Tokens: 2},
+	}
+	if !validPlatformGenerationReceiptResultSet(validRows, receiptID, ownerID) {
+		t.Fatal("valid row baseline rejected")
+	}
+	tests := []struct {
+		name   string
+		mutate func([]models.PlatformChatGenerationResult)
+	}{
+		{"invalid model", func(rows []models.PlatformChatGenerationResult) { rows[0].Model = " model-a" }},
+		{"excessive token", func(rows []models.PlatformChatGenerationResult) { rows[0].Tokens = int64(1) << 31 }},
+		{"duplicate assistant ID", func(rows []models.PlatformChatGenerationResult) {
+			rows[1].AssistantMessageID = rows[0].AssistantMessageID
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			rows := append([]models.PlatformChatGenerationResult(nil), validRows...)
+			test.mutate(rows)
+			if validPlatformGenerationReceiptResultSet(rows, receiptID, ownerID) {
+				t.Fatal("isolated invalid row set accepted")
+			}
 		})
 	}
 }
@@ -633,7 +682,7 @@ func TestLoadPlatformGenerationReceiptRejectsInvalidParentScalars(t *testing.T) 
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			fixture := seedPlatformGenerationReceipt(t, PlatformGenerationModeSingle)
+			fixture := seedPlatformGenerationReceiptSchema(t, PlatformGenerationModeSingle)
 			dropReceiptConstraint(t, fixture, "platform_chat_generation_receipts", test.constraint)
 			if err := fixture.db.Model(&models.PlatformChatGenerationReceipt{}).Where("id = ?", fixture.receipt.ID).Update(test.column, test.value).Error; err != nil {
 				t.Fatal(err)
@@ -685,10 +734,11 @@ func TestLoadPlatformGenerationReceiptRejectsDeletedOrMismatchedMessage(t *testi
 
 func TestLoadPlatformGenerationReceiptRejectsMissingDeletedWrongRoleOrCrossConversationUserMessage(t *testing.T) {
 	tests := []struct {
-		name   string
-		mutate func(*testing.T, platformGenerationReceiptFixture)
+		name        string
+		freshSchema bool
+		mutate      func(*testing.T, platformGenerationReceiptFixture)
 	}{
-		{"missing", func(t *testing.T, f platformGenerationReceiptFixture) {
+		{"missing", true, func(t *testing.T, f platformGenerationReceiptFixture) {
 			if err := f.db.Exec("ALTER TABLE platform_chat_generation_receipts DROP FOREIGN KEY fk_platform_chat_generation_receipts_user_message").Error; err != nil {
 				t.Fatal(err)
 			}
@@ -699,33 +749,33 @@ func TestLoadPlatformGenerationReceiptRejectsMissingDeletedWrongRoleOrCrossConve
 				t.Fatal(err)
 			}
 		}},
-		{"deleted", func(t *testing.T, f platformGenerationReceiptFixture) {
+		{"deleted", false, func(t *testing.T, f platformGenerationReceiptFixture) {
 			if err := f.db.Model(&models.Message{}).Where("id = ?", f.userMessage.ID).Update("is_deleted", 1).Error; err != nil {
 				t.Fatal(err)
 			}
 		}},
-		{"wrong role", func(t *testing.T, f platformGenerationReceiptFixture) {
+		{"wrong role", false, func(t *testing.T, f platformGenerationReceiptFixture) {
 			if err := f.db.Model(&models.Message{}).Where("id = ?", f.userMessage.ID).Update("role", models.MessageRoleAssistant).Error; err != nil {
 				t.Fatal(err)
 			}
 		}},
-		{"cross conversation", func(t *testing.T, f platformGenerationReceiptFixture) {
+		{"cross conversation", false, func(t *testing.T, f platformGenerationReceiptFixture) {
 			if err := f.db.Model(&models.Message{}).Where("id = ?", f.userMessage.ID).Update("conversation_id", f.otherConversation.ID).Error; err != nil {
 				t.Fatal(err)
 			}
 		}},
-		{"nonzero tokens", func(t *testing.T, f platformGenerationReceiptFixture) {
+		{"nonzero tokens", false, func(t *testing.T, f platformGenerationReceiptFixture) {
 			if err := f.db.Model(&models.Message{}).Where("id = ?", f.userMessage.ID).Update("tokens", 1).Error; err != nil {
 				t.Fatal(err)
 			}
 		}},
-		{"unexpected model", func(t *testing.T, f platformGenerationReceiptFixture) {
+		{"unexpected model", false, func(t *testing.T, f platformGenerationReceiptFixture) {
 			model := "model-a"
 			if err := f.db.Model(&models.Message{}).Where("id = ?", f.userMessage.ID).Update("model", model).Error; err != nil {
 				t.Fatal(err)
 			}
 		}},
-		{"empty content", func(t *testing.T, f platformGenerationReceiptFixture) {
+		{"empty content", false, func(t *testing.T, f platformGenerationReceiptFixture) {
 			if err := f.db.Model(&models.Message{}).Where("id = ?", f.userMessage.ID).Update("content", "").Error; err != nil {
 				t.Fatal(err)
 			}
@@ -733,7 +783,12 @@ func TestLoadPlatformGenerationReceiptRejectsMissingDeletedWrongRoleOrCrossConve
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			fixture := seedPlatformGenerationReceipt(t, PlatformGenerationModeSingle)
+			var fixture platformGenerationReceiptFixture
+			if test.freshSchema {
+				fixture = seedPlatformGenerationReceiptSchema(t, PlatformGenerationModeSingle)
+			} else {
+				fixture = seedPlatformGenerationReceipt(t, PlatformGenerationModeSingle)
+			}
 			test.mutate(t, fixture)
 			requireReceiptIntegrity(t, fixture)
 		})
