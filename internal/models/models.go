@@ -146,12 +146,56 @@ const (
 	PlatformGenerationReceiptModeCompare PlatformGenerationReceiptMode = 2
 )
 
+func (m PlatformGenerationReceiptMode) String() string {
+	switch m {
+	case PlatformGenerationReceiptModeSingle:
+		return "single"
+	case PlatformGenerationReceiptModeCompare:
+		return "compare"
+	default:
+		return "unknown"
+	}
+}
+
+func ParsePlatformGenerationReceiptMode(value string) (PlatformGenerationReceiptMode, bool) {
+	switch value {
+	case "single":
+		return PlatformGenerationReceiptModeSingle, true
+	case "compare":
+		return PlatformGenerationReceiptModeCompare, true
+	default:
+		return 0, false
+	}
+}
+
 type PlatformGenerationResultStatus int
 
 const (
 	PlatformGenerationResultCompleted PlatformGenerationResultStatus = 1
 	PlatformGenerationResultFailed    PlatformGenerationResultStatus = 2
 )
+
+func (s PlatformGenerationResultStatus) String() string {
+	switch s {
+	case PlatformGenerationResultCompleted:
+		return "completed"
+	case PlatformGenerationResultFailed:
+		return "failed"
+	default:
+		return "unknown"
+	}
+}
+
+func ParsePlatformGenerationResultStatus(value string) (PlatformGenerationResultStatus, bool) {
+	switch value {
+	case "completed":
+		return PlatformGenerationResultCompleted, true
+	case "failed":
+		return PlatformGenerationResultFailed, true
+	default:
+		return 0, false
+	}
+}
 
 // UserRole is the stable, integer-backed minimum role used by auth middleware.
 type UserRole int

@@ -25,6 +25,16 @@ func TestPlatformSSEV2ModelIdentifierMatchesExistingPersistenceColumns(t *testin
 	}
 }
 
+func TestPlatformSSEV2IdentifiersRejectInvalidUTF8(t *testing.T) {
+	invalid := string([]byte{0xff})
+	if platformSSEV2Identifier(invalid) || platformSSEV2ModelIdentifier(invalid) {
+		t.Fatal("malformed UTF-8 identifier was accepted")
+	}
+	if encoder, err := NewPlatformSSEV2Encoder(sseV2GenerationID, []string{invalid}); err == nil || encoder != nil {
+		t.Fatal("encoder accepted malformed UTF-8 model before dependencies")
+	}
+}
+
 func TestPlatformSSEV2EncoderFramesSanitizedSingleStream(t *testing.T) {
 	encoder, err := NewPlatformSSEV2Encoder(sseV2GenerationID, []string{"model-a"})
 	if err != nil {

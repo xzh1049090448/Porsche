@@ -12,7 +12,7 @@ Related product contract: `/Users/xuzhihao/code/Porsche-Web/.worktrees/chat-stre
 
 BE03 adds the durable MySQL commit boundary required by `platform-chat-sse.v2`. A successful generation must persist its complete exchange, including exactly one non-empty final user message, quota and token effects, usage records, and a durable generation receipt in one MySQL transaction. The receipt is the recovery proof used when the process crashes or Redis cannot be updated after MySQL commits.
 
-The user approved adding forward migration `0011` for local development and test implementation. The user also approved tightening v2 model identifiers to at most 128 UTF-8 bytes so they fit the existing `conversations.model`, `messages.model`, and `usage_records.model` columns without altering legacy tables. The generic opaque-identifier guard remains 255 bytes; the model-specific limit must be enforced before Redis or MySQL. These approvals do not authorize running a production migration, deploying, pushing, merging, or calling a real upstream model.
+The user approved adding forward migration `0011` for local development and test implementation. The user also approved tightening v2 model identifiers to well-formed UTF-8 of at most 128 bytes so they fit the existing `conversations.model`, `messages.model`, and `usage_records.model` columns without altering legacy tables. The generic v2 opaque-identifier guard remains 255 bytes and also requires well-formed UTF-8; the model-specific limit must be enforced before Redis or MySQL. These approvals do not authorize running a production migration, deploying, pushing, merging, or calling a real upstream model.
 
 BE03 remains below the HTTP boundary. It introduces the schema, persistence models, transactional finalizer, receipt reader, and Redis reconciliation primitives needed by later tranches, but it does not activate v2 stream, generation status, or cancellation routes.
 
@@ -50,7 +50,7 @@ BE01 supplies strict v2 request projection and a sanitized, ordered SSE encoder.
 
 The existing legacy chat path is not an acceptable persistence primitive for v2 because it performs independent writes and consumes daily quota before upstream completion. Its compare path also stores one `__MULTI_MODEL__` aggregate assistant message. BE03 therefore adds a separate v2 finalizer and does not silently change the legacy methods.
 
-The current shared `whitelabel.ValidateRequest` contract accepts an empty `messages` array and does not require a final user message. BE03 deliberately tightens only the inactive v2 durable-generation contract: every successful v2 exchange must have one final user message whose content is not the empty string. Whitespace is preserved and is not normalized for idempotency. The future v2 HTTP/orchestration tranche must reject a request with no non-empty final user message before Redis claim or upstream work; the BE03 finalizer repeats the check defensively before any dependency access. Legacy request validation and legacy chat behavior remain unchanged.
+The current shared `whitelabel.ValidateRequest` contract accepts an empty `messages` array and does not require a final user message. BE03 deliberately tightens only the inactive v2 durable-generation contract: every successful v2 exchange must have one final user message whose content is non-empty, well-formed UTF-8, and within the existing text-column byte bound; completed assistant content has the same UTF-8 and byte requirements. Whitespace is preserved and is not normalized for idempotency. The future v2 HTTP/orchestration tranche must reject a request with no valid non-empty final user message before Redis claim or upstream work; the BE03 finalizer repeats the check defensively before any dependency access. Legacy request validation and legacy chat behavior remain unchanged.
 
 Redis and MySQL cannot participate in one atomic transaction. The fixed cross-store order is:
 
@@ -65,7 +65,7 @@ The MySQL receipt is the authoritative proof for recovery across the gap between
 
 Migration `0011` adds two normalized tables. It does not alter existing `users`, `conversations`, `messages`, or `usage_records` tables and must not use GORM `AutoMigrate`.
 
-All primary and foreign keys are signed `BIGINT`. Every table contains an internal `id`, a snowflake-generated public/business `guid`, Unix-millisecond audit timestamps, actor IDs, and `is_deleted`. Enum values are explicit stable integers rather than strings or native MySQL enums.
+All primary and foreign keys are signed `BIGINT`. Every table contains an internal `id`, a snowflake-generated public/business `guid`, Unix-millisecond audit timestamps, actor IDs, and `is_deleted`. Enum values are explicit stable integers rather than strings or native MySQL enums. Their Go types provide explicit `String` and `Parse` mappings for `single`/`compare` and `completed`/`failed`; unknown integers render as `unknown`, while unrecognized strings return the zero value plus `false`.
 
 ### 5.1 `platform_chat_generation_receipts`
 
@@ -158,11 +158,13 @@ The v2 finalizer accepts an internal, typed value assembled after upstream proce
 - failed result stable code and no content;
 - one transaction timestamp and the authenticated actor ID.
 
-Before opening the transaction, the service validates all scalar bounds, mode/model cardinality, the approved 128-byte v2 model limit, the non-empty final user message, exact model order, terminal result coverage, stable error codes, content size allowed by the existing message contract, nonnegative safe token integers, and authenticated ownership. It then reads the current Redis snapshot and requires the same user-scoped generation to be `committing` with identical mode, models, per-model terminal states, and sequences. A mismatch fails closed before any MySQL mutation.
+Before opening the transaction, the service validates all scalar bounds, mode/model cardinality, well-formed UTF-8 and the approved 128-byte v2 model limit, the non-empty well-formed UTF-8 final user message, exact model order, terminal result coverage, stable error codes, well-formed UTF-8 completed content and its existing message byte limit, nonnegative safe token integers, and authenticated ownership. It then reads the current Redis snapshot and requires the same user-scoped generation to be `committing` with identical mode, models, per-model terminal states, and sequences. A mismatch fails closed before any MySQL mutation.
 
 The client cannot supply conversation IDs, message IDs, receipt GUIDs, audit fields, quota counts, or total-token aggregates. Those values are resolved or generated by the service.
 
 ## 7. Transaction boundary and lock order
+
+Finalization serializes one `user_id + generation_id` through a deterministic MySQL advisory lock. `GET_LOCK` and the transaction callback use one pinned GORM connection. Release is always attempted on that same connection using a short, bounded context derived from `context.Background()`, so caller cancellation cannot strand cleanup indefinitely. A callback error remains the primary result even if cleanup also fails; after a successful callback, a release error or a `0`/`NULL` release result fails closed as persistence unavailable.
 
 The complete SQL effect occurs in one `db.Transaction` callback. The fixed lock/write order is:
 

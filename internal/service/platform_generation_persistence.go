@@ -3,15 +3,21 @@ package service
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"errors"
 	"math"
 	"strconv"
+	"time"
+	"unicode/utf8"
 
 	"gorm.io/gorm"
 )
 
-const platformGenerationMessageTextMaxBytes = 65535
+const (
+	platformGenerationMessageTextMaxBytes        = 65535
+	platformGenerationAdvisoryLockReleaseTimeout = 2 * time.Second
+)
 
 var (
 	ErrPlatformGenerationPersistenceInvalid     = errors.New("invalid platform generation persistence input")
@@ -90,23 +96,36 @@ func platformGenerationAdvisoryLockName(userID int64, generationID string) strin
 }
 
 func withPlatformGenerationAdvisoryLock(ctx context.Context, db *gorm.DB, lockName string, fn func(*gorm.DB) error) error {
-	if db == nil || len(lockName) == 0 || len(lockName) > 64 || fn == nil {
+	if ctx == nil || db == nil || len(lockName) == 0 || len(lockName) > 64 || fn == nil {
 		return ErrPlatformGenerationPersistenceInvalid
 	}
 	return db.WithContext(ctx).Connection(func(conn *gorm.DB) error {
-		var acquired int
-		if err := conn.Raw("SELECT GET_LOCK(?, 5)", lockName).Scan(&acquired).Error; err != nil || acquired != 1 {
+		var acquired sql.NullInt64
+		if err := conn.Raw("SELECT GET_LOCK(?, 5)", lockName).Scan(&acquired).Error; err != nil || !acquired.Valid || acquired.Int64 != 1 {
 			return ErrPlatformGenerationPersistenceUnavailable
 		}
-		defer conn.WithContext(context.Background()).Exec("SELECT RELEASE_LOCK(?)", lockName) //nolint:errcheck
-		return fn(conn)
+		return runWithPlatformGenerationAdvisoryLockRelease(conn, lockName, fn)
 	})
+}
+
+func runWithPlatformGenerationAdvisoryLockRelease(conn *gorm.DB, lockName string, fn func(*gorm.DB) error) (primaryErr error) {
+	defer func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), platformGenerationAdvisoryLockReleaseTimeout)
+		defer cancel()
+		var released sql.NullInt64
+		releaseErr := conn.WithContext(cleanupCtx).Raw("SELECT RELEASE_LOCK(?)", lockName).Scan(&released).Error
+		if primaryErr == nil && (releaseErr != nil || !released.Valid || released.Int64 != 1) {
+			primaryErr = ErrPlatformGenerationPersistenceUnavailable
+		}
+	}()
+	primaryErr = fn(conn)
+	return primaryErr
 }
 
 func validatePlatformGenerationPersistenceInput(input PlatformGenerationPersistenceInput) error {
 	if validatePlatformGenerationIdentity(input.UserID, input.GenerationID) != nil ||
 		!platformSSEV2SafeInteger(input.NowMillis) || input.NowMillis <= 0 ||
-		input.UserMessage == "" ||
+		input.UserMessage == "" || !utf8.ValidString(input.UserMessage) ||
 		len([]byte(input.UserMessage)) > platformGenerationMessageTextMaxBytes ||
 		len(input.Models) != len(input.Results) {
 		return ErrPlatformGenerationPersistenceInvalid
@@ -120,6 +139,7 @@ func validatePlatformGenerationPersistenceInput(input PlatformGenerationPersiste
 	successes := 0
 	for index, result := range input.Results {
 		if result.Model != input.Models[index] || !platformSSEV2ModelIdentifier(result.Model) ||
+			!utf8.ValidString(result.Content) ||
 			len([]byte(result.Content)) > platformGenerationMessageTextMaxBytes ||
 			result.Tokens < 0 || result.Tokens > math.MaxInt32 {
 			return ErrPlatformGenerationPersistenceInvalid

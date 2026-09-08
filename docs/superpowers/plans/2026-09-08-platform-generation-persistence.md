@@ -16,9 +16,9 @@ This plan may create migration `0011`, persistence/reconciliation code, tests, v
 
 ## Approved model-identifier compatibility decision
 
-The user approved resolving the cross-tranche mismatch by tightening v2 model identifiers to at most 128 UTF-8 bytes. BE01/BE02 previously accepted model identifiers up to 255 bytes, but the existing `conversations.model`, `messages.model`, and `usage_records.model` columns are `VARCHAR(128)`.
+The user approved resolving the cross-tranche mismatch by tightening v2 model identifiers to well-formed UTF-8 of at most 128 bytes. BE01/BE02 previously accepted model identifiers up to 255 bytes, but the existing `conversations.model`, `messages.model`, and `usage_records.model` columns are `VARCHAR(128)`.
 
-Keep the generic opaque-identifier guard at 255 bytes, add `platformSSEV2ModelIdentifier` with a 128-byte bound, and use it in the encoder, generation store, and BE03 persistence input for model values. Migration `0011` uses `VARCHAR(128)`. Model IDs of 129-255 bytes that the inactive BE01/BE02 primitives previously accepted are now rejected before Redis or MySQL. No v2 HTTP route is active, so there is no deployed v2 compatibility impact; catalog tests must prove every currently supported model ID fits 128 bytes.
+Keep the generic v2 opaque-identifier guard at 255 bytes while requiring well-formed UTF-8, add `platformSSEV2ModelIdentifier` with a 128-byte bound, and use it in the encoder, generation store, and BE03 persistence input for model values. Migration `0011` uses `VARCHAR(128)`. Malformed UTF-8 and model IDs of 129-255 bytes that the inactive BE01/BE02 primitives previously accepted are now rejected before Redis or MySQL. No v2 HTTP route is active, so there is no deployed v2 compatibility impact; catalog tests must prove every currently supported model ID fits 128 bytes.
 
 **Alternative requiring broader authorization:** alter the three existing shared model columns to `VARCHAR(255)` in a separately designed migration. This affects legacy/non-v2 persistence and is outside the approved BE03 scope; this plan does not perform it.
 
@@ -26,7 +26,7 @@ All SQL, contracts, and tests below implement the approved 128-byte decision. BE
 
 ## Explicit v2 user-message contract tightening
 
-The current shared `whitelabel.ValidateRequest` accepts `messages: []`, and the legacy `lastUserMessage` helper returns an empty string when no user message exists. BE03 intentionally defines a narrower contract for the still-inactive v2 durable path: every successful exchange has exactly one final user message and its persisted content must not be the empty string. Preserve the exact bytes, including whitespace; do not trim or normalize before idempotency comparison.
+The current shared `whitelabel.ValidateRequest` accepts `messages: []`, and the legacy `lastUserMessage` helper returns an empty string when no user message exists. BE03 intentionally defines a narrower contract for the still-inactive v2 durable path: every successful exchange has exactly one final user message and its persisted content must be non-empty, well-formed UTF-8, and within the existing text-column byte bound. Completed assistant content has the same UTF-8 and byte requirements. Preserve the exact bytes, including whitespace; do not trim or normalize before idempotency comparison.
 
 Task 3 adds the BE03 defensive validation. BE05 must also reject a v2 request with no non-empty final user message before Redis claim or upstream work. Do not change shared/legacy validation in this tranche, because doing so would alter existing gateway and legacy platform behavior. This compatibility delta is explicit and approved for the v2-only path; it does not authorize an HTTP route in BE03.
 
@@ -47,8 +47,8 @@ Before implementation, read:
 | `internal/migration/platform_generation_receipts.go` | Verify the exact live MySQL schema for the two `0011` tables. |
 | `internal/migration/platform_generation_receipts_test.go` | Static SQL contract plus real isolated MySQL migration, constraint, rerun, partial-schema, and down-order tests. |
 | `internal/migration/runner_test.go` and published migration contract tests | Advance migration count/tail assertions from ten/`0010` to eleven/`0011` without changing prior checksums. |
-| `internal/models/models.go` | Define stable receipt/result integer enums and GORM persistence entities. |
-| `internal/models/models_contract_test.go` | Freeze enum integers, table names, signed IDs, audit fields, and GORM column mappings. |
+| `internal/models/models.go` | Define stable receipt/result integer enums with bidirectional fail-closed mappings and GORM persistence entities. |
+| `internal/models/models_contract_test.go` | Freeze enum integers/mappings, table names, exact Go types, signed IDs, audit fields, JSON exclusions, and GORM column/size/nullability mappings. |
 | `internal/service/platform_sse_v2.go` and `internal/service/platform_sse_v2_test.go` | Add and freeze the approved 128-byte model-specific validator while retaining the 255-byte generic identifier guard. |
 | `internal/service/platform_generation_store.go` and `internal/service/platform_generation_store_test.go` | Apply the approved model-specific validator consistently before Redis claim and model transitions. |
 | `internal/service/platform_generation_persistence.go` | Own typed finalization input/output, pure validation, transaction runner seam, and atomic single/compare finalization. |
@@ -639,6 +639,8 @@ func TestPlatformGenerationPersistenceEnumsAreStable(t *testing.T) {
 
 Add `TestValidatePlatformGenerationPersistenceInputRejectsInvalidBeforeDependencies` as a table-driven pure-validation test covering zero user ID, malformed UUID, unsafe time, invalid mode/cardinality, duplicate/oversized model, missing/extra result, model-order mismatch, running/cancelling/cancelled result, single failure, compare all-failure, completed result with empty content or invalid token count, failed result with content/tokens/missing or unstable code, empty user message, and oversized user message. Every invalid case calls `validatePlatformGenerationPersistenceInput` directly, expects `ErrPlatformGenerationPersistenceInvalid`, and therefore requires no Redis or MySQL fixture.
 
+The enum contract test must also round-trip `single`/`compare` and `completed`/`failed`, rejecting unknown strings and rendering unknown integer values as `unknown`. Add a GORM schema/reflection contract test for every new direct field's Go type, column name, explicit size/nullability tag, and internal-ID JSON exclusion. Add malformed UTF-8 cases for generic/model identifiers, Redis claim, user-message content, and completed assistant content. Add pure advisory-lock invalid-input tests plus an explicit `TEST_DATABASE_URL` integration test proving the callback runs on the connection that owns the lock and that success, callback error, and caller cancellation all leave the lock free; missing MySQL reports `BLOCKED_FIXTURE`.
+
 Also add the approved compatibility-boundary tests:
 
 ```go
@@ -688,6 +690,8 @@ func platformSSEV2ModelIdentifier(value string) bool {
 	return platformSSEV2Identifier(value) && len([]byte(value)) <= platformSSEV2MaxModelIdentifierBytes
 }
 ```
+
+`platformSSEV2Identifier` itself must require `utf8.ValidString(value)` before applying whitespace and the generic 255-byte bound. This is v2-only; do not change shared/legacy validation.
 
 Use `platformSSEV2ModelIdentifier` instead of `platformSSEV2Identifier` for every model value in `NewPlatformSSEV2Encoder`, `validatePlatformGenerationInput`, `RecordDelta`, `MarkModelDone`, `MarkModelFailed`, and stored-snapshot model validation. Keep `platformSSEV2Identifier` for conversation GUID and other generic opaque identifiers. Run:
 
@@ -751,6 +755,8 @@ func (PlatformChatGenerationResult) TableName() string {
 }
 ```
 
+Implement explicit `String()` and `ParsePlatformGenerationReceiptMode` / `ParsePlatformGenerationResultStatus` mappings for the four published names. Unknown integers return `"unknown"`; unknown strings return `(0, false)`.
+
 Keep alignment through `gofmt`; do not expose internal IDs in public JSON.
 
 - [ ] **Step 5: Add typed persistence values and pure validation**
@@ -763,16 +769,20 @@ package service
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"errors"
 	"math"
 	"strconv"
+	"time"
+	"unicode/utf8"
 
 	"gorm.io/gorm"
 )
 
 const (
-	platformGenerationMessageTextMaxBytes = 65535
+	platformGenerationMessageTextMaxBytes         = 65535
+	platformGenerationAdvisoryLockReleaseTimeout = 2 * time.Second
 )
 
 var (
@@ -852,23 +862,36 @@ func platformGenerationAdvisoryLockName(userID int64, generationID string) strin
 }
 
 func withPlatformGenerationAdvisoryLock(ctx context.Context, db *gorm.DB, lockName string, fn func(*gorm.DB) error) error {
-	if db == nil || len(lockName) == 0 || len(lockName) > 64 || fn == nil {
+	if ctx == nil || db == nil || len(lockName) == 0 || len(lockName) > 64 || fn == nil {
 		return ErrPlatformGenerationPersistenceInvalid
 	}
 	return db.WithContext(ctx).Connection(func(conn *gorm.DB) error {
-		var acquired int
-		if err := conn.Raw("SELECT GET_LOCK(?, 5)", lockName).Scan(&acquired).Error; err != nil || acquired != 1 {
+		var acquired sql.NullInt64
+		if err := conn.Raw("SELECT GET_LOCK(?, 5)", lockName).Scan(&acquired).Error; err != nil || !acquired.Valid || acquired.Int64 != 1 {
 			return ErrPlatformGenerationPersistenceUnavailable
 		}
-		defer conn.WithContext(context.Background()).Exec("SELECT RELEASE_LOCK(?)", lockName) //nolint:errcheck
-		return fn(conn)
+		return runWithPlatformGenerationAdvisoryLockRelease(conn, lockName, fn)
 	})
+}
+
+func runWithPlatformGenerationAdvisoryLockRelease(conn *gorm.DB, lockName string, fn func(*gorm.DB) error) (primaryErr error) {
+	defer func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), platformGenerationAdvisoryLockReleaseTimeout)
+		defer cancel()
+		var released sql.NullInt64
+		releaseErr := conn.WithContext(cleanupCtx).Raw("SELECT RELEASE_LOCK(?)", lockName).Scan(&released).Error
+		if primaryErr == nil && (releaseErr != nil || !released.Valid || released.Int64 != 1) {
+			primaryErr = ErrPlatformGenerationPersistenceUnavailable
+		}
+	}()
+	primaryErr = fn(conn)
+	return primaryErr
 }
 
 func validatePlatformGenerationPersistenceInput(input PlatformGenerationPersistenceInput) error {
 	if validatePlatformGenerationIdentity(input.UserID, input.GenerationID) != nil ||
 		!platformSSEV2SafeInteger(input.NowMillis) || input.NowMillis <= 0 ||
-		input.UserMessage == "" ||
+		input.UserMessage == "" || !utf8.ValidString(input.UserMessage) ||
 		len([]byte(input.UserMessage)) > platformGenerationMessageTextMaxBytes ||
 		len(input.Models) != len(input.Results) {
 		return ErrPlatformGenerationPersistenceInvalid
@@ -882,6 +905,7 @@ func validatePlatformGenerationPersistenceInput(input PlatformGenerationPersiste
 	successes := 0
 	for index, result := range input.Results {
 		if result.Model != input.Models[index] || !platformSSEV2ModelIdentifier(result.Model) ||
+			!utf8.ValidString(result.Content) ||
 			len([]byte(result.Content)) > platformGenerationMessageTextMaxBytes ||
 			result.Tokens < 0 || result.Tokens > math.MaxInt32 {
 			return ErrPlatformGenerationPersistenceInvalid
@@ -917,7 +941,7 @@ gofmt -w internal/models/models.go internal/models/models_contract_test.go inter
 GOCACHE=/private/tmp/porsche-chat-streaming-go-cache go test ./internal/models ./internal/service -run 'TestPlatformGenerationPersistenceEnumsAreStable|TestValidatePlatformGenerationPersistenceInput' -count=1
 ```
 
-Expected: PASS; empty user messages, invalid timestamps, and byte-overflowing UTF-8 `TEXT`/model values fail without touching Redis/MySQL. The user-message value is compared and persisted byte-for-byte without trimming; the limit uses `len([]byte(value))`, matching MySQL byte capacity rather than rune count. Existing `whitelabel.TestValidateRequestEnforcesChatContract` remains unchanged and green because the stricter rule belongs only to the inactive v2 durable path.
+Expected: PASS; empty or malformed UTF-8 user messages, malformed UTF-8 completed content/identifiers, invalid timestamps, and byte-overflowing `TEXT`/model values fail without touching Redis/MySQL. The user-message value is compared and persisted byte-for-byte without trimming; the limit uses `len([]byte(value))`, matching MySQL byte capacity rather than rune count. Advisory-lock cleanup is bounded, uses the pinned connection after caller cancellation, preserves a primary callback error, and fails closed on an unverified release. Existing `whitelabel.TestValidateRequestEnforcesChatContract` remains unchanged and green because the stricter rule belongs only to the inactive v2 durable path.
 
 - [ ] **Step 7: Commit typed contracts**
 

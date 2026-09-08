@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"unicode/utf8"
 )
 
 var (
@@ -310,7 +311,7 @@ func platformSSEV2CanonicalUUID(value string) bool {
 }
 
 func platformSSEV2Identifier(value string) bool {
-	return value != "" && value == strings.TrimSpace(value) && len(value) <= platformSSEV2MaxIdentifierBytes
+	return value != "" && utf8.ValidString(value) && value == strings.TrimSpace(value) && len(value) <= platformSSEV2MaxIdentifierBytes
 }
 
 func platformSSEV2ModelIdentifier(value string) bool {
