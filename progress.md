@@ -1,5 +1,11 @@
 # Porsche 开发进度
 
+## 2026-09-08：生产发布预检 hotfix 本地候选
+
+- `restart-all.sh` 当前在统一发布锁内重置前后端 `origin/main`，随后只把双方 `.env.example` 中新增且目标 `.env` 尚不存在的 key 追加进去；已有赋值、空值、顺序和注释均不覆盖或改写。`# ACTION_SECURITY_HMAC_KEY=` 会追加为空赋值，脚本绝不自动生成密钥，后续同一候选镜像的 `check-config` 会因生产值为空而在停容器、发布静态文件或 reload Nginx 前失败。
+- 后端候选绑定完整 source revision、不可变 image ID 与同一份 mode 0600 环境快照；配置预检和实际容器使用同一镜像及快照。前端以 committed lockfile 执行 `npm ci`，且生产 `VITE_USE_MOCK` 必须精确为 `false`。静态资源在同一文件系统 staging 后以目录切换发布，reload 失败时恢复旧目录。
+- 本 hotfix 只形成隔离工作树候选并运行本地/fixture 验证；未读取生产 `.env`，未 push、部署、迁移、替换容器、发布静态文件或 reload Nginx。R02 真实生产验收仍为 `BLOCKED_ENV`，须在两端 hotfix 合并并实际部署后记录 revision/image、迁移账本、HTTPS 浏览器检查及回滚证据，才能更新状态。
+
 ## 2026-09-08：A03 创建用户/管理员本地联合切片限定通过
 
 - A03 仅本地联合切片由 `BLOCKED_NOT_IMPLEMENTED` 提升为 `PASS_LIMITED_SCOPE`；代码候选为后端 `3a50144e53268f6ef3ae704699ef9fa851e4a5ee`、前端 `9f660a9ca26f5738dd661652596a1e450ff34335`。Admin 仅可按 immutable omitted default 创建普通用户；Root 可创建普通用户/管理员并保存 allow/deny 覆盖。删除后重放返回稳定 410 `created_user_deleted` 且无 PII，`operation_expired` 与之区分。

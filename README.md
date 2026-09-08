@@ -155,10 +155,10 @@ same application container. The script replaces only the application container
 and neither manages nor changes MySQL. On success it prints the new container
 ID and deployed Git revision.
 
-The full-stack restart command publishes frontend assets with `rsync`. It
-builds and stages those assets before replacing the live site, but `rsync` is
-not a cross-file atomic release mechanism; clients may briefly observe mixed
-asset versions during the static-file synchronization.
+The full-stack restart command stages frontend assets on the same filesystem
+and switches the live directory with `mv`. If Nginx reload fails, it restores
+the previous static directory. This keeps the published frontend tree on one
+release instead of copying files into the live tree one by one.
 
 ### One-command frontend and backend release
 
@@ -173,6 +173,16 @@ sudo /opt/Porsche/deploy/restart-all.sh
 During deployment, do not edit `.env` directly. Every supported `.env` writer
 must coordinate through the sibling `.<env-name>.merge.lock`; an uncoordinated
 edit is outside the supported deployment contract.
+
+After both repositories are reset to `origin/main`, the command runs
+`deploy/merge-env-example.sh` for the backend and frontend environment files.
+The merge only appends keys newly documented by the corresponding
+`.env.example`; it never overwrites, deletes, reorders, or normalizes an
+existing `.env` assignment. An empty template placeholder such as
+`# ACTION_SECURITY_HMAC_KEY=` is appended as `ACTION_SECURITY_HMAC_KEY=`. No
+secret is generated: the following configuration preflight rejects the empty
+production value and stops the release until an operator supplies the approved
+secret through the normal secret-management process.
 
 This command has deliberately fixed production locations and does not accept
 arguments:
@@ -192,13 +202,17 @@ application container to reach the existing MySQL 8 service. The command does
 not create, migrate, stop, remove, or otherwise manage MySQL, its Docker
 container, or any database volume.
 
-The frontend repository intentionally has no committed lockfile. The script
-therefore installs build dependencies with `npm install --package-lock=false`,
-then runs `npm run build` before it changes the backend or live static files.
-After a successful backend deployment it stages `dist/` and synchronizes it to
-`/var/www/porsche-web` with `rsync --archive --delete --delay-updates`.
-`rsync` avoids stale assets but is not a cross-file atomic release mechanism:
-brief mixed old/new asset responses remain possible while the copy is running.
+The frontend repository has a committed `package-lock.json`; the script uses
+`npm ci` and never rewrites the lockfile. The production build also requires
+the resolved `VITE_USE_MOCK` value to be exactly `false` before Vite starts.
+
+The full release holds one shared lock, snapshots the merged backend `.env`,
+builds one backend candidate, resolves it to an immutable image ID, and runs
+`/app/check-config` against that exact image and environment snapshot. The
+same image ID, source revision, and environment snapshot are then passed to
+the backend replacement. Only after the candidate is healthy does the script
+atomically switch the staged frontend directory and reload Nginx; failure
+restores the previous static directory.
 
 Install `deploy/nginx/aiportcloud.conf` as the production site before using the
 command. Nginx must serve the SPA from `/var/www/porsche-web` (including the
