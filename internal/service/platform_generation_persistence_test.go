@@ -2,13 +2,21 @@ package service
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/porsche/ai-gateway-go/internal/db"
+	"github.com/porsche/ai-gateway-go/internal/migration"
+	"github.com/porsche/ai-gateway-go/internal/models"
 	"gorm.io/gorm"
 )
 
@@ -264,4 +272,474 @@ func TestWithPlatformGenerationAdvisoryLockUsesPinnedConnectionAndAlwaysReleases
 			assertPlatformGenerationLockFree(t, db, lockName)
 		})
 	}
+}
+
+type platformGenerationReceiptFixture struct {
+	db                *gorm.DB
+	owner             models.User
+	other             models.User
+	conversation      models.Conversation
+	otherConversation models.Conversation
+	userMessage       models.Message
+	assistantMessages []models.Message
+	receipt           models.PlatformChatGenerationReceipt
+	results           []models.PlatformChatGenerationResult
+}
+
+func openPlatformGenerationReceiptMySQL(t *testing.T) *gorm.DB {
+	t.Helper()
+	raw := strings.TrimSpace(os.Getenv("TEST_DATABASE_URL"))
+	if raw == "" {
+		t.Skip("BLOCKED_FIXTURE: requires TEST_DATABASE_URL")
+	}
+	if err := validateTestDatabaseURL(raw, os.Getenv("DATABASE_URL")); err != nil {
+		t.Fatal(err)
+	}
+	parent, err := db.Open(raw, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	parentSQL, err := parent.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = parentSQL.Close() })
+
+	var token [12]byte
+	if _, err := rand.Read(token[:]); err != nil {
+		t.Fatal(err)
+	}
+	name := "porsche_receipt_" + hex.EncodeToString(token[:]) + "_test"
+	if err := parent.Exec("CREATE DATABASE `" + name + "`").Error; err != nil {
+		t.Fatalf("create owned receipt database: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := parent.Exec("DROP DATABASE `" + name + "`").Error; err != nil {
+			t.Errorf("drop owned receipt database: %v", err)
+		}
+	})
+
+	childURL, err := url.Parse(raw)
+	if err != nil {
+		t.Fatal("parse validated TEST_DATABASE_URL")
+	}
+	childURL.Path, childURL.RawPath = "/"+name, ""
+	child, err := db.Open(childURL.String(), "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	childSQL, err := child.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = childSQL.Close() })
+	now := time.Now().UTC().UnixMilli()
+	if err := migration.Up(context.Background(), child, testSnowflake.Next, func() int64 { return now }); err != nil {
+		t.Fatalf("migrate owned receipt database: %v", err)
+	}
+	return child
+}
+
+func seedPlatformGenerationReceipt(t *testing.T, mode PlatformGenerationMode) platformGenerationReceiptFixture {
+	t.Helper()
+	gdb := openPlatformGenerationReceiptMySQL(t)
+	now := int64(1_800_000_000_000)
+	var group models.BusinessGroup
+	if err := gdb.Where("group_key = ? AND is_deleted = 0", "default").First(&group).Error; err != nil {
+		t.Fatalf("load default group: %v", err)
+	}
+	newUser := func() models.User {
+		username := fixtureUsername(testSnowflake.Next())
+		return models.User{
+			AuditFields:   models.AuditFields{Guid: testSnowflake.Next(), CreatedAt: now, UpdatedAt: now},
+			GroupID:       group.ID,
+			Username:      &username,
+			Nickname:      &username,
+			AllowedModels: models.JSONSlice{},
+			PlanType:      models.PlanFree,
+			Status:        models.UserStatusActive,
+			Role:          models.UserRoleUser,
+			AuthVersion:   1,
+		}
+	}
+	fixture := platformGenerationReceiptFixture{db: gdb, owner: newUser(), other: newUser()}
+	if err := gdb.Create(&fixture.owner).Error; err != nil {
+		t.Fatalf("create receipt owner: %v", err)
+	}
+	if err := gdb.Create(&fixture.other).Error; err != nil {
+		t.Fatalf("create other user: %v", err)
+	}
+	fixture.conversation = models.Conversation{
+		AuditFields: models.AuditFields{Guid: testSnowflake.Next(), CreatedAt: now, CreatedBy: &fixture.owner.ID, UpdatedAt: now, UpdatedBy: &fixture.owner.ID},
+		UserID:      fixture.owner.ID, Title: "receipt fixture",
+	}
+	fixture.otherConversation = models.Conversation{
+		AuditFields: models.AuditFields{Guid: testSnowflake.Next(), CreatedAt: now, CreatedBy: &fixture.owner.ID, UpdatedAt: now, UpdatedBy: &fixture.owner.ID},
+		UserID:      fixture.owner.ID, Title: "other conversation",
+	}
+	if err := gdb.Create(&fixture.conversation).Error; err != nil {
+		t.Fatalf("create receipt conversation: %v", err)
+	}
+	if err := gdb.Create(&fixture.otherConversation).Error; err != nil {
+		t.Fatalf("create other conversation: %v", err)
+	}
+	fixture.userMessage = models.Message{
+		AuditFields:    models.AuditFields{Guid: testSnowflake.Next(), CreatedAt: now, CreatedBy: &fixture.owner.ID, UpdatedAt: now, UpdatedBy: &fixture.owner.ID},
+		ConversationID: fixture.conversation.ID, Role: models.MessageRoleUser, Content: " prompt bytes ", Tokens: 0,
+	}
+	if err := gdb.Create(&fixture.userMessage).Error; err != nil {
+		t.Fatalf("create receipt user message: %v", err)
+	}
+	modelsInOrder := []string{"Model-B"}
+	if mode == PlatformGenerationModeCompare {
+		modelsInOrder = []string{"Model-B", "model-a", "model-c"}
+	}
+	for index, model := range modelsInOrder {
+		if mode == PlatformGenerationModeCompare && index == 1 {
+			continue
+		}
+		modelCopy := model
+		message := models.Message{
+			AuditFields:    models.AuditFields{Guid: testSnowflake.Next(), CreatedAt: now, CreatedBy: &fixture.owner.ID, UpdatedAt: now, UpdatedBy: &fixture.owner.ID},
+			ConversationID: fixture.conversation.ID, Role: models.MessageRoleAssistant,
+			Content: "answer-" + model, Model: &modelCopy, Tokens: index + 2,
+		}
+		if err := gdb.Create(&message).Error; err != nil {
+			t.Fatalf("create assistant message: %v", err)
+		}
+		fixture.assistantMessages = append(fixture.assistantMessages, message)
+	}
+	successCount := len(fixture.assistantMessages)
+	totalTokens := int64(0)
+	for _, message := range fixture.assistantMessages {
+		totalTokens += int64(message.Tokens)
+	}
+	fixture.receipt = models.PlatformChatGenerationReceipt{
+		AuditFields: models.AuditFields{Guid: testSnowflake.Next(), CreatedAt: now, CreatedBy: &fixture.owner.ID, UpdatedAt: now, UpdatedBy: &fixture.owner.ID},
+		UserID:      fixture.owner.ID, GenerationID: generationTestID,
+		Mode: models.PlatformGenerationReceiptMode(mode), ConversationID: fixture.conversation.ID, UserMessageID: fixture.userMessage.ID,
+		SuccessfulModelCount: successCount, DailyCallsCharged: successCount, TotalTokens: totalTokens, CommittedAt: now,
+	}
+	if err := gdb.Create(&fixture.receipt).Error; err != nil {
+		t.Fatalf("create generation receipt: %v", err)
+	}
+	completedIndex := 0
+	for index, model := range modelsInOrder {
+		result := models.PlatformChatGenerationResult{
+			AuditFields: models.AuditFields{Guid: testSnowflake.Next(), CreatedAt: now, CreatedBy: &fixture.owner.ID, UpdatedAt: now, UpdatedBy: &fixture.owner.ID},
+			ReceiptID:   fixture.receipt.ID, ModelIndex: index, Model: model,
+		}
+		if mode == PlatformGenerationModeCompare && index == 1 {
+			code := "timeout"
+			result.Status, result.Tokens, result.ErrorCode = models.PlatformGenerationResultFailed, 0, &code
+		} else {
+			message := fixture.assistantMessages[completedIndex]
+			completedIndex++
+			result.Status, result.AssistantMessageID, result.Tokens = models.PlatformGenerationResultCompleted, &message.ID, int64(message.Tokens)
+		}
+		if err := gdb.Create(&result).Error; err != nil {
+			t.Fatalf("create generation result: %v", err)
+		}
+		fixture.results = append(fixture.results, result)
+	}
+	return fixture
+}
+
+func requireReceiptIntegrity(t *testing.T, fixture platformGenerationReceiptFixture) {
+	t.Helper()
+	_, err := LoadPlatformGenerationReceipt(context.Background(), fixture.db, fixture.owner.ID, generationTestID)
+	if !errors.Is(err, ErrPlatformGenerationPersistenceIntegrity) {
+		t.Fatalf("error=%v, want receipt integrity", err)
+	}
+}
+
+func dropReceiptConstraint(t *testing.T, fixture platformGenerationReceiptFixture, table, constraint string) {
+	t.Helper()
+	if err := fixture.db.Exec("ALTER TABLE `" + table + "` DROP CHECK `" + constraint + "`").Error; err != nil {
+		t.Fatalf("drop owned CHECK %s: %v", constraint, err)
+	}
+	if err := migration.VerifyPlatformGenerationReceiptSchema(context.Background(), fixture.db); !errors.Is(err, migration.ErrPlatformGenerationReceiptSchema) {
+		t.Fatalf("schema verifier error=%v after dropping %s", err, constraint)
+	}
+}
+
+func TestLoadPlatformGenerationReceiptHydratesOwnedSingleResult(t *testing.T) {
+	fixture := seedPlatformGenerationReceipt(t, PlatformGenerationModeSingle)
+	snapshot, err := LoadPlatformGenerationReceipt(context.Background(), fixture.db, fixture.owner.ID, generationTestID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.UserID != fixture.owner.ID || snapshot.GenerationID != generationTestID || snapshot.Mode != PlatformGenerationModeSingle ||
+		snapshot.ConversationGUID != fixture.conversation.Guid || snapshot.UserMessage != fixture.userMessage.Content ||
+		snapshot.SuccessfulModelCount != 1 || snapshot.DailyCallsCharged != 1 || snapshot.TotalTokens != 2 ||
+		snapshot.CommittedAtMillis != fixture.receipt.CommittedAt || len(snapshot.Results) != 1 {
+		t.Fatalf("unexpected hydrated receipt: %#v", snapshot)
+	}
+	result := snapshot.Results[0]
+	if result.Model != "Model-B" || result.State != PlatformGenerationStateCompleted || result.Content != "answer-Model-B" ||
+		result.Tokens != 2 || result.AssistantMessageGUID != stringInt64(fixture.assistantMessages[0].Guid) || result.ErrorCode != "" {
+		t.Fatalf("unexpected hydrated result: %#v", result)
+	}
+}
+
+func TestLoadPlatformGenerationReceiptPreservesCompareModelOrder(t *testing.T) {
+	fixture := seedPlatformGenerationReceipt(t, PlatformGenerationModeCompare)
+	snapshot, err := LoadPlatformGenerationReceipt(context.Background(), fixture.db, fixture.owner.ID, generationTestID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Results) != 3 || snapshot.Results[0].Model != "Model-B" || snapshot.Results[1].Model != "model-a" || snapshot.Results[2].Model != "model-c" {
+		t.Fatalf("result order not preserved: %#v", snapshot.Results)
+	}
+	if snapshot.Results[1].State != PlatformGenerationStateFailed || snapshot.Results[1].ErrorCode != "timeout" || snapshot.Results[1].Content != "" || snapshot.Results[1].AssistantMessageGUID != "" {
+		t.Fatalf("failed result hydrated incorrectly: %#v", snapshot.Results[1])
+	}
+}
+
+func TestLoadPlatformGenerationReceiptRejectsCrossUserAccess(t *testing.T) {
+	fixture := seedPlatformGenerationReceipt(t, PlatformGenerationModeSingle)
+	if _, err := LoadPlatformGenerationReceipt(context.Background(), fixture.db, fixture.other.ID, generationTestID); !errors.Is(err, ErrPlatformGenerationPersistenceNotFound) {
+		t.Fatalf("cross-user error=%v, want not found", err)
+	}
+}
+
+func TestLoadPlatformGenerationReceiptRejectsMalformedGraph(t *testing.T) {
+	for _, input := range []struct {
+		name         string
+		ctx          context.Context
+		db           *gorm.DB
+		userID       int64
+		generationID string
+	}{
+		{"nil context", nil, &gorm.DB{}, 1, generationTestID},
+		{"nil database", context.Background(), nil, 1, generationTestID},
+		{"invalid owner", context.Background(), &gorm.DB{}, 0, generationTestID},
+		{"malformed generation", context.Background(), &gorm.DB{}, 1, "not-a-uuid"},
+	} {
+		t.Run(input.name, func(t *testing.T) {
+			if _, err := LoadPlatformGenerationReceipt(input.ctx, input.db, input.userID, input.generationID); !errors.Is(err, ErrPlatformGenerationPersistenceInvalid) {
+				t.Fatalf("error=%v, want invalid", err)
+			}
+		})
+	}
+
+	tests := []struct {
+		name   string
+		mutate func(*testing.T, platformGenerationReceiptFixture)
+	}{
+		{"deleted conversation", func(t *testing.T, f platformGenerationReceiptFixture) {
+			if err := f.db.Model(&models.Conversation{}).Where("id = ?", f.conversation.ID).Update("is_deleted", 1).Error; err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"conversation owner mismatch", func(t *testing.T, f platformGenerationReceiptFixture) {
+			if err := f.db.Model(&models.Conversation{}).Where("id = ?", f.conversation.ID).Update("user_id", f.other.ID).Error; err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"receipt audit owner mismatch", func(t *testing.T, f platformGenerationReceiptFixture) {
+			if err := f.db.Model(&models.PlatformChatGenerationReceipt{}).Where("id = ?", f.receipt.ID).Update("updated_by", f.other.ID).Error; err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"result audit owner mismatch", func(t *testing.T, f platformGenerationReceiptFixture) {
+			if err := f.db.Model(&models.PlatformChatGenerationResult{}).Where("id = ?", f.results[0].ID).Update("created_by", f.other.ID).Error; err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"noncontiguous index", func(t *testing.T, f platformGenerationReceiptFixture) {
+			if err := f.db.Exec("ALTER TABLE platform_chat_generation_results DROP INDEX uk_platform_chat_generation_results_position").Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := f.db.Model(&models.PlatformChatGenerationResult{}).Where("id = ?", f.results[2].ID).Update("model_index", 4).Error; err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"duplicate model", func(t *testing.T, f platformGenerationReceiptFixture) {
+			if err := f.db.Exec("ALTER TABLE platform_chat_generation_results DROP INDEX uk_platform_chat_generation_results_model").Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := f.db.Model(&models.PlatformChatGenerationResult{}).Where("id = ?", f.results[2].ID).Update("model", f.results[0].Model).Error; err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"duplicate assistant reference", func(t *testing.T, f platformGenerationReceiptFixture) {
+			if err := f.db.Exec("ALTER TABLE platform_chat_generation_results DROP INDEX uk_platform_chat_generation_results_message").Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := f.db.Model(&models.PlatformChatGenerationResult{}).Where("id = ?", f.results[2].ID).Update("assistant_message_id", f.results[0].AssistantMessageID).Error; err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"unknown status", func(t *testing.T, f platformGenerationReceiptFixture) {
+			dropReceiptConstraint(t, f, "platform_chat_generation_results", "chk_platform_chat_generation_results_status")
+			dropReceiptConstraint(t, f, "platform_chat_generation_results", "chk_platform_chat_generation_results_shape")
+			if err := f.db.Model(&models.PlatformChatGenerationResult{}).Where("id = ?", f.results[1].ID).Update("status", 99).Error; err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"failed unstable code", func(t *testing.T, f platformGenerationReceiptFixture) {
+			if err := f.db.Model(&models.PlatformChatGenerationResult{}).Where("id = ?", f.results[1].ID).Update("error_code", "secret-provider-detail").Error; err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"excessive completed tokens", func(t *testing.T, f platformGenerationReceiptFixture) {
+			if err := f.db.Model(&models.PlatformChatGenerationResult{}).Where("id = ?", f.results[0].ID).Update("tokens", int64(1)<<31).Error; err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"invalid model", func(t *testing.T, f platformGenerationReceiptFixture) {
+			if err := f.db.Model(&models.PlatformChatGenerationResult{}).Where("id = ?", f.results[0].ID).Update("model", " model-a").Error; err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"extra result", func(t *testing.T, f platformGenerationReceiptFixture) {
+			code := "timeout"
+			row := models.PlatformChatGenerationResult{
+				AuditFields: models.AuditFields{Guid: testSnowflake.Next(), CreatedAt: f.receipt.CreatedAt, CreatedBy: &f.owner.ID, UpdatedAt: f.receipt.CreatedAt, UpdatedBy: &f.owner.ID},
+				ReceiptID:   f.receipt.ID, ModelIndex: 3, Model: "model-d", Status: models.PlatformGenerationResultFailed, ErrorCode: &code,
+			}
+			if err := f.db.Create(&row).Error; err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"completed has error", func(t *testing.T, f platformGenerationReceiptFixture) {
+			dropReceiptConstraint(t, f, "platform_chat_generation_results", "chk_platform_chat_generation_results_shape")
+			if err := f.db.Model(&models.PlatformChatGenerationResult{}).Where("id = ?", f.results[0].ID).Update("error_code", "timeout").Error; err != nil {
+				t.Fatal(err)
+			}
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := seedPlatformGenerationReceipt(t, PlatformGenerationModeCompare)
+			test.mutate(t, fixture)
+			requireReceiptIntegrity(t, fixture)
+		})
+	}
+}
+
+func TestLoadPlatformGenerationReceiptRejectsInvalidParentScalars(t *testing.T) {
+	tests := []struct {
+		name, constraint, column string
+		value                    any
+	}{
+		{"mode", "chk_platform_chat_generation_receipts_mode", "mode", 99},
+		{"success count", "chk_platform_chat_generation_receipts_counts", "successful_model_count", 0},
+		{"daily count", "chk_platform_chat_generation_receipts_counts", "daily_calls_charged", 2},
+		{"negative tokens", "chk_platform_chat_generation_receipts_counts", "total_tokens", -1},
+		{"zero committed", "chk_platform_chat_generation_receipts_time", "committed_at", 0},
+		{"unsafe committed", "chk_platform_chat_generation_receipts_time", "committed_at", platformSSEV2MaxSafeInteger + 1},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := seedPlatformGenerationReceipt(t, PlatformGenerationModeSingle)
+			dropReceiptConstraint(t, fixture, "platform_chat_generation_receipts", test.constraint)
+			if err := fixture.db.Model(&models.PlatformChatGenerationReceipt{}).Where("id = ?", fixture.receipt.ID).Update(test.column, test.value).Error; err != nil {
+				t.Fatal(err)
+			}
+			requireReceiptIntegrity(t, fixture)
+		})
+	}
+}
+
+func TestLoadPlatformGenerationReceiptRejectsDeletedOrMismatchedMessage(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*testing.T, platformGenerationReceiptFixture)
+	}{
+		{"deleted assistant", func(t *testing.T, f platformGenerationReceiptFixture) {
+			if err := f.db.Model(&models.Message{}).Where("id = ?", f.assistantMessages[0].ID).Update("is_deleted", 1).Error; err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"wrong assistant role", func(t *testing.T, f platformGenerationReceiptFixture) {
+			if err := f.db.Model(&models.Message{}).Where("id = ?", f.assistantMessages[0].ID).Update("role", models.MessageRoleUser).Error; err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"wrong assistant model", func(t *testing.T, f platformGenerationReceiptFixture) {
+			if err := f.db.Model(&models.Message{}).Where("id = ?", f.assistantMessages[0].ID).Update("model", "model-b").Error; err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"wrong assistant tokens", func(t *testing.T, f platformGenerationReceiptFixture) {
+			if err := f.db.Model(&models.Message{}).Where("id = ?", f.assistantMessages[0].ID).Update("tokens", 9).Error; err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"cross-conversation assistant", func(t *testing.T, f platformGenerationReceiptFixture) {
+			if err := f.db.Model(&models.Message{}).Where("id = ?", f.assistantMessages[0].ID).Update("conversation_id", f.otherConversation.ID).Error; err != nil {
+				t.Fatal(err)
+			}
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := seedPlatformGenerationReceipt(t, PlatformGenerationModeSingle)
+			test.mutate(t, fixture)
+			requireReceiptIntegrity(t, fixture)
+		})
+	}
+}
+
+func TestLoadPlatformGenerationReceiptRejectsMissingDeletedWrongRoleOrCrossConversationUserMessage(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*testing.T, platformGenerationReceiptFixture)
+	}{
+		{"missing", func(t *testing.T, f platformGenerationReceiptFixture) {
+			if err := f.db.Exec("ALTER TABLE platform_chat_generation_receipts DROP FOREIGN KEY fk_platform_chat_generation_receipts_user_message").Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := migration.VerifyPlatformGenerationReceiptSchema(context.Background(), f.db); !errors.Is(err, migration.ErrPlatformGenerationReceiptSchema) {
+				t.Fatalf("schema verifier error=%v", err)
+			}
+			if err := f.db.Delete(&models.Message{}, f.userMessage.ID).Error; err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"deleted", func(t *testing.T, f platformGenerationReceiptFixture) {
+			if err := f.db.Model(&models.Message{}).Where("id = ?", f.userMessage.ID).Update("is_deleted", 1).Error; err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"wrong role", func(t *testing.T, f platformGenerationReceiptFixture) {
+			if err := f.db.Model(&models.Message{}).Where("id = ?", f.userMessage.ID).Update("role", models.MessageRoleAssistant).Error; err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"cross conversation", func(t *testing.T, f platformGenerationReceiptFixture) {
+			if err := f.db.Model(&models.Message{}).Where("id = ?", f.userMessage.ID).Update("conversation_id", f.otherConversation.ID).Error; err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"nonzero tokens", func(t *testing.T, f platformGenerationReceiptFixture) {
+			if err := f.db.Model(&models.Message{}).Where("id = ?", f.userMessage.ID).Update("tokens", 1).Error; err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"unexpected model", func(t *testing.T, f platformGenerationReceiptFixture) {
+			model := "model-a"
+			if err := f.db.Model(&models.Message{}).Where("id = ?", f.userMessage.ID).Update("model", model).Error; err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"empty content", func(t *testing.T, f platformGenerationReceiptFixture) {
+			if err := f.db.Model(&models.Message{}).Where("id = ?", f.userMessage.ID).Update("content", "").Error; err != nil {
+				t.Fatal(err)
+			}
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := seedPlatformGenerationReceipt(t, PlatformGenerationModeSingle)
+			test.mutate(t, fixture)
+			requireReceiptIntegrity(t, fixture)
+		})
+	}
+}
+
+func stringInt64(value int64) string {
+	return fmt.Sprintf("%d", value)
 }
