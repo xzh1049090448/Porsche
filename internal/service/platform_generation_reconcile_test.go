@@ -3,9 +3,11 @@ package service
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/porsche/ai-gateway-go/internal/models"
+	"github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
 )
 
@@ -109,7 +111,7 @@ func TestReconcilePlatformGenerationReturnsResolvedSnapshotOnLockReleaseError(t 
 			}
 			return sentinel
 		})
-		if !errors.Is(err, sentinel) || snapshot.State != PlatformGenerationStateCompleted || snapshot.ModelStates["model-a"].AssistantMessageGUID != receipt.Results[0].AssistantMessageGUID {
+		if !errors.Is(err, ErrPlatformGenerationPersistenceUnavailable) || err.Error() != ErrPlatformGenerationPersistenceUnavailable.Error() || snapshot.State != PlatformGenerationStateCompleted || snapshot.ModelStates["model-a"].AssistantMessageGUID != receipt.Results[0].AssistantMessageGUID {
 			t.Fatalf("completed release error snapshot=%#v error=%v", snapshot, err)
 		}
 	})
@@ -127,7 +129,7 @@ func TestReconcilePlatformGenerationReturnsResolvedSnapshotOnLockReleaseError(t 
 			}
 			return sentinel
 		})
-		if !errors.Is(err, sentinel) || snapshot.State != PlatformGenerationStateFailed || snapshot.ErrorCode != "internal_error" {
+		if !errors.Is(err, ErrPlatformGenerationPersistenceUnavailable) || err.Error() != ErrPlatformGenerationPersistenceUnavailable.Error() || snapshot.State != PlatformGenerationStateFailed || snapshot.ErrorCode != "internal_error" {
 			t.Fatalf("stale-fail release error snapshot=%#v error=%v", snapshot, err)
 		}
 	})
@@ -265,10 +267,64 @@ func TestReconcilePlatformGenerationReceiptWinsCASRace(t *testing.T) {
 }
 
 func TestReconcilePlatformGenerationRedisUnavailableDoesNotReplayMySQL(t *testing.T) {
-	store := &PlatformGenerationStore{}
-	_, err := ReconcilePlatformGeneration(context.Background(), &gorm.DB{}, store, 1, generationTestID, 1)
-	if !errors.Is(err, ErrPlatformGenerationUnavailable) {
-		t.Fatalf("error=%v, want unchanged Redis unavailable error", err)
+	client := redis.NewClient(&redis.Options{Addr: "127.0.0.1:1"})
+	t.Cleanup(func() { _ = client.Close() })
+	store, err := NewPlatformGenerationStore(client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = ReconcilePlatformGeneration(context.Background(), &gorm.DB{}, store, 1, generationTestID, 1)
+	if !errors.Is(err, ErrPlatformGenerationPersistenceUnavailable) || err.Error() != ErrPlatformGenerationPersistenceUnavailable.Error() || strings.Contains(err.Error(), "127.0.0.1") {
+		t.Fatalf("error=%q, want stable persistence unavailable without Redis address", err)
+	}
+}
+
+func TestReconcilePlatformGenerationNormalizesLockedRedisCASErrors(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		seedReceipt bool
+	}{
+		{name: "complete", seedReceipt: true},
+		{name: "fail stale", seedReceipt: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := openPlatformGenerationFinalizationFixture(t)
+			input := f.committingSingle(t)
+			if test.seedReceipt {
+				p, err := NewPlatformGenerationPersistence(f.store)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := p.Finalize(context.Background(), f.db, input); err != nil {
+					t.Fatal(err)
+				}
+			}
+			current, err := f.store.Get(context.Background(), input.UserID, input.GenerationID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			nowMillis := current.UpdatedAtMillis + 1
+			if !test.seedReceipt {
+				nowMillis = current.UpdatedAtMillis + platformGenerationConvergenceWindow.Milliseconds()
+			}
+
+			liveClient := f.store.client
+			snapshot, err := reconcilePlatformGeneration(context.Background(), f.db, f.store, input.UserID, input.GenerationID, nowMillis, func(_ context.Context, _ *gorm.DB, _ string, fn func(*gorm.DB) error) error {
+				unreachable := redis.NewClient(&redis.Options{Addr: "127.0.0.1:1"})
+				f.store.client = unreachable
+				defer func() {
+					f.store.client = liveClient
+					_ = unreachable.Close()
+				}()
+				return fn(f.db)
+			})
+			if snapshot.GenerationID != input.GenerationID || snapshot.State != PlatformGenerationStateCommitting {
+				t.Fatalf("snapshot=%#v, want unchanged pre-lock committing snapshot", snapshot)
+			}
+			if !errors.Is(err, ErrPlatformGenerationPersistenceUnavailable) || err.Error() != ErrPlatformGenerationPersistenceUnavailable.Error() || strings.Contains(err.Error(), "127.0.0.1") || strings.Contains(err.Error(), "redis") {
+				t.Fatalf("error=%q, want stable persistence unavailable without dependency detail", err)
+			}
+		})
 	}
 }
 

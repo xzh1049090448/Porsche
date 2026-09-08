@@ -22,7 +22,7 @@ func reconcilePlatformGeneration(ctx context.Context, db *gorm.DB, store *Platfo
 	}
 	current, err := store.Get(ctx, userID, generationID)
 	if err != nil {
-		return PlatformGenerationSnapshot{}, err
+		return PlatformGenerationSnapshot{}, normalizePlatformGenerationReconcileError(err)
 	}
 	if current.State != PlatformGenerationStateCommitting {
 		return current, nil
@@ -52,9 +52,32 @@ func reconcilePlatformGeneration(ctx context.Context, db *gorm.DB, store *Platfo
 	})
 	if err != nil {
 		if resolvedAuthoritative {
-			return resolved, err
+			return resolved, normalizePlatformGenerationReconcileError(err)
 		}
-		return current, err
+		return current, normalizePlatformGenerationReconcileError(err)
 	}
 	return resolved, nil
+}
+
+func normalizePlatformGenerationReconcileError(err error) error {
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, ErrPlatformGenerationPersistenceInvalid):
+		return ErrPlatformGenerationPersistenceInvalid
+	case errors.Is(err, ErrPlatformGenerationPersistenceIntegrity):
+		return ErrPlatformGenerationPersistenceIntegrity
+	case errors.Is(err, ErrPlatformGenerationPersistenceConflict):
+		return ErrPlatformGenerationPersistenceConflict
+	case errors.Is(err, ErrPlatformGenerationPersistenceNotFound):
+		return ErrPlatformGenerationPersistenceNotFound
+	case errors.Is(err, ErrPlatformGenerationInvalid):
+		return ErrPlatformGenerationInvalid
+	case errors.Is(err, ErrPlatformGenerationConflict):
+		return ErrPlatformGenerationConflict
+	case errors.Is(err, ErrPlatformGenerationNotFound):
+		return ErrPlatformGenerationNotFound
+	default:
+		return ErrPlatformGenerationPersistenceUnavailable
+	}
 }
