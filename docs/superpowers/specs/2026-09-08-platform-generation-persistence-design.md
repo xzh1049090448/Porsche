@@ -10,9 +10,9 @@ Related product contract: `/Users/xuzhihao/code/Porsche-Web/.worktrees/chat-stre
 
 ## 1. Decision and objective
 
-BE03 adds the durable MySQL commit boundary required by `platform-chat-sse.v2`. A successful generation must persist its complete exchange, quota and token effects, usage records, and a durable generation receipt in one MySQL transaction. The receipt is the recovery proof used when the process crashes or Redis cannot be updated after MySQL commits.
+BE03 adds the durable MySQL commit boundary required by `platform-chat-sse.v2`. A successful generation must persist its complete exchange, including exactly one non-empty final user message, quota and token effects, usage records, and a durable generation receipt in one MySQL transaction. The receipt is the recovery proof used when the process crashes or Redis cannot be updated after MySQL commits.
 
-The user approved adding forward migration `0011` for local development and test implementation. This approval permits creating and exercising the migration against isolated fixtures only. It does not authorize running a production migration, deploying, pushing, merging, or calling a real upstream model.
+The user approved adding forward migration `0011` for local development and test implementation. The user also approved tightening v2 model identifiers to at most 128 UTF-8 bytes so they fit the existing `conversations.model`, `messages.model`, and `usage_records.model` columns without altering legacy tables. The generic opaque-identifier guard remains 255 bytes; the model-specific limit must be enforced before Redis or MySQL. These approvals do not authorize running a production migration, deploying, pushing, merging, or calling a real upstream model.
 
 BE03 remains below the HTTP boundary. It introduces the schema, persistence models, transactional finalizer, receipt reader, and Redis reconciliation primitives needed by later tranches, but it does not activate v2 stream, generation status, or cancellation routes.
 
@@ -22,7 +22,7 @@ BE03 must provide all of the following:
 
 1. A forward-only `0011` migration containing durable generation receipt and per-model result tables that comply with `docs/conventions/database-standards.md`.
 2. One transactional finalization service for single and compare generations.
-3. Exactly one user message per successful generation exchange and one independent assistant message per successful model.
+3. Exactly one non-empty user message per successful generation exchange and one independent assistant message per successful model.
 4. A permanent idempotency boundary on authenticated `users.id` plus canonical client `generation_id`.
 5. Exact agreement among successful assistant-message token counts, usage records, `users.total_tokens_used`, daily call consumption, and receipt result metadata.
 6. A durable way to distinguish “MySQL committed, Redis not completed” from “MySQL did not commit.”
@@ -49,6 +49,8 @@ BE03 does not:
 BE01 supplies strict v2 request projection and a sanitized, ordered SSE encoder. BE02 supplies a Redis registry with authenticated ownership, 24-hour TTL, per-model sequence state, atomic cancel-versus-commit transitions, and final assistant-message GUID references. Neither tranche activates a v2 route.
 
 The existing legacy chat path is not an acceptable persistence primitive for v2 because it performs independent writes and consumes daily quota before upstream completion. Its compare path also stores one `__MULTI_MODEL__` aggregate assistant message. BE03 therefore adds a separate v2 finalizer and does not silently change the legacy methods.
+
+The current shared `whitelabel.ValidateRequest` contract accepts an empty `messages` array and does not require a final user message. BE03 deliberately tightens only the inactive v2 durable-generation contract: every successful v2 exchange must have one final user message whose content is not the empty string. Whitespace is preserved and is not normalized for idempotency. The future v2 HTTP/orchestration tranche must reject a request with no non-empty final user message before Redis claim or upstream work; the BE03 finalizer repeats the check defensively before any dependency access. Legacy request validation and legacy chat behavior remain unchanged.
 
 Redis and MySQL cannot participate in one atomic transaction. The fixed cross-store order is:
 
@@ -77,6 +79,7 @@ This parent row is written only inside a successful finalization transaction. It
 | `generation_id` | `CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL` | Canonical lowercase client UUID used only with `user_id`. |
 | `mode` | `INT NOT NULL` | `1 = single`, `2 = compare`; values are permanent. |
 | `conversation_id` | `BIGINT NOT NULL` | Internal reference to the committed conversation. |
+| `user_message_id` | `BIGINT NOT NULL` | Internal reference to the exchange's one committed user message. |
 | `successful_model_count` | `INT NOT NULL` | Number of successful model results; at least one. |
 | `daily_calls_charged` | `INT NOT NULL` | Must equal `successful_model_count`. |
 | `total_tokens` | `BIGINT NOT NULL` | Sum of successful per-model token counts. |
@@ -91,12 +94,13 @@ Required indexes and constraints:
 
 - unique `guid`;
 - unique `(user_id, generation_id)` without `is_deleted`;
+- globally unique `user_message_id`, so one user message cannot prove two generation receipts;
 - index `(user_id, is_deleted, created_at)`;
 - index `(conversation_id, is_deleted)`;
-- foreign keys from `user_id` to `users.id` and `conversation_id` to `conversations.id`, both `ON DELETE RESTRICT`;
+- foreign keys from `user_id` to `users.id`, `conversation_id` to `conversations.id`, and `user_message_id` to `messages.id`, all `ON DELETE RESTRICT ON UPDATE RESTRICT`;
 - checks that `mode IN (1,2)`, `successful_model_count >= 1`, `daily_calls_charged = successful_model_count`, `total_tokens >= 0`, `committed_at > 0`, and `is_deleted IN (0,1)`.
 
-The `(user_id, generation_id)` uniqueness is intentionally permanent. A client can always generate a new UUID, while allowing a logically deleted generation ID to be reused would break idempotency and recovery. This is not a “soft-delete then reusable” business identifier.
+The `(user_id, generation_id)` uniqueness is intentionally permanent. A client can always generate a new UUID, while allowing a logically deleted generation ID to be reused would break idempotency and recovery. This is not a “soft-delete then reusable” business identifier. The receipt stores only `user_message_id`, never user-message content; exact duplicate comparison loads that owned message through the receipt integrity graph.
 
 ### 5.2 `platform_chat_generation_results`
 
@@ -108,7 +112,7 @@ This child table records one row for every requested model in original request o
 | `guid` | `BIGINT NOT NULL` | Server-generated snowflake business identifier. |
 | `receipt_id` | `BIGINT NOT NULL` | Internal parent receipt reference. |
 | `model_index` | `INT NOT NULL` | Zero-based request order. |
-| `model` | `VARCHAR(255) NOT NULL` | Validated model identifier from the claimed Redis identity. |
+| `model` | `VARCHAR(128) NOT NULL` | Validated model identifier from the claimed Redis identity; v2 rejects values over 128 UTF-8 bytes before Redis or MySQL. |
 | `status` | `INT NOT NULL` | `1 = completed`, `2 = failed`; values are permanent. |
 | `assistant_message_id` | `BIGINT NULL` | Successful result's internal message reference. |
 | `tokens` | `BIGINT NOT NULL DEFAULT 0` | Successful result token count; zero for failed results. |
@@ -148,13 +152,13 @@ The v2 finalizer accepts an internal, typed value assembled after upstream proce
 - authenticated `user_id` and canonical `generation_id`;
 - mode and the exact ordered model list already claimed in Redis;
 - optional existing conversation GUID or the instruction to create a new conversation;
-- the final trimmed user message to persist once;
+- exactly one final user message whose content is non-empty and is persisted byte-for-byte once;
 - one terminal result for each claimed model;
 - completed result content and a nonnegative token count;
 - failed result stable code and no content;
 - one transaction timestamp and the authenticated actor ID.
 
-Before opening the transaction, the service validates all scalar bounds, mode/model cardinality, exact model order, terminal result coverage, stable error codes, content size allowed by the existing message contract, nonnegative safe token integers, and authenticated ownership. It then reads the current Redis snapshot and requires the same user-scoped generation to be `committing` with identical mode, models, per-model terminal states, and sequences. A mismatch fails closed before any MySQL mutation.
+Before opening the transaction, the service validates all scalar bounds, mode/model cardinality, the approved 128-byte v2 model limit, the non-empty final user message, exact model order, terminal result coverage, stable error codes, content size allowed by the existing message contract, nonnegative safe token integers, and authenticated ownership. It then reads the current Redis snapshot and requires the same user-scoped generation to be `committing` with identical mode, models, per-model terminal states, and sequences. A mismatch fails closed before any MySQL mutation.
 
 The client cannot supply conversation IDs, message IDs, receipt GUIDs, audit fields, quota counts, or total-token aggregates. Those values are resolved or generated by the service.
 
@@ -165,11 +169,11 @@ The complete SQL effect occurs in one `db.Transaction` callback. The fixed lock/
 1. Lock the active owner row by `users.id` using `SELECT ... FOR UPDATE`; reject missing, disabled, or logically deleted users.
 2. Re-evaluate the UTC daily reset and available daily quota on the locked row without trusting the stale middleware user object.
 3. If an existing conversation GUID was supplied, load and lock the active conversation by `guid + user_id + is_deleted = 0`. Otherwise create one new conversation with a server snowflake GUID.
-4. Insert exactly one user message when the validated final user message is non-empty, and update the conversation title only under the existing title rule.
+4. Insert exactly one user message from the already validated non-empty final user-message content, retain its internal ID for the receipt, and update the conversation title only under the existing title rule.
 5. In request model order, create one independent assistant message for every completed model. Failed compare models create no message.
 6. Insert one usage record per completed model with the exact same model and token count as its assistant message.
 7. Increment `users.daily_calls_used` by the number of completed models and `users.total_tokens_used` by their token sum. Persist the UTC daily reset timestamp when reset was required.
-8. Insert the parent receipt and all ordered child result rows using the newly created internal conversation/message IDs.
+8. Insert the parent receipt with the new user-message ID and all ordered child result rows using the newly created internal conversation/assistant-message IDs.
 9. Commit once.
 
 Every insert receives a fresh snowflake GUID and explicit audit fields from the same transaction timestamp. Existing conversation, message, usage, and user-update helpers may be refactored into transaction-aware private helpers, but legacy public behavior must remain unchanged.
@@ -182,13 +186,13 @@ MySQL commit can return an uncertain transport error. The service must not blind
 
 ### 8.1 Single
 
-A successful single generation creates or resolves one conversation, optionally adds one user message, creates exactly one assistant message, creates one usage record, charges one daily call, adds the model tokens to `total_tokens_used`, and writes one completed result row.
+A successful single generation creates or resolves one conversation, creates exactly one non-empty user message, creates exactly one assistant message, creates one usage record, charges one daily call, adds the model tokens to `total_tokens_used`, and writes one parent receipt referencing that user message plus one completed result row.
 
 A failed or cancelled single generation calls no BE03 finalizer and creates no conversation, message, usage, receipt, token increment, or daily-call increment.
 
 ### 8.2 Compare
 
-A successful compare generation creates or resolves one shared conversation and optionally adds one user message exactly once. Each successful model creates its own normal assistant message with that model and token count. Each failed model creates no assistant message and no usage record, but receives one failed receipt result containing only its stable code.
+A successful compare generation creates or resolves one shared conversation and creates exactly one non-empty user message referenced by the parent receipt. Each successful model creates its own normal assistant message with that model and token count. Each failed model creates no assistant message and no usage record, but receives one failed receipt result containing only its stable code.
 
 Compare v2 never writes the legacy `__MULTI_MODEL__` aggregate message. That format remains unchanged for legacy compare requests only.
 
@@ -216,12 +220,14 @@ BE05/BE06 must preserve the existing platform token contract when producing thes
 
 Concurrent or repeated finalizers may execute, but only one transaction can commit the unique receipt. If a candidate transaction loses the unique constraint race, all of its candidate writes roll back. Outside that failed transaction, the service loads and validates the winner's receipt and returns the same authoritative committed result without adding messages, usage records, quota, or token totals.
 
-A duplicate input with different mode, model order, conversation, terminal statuses, token values, or stable codes does not return the existing success as though it matched. It returns a typed idempotency conflict after comparing the immutable receipt identity and result metadata. Message content is compared only by loading the owned referenced message rows inside the service; it is never copied into or returned by an internal integrity error.
+A duplicate input with different user-message content, mode, model order, conversation, terminal statuses, assistant content, token values, or stable codes does not return the existing success as though it matched. It returns a typed idempotency conflict after comparing the immutable receipt identity and hydrated internal snapshot. User and assistant message content is compared only by loading owned referenced message rows inside the service; user-message content is retained only in the internal snapshot used for exact duplicate comparison and is never copied into the receipt, public DTO, Redis, log, or integrity error.
 
 Receipt reads require:
 
 - `receipt.user_id` equal to the authenticated internal user ID;
 - parent and children with `is_deleted = 0`;
+- `receipt.user_message_id` resolving to exactly one active message in the same conversation with `role = user`; the globally unique key prevents that message from backing another receipt;
+- parent `mode` resolving only to the permanent single/compare values, `successful_model_count >= 1`, `daily_calls_charged = successful_model_count`, `total_tokens >= 0`, and `committed_at` being a positive safe Unix-millisecond integer;
 - exact child count and contiguous model indexes for the stored mode;
 - successful model count and token sum equal to the parent aggregates;
 - completed child message references resolving to active assistant messages in the same conversation with the same model and token count;
@@ -239,7 +245,7 @@ The parent receipt and validated child rows are the only durable proof that MySQ
 | Before Redis `BeginCommit` | Redis is `running` or a cancellation state; no receipt. | No BE03 write. Later control/recovery logic chooses cancellation or stable failure. |
 | After `BeginCommit`, before SQL commit | Redis is `committing`; no receipt. | After the 30-second convergence threshold, mark the generation failed through a dedicated `committing -> failed` CAS. |
 | SQL transaction rolls back | Redis is `committing`; no receipt and no partial SQL effect. | Mark failed; never send done and never charge quota. |
-| SQL commit succeeds, before Redis `Complete` | Redis is `committing`; active receipt and results exist. | Load and validate the receipt, then complete Redis with the exact per-model assistant-message GUID map. |
+| SQL commit succeeds, before Redis `Complete` | Redis is `committing`; an active receipt references the exchange's active user message and ordered results. | Load and validate the complete receipt graph, then complete Redis with the exact per-model assistant-message GUID map. |
 | Redis `Complete` succeeds, before SSE done | Redis and MySQL both prove completed. | Generation GET returns completed data; a stream reconnect is not attempted. |
 | Redis update temporarily fails after SQL commit | MySQL receipt proves success; Redis may remain `committing` or be unavailable. | Do not send done while Redis completion is unconfirmed. Retry only the idempotent Redis completion transition; recovery later derives completed from the receipt. |
 | Redis key expires or is lost while receipt remains | MySQL proves a historical committed exchange. | BE04 may reconstruct the completed status for the authenticated owner during the supported status window; it must never restart upstream. |
@@ -255,7 +261,7 @@ Those transitions retain BE02 ownership, CAS, TTL, identity, strict decoding, an
 
 ## 12. Failure and cancellation behavior
 
-BE03 only persists completed exchanges. The future orchestrator must never invoke the finalizer for `running`, `cancelling`, `cancelled`, or all-model `failed` input.
+BE03 only persists completed exchanges. The future orchestrator must never invoke the finalizer for `running`, `cancelling`, `cancelled`, all-model `failed`, or missing/empty final-user-message input. The finalizer rejects invalid input before reading Redis or opening MySQL.
 
 Validation, ownership, quota, conversation, message, usage, receipt, or transaction failure produces no committed SQL subset. If Redis is still `running`, the orchestrator may use the existing stable fail transition. If Redis is `committing`, it must use the dedicated receipt-aware reconciliation path rather than forcing a state change that could overwrite a committed success.
 
@@ -268,7 +274,8 @@ Cancelled and failed partial content remains process memory only and is discarde
 - Every operation is scoped by authenticated `users.id`; username, nickname, phone, user GUID, or a client-provided owner is never used for ownership.
 - The finalizer compares its immutable identity to the owner-scoped Redis claim before any SQL mutation.
 - Generation UUIDs are canonical lowercase values and are never accepted as database primary keys or server business GUIDs.
-- Receipt tables contain only lifecycle identity, model identifiers, stable codes, counts, timestamps, and internal references. They contain no prompt, reply, authorization header, token secret, upstream error body, internal URL, credential, price, or cost.
+- Receipt tables contain only lifecycle identity, model identifiers, stable codes, counts, timestamps, and internal references, including `user_message_id`. They contain no prompt or user-message body, reply, authorization header, token secret, upstream error body, internal URL, credential, price, or cost.
+- The receipt reader may retain the referenced user-message body only in the service-internal persistence snapshot for exact idempotency comparison. That field must be marked `json:"-"` and must not be exposed through BE04 public status output.
 - Assistant content exists only in the existing `messages` table and is returned later only after receipt, conversation, message, and user ownership are all verified.
 - Failed model errors use the existing stable allowlist. Raw Go errors and upstream bodies never enter result rows or public DTOs.
 - SQL errors are mapped to stable internal categories. Constraint names, SQL text, IDs, and database addresses are not returned to clients.
@@ -286,6 +293,7 @@ Implementation follows test-driven development. A local delivery is not accepted
 - Both tables contain internal `id`, unique snowflake `guid`, audit fields, logical deletion, stable integer enums, expected signed foreign keys, and all specified checks/indexes.
 - Canonical generation IDs compare byte-for-byte under ASCII binary collation.
 - Duplicate `(user_id, generation_id)`, duplicate model/index, shared assistant message, broken status/result invariant, negative token/count, and invalid enum inserts are rejected.
+- Duplicate `user_message_id`, missing referenced user message, and deletion/update of a referenced user message are rejected by the global unique key and `RESTRICT` foreign key.
 - Re-running through the migration ledger is a no-op; isolated down removes child before parent.
 - MySQL committed-prefix/partial-schema tests fail closed and prove rerun behavior appropriate to the explicit two-table DDL sequence.
 
@@ -293,17 +301,17 @@ Implementation follows test-driven development. A local delivery is not accepted
 
 Use an explicitly configured disposable MySQL fixture. Tests must prove:
 
-- single success commits one exchange, one usage row, one quota charge, exact token totals, and one receipt/result;
+- single success commits one exchange with exactly one non-empty user message, one usage row, one quota charge, exact token totals, and one receipt/result whose `user_message_id` references that message;
 - compare success creates independent assistant messages and ordered result references without `__MULTI_MODEL__`;
 - compare partial success persists only successful messages/usage/quota while preserving failed stable codes;
 - all-model failure and cancellation persist nothing and charge nothing;
 - injected failure at every write boundary rolls back all conversation, title, message, usage, user, receipt, and result effects;
 - insufficient quota under a locked concurrent race yields at most the permitted committed successes and never overcharges;
 - concurrent same-generation finalization has one committed winner and identical authoritative duplicate reads;
-- same generation with conflicting immutable input returns a typed conflict without new writes;
+- same generation with different user-message content or any other conflicting immutable input returns a typed conflict without new writes, even when retry timestamps differ;
 - a commit-unknown simulation resolves only through a fresh receipt read;
 - cross-user receipt/message references cannot be read or reused;
-- malformed, deleted, mismatched, incomplete, or duplicate receipt graphs fail closed.
+- missing/deleted/wrong-role/cross-conversation user-message references and malformed, deleted, mismatched, incomplete, or duplicate receipt graphs fail closed.
 
 ### 14.3 Redis/MySQL reconciliation tests
 
@@ -330,7 +338,7 @@ Independent specification, implementation-quality, and security reviews must ver
 BE04 receives the following completed primitives from BE03:
 
 1. Load a validated committed receipt by authenticated `user_id + generation_id`.
-2. Hydrate completed single/compare result metadata and content from owned active message references, preserving model request order.
+2. Hydrate completed single/compare result metadata and content from owned active message references, preserving model request order; retain the user-message body only in the internal snapshot used for duplicate comparison and never expose it through public status DTOs.
 3. Reconcile stale `committing` to `completed` from a receipt or to `failed` after the 30-second threshold when no receipt exists.
 4. Return typed not-found, unavailable, integrity, idempotency-conflict, quota, and persistence errors without raw dependency details.
 5. Keep v2 persistence isolated from all legacy chat methods.
