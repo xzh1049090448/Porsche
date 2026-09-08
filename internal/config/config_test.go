@@ -265,6 +265,11 @@ func TestEnvironmentExampleDocumentsEveryRuntimeSettingExactlyOnce(t *testing.T)
 	if !strings.Contains(string(raw), "# ACTION_SECURITY_HMAC_KEY=\n") {
 		t.Error(".env.example must contain exact commented empty assignment # ACTION_SECURITY_HMAC_KEY=")
 	}
+	for _, key := range []string{"ROOT_BOOTSTRAP_USERNAME", "ROOT_BOOTSTRAP_PASSWORD"} {
+		if !strings.Contains(string(raw), "# one-shot only: "+key+"\n") {
+			t.Errorf(".env.example must document %s as one-shot only", key)
+		}
+	}
 	validActionKey := regexp.MustCompile(`(?m)^#? ?ACTION_SECURITY_HMAC_KEY=[A-Za-z0-9_-]{43}$`)
 	if validActionKey.Match(raw) {
 		t.Error(".env.example contains a valid action-security key")
@@ -297,12 +302,16 @@ func TestEnvironmentAssignmentDiscoveryIgnoresCommentProse(t *testing.T) {
 func discoverEnvironmentAssignments(raw string) map[string]int {
 	activeAssignment := regexp.MustCompile(`^[[:space:]]*(?:export[[:space:]]+)?([A-Z][A-Z0-9_]*)[[:space:]]*=`)
 	commentedAssignment := regexp.MustCompile(`^# ([A-Z][A-Z0-9_]*)=`)
+	oneShotDocumentation := regexp.MustCompile(`^# one-shot only: ([A-Z][A-Z0-9_]*)$`)
 	counts := make(map[string]int)
 	for _, line := range strings.Split(raw, "\n") {
 		if match := activeAssignment.FindStringSubmatch(line); match != nil {
 			counts[match[1]]++
 		}
 		if match := commentedAssignment.FindStringSubmatch(line); match != nil {
+			counts[match[1]]++
+		}
+		if match := oneShotDocumentation.FindStringSubmatch(line); match != nil {
 			counts[match[1]]++
 		}
 	}

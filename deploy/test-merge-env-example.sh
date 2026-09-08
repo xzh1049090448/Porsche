@@ -141,6 +141,12 @@ comment_output="$(run_merge "$fixture_dir/comment-placeholders" "$fixture_dir/co
 [[ "$comment_output" == 'added environment key: EXACT_EMPTY' ]] || fail 'non-exact commented placeholders were recognized'
 [[ "$(cat "$fixture_dir/comment-env")" == $'BASE=unchanged\nEXACT_EMPTY=' ]] || fail 'comment placeholder parsing was not exact'
 
+printf 'EXISTING_OPERATOR_VALUE=preserved\n' >"$fixture_dir/runtime-env"
+run_merge "$script_dir/../.env.example" "$fixture_dir/runtime-env" >"$fixture_dir/runtime.stdout"
+if grep -Eq '^[[:space:]]*(export[[:space:]]+)?ROOT_BOOTSTRAP_[A-Z0-9_]*[[:space:]]*=' "$fixture_dir/runtime-env"; then
+    fail 'runtime example merge added one-shot root bootstrap variables'
+fi
+
 printf 'NO_NEWLINE=old-bytes' >"$fixture_dir/no-newline-env"
 printf 'APPENDED=value\n' >"$fixture_dir/no-newline-example"
 run_merge "$fixture_dir/no-newline-example" "$fixture_dir/no-newline-env" >"$fixture_dir/no-newline.stdout"
