@@ -4,14 +4,14 @@
   "status": "BLOCKED",
   "validated_at": "2026-09-08",
   "heads": {
-    "backend": "bf7ec6074a351a7155348d1f74f013f94a67a397",
+    "backend": "8b7396e717b005585d575ce38e435d12df2aa513",
     "frontend": "5a41f5679c1c35e5c2850665db54ae83e58db436"
   },
   "fixture": {
-    "isolation": "labeled loopback-only MySQL 8 and Redis 7 containers on a private bridge network; MySQL tmpfs; Redis persistence disabled",
-    "database": "a05_managed_user_edit_test",
-    "redis_namespace": 11,
-    "host_ports": [43307, 46379],
+    "isolation": "r2 separately labeled loopback-only MySQL 8 and Redis 7 containers on a private bridge network; MySQL tmpfs; Redis persistence disabled",
+    "database": "a05_managed_user_edit_r2_test",
+    "redis_namespace": 12,
+    "host_ports": [43308, 46380],
     "credentials": "private ephemeral file; never recorded",
     "migration_ledger": "0001 through 0010 applied and status-verified"
   },
@@ -29,21 +29,27 @@
       "detail": "all existing migration checksums 0001-0010 matched"
     },
     {
-      "id": "decoder_handler_router",
-      "result": "PASS",
+      "id": "r1_decoder_handler_router",
+      "result": "PASS_SUPERSEDED",
       "command": "TEST_DATABASE_URL=<private> TEST_REDIS_URL=<private> go test -json ./internal/dto ./internal/handler ./internal/router -run '^(TestDecodeAdminUserEdit|TestAdminUserEdit|TestAdminUserNicknameEditRoute)' -count=1",
-      "detail": "71 passing leaves; 0 skips; 0 failures. This includes strict duplicate/case-folded/unknown-field and exact route/response assertions."
+      "detail": "71 passing leaves; 0 skips; 0 failures on the previous source head. It does not replace r2 service acceptance."
     },
     {
-      "id": "service_matrix",
+      "id": "r1_service_matrix",
       "result": "BLOCKED",
       "command": "TEST_DATABASE_URL=<private> TEST_REDIS_URL=<private> go test -json ./internal/service -run '^TestAdminUserNicknameEdit' -count=1",
-      "detail": "The required 22 fixture leaves cannot pass. The rollback matrix panics at internal/service/admin_user_edit_failures_test.go:92 by dereferencing nullable target.Nickname. Independent non-rollback execution also reveals MySQL 8 error 1064 from internal/service/admin_user_edit.go:239: a user_permission_heads SELECT reaches MySQL with an unbound question-mark placeholder, causing expected success/403/409 paths to fail closed as 503."
+      "detail": "Superseded by r2. The earlier rollback nullable-nickname panic and MySQL 1064 are absent in r2."
+    },
+    {
+      "id": "r2_service_matrix",
+      "result": "BLOCKED",
+      "command": "TEST_DATABASE_URL=<private r2> TEST_REDIS_URL=<private r2> go test -v ./internal/service -run '^TestAdminUserNicknameEdit' -count=1",
+      "detail": "All three rollback leaves and both concurrency leaves pass, and neither the previous MySQL 1064 nor nullable-nickname panic occurs. The required 22 fixture leaves still fail: TestAdminUserNicknameEditAuthorizationAndSetClear fails for root_to_user, root_to_admin, and admin_to_user at internal/service/admin_user_edit_test.go:90; TestAdminUserNicknameEditNoopDoesNotAudit fails at line 115. Terminal package result is FAIL with 0 skips."
     },
     {
       "id": "runtime_http_browser",
       "result": "NOT_RUN_BLOCKED",
-      "detail": "No server/browser claim is made because the real service matrix is blocked before end-to-end authentication and mutation evidence can be trustworthy."
+      "detail": "No r2 server/browser claim is made because the real service matrix remains blocked. Handler/router reruns were intentionally not started after the service dependency failed."
     },
     {
       "id": "frontend_gates",
@@ -58,12 +64,12 @@
     }
   ],
   "required_remediation": [
-    "Fix the bound SQL expression at internal/service/admin_user_edit.go:239 and add a real-MySQL regression assertion.",
-    "Make the rollback fixture safe for nullable target.Nickname at internal/service/admin_user_edit_failures_test.go:92, then rerun all 22 fixture leaves with zero skips.",
+    "Fix the permitted set/clear failure in internal/service/admin_user_edit_test.go:90 for all three hierarchy paths.",
+    "Fix the no-op failure in internal/service/admin_user_edit_test.go:115.",
     "After those gates pass, run real HTTP, visible browser, race, DB/audit, adversarial, and privacy acceptance in a fresh isolated fixture."
   ],
   "cleanup": {
     "result": "PASS",
-    "scope": "only containers, network, ports, and private temporary directory carrying codex.task=a05-managed-user-edit"
+    "scope": "r1 and r2 containers, networks, ports, and private temporary directories carrying their exact A05 task labels"
   }
 }
