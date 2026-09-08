@@ -363,15 +363,26 @@ func seedPlatformGenerationReceipt(t *testing.T, mode PlatformGenerationMode) pl
 		t.Fatalf("begin receipt fixture transaction: %v", tx.Error)
 	}
 	t.Cleanup(func() { _ = tx.Rollback().Error })
-	return seedPlatformGenerationReceiptOnDB(t, mode, tx)
+	return seedPlatformGenerationReceiptOnDB(t, mode, tx, 1)
+}
+
+func seedPlatformGenerationReceiptWithTrailingFailure(t *testing.T) platformGenerationReceiptFixture {
+	t.Helper()
+	gdb := openPlatformGenerationPersistenceMySQL(t)
+	tx := gdb.Begin()
+	if tx.Error != nil {
+		t.Fatalf("begin receipt fixture transaction: %v", tx.Error)
+	}
+	t.Cleanup(func() { _ = tx.Rollback().Error })
+	return seedPlatformGenerationReceiptOnDB(t, PlatformGenerationModeCompare, tx, 2)
 }
 
 func seedPlatformGenerationReceiptSchema(t *testing.T, mode PlatformGenerationMode) platformGenerationReceiptFixture {
 	t.Helper()
-	return seedPlatformGenerationReceiptOnDB(t, mode, openPlatformGenerationReceiptSchemaMySQL(t))
+	return seedPlatformGenerationReceiptOnDB(t, mode, openPlatformGenerationReceiptSchemaMySQL(t), 1)
 }
 
-func seedPlatformGenerationReceiptOnDB(t *testing.T, mode PlatformGenerationMode, gdb *gorm.DB) platformGenerationReceiptFixture {
+func seedPlatformGenerationReceiptOnDB(t *testing.T, mode PlatformGenerationMode, gdb *gorm.DB, failedIndex int) platformGenerationReceiptFixture {
 	t.Helper()
 	now := int64(1_800_000_000_000)
 	var group models.BusinessGroup
@@ -425,7 +436,7 @@ func seedPlatformGenerationReceiptOnDB(t *testing.T, mode PlatformGenerationMode
 		modelsInOrder = []string{"Model-B", "model-a", "model-c"}
 	}
 	for index, model := range modelsInOrder {
-		if mode == PlatformGenerationModeCompare && index == 1 {
+		if mode == PlatformGenerationModeCompare && index == failedIndex {
 			continue
 		}
 		modelCopy := model
@@ -459,7 +470,7 @@ func seedPlatformGenerationReceiptOnDB(t *testing.T, mode PlatformGenerationMode
 			AuditFields: models.AuditFields{Guid: testSnowflake.Next(), CreatedAt: now, CreatedBy: &fixture.owner.ID, UpdatedAt: now, UpdatedBy: &fixture.owner.ID},
 			ReceiptID:   fixture.receipt.ID, ModelIndex: index, Model: model,
 		}
-		if mode == PlatformGenerationModeCompare && index == 1 {
+		if mode == PlatformGenerationModeCompare && index == failedIndex {
 			code := "timeout"
 			result.Status, result.Tokens, result.ErrorCode = models.PlatformGenerationResultFailed, 0, &code
 		} else {
@@ -552,6 +563,13 @@ func TestLoadPlatformGenerationReceiptRejectsMalformedGraph(t *testing.T) {
 			}
 		})
 	}
+	t.Run("soft-deleted trailing result", func(t *testing.T) {
+		fixture := seedPlatformGenerationReceiptWithTrailingFailure(t)
+		if err := fixture.db.Model(&models.PlatformChatGenerationResult{}).Where("id = ?", fixture.results[2].ID).Update("is_deleted", 1).Error; err != nil {
+			t.Fatal(err)
+		}
+		requireReceiptIntegrity(t, fixture)
+	})
 
 	tests := []struct {
 		name        string
@@ -647,15 +665,24 @@ func TestPlatformGenerationReceiptResultSetValidationIsolatesRowGuards(t *testin
 	if !validPlatformGenerationReceiptResultSet(validRows, receiptID, ownerID) {
 		t.Fatal("valid row baseline rejected")
 	}
+	caseDistinct := append([]models.PlatformChatGenerationResult(nil), validRows...)
+	caseDistinct[1].Model = "Model-A"
+	if !validPlatformGenerationReceiptResultSet(caseDistinct, receiptID, ownerID) {
+		t.Fatal("case-distinct models rejected")
+	}
 	tests := []struct {
 		name   string
 		mutate func([]models.PlatformChatGenerationResult)
 	}{
 		{"invalid model", func(rows []models.PlatformChatGenerationResult) { rows[0].Model = " model-a" }},
+		{"invalid UTF-8 model", func(rows []models.PlatformChatGenerationResult) { rows[0].Model = string([]byte{0xff}) }},
+		{"multibyte model byte overflow", func(rows []models.PlatformChatGenerationResult) { rows[0].Model = strings.Repeat("界", 43) }},
+		{"duplicate model", func(rows []models.PlatformChatGenerationResult) { rows[1].Model = rows[0].Model }},
 		{"excessive token", func(rows []models.PlatformChatGenerationResult) { rows[0].Tokens = int64(1) << 31 }},
 		{"duplicate assistant ID", func(rows []models.PlatformChatGenerationResult) {
 			rows[1].AssistantMessageID = rows[0].AssistantMessageID
 		}},
+		{"soft-deleted row", func(rows []models.PlatformChatGenerationResult) { rows[1].IsDeleted = 1 }},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

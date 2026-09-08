@@ -56,15 +56,15 @@ func LoadPlatformGenerationReceipt(ctx context.Context, db *gorm.DB, userID int6
 
 	var rows []models.PlatformChatGenerationResult
 	if err := db.WithContext(ctx).
-		Where("receipt_id = ? AND is_deleted = 0", receipt.ID).
+		Where("receipt_id = ?", receipt.ID).
 		Order("model_index ASC").
 		Find(&rows).Error; err != nil {
 		return PlatformGenerationReceiptSnapshot{}, ErrPlatformGenerationPersistenceUnavailable
 	}
-	if !validPlatformGenerationReceiptCardinality(receipt.Mode, len(rows)) {
+	if !validPlatformGenerationReceiptResultSet(rows, receipt.ID, receipt.UserID) {
 		return PlatformGenerationReceiptSnapshot{}, ErrPlatformGenerationPersistenceIntegrity
 	}
-	if !validPlatformGenerationReceiptResultSet(rows, receipt.ID, receipt.UserID) {
+	if !validPlatformGenerationReceiptCardinality(receipt.Mode, len(rows)) {
 		return PlatformGenerationReceiptSnapshot{}, ErrPlatformGenerationPersistenceIntegrity
 	}
 
@@ -156,7 +156,7 @@ func validPlatformGenerationReceiptResultSet(rows []models.PlatformChatGeneratio
 	seenModels := make(map[string]struct{}, len(rows))
 	seenAssistantMessages := make(map[int64]struct{}, len(rows))
 	for index, row := range rows {
-		if !validPlatformGenerationReceiptResultIdentity(row, receiptID, userID, index) {
+		if row.IsDeleted != 0 || !validPlatformGenerationReceiptResultIdentity(row, receiptID, userID, index) {
 			return false
 		}
 		if _, duplicate := seenModels[row.Model]; duplicate {
