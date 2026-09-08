@@ -1,5 +1,11 @@
 # Porsche 开发进度
 
+## 2026-09-08：Ubuntu GNU stat 环境合并兼容性修复候选
+
+- 生产执行 `restart-all.sh` 时，`merge-env-example.sh` 在 Ubuntu GNU coreutils 8.32 误报 `candidate metadata changed`。根因是脚本尝试 BSD `stat -f <format>` 后再回退 GNU `stat -c`；GNU `stat -f` 会把格式参数当作文件名，并可能在失败前输出包含候选路径的文件系统信息，使不同临时文件的元数据哈希必然不同。
+- 修复改为启动时识别 GNU/BSD `stat`，每次元数据读取只执行对应平台语法。测试新增 GNU 行为模拟并先复现相同错误；环境合并、不可变生产部署、全栈重启和 Dockerfile 回归随后全部通过。
+- 失败发生在原 `.env` 被替换前；本候选未读取或修改生产 `.env`，未部署、迁移、切换容器、发布静态文件或 reload Nginx。R02 保持 `BLOCKED_ENV`，待修复合并后重新执行生产发布与验收。
+
 ## 2026-09-08：生产发布预检 hotfix 本地候选
 
 - `restart-all.sh` 当前在统一发布锁内重置前后端 `origin/main`，随后只把双方 `.env.example` 中新增且目标 `.env` 尚不存在的 key 追加进去；已有赋值、空值、顺序和注释均不覆盖或改写。`# ACTION_SECURITY_HMAC_KEY=` 会追加为空赋值，脚本绝不自动生成密钥，后续同一候选镜像的 `check-config` 会因生产值为空而在停容器、发布静态文件或 reload Nginx 前失败。

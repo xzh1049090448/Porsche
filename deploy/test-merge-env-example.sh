@@ -45,7 +45,28 @@ set -Eeuo pipefail
 [[ -z "${MERGE_TEST_SYSTEM_MV_LOG:-}" ]] || printf 'system mv\n' >>"$MERGE_TEST_SYSTEM_MV_LOG"
 exec /bin/mv "$@"
 EOF
-chmod +x "$tool_bin/flock" "$tool_bin/cp" "$tool_bin/mv"
+cat >"$tool_bin/stat" <<'EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+if [[ "${1:-}" == --version ]]; then
+    printf 'stat (GNU coreutils) test compatibility wrapper\n'
+    exit 0
+fi
+if [[ "${1:-}" == -f ]]; then
+    # GNU stat interprets the BSD format operand as a file. It can emit output
+    # for the real path before returning failure for the nonexistent operand.
+    printf 'File: %s\n' "${3:-missing}"
+    exit 1
+fi
+if [[ "${1:-}" == -c ]]; then
+    case "${2:-}" in
+        '%d:%i:%u:%g:%a') exec /usr/bin/stat -f '%d:%i:%u:%g:%Lp' "${3}" ;;
+        '%u:%g:%a') exec /usr/bin/stat -f '%u:%g:%Lp' "${3}" ;;
+    esac
+fi
+exit 64
+EOF
+chmod +x "$tool_bin/flock" "$tool_bin/cp" "$tool_bin/mv" "$tool_bin/stat"
 
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 hash_file() {
@@ -83,7 +104,10 @@ EXISTING=operator-secret-must-not-print
 EOF
 chmod 640 "$env_file"
 before_owner="$(owner_for "$env_file")"
-output="$(run_merge "$example" "$env_file" 2>"$fixture_dir/happy.stderr")"
+if ! output="$(run_merge "$example" "$env_file" 2>"$fixture_dir/happy.stderr")"; then
+    cat "$fixture_dir/happy.stderr" >&2
+    fail 'happy-path merge failed'
+fi
 [[ ! -s "$fixture_dir/happy.stderr" ]] || fail 'successful merge wrote stderr'
 [[ "$output" == $'added environment key: SPACED\nadded environment key: NEW_ONE\nadded environment key: NEW_EMPTY\nadded environment key: NEW_TWO' ]] || fail "unexpected success output: $output"
 [[ "$output" != *secret* ]] || fail 'success output disclosed a value'

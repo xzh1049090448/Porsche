@@ -39,6 +39,10 @@ xattr_command="$(resolve_system_command xattr || true)"
 [[ "$stat_command" == /* && -x "$stat_command" && "$cmp_command" == /* && -x "$cmp_command" ]] || fail 'resolved system command is invalid'
 [[ "$flock_command" == /* && -x "$flock_command" ]] || fail 'resolved system command is invalid'
 
+stat_style=bsd
+stat_version="$("$stat_command" --version 2>/dev/null || true)"
+[[ "$stat_version" != *'GNU coreutils'* ]] || stat_style=gnu
+
 env_dir="$(cd -- "$(dirname -- "$env_path")" && pwd)" || fail 'env directory is unavailable'
 env_name="$(basename -- "$env_path")"
 lock_path="$env_dir/.$env_name.merge.lock"
@@ -54,7 +58,11 @@ cp_version="$("$cp_command" --version 2>/dev/null)" || fail 'full metadata copy 
 [[ "$cp_version" == *'GNU coreutils'* ]] || fail 'full metadata copy is unavailable'
 
 file_identity() {
-    "$stat_command" -f '%d:%i:%u:%g:%Lp' "$1" 2>/dev/null || "$stat_command" -c '%d:%i:%u:%g:%a' "$1" 2>/dev/null
+    if [[ "$stat_style" == gnu ]]; then
+        "$stat_command" -c '%d:%i:%u:%g:%a' "$1" 2>/dev/null
+    else
+        "$stat_command" -f '%d:%i:%u:%g:%Lp' "$1" 2>/dev/null
+    fi
 }
 
 digest_stream() {
@@ -70,7 +78,11 @@ digest_stream() {
 metadata_fingerprint() {
     local path="$1" attribute attributes
     {
-        "$stat_command" -f '%u:%g:%Lp' "$path" 2>/dev/null || "$stat_command" -c '%u:%g:%a' "$path" 2>/dev/null
+        if [[ "$stat_style" == gnu ]]; then
+            "$stat_command" -c '%u:%g:%a' "$path" 2>/dev/null
+        else
+            "$stat_command" -f '%u:%g:%Lp' "$path" 2>/dev/null
+        fi
         if [[ -n "$getfacl_command" ]]; then
             "$getfacl_command" -cp -- "$path" 2>/dev/null || return 1
         fi
