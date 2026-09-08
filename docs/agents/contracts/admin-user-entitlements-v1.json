@@ -1,0 +1,98 @@
+{
+  "contract": "admin-user-entitlements-v1",
+  "revision": "2026-09-08-a07-v1",
+  "status": "AGREED_FOR_IMPLEMENTATION",
+  "design_source": "docs/superpowers/specs/2026-09-08-a07-managed-user-entitlements-design.md",
+  "common": {
+    "authentication": "existing Bearer authentication with fresh actor, logical session, Redis revocation, policy, target, and target-session checks",
+    "path_guid": "canonical positive decimal signed int64 string without sign, whitespace, or leading zero",
+    "body_limit_bytes": 4096,
+    "strict_json": "one exact object; no unknown, duplicate, case-folded duplicate, invalid UTF-8, or trailing fields",
+    "reason": "trimmed 1..200 Unicode code points",
+    "expected_auth_version": "integer 1..2147483647",
+    "response_headers": {"Cache-Control": "no-store", "X-Request-ID": "required non-empty"},
+    "user_dto_keys": ["guid", "username", "nickname", "email", "group", "plan_type", "role", "status", "auth_version", "created_at", "last_login_at"]
+  },
+  "password_reset": {
+    "action": "users.reset_password",
+    "capability": "users.reset_password",
+    "internal_action": 2,
+    "encoding_revision": "pre-activation v1 adds expected_auth_version; no valid historical Action=2 operation exists",
+    "issue": {
+      "method": "POST",
+      "path": "/admin/v2/action-verifications",
+      "forbidden_headers": ["Idempotency-Key", "X-Action-Ticket"],
+      "body_keys": ["action", "intent", "current_password"],
+      "intent_keys": ["target_guid", "expected_auth_version", "new_password", "reason"],
+      "response_status": 201,
+      "response_keys": ["ticket", "expires_at"],
+      "ticket_ttl_seconds": 300
+    },
+    "execute": {
+      "method": "POST",
+      "path": "/admin/v2/users/{guid}/actions",
+      "required_headers": ["Idempotency-Key", "X-Action-Ticket"],
+      "body": {"action": "reset_password", "required_keys": ["action", "expected_auth_version", "new_password", "reason"]},
+      "response_status": 200,
+      "response_keys": ["operation_ref", "user"],
+      "user_auth_version_delta": 1
+    },
+    "query": {
+      "method": "GET",
+      "path": "/admin/v2/operations?scope=users.reset_password",
+      "required_headers": ["Idempotency-Key"],
+      "forbidden_headers": ["X-Action-Ticket"],
+      "statuses": ["processing", "succeeded", "failed", "pending_recovery"],
+      "mutation_replay": "never"
+    },
+    "password_rule": "exact owned UTF-8 bytes; 8..20 Unicode code points; existing weak-password denylist; never trim",
+    "credential_result": "old password, Access and Refresh fail; new password can log in; target is not auto-logged-in; Gateway Keys are not revoked and still require current owner and Key state"
+  },
+  "group_change": {
+    "method": "PATCH",
+    "path": "/admin/v2/users/{guid}/group",
+    "capability": "users.group.change",
+    "required_body_keys": ["group_guid", "reason", "expected_auth_version"],
+    "group_guid": "canonical active nondeleted business-group signed int64 decimal GUID; persist only business_groups.id",
+    "same_value": {"status": 409, "code": "user_group_conflict"},
+    "response_status": 200,
+    "response": "exact UserReadDTO with auth_version +1",
+    "mutation_replay": "never"
+  },
+  "plan_change": {
+    "method": "PATCH",
+    "path": "/admin/v2/users/{guid}/plan",
+    "capability": "users.plan.change",
+    "required_body_keys": ["plan_type", "reason", "expected_auth_version"],
+    "plan_type": ["free", "professional", "enterprise"],
+    "daily_policy": "set daily_call_limit=100 and preserve daily_calls_used; professional/enterprise runtime remains unlimited; free applies the 100-call limit immediately",
+    "orders_and_payment": "no writes and no paid claim",
+    "same_value": {"status": 409, "code": "user_plan_conflict"},
+    "response_status": 200,
+    "response": "exact UserReadDTO with auth_version +1",
+    "mutation_replay": "never"
+  },
+  "errors": {
+    "400": ["invalid_admin_user_entitlement_request", "invalid_admin_action_request"],
+    "401": ["authentication_invalid"],
+    "403": ["user_entitlement_forbidden", "action_verification_rejected", "action_operation_rejected"],
+    "404": ["user_not_found", "group_not_found", "action_target_not_found", "action_operation_not_found"],
+    "409": ["auth_version_conflict", "user_group_conflict", "user_plan_conflict", "action_verification_conflict", "idempotency_conflict", "idempotency_cross_session", "target_version_conflict", "target_state_conflict", "policy_version_conflict", "consumer_validation_failed"],
+    "410": ["operation_expired"],
+    "413": ["request_body_too_large"],
+    "429": ["action_rate_limited"],
+    "503": ["user_entitlement_dependency_unavailable", "action_dependency_unavailable", "operation_commit_unknown"]
+  },
+  "audit": {
+    "successful_change": "same-transaction authentication event plus one audit_logs row with actor/target/action/request ID, normalized reason, allowlisted before/after values, terminal result, and operation_ref only for reset",
+    "password_prohibitions": ["password", "password length", "password hash", "password digest", "password-present flag", "ticket", "idempotency key", "session SID", "Authorization"]
+  },
+  "legacy_put": {
+    "path": "/admin/users/{guid}",
+    "rejected_before_write_fields": ["status", "plan_type", "allowed_models", "daily_call_limit"]
+  },
+  "scope": {
+    "included": ["password reset", "group change", "plan change", "backend", "frontend", "local MySQL 8", "local Redis 7", "visible browser"],
+    "excluded": ["role change", "permission overrides", "model ACL editing", "amount or balance", "quota adjustment", "session management UI", "Key CRUD", "orders or payment", "production migration", "deployment", "production acceptance", "real business accounts"]
+  }
+}
