@@ -263,7 +263,7 @@ BE03 may extend the BE02 store with narrowly typed reconciliation transitions:
 
 Those transitions retain BE02 ownership, CAS, TTL, identity, strict decoding, and sensitive-data exclusions. They do not scan or run automatically in BE03. Scheduling and HTTP exposure belong to BE04.
 
-When a reconciliation mutation loses a CAS race, the store returns the authoritative nonzero snapshot alongside the typed error. Reconciliation returns that resolved snapshot rather than the stale pre-lock read. Errors that occur before any mutation can resolve an authoritative snapshot, including receipt-reader, advisory-lock, and database failures, return the original pre-lock Redis snapshot alongside the error.
+When a reconciliation mutation loses a CAS race, the store returns the authoritative nonzero snapshot alongside the typed error. Reconciliation returns that resolved snapshot rather than the stale pre-lock read. If the mutation succeeds but advisory-lock release or acknowledgement later fails, reconciliation likewise returns the resolved terminal snapshot alongside the release error. Errors that occur before any mutation can resolve an authoritative snapshot, including receipt-reader, advisory-lock acquisition, and database failures, return the original pre-lock Redis snapshot alongside the error.
 
 ## 12. Failure and cancellation behavior
 

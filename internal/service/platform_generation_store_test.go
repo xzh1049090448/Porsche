@@ -110,6 +110,39 @@ func claimTestGeneration(t *testing.T, store *PlatformGenerationStore, input Pla
 	}
 }
 
+func preparePlatformGenerationTestKey(t *testing.T, client redis.Cmdable, key string) {
+	t.Helper()
+	if err := client.Del(context.Background(), key).Err(); err != nil {
+		t.Fatalf("delete initial generation key %q: %v", key, err)
+	}
+	t.Cleanup(func() {
+		if err := client.Del(context.Background(), key).Err(); err != nil {
+			t.Errorf("delete generation key %q during cleanup: %v", key, err)
+		}
+	})
+}
+
+func requirePositivePlatformGenerationTTL(t *testing.T, client redis.Cmdable, key string) time.Duration {
+	t.Helper()
+	ttl, err := client.PTTL(context.Background(), key).Result()
+	if err != nil || ttl <= 0 {
+		t.Fatalf("generation TTL=%v error=%v, want positive expiring key", ttl, err)
+	}
+	return ttl
+}
+
+func requirePlatformGenerationTTLNotIncreased(t *testing.T, client redis.Cmdable, key string, prior time.Duration) time.Duration {
+	t.Helper()
+	if prior <= 0 {
+		t.Fatalf("prior generation TTL=%v, want positive", prior)
+	}
+	current := requirePositivePlatformGenerationTTL(t, client, key)
+	if current > prior {
+		t.Fatalf("generation TTL refreshed: before=%v after=%v", prior, current)
+	}
+	return current
+}
+
 func TestPlatformGenerationStoreClaimIsAtomicAndKeepsOriginalTTL(t *testing.T) {
 	store, client := openTestPlatformGenerationStore(t)
 	input := PlatformGenerationClaimInput{UserID: 910001, GenerationID: generationTestID, Mode: PlatformGenerationModeSingle, Models: []string{"model-a"}, NowMillis: 1000}
@@ -364,7 +397,7 @@ func TestPlatformGenerationStoreReconcileCompleteIsIdempotent(t *testing.T) {
 	input := PlatformGenerationClaimInput{UserID: 910020, GenerationID: "710e8400-e29b-41d4-a716-446655440000", Mode: PlatformGenerationModeCompare, Models: []string{"a", "b"}, NowMillis: 1000}
 	ctx := context.Background()
 	key := store.key(input.UserID, input.GenerationID)
-	_ = client.Del(ctx, key).Err()
+	preparePlatformGenerationTestKey(t, client, key)
 	claimTestGeneration(t, store, input)
 	if _, err := store.MarkModelDone(ctx, input.UserID, input.GenerationID, "a", 0, 1001); err != nil {
 		t.Fatal(err)
@@ -375,27 +408,18 @@ func TestPlatformGenerationStoreReconcileCompleteIsIdempotent(t *testing.T) {
 	if _, err := store.BeginCommit(ctx, input.UserID, input.GenerationID, 1003); err != nil {
 		t.Fatal(err)
 	}
-	before, err := client.PTTL(ctx, key).Result()
-	if err != nil {
-		t.Fatal(err)
-	}
+	before := requirePositivePlatformGenerationTTL(t, client, key)
 	guids := map[string]string{"a": "900000000000000101"}
 	first, err := store.ReconcileComplete(ctx, input.UserID, input.GenerationID, guids, 1004)
 	if err != nil || first.State != PlatformGenerationStateCompleted {
 		t.Fatalf("first reconcile=%#v error=%v", first, err)
 	}
-	firstTTL, err := client.PTTL(ctx, key).Result()
-	if err != nil || firstTTL > before {
-		t.Fatalf("first reconcile refreshed TTL: before=%v after=%v error=%v", before, firstTTL, err)
-	}
+	firstTTL := requirePlatformGenerationTTLNotIncreased(t, client, key, before)
 	second, err := store.ReconcileComplete(ctx, input.UserID, input.GenerationID, guids, 1005)
 	if err != nil || !reflect.DeepEqual(second, first) {
 		t.Fatalf("idempotent reconcile=%#v want=%#v error=%v", second, first, err)
 	}
-	after, err := client.PTTL(ctx, key).Result()
-	if err != nil || after > firstTTL {
-		t.Fatalf("idempotent reconcile refreshed TTL: before=%v after=%v error=%v", firstTTL, after, err)
-	}
+	requirePlatformGenerationTTLNotIncreased(t, client, key, firstTTL)
 	assertPlatformGenerationRedisMetadataOnly(t, client, key)
 }
 
@@ -404,7 +428,7 @@ func TestPlatformGenerationStoreReconcileCompleteRejectsDifferentGUIDMap(t *test
 	input := PlatformGenerationClaimInput{UserID: 910021, GenerationID: "720e8400-e29b-41d4-a716-446655440000", Mode: PlatformGenerationModeSingle, Models: []string{"a"}, NowMillis: 2000}
 	ctx := context.Background()
 	key := store.key(input.UserID, input.GenerationID)
-	_ = client.Del(ctx, key).Err()
+	preparePlatformGenerationTestKey(t, client, key)
 	claimTestGeneration(t, store, input)
 	if _, err := store.MarkModelDone(ctx, input.UserID, input.GenerationID, "a", 0, 2001); err != nil {
 		t.Fatal(err)
@@ -416,15 +440,12 @@ func TestPlatformGenerationStoreReconcileCompleteRejectsDifferentGUIDMap(t *test
 	if _, err := store.ReconcileComplete(ctx, input.UserID, input.GenerationID, original, 2003); err != nil {
 		t.Fatal(err)
 	}
-	before, _ := client.PTTL(ctx, key).Result()
+	before := requirePositivePlatformGenerationTTL(t, client, key)
 	snapshot, err := store.ReconcileComplete(ctx, input.UserID, input.GenerationID, map[string]string{"a": "900000000000000103"}, 2004)
 	if !errors.Is(err, ErrPlatformGenerationConflict) || snapshot.ModelStates["a"].AssistantMessageGUID != original["a"] {
 		t.Fatalf("different GUID reconcile=%#v error=%v", snapshot, err)
 	}
-	after, _ := client.PTTL(ctx, key).Result()
-	if after > before {
-		t.Fatalf("conflict refreshed TTL: before=%v after=%v", before, after)
-	}
+	requirePlatformGenerationTTLNotIncreased(t, client, key, before)
 	assertPlatformGenerationRedisMetadataOnly(t, client, key)
 }
 
@@ -433,7 +454,7 @@ func TestPlatformGenerationStoreFailStaleCommitRequiresThirtySeconds(t *testing.
 	input := PlatformGenerationClaimInput{UserID: 910022, GenerationID: "730e8400-e29b-41d4-a716-446655440000", Mode: PlatformGenerationModeSingle, Models: []string{"a"}, NowMillis: 3000}
 	ctx := context.Background()
 	key := store.key(input.UserID, input.GenerationID)
-	_ = client.Del(ctx, key).Err()
+	preparePlatformGenerationTestKey(t, client, key)
 	claimTestGeneration(t, store, input)
 	if _, err := store.MarkModelDone(ctx, input.UserID, input.GenerationID, "a", 0, 3001); err != nil {
 		t.Fatal(err)
@@ -442,23 +463,17 @@ func TestPlatformGenerationStoreFailStaleCommitRequiresThirtySeconds(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	before, _ := client.PTTL(ctx, key).Result()
+	before := requirePositivePlatformGenerationTTL(t, client, key)
 	tooFresh, err := store.FailStaleCommit(ctx, input.UserID, input.GenerationID, "internal_error", committing.UpdatedAtMillis+platformGenerationConvergenceWindow.Milliseconds()-1)
 	if !errors.Is(err, ErrPlatformGenerationConflict) || tooFresh.State != PlatformGenerationStateCommitting {
 		t.Fatalf("fresh fail=%#v error=%v", tooFresh, err)
 	}
-	freshTTL, err := client.PTTL(ctx, key).Result()
-	if err != nil || freshTTL > before {
-		t.Fatalf("fresh stale-check refreshed TTL: before=%v after=%v error=%v", before, freshTTL, err)
-	}
+	freshTTL := requirePlatformGenerationTTLNotIncreased(t, client, key, before)
 	failed, err := store.FailStaleCommit(ctx, input.UserID, input.GenerationID, "internal_error", committing.UpdatedAtMillis+platformGenerationConvergenceWindow.Milliseconds())
 	if err != nil || failed.State != PlatformGenerationStateFailed || failed.ErrorCode != "internal_error" || failed.ModelStates["a"].AssistantMessageGUID != "" {
 		t.Fatalf("stale fail=%#v error=%v", failed, err)
 	}
-	after, _ := client.PTTL(ctx, key).Result()
-	if after > freshTTL {
-		t.Fatalf("stale fail refreshed TTL: before=%v after=%v", freshTTL, after)
-	}
+	requirePlatformGenerationTTLNotIncreased(t, client, key, freshTTL)
 	assertPlatformGenerationRedisMetadataOnly(t, client, key)
 }
 
@@ -467,7 +482,7 @@ func TestPlatformGenerationStoreFailStaleCommitLosesToCompletedReceipt(t *testin
 	input := PlatformGenerationClaimInput{UserID: 910023, GenerationID: "740e8400-e29b-41d4-a716-446655440000", Mode: PlatformGenerationModeSingle, Models: []string{"a"}, NowMillis: 4000}
 	ctx := context.Background()
 	key := store.key(input.UserID, input.GenerationID)
-	_ = client.Del(ctx, key).Err()
+	preparePlatformGenerationTestKey(t, client, key)
 	claimTestGeneration(t, store, input)
 	if _, err := store.MarkModelDone(ctx, input.UserID, input.GenerationID, "a", 0, 4001); err != nil {
 		t.Fatal(err)
@@ -480,16 +495,47 @@ func TestPlatformGenerationStoreFailStaleCommitLosesToCompletedReceipt(t *testin
 	if _, err := store.ReconcileComplete(ctx, input.UserID, input.GenerationID, map[string]string{"a": guid}, 4003); err != nil {
 		t.Fatal(err)
 	}
-	before, _ := client.PTTL(ctx, key).Result()
+	before := requirePositivePlatformGenerationTTL(t, client, key)
 	completed, err := store.FailStaleCommit(ctx, input.UserID, input.GenerationID, "internal_error", committing.UpdatedAtMillis+platformGenerationConvergenceWindow.Milliseconds())
 	if !errors.Is(err, ErrPlatformGenerationConflict) || completed.State != PlatformGenerationStateCompleted || completed.ModelStates["a"].AssistantMessageGUID != guid {
 		t.Fatalf("completed lost stale-fail race: snapshot=%#v error=%v", completed, err)
 	}
-	after, _ := client.PTTL(ctx, key).Result()
-	if after > before {
-		t.Fatalf("losing stale fail refreshed TTL: before=%v after=%v", before, after)
-	}
+	requirePlatformGenerationTTLNotIncreased(t, client, key, before)
 	assertPlatformGenerationRedisMetadataOnly(t, client, key)
+}
+
+func TestPlatformGenerationStoreReconciliationRejectsInvalidInputBeforeDependencies(t *testing.T) {
+	disconnected, err := NewPlatformGenerationStore(redis.NewClient(&redis.Options{Addr: "127.0.0.1:1"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = disconnected.Close() }()
+	tests := []struct {
+		name         string
+		store        *PlatformGenerationStore
+		ctx          context.Context
+		userID       int64
+		generationID string
+		nowMillis    int64
+	}{
+		{"nil store", nil, context.Background(), 1, generationTestID, 1},
+		{"nil context", disconnected, nil, 1, generationTestID, 1},
+		{"invalid owner", disconnected, context.Background(), 0, generationTestID, 1},
+		{"invalid generation", disconnected, context.Background(), 1, "bad", 1},
+		{"zero time", disconnected, context.Background(), 1, generationTestID, 0},
+		{"negative time", disconnected, context.Background(), 1, generationTestID, -1},
+		{"unsafe time", disconnected, context.Background(), 1, generationTestID, platformSSEV2MaxSafeInteger + 1},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := test.store.ReconcileComplete(test.ctx, test.userID, test.generationID, map[string]string{"a": "900000000000000105"}, test.nowMillis); !errors.Is(err, ErrPlatformGenerationInvalid) {
+				t.Fatalf("ReconcileComplete error=%v, want invalid", err)
+			}
+			if _, err := test.store.FailStaleCommit(test.ctx, test.userID, test.generationID, "internal_error", test.nowMillis); !errors.Is(err, ErrPlatformGenerationInvalid) {
+				t.Fatalf("FailStaleCommit error=%v, want invalid", err)
+			}
+		})
+	}
 }
 
 func assertPlatformGenerationRedisMetadataOnly(t *testing.T, client redis.Cmdable, key string) {

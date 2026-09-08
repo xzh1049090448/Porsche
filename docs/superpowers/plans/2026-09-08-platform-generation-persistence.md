@@ -1515,6 +1515,9 @@ Add:
 const platformGenerationConvergenceWindow = 30 * time.Second
 
 func (s *PlatformGenerationStore) ReconcileComplete(ctx context.Context, userID int64, generationID string, assistantMessageGUIDs map[string]string, nowMillis int64) (PlatformGenerationSnapshot, error) {
+	if validatePlatformGenerationReconciliationRequest(s, ctx, userID, generationID, nowMillis) != nil {
+		return PlatformGenerationSnapshot{}, ErrPlatformGenerationInvalid
+	}
 	snapshot, err := s.Get(ctx, userID, generationID)
 	if err != nil {
 		return PlatformGenerationSnapshot{}, err
@@ -1533,7 +1536,7 @@ func (s *PlatformGenerationStore) ReconcileComplete(ctx context.Context, userID 
 }
 
 func (s *PlatformGenerationStore) FailStaleCommit(ctx context.Context, userID int64, generationID, code string, nowMillis int64) (PlatformGenerationSnapshot, error) {
-	if !platformGenerationStableCode(code) {
+	if validatePlatformGenerationReconciliationRequest(s, ctx, userID, generationID, nowMillis) != nil || !platformGenerationStableCode(code) {
 		return PlatformGenerationSnapshot{}, ErrPlatformGenerationInvalid
 	}
 	return s.mutate(ctx, userID, generationID, nowMillis, func(snapshot *PlatformGenerationSnapshot) error {
@@ -1544,6 +1547,14 @@ func (s *PlatformGenerationStore) FailStaleCommit(ctx context.Context, userID in
 		snapshot.ErrorCode = code
 		return nil
 	})
+}
+
+func validatePlatformGenerationReconciliationRequest(s *PlatformGenerationStore, ctx context.Context, userID int64, generationID string, nowMillis int64) error {
+	if s == nil || ctx == nil || validatePlatformGenerationIdentity(userID, generationID) != nil ||
+		!platformSSEV2SafeInteger(nowMillis) || nowMillis <= 0 {
+		return ErrPlatformGenerationInvalid
+	}
+	return nil
 }
 
 func platformGenerationGUIDMapMatches(snapshot PlatformGenerationSnapshot, expected map[string]string) bool {
@@ -1607,7 +1618,7 @@ func ReconcilePlatformGeneration(ctx context.Context, db *gorm.DB, store *Platfo
 		return current, nil
 	}
 	var resolved PlatformGenerationSnapshot
-	resolvedAuthoritativeOnError := false
+	resolvedAuthoritative := false
 	err = withPlatformGenerationAdvisoryLock(ctx, db, platformGenerationAdvisoryLockName(userID, generationID), func(conn *gorm.DB) error {
 		receipt, receiptErr := LoadPlatformGenerationReceipt(ctx, conn, userID, generationID)
 		if receiptErr == nil {
@@ -1618,18 +1629,18 @@ func ReconcilePlatformGeneration(ctx context.Context, db *gorm.DB, store *Platfo
 				}
 			}
 			resolved, receiptErr = store.ReconcileComplete(ctx, userID, generationID, guids, nowMillis)
-			resolvedAuthoritativeOnError = receiptErr != nil && resolved.GenerationID != ""
+			resolvedAuthoritative = resolved.GenerationID != ""
 			return receiptErr
 		}
 		if !errors.Is(receiptErr, ErrPlatformGenerationPersistenceNotFound) {
 			return receiptErr
 		}
 		resolved, receiptErr = store.FailStaleCommit(ctx, userID, generationID, "internal_error", nowMillis)
-		resolvedAuthoritativeOnError = receiptErr != nil && resolved.GenerationID != ""
+		resolvedAuthoritative = resolved.GenerationID != ""
 		return receiptErr
 	})
 	if err != nil {
-		if resolvedAuthoritativeOnError {
+		if resolvedAuthoritative {
 			return resolved, err
 		}
 		return current, err

@@ -327,6 +327,9 @@ func (s *PlatformGenerationStore) Complete(ctx context.Context, userID int64, ge
 }
 
 func (s *PlatformGenerationStore) ReconcileComplete(ctx context.Context, userID int64, generationID string, assistantMessageGUIDs map[string]string, nowMillis int64) (PlatformGenerationSnapshot, error) {
+	if validatePlatformGenerationReconciliationRequest(s, ctx, userID, generationID, nowMillis) != nil {
+		return PlatformGenerationSnapshot{}, ErrPlatformGenerationInvalid
+	}
 	snapshot, err := s.Get(ctx, userID, generationID)
 	if err != nil {
 		return PlatformGenerationSnapshot{}, err
@@ -345,7 +348,7 @@ func (s *PlatformGenerationStore) ReconcileComplete(ctx context.Context, userID 
 }
 
 func (s *PlatformGenerationStore) FailStaleCommit(ctx context.Context, userID int64, generationID, code string, nowMillis int64) (PlatformGenerationSnapshot, error) {
-	if !platformGenerationStableCode(code) {
+	if validatePlatformGenerationReconciliationRequest(s, ctx, userID, generationID, nowMillis) != nil || !platformGenerationStableCode(code) {
 		return PlatformGenerationSnapshot{}, ErrPlatformGenerationInvalid
 	}
 	return s.mutate(ctx, userID, generationID, nowMillis, func(snapshot *PlatformGenerationSnapshot) error {
@@ -356,6 +359,14 @@ func (s *PlatformGenerationStore) FailStaleCommit(ctx context.Context, userID in
 		snapshot.ErrorCode = code
 		return nil
 	})
+}
+
+func validatePlatformGenerationReconciliationRequest(s *PlatformGenerationStore, ctx context.Context, userID int64, generationID string, nowMillis int64) error {
+	if s == nil || ctx == nil || validatePlatformGenerationIdentity(userID, generationID) != nil ||
+		!platformSSEV2SafeInteger(nowMillis) || nowMillis <= 0 {
+		return ErrPlatformGenerationInvalid
+	}
+	return nil
 }
 
 func platformGenerationGUIDMapMatches(snapshot PlatformGenerationSnapshot, expected map[string]string) bool {

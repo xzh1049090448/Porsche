@@ -29,7 +29,7 @@ func reconcilePlatformGeneration(ctx context.Context, db *gorm.DB, store *Platfo
 	}
 
 	var resolved PlatformGenerationSnapshot
-	resolvedAuthoritativeOnError := false
+	resolvedAuthoritative := false
 	err = withLock(ctx, db, platformGenerationAdvisoryLockName(userID, generationID), func(conn *gorm.DB) error {
 		receipt, receiptErr := LoadPlatformGenerationReceipt(ctx, conn, userID, generationID)
 		if receiptErr == nil {
@@ -40,18 +40,18 @@ func reconcilePlatformGeneration(ctx context.Context, db *gorm.DB, store *Platfo
 				}
 			}
 			resolved, receiptErr = store.ReconcileComplete(ctx, userID, generationID, guids, nowMillis)
-			resolvedAuthoritativeOnError = receiptErr != nil && resolved.GenerationID != ""
+			resolvedAuthoritative = resolved.GenerationID != ""
 			return receiptErr
 		}
 		if !errors.Is(receiptErr, ErrPlatformGenerationPersistenceNotFound) {
 			return receiptErr
 		}
 		resolved, receiptErr = store.FailStaleCommit(ctx, userID, generationID, "internal_error", nowMillis)
-		resolvedAuthoritativeOnError = receiptErr != nil && resolved.GenerationID != ""
+		resolvedAuthoritative = resolved.GenerationID != ""
 		return receiptErr
 	})
 	if err != nil {
-		if resolvedAuthoritativeOnError {
+		if resolvedAuthoritative {
 			return resolved, err
 		}
 		return current, err

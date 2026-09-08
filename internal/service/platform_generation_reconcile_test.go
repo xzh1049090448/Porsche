@@ -21,15 +21,12 @@ func TestReconcilePlatformGenerationCompletesFromReceipt(t *testing.T) {
 		t.Fatal(err)
 	}
 	key := f.store.key(input.UserID, input.GenerationID)
-	before, _ := f.store.client.PTTL(context.Background(), key).Result()
+	before := requirePositivePlatformGenerationTTL(t, f.store.client, key)
 	snapshot, err := ReconcilePlatformGeneration(context.Background(), f.db, f.store, input.UserID, input.GenerationID, input.NowMillis+1)
 	if err != nil || snapshot.State != PlatformGenerationStateCompleted || snapshot.ModelStates["model-a"].AssistantMessageGUID != receipt.Results[0].AssistantMessageGUID {
 		t.Fatalf("reconcile=%#v receipt=%#v error=%v", snapshot, receipt, err)
 	}
-	after, _ := f.store.client.PTTL(context.Background(), key).Result()
-	if after > before {
-		t.Fatalf("receipt reconciliation refreshed TTL: before=%v after=%v", before, after)
-	}
+	requirePlatformGenerationTTLNotIncreased(t, f.store.client, key, before)
 	assertPlatformGenerationRedisMetadataOnly(t, f.store.client, key)
 }
 
@@ -52,15 +49,12 @@ func TestReconcilePlatformGenerationRejectsInvalidUserMessageReceipt(t *testing.
 		t.Fatal(err)
 	}
 	key := f.store.key(input.UserID, input.GenerationID)
-	before, _ := f.store.client.PTTL(context.Background(), key).Result()
+	before := requirePositivePlatformGenerationTTL(t, f.store.client, key)
 	snapshot, err := ReconcilePlatformGeneration(context.Background(), f.db, f.store, input.UserID, input.GenerationID, receipt.CommittedAtMillis+1)
 	if !errors.Is(err, ErrPlatformGenerationPersistenceIntegrity) || snapshot.State != PlatformGenerationStateCommitting {
 		t.Fatalf("invalid receipt reconcile=%#v error=%v", snapshot, err)
 	}
-	after, _ := f.store.client.PTTL(context.Background(), key).Result()
-	if after > before {
-		t.Fatalf("integrity failure refreshed TTL: before=%v after=%v", before, after)
-	}
+	requirePlatformGenerationTTLNotIncreased(t, f.store.client, key, before)
 }
 
 func TestReconcilePlatformGenerationFailsReceiptlessStaleCommit(t *testing.T) {
@@ -71,15 +65,12 @@ func TestReconcilePlatformGenerationFailsReceiptlessStaleCommit(t *testing.T) {
 		t.Fatal(err)
 	}
 	key := f.store.key(input.UserID, input.GenerationID)
-	before, _ := f.store.client.PTTL(context.Background(), key).Result()
+	before := requirePositivePlatformGenerationTTL(t, f.store.client, key)
 	failed, err := ReconcilePlatformGeneration(context.Background(), f.db, f.store, input.UserID, input.GenerationID, committing.UpdatedAtMillis+platformGenerationConvergenceWindow.Milliseconds())
 	if err != nil || failed.State != PlatformGenerationStateFailed || failed.ErrorCode != "internal_error" || failed.ModelStates["model-a"].AssistantMessageGUID != "" {
 		t.Fatalf("stale reconcile=%#v error=%v", failed, err)
 	}
-	after, _ := f.store.client.PTTL(context.Background(), key).Result()
-	if after > before {
-		t.Fatalf("stale reconciliation refreshed TTL: before=%v after=%v", before, after)
-	}
+	requirePlatformGenerationTTLNotIncreased(t, f.store.client, key, before)
 	assertPlatformGenerationRedisMetadataOnly(t, f.store.client, key)
 }
 
@@ -91,15 +82,55 @@ func TestReconcilePlatformGenerationDoesNotFailFreshCommit(t *testing.T) {
 		t.Fatal(err)
 	}
 	key := f.store.key(input.UserID, input.GenerationID)
-	before, _ := f.store.client.PTTL(context.Background(), key).Result()
+	before := requirePositivePlatformGenerationTTL(t, f.store.client, key)
 	current, err := ReconcilePlatformGeneration(context.Background(), f.db, f.store, input.UserID, input.GenerationID, committing.UpdatedAtMillis+platformGenerationConvergenceWindow.Milliseconds()-1)
 	if !errors.Is(err, ErrPlatformGenerationConflict) || current.State != PlatformGenerationStateCommitting {
 		t.Fatalf("fresh reconcile=%#v error=%v", current, err)
 	}
-	after, _ := f.store.client.PTTL(context.Background(), key).Result()
-	if after > before {
-		t.Fatalf("fresh reconciliation refreshed TTL: before=%v after=%v", before, after)
-	}
+	requirePlatformGenerationTTLNotIncreased(t, f.store.client, key, before)
+}
+
+func TestReconcilePlatformGenerationReturnsResolvedSnapshotOnLockReleaseError(t *testing.T) {
+	sentinel := errors.New("simulated advisory lock release failure")
+	t.Run("completed receipt", func(t *testing.T) {
+		f := openPlatformGenerationFinalizationFixture(t)
+		input := f.committingSingle(t)
+		p, err := NewPlatformGenerationPersistence(f.store)
+		if err != nil {
+			t.Fatal(err)
+		}
+		receipt, err := p.Finalize(context.Background(), f.db, input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		snapshot, err := reconcilePlatformGeneration(context.Background(), f.db, f.store, input.UserID, input.GenerationID, input.NowMillis+1, func(_ context.Context, _ *gorm.DB, _ string, fn func(*gorm.DB) error) error {
+			if err := fn(f.db); err != nil {
+				return err
+			}
+			return sentinel
+		})
+		if !errors.Is(err, sentinel) || snapshot.State != PlatformGenerationStateCompleted || snapshot.ModelStates["model-a"].AssistantMessageGUID != receipt.Results[0].AssistantMessageGUID {
+			t.Fatalf("completed release error snapshot=%#v error=%v", snapshot, err)
+		}
+	})
+
+	t.Run("receiptless stale fail", func(t *testing.T) {
+		f := openPlatformGenerationFinalizationFixture(t)
+		input := f.committingSingle(t)
+		committing, err := f.store.Get(context.Background(), input.UserID, input.GenerationID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		snapshot, err := reconcilePlatformGeneration(context.Background(), f.db, f.store, input.UserID, input.GenerationID, committing.UpdatedAtMillis+platformGenerationConvergenceWindow.Milliseconds(), func(_ context.Context, _ *gorm.DB, _ string, fn func(*gorm.DB) error) error {
+			if err := fn(f.db); err != nil {
+				return err
+			}
+			return sentinel
+		})
+		if !errors.Is(err, sentinel) || snapshot.State != PlatformGenerationStateFailed || snapshot.ErrorCode != "internal_error" {
+			t.Fatalf("stale-fail release error snapshot=%#v error=%v", snapshot, err)
+		}
+	})
 }
 
 func TestReconcilePlatformGenerationReturnsCompletedAuthoritativeConflict(t *testing.T) {
