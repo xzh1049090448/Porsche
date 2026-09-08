@@ -151,7 +151,7 @@ func TestVerifyPlatformGenerationReceiptSchemaRejectsEveryMetadataDrift(t *testi
 		{name: "table_collation", ddl: []string{"ALTER TABLE platform_chat_generation_receipts DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_bin"}},
 		{name: "extra_index", ddl: []string{"ALTER TABLE platform_chat_generation_results ADD KEY idx_platform_chat_generation_results_unexpected (status)"}},
 		{name: "missing_index", ddl: []string{"ALTER TABLE platform_chat_generation_receipts DROP INDEX idx_platform_chat_generation_receipts_owner_active_created"}},
-		{name: "renamed_index", ddl: []string{"ALTER TABLE platform_chat_generation_receipts RENAME INDEX idx_platform_chat_generation_receipts_owner_active_created TO idx_platform_chat_generation_receipts_owner_active_created_drifted"}},
+		{name: "renamed_index", ddl: []string{"ALTER TABLE platform_chat_generation_receipts RENAME INDEX idx_platform_chat_generation_receipts_owner_active_created TO idx_platform_receipts_owner_drift"}},
 		{name: "invisible_index", ddl: []string{"ALTER TABLE platform_chat_generation_receipts ALTER INDEX idx_platform_chat_generation_receipts_owner_active_created INVISIBLE"}},
 		{name: "prefix_index", ddl: []string{
 			"ALTER TABLE platform_chat_generation_results DROP INDEX uk_platform_chat_generation_results_model",
@@ -223,7 +223,7 @@ func TestVerifyPlatformGenerationReceiptSchemaRejectsEveryMetadataDrift(t *testi
 			"ALTER TABLE platform_chat_generation_results DROP CHECK chk_platform_chat_generation_results_tokens",
 			"ALTER TABLE platform_chat_generation_results ADD CONSTRAINT chk_platform_chat_generation_results_tokens CHECK (tokens >= 1)",
 		}},
-		{name: "extra_check", ddl: []string{"ALTER TABLE platform_chat_generation_results ADD CONSTRAINT chk_platform_chat_generation_results_unexpected CHECK (id > 0)"}},
+		{name: "extra_check", ddl: []string{"ALTER TABLE platform_chat_generation_results ADD CONSTRAINT chk_platform_chat_generation_results_unexpected CHECK (receipt_id > 0)"}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

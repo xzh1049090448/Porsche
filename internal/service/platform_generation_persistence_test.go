@@ -611,7 +611,7 @@ func TestLoadPlatformGenerationReceiptRejectsMalformedGraph(t *testing.T) {
 	}
 	t.Run("soft-deleted trailing result", func(t *testing.T) {
 		fixture := seedPlatformGenerationReceiptWithTrailingFailure(t)
-		if err := fixture.db.Model(&models.PlatformChatGenerationResult{}).Where("id = ?", fixture.results[2].ID).Update("is_deleted", 1).Error; err != nil {
+		if err := fixture.db.Model(&models.PlatformChatGenerationResult{}).Where("id = ?", fixture.results[2].ID).UpdateColumn("is_deleted", 1).Error; err != nil {
 			t.Fatal(err)
 		}
 		requireReceiptIntegrity(t, fixture)
@@ -633,17 +633,17 @@ func TestLoadPlatformGenerationReceiptRejectsMalformedGraph(t *testing.T) {
 			}
 		}},
 		{"receipt audit owner mismatch", false, func(t *testing.T, f platformGenerationReceiptFixture) {
-			if err := f.db.Model(&models.PlatformChatGenerationReceipt{}).Where("id = ?", f.receipt.ID).Update("updated_by", f.other.ID).Error; err != nil {
+			if err := f.db.Model(&models.PlatformChatGenerationReceipt{}).Where("id = ?", f.receipt.ID).UpdateColumn("updated_by", f.other.ID).Error; err != nil {
 				t.Fatal(err)
 			}
 		}},
 		{"result audit owner mismatch", false, func(t *testing.T, f platformGenerationReceiptFixture) {
-			if err := f.db.Model(&models.PlatformChatGenerationResult{}).Where("id = ?", f.results[0].ID).Update("created_by", f.other.ID).Error; err != nil {
+			if err := f.db.Model(&models.PlatformChatGenerationResult{}).Where("id = ?", f.results[0].ID).UpdateColumn("created_by", f.other.ID).Error; err != nil {
 				t.Fatal(err)
 			}
 		}},
 		{"noncontiguous index", false, func(t *testing.T, f platformGenerationReceiptFixture) {
-			if err := f.db.Model(&models.PlatformChatGenerationResult{}).Where("id = ?", f.results[2].ID).Update("model_index", 4).Error; err != nil {
+			if err := f.db.Model(&models.PlatformChatGenerationResult{}).Where("id = ?", f.results[2].ID).UpdateColumn("model_index", 4).Error; err != nil {
 				t.Fatal(err)
 			}
 		}},
@@ -651,7 +651,7 @@ func TestLoadPlatformGenerationReceiptRejectsMalformedGraph(t *testing.T) {
 			if err := f.db.Exec("ALTER TABLE platform_chat_generation_results DROP INDEX uk_platform_chat_generation_results_model").Error; err != nil {
 				t.Fatal(err)
 			}
-			if err := f.db.Model(&models.PlatformChatGenerationResult{}).Where("id = ?", f.results[2].ID).Update("model", f.results[0].Model).Error; err != nil {
+			if err := f.db.Model(&models.PlatformChatGenerationResult{}).Where("id = ?", f.results[2].ID).UpdateColumn("model", f.results[0].Model).Error; err != nil {
 				t.Fatal(err)
 			}
 			if err := f.db.Model(&models.Message{}).Where("id = ?", f.assistantMessages[1].ID).Update("model", f.results[0].Model).Error; err != nil {
@@ -661,12 +661,12 @@ func TestLoadPlatformGenerationReceiptRejectsMalformedGraph(t *testing.T) {
 		{"unknown status", true, func(t *testing.T, f platformGenerationReceiptFixture) {
 			dropReceiptConstraint(t, f, "platform_chat_generation_results", "chk_platform_chat_generation_results_status")
 			dropReceiptConstraint(t, f, "platform_chat_generation_results", "chk_platform_chat_generation_results_shape")
-			if err := f.db.Model(&models.PlatformChatGenerationResult{}).Where("id = ?", f.results[1].ID).Update("status", 99).Error; err != nil {
+			if err := f.db.Model(&models.PlatformChatGenerationResult{}).Where("id = ?", f.results[1].ID).UpdateColumn("status", 99).Error; err != nil {
 				t.Fatal(err)
 			}
 		}},
 		{"failed unstable code", false, func(t *testing.T, f platformGenerationReceiptFixture) {
-			if err := f.db.Model(&models.PlatformChatGenerationResult{}).Where("id = ?", f.results[1].ID).Update("error_code", "secret-provider-detail").Error; err != nil {
+			if err := f.db.Model(&models.PlatformChatGenerationResult{}).Where("id = ?", f.results[1].ID).UpdateColumn("error_code", "secret-provider-detail").Error; err != nil {
 				t.Fatal(err)
 			}
 		}},
@@ -682,7 +682,7 @@ func TestLoadPlatformGenerationReceiptRejectsMalformedGraph(t *testing.T) {
 		}},
 		{"completed has error", true, func(t *testing.T, f platformGenerationReceiptFixture) {
 			dropReceiptConstraint(t, f, "platform_chat_generation_results", "chk_platform_chat_generation_results_shape")
-			if err := f.db.Model(&models.PlatformChatGenerationResult{}).Where("id = ?", f.results[0].ID).Update("error_code", "timeout").Error; err != nil {
+			if err := f.db.Model(&models.PlatformChatGenerationResult{}).Where("id = ?", f.results[0].ID).UpdateColumn("error_code", "timeout").Error; err != nil {
 				t.Fatal(err)
 			}
 		}},
@@ -757,7 +757,7 @@ func TestLoadPlatformGenerationReceiptRejectsInvalidParentScalars(t *testing.T) 
 		t.Run(test.name, func(t *testing.T) {
 			fixture := seedPlatformGenerationReceiptSchema(t, PlatformGenerationModeSingle)
 			dropReceiptConstraint(t, fixture, "platform_chat_generation_receipts", test.constraint)
-			if err := fixture.db.Model(&models.PlatformChatGenerationReceipt{}).Where("id = ?", fixture.receipt.ID).Update(test.column, test.value).Error; err != nil {
+			if err := fixture.db.Model(&models.PlatformChatGenerationReceipt{}).Where("id = ?", fixture.receipt.ID).UpdateColumn(test.column, test.value).Error; err != nil {
 				t.Fatal(err)
 			}
 			requireReceiptIntegrity(t, fixture)

@@ -378,7 +378,7 @@ func TestBusinessGroupMigrationOnIsolatedMySQL(t *testing.T) {
 		insertMigrationUser(t, gdb, 7101, "biz-group-active", 0)
 		insertMigrationUser(t, gdb, 7102, "biz-group-tombstone", 1)
 
-		allocated := []int64{7201, 7202, 7203, 7204, 7205}
+		allocated := []int64{7201, 7202, 7203, 7204, 7205, 7206}
 		calls := 0
 		nextGUID := func() int64 {
 			value := allocated[calls]
@@ -388,8 +388,8 @@ func TestBusinessGroupMigrationOnIsolatedMySQL(t *testing.T) {
 		if err := Up(context.Background(), gdb, nextGUID, func() int64 { return 1_700_000_000_007 }); err != nil {
 			t.Fatalf("apply 0007: %v", err)
 		}
-		if calls != 5 {
-			t.Fatalf("GUID calls = %d, want default group plus 0007, 0008, 0009, and 0010 ledgers", calls)
+		if calls != 6 {
+			t.Fatalf("GUID calls = %d, want default group plus 0007, 0008, 0009, 0010, and 0011 ledgers", calls)
 		}
 		assertBusinessGroupBackfill(t, gdb, 2, 7201)
 		if err := VerifyBusinessGroupsSchema(context.Background(), gdb); err != nil {
