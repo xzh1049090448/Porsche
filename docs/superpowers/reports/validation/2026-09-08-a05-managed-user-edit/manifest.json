@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "slice": "A05 managed-user nickname edit",
+  "status": "BLOCKED",
+  "validated_at": "2026-09-08",
+  "heads": {
+    "backend": "bf7ec6074a351a7155348d1f74f013f94a67a397",
+    "frontend": "5a41f5679c1c35e5c2850665db54ae83e58db436"
+  },
+  "fixture": {
+    "isolation": "labeled loopback-only MySQL 8 and Redis 7 containers on a private bridge network; MySQL tmpfs; Redis persistence disabled",
+    "database": "a05_managed_user_edit_test",
+    "redis_namespace": 11,
+    "host_ports": [43307, 46379],
+    "credentials": "private ephemeral file; never recorded",
+    "migration_ledger": "0001 through 0010 applied and status-verified"
+  },
+  "checks": [
+    {
+      "id": "repository_init",
+      "result": "PASS",
+      "command": "./init.sh",
+      "detail": "required baseline initialization and Go package checks passed after resolving the existing dependency proxy access restriction"
+    },
+    {
+      "id": "migrations",
+      "result": "PASS",
+      "command": "DATABASE_URL=<private isolated URL> APP_ENV=test SNOWFLAKE_NODE_ID=27 go run ./cmd/migrate up; status",
+      "detail": "all existing migration checksums 0001-0010 matched"
+    },
+    {
+      "id": "decoder_handler_router",
+      "result": "PASS",
+      "command": "TEST_DATABASE_URL=<private> TEST_REDIS_URL=<private> go test -json ./internal/dto ./internal/handler ./internal/router -run '^(TestDecodeAdminUserEdit|TestAdminUserEdit|TestAdminUserNicknameEditRoute)' -count=1",
+      "detail": "71 passing leaves; 0 skips; 0 failures. This includes strict duplicate/case-folded/unknown-field and exact route/response assertions."
+    },
+    {
+      "id": "service_matrix",
+      "result": "BLOCKED",
+      "command": "TEST_DATABASE_URL=<private> TEST_REDIS_URL=<private> go test -json ./internal/service -run '^TestAdminUserNicknameEdit' -count=1",
+      "detail": "The required 22 fixture leaves cannot pass. The rollback matrix panics at internal/service/admin_user_edit_failures_test.go:92 by dereferencing nullable target.Nickname. Independent non-rollback execution also reveals MySQL 8 error 1064 from internal/service/admin_user_edit.go:239: a user_permission_heads SELECT reaches MySQL with an unbound question-mark placeholder, causing expected success/403/409 paths to fail closed as 503."
+    },
+    {
+      "id": "runtime_http_browser",
+      "result": "NOT_RUN_BLOCKED",
+      "detail": "No server/browser claim is made because the real service matrix is blocked before end-to-end authentication and mutation evidence can be trustworthy."
+    },
+    {
+      "id": "frontend_gates",
+      "result": "PASS",
+      "command": "A14_BACKEND_CONTRACT=<backend> A03_BACKEND_CONTRACT=<backend> A05_BACKEND_CONTRACT=<backend> npm test; npm run build",
+      "detail": "315 frontend tests passed with 0 failures and 0 skips; Vite production build passed. Existing Rollup dependency and chunk-size warnings remain non-blocking."
+    },
+    {
+      "id": "privacy_scan",
+      "result": "PASS_LIMITED",
+      "detail": "The committed evidence contains no fixture credentials, tokens, or nickname values. Full runtime privacy acceptance remains blocked with the service matrix."
+    }
+  ],
+  "required_remediation": [
+    "Fix the bound SQL expression at internal/service/admin_user_edit.go:239 and add a real-MySQL regression assertion.",
+    "Make the rollback fixture safe for nullable target.Nickname at internal/service/admin_user_edit_failures_test.go:92, then rerun all 22 fixture leaves with zero skips.",
+    "After those gates pass, run real HTTP, visible browser, race, DB/audit, adversarial, and privacy acceptance in a fresh isolated fixture."
+  ],
+  "cleanup": {
+    "result": "PASS",
+    "scope": "only containers, network, ports, and private temporary directory carrying codex.task=a05-managed-user-edit"
+  }
+}
