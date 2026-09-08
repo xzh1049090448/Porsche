@@ -27,7 +27,7 @@ if [[ "${PORSCHE_RESTART_TEST_MODE:-}" == '1' ]]; then
     STAGE_PARENT="${PORSCHE_RESTART_STAGE_PARENT:-$STAGE_PARENT}"
 fi
 
-for command_name in git docker npm rsync nginx systemctl flock; do
+for command_name in git docker npm rsync nginx systemctl flock cp chmod mv rm stat; do
     command -v "$command_name" >/dev/null 2>&1 || {
         echo "required command is unavailable: $command_name" >&2
         exit 1
@@ -43,6 +43,7 @@ done
 
 [[ -f "$BACKEND_DIR/.env" ]] || { echo "missing backend environment file: $BACKEND_DIR/.env" >&2; exit 1; }
 [[ -f "$FRONTEND_DIR/.env" ]] || { echo "missing frontend environment file: $FRONTEND_DIR/.env" >&2; exit 1; }
+[[ -d "$FRONTEND_ROOT" && ! -L "$FRONTEND_ROOT" ]] || { echo "frontend live root must be a regular directory: $FRONTEND_ROOT" >&2; exit 1; }
 docker network inspect "$APP_DOCKER_NETWORK" >/dev/null
 
 exec 9>"$LOCK_FILE"
@@ -69,6 +70,16 @@ done
 "$BACKEND_DIR/deploy/merge-env-example.sh" "$BACKEND_DIR/.env.example" "$BACKEND_DIR/.env"
 "$BACKEND_DIR/deploy/merge-env-example.sh" "$FRONTEND_DIR/.env.example" "$FRONTEND_DIR/.env"
 
+exec 8>"$BACKEND_DIR/.env.merge.lock"
+flock -E 75 -n 8 || { echo 'backend environment file is being updated' >&2; exit 75; }
+env_snapshot="$(mktemp "$BACKEND_DIR/.env.release.XXXXXX")"
+chmod 0600 "$env_snapshot"
+cp "$BACKEND_DIR/.env" "$env_snapshot"
+cleanup_env_snapshot() { [[ -z "${env_snapshot:-}" ]] || rm -f -- "$env_snapshot"; }
+trap cleanup_env_snapshot EXIT
+backend_revision="$(git -C "$BACKEND_DIR" rev-parse HEAD)"
+[[ "$backend_revision" =~ ^[0-9a-f]{40}$ ]] || { echo 'backend reset did not resolve to a full Git commit' >&2; exit 1; }
+
 candidate_tag='ai-gateway-go:release-candidate'
 docker build --tag "$candidate_tag" "$BACKEND_DIR"
 candidate_image_id="$(docker image inspect --format '{{.Id}}' "$candidate_tag")"
@@ -76,8 +87,8 @@ if [[ ! "$candidate_image_id" =~ ^sha256:[0-9a-f]{64}$ ]]; then
     echo 'backend candidate did not resolve to an immutable sha256 image ID' >&2
     exit 1
 fi
-docker run --rm --env-file "$BACKEND_DIR/.env" --network "$APP_DOCKER_NETWORK" \
-    --entrypoint ./check-config "$candidate_image_id"
+docker run --rm --env-file "$env_snapshot" --network "$APP_DOCKER_NETWORK" \
+    --entrypoint /app/check-config "$candidate_image_id"
 
 (
     cd "$FRONTEND_DIR"
@@ -89,13 +100,24 @@ nginx -t
 
 (
     cd "$BACKEND_DIR"
-    APP_DOCKER_NETWORK="$APP_DOCKER_NETWORK" PREBUILT_IMAGE_ID="$candidate_image_id" ./deploy/production-deploy.sh
+    APP_DOCKER_NETWORK="$APP_DOCKER_NETWORK" PREBUILT_IMAGE_ID="$candidate_image_id" \
+      PREBUILT_SOURCE_REVISION="$backend_revision" ENV_SNAPSHOT="$env_snapshot" \
+      RELEASE_LOCK_FD=9 LOCK_FILE="$LOCK_FILE" ./deploy/production-deploy.sh
 )
+cleanup_env_snapshot
+env_snapshot=''
+exec 8>&-
 
 stage_dir="$(mktemp -d "$STAGE_PARENT/.porsche-web-stage.XXXXXX")"
+backup_dir="$STAGE_PARENT/.porsche-web-backup.$$"
+live_backed_up=false
 cleanup_stage() {
     if [[ -n "${stage_dir:-}" && -d "$stage_dir" ]]; then
         rm -rf -- "$stage_dir"
+    fi
+    if [[ "$live_backed_up" == true && -d "$backup_dir" ]]; then
+        rm -rf -- "$FRONTEND_ROOT"
+        mv -- "$backup_dir" "$FRONTEND_ROOT"
     fi
 }
 trap cleanup_stage EXIT
@@ -104,10 +126,16 @@ rsync --archive --delete --delay-updates "$FRONTEND_DIR/dist/" "$stage_dir/"
 # Do not publish caller/build-tool umask into the Nginx document root.
 find "$stage_dir" -type d -exec chmod 0755 {} +
 find "$stage_dir" -type f -exec chmod 0644 {} +
-rsync --archive --delete --delay-updates "$stage_dir/" "$FRONTEND_ROOT/"
+[[ "$(stat -f '%d' "$stage_dir" 2>/dev/null || stat -c '%d' "$stage_dir")" == "$(stat -f '%d' "$FRONTEND_ROOT" 2>/dev/null || stat -c '%d' "$FRONTEND_ROOT")" ]] || { echo 'frontend staging and live root must share a filesystem' >&2; exit 1; }
+rm -rf -- "$backup_dir"
+mv -- "$FRONTEND_ROOT" "$backup_dir"
+live_backed_up=true
+mv -- "$stage_dir" "$FRONTEND_ROOT"
+stage_dir=''
 
 systemctl reload nginx
+rm -rf -- "$backup_dir"
+live_backed_up=false
 
-backend_revision="$(git -C "$BACKEND_DIR" rev-parse HEAD)"
 frontend_revision="$(git -C "$FRONTEND_DIR" rev-parse HEAD)"
 printf 'full stack deployment succeeded: backend=%s frontend=%s\n' "$backend_revision" "$frontend_revision"
