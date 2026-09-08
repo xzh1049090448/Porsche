@@ -28,11 +28,20 @@ func TestUserDeleteActiveContractMatchesRuntimeFixtures(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	assertContractKeys(t, document, "status", "production_observation", "implementation", "v2_user_read", "endpoints", "operation_statuses", "failure_codes", "error_contract", "frontend", "security_properties", "acceptance")
+	assertContractKeys(t, document, "status", "production_observation", "implementation", "future_a05_user_nickname_edit", "v2_user_read", "endpoints", "operation_statuses", "failure_codes", "error_contract", "frontend", "security_properties", "acceptance")
 	assertContractValue(t, document, "active_users_delete_contract", "status")
 	assertContractValue(t, document, true, "implementation", "handler_exists")
 	assertContractValue(t, document, true, "implementation", "backend_route_exists")
 	assertContractValue(t, document, false, "implementation", "frontend_client_exists")
+	assertContractKeys(t, contractAt(t, document, "future_a05_user_nickname_edit").(map[string]any), "contract_path", "status", "implementation", "method", "path", "capability", "mutation_retry", "legacy_put")
+	assertContractValue(t, document, "docs/agents/contracts/admin-user-edit-v1.json", "future_a05_user_nickname_edit", "contract_path")
+	assertContractValue(t, document, "AGREED_FOR_IMPLEMENTATION", "future_a05_user_nickname_edit", "status")
+	assertContractValue(t, document, "pending; this frozen contract does not register a route or activate a consumer", "future_a05_user_nickname_edit", "implementation")
+	assertContractValue(t, document, "PATCH", "future_a05_user_nickname_edit", "method")
+	assertContractValue(t, document, "/admin/v2/users/{guid}", "future_a05_user_nickname_edit", "path")
+	assertContractValue(t, document, "users.edit", "future_a05_user_nickname_edit", "capability")
+	assertContractValue(t, document, "never", "future_a05_user_nickname_edit", "mutation_retry")
+	assertContractValue(t, document, "excluded", "future_a05_user_nickname_edit", "legacy_put")
 	assertContractValue(t, document, true, "production_observation", "only_users_delete_active")
 	assertContractValue(t, document, "unregistered", "production_observation", "other_action_routes")
 	assertContractValue(t, document, []any{
