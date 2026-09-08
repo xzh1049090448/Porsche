@@ -132,3 +132,15 @@ func TestModelHealthUsesSingularMigratedTableName(t *testing.T) {
 		t.Fatalf("ModelHealth table = %q, want migrated table model_health", got)
 	}
 }
+
+func TestPlatformGenerationPersistenceEnumsAreStable(t *testing.T) {
+	if PlatformGenerationReceiptModeSingle != 1 || PlatformGenerationReceiptModeCompare != 2 {
+		t.Fatal("receipt mode integers changed")
+	}
+	if PlatformGenerationResultCompleted != 1 || PlatformGenerationResultFailed != 2 {
+		t.Fatal("result status integers changed")
+	}
+	if (PlatformChatGenerationReceipt{}).TableName() != "platform_chat_generation_receipts" || (PlatformChatGenerationResult{}).TableName() != "platform_chat_generation_results" {
+		t.Fatal("receipt table mapping changed")
+	}
+}

@@ -41,6 +41,20 @@ func TestPlatformGenerationStoreRejectsInvalidInputBeforeRedis(t *testing.T) {
 	}
 }
 
+func TestPlatformGenerationStoreRejectsModelOverPersistenceLimitBeforeRedis(t *testing.T) {
+	store, err := NewPlatformGenerationStore(redis.NewClient(&redis.Options{Addr: "127.0.0.1:1"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = store.Claim(context.Background(), PlatformGenerationClaimInput{
+		UserID: 1, GenerationID: generationTestID, Mode: PlatformGenerationModeSingle,
+		Models: []string{strings.Repeat("m", 129)}, NowMillis: 1,
+	})
+	if !errors.Is(err, ErrPlatformGenerationInvalid) {
+		t.Fatalf("Claim() error=%v, want invalid before Redis", err)
+	}
+}
+
 func TestPlatformGenerationStoreKeyOnlyUsesInternalUserIDAndGenerationID(t *testing.T) {
 	store, err := NewPlatformGenerationStore(redis.NewClient(&redis.Options{Addr: "127.0.0.1:1"}))
 	if err != nil {

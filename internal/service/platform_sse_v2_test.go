@@ -10,6 +10,21 @@ import (
 
 const sseV2GenerationID = "550e8400-e29b-41d4-a716-446655440000"
 
+func TestPlatformSSEV2ModelIdentifierMatchesExistingPersistenceColumns(t *testing.T) {
+	if !platformSSEV2ModelIdentifier(strings.Repeat("m", 128)) {
+		t.Fatal("128-byte model identifier was rejected")
+	}
+	if platformSSEV2ModelIdentifier(strings.Repeat("m", 129)) {
+		t.Fatal("129-byte model identifier would overflow existing model columns")
+	}
+	if !platformSSEV2ModelIdentifier(strings.Repeat("界", 42)) || platformSSEV2ModelIdentifier(strings.Repeat("界", 43)) {
+		t.Fatal("model identifier limit must be measured in UTF-8 bytes")
+	}
+	if !platformSSEV2Identifier(strings.Repeat("i", 255)) {
+		t.Fatal("model-specific bound unexpectedly narrowed generic opaque identifiers")
+	}
+}
+
 func TestPlatformSSEV2EncoderFramesSanitizedSingleStream(t *testing.T) {
 	encoder, err := NewPlatformSSEV2Encoder(sseV2GenerationID, []string{"model-a"})
 	if err != nil {

@@ -139,6 +139,20 @@ const (
 	UsageRecordChat UsageRecordType = 1
 )
 
+type PlatformGenerationReceiptMode int
+
+const (
+	PlatformGenerationReceiptModeSingle  PlatformGenerationReceiptMode = 1
+	PlatformGenerationReceiptModeCompare PlatformGenerationReceiptMode = 2
+)
+
+type PlatformGenerationResultStatus int
+
+const (
+	PlatformGenerationResultCompleted PlatformGenerationResultStatus = 1
+	PlatformGenerationResultFailed    PlatformGenerationResultStatus = 2
+)
+
 // UserRole is the stable, integer-backed minimum role used by auth middleware.
 type UserRole int
 
@@ -408,6 +422,40 @@ type GatewayAPIToken struct {
 	IPAllowlist   JSONSlice          `gorm:"type:json;not null" json:"ip_allowlist"`
 	ExpiresAt     *int64             `gorm:"type:bigint;index" json:"-"`
 	LastUsedAt    *int64             `gorm:"type:bigint" json:"-"`
+}
+
+type PlatformChatGenerationReceipt struct {
+	ID int64 `gorm:"primaryKey;type:bigint" json:"-"`
+	AuditFields
+	UserID               int64                         `gorm:"type:bigint;not null" json:"-"`
+	GenerationID         string                        `gorm:"size:36;not null" json:"generation_id"`
+	Mode                 PlatformGenerationReceiptMode `gorm:"type:int;not null" json:"mode"`
+	ConversationID       int64                         `gorm:"type:bigint;not null" json:"-"`
+	UserMessageID        int64                         `gorm:"type:bigint;not null" json:"-"`
+	SuccessfulModelCount int                           `gorm:"type:int;not null" json:"successful_model_count"`
+	DailyCallsCharged    int                           `gorm:"type:int;not null" json:"daily_calls_charged"`
+	TotalTokens          int64                         `gorm:"type:bigint;not null" json:"total_tokens"`
+	CommittedAt          int64                         `gorm:"type:bigint;not null" json:"committed_at"`
+}
+
+func (PlatformChatGenerationReceipt) TableName() string {
+	return "platform_chat_generation_receipts"
+}
+
+type PlatformChatGenerationResult struct {
+	ID int64 `gorm:"primaryKey;type:bigint" json:"-"`
+	AuditFields
+	ReceiptID          int64                          `gorm:"type:bigint;not null" json:"-"`
+	ModelIndex         int                            `gorm:"type:int;not null" json:"model_index"`
+	Model              string                         `gorm:"size:128;not null" json:"model"`
+	Status             PlatformGenerationResultStatus `gorm:"type:int;not null" json:"status"`
+	AssistantMessageID *int64                         `gorm:"type:bigint" json:"-"`
+	Tokens             int64                          `gorm:"type:bigint;not null" json:"tokens"`
+	ErrorCode          *string                        `gorm:"size:64" json:"error_code,omitempty"`
+}
+
+func (PlatformChatGenerationResult) TableName() string {
+	return "platform_chat_generation_results"
 }
 
 // TableName matches the singular table created by the explicit MySQL migration.

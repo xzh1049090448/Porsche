@@ -199,7 +199,7 @@ func (s *PlatformGenerationStore) Get(ctx context.Context, userID int64, generat
 }
 
 func (s *PlatformGenerationStore) RecordDelta(ctx context.Context, userID int64, generationID, model string, seq, nowMillis int64) (PlatformGenerationSnapshot, error) {
-	if !platformSSEV2Identifier(model) || !platformSSEV2SafeInteger(seq) || seq == 0 {
+	if !platformSSEV2ModelIdentifier(model) || !platformSSEV2SafeInteger(seq) || seq == 0 {
 		return PlatformGenerationSnapshot{}, ErrPlatformGenerationInvalid
 	}
 	return s.mutate(ctx, userID, generationID, nowMillis, func(snapshot *PlatformGenerationSnapshot) error {
@@ -214,7 +214,7 @@ func (s *PlatformGenerationStore) RecordDelta(ctx context.Context, userID int64,
 }
 
 func (s *PlatformGenerationStore) MarkModelDone(ctx context.Context, userID int64, generationID, model string, lastSeq, nowMillis int64) (PlatformGenerationSnapshot, error) {
-	if !platformSSEV2Identifier(model) || !platformSSEV2SafeInteger(lastSeq) {
+	if !platformSSEV2ModelIdentifier(model) || !platformSSEV2SafeInteger(lastSeq) {
 		return PlatformGenerationSnapshot{}, ErrPlatformGenerationInvalid
 	}
 	return s.mutate(ctx, userID, generationID, nowMillis, func(snapshot *PlatformGenerationSnapshot) error {
@@ -229,7 +229,7 @@ func (s *PlatformGenerationStore) MarkModelDone(ctx context.Context, userID int6
 }
 
 func (s *PlatformGenerationStore) MarkModelFailed(ctx context.Context, userID int64, generationID, model, code string, nowMillis int64) (PlatformGenerationSnapshot, error) {
-	if !platformSSEV2Identifier(model) || !platformGenerationStableCode(code) {
+	if !platformSSEV2ModelIdentifier(model) || !platformGenerationStableCode(code) {
 		return PlatformGenerationSnapshot{}, ErrPlatformGenerationInvalid
 	}
 	return s.mutate(ctx, userID, generationID, nowMillis, func(snapshot *PlatformGenerationSnapshot) error {
@@ -454,7 +454,7 @@ func validatePlatformGenerationInput(input PlatformGenerationClaimInput) error {
 	}
 	seen := make(map[string]struct{}, len(input.Models))
 	for _, model := range input.Models {
-		if !platformSSEV2Identifier(model) {
+		if !platformSSEV2ModelIdentifier(model) {
 			return ErrPlatformGenerationInvalid
 		}
 		if _, duplicate := seen[model]; duplicate {

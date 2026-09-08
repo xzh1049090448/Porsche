@@ -19,11 +19,12 @@ var (
 const platformSSEV2Schema = "platform-chat-sse.v2"
 
 const (
-	platformSSEV2MaxModels                = 3
-	platformSSEV2MaxIdentifierBytes       = 255
-	platformSSEV2MaxDeltaBytes            = 1 << 20
-	platformSSEV2MaxFrameBytes            = 2 << 20
-	platformSSEV2MaxSafeInteger     int64 = 9007199254740991
+	platformSSEV2MaxModels                     = 3
+	platformSSEV2MaxIdentifierBytes            = 255
+	platformSSEV2MaxModelIdentifierBytes       = 128
+	platformSSEV2MaxDeltaBytes                 = 1 << 20
+	platformSSEV2MaxFrameBytes                 = 2 << 20
+	platformSSEV2MaxSafeInteger          int64 = 9007199254740991
 )
 
 var platformSSEV2StableCodes = map[string]struct{}{
@@ -63,7 +64,7 @@ func NewPlatformSSEV2Encoder(generationID string, models []string) (*PlatformSSE
 	states := make(map[string]*platformSSEV2ModelState, len(models))
 	copyModels := make([]string, len(models))
 	for index, model := range models {
-		if !platformSSEV2Identifier(model) {
+		if !platformSSEV2ModelIdentifier(model) {
 			return nil, ErrPlatformSSEV2InvalidEvent
 		}
 		if _, duplicate := states[model]; duplicate {
@@ -310,6 +311,10 @@ func platformSSEV2CanonicalUUID(value string) bool {
 
 func platformSSEV2Identifier(value string) bool {
 	return value != "" && value == strings.TrimSpace(value) && len(value) <= platformSSEV2MaxIdentifierBytes
+}
+
+func platformSSEV2ModelIdentifier(value string) bool {
+	return platformSSEV2Identifier(value) && len([]byte(value)) <= platformSSEV2MaxModelIdentifierBytes
 }
 
 func platformSSEV2SafeInteger(value int64) bool {
