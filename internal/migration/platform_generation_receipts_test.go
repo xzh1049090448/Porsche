@@ -124,11 +124,21 @@ func applyPlatformGenerationReceiptStatement(t *testing.T, db *gorm.DB, index in
 	}
 }
 
+// TestVerifyPlatformGenerationReceiptSchemaRejectsEveryMetadataDrift executes
+// actual DDL against one fresh, test-owned MySQL child schema per subtest. The
+// matcher-only branch matrix below is deliberately separate from this test.
 func TestVerifyPlatformGenerationReceiptSchemaRejectsEveryMetadataDrift(t *testing.T) {
 	tests := []struct {
-		name string
-		ddl  []string
+		name   string
+		ddl    []string
+		mutate func(*testing.T, *gorm.DB)
 	}{
+		{name: "engine_real_with_required_foreign_keys_removed", ddl: []string{
+			"ALTER TABLE platform_chat_generation_results DROP FOREIGN KEY fk_platform_chat_generation_results_receipt",
+			"ALTER TABLE platform_chat_generation_results DROP FOREIGN KEY fk_platform_chat_generation_results_message",
+			"ALTER TABLE platform_chat_generation_results ENGINE=MyISAM",
+		}},
+		{name: "table_charset", ddl: []string{"ALTER TABLE platform_chat_generation_results DEFAULT CHARACTER SET latin1 COLLATE latin1_swedish_ci"}},
 		{name: "extra_column", ddl: []string{"ALTER TABLE platform_chat_generation_results ADD COLUMN unexpected_value BIGINT NULL"}},
 		{name: "column_order", ddl: []string{"ALTER TABLE platform_chat_generation_results MODIFY guid BIGINT NOT NULL AFTER receipt_id"}},
 		{name: "column_type", ddl: []string{"ALTER TABLE platform_chat_generation_results MODIFY model VARCHAR(127) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL"}},
@@ -140,6 +150,13 @@ func TestVerifyPlatformGenerationReceiptSchemaRejectsEveryMetadataDrift(t *testi
 		{name: "column_collation", ddl: []string{"ALTER TABLE platform_chat_generation_results MODIFY model VARCHAR(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL"}},
 		{name: "table_collation", ddl: []string{"ALTER TABLE platform_chat_generation_receipts DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_bin"}},
 		{name: "extra_index", ddl: []string{"ALTER TABLE platform_chat_generation_results ADD KEY idx_platform_chat_generation_results_unexpected (status)"}},
+		{name: "missing_index", ddl: []string{"ALTER TABLE platform_chat_generation_receipts DROP INDEX idx_platform_chat_generation_receipts_owner_active_created"}},
+		{name: "renamed_index", ddl: []string{"ALTER TABLE platform_chat_generation_receipts RENAME INDEX idx_platform_chat_generation_receipts_owner_active_created TO idx_platform_chat_generation_receipts_owner_active_created_drifted"}},
+		{name: "invisible_index", ddl: []string{"ALTER TABLE platform_chat_generation_receipts ALTER INDEX idx_platform_chat_generation_receipts_owner_active_created INVISIBLE"}},
+		{name: "prefix_index", ddl: []string{
+			"ALTER TABLE platform_chat_generation_results DROP INDEX uk_platform_chat_generation_results_model",
+			"ALTER TABLE platform_chat_generation_results ADD UNIQUE KEY uk_platform_chat_generation_results_model (receipt_id, model(64))",
+		}},
 		{name: "index_order", ddl: []string{
 			"ALTER TABLE platform_chat_generation_results DROP INDEX uk_platform_chat_generation_results_model",
 			"ALTER TABLE platform_chat_generation_results ADD UNIQUE KEY uk_platform_chat_generation_results_model (model, receipt_id)",
@@ -158,6 +175,33 @@ func TestVerifyPlatformGenerationReceiptSchemaRejectsEveryMetadataDrift(t *testi
 			"ALTER TABLE platform_chat_generation_results DROP FOREIGN KEY fk_platform_chat_generation_results_receipt",
 			"ALTER TABLE platform_chat_generation_results ADD CONSTRAINT fk_platform_chat_generation_results_receipt FOREIGN KEY (receipt_id) REFERENCES platform_chat_generation_receipts(guid) ON DELETE RESTRICT ON UPDATE RESTRICT",
 		}},
+		{name: "missing_foreign_key", ddl: []string{"ALTER TABLE platform_chat_generation_results DROP FOREIGN KEY fk_platform_chat_generation_results_message"}},
+		{name: "renamed_foreign_key", ddl: []string{
+			"ALTER TABLE platform_chat_generation_results DROP FOREIGN KEY fk_platform_chat_generation_results_message",
+			"ALTER TABLE platform_chat_generation_results ADD CONSTRAINT fk_platform_chat_generation_results_message_drifted FOREIGN KEY (assistant_message_id) REFERENCES messages(id) ON DELETE RESTRICT ON UPDATE RESTRICT",
+		}},
+		{name: "extra_foreign_key", ddl: []string{"ALTER TABLE platform_chat_generation_results ADD CONSTRAINT fk_platform_chat_generation_results_unexpected FOREIGN KEY (guid) REFERENCES platform_chat_generation_receipts(guid) ON DELETE RESTRICT ON UPDATE RESTRICT"}},
+		{name: "cross_schema_foreign_key", mutate: func(t *testing.T, source *gorm.DB) {
+			t.Helper()
+			target := platformGenerationReceiptSchemaDB(t)
+			permissionUp(t, target)
+			var targetSchema string
+			if err := target.Raw("SELECT DATABASE()").Row().Scan(&targetSchema); err != nil || targetSchema == "" {
+				t.Fatalf("load target test schema: %q %v", targetSchema, err)
+			}
+			if err := source.Exec("ALTER TABLE platform_chat_generation_results DROP FOREIGN KEY fk_platform_chat_generation_results_receipt").Error; err != nil {
+				t.Fatal(err)
+			}
+			add := "ALTER TABLE platform_chat_generation_results ADD CONSTRAINT fk_platform_chat_generation_results_receipt FOREIGN KEY (receipt_id) REFERENCES `" + targetSchema + "`.platform_chat_generation_receipts(id) ON DELETE RESTRICT ON UPDATE RESTRICT"
+			if err := source.Exec(add).Error; err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if err := source.Exec("ALTER TABLE platform_chat_generation_results DROP FOREIGN KEY fk_platform_chat_generation_results_receipt").Error; err != nil {
+					t.Errorf("drop cross-schema test foreign key: %v", err)
+				}
+			})
+		}},
 		{name: "foreign_key_delete_rule", ddl: []string{
 			"ALTER TABLE platform_chat_generation_results DROP FOREIGN KEY fk_platform_chat_generation_results_receipt",
 			"ALTER TABLE platform_chat_generation_results ADD CONSTRAINT fk_platform_chat_generation_results_receipt FOREIGN KEY (receipt_id) REFERENCES platform_chat_generation_receipts(id) ON DELETE CASCADE ON UPDATE RESTRICT",
@@ -171,6 +215,14 @@ func TestVerifyPlatformGenerationReceiptSchemaRejectsEveryMetadataDrift(t *testi
 			"ALTER TABLE platform_chat_generation_receipts ADD CONSTRAINT fk_platform_chat_generation_receipts_user_message FOREIGN KEY (user_message_id) REFERENCES conversations(id) ON DELETE RESTRICT ON UPDATE RESTRICT",
 		}},
 		{name: "missing_check", ddl: []string{"ALTER TABLE platform_chat_generation_results DROP CHECK chk_platform_chat_generation_results_tokens"}},
+		{name: "renamed_check", ddl: []string{
+			"ALTER TABLE platform_chat_generation_results DROP CHECK chk_platform_chat_generation_results_tokens",
+			"ALTER TABLE platform_chat_generation_results ADD CONSTRAINT chk_platform_chat_generation_results_tokens_drifted CHECK (tokens >= 0)",
+		}},
+		{name: "changed_check", ddl: []string{
+			"ALTER TABLE platform_chat_generation_results DROP CHECK chk_platform_chat_generation_results_tokens",
+			"ALTER TABLE platform_chat_generation_results ADD CONSTRAINT chk_platform_chat_generation_results_tokens CHECK (tokens >= 1)",
+		}},
 		{name: "extra_check", ddl: []string{"ALTER TABLE platform_chat_generation_results ADD CONSTRAINT chk_platform_chat_generation_results_unexpected CHECK (id > 0)"}},
 	}
 	for _, tc := range tests {
@@ -181,6 +233,9 @@ func TestVerifyPlatformGenerationReceiptSchemaRejectsEveryMetadataDrift(t *testi
 				if err := db.Exec(ddl).Error; err != nil {
 					t.Fatalf("execute metadata drift %q: %v", ddl, err)
 				}
+			}
+			if tc.mutate != nil {
+				tc.mutate(t, db)
 			}
 			err := VerifyPlatformGenerationReceiptSchema(context.Background(), db)
 			if !errors.Is(err, ErrPlatformGenerationReceiptSchema) {
@@ -228,11 +283,13 @@ func TestPlatformGenerationReceiptMigrationIsRerunnable(t *testing.T) {
 }
 
 type platformGenerationReceiptFixture struct {
-	userID             int64
-	conversationID     int64
-	userMessageID      int64
-	assistantMessageID int64
-	receiptID          int64
+	userID               int64
+	conversationID       int64
+	secondConversationID int64
+	userMessageID        int64
+	secondUserMessageID  int64
+	assistantMessageID   int64
+	receiptID            int64
 }
 
 func seedPlatformGenerationReceiptFixture(t *testing.T, db *gorm.DB) platformGenerationReceiptFixture {
@@ -255,14 +312,22 @@ func seedPlatformGenerationReceiptFixture(t *testing.T, db *gorm.DB) platformGen
 	if err := db.Raw("SELECT id FROM conversations WHERE guid=?", 9_112_000_000_000_002).Row().Scan(&fixture.conversationID); err != nil {
 		t.Fatal(err)
 	}
+	if err := db.Exec(`INSERT INTO conversations (guid, user_id, created_at, updated_at, is_deleted) VALUES (?, ?, ?, ?, 0)`, 9_112_000_000_000_020, fixture.userID, now, now).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Raw("SELECT id FROM conversations WHERE guid=?", 9_112_000_000_000_020).Row().Scan(&fixture.secondConversationID); err != nil {
+		t.Fatal(err)
+	}
 	for _, message := range []struct {
-		guid int64
-		role int
+		guid           int64
+		conversationID int64
+		role           int
 	}{
-		{guid: 9_112_000_000_000_003, role: 1},
-		{guid: 9_112_000_000_000_004, role: 2},
+		{guid: 9_112_000_000_000_003, conversationID: fixture.conversationID, role: 1},
+		{guid: 9_112_000_000_000_004, conversationID: fixture.conversationID, role: 2},
+		{guid: 9_112_000_000_000_021, conversationID: fixture.secondConversationID, role: 1},
 	} {
-		if err := db.Exec(`INSERT INTO messages (guid, conversation_id, role, content, created_at, updated_at, is_deleted) VALUES (?, ?, ?, 'receipt fixture', ?, ?, 0)`, message.guid, fixture.conversationID, message.role, now, now).Error; err != nil {
+		if err := db.Exec(`INSERT INTO messages (guid, conversation_id, role, content, created_at, updated_at, is_deleted) VALUES (?, ?, ?, 'receipt fixture', ?, ?, 0)`, message.guid, message.conversationID, message.role, now, now).Error; err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -270,6 +335,9 @@ func seedPlatformGenerationReceiptFixture(t *testing.T, db *gorm.DB) platformGen
 		t.Fatal(err)
 	}
 	if err := db.Raw("SELECT id FROM messages WHERE guid=?", 9_112_000_000_000_004).Row().Scan(&fixture.assistantMessageID); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Raw("SELECT id FROM messages WHERE guid=?", 9_112_000_000_000_021).Row().Scan(&fixture.secondUserMessageID); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Exec(`INSERT INTO platform_chat_generation_receipts
@@ -293,16 +361,27 @@ func TestPlatformGenerationReceiptUserMessageConstraints(t *testing.T) {
 	db := platformGenerationReceiptSchemaDB(t)
 	permissionUp(t, db)
 	fixture := seedPlatformGenerationReceiptFixture(t, db)
+	if fixture.secondConversationID <= 0 || fixture.secondUserMessageID <= 0 {
+		t.Fatalf("second owned conversation/user message missing: %#v", fixture)
+	}
+	var ownedActiveUserMessages int64
+	if err := db.Raw(`SELECT COUNT(*) FROM messages m JOIN conversations c ON c.id=m.conversation_id
+      WHERE c.user_id=? AND c.is_deleted=0 AND m.role=1 AND m.is_deleted=0
+      AND ((c.id=? AND m.id=?) OR (c.id=? AND m.id=?))`,
+		fixture.userID, fixture.conversationID, fixture.userMessageID, fixture.secondConversationID, fixture.secondUserMessageID,
+	).Row().Scan(&ownedActiveUserMessages); err != nil || ownedActiveUserMessages != 2 {
+		t.Fatalf("active owned user-message fixture count = %d, err=%v; want 2", ownedActiveUserMessages, err)
+	}
 	const now = int64(1_900_000_000_000)
-	insertReceipt := func(guid int64, generationID string, userMessageID int64) error {
+	insertReceipt := func(guid int64, generationID string, conversationID, userMessageID int64) error {
 		return db.Exec(`INSERT INTO platform_chat_generation_receipts
         (guid,user_id,generation_id,mode,conversation_id,user_message_id,successful_model_count,daily_calls_charged,total_tokens,committed_at,created_at,updated_at,is_deleted)
-        VALUES (?,?,?,1,?,?,1,1,0,?,?,?,0)`, guid, fixture.userID, generationID, fixture.conversationID, userMessageID, now, now, now).Error
+		VALUES (?,?,?,1,?,?,1,1,0,?,?,?,0)`, guid, fixture.userID, generationID, conversationID, userMessageID, now, now, now).Error
 	}
-	if err := insertReceipt(9_112_000_000_000_007, "31111111-1111-4111-8111-111111111111", fixture.userMessageID); err == nil {
-		t.Fatal("duplicate user_message_id was accepted")
+	if err := insertReceipt(9_112_000_000_000_007, "31111111-1111-4111-8111-111111111111", fixture.secondConversationID, fixture.userMessageID); err == nil {
+		t.Fatal("global duplicate user_message_id in a different conversation was accepted")
 	}
-	if err := insertReceipt(9_112_000_000_000_008, "41111111-1111-4111-8111-111111111111", 9_999_999_999); err == nil {
+	if err := insertReceipt(9_112_000_000_000_008, "41111111-1111-4111-8111-111111111111", fixture.secondConversationID, 9_999_999_999); err == nil {
 		t.Fatal("nonexistent user_message_id was accepted")
 	}
 	if err := db.Exec("DELETE FROM messages WHERE id=?", fixture.userMessageID).Error; err == nil {
@@ -321,7 +400,7 @@ func TestPlatformGenerationReceiptInvalidRowsAreRejected(t *testing.T) {
 		const now = int64(1_900_000_000_000)
 		err := db.Exec(`INSERT INTO platform_chat_generation_receipts
         (guid,user_id,generation_id,mode,conversation_id,user_message_id,successful_model_count,daily_calls_charged,total_tokens,committed_at,created_at,updated_at,is_deleted)
-        VALUES (?,?,?,1,?,?,0,0,0,?,?,?,0)`, 9_112_000_000_000_010, fixture.userID, "51111111-1111-4111-8111-111111111111", fixture.conversationID, fixture.assistantMessageID, now, now, now).Error
+		VALUES (?,?,?,1,?,?,0,0,0,?,?,?,0)`, 9_112_000_000_000_010, fixture.userID, "51111111-1111-4111-8111-111111111111", fixture.secondConversationID, fixture.secondUserMessageID, now, now, now).Error
 		if err == nil {
 			t.Fatal("receipt with successful_model_count=0 was accepted")
 		}
@@ -378,6 +457,113 @@ func TestPlatformGenerationReceiptContractsMatchExactMetadata(t *testing.T) {
 		if !matchesPlatformGenerationReceiptTableContract(contract, metadata, schemaName) {
 			t.Fatalf("exact metadata rejected for %s", contract.table.name)
 		}
+	}
+}
+
+// TestPlatformGenerationReceiptMatcherRejectsEveryMetadataBranch covers each
+// fail-closed comparison branch with one synthetic metadata mutation. It does
+// not substitute for the real-MySQL drift cases above.
+func TestPlatformGenerationReceiptMatcherRejectsEveryMetadataBranch(t *testing.T) {
+	const schemaName = "receipt_matcher_test"
+	contract := platformGenerationReceiptTableContracts()[1]
+	tests := []struct {
+		name   string
+		mutate func(*businessGroupTableMetadata)
+	}{
+		{name: "engine", mutate: func(got *businessGroupTableMetadata) { got.engine = "MyISAM" }},
+		{name: "table_charset", mutate: func(got *businessGroupTableMetadata) { got.characterSet = "latin1" }},
+		{name: "table_collation", mutate: func(got *businessGroupTableMetadata) { got.collation = "utf8mb4_bin" }},
+		{name: "missing_column", mutate: func(got *businessGroupTableMetadata) { got.columns = got.columns[:len(got.columns)-1] }},
+		{name: "extra_column", mutate: func(got *businessGroupTableMetadata) {
+			got.columns = append(got.columns, businessGroupColumnMetadata{name: "extra"})
+		}},
+		{name: "column_order", mutate: func(got *businessGroupTableMetadata) { got.columns[1], got.columns[2] = got.columns[2], got.columns[1] }},
+		{name: "column_name", mutate: func(got *businessGroupTableMetadata) { got.columns[1].name = "guid_drifted" }},
+		{name: "column_type", mutate: func(got *businessGroupTableMetadata) { got.columns[1].columnType = "int" }},
+		{name: "column_unsigned", mutate: func(got *businessGroupTableMetadata) { got.columns[1].columnType = "bigint unsigned" }},
+		{name: "column_nullability", mutate: func(got *businessGroupTableMetadata) { got.columns[1].nullable = "YES" }},
+		{name: "column_default", mutate: func(got *businessGroupTableMetadata) {
+			got.columns[7].defaultVal = sql.NullString{String: "1", Valid: true}
+		}},
+		{name: "column_extra", mutate: func(got *businessGroupTableMetadata) { got.columns[0].extra = "" }},
+		{name: "column_charset", mutate: func(got *businessGroupTableMetadata) { got.columns[4].characterSet = "ascii" }},
+		{name: "column_collation", mutate: func(got *businessGroupTableMetadata) { got.columns[4].collation = "utf8mb4_unicode_ci" }},
+		{name: "missing_named_index", mutate: func(got *businessGroupTableMetadata) {
+			got.indexes = removePlatformGenerationReceiptIndex(got.indexes, "uk_platform_chat_generation_results_model")
+		}},
+		{name: "extra_named_index", mutate: func(got *businessGroupTableMetadata) {
+			got.indexes = append(got.indexes, validPlatformGenerationReceiptIndex("extra", "status", 1, false))
+		}},
+		{name: "index_column_count", mutate: func(got *businessGroupTableMetadata) { got.indexes = append(got.indexes[:3], got.indexes[4:]...) }},
+		{name: "index_sequence", mutate: func(got *businessGroupTableMetadata) { got.indexes[2].sequence = 2 }},
+		{name: "index_column", mutate: func(got *businessGroupTableMetadata) { got.indexes[2].column = "model" }},
+		{name: "index_uniqueness", mutate: func(got *businessGroupTableMetadata) { got.indexes[2].nonUnique = 1 }},
+		{name: "index_prefix", mutate: func(got *businessGroupTableMetadata) { got.indexes[2].subPart = sql.NullInt64{Int64: 64, Valid: true} }},
+		{name: "index_missing_sort_collation", mutate: func(got *businessGroupTableMetadata) { got.indexes[2].collation = sql.NullString{} }},
+		{name: "index_descending", mutate: func(got *businessGroupTableMetadata) {
+			got.indexes[2].collation = sql.NullString{String: "D", Valid: true}
+		}},
+		{name: "index_non_btree", mutate: func(got *businessGroupTableMetadata) { got.indexes[2].indexType = "HASH" }},
+		{name: "index_invisible", mutate: func(got *businessGroupTableMetadata) { got.indexes[2].visible = "NO" }},
+		{name: "index_expression", mutate: func(got *businessGroupTableMetadata) {
+			got.indexes[2].expression = sql.NullString{String: "(`model`)", Valid: true}
+		}},
+		{name: "missing_foreign_key", mutate: func(got *businessGroupTableMetadata) { got.foreignKeys = got.foreignKeys[:1] }},
+		{name: "extra_foreign_key", mutate: func(got *businessGroupTableMetadata) {
+			extra := got.foreignKeys[0]
+			extra.name = "extra"
+			got.foreignKeys = append(got.foreignKeys, extra)
+		}},
+		{name: "composite_foreign_key", mutate: func(got *businessGroupTableMetadata) {
+			duplicate := got.foreignKeys[0]
+			duplicate.ordinal = 2
+			got.foreignKeys = append(got.foreignKeys, duplicate)
+		}},
+		{name: "foreign_key_ordinal", mutate: func(got *businessGroupTableMetadata) { got.foreignKeys[0].ordinal = 2 }},
+		{name: "foreign_key_column", mutate: func(got *businessGroupTableMetadata) { got.foreignKeys[0].column = "guid" }},
+		{name: "foreign_key_schema", mutate: func(got *businessGroupTableMetadata) { got.foreignKeys[0].targetSchema = "other_test" }},
+		{name: "foreign_key_table", mutate: func(got *businessGroupTableMetadata) { got.foreignKeys[0].targetTable = "messages" }},
+		{name: "foreign_key_target_column", mutate: func(got *businessGroupTableMetadata) { got.foreignKeys[0].targetColumn = "guid" }},
+		{name: "foreign_key_delete_rule", mutate: func(got *businessGroupTableMetadata) { got.foreignKeys[0].deleteRule = "CASCADE" }},
+		{name: "foreign_key_update_rule", mutate: func(got *businessGroupTableMetadata) { got.foreignKeys[0].updateRule = "CASCADE" }},
+		{name: "missing_check", mutate: func(got *businessGroupTableMetadata) { got.checks = got.checks[:len(got.checks)-1] }},
+		{name: "extra_check", mutate: func(got *businessGroupTableMetadata) {
+			got.checks = append(got.checks, businessGroupCheckMetadata{name: "extra", clause: "id > 0", enforced: "YES"})
+		}},
+		{name: "duplicate_check", mutate: func(got *businessGroupTableMetadata) { got.checks = append(got.checks, got.checks[0]) }},
+		{name: "check_not_enforced", mutate: func(got *businessGroupTableMetadata) { got.checks[0].enforced = "NO" }},
+		{name: "check_changed", mutate: func(got *businessGroupTableMetadata) { got.checks[0].clause = "model_index >= 1" }},
+		{name: "check_unparseable", mutate: func(got *businessGroupTableMetadata) { got.checks[0].clause = "model_index + 1 >= 0" }},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			metadata := platformGenerationReceiptMetadataFromContract(contract, schemaName)
+			tc.mutate(&metadata)
+			if matchesPlatformGenerationReceiptTableContract(contract, metadata, schemaName) {
+				t.Fatal("matcher accepted synthetic one-field metadata drift")
+			}
+		})
+	}
+}
+
+func removePlatformGenerationReceiptIndex(indexes []businessGroupIndexMetadata, name string) []businessGroupIndexMetadata {
+	filtered := make([]businessGroupIndexMetadata, 0, len(indexes))
+	for _, index := range indexes {
+		if index.name != name {
+			filtered = append(filtered, index)
+		}
+	}
+	return filtered
+}
+
+func validPlatformGenerationReceiptIndex(name, column string, sequence int, unique bool) businessGroupIndexMetadata {
+	nonUnique := 1
+	if unique {
+		nonUnique = 0
+	}
+	return businessGroupIndexMetadata{
+		name: name, column: column, sequence: sequence, nonUnique: nonUnique,
+		collation: sql.NullString{String: "A", Valid: true}, indexType: "BTREE", visible: "YES",
 	}
 }
 
