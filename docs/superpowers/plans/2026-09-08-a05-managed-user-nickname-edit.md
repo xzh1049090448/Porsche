@@ -22,11 +22,11 @@ Do not edit deployment/configuration files owned by the concurrent emergency-fix
 **Files:**
 - Create: backend `docs/agents/contracts/admin-user-edit-v1.json`
 - Modify: backend `docs/agents/contracts/admin-action-future-contract.json`
-- Modify: backend `docs/agents/contracts/prd-260903-interface-draft.json`
-- Modify: backend `interface-contract.json`
 - Modify: frontend `docs/agents/contracts/prd-260903-interface-draft.json`
 - Modify: frontend `interface-contract.json`
 - Create: frontend `src/api/admin-user-edit-contract.test.js`
+
+The broad PRD draft and root interface-contract documents are frontend-owned aggregate documents. The backend contributes only the dedicated A05 contract and its pending future-action reference; it does not create aggregate mirrors.
 
 - [ ] **Step 1: Write the failing frontend equality test**
 
@@ -53,7 +53,7 @@ Run the focused Node test plus `python3 -m json.tool` for every modified JSON do
 
 - [ ] **Step 5: Commit the contract freeze in each repository**
 
-Backend commit: `docs: freeze A05 user nickname edit contract`  
+Backend commit: `docs: freeze A05 user nickname edit contract`
 Frontend commit: `test: bind A05 frontend contract to backend`
 
 ### Task 2: Implement the strict backend request decoder
@@ -306,7 +306,7 @@ Re-run backend full tests/vet, frontend full tests/build, JSON parsing, contract
 
 - [ ] **Step 4: Commit final evidence and status separately**
 
-Backend commit: `docs: accept A05 managed user edit slice`  
+Backend commit: `docs: accept A05 managed user edit slice`
 Frontend commit: `docs: record A05 joint acceptance`
 
 - [ ] **Step 5: Use the finishing-a-development-branch workflow**
