@@ -2049,7 +2049,7 @@ func TestPlatformGenerationPersistenceDuplicateIgnoresRetryTimestamp(t *testing.
 }
 
 func TestPlatformGenerationPersistenceDuplicateRequiresExactConversationProvenance(t *testing.T) {
-	t.Run("existing conversation cannot retry as new", func(t *testing.T) {
+	t.Run("existing conversation requires exact request guid", func(t *testing.T) {
 		f := openPlatformGenerationFinalizationFixture(t)
 		conversation := models.Conversation{
 			AuditFields: models.AuditFields{Guid: testSnowflake.Next(), CreatedAt: f.now - 1, CreatedBy: &f.user.ID, UpdatedAt: f.now - 1, UpdatedBy: &f.user.ID},
@@ -2057,6 +2057,14 @@ func TestPlatformGenerationPersistenceDuplicateRequiresExactConversationProvenan
 			Title:       "existing",
 		}
 		if err := f.db.Create(&conversation).Error; err != nil {
+			t.Fatal(err)
+		}
+		otherConversation := models.Conversation{
+			AuditFields: models.AuditFields{Guid: testSnowflake.Next(), CreatedAt: f.now - 1, CreatedBy: &f.user.ID, UpdatedAt: f.now - 1, UpdatedBy: &f.user.ID},
+			UserID:      f.user.ID,
+			Title:       "other existing",
+		}
+		if err := f.db.Create(&otherConversation).Error; err != nil {
 			t.Fatal(err)
 		}
 		input := f.committingSingle(t)
@@ -2073,10 +2081,16 @@ func TestPlatformGenerationPersistenceDuplicateRequiresExactConversationProvenan
 		if err != nil || !reflect.DeepEqual(first, retry) {
 			t.Fatalf("same existing-conversation retry=%#v error=%v, want %#v", retry, err, first)
 		}
+		input.ConversationGUID = &otherConversation.Guid
+		if _, err := p.Finalize(context.Background(), f.db, input); !errors.Is(err, ErrPlatformGenerationPersistenceConflict) {
+			t.Fatalf("existing-to-different-existing retry error=%v, want conflict", err)
+		}
+		assertPlatformGenerationFinalizationEffects(t, f, 2, 2, 1, 1, 1, 3, 17)
 		input.ConversationGUID = nil
 		if _, err := p.Finalize(context.Background(), f.db, input); !errors.Is(err, ErrPlatformGenerationPersistenceConflict) {
 			t.Fatalf("existing-to-new retry error=%v, want conflict", err)
 		}
+		assertPlatformGenerationFinalizationEffects(t, f, 2, 2, 1, 1, 1, 3, 17)
 	})
 
 	t.Run("new conversation cannot retry as explicit result", func(t *testing.T) {

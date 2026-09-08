@@ -91,6 +91,7 @@ func TestPlatformGenerationReceiptMigrationContract(t *testing.T) {
 	for _, fragment := range []string{
 		"create table platform_chat_generation_receipts",
 		"generation_id char(36) character set ascii collate ascii_bin not null",
+		"requested_existing_conversation tinyint not null",
 		"unique key uk_platform_chat_generation_receipts_owner_generation (user_id, generation_id)",
 		"user_message_id bigint not null",
 		"unique key uk_platform_chat_generation_receipts_user_message (user_message_id)",
@@ -101,6 +102,7 @@ func TestPlatformGenerationReceiptMigrationContract(t *testing.T) {
 		"unique key uk_platform_chat_generation_results_position (receipt_id, model_index)",
 		"foreign key (assistant_message_id) references messages(id)",
 		"check (mode in (1, 2))",
+		"check (requested_existing_conversation in (0, 1))",
 		"check (status in (1, 2))",
 	} {
 		if !strings.Contains(up, fragment) {
@@ -336,6 +338,7 @@ func platformGenerationReceiptContracts() []platformGenerationTableContract {
 		requiredPlatformGenerationColumn("user_id", "bigint"),
 		requiredPlatformGenerationColumn("generation_id", "char(36)"),
 		requiredPlatformGenerationColumn("mode", "int"),
+		requiredPlatformGenerationColumn("requested_existing_conversation", "tinyint"),
 		requiredPlatformGenerationColumn("conversation_id", "bigint"),
 		requiredPlatformGenerationColumn("user_message_id", "bigint"),
 		requiredPlatformGenerationColumn("successful_model_count", "int"),
@@ -350,7 +353,7 @@ func platformGenerationReceiptContracts() []platformGenerationTableContract {
 	}
 	receiptColumns[0].extra = "auto_increment"
 	receiptColumns[3].characterSet, receiptColumns[3].collation = "ascii", "ascii_bin"
-	receiptColumns[15].defaultVal = sql.NullString{String: "0", Valid: true}
+	receiptColumns[16].defaultVal = sql.NullString{String: "0", Valid: true}
 
 	resultColumns := []businessGroupColumnContract{
 		requiredPlatformGenerationColumn("id", "bigint"),
@@ -388,6 +391,7 @@ func platformGenerationReceiptContracts() []platformGenerationTableContract {
 				},
 				checks: []businessGroupCheckContract{
 					{name: "chk_platform_chat_generation_receipts_mode", clause: "mode IN (1, 2)", enforced: "YES"},
+					{name: "chk_platform_chat_generation_receipts_requested_conversation", clause: "requested_existing_conversation IN (0, 1)", enforced: "YES"},
 					{name: "chk_platform_chat_generation_receipts_counts", clause: "successful_model_count >= 1 AND daily_calls_charged = successful_model_count AND total_tokens >= 0", enforced: "YES"},
 					{name: "chk_platform_chat_generation_receipts_time", clause: "committed_at > 0 AND updated_at = created_at", enforced: "YES"},
 					{name: "chk_platform_chat_generation_receipts_deleted", clause: "is_deleted IN (0, 1)", enforced: "YES"},
@@ -725,16 +729,16 @@ const (
 type PlatformChatGenerationReceipt struct {
 	ID int64 `gorm:"primaryKey;type:bigint" json:"-"`
 	AuditFields
-	UserID               int64                         `gorm:"type:bigint;not null" json:"-"`
-	GenerationID         string                        `gorm:"size:36;not null" json:"generation_id"`
-	Mode                 PlatformGenerationReceiptMode `gorm:"type:int;not null" json:"mode"`
-	RequestedExistingConversation int                   `gorm:"type:tinyint;not null" json:"-"`
-	ConversationID       int64                         `gorm:"type:bigint;not null" json:"-"`
-	UserMessageID         int64                         `gorm:"type:bigint;not null" json:"-"`
-	SuccessfulModelCount int                           `gorm:"type:int;not null" json:"successful_model_count"`
-	DailyCallsCharged    int                           `gorm:"type:int;not null" json:"daily_calls_charged"`
-	TotalTokens          int64                         `gorm:"type:bigint;not null" json:"total_tokens"`
-	CommittedAt          int64                         `gorm:"type:bigint;not null" json:"committed_at"`
+	UserID                        int64                         `gorm:"type:bigint;not null" json:"-"`
+	GenerationID                  string                        `gorm:"size:36;not null" json:"generation_id"`
+	Mode                          PlatformGenerationReceiptMode `gorm:"type:int;not null" json:"mode"`
+	RequestedExistingConversation int                           `gorm:"type:tinyint;not null" json:"-"`
+	ConversationID                int64                         `gorm:"type:bigint;not null" json:"-"`
+	UserMessageID                 int64                         `gorm:"type:bigint;not null" json:"-"`
+	SuccessfulModelCount          int                           `gorm:"type:int;not null" json:"successful_model_count"`
+	DailyCallsCharged             int                           `gorm:"type:int;not null" json:"daily_calls_charged"`
+	TotalTokens                   int64                         `gorm:"type:bigint;not null" json:"total_tokens"`
+	CommittedAt                   int64                         `gorm:"type:bigint;not null" json:"committed_at"`
 }
 
 func (PlatformChatGenerationReceipt) TableName() string {
@@ -829,16 +833,17 @@ type PlatformGenerationCommittedResult struct {
 }
 
 type PlatformGenerationReceiptSnapshot struct {
-	UserID               int64
-	GenerationID         string
-	Mode                 PlatformGenerationMode
-	ConversationGUID     int64
-	UserMessage          string `json:"-"`
-	SuccessfulModelCount int
-	DailyCallsCharged    int
-	TotalTokens          int64
-	CommittedAtMillis    int64
-	Results              []PlatformGenerationCommittedResult
+	UserID                        int64
+	GenerationID                  string
+	Mode                          PlatformGenerationMode
+	ConversationGUID              int64
+	RequestedExistingConversation bool   `json:"-"`
+	UserMessage                   string `json:"-"`
+	SuccessfulModelCount          int
+	DailyCallsCharged             int
+	TotalTokens                   int64
+	CommittedAtMillis             int64
+	Results                       []PlatformGenerationCommittedResult
 }
 
 type platformGenerationLockRunner func(context.Context, *gorm.DB, string, func(*gorm.DB) error) error
@@ -1008,7 +1013,7 @@ func openPlatformGenerationPersistenceMySQL(t *testing.T) *gorm.DB {
 }
 ```
 
-Seed valid rows with model constructors and GORM rather than disabling foreign-key checks. Cross-user lookup must expect `ErrPlatformGenerationPersistenceNotFound`; malformed owned graphs must expect `ErrPlatformGenerationPersistenceIntegrity`. `TestLoadPlatformGenerationReceiptRejectsInvalidParentScalars` uses a fresh disposable child database per case and covers `mode=3`, `successful_model_count=0`, `daily_calls_charged != successful_model_count`, `total_tokens=-1`, `committed_at=0`, and `committed_at` above JavaScript's safe-integer maximum. For each otherwise CHECK-protected mutation, drop only its named receipt CHECK constraint, apply the one scalar mutation, prove `VerifyPlatformGenerationReceiptSchema` fails closed, and then prove the reader returns `ErrPlatformGenerationPersistenceIntegrity`; never disable foreign-key checks. For the otherwise-unrepresentable missing-user-message corruption subtest only, use a fresh disposable child database, drop the named `fk_platform_chat_generation_receipts_user_message` constraint, delete the referenced message, prove the schema verifier fails closed, then prove the reader returns the integrity error. The deleted, wrong-role, and cross-conversation subtests keep the FK installed and mutate only `is_deleted`, `role`, or `conversation_id` respectively.
+Seed valid rows with model constructors and GORM rather than disabling foreign-key checks. Cross-user lookup must expect `ErrPlatformGenerationPersistenceNotFound`; malformed owned graphs must expect `ErrPlatformGenerationPersistenceIntegrity`. `TestLoadPlatformGenerationReceiptRejectsInvalidParentScalars` uses a fresh disposable child database per case and covers `mode=3`, `requested_existing_conversation=2`, `successful_model_count=0`, `daily_calls_charged != successful_model_count`, `total_tokens=-1`, `committed_at=0`, and `committed_at` above JavaScript's safe-integer maximum. For each otherwise CHECK-protected mutation, drop only its named receipt CHECK constraint, apply the one scalar mutation, prove `VerifyPlatformGenerationReceiptSchema` fails closed, and then prove the reader returns `ErrPlatformGenerationPersistenceIntegrity`; never disable foreign-key checks. The reader hydrates `RequestedExistingConversation` only after accepting the durable scalar as exactly `0` or `1`. For the otherwise-unrepresentable missing-user-message corruption subtest only, use a fresh disposable child database, drop the named `fk_platform_chat_generation_receipts_user_message` constraint, delete the referenced message, prove the schema verifier fails closed, then prove the reader returns the integrity error. The deleted, wrong-role, and cross-conversation subtests keep the FK installed and mutate only `is_deleted`, `role`, or `conversation_id` respectively.
 
 - [ ] **Step 2: Run reader tests and confirm RED**
 
@@ -1053,7 +1058,7 @@ func LoadPlatformGenerationReceipt(ctx context.Context, db *gorm.DB, userID int6
 	default:
 		return PlatformGenerationReceiptSnapshot{}, ErrPlatformGenerationPersistenceIntegrity
 	}
-	if receipt.SuccessfulModelCount < 1 || receipt.DailyCallsCharged != receipt.SuccessfulModelCount || receipt.TotalTokens < 0 || receipt.CommittedAt <= 0 || !platformSSEV2SafeInteger(receipt.CommittedAt) {
+	if (receipt.RequestedExistingConversation != 0 && receipt.RequestedExistingConversation != 1) || receipt.SuccessfulModelCount < 1 || receipt.DailyCallsCharged != receipt.SuccessfulModelCount || receipt.TotalTokens < 0 || receipt.CommittedAt <= 0 || !platformSSEV2SafeInteger(receipt.CommittedAt) {
 		return PlatformGenerationReceiptSnapshot{}, ErrPlatformGenerationPersistenceIntegrity
 	}
 	var conversation models.Conversation
@@ -1073,7 +1078,7 @@ func LoadPlatformGenerationReceipt(ctx context.Context, db *gorm.DB, userID int6
 	}
 	out := PlatformGenerationReceiptSnapshot{
 		UserID: receipt.UserID, GenerationID: receipt.GenerationID, Mode: mode,
-		ConversationGUID: conversation.Guid, UserMessage: userMessage.Content,
+		ConversationGUID: conversation.Guid, RequestedExistingConversation: receipt.RequestedExistingConversation == 1, UserMessage: userMessage.Content,
 		SuccessfulModelCount: receipt.SuccessfulModelCount,
 		DailyCallsCharged: receipt.DailyCallsCharged, TotalTokens: receipt.TotalTokens,
 		CommittedAtMillis: receipt.CommittedAt, Results: make([]PlatformGenerationCommittedResult, 0, len(rows)),
@@ -1335,7 +1340,8 @@ func persistPlatformGeneration(tx *gorm.DB, input PlatformGenerationPersistenceI
 	}
 	receipt := models.PlatformChatGenerationReceipt{
 		AuditFields: platformPersistenceAudit(input.UserID, input.NowMillis), UserID: input.UserID,
-		GenerationID: input.GenerationID, Mode: models.PlatformGenerationReceiptMode(input.Mode), ConversationID: conversation.ID,
+		GenerationID: input.GenerationID, Mode: models.PlatformGenerationReceiptMode(input.Mode),
+		RequestedExistingConversation: boolToPlatformGenerationInt(input.ConversationGUID != nil), ConversationID: conversation.ID,
 		UserMessageID: userMessage.ID,
 		SuccessfulModelCount: successes, DailyCallsCharged: successes, TotalTokens: totalTokens, CommittedAt: input.NowMillis,
 	}
@@ -1361,6 +1367,13 @@ func persistPlatformGeneration(tx *gorm.DB, input PlatformGenerationPersistenceI
 	return nil
 }
 
+func boolToPlatformGenerationInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
+}
+
 func platformPersistenceAudit(userID, nowMillis int64) models.AuditFields {
 	return models.AuditFields{Guid: persistence.NextGUID(), CreatedAt: nowMillis, CreatedBy: &userID, UpdatedAt: nowMillis, UpdatedBy: &userID, IsDeleted: 0}
 }
@@ -1374,7 +1387,7 @@ func resetDailyAt(user *models.User, nowMillis int64) {
 }
 ```
 
-Add the required imports `time`, `gorm.io/gorm/clause`, `gorm.io/gorm/logger`, `internal/models`, and `internal/persistence`. The finalizer and receipt-less recovery path must hold the same hashed per-generation MySQL advisory lock while resolving commit state. Run the entire transaction through a silent GORM session so error and slow-query logging cannot interpolate prompt or assistant content; preserve the original returned database error without logging content in service code. Reject a transaction timestamp older than Redis `updated_at_ms`, the locked user's `updated_at` or non-null `daily_calls_reset_at`, or a locked existing conversation's `updated_at`; equal timestamps are allowed. Replace full-model `Save` calls with explicit field-only updates and active ownership predicates. Compute a new conversation's final title before `CREATE` and skip its redundant update; skip a known no-op for an already locked active owned conversation, while attempted updates require exactly one affected row. This must work under default changed-row semantics without `clientFoundRows`. Implement `platformReceiptMatchesInput` by exact user-message bytes plus ordered mode/model/state/assistant-content/token/error comparison against the loaded receipt. `Seq` is deliberately excluded because it is a Redis precondition and has no durable receipt column. The matcher must not normalize or ignore conflicting durable fields, and it must not compare `CommittedAtMillis` with retry-local `NowMillis`. Commit-unknown receipt reads use the injected production reader under a short `WithoutCancel`-derived timeout, preserve a matching receipt as success, return mismatch as conflict and integrity as integrity, preserve typed quota/conflict/invalid only on not-found, and otherwise return unavailable.
+Add the required imports `time`, `gorm.io/gorm/clause`, `gorm.io/gorm/logger`, `internal/models`, and `internal/persistence`. The finalizer and receipt-less recovery path must hold the same hashed per-generation MySQL advisory lock while resolving commit state. Run the entire transaction through a silent GORM session so error and slow-query logging cannot interpolate prompt or assistant content; preserve the original returned database error without logging content in service code. Reject a transaction timestamp older than Redis `updated_at_ms`, the locked user's `updated_at` or non-null `daily_calls_reset_at`, or a locked existing conversation's `updated_at`; equal timestamps are allowed. Replace full-model `Save` calls with explicit field-only updates and active ownership predicates. Compute a new conversation's final title before `CREATE` and skip its redundant update; skip a known no-op for an already locked active owned conversation, while attempted updates require exactly one affected row. This must work under default changed-row semantics without `clientFoundRows`. Persist `requested_existing_conversation` from whether `input.ConversationGUID` is non-nil. Implement `platformReceiptMatchesInput` by exact conversation provenance, existing-conversation GUID when applicable, user-message bytes, and ordered mode/model/state/assistant-content/token/error comparison against the loaded receipt. `Seq` is deliberately excluded because it is a Redis precondition and has no durable receipt column. The matcher must reject existing-to-new, new-to-explicit-result, and one-explicit-GUID-to-another-explicit-GUID retries; it must not compare `CommittedAtMillis` with retry-local `NowMillis`. Commit-unknown receipt reads use the injected production reader under a short `WithoutCancel`-derived timeout, preserve a matching receipt as success, return mismatch as conflict and integrity as integrity, preserve typed quota/conflict/invalid only on not-found, and otherwise return unavailable.
 
 - [ ] **Step 4: Run single/fault tests and confirm GREEN**
 
@@ -1411,13 +1424,14 @@ func TestPlatformGenerationPersistenceConcurrentDuplicateHasOneWinner(t *testing
 func TestPlatformGenerationPersistenceConflictingDuplicateIsRejected(t *testing.T)
 func TestPlatformGenerationPersistenceDuplicateRejectsDifferentUserMessage(t *testing.T)
 func TestPlatformGenerationPersistenceDuplicateIgnoresRetryTimestamp(t *testing.T)
+func TestPlatformGenerationPersistenceDuplicateRequiresExactConversationProvenance(t *testing.T)
 func TestPlatformGenerationPersistenceQuotaRaceCannotOverrunLimit(t *testing.T)
 func TestPlatformGenerationPersistenceCommitUnknownResolvesFromReceipt(t *testing.T)
 ```
 
 The compare success assertions must prove two or three distinct assistant message GUIDs, no content prefixed by `__MULTI_MODEL__`, one user message, one usage row per success, original model order in the receipt, and exact aggregate counters. Partial compare must prove failed models have no message/usage/quota/tokens and retain only an allowlisted stable code.
 
-The duplicate test must launch eight finalizers for one owner/generation and assert one receipt, one globally referenced user message, one assistant message per successful model, one quota charge set, and eight equivalent returned snapshots. The different-user-message test reuses every field except `UserMessage` and must return `ErrPlatformGenerationPersistenceConflict` without writes. The retry-timestamp test changes only `NowMillis`; it must return the existing receipt because commit time is an outcome, not immutable request identity. The quota race must use distinct generation IDs for a free user with one remaining call and assert exactly one commit. A deterministic transaction-order test must instrument `BeginTx` and the persistence query callback, proving that the locked Redis recheck completes before `BeginTx`, that persistence queries execute inside the transaction, and that both use the advisory lock's pinned physical connection. The commit-unknown test replaces `runLocked` with:
+The duplicate test must launch eight finalizers for one owner/generation and assert one receipt, one globally referenced user message, one assistant message per successful model, one quota charge set, and eight equivalent returned snapshots. The different-user-message test reuses every field except `UserMessage` and must return `ErrPlatformGenerationPersistenceConflict` without writes. The retry-timestamp test changes only `NowMillis`; it must return the existing receipt because commit time is an outcome, not immutable request identity. The conversation-provenance test must prove same-new and same-existing retries are idempotent, while existing-to-new, new-to-explicit-created-result, and one explicit existing GUID to another explicit existing GUID all conflict without extra persistence effects. The quota race must use distinct generation IDs for a free user with one remaining call and assert exactly one commit. A deterministic transaction-order test must instrument `BeginTx` and the persistence query callback, proving that the locked Redis recheck completes before `BeginTx`, that persistence queries execute inside the transaction, and that both use the advisory lock's pinned physical connection. The commit-unknown test replaces `runLocked` with:
 
 ```go
 persistence.runLocked = func(ctx context.Context, db *gorm.DB, lockName string, fn func(*gorm.DB) error) error {
