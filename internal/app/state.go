@@ -14,23 +14,24 @@ import (
 )
 
 type State struct {
-	Settings              *config.Settings
-	DB                    *gorm.DB
-	Auth                  *service.AuthService
-	Billing               *service.BillingService
-	SMS                   *service.SMSService
-	Platform              *service.PlatformChatService
-	GatewayTokens         *service.GatewayTokenService
-	WhiteLabel            *whitelabel.WhiteLabelService
-	Audit                 *service.AuditService
-	AuthRedis             *service.AuthRedis
-	PlatformGenerations   *service.PlatformGenerationStore
-	Sessions              *service.SessionService
-	ActionSecurityCrypto  *actionsecurity.Crypto
-	UserManagementActions *service.UserManagementActions
-	UserDeleteActions     *service.UserDeleteActions
-	ActionVerifications   *service.ActionVerificationService
-	HTTP                  *http.Client
+	Settings                      *config.Settings
+	DB                            *gorm.DB
+	Auth                          *service.AuthService
+	Billing                       *service.BillingService
+	SMS                           *service.SMSService
+	Platform                      *service.PlatformChatService
+	GatewayTokens                 *service.GatewayTokenService
+	WhiteLabel                    *whitelabel.WhiteLabelService
+	Audit                         *service.AuditService
+	AuthRedis                     *service.AuthRedis
+	PlatformGenerations           *service.PlatformGenerationStore
+	PlatformGenerationPersistence *service.PlatformGenerationPersistence
+	Sessions                      *service.SessionService
+	ActionSecurityCrypto          *actionsecurity.Crypto
+	UserManagementActions         *service.UserManagementActions
+	UserDeleteActions             *service.UserDeleteActions
+	ActionVerifications           *service.ActionVerificationService
+	HTTP                          *http.Client
 }
 
 func NewState(settings *config.Settings, db *gorm.DB) (*State, error) {
@@ -108,6 +109,11 @@ func newState(settings *config.Settings, db *gorm.DB, constructors stateConstruc
 			return nil, err
 		}
 		s.PlatformGenerations = generations
+		generationPersistence, err := service.NewPlatformGenerationPersistence(generations)
+		if err != nil {
+			return nil, err
+		}
+		s.PlatformGenerationPersistence = generationPersistence
 	}
 	s.Sessions = service.NewSessionService(db, s.AuthRedis, settings)
 	s.Auth.SetSessionService(s.Sessions)
