@@ -1156,7 +1156,7 @@ func TestPlatformGenerationPersistenceSingleWriteFailuresRollbackEveryEffect(t *
 func TestPlatformGenerationPersistenceSingleInsufficientQuotaRollsBack(t *testing.T)
 ```
 
-The success test must claim a single generation, mark the model done, call `BeginCommit`, call `Finalize`, and assert one conversation, one non-empty user message, one assistant message, one usage record, one quota increment, exact total token increment, one receipt/result, `receipt.user_message_id` equal to that user-message row, and identical loaded user/assistant content plus assistant-message GUID. Every persistence result includes the final Redis `Seq`, which must match exactly but is not stored in the receipt schema. The empty-user-message and compare-mode tests use a store whose Redis address is deliberately unreachable and a transaction runner that panics if called; Task 5 `Finalize` must return `ErrPlatformGenerationPersistenceInvalid` without either dependency being touched. The fault table must inject failure at conversation create, user message, assistant message, usage, existing-conversation title/audit update, user update, receipt, and result boundaries and assert zero net rows/counter changes after each subtest. Include a receipt-insert failure caused by a bad `user_message_id` and prove it rolls back the entire transaction. Add stale Redis/user/reset/conversation timestamp cases, commit-unknown integrity/bounded-context coverage, and an interpolating slow/error GORM logger capture that proves unique prompt/answer sentinels never appear.
+The success test must claim a single generation, mark the model done, call `BeginCommit`, call `Finalize`, and assert one conversation, one non-empty user message, one assistant message, one usage record, one quota increment, exact total token increment, one receipt/result, `receipt.user_message_id` equal to that user-message row, and identical loaded user/assistant content plus assistant-message GUID. Every persistence result includes the final Redis `Seq`, which must match exactly but is not stored in the receipt schema. The empty-user-message and compare-mode tests use a store whose Redis address is deliberately unreachable and a transaction runner that panics if called; Task 5 `Finalize` must return `ErrPlatformGenerationPersistenceInvalid` without either dependency being touched. The fault table must inject failure at conversation create, user message, assistant message, usage, existing-conversation title/audit update, user update, receipt, and result boundaries and assert zero net rows/counter changes after each subtest. Include a receipt-insert failure caused by a bad `user_message_id` and prove it rolls back the entire transaction. Add stale Redis/user/reset/conversation timestamp cases, commit-unknown integrity/bounded-context coverage, an interpolating slow/error GORM logger capture that proves unique prompt/answer sentinels never appear, and default changed-row MySQL regressions proving whitespace-only content is byte-exact while new and already-current conversations retain the fallback title without `clientFoundRows`.
 
 - [ ] **Step 2: Run single tests and confirm RED**
 
@@ -1249,6 +1249,7 @@ func persistPlatformGeneration(tx *gorm.DB, input PlatformGenerationPersistenceI
 		return ErrPlatformGenerationPersistenceQuota
 	}
 	var conversation models.Conversation
+	conversationCreated := false
 	if input.ConversationGUID != nil {
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("guid=? AND user_id=? AND is_deleted=0", *input.ConversationGUID, input.UserID).First(&conversation).Error; err != nil {
 			return ErrPlatformGenerationPersistenceConflict
@@ -1258,7 +1259,8 @@ func persistPlatformGeneration(tx *gorm.DB, input PlatformGenerationPersistenceI
 		}
 	} else {
 		model := input.Models[0]
-		conversation = models.Conversation{UserID: input.UserID, Title: "新对话", Model: &model, AuditFields: platformPersistenceAudit(input.UserID, input.NowMillis)}
+		conversationCreated = true
+		conversation = models.Conversation{UserID: input.UserID, Title: truncateTitle(input.UserMessage), Model: &model, AuditFields: platformPersistenceAudit(input.UserID, input.NowMillis)}
 		if err := tx.Create(&conversation).Error; err != nil {
 			return err
 		}
@@ -1266,9 +1268,6 @@ func persistPlatformGeneration(tx *gorm.DB, input PlatformGenerationPersistenceI
 	userMessage := models.Message{ConversationID: conversation.ID, Role: models.MessageRoleUser, Content: input.UserMessage, AuditFields: platformPersistenceAudit(input.UserID, input.NowMillis)}
 	if err := tx.Create(&userMessage).Error; err != nil {
 		return err
-	}
-	if conversation.Title == "新对话" {
-		conversation.Title = truncateTitle(input.UserMessage)
 	}
 	messageIDs := make(map[string]int64, successes)
 	for _, result := range input.Results {
@@ -1286,14 +1285,23 @@ func persistPlatformGeneration(tx *gorm.DB, input PlatformGenerationPersistenceI
 			return err
 		}
 	}
-	conversationUpdate := tx.Model(&models.Conversation{}).Where("id=? AND user_id=? AND is_deleted=0", conversation.ID, input.UserID).Updates(map[string]any{
-		"title": conversation.Title, "updated_at": input.NowMillis, "updated_by": input.UserID,
-	})
-	if conversationUpdate.Error != nil {
-		return conversationUpdate.Error
-	}
-	if conversationUpdate.RowsAffected != 1 {
-		return ErrPlatformGenerationPersistenceConflict
+	if !conversationCreated {
+		title := conversation.Title
+		if title == "新对话" {
+			title = truncateTitle(input.UserMessage)
+		}
+		updatedByMatches := conversation.UpdatedBy != nil && *conversation.UpdatedBy == input.UserID
+		if title != conversation.Title || conversation.UpdatedAt != input.NowMillis || !updatedByMatches {
+			conversationUpdate := tx.Model(&models.Conversation{}).Where("id=? AND user_id=? AND is_deleted=0", conversation.ID, input.UserID).Updates(map[string]any{
+				"title": title, "updated_at": input.NowMillis, "updated_by": input.UserID,
+			})
+			if conversationUpdate.Error != nil {
+				return conversationUpdate.Error
+			}
+			if conversationUpdate.RowsAffected != 1 {
+				return ErrPlatformGenerationPersistenceConflict
+			}
+		}
 	}
 	user.DailyCallsUsed += successes
 	user.TotalTokensUsed += totalTokens
@@ -1348,7 +1356,7 @@ func resetDailyAt(user *models.User, nowMillis int64) {
 }
 ```
 
-Add the required imports `time`, `gorm.io/gorm/clause`, `gorm.io/gorm/logger`, `internal/models`, and `internal/persistence`. The finalizer and receipt-less recovery path must hold the same hashed per-generation MySQL advisory lock while resolving commit state. Run the entire transaction through a silent GORM session so error and slow-query logging cannot interpolate prompt or assistant content; preserve the original returned database error without logging content in service code. Reject a transaction timestamp older than Redis `updated_at_ms`, the locked user's `updated_at` or non-null `daily_calls_reset_at`, or a locked existing conversation's `updated_at`; equal timestamps are allowed. Replace full-model `Save` calls with explicit field-only updates and active ownership predicates, requiring exactly one affected row. Implement `platformReceiptMatchesInput` by exact user-message bytes plus ordered mode/model/state/assistant-content/token/error comparison against the loaded receipt. `Seq` is deliberately excluded because it is a Redis precondition and has no durable receipt column. The matcher must not normalize or ignore conflicting durable fields, and it must not compare `CommittedAtMillis` with retry-local `NowMillis`. Commit-unknown receipt reads use the injected production reader under a short `WithoutCancel`-derived timeout, preserve a matching receipt as success, return mismatch as conflict and integrity as integrity, preserve typed quota/conflict/invalid only on not-found, and otherwise return unavailable.
+Add the required imports `time`, `gorm.io/gorm/clause`, `gorm.io/gorm/logger`, `internal/models`, and `internal/persistence`. The finalizer and receipt-less recovery path must hold the same hashed per-generation MySQL advisory lock while resolving commit state. Run the entire transaction through a silent GORM session so error and slow-query logging cannot interpolate prompt or assistant content; preserve the original returned database error without logging content in service code. Reject a transaction timestamp older than Redis `updated_at_ms`, the locked user's `updated_at` or non-null `daily_calls_reset_at`, or a locked existing conversation's `updated_at`; equal timestamps are allowed. Replace full-model `Save` calls with explicit field-only updates and active ownership predicates. Compute a new conversation's final title before `CREATE` and skip its redundant update; skip a known no-op for an already locked active owned conversation, while attempted updates require exactly one affected row. This must work under default changed-row semantics without `clientFoundRows`. Implement `platformReceiptMatchesInput` by exact user-message bytes plus ordered mode/model/state/assistant-content/token/error comparison against the loaded receipt. `Seq` is deliberately excluded because it is a Redis precondition and has no durable receipt column. The matcher must not normalize or ignore conflicting durable fields, and it must not compare `CommittedAtMillis` with retry-local `NowMillis`. Commit-unknown receipt reads use the injected production reader under a short `WithoutCancel`-derived timeout, preserve a matching receipt as success, return mismatch as conflict and integrity as integrity, preserve typed quota/conflict/invalid only on not-found, and otherwise return unavailable.
 
 - [ ] **Step 4: Run single/fault tests and confirm GREEN**
 

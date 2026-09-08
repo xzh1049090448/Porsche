@@ -173,14 +173,14 @@ The complete SQL effect occurs in one `db.Transaction` callback. The fixed lock/
 1. Lock the active owner row by `users.id` using `SELECT ... FOR UPDATE`; reject missing, disabled, or logically deleted users, and reject a transaction timestamp older than the locked user's `updated_at` or non-null `daily_calls_reset_at`.
 2. Re-evaluate the UTC daily reset and available daily quota on the locked row without trusting the stale middleware user object.
 3. If an existing conversation GUID was supplied, load and lock the active conversation by `guid + user_id + is_deleted = 0` and reject a transaction timestamp older than its `updated_at`. Otherwise create one new conversation with a server snowflake GUID.
-4. Insert exactly one user message from the already validated non-empty final user-message content, retain its internal ID for the receipt, and update the conversation title only under the existing title rule.
+4. Insert exactly one user message from the already validated non-empty final user-message content, retain its internal ID for the receipt, and apply the existing title rule. For a new conversation, compute the final title before `CREATE`; valid whitespace-only content remains byte-exact in the message and keeps the `新对话` fallback without a redundant update.
 5. In request model order, create one independent assistant message for every completed model. Failed compare models create no message.
 6. Insert one usage record per completed model with the exact same model and token count as its assistant message.
 7. Increment `users.daily_calls_used` by the number of completed models and `users.total_tokens_used` by their token sum. Persist the UTC daily reset timestamp when reset was required. Update only these counters/reset and `updated_at`/`updated_by` through an active-user predicate; require exactly one affected row.
 8. Insert the parent receipt with the new user-message ID and all ordered child result rows using the newly created internal conversation/assistant-message IDs.
 9. Commit once.
 
-Every insert receives a fresh snowflake GUID and explicit audit fields from the same transaction timestamp. Conversation updates are restricted to `title`, `updated_at`, and `updated_by` through the locked active owner predicate and require exactly one affected row. User updates are restricted to quota/token/reset and update-audit fields. Neither path uses GORM `Save`, rewrites immutable/authentication fields, or permits upsert fallback. Legacy public behavior remains unchanged.
+Every insert receives a fresh snowflake GUID and explicit audit fields from the same transaction timestamp. Existing-conversation updates are restricted to `title`, `updated_at`, and `updated_by` through the locked active owner predicate. A known no-op against the already locked active owned row skips the update; an attempted update still requires exactly one affected row. New conversations need no audit update after creation. User updates are restricted to quota/token/reset and update-audit fields. Neither path uses GORM `Save`, rewrites immutable/authentication fields, or permits upsert fallback. Legacy public behavior remains unchanged.
 
 No success DTO, message GUID, or quota mutation is published before commit returns success. A callback error rolls back the conversation, title change, user message, assistant messages, usage rows, user counters, receipt, and result rows together.
 
@@ -311,6 +311,7 @@ Use an explicitly configured disposable MySQL fixture. Tests must prove:
 - all-model failure and cancellation persist nothing and charge nothing;
 - injected failure at every write boundary rolls back all conversation, title, message, usage, user, receipt, and result effects;
 - the existing-conversation title/audit update is a separately injected boundary, and rollback leaves its prior title and audit fields unchanged;
+- whitespace-only user content is accepted and stored byte-for-byte while a new or already-current conversation retains the fallback title without relying on `clientFoundRows` no-op affected-row behavior;
 - Redis final sequence mismatch and a transaction timestamp older than Redis, locked user/reset, or locked conversation state conflict before SQL effects; equality is accepted;
 - an interpolating slow/error GORM logger never receives unique prompt or assistant-content sentinels from transaction writes;
 - insufficient quota under a locked concurrent race yields at most the permitted committed successes and never overcharges;

@@ -319,6 +319,7 @@ func persistPlatformGeneration(tx *gorm.DB, input PlatformGenerationPersistenceI
 	}
 
 	var conversation models.Conversation
+	conversationCreated := false
 	if input.ConversationGUID != nil {
 		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
 			Where("guid = ? AND user_id = ? AND is_deleted = 0", *input.ConversationGUID, input.UserID).
@@ -334,10 +335,11 @@ func persistPlatformGeneration(tx *gorm.DB, input PlatformGenerationPersistenceI
 		}
 	} else {
 		model := input.Models[0]
+		conversationCreated = true
 		conversation = models.Conversation{
 			AuditFields: platformPersistenceAudit(input.UserID, input.NowMillis),
 			UserID:      input.UserID,
-			Title:       "新对话",
+			Title:       truncateTitle(input.UserMessage),
 			Model:       &model,
 		}
 		if err := tx.Create(&conversation).Error; err != nil {
@@ -353,9 +355,6 @@ func persistPlatformGeneration(tx *gorm.DB, input PlatformGenerationPersistenceI
 	}
 	if err := tx.Create(&userMessage).Error; err != nil {
 		return err
-	}
-	if conversation.Title == "新对话" {
-		conversation.Title = truncateTitle(input.UserMessage)
 	}
 
 	messageIDs := make(map[string]int64, successes)
@@ -388,14 +387,23 @@ func persistPlatformGeneration(tx *gorm.DB, input PlatformGenerationPersistenceI
 		}
 	}
 
-	conversationUpdate := tx.Model(&models.Conversation{}).
-		Where("id = ? AND user_id = ? AND is_deleted = 0", conversation.ID, input.UserID).
-		Updates(map[string]any{"title": conversation.Title, "updated_at": input.NowMillis, "updated_by": input.UserID})
-	if conversationUpdate.Error != nil {
-		return conversationUpdate.Error
-	}
-	if conversationUpdate.RowsAffected != 1 {
-		return ErrPlatformGenerationPersistenceConflict
+	if !conversationCreated {
+		title := conversation.Title
+		if title == "新对话" {
+			title = truncateTitle(input.UserMessage)
+		}
+		updatedByMatches := conversation.UpdatedBy != nil && *conversation.UpdatedBy == input.UserID
+		if title != conversation.Title || conversation.UpdatedAt != input.NowMillis || !updatedByMatches {
+			conversationUpdate := tx.Model(&models.Conversation{}).
+				Where("id = ? AND user_id = ? AND is_deleted = 0", conversation.ID, input.UserID).
+				Updates(map[string]any{"title": title, "updated_at": input.NowMillis, "updated_by": input.UserID})
+			if conversationUpdate.Error != nil {
+				return conversationUpdate.Error
+			}
+			if conversationUpdate.RowsAffected != 1 {
+				return ErrPlatformGenerationPersistenceConflict
+			}
+		}
 	}
 	user.DailyCallsUsed += successes
 	user.TotalTokensUsed += totalTokens

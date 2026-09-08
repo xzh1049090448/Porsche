@@ -910,6 +910,9 @@ func openPlatformGenerationFinalizationMySQL(t *testing.T) *gorm.DB {
 
 	childURL := *parsed
 	childURL.Path, childURL.RawPath = "/"+name, ""
+	childQuery := childURL.Query()
+	childQuery.Del("clientFoundRows")
+	childURL.RawQuery = childQuery.Encode()
 	child, err := db.Open(childURL.String(), "test")
 	if err != nil {
 		t.Fatal(err)
@@ -1395,6 +1398,81 @@ func TestPlatformGenerationPersistenceSingleAllowsEqualLockedTimestamps(t *testi
 		t.Fatalf("equal locked timestamps rejected: %v", err)
 	}
 	assertPlatformGenerationFinalizationEffects(t, f, 1, 2, 1, 1, 1, 3, 17)
+}
+
+func TestPlatformGenerationPersistenceSingleAllowsNoOpConversationWrites(t *testing.T) {
+	for _, test := range []struct {
+		name                 string
+		existingConversation bool
+	}{
+		{name: "new conversation with whitespace user message"},
+		{name: "existing conversation with same title and audit", existingConversation: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := openPlatformGenerationFinalizationFixture(t)
+			input := f.committingSingle(t)
+			input.UserMessage = "   "
+			conversationUpdates := 0
+			hook := fmt.Sprintf("platform_single_noop_%d", testSnowflake.Next())
+			if err := f.db.Callback().Update().Before("gorm:update").Register(hook, func(tx *gorm.DB) {
+				table := tx.Statement.Table
+				if table == "" && tx.Statement.Schema != nil {
+					table = tx.Statement.Schema.Table
+				}
+				if table == "conversations" {
+					conversationUpdates++
+				}
+			}); err != nil {
+				t.Fatal(err)
+			}
+			defer f.db.Callback().Update().Remove(hook)
+
+			var conversation models.Conversation
+			if test.existingConversation {
+				conversation = models.Conversation{
+					AuditFields: models.AuditFields{
+						Guid: testSnowflake.Next(), CreatedAt: f.now, CreatedBy: &f.user.ID,
+						UpdatedAt: input.NowMillis, UpdatedBy: &f.user.ID,
+					},
+					UserID: f.user.ID, Title: "新对话",
+				}
+				if err := f.db.Create(&conversation).Error; err != nil {
+					t.Fatal(err)
+				}
+				input.ConversationGUID = &conversation.Guid
+			}
+
+			p, err := NewPlatformGenerationPersistence(f.store)
+			if err != nil {
+				t.Fatal(err)
+			}
+			receipt, err := p.Finalize(context.Background(), f.db, input)
+			if err != nil {
+				t.Fatalf("Finalize() rejected valid no-op conversation write: %v", err)
+			}
+			if receipt.UserMessage != input.UserMessage {
+				t.Fatalf("receipt user message=%q, want exact bytes %q", receipt.UserMessage, input.UserMessage)
+			}
+			if conversationUpdates != 0 {
+				t.Fatalf("redundant conversation updates=%d, want 0", conversationUpdates)
+			}
+			if err := f.db.Where("guid = ?", receipt.ConversationGUID).First(&conversation).Error; err != nil {
+				t.Fatal(err)
+			}
+			if conversation.Title != "新对话" || conversation.UpdatedAt != input.NowMillis ||
+				conversation.UpdatedBy == nil || *conversation.UpdatedBy != f.user.ID {
+				t.Fatalf("unexpected fallback conversation state: %#v", conversation)
+			}
+			var userMessage models.Message
+			if err := f.db.Where("conversation_id = ? AND role = ?", conversation.ID, models.MessageRoleUser).First(&userMessage).Error; err != nil {
+				t.Fatal(err)
+			}
+			if userMessage.Content != input.UserMessage {
+				t.Fatalf("stored user message=%q, want exact bytes %q", userMessage.Content, input.UserMessage)
+			}
+			assertPlatformGenerationFinalizationEffects(t, f, 1, 2, 1, 1, 1, 3, 17)
+		})
+	}
 }
 
 func TestPlatformGenerationPersistenceSingleWriteErrorsDoNotLogMessageContent(t *testing.T) {
