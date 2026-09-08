@@ -62,10 +62,14 @@ func TestNewStateAssignsCompleteCreateAccountActionsAndDeleteCompatibilityView(t
 		Operations:    &service.ActionOperationService{},
 		DeleteOutbox:  &service.AdminActionOutboxWriter{},
 		CreateOutbox:  &service.CreateAccountOutboxWriter{},
+		ResetOutbox:   &service.ResetPasswordOutboxWriter{},
 		NewDeleteExecution: func(actionsecurity.DeleteUserIntent) (*service.DeleteUserExecution, error) {
 			return nil, service.ErrActionOperationUnavailable
 		},
 		NewCreateExecution: func(actionsecurity.Action, actionsecurity.CreateAccountIntent, []byte, service.CreateAccountRequestMetadata) (*service.CreateAccountExecution, error) {
+			return nil, service.ErrActionOperationUnavailable
+		},
+		NewResetExecution: func(actionsecurity.ResetPasswordIntent, []byte, service.ResetPasswordRequestMetadata) (*service.ResetPasswordExecution, error) {
 			return nil, service.ErrActionOperationUnavailable
 		},
 	}
@@ -108,9 +112,12 @@ func TestNewStateCreateAccountActionsFailureExposesNoCreateRouteDependency(t *te
 	complete := func() *service.UserManagementActions {
 		return &service.UserManagementActions{
 			Verifications: &service.ActionVerificationService{}, Operations: &service.ActionOperationService{},
-			DeleteOutbox: &service.AdminActionOutboxWriter{}, CreateOutbox: &service.CreateAccountOutboxWriter{},
+			DeleteOutbox: &service.AdminActionOutboxWriter{}, CreateOutbox: &service.CreateAccountOutboxWriter{}, ResetOutbox: &service.ResetPasswordOutboxWriter{},
 			NewDeleteExecution: func(actionsecurity.DeleteUserIntent) (*service.DeleteUserExecution, error) { return nil, nil },
 			NewCreateExecution: func(actionsecurity.Action, actionsecurity.CreateAccountIntent, []byte, service.CreateAccountRequestMetadata) (*service.CreateAccountExecution, error) {
+				return nil, nil
+			},
+			NewResetExecution: func(actionsecurity.ResetPasswordIntent, []byte, service.ResetPasswordRequestMetadata) (*service.ResetPasswordExecution, error) {
 				return nil, nil
 			},
 		}
@@ -125,8 +132,10 @@ func TestNewStateCreateAccountActionsFailureExposesNoCreateRouteDependency(t *te
 		{name: "operation service", mutate: func(bundle *service.UserManagementActions) { bundle.Operations = nil }},
 		{name: "delete writer", mutate: func(bundle *service.UserManagementActions) { bundle.DeleteOutbox = nil }},
 		{name: "create writer", mutate: func(bundle *service.UserManagementActions) { bundle.CreateOutbox = nil }},
+		{name: "reset writer", mutate: func(bundle *service.UserManagementActions) { bundle.ResetOutbox = nil }},
 		{name: "delete factory", mutate: func(bundle *service.UserManagementActions) { bundle.NewDeleteExecution = nil }},
 		{name: "create factory", mutate: func(bundle *service.UserManagementActions) { bundle.NewCreateExecution = nil }},
+		{name: "reset factory", mutate: func(bundle *service.UserManagementActions) { bundle.NewResetExecution = nil }},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

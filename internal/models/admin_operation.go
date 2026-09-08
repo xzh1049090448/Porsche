@@ -200,6 +200,7 @@ type AdminOperation struct {
 	ResultKind         *AdminResultKind       `gorm:"column:result_kind;type:int" json:"-"`
 	ResultGUID         *int64                 `gorm:"column:result_guid;type:bigint" json:"-"`
 	ResultHTTPStatus   *int                   `gorm:"column:result_http_status;type:int" json:"-"`
+	ResultAuthVersion  *int                   `gorm:"column:result_auth_version;type:int" json:"-"`
 }
 
 func (AdminOperation) TableName() string { return "admin_operations" }

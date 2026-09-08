@@ -72,6 +72,12 @@ var adminOperationResponseTargetsUp []byte
 //go:embed sql/0010_admin_operation_response_targets.down.sql
 var adminOperationResponseTargetsDown []byte
 
+//go:embed sql/0011_admin_operation_result_auth_version.up.sql
+var adminOperationResultAuthVersionUp []byte
+
+//go:embed sql/0011_admin_operation_result_auth_version.down.sql
+var adminOperationResultAuthVersionDown []byte
+
 // Migration is an immutable, embedded schema version.
 type Migration struct {
 	Version string
@@ -98,6 +104,7 @@ func All() ([]Migration, error) {
 		{Version: "0008", UpSQL: adminOperationResponsesUp, DownSQL: adminOperationResponsesDown},
 		{Version: "0009", UpSQL: adminResponseIntegrityUp, DownSQL: adminResponseIntegrityDown},
 		{Version: "0010", UpSQL: adminOperationResponseTargetsUp, DownSQL: adminOperationResponseTargetsDown},
+		{Version: "0011", UpSQL: adminOperationResultAuthVersionUp, DownSQL: adminOperationResultAuthVersionDown},
 	}
 	sort.Slice(migrations, func(i, j int) bool { return migrations[i].Version < migrations[j].Version })
 	return migrations, nil
@@ -166,11 +173,6 @@ func Up(ctx context.Context, db *gorm.DB, nextGUID func() int64, nowMillis func(
 						return err
 					}
 				}
-				if migration.Version == "0005" {
-					if err := VerifyAdminOperationSafetySchema(ctx, conn); err != nil {
-						return err
-					}
-				}
 				if migration.Version == "0007" {
 					if err := VerifyBusinessGroupsSchema(ctx, conn); err != nil {
 						return err
@@ -181,6 +183,11 @@ func Up(ctx context.Context, db *gorm.DB, nextGUID func() int64, nowMillis func(
 						return err
 					}
 					if err := VerifyAdminOperationResponseSchema(ctx, conn); err != nil {
+						return err
+					}
+				}
+				if migration.Version == "0011" {
+					if err := VerifyAdminOperationSafetySchema(ctx, conn); err != nil {
 						return err
 					}
 				}
@@ -213,6 +220,11 @@ func Up(ctx context.Context, db *gorm.DB, nextGUID func() int64, nowMillis func(
 					return err
 				}
 			}
+			if migration.Version == "0011" {
+				if err := VerifyAdminOperationSafetySchema(ctx, conn); err != nil {
+					return err
+				}
+			}
 			if migration.Version == "0003" {
 				if err := VerifyPermissionSchema(ctx, conn); err != nil {
 					return err
@@ -220,11 +232,6 @@ func Up(ctx context.Context, db *gorm.DB, nextGUID func() int64, nowMillis func(
 			}
 			if migration.Version == "0004" {
 				if err := VerifyAdminUsersReadCountIndex(ctx, conn); err != nil {
-					return err
-				}
-			}
-			if migration.Version == "0005" {
-				if err := VerifyAdminOperationSafetySchema(ctx, conn); err != nil {
 					return err
 				}
 			}

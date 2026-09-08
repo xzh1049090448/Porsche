@@ -103,8 +103,8 @@ func newState(settings *config.Settings, db *gorm.DB, constructors stateConstruc
 		}
 		userManagementActions, err := constructors.newUserManagementActions(db, s.AuthRedis, s.ActionSecurityCrypto)
 		if err != nil || userManagementActions == nil || userManagementActions.Verifications == nil ||
-			userManagementActions.Operations == nil || userManagementActions.DeleteOutbox == nil || userManagementActions.CreateOutbox == nil ||
-			userManagementActions.NewDeleteExecution == nil || userManagementActions.NewCreateExecution == nil {
+			userManagementActions.Operations == nil || userManagementActions.DeleteOutbox == nil || userManagementActions.CreateOutbox == nil || userManagementActions.ResetOutbox == nil ||
+			userManagementActions.NewDeleteExecution == nil || userManagementActions.NewCreateExecution == nil || userManagementActions.NewResetExecution == nil {
 			return nil, service.ErrActionVerificationUnavailable
 		}
 		userDeleteActions := userManagementActions.DeleteActions()

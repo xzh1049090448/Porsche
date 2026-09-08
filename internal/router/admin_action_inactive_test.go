@@ -41,8 +41,12 @@ func completeRouterUserManagementActions() *service.UserManagementActions {
 	return &service.UserManagementActions{
 		Verifications: &service.ActionVerificationService{}, Operations: &service.ActionOperationService{},
 		DeleteOutbox: &service.AdminActionOutboxWriter{}, CreateOutbox: &service.CreateAccountOutboxWriter{},
+		ResetOutbox:        &service.ResetPasswordOutboxWriter{},
 		NewDeleteExecution: func(actionsecurity.DeleteUserIntent) (*service.DeleteUserExecution, error) { return nil, nil },
 		NewCreateExecution: func(actionsecurity.Action, actionsecurity.CreateAccountIntent, []byte, service.CreateAccountRequestMetadata) (*service.CreateAccountExecution, error) {
+			return nil, nil
+		},
+		NewResetExecution: func(actionsecurity.ResetPasswordIntent, []byte, service.ResetPasswordRequestMetadata) (*service.ResetPasswordExecution, error) {
 			return nil, nil
 		},
 	}

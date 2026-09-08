@@ -91,7 +91,7 @@ func newActionVerificationService(db *gorm.DB, limiter *ActionSecurityRedis, aut
 
 func (s *ActionVerificationService) Issue(ctx context.Context, in VerificationIssue) (*IssuedVerification, error) {
 	defer clear(in.CurrentPassword)
-	defer clearCreateVerificationPassword(in.Intent)
+	defer clearVerificationPassword(in.Intent)
 	if s == nil || ctx == nil || s.resolve == nil {
 		return nil, ErrActionVerificationUnavailable
 	}
@@ -150,6 +150,10 @@ func (s *ActionVerificationService) Issue(ctx context.Context, in VerificationIs
 			}
 		case actionsecurity.ActionUsersCreateAdmin:
 			if err := validateLockedCreateAdminIntent(tx, descriptor, in.Intent, identity.actor); err != nil {
+				return err
+			}
+		case actionsecurity.ActionUsersResetPassword:
+			if err := validateLockedResetPasswordIntent(descriptor, in.Intent, identity.target); err != nil {
 				return err
 			}
 		default:
@@ -221,9 +225,12 @@ func (s *ActionVerificationService) Issue(ctx context.Context, in VerificationIs
 	return issued, nil
 }
 
-func clearCreateVerificationPassword(value any) {
-	if intent, ok := value.(actionsecurity.CreateAccountIntent); ok {
+func clearVerificationPassword(value any) {
+	switch intent := value.(type) {
+	case actionsecurity.CreateAccountIntent:
 		clear(intent.Password)
+	case actionsecurity.ResetPasswordIntent:
+		clear(intent.NewPassword)
 	}
 }
 

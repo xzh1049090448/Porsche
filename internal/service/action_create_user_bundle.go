@@ -11,7 +11,8 @@ import (
 )
 
 // UserManagementActions is the complete internal service boundary for the
-// active users.create, users.create_admin, and users.delete action set.
+// active users.create, users.create_admin, users.delete, and
+// users.reset_password action set.
 // Callers must not expose any member unless construction of the whole bundle
 // succeeds.
 type UserManagementActions struct {
@@ -19,8 +20,10 @@ type UserManagementActions struct {
 	Operations         *ActionOperationService
 	DeleteOutbox       *AdminActionOutboxWriter
 	CreateOutbox       *CreateAccountOutboxWriter
+	ResetOutbox        *ResetPasswordOutboxWriter
 	NewDeleteExecution func(actionsecurity.DeleteUserIntent) (*DeleteUserExecution, error)
 	NewCreateExecution func(actionsecurity.Action, actionsecurity.CreateAccountIntent, []byte, CreateAccountRequestMetadata) (*CreateAccountExecution, error)
+	NewResetExecution  func(actionsecurity.ResetPasswordIntent, []byte, ResetPasswordRequestMetadata) (*ResetPasswordExecution, error)
 }
 
 // NewUserManagementActions constructs the production user-management services
@@ -76,6 +79,10 @@ func newUserManagementActions(
 	if err != nil {
 		return nil, ErrActionVerificationUnavailable
 	}
+	resetOutbox, err := NewResetPasswordOutboxWriter(nextGUID, clock)
+	if err != nil {
+		return nil, ErrActionVerificationUnavailable
+	}
 	descriptorByAction := make(map[actionsecurity.Action]actionsecurity.Descriptor, len(owned))
 	for _, descriptor := range owned {
 		descriptorByAction[descriptor.Action] = descriptor
@@ -85,6 +92,7 @@ func newUserManagementActions(
 		Operations:    operations,
 		DeleteOutbox:  deleteOutbox,
 		CreateOutbox:  createOutbox,
+		ResetOutbox:   resetOutbox,
 		NewDeleteExecution: func(intent actionsecurity.DeleteUserIntent) (*DeleteUserExecution, error) {
 			return newDeleteUserExecution(descriptorByAction[actionsecurity.ActionUsersDelete], intent, nextGUID, clock, crypto)
 		},
@@ -96,6 +104,9 @@ func newUserManagementActions(
 			}
 			return NewCreateAccountExecution(descriptor, intent, passwordHash, metadata, nextGUID, clock, crypto)
 		},
+		NewResetExecution: func(intent actionsecurity.ResetPasswordIntent, passwordHash []byte, metadata ResetPasswordRequestMetadata) (*ResetPasswordExecution, error) {
+			return newResetPasswordExecution(descriptorByAction[actionsecurity.ActionUsersResetPassword], intent, passwordHash, authRedis, clock, nextGUID, crypto, metadata)
+		},
 	}
 	if !completeUserManagementActions(bundle) {
 		return nil, ErrActionVerificationUnavailable
@@ -105,8 +116,8 @@ func newUserManagementActions(
 
 func completeUserManagementActions(bundle *UserManagementActions) bool {
 	return bundle != nil && bundle.Verifications != nil && bundle.Operations != nil &&
-		bundle.DeleteOutbox != nil && bundle.CreateOutbox != nil &&
-		bundle.NewDeleteExecution != nil && bundle.NewCreateExecution != nil
+		bundle.DeleteOutbox != nil && bundle.CreateOutbox != nil && bundle.ResetOutbox != nil &&
+		bundle.NewDeleteExecution != nil && bundle.NewCreateExecution != nil && bundle.NewResetExecution != nil
 }
 
 // DeleteActions returns the existing users.delete boundary backed by the same
@@ -125,7 +136,7 @@ func (bundle *UserManagementActions) DeleteActions() *UserDeleteActions {
 
 func exactActiveUserManagementDescriptors(descriptors []actionsecurity.Descriptor) bool {
 	expected := actionsecurity.FutureActionDescriptors()
-	if len(descriptors) != 3 || len(expected) != len(descriptors) {
+	if len(descriptors) != 4 || len(expected) != len(descriptors) {
 		return false
 	}
 	for index := range expected {

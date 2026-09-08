@@ -120,7 +120,7 @@ func adminOperationSafetyContracts() []adminOperationTableContract {
 		nullableColumn("lease_expires_at", "bigint"), nullableColumn("finished_at", "bigint"),
 		requiredColumn("query_expires_at", "bigint"), nullableColumn("error_code", "int"),
 		nullableColumn("result_kind", "int"), nullableColumn("result_guid", "bigint"),
-		nullableColumn("result_http_status", "int"), requiredColumn("created_at", "bigint"),
+		nullableColumn("result_auth_version", "int"), nullableColumn("result_http_status", "int"), requiredColumn("created_at", "bigint"),
 		nullableColumn("created_by", "bigint"), requiredColumn("updated_at", "bigint"),
 		nullableColumn("updated_by", "bigint"), requiredColumn("is_deleted", "int"),
 	}
@@ -175,6 +175,7 @@ func adminOperationSafetyContracts() []adminOperationTableContract {
 				{"chk_admin_operations_audit", "actor_auth_version >= 0 AND created_at >= 0 AND updated_at >= 0 AND ((state = 5 AND is_deleted = 1) OR (state IN (1, 2, 3, 4) AND is_deleted = 0))", "YES"},
 				{"chk_admin_operations_failure", "error_code IS NULL OR error_code BETWEEN 1 AND 999", "YES"},
 				{"chk_admin_operations_http_status", "result_http_status IS NULL OR result_http_status BETWEEN 100 AND 599", "YES"},
+				{"chk_admin_operations_result_auth_version", "(state = 2 AND action = 2 AND result_kind = 2 AND result_guid IS NOT NULL AND result_auth_version IS NOT NULL AND result_auth_version > 0) OR ((state IN (1, 3, 4, 5) OR (state = 2 AND (action < 2 OR action > 2))) AND result_auth_version IS NULL)", "YES"},
 				{"chk_admin_operations_lease", "(lease_owner_hmac IS NULL AND lease_expires_at IS NULL) OR (lease_owner_hmac IS NOT NULL AND lease_expires_at IS NOT NULL AND lease_expires_at >= 0)", "YES"},
 				{"chk_admin_operations_result", "(result_kind IS NULL AND result_guid IS NULL) OR (result_kind = 1 AND result_guid IS NULL) OR (result_kind IN (2, 3) AND result_guid IS NOT NULL)", "YES"},
 				{"chk_admin_operations_state", "state IN (1, 2, 3, 4, 5)", "YES"},

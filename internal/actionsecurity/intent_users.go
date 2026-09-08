@@ -1,7 +1,10 @@
 package actionsecurity
 
 import (
+	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"math"
 	"sort"
 	"strings"
@@ -22,10 +25,21 @@ type CreateAccountIntent struct {
 	Overrides      []PermissionOverrideIntent
 }
 type ResetPasswordIntent struct {
-	TargetGUID  int64
-	NewPassword []byte
-	Reason      string
+	TargetGUID          int64
+	ExpectedAuthVersion int
+	NewPassword         []byte
+	Reason              string
 }
+
+func (i ResetPasswordIntent) String() string {
+	return fmt.Sprintf("ResetPasswordIntent{TargetGUID:%d ExpectedAuthVersion:%d NewPassword:<redacted> Reason:%q}", i.TargetGUID, i.ExpectedAuthVersion, i.Reason)
+}
+func (i ResetPasswordIntent) GoString() string { return i.String() }
+func (i ResetPasswordIntent) Format(state fmt.State, _ rune) {
+	_, _ = io.WriteString(state, i.String())
+}
+func (ResetPasswordIntent) MarshalJSON() ([]byte, error) { return json.Marshal(struct{}{}) }
+
 type RoleIntent struct {
 	TargetGUID          int64
 	ExpectedAuthVersion int
@@ -169,7 +183,7 @@ func checkedCreateOverrideArrayPayloadLength(count uint64, capabilityLengths []u
 
 func encodeResetPasswordIntent(intent ResetPasswordIntent) ([]byte, error) {
 	defer clear(intent.NewPassword)
-	if intent.TargetGUID <= 0 || len(intent.NewPassword) == 0 || intent.Reason == "" {
+	if intent.TargetGUID <= 0 || intent.ExpectedAuthVersion <= 0 || intent.ExpectedAuthVersion > math.MaxInt32 || len(intent.NewPassword) == 0 || intent.Reason == "" {
 		return nil, errInvalidIntent
 	}
 	if _, err := checkedU32Length(uint64(len(intent.NewPassword))); err != nil {
@@ -182,10 +196,13 @@ func encodeResetPasswordIntent(intent ResetPasswordIntent) ([]byte, error) {
 		if err := w.fieldInt64(1, intent.TargetGUID); err != nil {
 			return err
 		}
-		if err := w.fieldBytes(2, intent.NewPassword); err != nil {
+		if err := w.fieldInt32(2, intent.ExpectedAuthVersion); err != nil {
 			return err
 		}
-		return w.fieldString(3, intent.Reason)
+		if err := w.fieldBytes(3, intent.NewPassword); err != nil {
+			return err
+		}
+		return w.fieldString(4, intent.Reason)
 	})
 }
 

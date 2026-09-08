@@ -548,7 +548,7 @@ func TestActionOperationExpiryBoundaryTombstones(t *testing.T) {
 		t.Fatalf("committed tombstone = %#v", script.operation)
 	}
 	write := script.execs[0]
-	for _, column := range []string{"`state`", "`is_deleted`", "`lease_owner_hmac`", "`lease_expires_at`", "`error_code`", "`result_kind`", "`result_guid`", "`result_http_status`"} {
+	for _, column := range []string{"`state`", "`is_deleted`", "`lease_owner_hmac`", "`lease_expires_at`", "`error_code`", "`result_kind`", "`result_guid`", "`result_auth_version`", "`result_http_status`"} {
 		if !bytes.Contains([]byte(write), []byte(column)) {
 			t.Fatalf("expiry update missing %s: %s", column, write)
 		}
@@ -556,7 +556,7 @@ func TestActionOperationExpiryBoundaryTombstones(t *testing.T) {
 	updated := actionOperationUpdateValues(t, script.execs[0], script.execArgs[0])
 	for column, want := range map[string]string{
 		"state": fmt.Sprint(int(models.OperationExpired)), "is_deleted": "1", "lease_owner_hmac": "<nil>", "lease_expires_at": "<nil>",
-		"error_code": "<nil>", "result_kind": "<nil>", "result_guid": "<nil>", "result_http_status": "<nil>",
+		"error_code": "<nil>", "result_kind": "<nil>", "result_guid": "<nil>", "result_auth_version": "<nil>", "result_http_status": "<nil>",
 		"updated_at": fmt.Sprint(now), "updated_by": "10",
 	} {
 		if got := updated[column]; got != want {

@@ -54,7 +54,7 @@ func TestAdminActionVerificationAndAdminOperationSchemaContract(t *testing.T) {
 			"lease_owner_hmac": {"char(64)", false}, "lease_expires_at": {"bigint", false},
 			"finished_at": {"bigint", false}, "query_expires_at": {"bigint", true},
 			"error_code": {"int", false}, "result_kind": {"int", false},
-			"result_guid": {"bigint", false}, "result_http_status": {"int", false},
+			"result_guid": {"bigint", false}, "result_auth_version": {"int", false}, "result_http_status": {"int", false},
 		}},
 	}
 

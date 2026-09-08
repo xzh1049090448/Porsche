@@ -463,10 +463,20 @@ func prepareCreateSnapshotThrough0010(t *testing.T, now int64, deleteBeforeMigra
 		}
 	}
 	migrations, err := migration.All()
-	if err != nil || len(migrations) != 10 || migrations[9].Version != "0010" {
+	if err != nil {
 		t.Fatalf("0010 migration = %d/%v", len(migrations), err)
 	}
-	for index, statement := range strings.Split(string(migrations[9].DownSQL), ";") {
+	var migration0010 *migration.Migration
+	for index := range migrations {
+		if migrations[index].Version == "0010" {
+			migration0010 = &migrations[index]
+			break
+		}
+	}
+	if migration0010 == nil {
+		t.Fatalf("0010 migration absent from %d migrations", len(migrations))
+	}
+	for index, statement := range strings.Split(string(migration0010.DownSQL), ";") {
 		if statement = strings.TrimSpace(statement); statement != "" {
 			if err := db.Exec(statement).Error; err != nil {
 				t.Fatalf("isolated 0010 down statement %d: %v", index+1, err)

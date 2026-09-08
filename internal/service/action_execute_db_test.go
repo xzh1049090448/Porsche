@@ -158,24 +158,26 @@ type actionExecuteState struct {
 	officialOutbox int
 }
 type actionExecuteScript struct {
-	mu            sync.Mutex
-	now           int64
-	actor         models.User
-	session       models.Session
-	target        models.User
-	policy        models.PermissionPolicyHead
-	overrides     []models.PermissionOverride
-	state         actionExecuteState
-	queries       []string
-	execs         []string
-	beginCount    int
-	commitCount   int
-	rollbackCount int
-	failAt        string
-	commitUnknown bool
-	lastError     string
-	queryStep     int
-	ticketless    bool
+	mu             sync.Mutex
+	now            int64
+	actor          models.User
+	session        models.Session
+	target         models.User
+	policy         models.PermissionPolicyHead
+	overrides      []models.PermissionOverride
+	state          actionExecuteState
+	queries        []string
+	execs          []string
+	beginCount     int
+	commitCount    int
+	rollbackCount  int
+	failAt         string
+	commitUnknown  bool
+	lastError      string
+	queryStep      int
+	ticketless     bool
+	resetPrelock   bool
+	targetSessions []models.Session
 }
 type actionExecuteDriver struct{}
 type actionExecuteConn struct {
@@ -272,6 +274,9 @@ func (c *actionExecuteConn) QueryContext(_ context.Context, query string, args [
 		sequenceKind += "_lock"
 	}
 	expected := []string{"actor", "session", "operation", "verification", "target", "policy_lock", "rules_lock", "policy", "rules"}
+	if c.script.resetPrelock {
+		expected = []string{"actor", "session", "operation", "verification", "target", "target_sessions", "policy_lock", "rules_lock", "policy", "rules"}
+	}
 	if c.script.ticketless {
 		expected = []string{"actor", "session", "operation", "policy_lock", "rules_lock", "policy", "rules"}
 	}
@@ -302,6 +307,12 @@ func (c *actionExecuteConn) QueryContext(_ context.Context, query string, args [
 	case "session":
 		s := c.script.session
 		return executeRows([]string{"id", "guid", "sid", "user_id", "session_version", "is_deleted", "revoked_at", "expires_at"}, [][]driver.Value{{s.ID, s.Guid, s.SID, s.UserID, int64(s.SessionVersion), int64(s.IsDeleted), nil, s.ExpiresAt}}), nil
+	case "target_sessions":
+		values := make([][]driver.Value, 0, len(c.script.targetSessions))
+		for _, s := range c.script.targetSessions {
+			values = append(values, []driver.Value{s.ID, s.Guid, s.SID, s.UserID, int64(s.LoginMethod), int64(s.SessionVersion), int64(s.IsDeleted), nil, s.ExpiresAt})
+		}
+		return executeRows([]string{"id", "guid", "sid", "user_id", "login_method", "session_version", "is_deleted", "revoked_at", "expires_at"}, values), nil
 	case "operation":
 		return executeRows(operationColumns(), [][]driver.Value{operationValues(state.operation)}), nil
 	case "verification":
@@ -411,6 +422,14 @@ func validateExecuteQuery(script *actionExecuteScript, tx *actionExecuteTx, kind
 		if err := exactArgs(script.actor.ID, script.now); err != nil {
 			return err
 		}
+	case "target_sessions":
+		locked = true
+		if err := exactSQL("SELECT `id`,`guid`,`sid`,`user_id`,`login_method`,`session_version`,`is_deleted`,`revoked_at`,`expires_at` FROM `user_sessions` WHERE user_id = ? AND is_deleted = 0 AND revoked_at IS NULL ORDER BY id ASC FOR UPDATE"); err != nil {
+			return err
+		}
+		if err := exactArgs(script.target.ID); err != nil {
+			return err
+		}
 	case "operation":
 		locked = true
 		if err := exactSQL("SELECT * FROM `admin_operations` WHERE id = ? ORDER BY `admin_operations`.`id` LIMIT ? FOR UPDATE"); err != nil {
@@ -498,6 +517,9 @@ func validateExecuteQuery(script *actionExecuteScript, tx *actionExecuteTx, kind
 			return fmt.Errorf("%s lock outside transaction", kind)
 		}
 		order := []string{"actor", "session", "operation", "verification", "target", "policy", "rules"}
+		if script.resetPrelock {
+			order = []string{"actor", "session", "operation", "verification", "target", "target_sessions", "policy", "rules"}
+		}
 		if script.ticketless {
 			order = []string{"actor", "session", "operation", "policy", "rules"}
 		}
@@ -522,8 +544,10 @@ func executeQueryKind(query string) string {
 		return "target"
 	case strings.Contains(query, "FROM `users`"):
 		return "actor"
-	case strings.Contains(query, "FROM `user_sessions`"):
+	case strings.Contains(query, "FROM `user_sessions`") && strings.Contains(query, "expires_at > ?"):
 		return "session"
+	case strings.Contains(query, "FROM `user_sessions`"):
+		return "target_sessions"
 	case strings.Contains(query, "FROM `admin_operations`"):
 		return "operation"
 	case strings.Contains(query, "FROM `admin_action_verifications`"):
@@ -681,10 +705,10 @@ func validateExecuteExec(script *actionExecuteScript, tx *actionExecuteTx, kind,
 		}
 		return nil
 	case "terminal_success", "terminal_failed":
-		terminalSQL := "UPDATE `admin_operations` SET `error_code`=?,`finished_at`=?,`lease_expires_at`=?,`lease_owner_hmac`=?,`query_expires_at`=?,`result_guid`=?,`result_http_status`=?,`result_kind`=?,`state`=?,`updated_at`=?,`updated_by`=? WHERE id = ? AND state = ? AND is_deleted = 0 AND lease_owner_hmac = ? AND verification_id = ?"
+		terminalSQL := "UPDATE `admin_operations` SET `error_code`=?,`finished_at`=?,`lease_expires_at`=?,`lease_owner_hmac`=?,`query_expires_at`=?,`result_auth_version`=?,`result_guid`=?,`result_http_status`=?,`result_kind`=?,`state`=?,`updated_at`=?,`updated_by`=? WHERE id = ? AND state = ? AND is_deleted = 0 AND lease_owner_hmac = ? AND verification_id = ?"
 		selector := "id = ? AND state = ? AND is_deleted = 0 AND lease_owner_hmac = ? AND verification_id = ?"
 		if script.ticketless {
-			terminalSQL = "UPDATE `admin_operations` SET `error_code`=?,`finished_at`=?,`lease_expires_at`=?,`lease_owner_hmac`=?,`query_expires_at`=?,`result_guid`=?,`result_http_status`=?,`result_kind`=?,`state`=?,`updated_at`=?,`updated_by`=? WHERE id = ? AND state = ? AND is_deleted = 0 AND lease_owner_hmac = ? AND verification_id IS NULL"
+			terminalSQL = "UPDATE `admin_operations` SET `error_code`=?,`finished_at`=?,`lease_expires_at`=?,`lease_owner_hmac`=?,`query_expires_at`=?,`result_auth_version`=?,`result_guid`=?,`result_http_status`=?,`result_kind`=?,`state`=?,`updated_at`=?,`updated_by`=? WHERE id = ? AND state = ? AND is_deleted = 0 AND lease_owner_hmac = ? AND verification_id IS NULL"
 			selector = "id = ? AND state = ? AND is_deleted = 0 AND lease_owner_hmac = ? AND verification_id IS NULL"
 		}
 		if err := exactSQL(terminalSQL); err != nil {
@@ -697,10 +721,10 @@ func validateExecuteExec(script *actionExecuteScript, tx *actionExecuteTx, kind,
 		if err != nil {
 			return err
 		}
-		if len(values) != 11 {
+		if len(values) != 12 {
 			return fmt.Errorf("terminal assignments=%d", len(values))
 		}
-		for _, key := range []string{"state", "finished_at", "query_expires_at", "lease_owner_hmac", "lease_expires_at", "error_code", "result_kind", "result_guid", "result_http_status", "updated_at", "updated_by"} {
+		for _, key := range []string{"state", "finished_at", "query_expires_at", "lease_owner_hmac", "lease_expires_at", "error_code", "result_kind", "result_guid", "result_auth_version", "result_http_status", "updated_at", "updated_by"} {
 			if _, ok := values[key]; !ok {
 				return fmt.Errorf("terminal write missing assignment %s", key)
 			}
@@ -709,9 +733,12 @@ func validateExecuteExec(script *actionExecuteScript, tx *actionExecuteTx, kind,
 		wantFailure, wantKind, wantStatus := any(nil), any(int64(models.ResultNone)), any(int64(204))
 		if kind == "terminal_failed" {
 			wantState, wantFailure, wantKind, wantStatus = models.OperationFailed, int64(models.FailureActionRejected), nil, int64(409)
+			if script.resetPrelock {
+				wantFailure = int64(models.FailureTargetVersionConflict)
+			}
 		}
 		want := map[string]any{"state": int64(wantState), "finished_at": script.now, "query_expires_at": script.now + actionOperationQueryRetentionMS,
-			"lease_owner_hmac": nil, "lease_expires_at": nil, "error_code": wantFailure, "result_kind": wantKind, "result_guid": nil,
+			"lease_owner_hmac": nil, "lease_expires_at": nil, "error_code": wantFailure, "result_kind": wantKind, "result_guid": nil, "result_auth_version": nil,
 			"result_http_status": wantStatus, "updated_at": script.now, "updated_by": script.actor.ID}
 		for key, expected := range want {
 			if fmt.Sprint(values[key]) != fmt.Sprint(expected) {

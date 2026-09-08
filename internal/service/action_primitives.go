@@ -13,10 +13,11 @@ import (
 // action callback. A non-nil Failure is a known business rejection; a returned
 // error is reserved for infrastructure failure and causes a full rollback.
 type TerminalOutcome struct {
-	Failure    *models.AdminOperationFailure
-	ResultKind models.AdminResultKind
-	ResultGUID *int64
-	HTTPStatus int
+	Failure           *models.AdminOperationFailure
+	ResultKind        models.AdminResultKind
+	ResultGUID        *int64
+	ResultAuthVersion *int
+	HTTPStatus        int
 }
 
 type TransactionalActionConsumer interface {
@@ -86,7 +87,7 @@ func (e *CommitUnknownError) Is(target error) bool {
 
 func validateTerminalOutcome(outcome TerminalOutcome) error {
 	if outcome.Failure != nil {
-		if outcome.ResultKind != 0 || outcome.ResultGUID != nil || outcome.HTTPStatus < 400 || outcome.HTTPStatus > 499 {
+		if outcome.ResultKind != 0 || outcome.ResultGUID != nil || outcome.ResultAuthVersion != nil || outcome.HTTPStatus < 400 || outcome.HTTPStatus > 499 {
 			return errors.New("invalid terminal outcome")
 		}
 		switch *outcome.Failure {
@@ -110,6 +111,9 @@ func validateTerminalOutcome(outcome TerminalOutcome) error {
 			return errors.New("invalid terminal outcome")
 		}
 	default:
+		return errors.New("invalid terminal outcome")
+	}
+	if outcome.ResultAuthVersion != nil && (*outcome.ResultAuthVersion <= 0 || outcome.ResultKind != models.ResultUser) {
 		return errors.New("invalid terminal outcome")
 	}
 	return nil

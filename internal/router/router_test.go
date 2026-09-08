@@ -143,6 +143,39 @@ func TestAdminUserStatusRouteIsRegisteredExactlyOnceBehindAuthentication(t *test
 	}
 }
 
+func TestAdminUserEntitlementRoutesAreRegisteredExactlyOnce(t *testing.T) {
+	settings := &config.Settings{AppEnv: "test", AllowedHosts: "example.com", JWTSecretKey: "test-secret"}
+	engine := router.New(&app.State{Settings: settings, DB: &gorm.DB{}, Sessions: &service.SessionService{}})
+	want := map[string]int{
+		"/admin/v2/users/:guid/group": 0,
+		"/admin/v2/users/:guid/plan":  0,
+	}
+	for _, route := range engine.Routes() {
+		if route.Method == http.MethodPatch {
+			if _, ok := want[route.Path]; ok {
+				want[route.Path]++
+			}
+		}
+	}
+	for path, count := range want {
+		if count != 1 {
+			t.Fatalf("PATCH %s route count=%d, want 1", path, count)
+		}
+		request := httptest.NewRequest(http.MethodPatch, strings.Replace(path, ":guid", "123", 1), strings.NewReader(`{"plan_type":"professional","reason":"grant","expected_auth_version":1}`))
+		if strings.HasSuffix(path, "/group") {
+			request = httptest.NewRequest(http.MethodPatch, strings.Replace(path, ":guid", "123", 1), strings.NewReader(`{"group_guid":"456","reason":"move","expected_auth_version":1}`))
+		}
+		request.Host = "example.com"
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("X-Request-ID", "route-a07-auth")
+		recorder := httptest.NewRecorder()
+		engine.ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusUnauthorized || recorder.Header().Get("Cache-Control") != "no-store" || recorder.Header().Get("X-Request-ID") != "route-a07-auth" || !strings.Contains(recorder.Body.String(), `"detail"`) {
+			t.Fatalf("path=%s auth status/headers/body=%d/%v/%s", path, recorder.Code, recorder.Header(), recorder.Body.String())
+		}
+	}
+}
+
 func TestHostAllowlistAcceptsDomainAndRejectsDirectIPAddress(t *testing.T) {
 	state := newGatewayTestState(t)
 	state.Settings.AllowedHosts = "aiportcloud.com"
@@ -570,6 +603,8 @@ var preB1ERouteInventory = []routeContract{
 	{http.MethodGet, "/admin/v2/users"},
 	{http.MethodGet, "/admin/v2/users/:guid"},
 	{http.MethodPatch, "/admin/v2/users/:guid"},
+	{http.MethodPatch, "/admin/v2/users/:guid/group"},
+	{http.MethodPatch, "/admin/v2/users/:guid/plan"},
 	{http.MethodPatch, "/admin/v2/users/:guid/status"},
 	{http.MethodGet, "/admin/v2/users/:guid/permissions"},
 	{http.MethodPost, "/api/v1/auth/login"},

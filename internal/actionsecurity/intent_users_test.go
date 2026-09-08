@@ -3,11 +3,31 @@ package actionsecurity
 import (
 	"bytes"
 	"encoding/binary"
+	"encoding/json"
+	"fmt"
 	"math"
 	"reflect"
 	"strings"
 	"testing"
 )
+
+func TestResetPasswordIntentRedactsSecretFormatting(t *testing.T) {
+	intent := ResetPasswordIntent{TargetGUID: 2, ExpectedAuthVersion: 3, NewPassword: []byte("Strong!Pass1"), Reason: "rotation"}
+	for _, got := range []string{fmt.Sprint(intent), fmt.Sprintf("%#v", intent), string(mustJSON(t, intent))} {
+		if strings.Contains(got, "Strong!Pass1") {
+			t.Fatalf("secret escaped formatting: %s", got)
+		}
+	}
+}
+
+func mustJSON(t *testing.T, value any) []byte {
+	t.Helper()
+	out, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
 
 func decodeArrayItems(t *testing.T, encoded []byte) [][]byte {
 	t.Helper()
@@ -202,7 +222,7 @@ func TestPasswordZeroOnSuccessAndValidationError(t *testing.T) {
 	}{
 		{"create success", ActionUsersCreateAdmin, CreateAccountIntent{Username: "alice", Password: []byte{1, 2, 3}, Role: "admin", PlanType: 1}},
 		{"create error", ActionUsersCreateAdmin, CreateAccountIntent{Password: []byte{1, 2, 3}, Role: "admin", PlanType: 1}},
-		{"reset success", ActionUsersResetPassword, ResetPasswordIntent{TargetGUID: 1, NewPassword: []byte{4, 5, 6}, Reason: "requested"}},
+		{"reset success", ActionUsersResetPassword, ResetPasswordIntent{TargetGUID: 1, ExpectedAuthVersion: 1, NewPassword: []byte{4, 5, 6}, Reason: "requested"}},
 		{"reset error", ActionUsersResetPassword, ResetPasswordIntent{NewPassword: []byte{4, 5, 6}, Reason: "requested"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -218,6 +238,24 @@ func TestPasswordZeroOnSuccessAndValidationError(t *testing.T) {
 				t.Fatal("caller password was not zeroed")
 			}
 		})
+	}
+}
+
+func TestResetPasswordIntentBindsExpectedAuthVersion(t *testing.T) {
+	first, err := descriptorFor(t, ActionUsersResetPassword).Encode(ResetPasswordIntent{TargetGUID: 7, ExpectedAuthVersion: 3, NewPassword: []byte("Strong!Pass1"), Reason: "requested"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := descriptorFor(t, ActionUsersResetPassword).Encode(ResetPasswordIntent{TargetGUID: 7, ExpectedAuthVersion: 4, NewPassword: []byte("Strong!Pass1"), Reason: "requested"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(first, second) {
+		t.Fatal("expected_auth_version did not affect canonical encoding")
+	}
+	fields := decodeFields(t, first)
+	if len(fields) != 4 || fields[1].tag != 2 || fields[1].typ != typeInt32 || binary.BigEndian.Uint32(fields[1].value) != 3 {
+		t.Fatalf("reset password encoding fields = %#v", fields)
 	}
 }
 
@@ -279,7 +317,9 @@ func TestAllDescriptorsDeterministicAndDoNotMutateInputs(t *testing.T) {
 		{"create", ActionUsersCreateAdmin, func() any {
 			return CreateAccountIntent{Username: "alice", Nickname: &nickname, Password: []byte{1, 2, 3}, Role: "admin", GroupGUID: &group, PlanType: 2, AllowedModels: []string{"z", "a", "z"}, DailyCallLimit: 4, Overrides: []PermissionOverrideIntent{{Capability: "users.write", Effect: 3}, {Capability: "users.read", Effect: 2}}}
 		}},
-		{"reset", ActionUsersResetPassword, func() any { return ResetPasswordIntent{TargetGUID: 2, NewPassword: []byte{4, 5, 6}, Reason: "case"} }},
+		{"reset", ActionUsersResetPassword, func() any {
+			return ResetPasswordIntent{TargetGUID: 2, ExpectedAuthVersion: 3, NewPassword: []byte{4, 5, 6}, Reason: "case"}
+		}},
 		{"promote", ActionUsersPromote, func() any { return RoleIntent{TargetGUID: 2, ExpectedAuthVersion: 3, Reason: "case"} }},
 		{"demote", ActionUsersDemote, func() any { return RoleIntent{TargetGUID: 2, ExpectedAuthVersion: 3, Reason: "case"} }},
 		{"permissions", ActionUsersPermissionsWrite, func() any {

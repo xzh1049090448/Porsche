@@ -80,6 +80,13 @@ func decodeAdminUserUpdate(body io.Reader) (adminUserUpdateRequest, error) {
 	if _, hasStatus := raw["status"]; hasStatus {
 		return adminUserUpdateRequest{}, errAdminUserUpdateStatusRetired
 	}
+	// A07 owns these mutations through dedicated v2 endpoints. Reject even null
+	// or malformed values here, before legacy interpretation can reach storage.
+	for _, retired := range []string{"plan_type", "allowed_models", "daily_call_limit"} {
+		if _, present := raw[retired]; present {
+			return adminUserUpdateRequest{}, errAdminUserUpdateStatusRetired
+		}
+	}
 	request := adminUserUpdateRequest{}
 	if value, ok := raw["plan_type"]; ok && !bytes.Equal(value, []byte("null")) {
 		var parsed string

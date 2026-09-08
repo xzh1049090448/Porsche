@@ -67,7 +67,14 @@ type realActionFixture struct {
 
 func openRealActionFixture(t *testing.T, now int64) *realActionFixture {
 	t.Helper()
-	db := openTestMySQL(t)
+	return openRealActionFixtureOnDB(t, now, openTestMySQL(t))
+}
+
+func openRealActionFixtureOnDB(t *testing.T, now int64, db *gorm.DB) *realActionFixture {
+	t.Helper()
+	if db == nil {
+		t.Fatal("real action fixture requires an isolated MySQL database")
+	}
 	rawRedis := strings.TrimSpace(os.Getenv("TEST_REDIS_URL"))
 	if rawRedis == "" {
 		t.Skip("requires explicit disposable TEST_REDIS_URL")
@@ -994,10 +1001,10 @@ func operationRows(columns []string, values [][]driver.Value) *actionOperationRo
 	return &actionOperationRows{columns: columns, values: values}
 }
 func operationColumns() []string {
-	return []string{"id", "guid", "created_at", "created_by", "updated_at", "updated_by", "is_deleted", "actor_user_id", "actor_auth_version", "session_id", "action", "idempotency_key_hmac", "request_hmac", "verification_id", "state", "public_ref", "lease_owner_hmac", "lease_expires_at", "finished_at", "query_expires_at", "error_code", "result_kind", "result_guid", "result_http_status"}
+	return []string{"id", "guid", "created_at", "created_by", "updated_at", "updated_by", "is_deleted", "actor_user_id", "actor_auth_version", "session_id", "action", "idempotency_key_hmac", "request_hmac", "verification_id", "state", "public_ref", "lease_owner_hmac", "lease_expires_at", "finished_at", "query_expires_at", "error_code", "result_kind", "result_guid", "result_auth_version", "result_http_status"}
 }
 func operationValues(o models.AdminOperation) []driver.Value {
-	return []driver.Value{o.ID, o.Guid, o.CreatedAt, ptrDriver(o.CreatedBy), o.UpdatedAt, ptrDriver(o.UpdatedBy), int64(o.IsDeleted), o.ActorUserID, int64(o.ActorAuthVersion), o.SessionID, int64(o.Action), o.IdempotencyKeyHMAC, o.RequestHMAC, ptrDriver(o.VerificationID), int64(o.State), o.PublicRef, ptrDriver(o.LeaseOwnerHMAC), ptrDriver(o.LeaseExpiresAt), ptrDriver(o.FinishedAt), o.QueryExpiresAt, ptrDriver(o.ErrorCode), ptrDriver(o.ResultKind), ptrDriver(o.ResultGUID), ptrDriver(o.ResultHTTPStatus)}
+	return []driver.Value{o.ID, o.Guid, o.CreatedAt, ptrDriver(o.CreatedBy), o.UpdatedAt, ptrDriver(o.UpdatedBy), int64(o.IsDeleted), o.ActorUserID, int64(o.ActorAuthVersion), o.SessionID, int64(o.Action), o.IdempotencyKeyHMAC, o.RequestHMAC, ptrDriver(o.VerificationID), int64(o.State), o.PublicRef, ptrDriver(o.LeaseOwnerHMAC), ptrDriver(o.LeaseExpiresAt), ptrDriver(o.FinishedAt), o.QueryExpiresAt, ptrDriver(o.ErrorCode), ptrDriver(o.ResultKind), ptrDriver(o.ResultGUID), ptrDriver(o.ResultAuthVersion), ptrDriver(o.ResultHTTPStatus)}
 }
 func verificationColumns() []string {
 	return []string{"id", "guid", "created_at", "created_by", "updated_at", "updated_by", "is_deleted", "actor_user_id", "actor_auth_version", "session_id", "action", "target_kind", "target_guid", "intent_hmac", "ticket_hmac", "expires_at", "consumed_at"}

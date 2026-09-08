@@ -44,14 +44,11 @@ func TestNewCreateAccountActionsBuildsOneCoherentUserManagementBundle(t *testing
 		t.Fatal("bundle did not retain one reviewed persistence dependency set")
 	}
 	for _, resolver := range []func(actionsecurity.Action) (actionsecurity.Descriptor, bool){bundle.Verifications.resolve, bundle.Operations.resolve} {
-		for _, action := range []actionsecurity.Action{actionsecurity.ActionUsersCreate, actionsecurity.ActionUsersCreateAdmin, actionsecurity.ActionUsersDelete} {
+		for _, action := range []actionsecurity.Action{actionsecurity.ActionUsersCreate, actionsecurity.ActionUsersCreateAdmin, actionsecurity.ActionUsersDelete, actionsecurity.ActionUsersResetPassword} {
 			descriptor, ok := resolver(action)
 			if !ok || descriptor.Action != action || !descriptor.Active {
 				t.Fatalf("private resolver rejected action %d: %#v, %v", action, descriptor, ok)
 			}
-		}
-		if _, ok := resolver(actionsecurity.ActionUsersResetPassword); ok {
-			t.Fatal("private resolver exposed an action outside the complete user-management bundle")
 		}
 	}
 	deleteView := bundle.DeleteActions()
@@ -160,7 +157,7 @@ func TestNewCreateAccountActionsRejectsRegistryOrderMetadataAndEncoderDrift(t *t
 		name   string
 		mutate func(*actionsecurity.Descriptor)
 	}{
-		{name: "action", mutate: func(d *actionsecurity.Descriptor) { d.Action = actionsecurity.ActionUsersResetPassword }},
+		{name: "action", mutate: func(d *actionsecurity.Descriptor) { d.Action = actionsecurity.ActionUsersPromote }},
 		{name: "name", mutate: func(d *actionsecurity.Descriptor) { d.Name += ".changed" }},
 		{name: "capability", mutate: func(d *actionsecurity.Descriptor) { d.Capability = "users.edit" }},
 		{name: "root only", mutate: func(d *actionsecurity.Descriptor) { d.RootOnly = !d.RootOnly }},

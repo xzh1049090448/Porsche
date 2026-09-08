@@ -149,6 +149,8 @@ type OperationView struct {
 	FinishedAt        *int64
 	FailureCode       *string
 	RetryAfterSeconds int
+	TargetGUID        *int64
+	ResultAuthVersion *int
 }
 
 type ActionOperationService struct {
@@ -920,7 +922,7 @@ func expireOperation(tx *gorm.DB, operation *models.AdminOperation, actorID, now
 		Where("id = ? AND state = ? AND is_deleted = 0 AND query_expires_at = ? AND query_expires_at <= ?", operation.ID, operation.State, operation.QueryExpiresAt, now).
 		Updates(map[string]any{
 			"state": models.OperationExpired, "is_deleted": 1, "lease_owner_hmac": nil, "lease_expires_at": nil,
-			"error_code": nil, "result_kind": nil, "result_guid": nil, "result_http_status": nil,
+			"error_code": nil, "result_kind": nil, "result_guid": nil, "result_auth_version": nil, "result_http_status": nil,
 			"updated_at": now, "updated_by": updatedBy,
 		})
 	if result.Error != nil || result.RowsAffected != 1 {
@@ -936,6 +938,13 @@ func operationView(descriptor actionsecurity.Descriptor, operation models.AdminO
 	if operation.ErrorCode != nil {
 		code := operation.ErrorCode.String()
 		view.FailureCode = &code
+	}
+	if operation.State == models.OperationSucceeded && descriptor.Action == actionsecurity.ActionUsersResetPassword {
+		view.TargetGUID = copyInt64(operation.ResultGUID)
+		if operation.ResultAuthVersion != nil {
+			value := *operation.ResultAuthVersion
+			view.ResultAuthVersion = &value
+		}
 	}
 	if operation.State == models.OperationProcessing {
 		seconds := 1
