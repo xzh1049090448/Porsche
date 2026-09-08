@@ -6,6 +6,15 @@ import (
 )
 
 func TestAllIncludesPlatformGenerationReceiptMigration(t *testing.T) {
+	assertPlatformGenerationReceiptMigrationContract(t)
+}
+
+func TestPlatformGenerationReceiptMigrationContract(t *testing.T) {
+	assertPlatformGenerationReceiptMigrationContract(t)
+}
+
+func assertPlatformGenerationReceiptMigrationContract(t *testing.T) {
+	t.Helper()
 	migrations, err := All()
 	if err != nil {
 		t.Fatal(err)
