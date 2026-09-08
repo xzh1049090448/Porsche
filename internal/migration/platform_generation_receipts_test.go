@@ -1,9 +1,417 @@
 package migration
 
 import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+	"os"
 	"strings"
 	"testing"
+
+	"github.com/porsche/ai-gateway-go/internal/persistence"
+	"gorm.io/gorm"
 )
+
+func platformGenerationReceiptSchemaDB(t *testing.T) *gorm.DB {
+	t.Helper()
+	if strings.TrimSpace(os.Getenv("TEST_DATABASE_URL")) == "" {
+		t.Skip("BLOCKED_FIXTURE: requires isolated TEST_DATABASE_URL MySQL fixture")
+	}
+	return permissionSchemaDB(t)
+}
+
+func TestVerifyPlatformGenerationReceiptSchemaRejectsMissingAndPartialTables(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		setup func(*testing.T, *gorm.DB)
+	}{
+		{name: "both_absent"},
+		{name: "receipt_only", setup: func(t *testing.T, db *gorm.DB) {
+			t.Helper()
+			applyPlatformGenerationReceiptStatement(t, db, 0)
+		}},
+		{name: "result_only", setup: func(t *testing.T, db *gorm.DB) {
+			t.Helper()
+			if err := db.Exec(`CREATE TABLE platform_chat_generation_results (id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`).Error; err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "malformed_pair", setup: func(t *testing.T, db *gorm.DB) {
+			t.Helper()
+			if err := db.Exec(`CREATE TABLE platform_chat_generation_receipts (id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`).Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := db.Exec(`CREATE TABLE platform_chat_generation_results (id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`).Error; err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db := platformGenerationReceiptSchemaDB(t)
+			applyThroughPlatformGenerationReceiptPredecessor(t, db)
+			if tc.setup != nil {
+				tc.setup(t, db)
+			}
+			err := VerifyPlatformGenerationReceiptSchema(context.Background(), db)
+			if !errors.Is(err, ErrPlatformGenerationReceiptSchema) {
+				t.Fatalf("VerifyPlatformGenerationReceiptSchema error = %v, want %v", err, ErrPlatformGenerationReceiptSchema)
+			}
+		})
+	}
+}
+
+func TestUpRejectsPartialPlatformGenerationReceiptSchemaBeforeLedger(t *testing.T) {
+	db := platformGenerationReceiptSchemaDB(t)
+	applyThroughPlatformGenerationReceiptPredecessor(t, db)
+	applyPlatformGenerationReceiptStatement(t, db, 0)
+
+	generator := persistence.NewSnowflake(28, persistence.SystemClock())
+	if err := Up(context.Background(), db, generator.Next, func() int64 { return 1_900_000_000_000 }); err == nil {
+		t.Fatal("Up accepted a partial platform generation receipt schema")
+	}
+	var active int64
+	if err := db.Raw("SELECT COUNT(*) FROM schema_migrations WHERE version='0011' AND is_deleted=0").Row().Scan(&active); err != nil {
+		t.Fatal(err)
+	}
+	if active != 0 {
+		t.Fatalf("active 0011 ledger rows = %d, want 0", active)
+	}
+}
+
+func TestUpVerifiesActivePlatformGenerationReceiptSchema(t *testing.T) {
+	db := platformGenerationReceiptSchemaDB(t)
+	permissionUp(t, db)
+	if err := db.Exec("ALTER TABLE platform_chat_generation_results ADD COLUMN unexpected_value BIGINT NULL").Error; err != nil {
+		t.Fatal(err)
+	}
+	generator := persistence.NewSnowflake(29, persistence.SystemClock())
+	err := Up(context.Background(), db, generator.Next, func() int64 { return 1_900_000_000_000 })
+	if !errors.Is(err, ErrPlatformGenerationReceiptSchema) {
+		t.Fatalf("Up error = %v, want %v", err, ErrPlatformGenerationReceiptSchema)
+	}
+}
+
+func applyThroughPlatformGenerationReceiptPredecessor(t *testing.T, db *gorm.DB) {
+	t.Helper()
+	generator := persistence.NewSnowflake(27, persistence.SystemClock())
+	if err := Up(context.Background(), db, generator.Next, func() int64 { return 1_900_000_000_000 }); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec("DROP TABLE platform_chat_generation_results").Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec("DROP TABLE platform_chat_generation_receipts").Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec("DELETE FROM schema_migrations WHERE version='0011'").Error; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func applyPlatformGenerationReceiptStatement(t *testing.T, db *gorm.DB, index int) {
+	t.Helper()
+	migrations, err := All()
+	if err != nil {
+		t.Fatal(err)
+	}
+	statements := splitStatements(string(migrations[10].UpSQL))
+	if index < 0 || index >= len(statements) {
+		t.Fatalf("0011 statement index %d out of range %d", index, len(statements))
+	}
+	if err := db.Exec(statements[index]).Error; err != nil {
+		t.Fatal(fmt.Errorf("apply 0011 statement %d: %w", index, err))
+	}
+}
+
+func TestVerifyPlatformGenerationReceiptSchemaRejectsEveryMetadataDrift(t *testing.T) {
+	tests := []struct {
+		name string
+		ddl  []string
+	}{
+		{name: "extra_column", ddl: []string{"ALTER TABLE platform_chat_generation_results ADD COLUMN unexpected_value BIGINT NULL"}},
+		{name: "column_order", ddl: []string{"ALTER TABLE platform_chat_generation_results MODIFY guid BIGINT NOT NULL AFTER receipt_id"}},
+		{name: "column_type", ddl: []string{"ALTER TABLE platform_chat_generation_results MODIFY model VARCHAR(127) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL"}},
+		{name: "column_signedness", ddl: []string{"ALTER TABLE platform_chat_generation_receipts MODIFY total_tokens BIGINT UNSIGNED NOT NULL"}},
+		{name: "nullability", ddl: []string{"ALTER TABLE platform_chat_generation_results MODIFY error_code VARCHAR(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL"}},
+		{name: "default", ddl: []string{"ALTER TABLE platform_chat_generation_results MODIFY tokens BIGINT NOT NULL DEFAULT 1"}},
+		{name: "auto_increment", ddl: []string{"ALTER TABLE platform_chat_generation_results MODIFY id BIGINT NOT NULL"}},
+		{name: "column_charset", ddl: []string{"ALTER TABLE platform_chat_generation_results MODIFY model VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NOT NULL"}},
+		{name: "column_collation", ddl: []string{"ALTER TABLE platform_chat_generation_results MODIFY model VARCHAR(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL"}},
+		{name: "table_collation", ddl: []string{"ALTER TABLE platform_chat_generation_receipts DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_bin"}},
+		{name: "extra_index", ddl: []string{"ALTER TABLE platform_chat_generation_results ADD KEY idx_platform_chat_generation_results_unexpected (status)"}},
+		{name: "index_order", ddl: []string{
+			"ALTER TABLE platform_chat_generation_results DROP INDEX uk_platform_chat_generation_results_model",
+			"ALTER TABLE platform_chat_generation_results ADD UNIQUE KEY uk_platform_chat_generation_results_model (model, receipt_id)",
+		}},
+		{name: "index_uniqueness", ddl: []string{
+			"ALTER TABLE platform_chat_generation_results DROP INDEX uk_platform_chat_generation_results_model",
+			"ALTER TABLE platform_chat_generation_results ADD KEY uk_platform_chat_generation_results_model (receipt_id, model)",
+		}},
+		{name: "user_message_uniqueness_downgrade", ddl: []string{
+			"ALTER TABLE platform_chat_generation_receipts DROP FOREIGN KEY fk_platform_chat_generation_receipts_user_message",
+			"ALTER TABLE platform_chat_generation_receipts DROP INDEX uk_platform_chat_generation_receipts_user_message",
+			"ALTER TABLE platform_chat_generation_receipts ADD KEY uk_platform_chat_generation_receipts_user_message (user_message_id)",
+			"ALTER TABLE platform_chat_generation_receipts ADD CONSTRAINT fk_platform_chat_generation_receipts_user_message FOREIGN KEY (user_message_id) REFERENCES messages(id) ON DELETE RESTRICT ON UPDATE RESTRICT",
+		}},
+		{name: "foreign_key_target", ddl: []string{
+			"ALTER TABLE platform_chat_generation_results DROP FOREIGN KEY fk_platform_chat_generation_results_receipt",
+			"ALTER TABLE platform_chat_generation_results ADD CONSTRAINT fk_platform_chat_generation_results_receipt FOREIGN KEY (receipt_id) REFERENCES platform_chat_generation_receipts(guid) ON DELETE RESTRICT ON UPDATE RESTRICT",
+		}},
+		{name: "foreign_key_delete_rule", ddl: []string{
+			"ALTER TABLE platform_chat_generation_results DROP FOREIGN KEY fk_platform_chat_generation_results_receipt",
+			"ALTER TABLE platform_chat_generation_results ADD CONSTRAINT fk_platform_chat_generation_results_receipt FOREIGN KEY (receipt_id) REFERENCES platform_chat_generation_receipts(id) ON DELETE CASCADE ON UPDATE RESTRICT",
+		}},
+		{name: "foreign_key_update_rule", ddl: []string{
+			"ALTER TABLE platform_chat_generation_results DROP FOREIGN KEY fk_platform_chat_generation_results_receipt",
+			"ALTER TABLE platform_chat_generation_results ADD CONSTRAINT fk_platform_chat_generation_results_receipt FOREIGN KEY (receipt_id) REFERENCES platform_chat_generation_receipts(id) ON DELETE RESTRICT ON UPDATE CASCADE",
+		}},
+		{name: "user_message_foreign_key_target", ddl: []string{
+			"ALTER TABLE platform_chat_generation_receipts DROP FOREIGN KEY fk_platform_chat_generation_receipts_user_message",
+			"ALTER TABLE platform_chat_generation_receipts ADD CONSTRAINT fk_platform_chat_generation_receipts_user_message FOREIGN KEY (user_message_id) REFERENCES conversations(id) ON DELETE RESTRICT ON UPDATE RESTRICT",
+		}},
+		{name: "missing_check", ddl: []string{"ALTER TABLE platform_chat_generation_results DROP CHECK chk_platform_chat_generation_results_tokens"}},
+		{name: "extra_check", ddl: []string{"ALTER TABLE platform_chat_generation_results ADD CONSTRAINT chk_platform_chat_generation_results_unexpected CHECK (id > 0)"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			db := platformGenerationReceiptSchemaDB(t)
+			permissionUp(t, db)
+			for _, ddl := range tc.ddl {
+				if err := db.Exec(ddl).Error; err != nil {
+					t.Fatalf("execute metadata drift %q: %v", ddl, err)
+				}
+			}
+			err := VerifyPlatformGenerationReceiptSchema(context.Background(), db)
+			if !errors.Is(err, ErrPlatformGenerationReceiptSchema) {
+				t.Fatalf("VerifyPlatformGenerationReceiptSchema error = %v, want typed mismatch", err)
+			}
+		})
+	}
+}
+
+func TestVerifyReportsOldDatabaseAsUnmigratedBefore0011SchemaCheck(t *testing.T) {
+	db := platformGenerationReceiptSchemaDB(t)
+	permissionUp(t, db)
+	migrations, err := All()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, statement := range splitStatements(string(migrations[10].DownSQL)) {
+		if err := db.Exec(statement).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.Exec("DELETE FROM schema_migrations WHERE version='0011'").Error; err != nil {
+		t.Fatal(err)
+	}
+	err = Verify(context.Background(), db)
+	if err == nil || err.Error() != "database schema is not fully migrated" {
+		t.Fatalf("Verify error = %v, want database schema is not fully migrated", err)
+	}
+	if errors.Is(err, ErrPlatformGenerationReceiptSchema) {
+		t.Fatalf("old database reached 0011 live schema verifier: %v", err)
+	}
+}
+
+func TestPlatformGenerationReceiptMigrationIsRerunnable(t *testing.T) {
+	db := platformGenerationReceiptSchemaDB(t)
+	permissionUp(t, db)
+	permissionUp(t, db)
+	var active int64
+	if err := db.Raw("SELECT COUNT(*) FROM schema_migrations WHERE version='0011' AND is_deleted=0").Row().Scan(&active); err != nil {
+		t.Fatal(err)
+	}
+	if active != 1 {
+		t.Fatalf("active 0011 ledger rows = %d, want 1", active)
+	}
+}
+
+type platformGenerationReceiptFixture struct {
+	userID             int64
+	conversationID     int64
+	userMessageID      int64
+	assistantMessageID int64
+	receiptID          int64
+}
+
+func seedPlatformGenerationReceiptFixture(t *testing.T, db *gorm.DB) platformGenerationReceiptFixture {
+	t.Helper()
+	const now = int64(1_900_000_000_000)
+	var groupID int64
+	if err := db.Raw("SELECT id FROM business_groups WHERE BINARY group_key = BINARY 'default' AND status = 1 AND is_deleted = 0").Row().Scan(&groupID); err != nil || groupID <= 0 {
+		t.Fatalf("load active default business group: id=%d err=%v", groupID, err)
+	}
+	if err := db.Exec(`INSERT INTO users (guid, group_id, allowed_models, created_at, updated_at, is_deleted) VALUES (?, ?, '[]', ?, ?, 0)`, 9_112_000_000_000_001, groupID, now, now).Error; err != nil {
+		t.Fatal(err)
+	}
+	var fixture platformGenerationReceiptFixture
+	if err := db.Raw("SELECT id FROM users WHERE guid=?", 9_112_000_000_000_001).Row().Scan(&fixture.userID); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec(`INSERT INTO conversations (guid, user_id, created_at, updated_at, is_deleted) VALUES (?, ?, ?, ?, 0)`, 9_112_000_000_000_002, fixture.userID, now, now).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Raw("SELECT id FROM conversations WHERE guid=?", 9_112_000_000_000_002).Row().Scan(&fixture.conversationID); err != nil {
+		t.Fatal(err)
+	}
+	for _, message := range []struct {
+		guid int64
+		role int
+	}{
+		{guid: 9_112_000_000_000_003, role: 1},
+		{guid: 9_112_000_000_000_004, role: 2},
+	} {
+		if err := db.Exec(`INSERT INTO messages (guid, conversation_id, role, content, created_at, updated_at, is_deleted) VALUES (?, ?, ?, 'receipt fixture', ?, ?, 0)`, message.guid, fixture.conversationID, message.role, now, now).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.Raw("SELECT id FROM messages WHERE guid=?", 9_112_000_000_000_003).Row().Scan(&fixture.userMessageID); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Raw("SELECT id FROM messages WHERE guid=?", 9_112_000_000_000_004).Row().Scan(&fixture.assistantMessageID); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec(`INSERT INTO platform_chat_generation_receipts
+      (guid,user_id,generation_id,mode,conversation_id,user_message_id,successful_model_count,daily_calls_charged,total_tokens,committed_at,created_at,updated_at,is_deleted)
+      VALUES (?,?,'21111111-1111-4111-8111-111111111111',1,?,?,1,1,17,?,?,?,0)`,
+		9_112_000_000_000_005, fixture.userID, fixture.conversationID, fixture.userMessageID, now, now, now).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Raw("SELECT id FROM platform_chat_generation_receipts WHERE guid=?", 9_112_000_000_000_005).Row().Scan(&fixture.receiptID); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec(`INSERT INTO platform_chat_generation_results
+      (guid,receipt_id,model_index,model,status,assistant_message_id,tokens,created_at,updated_at,is_deleted)
+      VALUES (?,?,0,'owned-model',1,?,17,?,?,0)`, 9_112_000_000_000_006, fixture.receiptID, fixture.assistantMessageID, now, now).Error; err != nil {
+		t.Fatal(err)
+	}
+	return fixture
+}
+
+func TestPlatformGenerationReceiptUserMessageConstraints(t *testing.T) {
+	db := platformGenerationReceiptSchemaDB(t)
+	permissionUp(t, db)
+	fixture := seedPlatformGenerationReceiptFixture(t, db)
+	const now = int64(1_900_000_000_000)
+	insertReceipt := func(guid int64, generationID string, userMessageID int64) error {
+		return db.Exec(`INSERT INTO platform_chat_generation_receipts
+        (guid,user_id,generation_id,mode,conversation_id,user_message_id,successful_model_count,daily_calls_charged,total_tokens,committed_at,created_at,updated_at,is_deleted)
+        VALUES (?,?,?,1,?,?,1,1,0,?,?,?,0)`, guid, fixture.userID, generationID, fixture.conversationID, userMessageID, now, now, now).Error
+	}
+	if err := insertReceipt(9_112_000_000_000_007, "31111111-1111-4111-8111-111111111111", fixture.userMessageID); err == nil {
+		t.Fatal("duplicate user_message_id was accepted")
+	}
+	if err := insertReceipt(9_112_000_000_000_008, "41111111-1111-4111-8111-111111111111", 9_999_999_999); err == nil {
+		t.Fatal("nonexistent user_message_id was accepted")
+	}
+	if err := db.Exec("DELETE FROM messages WHERE id=?", fixture.userMessageID).Error; err == nil {
+		t.Fatal("deleting referenced user message was accepted")
+	}
+	if err := db.Exec("UPDATE messages SET id=id+1000000 WHERE id=?", fixture.userMessageID).Error; err == nil {
+		t.Fatal("updating referenced user message id was accepted")
+	}
+}
+
+func TestPlatformGenerationReceiptInvalidRowsAreRejected(t *testing.T) {
+	t.Run("parent_successful_model_count_zero", func(t *testing.T) {
+		db := platformGenerationReceiptSchemaDB(t)
+		permissionUp(t, db)
+		fixture := seedPlatformGenerationReceiptFixture(t, db)
+		const now = int64(1_900_000_000_000)
+		err := db.Exec(`INSERT INTO platform_chat_generation_receipts
+        (guid,user_id,generation_id,mode,conversation_id,user_message_id,successful_model_count,daily_calls_charged,total_tokens,committed_at,created_at,updated_at,is_deleted)
+        VALUES (?,?,?,1,?,?,0,0,0,?,?,?,0)`, 9_112_000_000_000_010, fixture.userID, "51111111-1111-4111-8111-111111111111", fixture.conversationID, fixture.assistantMessageID, now, now, now).Error
+		if err == nil {
+			t.Fatal("receipt with successful_model_count=0 was accepted")
+		}
+	})
+	t.Run("failed_child_with_assistant_message", func(t *testing.T) {
+		db := platformGenerationReceiptSchemaDB(t)
+		permissionUp(t, db)
+		fixture := seedPlatformGenerationReceiptFixture(t, db)
+		const now = int64(1_900_000_000_000)
+		err := db.Exec(`INSERT INTO platform_chat_generation_results
+        (guid,receipt_id,model_index,model,status,assistant_message_id,tokens,error_code,created_at,updated_at,is_deleted)
+        VALUES (?,?,1,'failed-model',2,?,0,'upstream_failed',?,?,0)`, 9_112_000_000_000_011, fixture.receiptID, fixture.userMessageID, now, now).Error
+		if err == nil {
+			t.Fatal("failed result with non-null assistant_message_id was accepted")
+		}
+	})
+}
+
+func TestPlatformGenerationReceiptDownRemovesChildBeforeParent(t *testing.T) {
+	db := platformGenerationReceiptSchemaDB(t)
+	permissionUp(t, db)
+	migrations, err := All()
+	if err != nil {
+		t.Fatal(err)
+	}
+	statements := splitStatements(string(migrations[10].DownSQL))
+	if len(statements) != 2 || !strings.Contains(statements[0], "platform_chat_generation_results") || !strings.Contains(statements[1], "platform_chat_generation_receipts") {
+		t.Fatalf("0011 down order = %#v", statements)
+	}
+	for _, statement := range statements {
+		if err := db.Exec(statement).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	var tables int64
+	if err := db.Raw(`SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name IN ('platform_chat_generation_receipts','platform_chat_generation_results')`).Row().Scan(&tables); err != nil {
+		t.Fatal(err)
+	}
+	if tables != 0 {
+		t.Fatalf("0011 tables remaining after down = %d", tables)
+	}
+}
+
+func TestVerifyPlatformGenerationReceiptSchemaRejectsNilDB(t *testing.T) {
+	if err := VerifyPlatformGenerationReceiptSchema(context.Background(), nil); !errors.Is(err, ErrPlatformGenerationReceiptSchema) {
+		t.Fatalf("nil DB error = %v, want typed mismatch", err)
+	}
+}
+
+func TestPlatformGenerationReceiptContractsMatchExactMetadata(t *testing.T) {
+	const schemaName = "receipt_contract_test"
+	for _, contract := range platformGenerationReceiptTableContracts() {
+		metadata := platformGenerationReceiptMetadataFromContract(contract, schemaName)
+		if !matchesPlatformGenerationReceiptTableContract(contract, metadata, schemaName) {
+			t.Fatalf("exact metadata rejected for %s", contract.table.name)
+		}
+	}
+}
+
+func platformGenerationReceiptMetadataFromContract(contract platformGenerationReceiptTableContract, schemaName string) businessGroupTableMetadata {
+	metadata := businessGroupTableMetadata{engine: "InnoDB", characterSet: "utf8mb4", collation: "utf8mb4_unicode_ci"}
+	for _, column := range contract.table.columns {
+		metadata.columns = append(metadata.columns, businessGroupColumnMetadata{
+			name: column.name, columnType: column.columnType, nullable: column.nullable, defaultVal: column.defaultVal,
+			extra: column.extra, characterSet: column.characterSet, collation: column.collation,
+		})
+	}
+	for _, index := range contract.table.indexes {
+		for position, column := range index.columns {
+			nonUnique := 1
+			if index.unique {
+				nonUnique = 0
+			}
+			metadata.indexes = append(metadata.indexes, businessGroupIndexMetadata{
+				name: index.name, column: column, sequence: position + 1, nonUnique: nonUnique,
+				collation: sql.NullString{String: "A", Valid: true}, indexType: "BTREE", visible: "YES",
+			})
+		}
+	}
+	for _, foreignKey := range contract.foreignKeys {
+		metadata.foreignKeys = append(metadata.foreignKeys, businessGroupForeignKeyMetadata{
+			name: foreignKey.name, column: foreignKey.column, ordinal: 1, targetSchema: schemaName,
+			targetTable: foreignKey.targetTable, targetColumn: foreignKey.targetColumn, deleteRule: "RESTRICT", updateRule: "RESTRICT",
+		})
+	}
+	for _, check := range contract.table.checks {
+		metadata.checks = append(metadata.checks, businessGroupCheckMetadata{name: check.name, clause: check.clause, enforced: "YES"})
+	}
+	return metadata
+}
 
 func TestAllIncludesPlatformGenerationReceiptMigration(t *testing.T) {
 	assertPlatformGenerationReceiptMigrationContract(t)
@@ -122,7 +530,7 @@ func assertPlatformGenerationReceiptMigrationContract(t *testing.T) {
 }
 
 func TestPlatformGenerationReceiptMigrationPreservesCaseDistinctModelsOnIsolatedMySQL(t *testing.T) {
-	gdb := permissionSchemaDB(t)
+	gdb := platformGenerationReceiptSchemaDB(t)
 	permissionUp(t, gdb)
 
 	const now = int64(1_900_000_000_000)
