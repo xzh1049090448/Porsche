@@ -940,13 +940,6 @@ func (f platformGenerationFinalizationFixture) singleInput() PlatformGenerationP
 	}
 }
 
-func (f platformGenerationFinalizationFixture) compareInput(modelsInOrder []string, results []PlatformGenerationPersistenceResult) PlatformGenerationPersistenceInput {
-	return PlatformGenerationPersistenceInput{
-		UserID: f.user.ID, GenerationID: generationTestID, Mode: PlatformGenerationModeCompare,
-		Models: modelsInOrder, UserMessage: "  exact user bytes  ", NowMillis: f.now + 3, Results: results,
-	}
-}
-
 func TestPlatformGenerationPersistenceFinalizesSingleAtomically(t *testing.T) {
 	f := openPlatformGenerationFinalizationFixture(t)
 	input := f.committingSingle(t)
@@ -1022,7 +1015,7 @@ func TestPlatformGenerationPersistenceRejectsRedisIdentityMismatchBeforeMySQL(t 
 		}
 		snapshot := PlatformGenerationSnapshot{
 			GenerationID: generationTestID, Mode: PlatformGenerationModeCompare,
-			Models: []string{"model-b", "model-a"}, State: PlatformGenerationStateCommitting,
+			Models: []string{"model-b", "model-a"}, State: PlatformGenerationStateCommitting, CreatedAtMillis: 1, UpdatedAtMillis: 1,
 			ModelStates: map[string]PlatformGenerationModel{
 				"model-a": {State: PlatformGenerationStateCompleted},
 				"model-b": {State: PlatformGenerationStateCompleted},
@@ -1032,11 +1025,67 @@ func TestPlatformGenerationPersistenceRejectsRedisIdentityMismatchBeforeMySQL(t 
 			t.Fatal("reordered Redis models matched input")
 		}
 	})
+	t.Run("pure mode and cardinality", func(t *testing.T) {
+		input := validPlatformGenerationPersistenceInput()
+		snapshot := PlatformGenerationSnapshot{
+			GenerationID: generationTestID, Mode: PlatformGenerationModeCompare,
+			Models: []string{"model-a", "model-b"}, State: PlatformGenerationStateCommitting, CreatedAtMillis: 1, UpdatedAtMillis: 1,
+			ModelStates: map[string]PlatformGenerationModel{
+				"model-a": {State: PlatformGenerationStateCompleted},
+				"model-b": {State: PlatformGenerationStateCompleted},
+			},
+		}
+		if platformPersistenceMatchesRedis(input, snapshot) {
+			t.Fatal("compare Redis identity matched single input")
+		}
+	})
+	t.Run("pure terminal state", func(t *testing.T) {
+		input := PlatformGenerationPersistenceInput{
+			UserID: 1, GenerationID: generationTestID, Mode: PlatformGenerationModeCompare,
+			Models: []string{"model-a", "model-b"}, UserMessage: "prompt", NowMillis: 1,
+			Results: []PlatformGenerationPersistenceResult{
+				{Model: "model-a", State: PlatformGenerationStateCompleted, Content: "a", Tokens: 1},
+				{Model: "model-b", State: PlatformGenerationStateCompleted, Content: "b", Tokens: 1},
+			},
+		}
+		snapshot := PlatformGenerationSnapshot{
+			GenerationID: generationTestID, Mode: PlatformGenerationModeCompare,
+			Models: []string{"model-a", "model-b"}, State: PlatformGenerationStateCommitting, CreatedAtMillis: 1, UpdatedAtMillis: 1,
+			ModelStates: map[string]PlatformGenerationModel{
+				"model-a": {State: PlatformGenerationStateFailed, ErrorCode: "timeout"},
+				"model-b": {State: PlatformGenerationStateCompleted},
+			},
+		}
+		if platformPersistenceMatchesRedis(input, snapshot) {
+			t.Fatal("different terminal state matched input")
+		}
+	})
+	t.Run("pure terminal error", func(t *testing.T) {
+		input := PlatformGenerationPersistenceInput{
+			UserID: 1, GenerationID: generationTestID, Mode: PlatformGenerationModeCompare,
+			Models: []string{"model-a", "model-b"}, UserMessage: "prompt", NowMillis: 1,
+			Results: []PlatformGenerationPersistenceResult{
+				{Model: "model-a", State: PlatformGenerationStateFailed, ErrorCode: "upstream_error"},
+				{Model: "model-b", State: PlatformGenerationStateCompleted, Content: "b", Tokens: 1},
+			},
+		}
+		snapshot := PlatformGenerationSnapshot{
+			GenerationID: generationTestID, Mode: PlatformGenerationModeCompare,
+			Models: []string{"model-a", "model-b"}, State: PlatformGenerationStateCommitting, CreatedAtMillis: 1, UpdatedAtMillis: 1,
+			ModelStates: map[string]PlatformGenerationModel{
+				"model-a": {State: PlatformGenerationStateFailed, ErrorCode: "timeout"},
+				"model-b": {State: PlatformGenerationStateCompleted},
+			},
+		}
+		if platformPersistenceMatchesRedis(input, snapshot) {
+			t.Fatal("different terminal error matched input")
+		}
+	})
 	t.Run("pure committing assistant guid", func(t *testing.T) {
 		input := validPlatformGenerationPersistenceInput()
 		snapshot := PlatformGenerationSnapshot{
 			GenerationID: generationTestID, Mode: PlatformGenerationModeSingle,
-			Models: []string{"model-a"}, State: PlatformGenerationStateCommitting,
+			Models: []string{"model-a"}, State: PlatformGenerationStateCommitting, CreatedAtMillis: 1, UpdatedAtMillis: 1,
 			ModelStates: map[string]PlatformGenerationModel{
 				"model-a": {State: PlatformGenerationStateCompleted, AssistantMessageGUID: "123"},
 			},
@@ -1057,35 +1106,6 @@ func TestPlatformGenerationPersistenceRejectsRedisIdentityMismatchBeforeMySQL(t 
 			}
 			return f.singleInput()
 		}},
-		{"mode and cardinality", func(t *testing.T, f platformGenerationFinalizationFixture) PlatformGenerationPersistenceInput {
-			models := []string{"model-a", "model-b"}
-			claimTestGeneration(t, f.store, PlatformGenerationClaimInput{UserID: f.user.ID, GenerationID: generationTestID, Mode: PlatformGenerationModeCompare, Models: models, NowMillis: f.now})
-			for _, model := range models {
-				if _, err := f.store.MarkModelDone(context.Background(), f.user.ID, generationTestID, model, 0, f.now+1); err != nil {
-					t.Fatal(err)
-				}
-			}
-			if _, err := f.store.BeginCommit(context.Background(), f.user.ID, generationTestID, f.now+2); err != nil {
-				t.Fatal(err)
-			}
-			return f.singleInput()
-		}},
-		{"model order", func(t *testing.T, f platformGenerationFinalizationFixture) PlatformGenerationPersistenceInput {
-			redisModels := []string{"model-b", "model-a"}
-			claimTestGeneration(t, f.store, PlatformGenerationClaimInput{UserID: f.user.ID, GenerationID: generationTestID, Mode: PlatformGenerationModeCompare, Models: redisModels, NowMillis: f.now})
-			for _, model := range redisModels {
-				if _, err := f.store.MarkModelDone(context.Background(), f.user.ID, generationTestID, model, 0, f.now+1); err != nil {
-					t.Fatal(err)
-				}
-			}
-			if _, err := f.store.BeginCommit(context.Background(), f.user.ID, generationTestID, f.now+2); err != nil {
-				t.Fatal(err)
-			}
-			return f.compareInput([]string{"model-a", "model-b"}, []PlatformGenerationPersistenceResult{
-				{Model: "model-a", State: PlatformGenerationStateCompleted, Content: "a", Tokens: 1},
-				{Model: "model-b", State: PlatformGenerationStateCompleted, Content: "b", Tokens: 1},
-			})
-		}},
 		{"model identity", func(t *testing.T, f platformGenerationFinalizationFixture) PlatformGenerationPersistenceInput {
 			claimTestGeneration(t, f.store, PlatformGenerationClaimInput{UserID: f.user.ID, GenerationID: generationTestID, Mode: PlatformGenerationModeSingle, Models: []string{"model-b"}, NowMillis: f.now})
 			if _, err := f.store.MarkModelDone(context.Background(), f.user.ID, generationTestID, "model-b", 0, f.now+1); err != nil {
@@ -1095,40 +1115,6 @@ func TestPlatformGenerationPersistenceRejectsRedisIdentityMismatchBeforeMySQL(t 
 				t.Fatal(err)
 			}
 			return f.singleInput()
-		}},
-		{"terminal state", func(t *testing.T, f platformGenerationFinalizationFixture) PlatformGenerationPersistenceInput {
-			models := []string{"model-a", "model-b"}
-			claimTestGeneration(t, f.store, PlatformGenerationClaimInput{UserID: f.user.ID, GenerationID: generationTestID, Mode: PlatformGenerationModeCompare, Models: models, NowMillis: f.now})
-			if _, err := f.store.MarkModelFailed(context.Background(), f.user.ID, generationTestID, "model-a", "timeout", f.now+1); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := f.store.MarkModelDone(context.Background(), f.user.ID, generationTestID, "model-b", 0, f.now+1); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := f.store.BeginCommit(context.Background(), f.user.ID, generationTestID, f.now+2); err != nil {
-				t.Fatal(err)
-			}
-			return f.compareInput(models, []PlatformGenerationPersistenceResult{
-				{Model: "model-a", State: PlatformGenerationStateCompleted, Content: "a", Tokens: 1},
-				{Model: "model-b", State: PlatformGenerationStateCompleted, Content: "b", Tokens: 1},
-			})
-		}},
-		{"terminal error", func(t *testing.T, f platformGenerationFinalizationFixture) PlatformGenerationPersistenceInput {
-			models := []string{"model-a", "model-b"}
-			claimTestGeneration(t, f.store, PlatformGenerationClaimInput{UserID: f.user.ID, GenerationID: generationTestID, Mode: PlatformGenerationModeCompare, Models: models, NowMillis: f.now})
-			if _, err := f.store.MarkModelFailed(context.Background(), f.user.ID, generationTestID, "model-a", "timeout", f.now+1); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := f.store.MarkModelDone(context.Background(), f.user.ID, generationTestID, "model-b", 0, f.now+1); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := f.store.BeginCommit(context.Background(), f.user.ID, generationTestID, f.now+2); err != nil {
-				t.Fatal(err)
-			}
-			return f.compareInput(models, []PlatformGenerationPersistenceResult{
-				{Model: "model-a", State: PlatformGenerationStateFailed, ErrorCode: "upstream_error"},
-				{Model: "model-b", State: PlatformGenerationStateCompleted, Content: "b", Tokens: 1},
-			})
 		}},
 		{"completed non-committing with assistant guid", func(t *testing.T, f platformGenerationFinalizationFixture) PlatformGenerationPersistenceInput {
 			input := f.committingSingle(t)
@@ -1162,11 +1148,26 @@ func TestPlatformGenerationPersistenceRejectsEmptyUserMessageBeforeDependencies(
 	p := &PlatformGenerationPersistence{generations: store, runTx: func(context.Context, *gorm.DB, string, func(*gorm.DB) error) error {
 		panic("transaction dependency touched")
 	}}
-	input := validPlatformGenerationPersistenceInput()
-	input.UserMessage = ""
-	if _, err := p.Finalize(context.Background(), &gorm.DB{}, input); !errors.Is(err, ErrPlatformGenerationPersistenceInvalid) {
-		t.Fatalf("Finalize() error=%v, want invalid", err)
-	}
+	t.Run("empty user message", func(t *testing.T) {
+		input := validPlatformGenerationPersistenceInput()
+		input.UserMessage = ""
+		if _, err := p.Finalize(context.Background(), &gorm.DB{}, input); !errors.Is(err, ErrPlatformGenerationPersistenceInvalid) {
+			t.Fatalf("Finalize() error=%v, want invalid", err)
+		}
+	})
+	t.Run("compare mode", func(t *testing.T) {
+		compare := PlatformGenerationPersistenceInput{
+			UserID: 1, GenerationID: generationTestID, Mode: PlatformGenerationModeCompare,
+			Models: []string{"model-a", "model-b"}, UserMessage: "prompt", NowMillis: 1,
+			Results: []PlatformGenerationPersistenceResult{
+				{Model: "model-a", State: PlatformGenerationStateCompleted, Content: "a", Tokens: 1},
+				{Model: "model-b", State: PlatformGenerationStateCompleted, Content: "b", Tokens: 1},
+			},
+		}
+		if _, err := p.Finalize(context.Background(), &gorm.DB{}, compare); !errors.Is(err, ErrPlatformGenerationPersistenceInvalid) {
+			t.Fatalf("compare Finalize() error=%v, want invalid before dependencies", err)
+		}
+	})
 }
 
 func TestPlatformGenerationPersistenceSingleWriteFailuresRollbackEveryEffect(t *testing.T) {
