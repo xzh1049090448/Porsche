@@ -1,169 +1,210 @@
 #!/usr/bin/env bash
-# Behavioural regression checks for the production deployment safety contract.
 set -Eeuo pipefail
-
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 source_script="$script_dir/production-deploy.sh"
 source_repo="$(cd -- "$script_dir/.." && pwd)"
 test -f "$source_script"
-test ! -e "$source_repo/.env" || { echo 'test must not create the source repository .env' >&2; exit 1; }
+test ! -e "$source_repo/.env" || { echo 'test must not create source .env' >&2; exit 1; }
 ! grep -Eq 'docker[[:space:]].*compose[[:space:]]+down|docker[[:space:]].*prune|docker[[:space:]]+volume[[:space:]]+rm|docker[[:space:]]+network[[:space:]]+rm|docker[[:space:]]+image[[:space:]]+rm|(^|[[:space:]])mysql([[:space:]]|$)' "$source_script" || { echo 'deployment script contains a forbidden operation' >&2; exit 1; }
+fixture="$(mktemp -d "${TMPDIR:-/tmp}/production-deploy-test.XXXXXX")"; trap 'rm -rf -- "$fixture"' EXIT
+repo="$fixture/repo"; bin="$fixture/bin"; log="$fixture/log"; mkdir -p "$repo/deploy" "$repo/.deploy-locks" "$bin"
+repo="$(cd "$repo" && pwd)"
+ln -s "$source_script" "$repo/deploy/production-deploy.sh"
+printf 'ALLOWED_HOSTS=example.com\nACTION_SECURITY_HMAC_KEY=fixture-secret-never-log\n' >"$repo/.env"
+chmod 600 "$repo/.env"
+printf 'ALLOWED_HOSTS=example.com\n# ACTION_SECURITY_HMAC_KEY=\n' >"$repo/.env.example"
+cat >"$repo/deploy/merge-env-example.sh" <<'EOF_M'
+#!/usr/bin/env bash
+printf 'merge-env-example.sh %s %s\n' "$1" "$2" >>"$COMMAND_LOG"
+EOF_M
+chmod +x "$repo/deploy/merge-env-example.sh"
 
-fixture_dir="$(mktemp -d "${TMPDIR:-/tmp}/production-deploy-test.XXXXXX")"
-repo_dir="$fixture_dir/repo"; mock_dir="$fixture_dir/bin"; command_log="$fixture_dir/commands.nul"
-mkdir -p "$repo_dir/deploy" "$mock_dir"
-repo_dir="$(cd -- "$repo_dir" && pwd)"
-lock_dir="$repo_dir/.deploy-locks"
-mkdir -p "$lock_dir"
-ln -s "$source_script" "$repo_dir/deploy/production-deploy.sh"
-printf 'DATABASE_URL=mysql://test:secret@db/test\nALLOWED_HOSTS=example.com,127.0.0.1\n' >"$repo_dir/.env"
-cleanup() { rm -rf -- "$fixture_dir"; }; trap cleanup EXIT
+image_id="sha256:$(printf 'a%.0s' {1..64})"; revision="$(printf 'd%.0s' {1..40})"
+cat >"$bin/git" <<'EOF_M'
+#!/usr/bin/env bash
+printf 'git %s\n' "$*" >>"$COMMAND_LOG"
+case "${1:-}" in
+ rev-parse) [[ "${2:-}" == --is-inside-work-tree ]] && printf 'true\n' || { [[ ! -e "$STATE_DIR/remote-advanced" ]] && printf '%s\n' "$EXPECTED_REVISION" || printf 'f%.0s' {1..40}; printf '\n'; };;
+ diff) exit "${MOCK_GIT_DIRTY:-0}";;
+ fetch) [[ "${MOCK_REMOTE_ADVANCE:-0}" != 1 ]] || : >"$STATE_DIR/remote-advanced";;
+esac
+EOF_M
+cat >"$bin/docker" <<'EOF_M'
+#!/usr/bin/env bash
+printf 'docker %s\n' "$*" >>"$COMMAND_LOG"
+case "${1:-}" in
+ image) [[ "${2:-}" == inspect ]] || exit 90; printf '%s\n' "${MOCK_INSPECT_ID:-$EXPECTED_IMAGE_ID}";;
+ container) [[ "${MOCK_OLD_CONTAINER:-present}" == present ]];;
+ run)
+   if [[ " $* " == *' --entrypoint /app/check-config '* ]]; then [[ "${MOCK_CONFIG_RESULT:-success}" == success ]] || exit 81; printf 'configuration valid\n';
+   else [[ "${MOCK_RUN_RESULT:-success}" == success ]] || exit 82; printf 'container-id\n'; fi;;
+ start) :;;
+esac
+EOF_M
+cat >"$bin/curl" <<'EOF_M'
+#!/usr/bin/env bash
+printf 'curl %s\n' "$*" >>"$COMMAND_LOG"
+[[ "${MOCK_CURL_RESULT:-success}" == success ]]
+EOF_M
+cat >"$bin/sleep" <<'EOF_M'
+#!/usr/bin/env bash
+printf 'sleep %s\n' "$*" >>"$COMMAND_LOG"
+EOF_M
+cat >"$bin/flock" <<'EOF_M'
+#!/usr/bin/env bash
+printf 'flock %s\n' "$*" >>"$COMMAND_LOG"
+[[ "${USE_REAL_FLOCK:-0}" != 1 ]] || exec "$REAL_FLOCK" "$@"
+[[ "${MOCK_FLOCK_RESULT:-success}" == success ]]
+EOF_M
+cat >"$bin/stat" <<'EOF_M'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+if [[ "${1:-}" == --version ]]; then printf 'stat (GNU coreutils) test compatibility wrapper\n'; exit 0; fi
+if [[ "${1:-}" == -L && "${2:-}" == -f ]]; then
+    printf 'File: %s\n' "${4:-missing}"
+    exit 1
+fi
+if [[ "${1:-}" == -L && "${2:-}" == -c ]]; then
+    case "${3:-}" in
+        '%i') exec /usr/bin/stat -f '%i' "${4}" ;;
+        '%a') exec /usr/bin/stat -f '%Lp' "${4}" ;;
+    esac
+fi
+if [[ "${1:-}" == -f ]]; then
+    printf 'File: %s\n' "${3:-missing}"
+    exit 1
+fi
+if [[ "${1:-}" == -c && "${2:-}" == '%a' ]]; then
+    exec /usr/bin/stat -f '%Lp' "${3}"
+fi
+exit 64
+EOF_M
+cat >"$bin/kernel-flock" <<'EOF_M'
+#!/usr/bin/env python3
+import fcntl, os, sys
+args=sys.argv[1:]; fd=int(args[-1]); nonblocking='-n' in args
+try: fcntl.flock(fd, fcntl.LOCK_EX | (fcntl.LOCK_NB if nonblocking else 0))
+except BlockingIOError: sys.exit(75)
+EOF_M
+chmod +x "$bin"/*
+fail(){ echo "FAIL: $*" >&2; exit 1; }
+run(){ : >"$log"; rm -f "$fixture/remote-advanced"; (cd "$repo" && PATH="$bin:$PATH" COMMAND_LOG="$log" STATE_DIR="$fixture" EXPECTED_IMAGE_ID="$image_id" EXPECTED_REVISION="$revision" LOCK_FILE="$repo/.deploy-locks/porsche-full-stack.deploy.lock" APP_NAME=app IMAGE_NAME=test-image HOST_PORT="${TEST_HOST_PORT:-18000}" PREBUILT_SOURCE_REVISION="${PREBUILT_SOURCE_REVISION:-$revision}" ENV_SNAPSHOT="${ENV_SNAPSHOT:-$repo/.env}" "$repo/deploy/production-deploy.sh"); }
+line(){ grep -Fn -- "$1" "$log" | head -1 | cut -d: -f1; }
+require(){ grep -Fq -- "$1" "$log" || { cat "$log" >&2; fail "missing: $1"; }; }
+forbid(){ ! grep -Fq -- "$1" "$log" || fail "unexpected: $1"; }
+before(){ local a b; a="$(line "$1")"; b="$(line "$2")"; [[ -n "$a" && -n "$b" && "$a" -lt "$b" ]] || fail "order: $1 before $2"; }
 
-write_mock() {
-    local command_name="$1"
-    {
-        printf '%s\n' '#!/usr/bin/env bash' 'set -Eeuo pipefail'
-        printf '%s\n' 'printf "%s\\0" "'"$command_name"'" "$@" "__END__" >>"$COMMAND_LOG"'
-        printf '%s\n' 'case "'"$command_name"'" in'
-        printf '%s\n' '  git) case "${1:-}" in rev-parse) printf "%s\\n" "${MOCK_WORKTREE:-true}" ;; diff) exit "${MOCK_GIT_DIRTY:-0}" ;; esac ;;'
-        printf '%s\n' '  docker) case "${1:-}" in container) [[ "${2:-}" != inspect ]] || [[ "${MOCK_OLD_CONTAINER:-present}" == present ]] ;; run) [[ "${MOCK_RUN_RESULT:-success}" == success ]] || exit 71; printf "new-container-id\\n" ;; start) [[ "${MOCK_ROLLBACK_START_RESULT:-success}" == success ]] || exit 72 ;; esac ;;'
-        printf '%s\n' '  curl) [[ "${MOCK_HEALTH_RESULT:-success}" == success ]] || exit 28 ;;'
-        printf '%s\n' '  flock) [[ "${1:-}" == -E && "${2:-}" == 75 && "${3:-}" == -n && "${4:-}" == 9 ]] || exit 76; [[ "${MOCK_LOCK_RESULT:-success}" == success ]] || exit 75 ;;'
-        printf '%s\n' 'esac'
-    } >"$mock_dir/$command_name"
-    chmod +x "$mock_dir/$command_name"
-}
-write_mock git; write_mock docker; write_mock curl; write_mock sleep; write_mock flock
+run >"$fixture/out"
+require "merge-env-example.sh $repo/.env.example $repo/.env"
+[[ "$(grep -Fc 'docker build --tag test-image .' "$log")" == 1 ]] || fail 'standalone must build exactly once'
+before 'merge-env-example.sh' 'docker build --tag test-image .'
+require "docker image inspect --format {{.Id}} test-image"
+require "--entrypoint /app/check-config $image_id"
+before '--entrypoint /app/check-config' 'docker stop -- app'
+require "--publish 127.0.0.1:18000:8000 $image_id"
+config_snapshot="$(grep -F 'docker run --rm --env-file ' "$log" | head -1 | sed -E 's/.*--env-file ([^ ]+).*/\1/')"
+app_snapshot="$(grep -F 'docker run -d --name app --env-file ' "$log" | head -1 | sed -E 's/.*--env-file ([^ ]+).*/\1/')"
+[[ -n "$config_snapshot" && "$config_snapshot" == "$app_snapshot" ]] || fail 'check-config and application did not share one snapshot'
+[[ ! -e "$config_snapshot" ]] || fail 'standalone environment snapshot was not cleaned'
 
-read_calls() { calls=(); local record current=''; while IFS= read -r -d '' record; do if [[ "$record" == '__END__' ]]; then calls+=("$current"); current=''; else current+="${current:+ }$record"; fi; done <"$command_log"; }
-line_for() { local expression="$1" index; read_calls; for index in "${!calls[@]}"; do [[ "${calls[$index]}" == *"$expression"* ]] && { printf '%s\n' "$((index + 1))"; return; }; done; return 1; }
-count_calls() { local expression="$1" count=0 call; read_calls; for call in "${calls[@]}"; do [[ "$call" == *"$expression"* ]] && ((count += 1)); done; printf '%s\n' "$count"; }
-require_line() { local label="$1" expression="$2" line; line="$(line_for "$expression")" || { echo "missing expected command: $label" >&2; read_calls; printf 'calls: %s\n' "${calls[*]:-<none>}" >&2; exit 1; }; printf '%s\n' "$line"; }
-assert_no_docker_writes() { read_calls; local call; for call in "${calls[@]-}"; do [[ "$call" == docker\ build* || "$call" == docker\ run* || "$call" == docker\ stop* || "$call" == docker\ rename* || "$call" == docker\ rm* ]] && { echo "unexpected Docker write: $call" >&2; exit 1; }; done; return 0; }
-run_deploy() { : >"$command_log"; (cd "$repo_dir" && PATH="$mock_dir:$PATH" COMMAND_LOG="$command_log" LOCK_FILE="$lock_dir/existing-app.deploy.lock" APP_NAME="${TEST_APP_NAME:-existing-app}" IMAGE_NAME=test-image HOST_PORT="${TEST_HOST_PORT:-18000}" "$repo_dir/deploy/production-deploy.sh"); }
+: >"$log"
+PREBUILT_IMAGE_ID="$image_id" run >"$fixture/prebuilt-out"
+forbid 'docker build'
+forbid 'merge-env-example.sh'
+require "docker image inspect --format {{.Id}} $image_id"
+require "--entrypoint /app/check-config $image_id"
+require "--publish 127.0.0.1:18000:8000 $image_id"
+forbid 'git fetch'; forbid 'git switch'; forbid 'git reset'; forbid 'docker build'
 
-assert_successful_deploy() {
-    run_deploy >"$fixture_dir/success-stdout"
-    require_line lock 'flock -E 75 -n 9' >/dev/null
-    require_line env "--env-file $repo_dir/.env" >/dev/null
-    require_line health-host 'curl -fsS -H Host: example.com --connect-timeout 2 --max-time 3 http://127.0.0.1:18000/health' >/dev/null
-    require_line container-id 'docker run -d --name existing-app' >/dev/null
-}
-assert_timeout_rolls_back() {
-    if MOCK_HEALTH_RESULT=timeout run_deploy >"$fixture_dir/timeout-stdout" 2>"$fixture_dir/timeout-stderr"; then echo 'deployment must fail after bounded health timeouts' >&2; exit 1; fi
-    require_line health-host 'curl -fsS -H Host: example.com --connect-timeout 2 --max-time 3 http://127.0.0.1:18000/health' >/dev/null
-    require_line candidate-removal 'docker rm -f -- existing-app' >/dev/null
-    require_line restore-name 'docker rename -- existing-app-rollback-' >/dev/null
-    require_line restore-start 'docker start -- existing-app' >/dev/null
-    [[ "$(count_calls 'curl -fsS -H Host: example.com --connect-timeout 2 --max-time 3 http://127.0.0.1:18000/health')" == 30 ]] || { echo 'health timeout must make exactly 30 bounded attempts' >&2; exit 1; }
-}
-assert_lock_contention_is_safe() {
-    local stderr_file="$fixture_dir/lock-stderr"
-    if MOCK_LOCK_RESULT=busy run_deploy >"$fixture_dir/lock-stdout" 2>"$stderr_file"; then echo 'deployment must fail while another deployment holds its lock' >&2; exit 1; fi
-    grep -Fq 'another deployment is already running for existing-app' "$stderr_file" || { echo 'lock contention error is not readable' >&2; exit 1; }
-    require_line lock 'flock -E 75 -n 9' >/dev/null
-    assert_no_docker_writes
-}
-assert_start_failure_rolls_back() {
-    if MOCK_RUN_RESULT=failure run_deploy >"$fixture_dir/startup-stdout" 2>"$fixture_dir/startup-stderr"; then echo 'deployment must fail when candidate startup fails' >&2; exit 1; fi
-    require_line candidate-removal 'docker rm -f -- existing-app' >/dev/null
-    require_line restore-name 'docker rename -- existing-app-rollback-' >/dev/null
-    require_line restore-start 'docker start -- existing-app' >/dev/null
-    [[ -z "$(line_for 'curl -fsS' || true)" ]] || { echo 'health check ran after candidate startup failure' >&2; exit 1; }
-}
-assert_invalid_input_has_no_docker_write() {
-    if TEST_HOST_PORT=invalid run_deploy >"$fixture_dir/invalid-port-stdout" 2>"$fixture_dir/invalid-port-stderr"; then echo 'deployment accepted invalid port' >&2; exit 1; fi
-    assert_no_docker_writes
-    if MOCK_GIT_DIRTY=1 run_deploy; then echo 'deployment accepted dirty tracked worktree' >&2; exit 1; fi
-    [[ -z "$(line_for 'git fetch origin main' || true)" ]] || { echo 'deployment fetched after dirty check' >&2; exit 1; }
-}
-assert_missing_allowed_hosts_fails_safely() {
-    local stderr_file="$fixture_dir/missing-allowed-hosts-stderr"
-    printf 'DATABASE_URL=mysql://test:secret@db/test\n' >"$repo_dir/.env"
-    if run_deploy >"$fixture_dir/missing-allowed-hosts-stdout" 2>"$stderr_file"; then
-        echo 'deployment accepted a missing ALLOWED_HOSTS entry' >&2
-        exit 1
-    fi
-    grep -Fq 'deployment requires a non-empty ALLOWED_HOSTS entry in .env' "$stderr_file" || {
-        echo 'missing ALLOWED_HOSTS error is not readable' >&2
-        exit 1
-    }
-    assert_no_docker_writes
-    printf 'DATABASE_URL=mysql://test:secret@db/test\nALLOWED_HOSTS=example.com,127.0.0.1\n' >"$repo_dir/.env"
-}
-assert_empty_allowed_hosts_fails_safely() {
-    local stderr_file="$fixture_dir/empty-allowed-hosts-stderr"
-    printf 'DATABASE_URL=mysql://test:secret@db/test\nALLOWED_HOSTS=\n' >"$repo_dir/.env"
-    if run_deploy >"$fixture_dir/empty-allowed-hosts-stdout" 2>"$stderr_file"; then
-        echo 'deployment accepted an empty ALLOWED_HOSTS entry' >&2
-        exit 1
-    fi
-    grep -Fq 'deployment requires a non-empty ALLOWED_HOSTS entry in .env' "$stderr_file" || {
-        echo 'empty ALLOWED_HOSTS error is not readable' >&2
-        exit 1
-    }
-    assert_no_docker_writes
-    printf 'DATABASE_URL=mysql://test:secret@db/test\nALLOWED_HOSTS=example.com,127.0.0.1\n' >"$repo_dir/.env"
-}
-assert_unreadable_env_fails_safely() {
-    local stderr_file="$fixture_dir/unreadable-env-stderr"
-    rm "$repo_dir/.env"
-    mkdir "$repo_dir/.env"
-    if run_deploy >"$fixture_dir/unreadable-env-stdout" 2>"$stderr_file"; then
-        echo 'deployment accepted an unreadable .env path' >&2
-        exit 1
-    fi
-    grep -Fq 'deployment requires the repository .env' "$stderr_file" || {
-        echo 'unreadable .env error is not readable' >&2
-        exit 1
-    }
-    assert_no_docker_writes
-    rmdir "$repo_dir/.env"
-    printf 'DATABASE_URL=mysql://test:secret@db/test\nALLOWED_HOSTS=example.com,127.0.0.1\n' >"$repo_dir/.env"
-}
-assert_quoted_and_export_allowed_hosts_work() {
-    local env_line
-    for env_line in 'ALLOWED_HOSTS="example.com,127.0.0.1"' "ALLOWED_HOSTS='example.com,127.0.0.1'" '  export ALLOWED_HOSTS=example.com,127.0.0.1'; do
-        printf 'DATABASE_URL=mysql://test:secret@db/test\n%s\n' "$env_line" >"$repo_dir/.env"
-        run_deploy >"$fixture_dir/quoted-or-export-stdout"
-        require_line health-host 'curl -fsS -H Host: example.com --connect-timeout 2 --max-time 3 http://127.0.0.1:18000/health' >/dev/null
-    done
-    printf 'DATABASE_URL=mysql://test:secret@db/test\nALLOWED_HOSTS=example.com,127.0.0.1\n' >"$repo_dir/.env"
-}
-assert_invalid_allowed_hosts_fail_safely() {
-    local env_line stderr_file="$fixture_dir/invalid-allowed-hosts-stderr"
-    for env_line in 'ALLOWED_HOSTS=example .com,127.0.0.1' $'ALLOWED_HOSTS=example.com\r,127.0.0.1' 'ALLOWED_HOSTS="example.com,127.0.0.1'; do
-        printf 'DATABASE_URL=mysql://test:secret@db/test\n%s\n' "$env_line" >"$repo_dir/.env"
-        if run_deploy >"$fixture_dir/invalid-allowed-hosts-stdout" 2>"$stderr_file"; then
-            echo "deployment accepted an invalid ALLOWED_HOSTS entry: $env_line" >&2
-            exit 1
-        fi
-        grep -Fq 'deployment requires a valid non-empty ALLOWED_HOSTS entry in .env' "$stderr_file" || {
-            echo 'invalid ALLOWED_HOSTS error is not readable' >&2
-            exit 1
-        }
-        assert_no_docker_writes
-    done
-    printf 'DATABASE_URL=mysql://test:secret@db/test\nALLOWED_HOSTS=example.com,127.0.0.1\n' >"$repo_dir/.env"
-}
+: >"$log"
+MOCK_REMOTE_ADVANCE=1 PREBUILT_IMAGE_ID="$image_id" run >"$fixture/remote-advance-out"
+forbid 'git fetch'; forbid 'git switch'; forbid 'git reset'; forbid 'docker build'
+[[ ! -e "$fixture/remote-advanced" ]] || fail 'prebuilt deployment observed a later remote revision'
+grep -Fq "revision=$revision" "$fixture/remote-advance-out" || fail 'prebuilt deployment logged a drifting revision'
 
-assert_successful_deploy
-assert_missing_allowed_hosts_fails_safely
-assert_empty_allowed_hosts_fails_safely
-assert_unreadable_env_fails_safely
-assert_quoted_and_export_allowed_hosts_work
-assert_invalid_allowed_hosts_fail_safely
-if ENV_FILE="$fixture_dir/attempted-override.env" run_deploy >"$fixture_dir/override-stdout"; then :; else echo 'ENV_FILE must not alter the deployment environment file' >&2; exit 1; fi
-require_line env-after-override "--env-file $repo_dir/.env" >/dev/null
-[[ -z "$(line_for "$fixture_dir/attempted-override.env" || true)" ]] || { echo 'deployment honored ENV_FILE override' >&2; exit 1; }
-assert_timeout_rolls_back
-assert_start_failure_rolls_back
-assert_lock_contention_is_safe
-assert_invalid_input_has_no_docker_write
-test ! -e "$source_repo/.env" || { echo 'test created the source repository .env' >&2; exit 1; }
-grep -Fq '.env' "$source_repo/.dockerignore" || { echo '.dockerignore must exclude .env' >&2; exit 1; }
-grep -Fq '!.env.example' "$source_repo/.dockerignore" || { echo '.dockerignore must retain .env.example' >&2; exit 1; }
-for pattern in .git .worktrees .claw .superpowers data coverage test-results playwright-report node_modules .idea .vscode; do grep -Fqx "$pattern" "$source_repo/.dockerignore" || { echo ".dockerignore must exclude $pattern" >&2; exit 1; }; done
-for required in Dockerfile go.mod go.sum cmd internal config; do if test -e "$source_repo/$required" && grep -Fqx "$required" "$source_repo/.dockerignore"; then echo ".dockerignore must retain required build input: $required" >&2; exit 1; fi; done
-grep -Fq 'sudo bash deploy/production-deploy.sh' "$source_repo/README.md" || { echo 'README must document sudo bash deployment' >&2; exit 1; }
-! grep -Fq 'sudo -E bash deploy/production-deploy.sh' "$source_repo/README.md" || { echo 'README must not recommend sudo -E deployment' >&2; exit 1; }
+: >"$log"
+APP_DOCKER_NETWORK=test-network PREBUILT_IMAGE_ID="$image_id" run >"$fixture/network-out"
+require "docker run --rm --env-file $repo/.env --network test-network --entrypoint /app/check-config $image_id"
+require "docker run -d --name app --env-file $repo/.env --publish 127.0.0.1:18000:8000 --network test-network $image_id"
+
+: >"$log"
+if PREBUILT_IMAGE_ID="$image_id" PREBUILT_SOURCE_REVISION="$(printf 'b%.0s' {1..40})" run >"$fixture/revision-out" 2>"$fixture/revision-err"; then fail 'mismatched prebuilt source revision accepted'; fi
+forbid 'git fetch'; forbid 'docker build'; forbid 'docker run'; forbid 'docker stop'
+
+chmod 644 "$repo/.env"
+: >"$log"
+if PREBUILT_IMAGE_ID="$image_id" run >"$fixture/mode-out" 2>"$fixture/mode-err"; then fail 'insecure snapshot mode accepted'; fi
+forbid 'docker build'; forbid 'docker run'; forbid 'docker stop'
+chmod 600 "$repo/.env"
+: >"$log"
+if PREBUILT_IMAGE_ID="$image_id" ENV_SNAPSHOT=relative.env run >"$fixture/path-out" 2>"$fixture/path-err"; then fail 'relative snapshot path accepted'; fi
+forbid 'docker build'; forbid 'docker run'; forbid 'docker stop'
+
+: >"$log"
+if PREBUILT_IMAGE_ID=latest run >"$fixture/bad-out" 2>"$fixture/bad-err"; then fail 'invalid prebuilt ID accepted'; fi
+forbid 'docker build'; forbid 'docker run'; forbid 'docker stop'
+
+: >"$log"
+if PREBUILT_IMAGE_ID="$image_id" MOCK_INSPECT_ID="sha256:$(printf 'b%.0s' {1..64})" run >"$fixture/mismatch-out" 2>"$fixture/mismatch-err"; then fail 'mismatched ID accepted'; fi
+forbid 'docker build'; forbid 'docker run'; forbid 'docker stop'
+
+: >"$log"
+if MOCK_CONFIG_RESULT=failure run >"$fixture/config-out" 2>"$fixture/config-err"; then fail 'config failure accepted'; fi
+forbid 'docker stop'; forbid 'docker rename'; forbid 'docker rm'
+! grep -Fq 'fixture-secret-never-log' "$fixture/config-out" "$fixture/config-err" "$log" || fail 'secret leaked'
+
+: >"$log"
+if MOCK_CURL_RESULT=failure run >"$fixture/health-out" 2>"$fixture/health-err"; then fail 'health failure accepted'; fi
+require 'docker rm -f -- app'; require 'docker rename -- app-rollback-'; require 'docker start -- app'
+[[ "$(grep -Fc 'curl -fsS' "$log")" == 30 ]] || fail 'health check must remain bounded to 30 attempts'
+
+: >"$log"
+if MOCK_FLOCK_RESULT=failure run >"$fixture/lock-out" 2>"$fixture/lock-err"; then fail 'lock contention accepted'; fi
+forbid 'docker build'; forbid 'docker run'; forbid 'docker stop'
+
+printf 'ACTION_SECURITY_HMAC_KEY=fixture-secret-never-log\n' >"$repo/.env"
+: >"$log"
+if run >"$fixture/hosts-out" 2>"$fixture/hosts-err"; then fail 'missing ALLOWED_HOSTS accepted'; fi
+forbid 'docker build'; forbid 'docker run'; forbid 'docker stop'
+printf 'ALLOWED_HOSTS=example.com\nACTION_SECURITY_HMAC_KEY=fixture-secret-never-log\n' >"$repo/.env"
+
+system_flock="$bin/kernel-flock"
+exec 7>"$repo/.deploy-locks/porsche-full-stack.deploy.lock"
+"$system_flock" -x 7
+USE_REAL_FLOCK=1 REAL_FLOCK="$system_flock" RELEASE_LOCK_FD=7 PREBUILT_IMAGE_ID="$image_id" run >"$fixture/inherited-lock-out"
+exec 7>&-
+forbid 'git fetch'; forbid 'docker build'
+
+ready="$fixture/lock-ready"
+( exec 7>"$repo/.deploy-locks/porsche-full-stack.deploy.lock"; python3 -c 'import fcntl,sys,time; fcntl.flock(7,fcntl.LOCK_EX); open(sys.argv[1],"w").close(); time.sleep(2)' "$ready" ) & holder_pid=$!
+for _ in {1..50}; do [[ -e "$ready" ]] && break; /bin/sleep 0.02; done
+if USE_REAL_FLOCK=1 REAL_FLOCK="$system_flock" run >"$fixture/contention-out" 2>"$fixture/contention-err"; then kill "$holder_pid" 2>/dev/null || true; wait "$holder_pid" 2>/dev/null || true; fail 'shared release lock contention accepted'; fi
+kill "$holder_pid" 2>/dev/null || true; wait "$holder_pid" 2>/dev/null || true
+forbid 'git fetch'; forbid 'docker build'; forbid 'docker stop'
+
+writer_ready="$fixture/writer-ready"
+( exec 6>"$repo/..env.merge.lock"; python3 -c 'import fcntl,sys,time; fcntl.flock(6,fcntl.LOCK_EX); open(sys.argv[1],"w").close(); time.sleep(2)' "$writer_ready" ) & writer_pid=$!
+for _ in {1..50}; do [[ -e "$writer_ready" ]] && break; /bin/sleep 0.02; done
+if USE_REAL_FLOCK=1 REAL_FLOCK="$system_flock" run >"$fixture/writer-out" 2>"$fixture/writer-err"; then kill "$writer_pid" 2>/dev/null || true; wait "$writer_pid" 2>/dev/null || true; fail 'environment writer lock contention accepted'; fi
+kill "$writer_pid" 2>/dev/null || true; wait "$writer_pid" 2>/dev/null || true
+forbid 'docker build'; forbid 'docker run'; forbid 'docker stop'
+
+: >"$log"
+if TEST_HOST_PORT=invalid run >"$fixture/port-out" 2>"$fixture/port-err"; then fail 'invalid port accepted'; fi
+forbid 'docker build'; forbid 'docker run'; forbid 'docker stop'
+
+: >"$log"
+if MOCK_GIT_DIRTY=1 run >"$fixture/dirty-out" 2>"$fixture/dirty-err"; then fail 'dirty checkout accepted'; fi
+forbid 'git fetch'; forbid 'docker build'; forbid 'docker run'; forbid 'docker stop'
+
+for env_line in 'ALLOWED_HOSTS="example.com,127.0.0.1"' "ALLOWED_HOSTS='example.com,127.0.0.1'" ' export ALLOWED_HOSTS=example.com,127.0.0.1'; do
+    printf '%s\nACTION_SECURITY_HMAC_KEY=fixture-secret-never-log\n' "$env_line" >"$repo/.env"
+    run >"$fixture/quoted-out"
+    require 'curl -fsS -H Host: example.com'
+done
+printf 'ALLOWED_HOSTS=example.com\nACTION_SECURITY_HMAC_KEY=fixture-secret-never-log\n' >"$repo/.env"
+
+bash -n "$source_script"
+grep -Fq '.env' "$source_repo/.dockerignore"
+grep -Fq '!.env.example' "$source_repo/.dockerignore"
+echo 'PASS: production deployment immutable preflight checks'
