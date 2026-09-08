@@ -1,0 +1,237 @@
+[GIN-debug] [WARNING] Running in "debug" mode. Switch to "release" mode in production.
+ - using env:	export GIN_MODE=release
+ - using code:	gin.SetMode(gin.ReleaseMode)
+
+[GIN-debug] GET    /health                   --> github.com/porsche/ai-gateway-go/internal/handler.RegisterHealth.func1 (5 handlers)
+[GIN-debug] GET    /v1/models                --> github.com/porsche/ai-gateway-go/internal/handler.registerGatewayRoutes.func1 (6 handlers)
+[GIN-debug] GET    /v1/models/detail         --> github.com/porsche/ai-gateway-go/internal/handler.registerGatewayRoutes.func2 (6 handlers)
+[GIN-debug] GET    /v1/models/:id            --> github.com/porsche/ai-gateway-go/internal/handler.registerGatewayRoutes.func3 (6 handlers)
+[GIN-debug] POST   /v1/chat/completions      --> github.com/porsche/ai-gateway-go/internal/handler.registerGatewayRoutes.func4 (6 handlers)
+[GIN-debug] GET    /api/v1/tokens            --> github.com/porsche/ai-gateway-go/internal/handler.RegisterGatewayTokens.func1 (6 handlers)
+[GIN-debug] POST   /api/v1/tokens            --> github.com/porsche/ai-gateway-go/internal/handler.RegisterGatewayTokens.func2 (6 handlers)
+[GIN-debug] GET    /api/v1/tokens/:guid      --> github.com/porsche/ai-gateway-go/internal/handler.RegisterGatewayTokens.func3 (6 handlers)
+[GIN-debug] PATCH  /api/v1/tokens/:guid      --> github.com/porsche/ai-gateway-go/internal/handler.RegisterGatewayTokens.func4 (6 handlers)
+[GIN-debug] POST   /api/v1/tokens/:guid/revoke --> github.com/porsche/ai-gateway-go/internal/handler.RegisterGatewayTokens.func5 (6 handlers)
+[GIN-debug] DELETE /api/v1/tokens/:guid      --> github.com/porsche/ai-gateway-go/internal/handler.RegisterGatewayTokens.func6 (6 handlers)
+[GIN-debug] POST   /api/v1/auth/send-code    --> github.com/porsche/ai-gateway-go/internal/handler.RegisterAuth.func1 (6 handlers)
+[GIN-debug] POST   /api/v1/auth/login/password --> github.com/porsche/ai-gateway-go/internal/handler.RegisterAuth.func1 (6 handlers)
+[GIN-debug] POST   /api/v1/auth/login/code   --> github.com/porsche/ai-gateway-go/internal/handler.RegisterAuth.func1 (6 handlers)
+[GIN-debug] POST   /api/v1/auth/register     --> github.com/porsche/ai-gateway-go/internal/handler.RegisterAuth.func2 (6 handlers)
+[GIN-debug] POST   /api/v1/auth/login        --> github.com/porsche/ai-gateway-go/internal/handler.RegisterAuth.func3 (6 handlers)
+[GIN-debug] POST   /api/v1/auth/refresh      --> github.com/porsche/ai-gateway-go/internal/handler.RegisterAuth.func4 (6 handlers)
+[GIN-debug] POST   /api/v1/auth/logout       --> github.com/porsche/ai-gateway-go/internal/handler.RegisterAuth.func5 (7 handlers)
+[GIN-debug] GET    /api/v1/auth/self         --> github.com/porsche/ai-gateway-go/internal/handler.RegisterAuth.func6 (7 handlers)
+[GIN-debug] GET    /api/v1/auth/sessions     --> github.com/porsche/ai-gateway-go/internal/handler.RegisterAuth.func7 (7 handlers)
+[GIN-debug] DELETE /api/v1/auth/sessions/:guid --> github.com/porsche/ai-gateway-go/internal/handler.RegisterAuth.func8 (7 handlers)
+[GIN-debug] POST   /api/v1/auth/sessions/revoke-others --> github.com/porsche/ai-gateway-go/internal/handler.RegisterAuth.func9 (7 handlers)
+[GIN-debug] POST   /api/v1/auth/self/password --> github.com/porsche/ai-gateway-go/internal/handler.RegisterAuth.func10 (7 handlers)
+[GIN-debug] POST   /api/v1/auth/self/verify  --> github.com/porsche/ai-gateway-go/internal/handler.RegisterAuth.func11 (7 handlers)
+[GIN-debug] GET    /api/v1/users/me          --> github.com/porsche/ai-gateway-go/internal/handler.RegisterUsers.func1 (7 handlers)
+[GIN-debug] PUT    /api/v1/users/me          --> github.com/porsche/ai-gateway-go/internal/handler.RegisterUsers.func2 (6 handlers)
+[GIN-debug] POST   /api/v1/users/me/password --> github.com/porsche/ai-gateway-go/internal/handler.RegisterUsers.func3 (6 handlers)
+[GIN-debug] POST   /api/v1/users/me/verify   --> github.com/porsche/ai-gateway-go/internal/handler.RegisterUsers.func4 (6 handlers)
+[GIN-debug] GET    /api/v1/users/me/usage    --> github.com/porsche/ai-gateway-go/internal/handler.RegisterUsers.func5 (6 handlers)
+[GIN-debug] GET    /api/v1/conversations     --> github.com/porsche/ai-gateway-go/internal/handler.RegisterConversations.func1 (6 handlers)
+[GIN-debug] POST   /api/v1/conversations     --> github.com/porsche/ai-gateway-go/internal/handler.RegisterConversations.func2 (6 handlers)
+[GIN-debug] GET    /api/v1/conversations/:guid --> github.com/porsche/ai-gateway-go/internal/handler.RegisterConversations.func3 (6 handlers)
+[GIN-debug] PUT    /api/v1/conversations/:guid --> github.com/porsche/ai-gateway-go/internal/handler.RegisterConversations.func4 (6 handlers)
+[GIN-debug] DELETE /api/v1/conversations/:guid --> github.com/porsche/ai-gateway-go/internal/handler.RegisterConversations.func5 (6 handlers)
+[GIN-debug] GET    /api/v1/conversations/:guid/export/markdown --> github.com/porsche/ai-gateway-go/internal/handler.RegisterConversations.func6 (6 handlers)
+[GIN-debug] GET    /api/v1/billing/plans     --> github.com/porsche/ai-gateway-go/internal/handler.RegisterBilling.func1 (6 handlers)
+[GIN-debug] POST   /api/v1/billing/orders    --> github.com/porsche/ai-gateway-go/internal/handler.RegisterBilling.func2 (6 handlers)
+[GIN-debug] POST   /api/v1/billing/orders/:guid/pay --> github.com/porsche/ai-gateway-go/internal/handler.RegisterBilling.func3 (6 handlers)
+[GIN-debug] GET    /api/v1/billing/orders    --> github.com/porsche/ai-gateway-go/internal/handler.RegisterBilling.func4 (6 handlers)
+[GIN-debug] POST   /api/v1/billing/invoice   --> github.com/porsche/ai-gateway-go/internal/handler.RegisterBilling.func5 (6 handlers)
+[GIN-debug] GET    /api/v1/platform/models   --> github.com/porsche/ai-gateway-go/internal/handler.RegisterPlatform.func1 (9 handlers)
+[GIN-debug] GET    /api/v1/platform/models/detail --> github.com/porsche/ai-gateway-go/internal/handler.RegisterPlatform.func2 (9 handlers)
+[GIN-debug] GET    /api/v1/platform/models/:id --> github.com/porsche/ai-gateway-go/internal/handler.RegisterPlatform.func3 (9 handlers)
+[GIN-debug] POST   /api/v1/platform/chat/completions --> github.com/porsche/ai-gateway-go/internal/handler.RegisterPlatform.func4 (9 handlers)
+[GIN-debug] POST   /api/v1/platform/chat/compare --> github.com/porsche/ai-gateway-go/internal/handler.RegisterPlatform.func5 (9 handlers)
+[GIN-debug] GET    /api/v1/billing/analytics/access --> github.com/porsche/ai-gateway-go/internal/handler.RegisterAnalytics.func1 (6 handlers)
+[GIN-debug] GET    /api/v1/billing/analytics/summary --> github.com/porsche/ai-gateway-go/internal/handler.RegisterAnalytics.func2 (7 handlers)
+[GIN-debug] GET    /api/v1/billing/analytics/models --> github.com/porsche/ai-gateway-go/internal/handler.RegisterAnalytics.func3 (7 handlers)
+[GIN-debug] GET    /api/v1/billing/analytics/charts/:view --> github.com/porsche/ai-gateway-go/internal/handler.RegisterAnalytics.func4 (7 handlers)
+[GIN-debug] GET    /api/v1/billing/analytics/export --> github.com/porsche/ai-gateway-go/internal/handler.RegisterAnalytics.func5 (7 handlers)
+[GIN-debug] GET    /admin/status             --> github.com/porsche/ai-gateway-go/internal/handler.RegisterAdmin.func1 (6 handlers)
+[GIN-debug] POST   /admin/models/health-check --> github.com/porsche/ai-gateway-go/internal/handler.RegisterAdmin.func2 (6 handlers)
+[GIN-debug] POST   /admin/models/:id/health-check --> github.com/porsche/ai-gateway-go/internal/handler.RegisterAdmin.func3 (6 handlers)
+[GIN-debug] GET    /admin/users              --> github.com/porsche/ai-gateway-go/internal/handler.registerLegacyAdminUsersRead.func1 (8 handlers)
+[GIN-debug] GET    /admin/users/:guid        --> github.com/porsche/ai-gateway-go/internal/handler.registerLegacyAdminUsersRead.func2 (8 handlers)
+[GIN-debug] GET    /admin/users/:guid/behavior --> github.com/porsche/ai-gateway-go/internal/handler.registerLegacyAdminUsersRead.func3 (8 handlers)
+[GIN-debug] DELETE /admin/users/:guid        --> github.com/porsche/ai-gateway-go/internal/handler.legacyAdminUserDeleteGone (8 handlers)
+[GIN-debug] PUT    /admin/users/:guid        --> github.com/porsche/ai-gateway-go/internal/handler.RegisterAdminUsers.func1 (6 handlers)
+[GIN-debug] GET    /admin/v2/authz/catalog   --> github.com/porsche/ai-gateway-go/internal/handler.RegisterAdminAuthz.func2 (8 handlers)
+[GIN-debug] GET    /admin/v2/users/:guid/permissions --> github.com/porsche/ai-gateway-go/internal/handler.RegisterAdminAuthz.func3 (8 handlers)
+[GIN-debug] GET    /admin/v2/users           --> github.com/porsche/ai-gateway-go/internal/handler.RegisterAdminUsersRead.func1 (8 handlers)
+[GIN-debug] GET    /admin/v2/users/:guid     --> github.com/porsche/ai-gateway-go/internal/handler.RegisterAdminUsersRead.func2 (8 handlers)
+[GIN-debug] GET    /admin/v2/groups          --> github.com/porsche/ai-gateway-go/internal/handler.RegisterAdminGroupsRead.func1 (8 handlers)
+[GIN-debug] POST   /admin/v2/action-verifications --> github.com/porsche/ai-gateway-go/internal/handler.registerAdminUserManagementActionRoutes.func1 (8 handlers)
+[GIN-debug] POST   /admin/v2/users           --> github.com/porsche/ai-gateway-go/internal/handler.registerAdminUserManagementActionRoutes.func2 (8 handlers)
+[GIN-debug] POST   /admin/v2/users/:guid/actions --> github.com/porsche/ai-gateway-go/internal/handler.registerAdminUserManagementActionRoutes.func3 (8 handlers)
+[GIN-debug] GET    /admin/v2/operations      --> github.com/porsche/ai-gateway-go/internal/handler.registerAdminUserManagementActionRoutes.func4 (8 handlers)
+[GIN-debug] GET    /admin/logs               --> github.com/porsche/ai-gateway-go/internal/handler.RegisterAdminLogs.func1 (6 handlers)
+[GIN-debug] GET    /admin/logs/alerts        --> github.com/porsche/ai-gateway-go/internal/handler.RegisterAdminLogs.func2 (6 handlers)
+[GIN-debug] PUT    /admin/logs/alerts/:alert_type --> github.com/porsche/ai-gateway-go/internal/handler.RegisterAdminLogs.func3 (6 handlers)
+[GIN-debug] GET    /admin/dashboard          --> github.com/porsche/ai-gateway-go/internal/handler.RegisterAdminDashboard.func1 (6 handlers)
+[GIN-debug] GET    /admin/dashboard/models/health --> github.com/porsche/ai-gateway-go/internal/handler.RegisterAdminDashboard.func2 (6 handlers)
+[GIN-debug] POST   /admin/dashboard/models/health/check --> github.com/porsche/ai-gateway-go/internal/handler.RegisterAdminDashboard.func3 (6 handlers)
+[GIN-debug] GET    /metrics                  --> github.com/porsche/ai-gateway-go/internal/router.New.func1 (5 handlers)
+2026/09/07 22:17:25 ai-gateway-go listening on 127.0.0.1:51294 (env=test)
+[GIN-debug] [WARNING] You trusted all proxies, this is NOT safe. We recommend you to set a value.
+Please check https://pkg.go.dev/github.com/gin-gonic/gin#readme-don-t-trust-all-proxies for details.
+[GIN-debug] Listening and serving HTTP on 127.0.0.1:51294
+[GIN] 2026/09/07 - 22:19:06 | 200 |      64.583µs |       127.0.0.1 | GET      "/health"
+[GIN] 2026/09/07 - 22:19:06 | 200 |     106.583µs |       127.0.0.1 | GET      "/health"
+
+2026/09/07 22:20:20 [31;1m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/service/auth.go:168 [35;1mrecord not found
+[0m[33m[1.334ms] [34;1m[rows:0][0m SELECT * FROM `users` WHERE username = 'tomb_023b3e15' ORDER BY `users`.`id` LIMIT 1
+[GIN] 2026/09/07 - 22:20:20 | 201 |   41.176042ms |       127.0.0.1 | POST     "/api/v1/auth/register"
+[GIN] 2026/09/07 - 22:32:04 | 401 |         105µs |       127.0.0.1 | POST     "/api/v1/auth/refresh"
+[GIN] 2026/09/07 - 22:32:05 | 200 |   89.803584ms |       127.0.0.1 | POST     "/api/v1/auth/login"
+[GIN] 2026/09/07 - 22:32:05 | 200 |    6.464667ms |       127.0.0.1 | GET      "/api/v1/auth/self"
+[GIN] 2026/09/07 - 22:32:05 | 200 |     6.48675ms |       127.0.0.1 | GET      "/api/v1/users/me"
+[GIN] 2026/09/07 - 22:32:05 | 200 |   21.035208ms |       127.0.0.1 | GET      "/api/v1/users/me/usage"
+[GIN] 2026/09/07 - 22:32:05 | 200 |   25.377834ms |       127.0.0.1 | POST     "/api/v1/auth/refresh"
+[GIN] 2026/09/07 - 22:32:05 | 200 |    9.541417ms |       127.0.0.1 | GET      "/api/v1/auth/self"
+[GIN] 2026/09/07 - 22:32:05 | 200 |    7.821291ms |       127.0.0.1 | GET      "/api/v1/users/me/usage"
+[GIN] 2026/09/07 - 22:32:05 | 200 |   21.423667ms |       127.0.0.1 | GET      "/admin/v2/users?page=1&page_size=20&sort=guid&order=desc"
+[GIN] 2026/09/07 - 22:32:05 | 200 |    9.491791ms |       127.0.0.1 | GET      "/admin/v2/groups?status=active"
+[GIN] 2026/09/07 - 22:32:06 | 200 |    12.34925ms |       127.0.0.1 | GET      "/admin/v2/authz/catalog"
+[GIN] 2026/09/07 - 22:32:06 | 200 |  1.440619167s |       127.0.0.1 | GET      "/api/v1/platform/models"
+[GIN] 2026/09/07 - 22:32:06 | 200 |  1.572126042s |       127.0.0.1 | GET      "/api/v1/platform/models"
+[GIN] 2026/09/07 - 22:32:07 | 201 |   86.655541ms |       127.0.0.1 | POST     "/admin/v2/action-verifications"
+[GIN] 2026/09/07 - 22:32:07 | 201 |   71.200417ms |       127.0.0.1 | POST     "/admin/v2/users"
+[GIN] 2026/09/07 - 22:32:07 | 200 |    6.174958ms |       127.0.0.1 | GET      "/admin/v2/users?page=1&page_size=20&sort=guid&order=desc"
+[GIN] 2026/09/07 - 22:32:08 | 201 |      77.906ms |       127.0.0.1 | POST     "/admin/v2/users"
+[GIN] 2026/09/07 - 22:32:08 | 201 |   39.340041ms |       127.0.0.1 | POST     "/admin/v2/action-verifications"
+[GIN] 2026/09/07 - 22:32:08 | 200 |   34.518458ms |       127.0.0.1 | POST     "/admin/v2/users/355359588481527808/actions"
+[GIN] 2026/09/07 - 22:32:08 | 410 |    9.299667ms |       127.0.0.1 | POST     "/admin/v2/users"
+[GIN] 2026/09/07 - 22:32:08 | 401 |      24.875µs |       127.0.0.1 | POST     "/api/v1/auth/refresh"
+[GIN] 2026/09/07 - 22:32:08 | 200 |   44.955458ms |       127.0.0.1 | POST     "/api/v1/auth/login"
+[GIN] 2026/09/07 - 22:32:08 | 200 |   19.574375ms |       127.0.0.1 | GET      "/api/v1/auth/self"
+[GIN] 2026/09/07 - 22:32:08 | 200 |     8.86475ms |       127.0.0.1 | GET      "/api/v1/users/me"
+[GIN] 2026/09/07 - 22:32:08 | 200 |    3.862791ms |       127.0.0.1 | GET      "/api/v1/users/me/usage"
+[GIN] 2026/09/07 - 22:32:08 | 200 |    3.942834ms |       127.0.0.1 | GET      "/api/v1/platform/models"
+[GIN] 2026/09/07 - 22:32:08 | 200 |     9.92025ms |       127.0.0.1 | POST     "/api/v1/auth/refresh"
+[GIN] 2026/09/07 - 22:32:08 | 200 |    6.021708ms |       127.0.0.1 | GET      "/api/v1/auth/self"
+[GIN] 2026/09/07 - 22:32:08 | 200 |    3.548833ms |       127.0.0.1 | GET      "/api/v1/platform/models"
+[GIN] 2026/09/07 - 22:32:08 | 200 |    3.490625ms |       127.0.0.1 | GET      "/api/v1/users/me/usage"
+[GIN] 2026/09/07 - 22:32:08 | 200 |    7.810834ms |       127.0.0.1 | GET      "/admin/v2/users?page=1&page_size=20&sort=guid&order=desc"
+[GIN] 2026/09/07 - 22:32:09 | 200 |    7.905125ms |       127.0.0.1 | GET      "/admin/v2/groups?status=active"
+[GIN] 2026/09/07 - 22:32:09 | 403 |      16.424ms |       127.0.0.1 | POST     "/admin/v2/action-verifications"
+[GIN] 2026/09/07 - 22:32:09 | 403 |   64.642333ms |       127.0.0.1 | POST     "/admin/v2/users"
+[GIN] 2026/09/07 - 22:32:10 | 200 |   18.100333ms |       127.0.0.1 | GET      "/admin/v2/groups?status=active"
+[GIN] 2026/09/07 - 22:32:14 | 200 |    8.410833ms |       127.0.0.1 | GET      "/admin/v2/groups?status=active"
+[GIN] 2026/09/07 - 22:32:14 | 201 |   81.409167ms |       127.0.0.1 | POST     "/admin/v2/users"
+[GIN] 2026/09/07 - 22:32:14 | 200 |    8.516417ms |       127.0.0.1 | GET      "/admin/v2/users?page=1&page_size=20&sort=guid&order=desc"
+[GIN] 2026/09/07 - 22:32:15 | 200 |   15.075625ms |       127.0.0.1 | GET      "/admin/v2/groups?status=active"
+[GIN] 2026/09/07 - 22:32:16 | 201 |   79.559042ms |       127.0.0.1 | POST     "/admin/v2/users"
+[GIN] 2026/09/07 - 22:32:16 | 200 |    7.282791ms |       127.0.0.1 | GET      "/admin/v2/users?page=1&page_size=20&sort=guid&order=desc"
+[GIN] 2026/09/07 - 22:32:17 | 200 |   12.286625ms |       127.0.0.1 | GET      "/admin/v2/groups?status=active"
+[GIN] 2026/09/07 - 22:32:17 | 409 |     76.9885ms |       127.0.0.1 | POST     "/admin/v2/users"
+[GIN] 2026/09/07 - 22:32:18 | 200 |   13.439333ms |       127.0.0.1 | GET      "/admin/v2/groups?status=active"
+[GIN] 2026/09/07 - 22:32:19 | 201 |   70.291083ms |       127.0.0.1 | POST     "/admin/v2/users"
+[GIN] 2026/09/07 - 22:32:19 | 200 |    5.253542ms |       127.0.0.1 | GET      "/admin/v2/operations?scope=users.create"
+[GIN] 2026/09/07 - 22:32:19 | 200 |    6.026708ms |       127.0.0.1 | GET      "/admin/v2/users?page=1&page_size=20&sort=guid&order=desc"
+[GIN] 2026/09/07 - 22:32:20 | 201 |   68.073625ms |       127.0.0.1 | POST     "/admin/v2/users"
+[GIN] 2026/09/07 - 22:32:20 | 410 |      5.1065ms |       127.0.0.1 | GET      "/admin/v2/operations?scope=users.create"
+[GIN] 2026/09/07 - 22:32:20 | 410 |      4.4995ms |       127.0.0.1 | POST     "/admin/v2/users"
+[GIN] 2026/09/07 - 22:32:20 | 200 |    9.917458ms |       127.0.0.1 | POST     "/api/v1/auth/refresh"
+[GIN] 2026/09/07 - 22:32:20 | 200 |    6.217875ms |       127.0.0.1 | GET      "/api/v1/auth/self"
+[GIN] 2026/09/07 - 22:32:20 | 200 |    6.355459ms |       127.0.0.1 | GET      "/api/v1/users/me/usage"
+[GIN] 2026/09/07 - 22:32:20 | 200 |    6.621416ms |       127.0.0.1 | GET      "/api/v1/platform/models"
+[GIN] 2026/09/07 - 22:32:20 | 200 |    7.333541ms |       127.0.0.1 | GET      "/admin/v2/users?page=1&page_size=20&sort=guid&order=desc"
+[GIN] 2026/09/07 - 22:32:20 | 200 |       6.958ms |       127.0.0.1 | GET      "/admin/v2/users?page=1&page_size=20&q=amb_023b3e15&sort=guid&order=desc"
+[GIN] 2026/09/07 - 22:32:20 | 200 |   15.510416ms |       127.0.0.1 | GET      "/admin/v2/users/355359634493042688"
+internal/app/state.go:8:2: open /Users/xuzhihao/Library/Caches/go-build/8f/8f2c59e9f86764aa462209df644cd86c1899e7e0613843127864994ea44ac299-a: operation not permitted
+internal/app/state.go:11:2: open /Users/xuzhihao/Library/Caches/go-build/99/99c344777f53a8400a35e4a97ed9d4f378d9ca797428208dcd7ddea418d13a9a-d: operation not permitted
+cmd/server/main.go:11:2: open /Users/xuzhihao/Library/Caches/go-build/d9/d92f93014de8ca1bab8aadae7b162b7f576d4a357a361491bca05775f4889a38-d: operation not permitted
+internal/router/router.go:8:2: open /Users/xuzhihao/Library/Caches/go-build/52/5257a8da25529e2a8e74eeff29d40b876b1fc44c46ff7825c33d6761994cfa46-d: operation not permitted
+internal/middleware/jwt.go:9:2: open /Users/xuzhihao/Library/Caches/go-build/01/01ceea97f6f2717517359b832a6c1452b0bed712a853e37d0256cfe5f30291ea-a: operation not permitted
+internal/middleware/middleware.go:10:2: open /Users/xuzhihao/Library/Caches/go-build/eb/ebb4023b12940da2a21e17ae5de2253051eb5be046fdeebfa8da20cb7c5c5abd-a: operation not permitted
+[GIN-debug] [WARNING] Running in "debug" mode. Switch to "release" mode in production.
+ - using env:	export GIN_MODE=release
+ - using code:	gin.SetMode(gin.ReleaseMode)
+
+[GIN-debug] GET    /health                   --> github.com/porsche/ai-gateway-go/internal/handler.RegisterHealth.func1 (5 handlers)
+[GIN-debug] GET    /v1/models                --> github.com/porsche/ai-gateway-go/internal/handler.registerGatewayRoutes.func1 (6 handlers)
+[GIN-debug] GET    /v1/models/detail         --> github.com/porsche/ai-gateway-go/internal/handler.registerGatewayRoutes.func2 (6 handlers)
+[GIN-debug] GET    /v1/models/:id            --> github.com/porsche/ai-gateway-go/internal/handler.registerGatewayRoutes.func3 (6 handlers)
+[GIN-debug] POST   /v1/chat/completions      --> github.com/porsche/ai-gateway-go/internal/handler.registerGatewayRoutes.func4 (6 handlers)
+[GIN-debug] GET    /api/v1/tokens            --> github.com/porsche/ai-gateway-go/internal/handler.RegisterGatewayTokens.func1 (6 handlers)
+[GIN-debug] POST   /api/v1/tokens            --> github.com/porsche/ai-gateway-go/internal/handler.RegisterGatewayTokens.func2 (6 handlers)
+[GIN-debug] GET    /api/v1/tokens/:guid      --> github.com/porsche/ai-gateway-go/internal/handler.RegisterGatewayTokens.func3 (6 handlers)
+[GIN-debug] PATCH  /api/v1/tokens/:guid      --> github.com/porsche/ai-gateway-go/internal/handler.RegisterGatewayTokens.func4 (6 handlers)
+[GIN-debug] POST   /api/v1/tokens/:guid/revoke --> github.com/porsche/ai-gateway-go/internal/handler.RegisterGatewayTokens.func5 (6 handlers)
+[GIN-debug] DELETE /api/v1/tokens/:guid      --> github.com/porsche/ai-gateway-go/internal/handler.RegisterGatewayTokens.func6 (6 handlers)
+[GIN-debug] POST   /api/v1/auth/send-code    --> github.com/porsche/ai-gateway-go/internal/handler.RegisterAuth.func1 (6 handlers)
+[GIN-debug] POST   /api/v1/auth/login/password --> github.com/porsche/ai-gateway-go/internal/handler.RegisterAuth.func1 (6 handlers)
+[GIN-debug] POST   /api/v1/auth/login/code   --> github.com/porsche/ai-gateway-go/internal/handler.RegisterAuth.func1 (6 handlers)
+[GIN-debug] POST   /api/v1/auth/register     --> github.com/porsche/ai-gateway-go/internal/handler.RegisterAuth.func2 (6 handlers)
+[GIN-debug] POST   /api/v1/auth/login        --> github.com/porsche/ai-gateway-go/internal/handler.RegisterAuth.func3 (6 handlers)
+[GIN-debug] POST   /api/v1/auth/refresh      --> github.com/porsche/ai-gateway-go/internal/handler.RegisterAuth.func4 (6 handlers)
+[GIN-debug] POST   /api/v1/auth/logout       --> github.com/porsche/ai-gateway-go/internal/handler.RegisterAuth.func5 (7 handlers)
+[GIN-debug] GET    /api/v1/auth/self         --> github.com/porsche/ai-gateway-go/internal/handler.RegisterAuth.func6 (7 handlers)
+[GIN-debug] GET    /api/v1/auth/sessions     --> github.com/porsche/ai-gateway-go/internal/handler.RegisterAuth.func7 (7 handlers)
+[GIN-debug] DELETE /api/v1/auth/sessions/:guid --> github.com/porsche/ai-gateway-go/internal/handler.RegisterAuth.func8 (7 handlers)
+[GIN-debug] POST   /api/v1/auth/sessions/revoke-others --> github.com/porsche/ai-gateway-go/internal/handler.RegisterAuth.func9 (7 handlers)
+[GIN-debug] POST   /api/v1/auth/self/password --> github.com/porsche/ai-gateway-go/internal/handler.RegisterAuth.func10 (7 handlers)
+[GIN-debug] POST   /api/v1/auth/self/verify  --> github.com/porsche/ai-gateway-go/internal/handler.RegisterAuth.func11 (7 handlers)
+[GIN-debug] GET    /api/v1/users/me          --> github.com/porsche/ai-gateway-go/internal/handler.RegisterUsers.func1 (7 handlers)
+[GIN-debug] PUT    /api/v1/users/me          --> github.com/porsche/ai-gateway-go/internal/handler.RegisterUsers.func2 (6 handlers)
+[GIN-debug] POST   /api/v1/users/me/password --> github.com/porsche/ai-gateway-go/internal/handler.RegisterUsers.func3 (6 handlers)
+[GIN-debug] POST   /api/v1/users/me/verify   --> github.com/porsche/ai-gateway-go/internal/handler.RegisterUsers.func4 (6 handlers)
+[GIN-debug] GET    /api/v1/users/me/usage    --> github.com/porsche/ai-gateway-go/internal/handler.RegisterUsers.func5 (6 handlers)
+[GIN-debug] GET    /api/v1/conversations     --> github.com/porsche/ai-gateway-go/internal/handler.RegisterConversations.func1 (6 handlers)
+[GIN-debug] POST   /api/v1/conversations     --> github.com/porsche/ai-gateway-go/internal/handler.RegisterConversations.func2 (6 handlers)
+[GIN-debug] GET    /api/v1/conversations/:guid --> github.com/porsche/ai-gateway-go/internal/handler.RegisterConversations.func3 (6 handlers)
+[GIN-debug] PUT    /api/v1/conversations/:guid --> github.com/porsche/ai-gateway-go/internal/handler.RegisterConversations.func4 (6 handlers)
+[GIN-debug] DELETE /api/v1/conversations/:guid --> github.com/porsche/ai-gateway-go/internal/handler.RegisterConversations.func5 (6 handlers)
+[GIN-debug] GET    /api/v1/conversations/:guid/export/markdown --> github.com/porsche/ai-gateway-go/internal/handler.RegisterConversations.func6 (6 handlers)
+[GIN-debug] GET    /api/v1/billing/plans     --> github.com/porsche/ai-gateway-go/internal/handler.RegisterBilling.func1 (6 handlers)
+[GIN-debug] POST   /api/v1/billing/orders    --> github.com/porsche/ai-gateway-go/internal/handler.RegisterBilling.func2 (6 handlers)
+[GIN-debug] POST   /api/v1/billing/orders/:guid/pay --> github.com/porsche/ai-gateway-go/internal/handler.RegisterBilling.func3 (6 handlers)
+[GIN-debug] GET    /api/v1/billing/orders    --> github.com/porsche/ai-gateway-go/internal/handler.RegisterBilling.func4 (6 handlers)
+[GIN-debug] POST   /api/v1/billing/invoice   --> github.com/porsche/ai-gateway-go/internal/handler.RegisterBilling.func5 (6 handlers)
+[GIN-debug] GET    /api/v1/platform/models   --> github.com/porsche/ai-gateway-go/internal/handler.RegisterPlatform.func1 (9 handlers)
+[GIN-debug] GET    /api/v1/platform/models/detail --> github.com/porsche/ai-gateway-go/internal/handler.RegisterPlatform.func2 (9 handlers)
+[GIN-debug] GET    /api/v1/platform/models/:id --> github.com/porsche/ai-gateway-go/internal/handler.RegisterPlatform.func3 (9 handlers)
+[GIN-debug] POST   /api/v1/platform/chat/completions --> github.com/porsche/ai-gateway-go/internal/handler.RegisterPlatform.func4 (9 handlers)
+[GIN-debug] POST   /api/v1/platform/chat/compare --> github.com/porsche/ai-gateway-go/internal/handler.RegisterPlatform.func5 (9 handlers)
+[GIN-debug] GET    /api/v1/billing/analytics/access --> github.com/porsche/ai-gateway-go/internal/handler.RegisterAnalytics.func1 (6 handlers)
+[GIN-debug] GET    /api/v1/billing/analytics/summary --> github.com/porsche/ai-gateway-go/internal/handler.RegisterAnalytics.func2 (7 handlers)
+[GIN-debug] GET    /api/v1/billing/analytics/models --> github.com/porsche/ai-gateway-go/internal/handler.RegisterAnalytics.func3 (7 handlers)
+[GIN-debug] GET    /api/v1/billing/analytics/charts/:view --> github.com/porsche/ai-gateway-go/internal/handler.RegisterAnalytics.func4 (7 handlers)
+[GIN-debug] GET    /api/v1/billing/analytics/export --> github.com/porsche/ai-gateway-go/internal/handler.RegisterAnalytics.func5 (7 handlers)
+[GIN-debug] GET    /admin/status             --> github.com/porsche/ai-gateway-go/internal/handler.RegisterAdmin.func1 (6 handlers)
+[GIN-debug] POST   /admin/models/health-check --> github.com/porsche/ai-gateway-go/internal/handler.RegisterAdmin.func2 (6 handlers)
+[GIN-debug] POST   /admin/models/:id/health-check --> github.com/porsche/ai-gateway-go/internal/handler.RegisterAdmin.func3 (6 handlers)
+[GIN-debug] GET    /admin/users              --> github.com/porsche/ai-gateway-go/internal/handler.registerLegacyAdminUsersRead.func1 (8 handlers)
+[GIN-debug] GET    /admin/users/:guid        --> github.com/porsche/ai-gateway-go/internal/handler.registerLegacyAdminUsersRead.func2 (8 handlers)
+[GIN-debug] GET    /admin/users/:guid/behavior --> github.com/porsche/ai-gateway-go/internal/handler.registerLegacyAdminUsersRead.func3 (8 handlers)
+[GIN-debug] DELETE /admin/users/:guid        --> github.com/porsche/ai-gateway-go/internal/handler.legacyAdminUserDeleteGone (8 handlers)
+[GIN-debug] PUT    /admin/users/:guid        --> github.com/porsche/ai-gateway-go/internal/handler.RegisterAdminUsers.func1 (6 handlers)
+[GIN-debug] GET    /admin/v2/authz/catalog   --> github.com/porsche/ai-gateway-go/internal/handler.RegisterAdminAuthz.func2 (8 handlers)
+[GIN-debug] GET    /admin/v2/users/:guid/permissions --> github.com/porsche/ai-gateway-go/internal/handler.RegisterAdminAuthz.func3 (8 handlers)
+[GIN-debug] GET    /admin/v2/users           --> github.com/porsche/ai-gateway-go/internal/handler.RegisterAdminUsersRead.func1 (8 handlers)
+[GIN-debug] GET    /admin/v2/users/:guid     --> github.com/porsche/ai-gateway-go/internal/handler.RegisterAdminUsersRead.func2 (8 handlers)
+[GIN-debug] GET    /admin/v2/groups          --> github.com/porsche/ai-gateway-go/internal/handler.RegisterAdminGroupsRead.func1 (8 handlers)
+[GIN-debug] POST   /admin/v2/action-verifications --> github.com/porsche/ai-gateway-go/internal/handler.registerAdminUserManagementActionRoutes.func1 (8 handlers)
+[GIN-debug] POST   /admin/v2/users           --> github.com/porsche/ai-gateway-go/internal/handler.registerAdminUserManagementActionRoutes.func2 (8 handlers)
+[GIN-debug] POST   /admin/v2/users/:guid/actions --> github.com/porsche/ai-gateway-go/internal/handler.registerAdminUserManagementActionRoutes.func3 (8 handlers)
+[GIN-debug] GET    /admin/v2/operations      --> github.com/porsche/ai-gateway-go/internal/handler.registerAdminUserManagementActionRoutes.func4 (8 handlers)
+[GIN-debug] GET    /admin/logs               --> github.com/porsche/ai-gateway-go/internal/handler.RegisterAdminLogs.func1 (6 handlers)
+[GIN-debug] GET    /admin/logs/alerts        --> github.com/porsche/ai-gateway-go/internal/handler.RegisterAdminLogs.func2 (6 handlers)
+[GIN-debug] PUT    /admin/logs/alerts/:alert_type --> github.com/porsche/ai-gateway-go/internal/handler.RegisterAdminLogs.func3 (6 handlers)
+[GIN-debug] GET    /admin/dashboard          --> github.com/porsche/ai-gateway-go/internal/handler.RegisterAdminDashboard.func1 (6 handlers)
+[GIN-debug] GET    /admin/dashboard/models/health --> github.com/porsche/ai-gateway-go/internal/handler.RegisterAdminDashboard.func2 (6 handlers)
+[GIN-debug] POST   /admin/dashboard/models/health/check --> github.com/porsche/ai-gateway-go/internal/handler.RegisterAdminDashboard.func3 (6 handlers)
+[GIN-debug] GET    /metrics                  --> github.com/porsche/ai-gateway-go/internal/router.New.func1 (5 handlers)
+2026/09/08 00:05:47 ai-gateway-go listening on 127.0.0.1:51294 (env=test)
+[GIN-debug] [WARNING] You trusted all proxies, this is NOT safe. We recommend you to set a value.
+Please check https://pkg.go.dev/github.com/gin-gonic/gin#readme-don-t-trust-all-proxies for details.
+[GIN-debug] Listening and serving HTTP on 127.0.0.1:51294
+[GIN] 2026/09/08 - 00:06:05 | 200 |      59.416µs |       127.0.0.1 | GET      "/health"
+[GIN] 2026/09/08 - 00:06:05 | 200 |     105.917µs |       127.0.0.1 | GET      "/health"
+[GIN] 2026/09/08 - 00:07:09 | 200 |      50.625µs |       127.0.0.1 | GET      "/health"
+[GIN] 2026/09/08 - 00:07:09 | 200 |      21.667µs |       127.0.0.1 | GET      "/health"

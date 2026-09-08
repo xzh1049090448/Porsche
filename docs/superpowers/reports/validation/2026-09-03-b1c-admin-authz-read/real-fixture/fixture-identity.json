@@ -1,0 +1,23 @@
+{
+  "task": "b1c-admin-authz-read-260903",
+  "database": "porsche_b1c_admin_authz_260903_test",
+  "containers": {
+    "mysql": {
+      "id": "133f7729e68712032b691f154657c8c504f52dc6030bf40bd2dcf96443cf6816",
+      "image": "sha256:7dcddc01f13bab2f15cde676d44d01f61fc9f99fe7785e86196dfc07d358ae2b",
+      "container_port": 3306,
+      "host_port": 64128
+    },
+    "redis": {
+      "id": "f3c304aaec4be4bdf30a8f4adab914b416be679db13c0957705d93ee9c2d7f0a",
+      "image": "sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf",
+      "container_port": 6379,
+      "host_port": 64139
+    }
+  },
+  "mysql_version": "8.0.46",
+  "redis_version": "Redis server v=7.4.11 sha=00000000:0 malloc=jemalloc-5.3.0 bits=64 build=c8d8130a4710f7c0",
+  "provisioned_phase": "ready",
+  "phase": "cleaned",
+  "cleanup_evidence": "cleanup.json"
+}

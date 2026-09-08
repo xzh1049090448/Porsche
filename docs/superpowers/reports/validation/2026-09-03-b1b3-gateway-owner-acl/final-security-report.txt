@@ -1,0 +1,49 @@
+B1-B3 Gateway owner ACL — independent final verification
+Date: 2026-09-03
+Worktree: /Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903
+Fixture scope: the explicitly authorized disposable porsche_b1b3_17884390752a356ab0_test MySQL/Redis fixture and existing isolated child-test helpers only. DATABASE_URL was unset; fixture credentials/DSNs were not emitted.
+
+SECURITY_REPORT
+Critical: 0
+High: 0
+Medium: 0
+Low: 0
+
+Static security conclusion
+- AuthenticatePrincipal loads token then owner, uses private validity plus separate cloned Key/owner ACLs, strictly parses persisted JSON, and fail-closes storage/decode/last-used errors as GatewayTokenUnavailable.
+- The authentication query session uses logger.Discard, preventing raw persisted ACL SQL parameters from becoming GORM log output.
+- Gateway list retains Key/global filtering then applies owner filtering to a new slice. Detail rejects owner denial before any WhiteLabel access. Chat/SSE applies both ACLs before catalog or generation calls.
+- The unavailable error uses the fixed public 503 gateway_authentication_unavailable/api_error/Gateway authentication is temporarily unavailable. envelope.
+- No security defect was observed in the frozen B1-B3 diff.
+
+Fresh execution evidence
+1. Full serial suite, after quietly exporting only TEST_* from the private fixture environment and unsetting DATABASE_URL:
+   GOCACHE=/private/tmp/porsche-go-build-cache go test -json -p 1 ./... -count=1
+   Result: PASS.
+   Original JSON: /private/tmp/porsche-b1b3-independent-full.json
+   Counts from JSON: 544 test PASS events; 0 test FAIL; 0 test SKIP; 15 packages PASS; 4 packages with no test files; 0 package failures. Total pass events including packages: 559.
+   The initial sandboxed attempt was blocked before database/listener access by local-loopback restrictions. The identical command was re-run under the authorized local-loopback permission and produced the passing JSON above.
+2. Focused race:
+   GOCACHE=/private/tmp/porsche-go-build-cache go test -race -p 1 ./internal/service ./internal/handler -run '^(TestGateway)' -count=1
+   Result: PASS — internal/service 1.803s; internal/handler 2.383s.
+3. Static gates:
+   go build ./...; go vet ./...; git diff --check
+   Result: PASS.
+4. Feature manifest:
+   feature_list.json parsed as JSON. go-014 remains in_progress; this verification did not modify product tracking state.
+
+Final hashes
+73a94557bcd2ee44d194c891829072de6ad5acd68a7e50e01a0d5055aea989ed  internal/service/gateway_token.go
+96670642cada1b22b8002e284fa4467c9cc7c7b7320d15e4c85b85e57997e02f  internal/handler/gateway_tokens.go
+e63281723fa991a43857dc9aa31a6843f77c11d3199a3bd4b74d4f09db4f6634  internal/whitelabel/errors.go
+b42b179761f8ed8199796e6434298e3bd26279461053907ff76ad77780357996  internal/service/gateway_token_test.go
+53f2ea8c9247733a24b6c338bcbf8e6519f410b8b29375e5f00ac0281c330540  internal/service/gateway_auth_failures_test.go
+0754d570db2853d6b4e842d2cd30a2fa79f09a8e0fa6a990d2cc95671a41c1e4  internal/handler/gateway_owner_acl_test.go
+d7ef44d2eaa0ed587a764d7d84747cfec820fdb29fea04408d46fde303846904  internal/handler/gateway_whitelabel_test.go
+
+Prior independent pure probes retained for traceability
+/private/tmp/porsche-b1b3-partial-probe/gateway_unavailable_probe_test.go
+/private/tmp/porsche-b1b3-partial-probe/gateway_principal_matrix_probe_test.go
+
+No production action, schema implementation edit, fixture cleanup, container stop, or deletion was performed.
+VERDICT: PASS

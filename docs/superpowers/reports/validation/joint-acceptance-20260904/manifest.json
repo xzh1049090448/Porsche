@@ -1,0 +1,341 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-09-04T12:54:38+08:00",
+  "status": "FINAL_ACCEPTANCE_FAIL_ARCHIVED_AND_CLEANED",
+  "scope": "one-time local loopback FE+BE real joint acceptance; no production connection, commit, push, or deploy",
+  "candidate": {
+    "backend": {
+      "worktree": "/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903",
+      "branch": "feature/admin-public-260903",
+      "head": "aec1619ee710c80cd71dbe529660e2d12b3fda7b",
+      "h3_sha256": "7a20df0cb257feb393f930b0d006fc88795acbc0b9dead2784f5ae3b61d4f715",
+      "migration_0004_sha256": "44b5caba0473162c239e6b3035e6d9067e3af0b35e998a79c827a1424621494e"
+    },
+    "frontend": {
+      "worktree": "/Users/xuzhihao/code/Porsche-Web/.worktrees/admin-public-260903",
+      "branch": "feature/admin-public-260903",
+      "head": "25a66a4ad546a481941dfc6e0cc9bc75da2e631b"
+    },
+    "source_modified_by_joint_setup": false
+  },
+  "lifecycle": {
+    "task_label": "codex.task=b1d-joint-acceptance-260904",
+    "resources_retained": false,
+    "cleanup_performed": true,
+    "named_volumes": 0,
+    "cleanup_result": "PASS"
+  },
+  "resources": {
+    "mysql": {
+      "id": "868308ad13c424fc529e1b401eca1a13702af8adcf866711d5453111903e7b2a",
+      "name": "b1d-joint-acceptance-260904-mysql",
+      "image_id": "sha256:7dcddc01f13bab2f15cde676d44d01f61fc9f99fe7785e86196dfc07d358ae2b",
+      "loopback_port": 61998,
+      "auto_remove": true,
+      "tmpfs": [
+        "/var/lib/mysql",
+        "/tmp"
+      ],
+      "exists": false
+    },
+    "redis": {
+      "id": "0f2bdaecb9e8da94e67667eea6487459c957ba62af469406aad41fa521d8f5f8",
+      "name": "b1d-joint-acceptance-260904-redis",
+      "image_id": "sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf",
+      "loopback_port": 62001,
+      "auto_remove": true,
+      "tmpfs": [
+        "/data"
+      ],
+      "exists": false
+    }
+  },
+  "services": {
+    "backend": {
+      "url": "http://127.0.0.1:18080",
+      "pid": 22213,
+      "exec_session": 37608,
+      "status": "stopped"
+    },
+    "frontend": {
+      "url": "http://127.0.0.1:15173",
+      "pid": 22388,
+      "exec_session": 23561,
+      "proxy_paths": [
+        "/api",
+        "/admin"
+      ],
+      "status": "stopped"
+    }
+  },
+  "private_credentials": {
+    "directory": "/private/tmp/porsche-joint-acceptance-260904-td1FYO",
+    "directory_mode": "0700",
+    "file_mode": "0600",
+    "account_index": "/private/tmp/porsche-joint-acceptance-260904-td1FYO/account-index.json",
+    "root_login_payload": "/private/tmp/porsche-joint-acceptance-260904-td1FYO/joint_root-login.json",
+    "admin_login_payload": "/private/tmp/porsche-joint-acceptance-260904-td1FYO/joint_admin-login.json",
+    "values_in_evidence": false,
+    "deleted": true,
+    "directory_exists": false
+  },
+  "database": {
+    "name": "porsche_joint_acceptance_260904_test",
+    "migrations": [
+      "0001",
+      "0002",
+      "0003",
+      "0004"
+    ],
+    "dataset": {
+      "active_root": 1,
+      "active_admin": 1,
+      "active_user": 1,
+      "disabled_user": 1,
+      "soft_deleted_user": 1,
+      "performance_100k_loaded": false
+    },
+    "real_redis_sessions": [
+      "Root",
+      "Admin"
+    ]
+  },
+  "smoke": {
+    "frontend_root": 200,
+    "backend_health": 200,
+    "root_login": 200,
+    "refresh_cookie": "present_httponly",
+    "bearer_list": 200,
+    "list_total": 3,
+    "bearer_detail": 200,
+    "detail_username": "joint_user",
+    "admin_login": 200,
+    "admin_refresh_cookie": "present_httponly",
+    "admin_bearer_list": 200,
+    "admin_list_total": 2,
+    "root_deleted_list": 200,
+    "deleted_total": 1
+  },
+  "smoke_result": "PASS",
+  "preserved_setup_failures": 5,
+  "predecessor_manifest_chain": {
+    "h3_independent_qa_frozen_input_sha256": "26c063e0d31a4aa10bbd41df3396e965cdb9d186a88eecb9e0d23577aa58e2a5",
+    "b1d_cleanup_final_sha256": "70427948ad19132f3ad4fc0a48c2da5a1d9276c6fda93589b5abb36691f70922",
+    "relationship": "26c063 is historical QA input; 704279 is the verified post-cleanup final predecessor"
+  },
+  "artifacts": {
+    "README.md": {
+      "sha256": "0118d64850fca79512ee76275485c887f4a509404f0b8a7656040d881af23cdb",
+      "bytes": 6429
+    },
+    "backend-baseline.txt": {
+      "sha256": "6a6d521a7c780fbc20a1fd760e352c7b673c497c27ceca7a9dd9b790d041d9a4",
+      "bytes": 4047
+    },
+    "backend-candidate-hashes.sha256": {
+      "sha256": "6b466d528521cb302db5cc481906b445b658f6b7f667e4ccfaaf3df4a45caf8e",
+      "bytes": 573
+    },
+    "backend-health.json": {
+      "sha256": "f335de695ca26ff67351c6a52f9497db00fe3c5de988481a95902d390c4f9af7",
+      "bytes": 39
+    },
+    "backend-listener.txt": {
+      "sha256": "c4b0400c37e6cdbb44a2cbd4de32669e07d425e7e87fefea8c4b538c1d6d4c76",
+      "bytes": 166
+    },
+    "bootstrap.log": {
+      "sha256": "67feba718b941cdd9e3a34e62e04f490deb9e6db7867a75e9f8f5be64041f50b",
+      "bytes": 187
+    },
+    "cleanup-precheck.txt": {
+      "sha256": "4500d20ee9c77f91a0a946bbe50e371b5ba11978b23f232af473504f08f6f695",
+      "bytes": 1207
+    },
+    "cleanup-stop.txt": {
+      "sha256": "9635e18e4e8383b2694f4b9f4c50dcda2c948072c8842453f73d73781c3c217c",
+      "bytes": 434
+    },
+    "cleanup-verification.txt": {
+      "sha256": "2360857a433dcf6bc60cae457e31ecc1114637a34e2920810a865bf62ce62ed1",
+      "bytes": 498
+    },
+    "dataset-ledger.txt": {
+      "sha256": "98d574944cd364714c84a37fb5f3128c602137dc7174f2ac8fc0c7aff1ec2245",
+      "bytes": 228
+    },
+    "evidence-hygiene.txt": {
+      "sha256": "119543e6877ec8ac126b985d46f56da52d0449949b641b33dd15dbbbb8bfd171",
+      "bytes": 464
+    },
+    "final-live-check.txt": {
+      "sha256": "7d58ac6868a20f0cc339d7cb7b702ed28c311666599f2e7c866b99f667127cf7",
+      "bytes": 473
+    },
+    "frontend-baseline.txt": {
+      "sha256": "6fd79aeb65e82343e4221c3c50e0bc436d74cb2fd7b89362c9ca2a6ca61583a9",
+      "bytes": 1132
+    },
+    "frontend-candidate-hashes.sha256": {
+      "sha256": "7954cc358b175b7763f37ebcb3b6695cb8b740e99d0728d185ece2b3c783a7d5",
+      "bytes": 923
+    },
+    "frontend-listener.txt": {
+      "sha256": "331118b9052d8cc8936f0d151331e2611531a5bcf2ce239ed63fdbb6c6489e7b",
+      "bytes": 166
+    },
+    "frontend-login-route.html": {
+      "sha256": "212add08ffb81e2f6877116b8bc6aeae54fdd8cb865b7cfdc9b60afd8f07f3eb",
+      "bytes": 1307
+    },
+    "frontend-route-status.txt": {
+      "sha256": "ce668b8d01cff7e5736179fa3c06af81c3346a5311343db0a3aed909511da2ab",
+      "bytes": 46
+    },
+    "frontend-users-route.html": {
+      "sha256": "212add08ffb81e2f6877116b8bc6aeae54fdd8cb865b7cfdc9b60afd8f07f3eb",
+      "bytes": 1307
+    },
+    "initial-smoke-shell-failure.txt": {
+      "sha256": "adcaf225c1f142626045dbf3d0e0bdd1dc8865c0e9446a9951a985a6c62ef367",
+      "bytes": 95
+    },
+    "migration-ledger.txt": {
+      "sha256": "813bc27cca79c1c3c2ab1579f1a88523b2f1aac1866d03ef73289c3c8082c433",
+      "bytes": 280
+    },
+    "named-volume-inventory.txt": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "process-and-url-ledger.txt": {
+      "sha256": "ecd537af98edcfb2a9b105dee2417d81b0a21fd77dbd6d85a72bb10b77a9e376",
+      "bytes": 230
+    },
+    "recovery-live-check.txt": {
+      "sha256": "9757880f55b9150f13fc914929ecb96eabfd86b48c8258f372a70a9691fa9dfc",
+      "bytes": 1160
+    },
+    "resource-ledger.txt": {
+      "sha256": "fa5a48b0d3c04276ebaa0c9945d01817c4fc4bf878516a256eea30f9c825288e",
+      "bytes": 2504
+    },
+    "setup-failures.md": {
+      "sha256": "a86b77b8c59f9572c78e5ebaf763306a5ebd2e1411d9edd67f0b73cf173054f8",
+      "bytes": 959
+    },
+    "smoke-summary.json": {
+      "sha256": "adf8bf34b3d2ffa58b15fad90b4ce373158643fdd3bc6db7d34f3889febeacda",
+      "bytes": 384
+    }
+  },
+  "manifest_self_excluded": true,
+  "recovery_check": {
+    "backend_health_http": 200,
+    "frontend_users_http": 200,
+    "original_sessions_open": true,
+    "second_backend_attempt": "safe bind collision; no second instance",
+    "data_or_code_changed": false
+  },
+  "acceptance": {
+    "verdict": "FAIL_LOCAL_JOINT_ACCEPTANCE",
+    "pm_final_signed": true,
+    "independent_qa": "FAIL",
+    "summary": {
+      "total": 26,
+      "PASS_LIMITED_SCOPE": 6,
+      "FAIL_LOCAL_DEV_ROUTE": 2,
+      "BLOCKED_NOT_IMPLEMENTED": 16,
+      "BLOCKED_PRODUCT": 1,
+      "BLOCKED_ENV": 1,
+      "blocked_total": 18
+    },
+    "pass_items": [
+      "A01",
+      "A02",
+      "A04",
+      "A13",
+      "V01",
+      "V02"
+    ],
+    "fail_items": [
+      "P02",
+      "R01"
+    ],
+    "root_cause": "local Vite /api proxy prefix intercepted the /api-keys browser document route and returned backend 404 before Vue routing",
+    "logout_subassertions": "204, context cookies empty, explicit refresh 401, no private API-key DOM",
+    "cleanup": "PASS"
+  },
+  "supersession": {
+    "rule": "FE SECOND-PHASE-REPORT supersedes CORE-PHASE-REPORT only for the early logout/direct-route interpretation; both raw evidence sets remain retained",
+    "core_report_sha256": "6971e1975c3bffc0fc976ca7cfe56442713a6756c4af393523956ea7aed55929",
+    "second_report_sha256": "45726625012f46d046896eeda1f673f9e4e66226c1dbb62719c2f84e364724a7"
+  },
+  "frontend_final_artifacts": {
+    "final_report": {
+      "path": "docs/agents/validation/joint-acceptance-20260904/FINAL-ACCEPTANCE-REPORT.md",
+      "sha256": "4147caaef7e745f49126f5689528f580dc8bb1b69e4c2c55d1e59e55324312f2"
+    },
+    "matrix": {
+      "path": "docs/agents/validation/joint-acceptance-20260904/acceptance-matrix.json",
+      "sha256": "3acf4b8212f106b8a3f20dcc12f3d1b4768b70a3f40584fe7afe9e249c002a75"
+    },
+    "confirmations": {
+      "path": "docs/agents/validation/prd-260903-confirmations.json",
+      "sha256": "952bae579b7aa426fa95342f18d69b4cb1038a9b5e311a10db9f8186fd196d48"
+    },
+    "progress": {
+      "path": "progress.md",
+      "sha256": "797c8f45d8579c2068d913ae4ada1be5df4c8523b0315e57c58e21f245e04046"
+    },
+    "feature_list": {
+      "path": "feature_list.json",
+      "sha256": "ff47ef09f09b4a69ce8f6740eae85e266166b92352f9836d866633103c5e145a"
+    },
+    "evidence_hygiene": {
+      "path": "docs/agents/validation/joint-acceptance-20260904/evidence-hygiene.txt",
+      "sha256": "5247f49740161e8ef48862b1612b3a3818303b6faf98b7ceb567356abf4b0726"
+    },
+    "hash_list": {
+      "path": "docs/agents/validation/joint-acceptance-20260904/final-archive-hashes.sha256",
+      "sha256": "8d442a4992b5765d15f560578878ff48209e236107a5fe5cd86758e995e419d3"
+    }
+  },
+  "manifest_chain": {
+    "h3_independent_qa_frozen_input_sha256": "26c063e0d31a4aa10bbd41df3396e965cdb9d186a88eecb9e0d23577aa58e2a5",
+    "b1d_cleanup_final_sha256": "70427948ad19132f3ad4fc0a48c2da5a1d9276c6fda93589b5abb36691f70922",
+    "joint_recovery_ready_before_final_archive_sha256": "d3d1de8b3609721baba3e1f04ca19ef5990aaad2666e63f9aab7786cb6101641",
+    "current": "manifest.sha256 (self-excluded)",
+    "joint_final_before_cleanup_sha256": "85c388b52de3d59324d719d6f3938ec15ec6b065b8b8ce0cddf03106bdc6351c"
+  },
+  "cleanup": {
+    "result": "PASS",
+    "sessions": {
+      "frontend_23561": "exited",
+      "backend_37608": "exited"
+    },
+    "pids": {
+      "22388": "absent",
+      "22213": "absent"
+    },
+    "container_ids": {
+      "868308ad13c424fc529e1b401eca1a13702af8adcf866711d5453111903e7b2a": "absent",
+      "0f2bdaecb9e8da94e67667eea6487459c957ba62af469406aad41fa521d8f5f8": "absent"
+    },
+    "names_remaining": 0,
+    "task_label_remaining": 0,
+    "ports": {
+      "15173": "closed",
+      "18080": "closed",
+      "61998": "closed",
+      "62001": "closed"
+    },
+    "private_directory": "absent",
+    "forbidden_operations_used": false,
+    "evidence": [
+      "cleanup-precheck.txt",
+      "cleanup-stop.txt",
+      "cleanup-verification.txt"
+    ]
+  }
+}

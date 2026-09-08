@@ -1,0 +1,233 @@
+[
+  {
+    "actor": "root",
+    "method": "POST",
+    "path": "/api/v1/auth/refresh",
+    "status": 401,
+    "disposition": "response"
+  },
+  {
+    "actor": "root",
+    "method": "POST",
+    "path": "/api/v1/auth/login",
+    "status": 200,
+    "disposition": "response"
+  },
+  {
+    "actor": "root",
+    "method": "POST",
+    "path": "/api/v1/auth/refresh",
+    "status": 200,
+    "disposition": "response"
+  },
+  {
+    "actor": "root",
+    "method": "GET",
+    "path": "/admin/v2/users",
+    "status": 200,
+    "disposition": "response"
+  },
+  {
+    "actor": "root",
+    "method": "GET",
+    "path": "/admin/v2/groups",
+    "status": 200,
+    "disposition": "response"
+  },
+  {
+    "actor": "root",
+    "method": "GET",
+    "path": "/admin/v2/authz/catalog",
+    "status": 200,
+    "disposition": "response"
+  },
+  {
+    "actor": "root",
+    "method": "POST",
+    "path": "/admin/v2/action-verifications",
+    "status": 201,
+    "disposition": "response"
+  },
+  {
+    "actor": "root",
+    "method": "POST",
+    "path": "/admin/v2/users",
+    "status": 201,
+    "username_alias": "created_admin",
+    "disposition": "response"
+  },
+  {
+    "actor": "root",
+    "method": "GET",
+    "path": "/admin/v2/users",
+    "status": 200,
+    "disposition": "response"
+  },
+  {
+    "actor": "admin",
+    "method": "POST",
+    "path": "/api/v1/auth/refresh",
+    "status": 401,
+    "disposition": "response"
+  },
+  {
+    "actor": "admin",
+    "method": "POST",
+    "path": "/api/v1/auth/login",
+    "status": 200,
+    "disposition": "response"
+  },
+  {
+    "actor": "admin",
+    "method": "POST",
+    "path": "/api/v1/auth/refresh",
+    "status": 200,
+    "disposition": "response"
+  },
+  {
+    "actor": "admin",
+    "method": "GET",
+    "path": "/admin/v2/users",
+    "status": 200,
+    "disposition": "response"
+  },
+  {
+    "actor": "admin",
+    "method": "GET",
+    "path": "/admin/v2/groups",
+    "status": 200,
+    "disposition": "response"
+  },
+  {
+    "actor": "admin",
+    "method": "POST",
+    "path": "/admin/v2/action-verifications",
+    "status": 403,
+    "username_alias": "denied_admin_creation",
+    "disposition": "direct_browser_context"
+  },
+  {
+    "actor": "admin",
+    "method": "POST",
+    "path": "/admin/v2/users",
+    "status": 403,
+    "username_alias": "denied_non_default_plan",
+    "disposition": "direct_browser_context"
+  },
+  {
+    "actor": "admin",
+    "method": "GET",
+    "path": "/admin/v2/groups",
+    "status": 200,
+    "disposition": "response"
+  },
+  {
+    "actor": "admin",
+    "method": "POST",
+    "path": "/admin/v2/users",
+    "status": 201,
+    "username_alias": "ordinary_default",
+    "disposition": "response"
+  },
+  {
+    "actor": "admin",
+    "method": "GET",
+    "path": "/admin/v2/users",
+    "status": 200,
+    "disposition": "response"
+  },
+  {
+    "actor": "admin",
+    "method": "GET",
+    "path": "/admin/v2/groups",
+    "status": 200,
+    "disposition": "response"
+  },
+  {
+    "actor": "admin",
+    "method": "POST",
+    "path": "/admin/v2/users",
+    "status": 201,
+    "username_alias": "double_submit",
+    "disposition": "response"
+  },
+  {
+    "actor": "admin",
+    "method": "GET",
+    "path": "/admin/v2/users",
+    "status": 200,
+    "disposition": "response"
+  },
+  {
+    "actor": "admin",
+    "method": "GET",
+    "path": "/admin/v2/groups",
+    "status": 200,
+    "disposition": "response"
+  },
+  {
+    "actor": "admin",
+    "method": "POST",
+    "path": "/admin/v2/users",
+    "status": 409,
+    "username_alias": "tombstone_conflict",
+    "disposition": "response"
+  },
+  {
+    "actor": "admin",
+    "method": "GET",
+    "path": "/admin/v2/groups",
+    "status": 200,
+    "disposition": "response"
+  },
+  {
+    "actor": "admin",
+    "method": "POST",
+    "path": "/admin/v2/users",
+    "status": null,
+    "username_alias": "ambiguous_recovery",
+    "disposition": "transport_failed"
+  },
+  {
+    "actor": "admin",
+    "method": "GET",
+    "path": "/admin/v2/operations?scope=users.create",
+    "status": 200,
+    "disposition": "response"
+  },
+  {
+    "actor": "admin",
+    "method": "GET",
+    "path": "/admin/v2/users",
+    "status": 200,
+    "disposition": "response"
+  },
+  {
+    "actor": "admin",
+    "method": "POST",
+    "path": "/api/v1/auth/refresh",
+    "status": 200,
+    "disposition": "response"
+  },
+  {
+    "actor": "admin",
+    "method": "GET",
+    "path": "/admin/v2/users",
+    "status": 200,
+    "disposition": "response"
+  },
+  {
+    "actor": "admin",
+    "method": "GET",
+    "path": "/admin/v2/users",
+    "status": 200,
+    "disposition": "response"
+  },
+  {
+    "actor": "admin",
+    "method": "GET",
+    "path": "/admin/v2/users/355244174601891840",
+    "status": 200,
+    "disposition": "response"
+  }
+]

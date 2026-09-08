@@ -151,6 +151,28 @@ func TestVerifyAppliedRejectsMissingAndTamperedMigrations(t *testing.T) {
 	}
 }
 
+func TestAdminUsersReadCountIndexMigrationContract(t *testing.T) {
+	migrations, err := All()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(migrations) != 10 || migrations[3].Version != "0004" || migrations[5].Version != "0006" || migrations[6].Version != "0007" || migrations[7].Version != "0008" || migrations[8].Version != "0009" || migrations[9].Version != "0010" {
+		t.Fatalf("admin users count migration 0004 is missing: %#v", migrations)
+	}
+	up := strings.ToLower(string(migrations[3].UpSQL))
+	for _, fragment := range []string{
+		"create index idx_users_admin_read_count",
+		"on users (is_deleted, role, status)",
+	} {
+		if !strings.Contains(up, fragment) {
+			t.Errorf("0004 missing %q: %s", fragment, up)
+		}
+	}
+	if strings.Contains(up, "drop ") || strings.Contains(up, "delete ") || strings.Contains(up, "update ") {
+		t.Fatalf("0004 must be additive: %s", up)
+	}
+}
+
 // TestAuthCoreMigrationContract protects the explicit, additive auth schema
 // migration. It intentionally asserts the SQL contract without connecting to
 // any configured database.
@@ -159,7 +181,7 @@ func TestAuthCoreMigrationContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(migrations) != 2 || migrations[1].Version != "0002" {
+	if len(migrations) != 10 || migrations[1].Version != "0002" || migrations[2].Version != "0003" || migrations[3].Version != "0004" || migrations[5].Version != "0006" || migrations[6].Version != "0007" || migrations[7].Version != "0008" || migrations[8].Version != "0009" || migrations[9].Version != "0010" {
 		t.Fatalf("auth migration 0002 is missing: %#v", migrations)
 	}
 

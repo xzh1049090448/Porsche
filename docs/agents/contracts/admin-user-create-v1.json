@@ -1,0 +1,218 @@
+{
+  "contract": "admin-user-create-v1",
+  "revision": "2026-09-07-a03-v3",
+  "status": "AGREED_FOR_IMPLEMENTATION",
+  "design_source": "docs/superpowers/specs/2026-09-06-a03-admin-user-create-design.md",
+  "create": {
+    "method": "POST",
+    "path": "/admin/v2/users",
+    "authorization": {
+      "capability": "users.create",
+      "fresh_recheck": "reload actor, session, and permission snapshot; then Evaluator.Create(role)",
+      "role_matrix": {
+        "admin": "may create role=user only",
+        "root": "may create role=user|admin; role=root is rejected",
+        "administrator_create": "requires Root and a valid users.create_admin action ticket"
+      },
+      "additional_capabilities": {
+        "explicit_non_default_group": "users.group.change",
+        "non_free_plan": "users.plan.change"
+      },
+      "failure_mode": "dependency reads fail closed; frontend capability projection is display-only"
+    },
+    "request": {
+      "headers": {
+        "Authorization": "required Bearer authentication under the existing mechanism",
+        "Idempotency-Key": "required exactly once; unique original value; format and secret handling follow the admin action foundation",
+        "X-Action-Ticket": {
+          "role=user": "forbidden",
+          "role=admin": "required exactly once; valid users.create_admin ticket bound to the complete intent"
+        }
+      },
+      "body": {
+        "body_limit": "existing admin action body limit",
+        "json_rule": "one JSON object; reject unknown fields, duplicate keys, trailing values, and oversized bodies",
+        "schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["username", "password", "role"],
+          "properties": {
+            "username": {"type": "string", "rule": "required; NormalizeUsername; permanently unique including soft-delete tombstones; immutable after create"},
+            "nickname": {"type": ["string", "null"], "rule": "optional; null or trimmed non-empty value of at most 64 Unicode characters; omitted reads as null"},
+            "password": {"type": "string", "rule": "required; preserve bytes without trim; existing 8-20 Unicode character and weak-password rules"},
+            "role": {"type": "string", "enum": ["user", "admin"], "rule": "required; root and every other value reject"},
+            "group_guid": {"type": ["string", "null"], "rule": "optional/null resolves the current unique active non-deleted default group; explicit value is a canonical positive decimal int64 string for an active visible group"},
+            "plan_type": {"type": "string", "enum": ["free", "professional", "enterprise"], "default": "free"},
+            "permission_overrides": {
+              "type": "array",
+              "default": [],
+              "rule": "only role=admin and Root; canonical capability order; no duplicate capability; capability must exist, be grantable, non-Root-only, and available",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["capability", "effect"],
+                "properties": {
+                  "capability": {"type": "string"},
+                  "effect": {"type": "string", "enum": ["allow", "deny"]}
+                }
+              }
+            }
+          }
+        },
+        "prohibited_public_fields": ["allowed_models", "daily_call_limit", "status", "auth_version", "amount", "balance", "internal_id"],
+        "server_resolved_defaults": {"allowed_models": [], "daily_call_limit": 100, "status": "active", "auth_version": 1},
+        "examples": {
+          "user": {
+            "username": "alice",
+            "nickname": "Alice",
+            "password": "Ex4mple!Pass1",
+            "role": "user",
+            "group_guid": null,
+            "plan_type": "free",
+            "permission_overrides": []
+          },
+          "admin": {
+            "username": "admin-alice",
+            "nickname": "Admin Alice",
+            "password": "Ex4mple!Pass1",
+            "role": "admin",
+            "group_guid": null,
+            "plan_type": "free",
+            "permission_overrides": [
+              {"capability": "users.sessions.read", "effect": "allow"},
+              {"capability": "users.plan.change", "effect": "deny"}
+            ]
+          }
+        },
+        "example_secrets": "password values are example-only placeholders and must never be used as credentials"
+      }
+    },
+    "response": {
+      "status": 201,
+      "headers": {"Cache-Control": "no-store", "X-Request-ID": "required non-empty"},
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["operation_ref", "user", "permissions_version"],
+        "properties": {
+          "operation_ref": {"type": "string", "rule": "non-empty; use for unknown-result operation query"},
+          "user": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["guid", "username", "nickname", "email", "group", "plan_type", "role", "status", "auth_version", "created_at", "last_login_at"],
+            "properties": {
+              "guid": {"type": "string", "rule": "canonical positive decimal int64 string"},
+              "username": {"type": "string"},
+              "nickname": {"type": ["string", "null"]},
+              "email": {"type": "null"},
+              "group": {"type": "string"},
+              "plan_type": {"type": "string", "enum": ["free", "professional", "enterprise"]},
+              "role": {"type": "string", "enum": ["user", "admin"]},
+              "status": {"type": "string", "const": "active"},
+              "auth_version": {"type": "integer", "const": 1},
+              "created_at": {"type": "string", "rule": "UTC RFC3339 ending in Z"},
+              "last_login_at": {"type": "null"}
+            }
+          },
+          "permissions_version": {"type": ["string", "null"], "rule": "null for role=user; canonical string 1 for role=admin"}
+        }
+      },
+      "examples": {
+        "user": {"operation_ref": "op_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "user": {"guid": "123456789012345678", "username": "alice", "nickname": "Alice", "email": null, "group": "default", "plan_type": "free", "role": "user", "status": "active", "auth_version": 1, "created_at": "2026-09-06T00:00:00.000Z", "last_login_at": null}, "permissions_version": null},
+        "admin": {"operation_ref": "op_BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB", "user": {"guid": "123456789012345679", "username": "admin-alice", "nickname": "Admin Alice", "email": null, "group": "default", "plan_type": "free", "role": "admin", "status": "active", "auth_version": 1, "created_at": "2026-09-06T00:00:00.000Z", "last_login_at": null}, "permissions_version": "1"}
+      },
+      "never_return": ["password", "password_hash", "internal_user_id", "action_ticket", "idempotency_key", "permission_override_primary_key"]
+    }
+  },
+  "action_ticket": {
+    "issue_endpoint": "POST /admin/v2/action-verifications with action=users.create_admin",
+    "intent": "same normalized business fields, resolved defaults, and validated permission overrides as create; raw password bytes participate in the HMAC and are cleared immediately",
+    "binding": ["actor", "current_session", "actor_auth_version", "action", "complete_intent"],
+    "ttl_seconds": 300,
+    "consumption": "single-use; final create rechecks actor and authorization; ticket cannot freeze prior authority",
+    "non_effects": ["does not generate or reserve a user GUID", "does not create a user", "does not reserve a username"],
+    "secrecy": "do not log, persist, or return password text, password hash, length, or fragment"
+  },
+  "idempotency": {
+    "operation_scopes": ["users.create", "users.create_admin"],
+    "operation_key": "unique on actor/session/action/idempotency digest",
+    "request_hmac": "covers the normalized complete create intent",
+    "same_scope_same_request": {
+      "active_target": "return the exact HMAC-verified original terminal 201 result without another user or audit record",
+      "deleted_target": {"status": 410, "code": "created_user_deleted", "rule": "return only the stable safe error and operation_ref after the A14 delete transaction atomically redacts the snapshot; an exact pre-0010 canonical zero-HMAC sentinel for a deleted target also returns this result without reading or returning the old success body"}
+    },
+    "same_scope_different_request": {"status": 409, "code": "idempotency_conflict"},
+    "cross_session_reuse": {"status": 409, "code": "idempotency_cross_session"},
+    "lost_response": "query the operation with the same scope; never automatically create a new key and replay",
+    "pre_commit_failure": "return a stable error; ticket consumption and operation state use the existing recovery semantics",
+    "response_integrity": {
+      "version": 1,
+      "key": "independent response key derived from the action-security root key",
+      "binding": ["integrity_version", "lifecycle", "operation_id", "operation_ref", "action", "terminal_state", "result_kind", "result_guid", "http_status", "media_type", "response_body"],
+      "target_binding": "admin_operation_responses.target_guid is a durable positive target for every new active snapshot; HMAC v1 binds that same value in its backward-compatible result_guid slot",
+      "expiry_rule": "operation expiry may clear admin_operations.result_guid, but the durable response target remains available for privacy redaction; expired create requests return the stable operation-expired 410 and never expose the stored success body",
+      "deletion_lookup": "A14 locks every target_guid snapshot and every candidate successful create marker before the user write; post-0010 active and current-key redacted snapshots require an exact marker, operation binding, digest, and HMAC. An exact canonical pre-0010 zero-HMAC sentinel is already PII-free and may be accepted without a matching marker, or re-HMACed by an exact guarded update when the marker is valid, so a misbound marker cannot block an unrelated user. An exact valid marker with a missing snapshot and any active snapshot without its exact marker still fail closed; zero valid markers and zero snapshots means no create snapshot exists",
+      "migration": "0010 treats every pre-0010 response snapshot as unverifiable because SQL cannot authenticate the runtime-key HMAC: after optional strict diagnostic target backfill from an exact live create result or exact expired-operation successful ResultUser marker, every active and redacted row is atomically normalized to fixed 201 application/json, canonical {}, its fixed digest, is_deleted=1, and a zero-HMAC sentinel. Mismatched or unresolved targets remain null and no pre-0010 PII or replayable 201 body survives before the final outcome/lifecycle CHECK, target index, and foreign key; only post-0010 writes may create active real-HMAC snapshots",
+      "key_rotation": "rotation is prohibited while post-0010 response snapshots that may require replay or current-key delete redaction remain active unless a separately approved key-id, multi-key verification, or transactional re-HMAC migration is deployed; canonical pre-0010 zero-HMAC sentinels are already PII-free and do not require an old key, while any unsupported active-snapshot rotation fails closed",
+      "tamper_rule": "post-0010 active rows and direct target/body/digest/version/lifecycle mutation without a valid HMAC fail closed; an active target paired with a zero-HMAC sentinel is unavailable, while only an exact canonical sentinel whose target is already deleted yields the stable no-PII 410; direct deletion of a post-0010 snapshot is detected by its exact durable marker and fails closed"
+    }
+  },
+  "operation_query": {
+    "method": "GET",
+    "path": "/admin/v2/operations",
+    "request": {
+      "query_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["scope"],
+        "properties": {"scope": {"type": "string", "enum": ["users.create", "users.create_admin"]}}
+      },
+      "query_rule": "exactly one scope query parameter and no other query parameters",
+      "headers": {"Idempotency-Key": "required exactly once; unique original value", "X-Action-Ticket": "forbidden"}
+    },
+    "response": {
+      "status": 200,
+      "headers": {"Cache-Control": "no-store", "X-Request-ID": "required non-empty", "Retry-After": "processing only; integer seconds 1-30"},
+      "schema": {"type": "object", "additionalProperties": false, "required": ["operation_ref", "scope", "status", "finished_at", "failure_code"], "properties": {"operation_ref": {"type": "string"}, "scope": {"type": "string", "enum": ["users.create", "users.create_admin"]}, "status": {"type": "string", "enum": ["processing", "succeeded", "failed", "pending_recovery"]}, "finished_at": {"type": ["integer", "null"]}, "failure_code": {"type": ["string", "null"]}}}
+    }
+  },
+  "active_group_directory": {
+    "method": "GET",
+    "path": "/admin/v2/groups?status=active",
+    "authorization": "groups.read; callers lacking groups.read may omit group_guid and use the immutable default-group form path without querying this directory",
+    "request": {"query_schema": {"type": "object", "additionalProperties": false, "required": ["status"], "properties": {"status": {"type": "string", "const": "active"}}}, "query_rule": "accept exactly one status=active and no other query parameters"},
+    "response": {"status": 200, "headers": {"Cache-Control": "no-store", "X-Request-ID": "required non-empty"}, "schema": {"type": "object", "additionalProperties": false, "required": ["items"], "properties": {"items": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["guid", "key", "display_name"], "properties": {"guid": {"type": "string", "rule": "canonical positive decimal int64 string"}, "key": {"type": "string"}, "display_name": {"type": "string"}}}}}}, "result_rule": "active, non-deleted, readable groups ordered by key ascending; default must be present"},
+    "dependency_failure": {"status": 503, "code": "action_dependency_unavailable", "rule": "return when a dependency is unavailable, default is duplicated, or visible group data is corrupt; do not substitute hard-coded choices"},
+    "frontend_submit_gate": "when groups.read is present, pending, error, empty results, or a selection absent from the current active catalog all disable submit and produce zero create/verify requests; only callers without groups.read use omitted group_guid"
+  },
+  "transaction": {
+    "result": "user, administrator permission head/overrides, security facts, redacted audit, outbox, operation result, and ticket consumption commit atomically",
+    "rollback": "any failure rolls back all listed writes and terminal success state; A14 deletion and create-response redaction/re-HMAC also commit or roll back together",
+    "commit_unknown": {"status": 503, "code": "operation_commit_unknown", "rule": "include operation_ref and require query/recovery; never report success"}
+  },
+  "errors": {
+    "headers": {"Cache-Control": "no-store", "X-Request-ID": "required non-empty on every success and route error", "Retry-After": "only 429 and is an integer number of seconds"},
+    "envelope": {"type": "object", "additionalProperties": false, "required": ["error"], "properties": {"error": {"type": "object", "additionalProperties": false, "required": ["code", "message", "type", "request_id"], "properties": {"code": {"type": "string"}, "message": {"type": "string", "const": "请求无法完成"}, "type": {"type": "string", "const": "admin_action_error"}, "request_id": {"type": "string"}, "operation_ref": {"type": "string", "rule": "only operation_commit_unknown or created_user_deleted"}}}}},
+    "matrix": [
+      {"status": 400, "codes": ["invalid_admin_user_create_request"], "rule": "invalid JSON or fields, username, nickname, password, role, group GUID, plan, override format, amount, or another unknown field"},
+      {"status": 401, "codes": [], "rule": "existing authentication middleware detail shape"},
+      {"status": 403, "codes": ["action_operation_rejected"], "rule": "role hierarchy, users.create, or additional capability denied; do not disclose hidden resources"},
+      {"status": 404, "codes": ["action_group_not_found"], "rule": "explicit group missing, inactive, or invisible; use one safe response"},
+      {"status": 409, "codes": ["username_conflict", "idempotency_conflict", "idempotency_cross_session", "action_rejected", "action_verification_conflict", "policy_version_conflict", "target_state_conflict", "consumer_validation_failed"], "rule": "username conflict reveals only the conflict fact; ticket, actor/session, and policy drift retain existing action codes"},
+      {"status": 410, "codes": ["operation_expired", "created_user_deleted"], "rule": "operation_expired means the create operation retention ended and exposes no snapshot body; created_user_deleted means a retained successful target was soft-deleted and returns no original target fields or response body"},
+      {"status": 422, "codes": ["action_inactive"], "rule": "only action not activated server-side or deployment version mismatch"},
+      {"status": 429, "codes": ["action_rate_limited"], "rule": "include Retry-After as integer seconds"},
+      {"status": 503, "codes": ["action_dependency_unavailable", "operation_commit_unknown"], "rule": "database, Redis, permission, or commit state cannot be safely determined"}
+    ],
+    "prohibited_disclosures": ["password", "ticket", "idempotency key", "dependency raw text", "existing username owner's GUID", "existing username owner's status", "existing username owner's role", "existing username owner's deletion state"]
+  },
+  "frontend_security": {
+    "sensitive_values": ["current password", "action ticket", "idempotency key"],
+    "lifetime": "component memory only; clear on close, success, explicit failure, and unmount",
+    "conflict_recovery": "on username_conflict retain non-sensitive form fields and clear password, ticket, and idempotency key",
+    "policy_drift_recovery": "refresh current capability and directory data",
+    "money": "no amount or balance input, query/localStorage mock toggle, ledger, recharge, refund, or deduction"
+  },
+  "execution_order": "before Operation.Begin create two independent owned password byte backing arrays, one exclusively for descriptor encoding and one exclusively for a possible hash; authenticate, enforce action rate limit, role and capability checks, and resolve idempotent terminal replay before Argon2; Begin may clear only its descriptor copy; forbidden, rate-limited, error, and replay requests hash zero times and clear applicable buffers; only ExecutionReady hashes the independent copy exactly once, then clears both plaintext copies and the hash without creating a plaintext password string",
+  "audit_outbox": "audit action is exactly users.create or users.create_admin and records terminal_state, redacted failure_code, request_id, operation_ref, and successful resource detail; outbox records terminal success/failure plus failure_code; neither persists password, ticket, idempotency key, hash, length, or fragment"
+}

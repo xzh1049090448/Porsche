@@ -1,0 +1,5 @@
+--- FAIL: TestAdminUsersReadLegacyPagination (0.00s)
+    admin_users_read_test.go:87: {s:9223372036854775808 l:50 skip:0 limit:0 bad:true} got 0/50/<nil>
+FAIL
+FAIL	github.com/porsche/ai-gateway-go/internal/service	0.598s
+FAIL

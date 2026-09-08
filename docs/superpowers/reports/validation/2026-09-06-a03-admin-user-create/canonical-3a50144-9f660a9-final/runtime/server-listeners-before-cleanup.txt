@@ -1,0 +1,17 @@
+observed_at_utc=2026-09-07T16:24:05Z
+state=STOPPED_AFTER_ACCEPTANCE
+history=backend frontend and TLS proxy ran for visible-Chrome acceptance; their exec sessions ended afterward
+command_51294=lsof -nP -iTCP:51294 -sTCP:LISTEN
+command_51295=lsof -nP -iTCP:51295 -sTCP:LISTEN
+command_51296=lsof -nP -iTCP:51296 -sTCP:LISTEN
+expected_listener_count=0
+actual_listener_count=0
+lsof_exit_51294=1
+lsof_exit_51295=1
+lsof_exit_51296=1
+lsof_stdout_empty=true
+ps_command=ps -p 75433,75488,75497 -o pid=,ppid=,state=,etime=,command=
+ps_expected_exit=1
+ps_actual_exit=1
+ps_stdout_empty=true
+safe_interpretation=lsof and ps nonzero exits prove the expected stopped state; wrapper exit is 0

@@ -1,0 +1,54 @@
+{
+  "status": "PASS",
+  "browser": "chromium",
+  "headless": false,
+  "base_url": "https://127.0.0.1:8443",
+  "scenarios": {
+    "root_created_admin_with_overrides": true,
+    "admin_creation_denied": {
+      "status": 403,
+      "code": "action_verification_rejected"
+    },
+    "non_default_plan_denied": {
+      "status": 403,
+      "code": "action_operation_rejected"
+    },
+    "admin_created_default_ordinary_user": true,
+    "double_submit_post_count": 1,
+    "tombstone_conflict": {
+      "status": 409,
+      "code": "username_conflict",
+      "disclosed_keys": [
+        "code",
+        "message",
+        "request_id",
+        "type"
+      ]
+    },
+    "ambiguous_transport_failure_recovered_by_operation_query": true,
+    "ambiguous_fault_injection": "playwright_route_fetch_then_abort_after_committed_201",
+    "hard_refresh_list_group": "default",
+    "detail_group": "default"
+  },
+  "storage": {
+    "local_storage_keys": [
+      "llm_platform_compareModelIds",
+      "llm_platform_compareMode",
+      "llm_platform_selectedModel",
+      "llm_platform_selectedScenario",
+      "llm_platform_modelParams",
+      "porsche_auth_coordination_v1"
+    ],
+    "session_storage_keys": [],
+    "password_fields_nonempty": 0,
+    "refresh_cookie_count": 1,
+    "refresh_cookie_http_only": true,
+    "refresh_cookie_secure": true,
+    "refresh_cookie_visible_to_document": false
+  },
+  "console_counts": {
+    "debug": 5,
+    "error": 4
+  },
+  "page_error_count": 0
+}

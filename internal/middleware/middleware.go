@@ -11,9 +11,10 @@ import (
 )
 
 const (
-	ContextUserID     = "user_id"
-	ContextUser       = "user"
-	ContextSessionSID = "session_sid"
+	ContextUserID         = "user_id"
+	ContextUser           = "user"
+	ContextSessionSID     = "session_sid"
+	contextSessionVersion = "authenticated_session_version"
 )
 
 func InjectState(state *app.State) gin.HandlerFunc {
@@ -130,6 +131,7 @@ func authenticateUser(c *gin.Context, state *app.State) bool {
 	c.Set(ContextUserID, user.ID)
 	c.Set(ContextUser, &user)
 	c.Set(ContextSessionSID, sessionClaims.SID)
+	c.Set(contextSessionVersion, sessionClaims.SessionVersion)
 	return true
 }
 
@@ -151,4 +153,11 @@ func CurrentUserID(c *gin.Context) int64 {
 	v, _ := c.Get(ContextUserID)
 	id, _ := v.(int64)
 	return id
+}
+
+// CurrentSessionVersion returns only the version saved by successful authentication.
+func CurrentSessionVersion(c *gin.Context) int {
+	v, _ := c.Get(contextSessionVersion)
+	version, _ := v.(int)
+	return version
 }

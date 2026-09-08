@@ -1,0 +1,310 @@
+#!/usr/bin/env python3
+import json
+import os
+import re
+import shlex
+import shutil
+import subprocess
+import sys
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+from urllib.parse import unquote, urlparse
+
+BE = Path("/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903")
+CANONICAL = BE / "docs/superpowers/reports/validation/2026-09-06-a03-admin-user-create/canonical-3a50144-9f660a9-final"
+EXPECTED_NAMES = {
+    "a03-task12-mysql-20260907182125-bfacc639",
+    "a03-task12-redis-20260907182125-bfacc639",
+    "a03-task12-mysql-20260907181306-b8b409bc",
+    "a03-task12-redis-20260907181306-b8b409bc",
+    "a03-task12-mysql-20260907091002-2b0f5583",
+    "a03-task12-redis-20260907091002-2b0f5583",
+    "a03-task12-mysql-20260907140441-9d83c897",
+    "a03-task12-redis-20260907140441-9d83c897",
+}
+EXPECTED_PORTS = {
+    "a03-task12-mysql-20260907182125-bfacc639": "55877",
+    "a03-task12-redis-20260907182125-bfacc639": "55878",
+    "a03-task12-mysql-20260907181306-b8b409bc": "51767",
+    "a03-task12-redis-20260907181306-b8b409bc": "51768",
+    "a03-task12-mysql-20260907091002-2b0f5583": "62426",
+    "a03-task12-redis-20260907091002-2b0f5583": "62427",
+    "a03-task12-mysql-20260907140441-9d83c897": "58106",
+    "a03-task12-redis-20260907140441-9d83c897": "58107",
+}
+APP_PORTS = (51294, 51295, 51296)
+APP_PIDS = (75433, 75488, 75497)
+PRIVATE_NAME = re.compile(r"^(?:a03(?:[-_].*)?|porsche-a03(?:-.*)?|codex-a03(?:-.*)?|playwright-test-a03-final\.js)$")
+
+
+def run(argv, check=True, cwd=BE):
+    result = subprocess.run(argv, cwd=cwd, text=True, errors="replace", capture_output=True)
+    if check and result.returncode:
+        raise RuntimeError("command failed: " + " ".join(argv[:3]))
+    return result
+
+
+def docker_inspect(ids):
+    if not ids:
+        return []
+    return json.loads(run(["docker", "inspect", *ids]).stdout)
+
+
+def task_label(labels):
+    labels = labels or {}
+    return (
+        labels.get("codex.scope") == "a03-task12"
+        or labels.get("codex.task", "").startswith("a03-task12-")
+        or labels.get("com.porsche.fixture.owner", "").startswith("a03-task12-")
+    )
+
+
+def container_snapshot(inspect):
+    return {
+        "id": inspect["Id"],
+        "name": inspect["Name"].lstrip("/"),
+        "configured_image": inspect["Config"]["Image"],
+        "image_id": inspect["Image"],
+        "labels": inspect["Config"].get("Labels") or {},
+        "ports": inspect["NetworkSettings"].get("Ports") or {},
+        "mounts": inspect.get("Mounts") or [],
+        "tmpfs": inspect["HostConfig"].get("Tmpfs") or {},
+        "auto_remove": bool(inspect["HostConfig"].get("AutoRemove")),
+        "state": inspect["State"]["Status"],
+    }
+
+
+def all_containers():
+    ids = run(["docker", "ps", "-aq"]).stdout.split()
+    return [container_snapshot(item) for item in docker_inspect(ids)]
+
+
+def image_inventory():
+    result = run(["docker", "images", "--no-trunc", "--digests", "--format", "{{.ID}}\t{{.Repository}}\t{{.Tag}}\t{{.Digest}}"])
+    return sorted(line for line in result.stdout.splitlines() if line)
+
+
+def volume_inventory():
+    names = run(["docker", "volume", "ls", "-q"]).stdout.split()
+    if not names:
+        return []
+    rows = json.loads(run(["docker", "volume", "inspect", *names]).stdout)
+    return sorted(
+        [
+            {"name": row["Name"], "driver": row["Driver"], "labels": row.get("Labels") or {}, "options": row.get("Options") or {}, "scope": row.get("Scope")}
+            for row in rows
+        ],
+        key=lambda row: row["name"],
+    )
+
+
+def private_paths():
+    root = Path("/private/tmp")
+    return sorted(path for path in root.iterdir() if PRIVATE_NAME.fullmatch(path.name))
+
+
+def collect_known():
+    files = sorted({
+        *Path("/private/tmp").glob("a03-task12*/**/*.env"),
+        *Path("/private/tmp").glob("a03-task12*/**/*env.sh"),
+        *Path("/private/tmp").glob("a03-task12*/**/*credentials*"),
+    })
+    names = re.compile(r"(?:PASS(?:WORD)?|SECRET|TOKEN|HMAC|API_KEY|MYSQL_PWD|CREDENTIAL)", re.I)
+    placeholder = re.compile(r"^(?:<redacted>|redacted|false|true|null|none)?$", re.I)
+    known = set()
+    for path in files:
+        text = path.read_text(errors="replace")
+        for line in text.splitlines():
+            line = line.strip()[7:] if line.strip().startswith("export ") else line.strip()
+            if "=" not in line:
+                continue
+            name, raw = line.split("=", 1)
+            value = raw.strip()
+            try:
+                parsed = shlex.split(value, posix=True)
+                if len(parsed) == 1:
+                    value = parsed[0]
+            except ValueError:
+                pass
+            if names.search(name) and len(value) >= 8 and not placeholder.fullmatch(value):
+                known.add(value)
+            if name.upper().endswith("DATABASE_URL") or ("MYSQL" in name.upper() and "://" in value):
+                try:
+                    password = urlparse(value).password
+                    if password and len(unquote(password)) >= 8:
+                        known.add(unquote(password))
+                except ValueError:
+                    pass
+    if len(files) != 19 or len(known) != 34:
+        raise RuntimeError("known-secret provenance count mismatch")
+    return files, sorted(known, key=len, reverse=True)
+
+
+def app_state():
+    listener_checks = {}
+    for port in APP_PORTS:
+        result = run(["lsof", "-nP", "-iTCP:" + str(port), "-sTCP:LISTEN"], check=False)
+        listener_checks[str(port)] = {"exit": result.returncode, "stdout_empty": not bool(result.stdout)}
+    process = run(["ps", "-p", ",".join(str(pid) for pid in APP_PIDS), "-o", "pid=,ppid=,state=,etime=,command="], check=False)
+    return listener_checks, {"exit": process.returncode, "stdout_empty": not bool(process.stdout)}
+
+
+def write_json(path, value):
+    path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
+
+
+(CANONICAL / "cleanup").mkdir(exist_ok=True)
+(CANONICAL / "status").mkdir(exist_ok=True)
+observed = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+secret_files, known = collect_known()
+before_private = private_paths()
+before_all = all_containers()
+before_tasks = sorted((row for row in before_all if task_label(row["labels"])), key=lambda row: row["name"])
+if {row["name"] for row in before_tasks} != EXPECTED_NAMES:
+    raise RuntimeError("task container set differs from exact allowlist")
+if any(not row["auto_remove"] or row["mounts"] or not row["tmpfs"] for row in before_tasks):
+    raise RuntimeError("task container storage/AutoRemove guard failed")
+for row in before_tasks:
+    port_values = [binding["HostPort"] for bindings in row["ports"].values() for binding in (bindings or [])]
+    if port_values != [EXPECTED_PORTS[row["name"]]]:
+        raise RuntimeError("task container port guard failed")
+    image = row["configured_image"]
+    if not (image.startswith("mysql:") or image.startswith("redis:") or image.startswith("sha256:")):
+        raise RuntimeError("task container image guard failed")
+
+before_unrelated = sorted((row for row in before_all if row["name"] not in EXPECTED_NAMES), key=lambda row: row["id"])
+before_images = image_inventory()
+before_volumes = volume_inventory()
+task_volume_before = [row for row in before_volumes if "a03-task12" in row["name"] or any("a03-task12" in str(value) for value in row["labels"].values())]
+if task_volume_before:
+    raise RuntimeError("unexpected named task volume")
+listeners_before, processes_before = app_state()
+if any(item["exit"] != 1 or not item["stdout_empty"] for item in listeners_before.values()) or processes_before != {"exit": 1, "stdout_empty": True}:
+    raise RuntimeError("application stopped-state guard failed")
+
+container_logs = []
+for row in before_tasks:
+    result = run(["docker", "logs", row["id"]])
+    container_logs.append((result.stdout or "") + (result.stderr or ""))
+
+redis_version = run(["docker", "exec", next(row["id"] for row in before_tasks if row["name"] == "a03-task12-redis-20260907182125-bfacc639"), "redis-server", "--version"]).stdout.strip()
+write_json(CANONICAL / "cleanup/task-containers-before.json", {"observed_at_utc": observed, "containers": before_tasks, "redis_version": redis_version, "mysql_version_source": "runtime/mysql-runtime-security-query.tsv"})
+write_json(CANONICAL / "cleanup/unrelated-containers-before.json", before_unrelated)
+(CANONICAL / "cleanup/images-before.txt").write_text("\n".join(before_images) + "\n")
+write_json(CANONICAL / "cleanup/volumes-before.json", before_volumes)
+(CANONICAL / "cleanup/private-paths-before.txt").write_text("\n".join(str(path) for path in before_private) + "\n")
+write_json(CANONICAL / "cleanup/application-state-before.json", {"listeners": listeners_before, "processes": processes_before})
+
+stop_results = []
+for row in before_tasks:
+    result = run(["docker", "stop", "--time", "10", row["id"]])
+    stop_results.append({"id": row["id"], "name": row["name"], "command": "docker stop --time 10 <full-id>", "exit": result.returncode})
+for _ in range(50):
+    if not any(row["name"] in EXPECTED_NAMES for row in all_containers()):
+        break
+    time.sleep(0.1)
+
+for path in before_private:
+    if path.parent != Path("/private/tmp") or not PRIVATE_NAME.fullmatch(path.name):
+        raise RuntimeError("private path guard failed")
+    if path.is_dir() and not path.is_symlink():
+        shutil.rmtree(path)
+    else:
+        path.unlink(missing_ok=True)
+
+after_private = private_paths()
+after_all = all_containers()
+after_tasks = sorted((row for row in after_all if task_label(row["labels"])), key=lambda row: row["name"])
+after_named = sorted(row for row in after_all if row["name"].startswith("a03-task12-"))
+after_unrelated = sorted(after_all, key=lambda row: row["id"])
+after_images = image_inventory()
+after_volumes = volume_inventory()
+task_volume_after = [row for row in after_volumes if "a03-task12" in row["name"] or any("a03-task12" in str(value) for value in row["labels"].values())]
+listeners_after, processes_after = app_state()
+
+write_json(CANONICAL / "cleanup/task-container-stop-results.json", stop_results)
+write_json(CANONICAL / "cleanup/unrelated-containers-after.json", after_unrelated)
+(CANONICAL / "cleanup/images-after.txt").write_text("\n".join(after_images) + "\n")
+write_json(CANONICAL / "cleanup/volumes-after.json", after_volumes)
+(CANONICAL / "cleanup/private-paths-after.txt").write_text("\n".join(str(path) for path in after_private) + ("\n" if after_private else ""))
+write_json(CANONICAL / "cleanup/application-state-after.json", {"listeners": listeners_after, "processes": processes_after})
+
+comparison = {
+    "unrelated_containers_added": len([row for row in after_unrelated if row not in before_unrelated]),
+    "unrelated_containers_removed": len([row for row in before_unrelated if row not in after_unrelated]),
+    "images_added": len(set(after_images) - set(before_images)),
+    "images_removed": len(set(before_images) - set(after_images)),
+    "volumes_added": len([row for row in after_volumes if row not in before_volumes]),
+    "volumes_removed": len([row for row in before_volumes if row not in after_volumes]),
+}
+residuals = {
+    "task_container_count": len(after_named),
+    "task_label_match_count": len(after_tasks),
+    "task_named_volume_count": len(task_volume_after),
+    "private_path_count": len(after_private),
+    "listener_count": sum(item["exit"] == 0 for item in listeners_after.values()),
+    "process_count": 0 if processes_after == {"exit": 1, "stdout_empty": True} else 1,
+}
+checks = {
+    "exact_task_container_allowlist": {row["name"] for row in before_tasks} == EXPECTED_NAMES,
+    "all_task_containers_auto_remove": all(row["auto_remove"] for row in before_tasks),
+    "task_containers_used_tmpfs_only": all(not row["mounts"] and row["tmpfs"] for row in before_tasks),
+    "task_named_volumes_absent_before": not task_volume_before,
+    "all_exact_stops_succeeded": len(stop_results) == 8 and all(row["exit"] == 0 for row in stop_results),
+    "task_containers_zero": residuals["task_container_count"] == 0,
+    "task_labels_zero": residuals["task_label_match_count"] == 0,
+    "task_named_volumes_zero": residuals["task_named_volume_count"] == 0,
+    "task_private_paths_zero": residuals["private_path_count"] == 0,
+    "application_listeners_zero": residuals["listener_count"] == 0,
+    "application_processes_zero": residuals["process_count"] == 0,
+    "unrelated_containers_unchanged": comparison["unrelated_containers_added"] == comparison["unrelated_containers_removed"] == 0,
+    "images_unchanged": comparison["images_added"] == comparison["images_removed"] == 0,
+    "volumes_unchanged": comparison["volumes_added"] == comparison["volumes_removed"] == 0,
+}
+cleanup = {
+    "status": "PASS" if all(checks.values()) else "FAIL",
+    "observed_at_utc": observed,
+    "scope": "eight exact A03 Task12-labelled MySQL/Redis containers and A03-prefixed private temporary paths only; no prune or broad Docker removal",
+    "commands": {"container_stop": "docker stop --time 10 <verified-full-id>", "container_remove": "AutoRemove=true removed each stopped container", "private_remove": "Python unlink/rmtree after exact /private/tmp top-level name guard"},
+    "counts": {"task_containers_before": len(before_tasks), "private_paths_before": len(before_private), "known_secret_sources_read_before_cleanup": len(secret_files), "known_secret_values_held_in_memory": len(known), "task_container_logs_held_in_memory": len(container_logs)},
+    "comparison": comparison,
+    "residuals": residuals,
+    "checks": checks,
+    "unrelated_resources_changed": 0,
+    "production_touched": False,
+}
+write_json(CANONICAL / "cleanup/cleanup-evidence.json", cleanup)
+(CANONICAL / "cleanup/cleanup.exit").write_text(("0" if cleanup["status"] == "PASS" else "1") + "\n")
+if cleanup["status"] != "PASS":
+    raise RuntimeError("cleanup evidence failed")
+
+rename_pairs = [
+    ("runtime/server-retention.json", "runtime/server-retention-before-cleanup.json"),
+    ("runtime/server-retention.exit", "runtime/server-retention-before-cleanup.exit"),
+    ("runtime/server-listeners-after.txt", "runtime/server-listeners-before-cleanup.txt"),
+    ("runtime/task-fixtures-retained-current.txt", "runtime/task-fixtures-before-cleanup.txt"),
+    ("scripts/resource-compare.py.txt", "scripts/resource-compare-before-cleanup-superseded.py.txt"),
+]
+for source_name, target_name in rename_pairs:
+    source = CANONICAL / source_name
+    target = CANONICAL / target_name
+    if source.exists():
+        source.rename(target)
+
+environment = dict(os.environ)
+environment["PYTHONDONTWRITEBYTECODE"] = "1"
+payload = json.dumps({"private_source_count": len(secret_files), "known_secrets": known, "container_logs": container_logs})
+
+def python_script(relative, *arguments, stdin=None):
+    result = subprocess.run([sys.executable, str(CANONICAL / relative), *arguments], cwd=CANONICAL, text=True, input=stdin, env=environment)
+    if result.returncode:
+        raise RuntimeError("evidence script failed: " + relative)
+
+python_script("scripts/status-verify.py.txt")
+python_script("scripts/resource-compare-after-cleanup.py.txt")
+python_script("scripts/secret-scan.py.txt", "--payload-stdin", stdin=payload)
+python_script("scripts/manifest-adversarial-tests.py.txt", "--payload-stdin", stdin=payload)
+python_script("scripts/secret-scan.py.txt", "--payload-stdin", stdin=payload)
+python_script("scripts/manifest.py.txt", "--payload-stdin", stdin=payload)
+print("final_close=PASS task_containers=0 private_paths=0")

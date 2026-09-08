@@ -1,0 +1,33 @@
+HEAD 25a66a4ad546a481941dfc6e0cc9bc75da2e631b
+branch feature/admin-public-260903
+ D docs/agents/validation/m3-sse-attempt4-guard-test.cjs
+ M feature_list.json
+ M progress.md
+ M src/api/auth-p0.test.js
+ M src/api/auth-request-policy.js
+ M src/api/auth-request-policy.test.js
+ M src/api/auth-session.js
+ M src/api/auth.js
+ M src/api/profile-state.js
+ M src/api/profile-state.test.js
+ M src/api/users.js
+ M src/layouts/MainLayout.vue
+ M src/router/index.js
+ M src/stores/user.js
+?? docs/agents/2026-09-03-prd-260903-kickoff.md
+?? docs/agents/2026-09-04-frontend-b1d-plan.md
+?? docs/agents/contracts/
+?? docs/agents/validation/2026-09-03-frontend-baseline.md
+?? docs/agents/validation/b1d-20260904/
+?? docs/agents/validation/m3-sse-attempt4-guard.cjs
+?? docs/agents/validation/prd-260903-confirmations.json
+?? docs/agents/validation/prd-260903-kickoff-inputs.json
+?? docs/requirements/
+?? docs/superpowers/specs/2026-09-03-admin-public-design.md
+?? package-lock.json
+?? src/api/admin-users-state.js
+?? src/api/admin-users.js
+?? src/api/admin-users.test.js
+?? src/stores/admin-users.js
+?? src/views/UserDetail.vue
+?? src/views/Users.vue

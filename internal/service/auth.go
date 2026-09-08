@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -11,12 +12,16 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/porsche/ai-gateway-go/internal/config"
 	"github.com/porsche/ai-gateway-go/internal/models"
 	"github.com/porsche/ai-gateway-go/internal/security"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
+
+var errDefaultBusinessGroupUnavailable = errors.New("default business group is unavailable")
 
 type AuthService struct {
 	settings *config.Settings
@@ -53,7 +58,7 @@ func NormalizeUsername(raw string) (string, error) {
 // ValidatePassword enforces the reviewed username-password registration
 // contract before an Argon2id hash is generated.
 func ValidatePassword(password string) error {
-	if len([]rune(password)) < 8 || len([]rune(password)) > 20 {
+	if !utf8.ValidString(password) || utf8.RuneCountInString(password) < 8 || utf8.RuneCountInString(password) > 20 {
 		return errBadRequest("密码长度必须为8到20个字符")
 	}
 	switch strings.ToLower(strings.TrimSpace(password)) {
@@ -61,6 +66,65 @@ func ValidatePassword(password string) error {
 		return errBadRequest("密码过于简单")
 	}
 	return nil
+}
+
+// ValidatePasswordBytes enforces the managed-create password contract without
+// materializing plaintext as a Go string.
+func ValidatePasswordBytes(password []byte) error {
+	if !utf8.Valid(password) || utf8.RuneCount(password) < 8 || utf8.RuneCount(password) > 20 {
+		return errBadRequest("密码长度必须为8到20个字符")
+	}
+	trimmed := bytes.TrimSpace(password)
+	for _, weak := range [][]byte{[]byte("password"), []byte("password123"), []byte("12345678"), []byte("qwerty123"), []byte("porsche"), []byte("porsche@2026")} {
+		if asciiEqualFold(trimmed, weak) {
+			return errBadRequest("密码过于简单")
+		}
+	}
+	return nil
+}
+
+func asciiEqualFold(left, right []byte) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	var different byte
+	for index := range left {
+		value := left[index]
+		if value >= 'A' && value <= 'Z' {
+			value += 'a' - 'A'
+		}
+		different |= value ^ right[index]
+	}
+	return different == 0
+}
+
+// NormalizeManagedUserNickname applies the stricter public managed-creation
+// nickname contract without changing self-registration's legacy display-name
+// fallback behavior.
+func NormalizeManagedUserNickname(raw string) (string, error) {
+	nickname := strings.TrimSpace(raw)
+	if nickname == "" || !utf8.ValidString(nickname) || utf8.RuneCountInString(nickname) > 64 {
+		return "", errBadRequest("昵称不能为空且最多64个字符")
+	}
+	return nickname, nil
+}
+
+// HashManagedCreationPassword validates a managed account's initial password
+// before calculating its Argon2id hash. HTTP DTO decoders must only validate.
+func HashManagedCreationPassword(password string) (string, error) {
+	if err := ValidatePassword(password); err != nil {
+		return "", err
+	}
+	return security.HashPassword(password)
+}
+
+// HashManagedCreationPasswordBytes validates and derives one managed-create
+// hash while retaining plaintext exclusively in caller-owned byte slices.
+func HashManagedCreationPasswordBytes(password []byte) ([]byte, error) {
+	if err := ValidatePasswordBytes(password); err != nil {
+		return nil, err
+	}
+	return security.HashPasswordBytes(password)
 }
 
 // RegisterUsername creates one ordinary username user. Username uniqueness is
@@ -106,6 +170,11 @@ func (a *AuthService) RegisterUsername(ctx context.Context, rawUsername, passwor
 		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
 			return err
 		}
+		groupID, err := lockCanonicalDefaultBusinessGroup(tx)
+		if err != nil {
+			return err
+		}
+		user.GroupID = groupID
 		if err := tx.Create(user).Error; err != nil {
 			return err
 		}
@@ -213,6 +282,11 @@ func (a *AuthService) BootstrapRoot(ctx context.Context) (*models.User, error) {
 			if count > 0 {
 				return nil
 			}
+			groupID, err := lockCanonicalDefaultBusinessGroup(tx)
+			if err != nil {
+				return err
+			}
+			root.GroupID = groupID
 			if err := tx.Create(root).Error; err != nil {
 				return err
 			}
@@ -228,6 +302,32 @@ func (a *AuthService) BootstrapRoot(ctx context.Context) (*models.User, error) {
 		return nil, nil
 	}
 	return root, nil
+}
+
+// lockCanonicalDefaultBusinessGroup resolves the sole live default group on
+// the caller's transaction and locks it through the following user insert.
+// The normal utf8mb4 collation deliberately finds case variants; Go then
+// enforces the exact immutable key bytes before accepting the row.
+func lockCanonicalDefaultBusinessGroup(tx *gorm.DB) (int64, error) {
+	if tx == nil {
+		return 0, errDefaultBusinessGroupUnavailable
+	}
+	var groups []models.BusinessGroup
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Select("id", "guid", "group_key", "status", "is_deleted").
+		Where("group_key = ? AND is_deleted = 0", "default").
+		Order("id ASC").
+		Find(&groups).Error; err != nil {
+		return 0, errDefaultBusinessGroupUnavailable
+	}
+	if len(groups) != 1 {
+		return 0, errDefaultBusinessGroupUnavailable
+	}
+	group := groups[0]
+	if group.ID <= 0 || group.Guid <= 0 || group.Key != "default" || group.Status != models.BusinessGroupStatusActive || group.IsDeleted != 0 {
+		return 0, errDefaultBusinessGroupUnavailable
+	}
+	return group.ID, nil
 }
 
 // CanManageUser enforces the role hierarchy for state-changing administrator

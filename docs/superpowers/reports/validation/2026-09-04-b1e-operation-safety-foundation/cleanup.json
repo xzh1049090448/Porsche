@@ -1,0 +1,71 @@
+{
+  "schema_version": 1,
+  "task": "B1-E Task 14 exact fixture cleanup",
+  "status": "CLEANUP_PASS",
+  "baseline_head": "182a91f0e152149fd4e6b53a1b3fcc9ef9feb2e0",
+  "precheck": {
+    "verdict": "PASS",
+    "full_id_name_label_image_mounts_auto_remove_loopback": "PASS",
+    "private_marker_owner_realpath_mode": "PASS",
+    "fixture_helper_tables_remaining": 0,
+    "migrated_core_table_instances_before_stop": 44,
+    "task_named_volumes": 0,
+    "test_processes": 0
+  },
+  "operations": {
+    "container_stop_count": 2,
+    "container_ids": [
+      "188d95b42424ca47a8d9cfddccc929ebe63537adff9a54515e54fd18c1be160a",
+      "945419ecbc5e6fbe15615acfa7b652acca3d6ae6dc748f9bd863489c5c1258bf"
+    ],
+    "auto_remove": true,
+    "exact_private_path_removed": true,
+    "prune_commands": 0,
+    "glob_removals": 0,
+    "compose_down_commands": 0,
+    "volume_remove_commands": 0,
+    "broad_remove_commands": 0
+  },
+  "zero_residual": {
+    "exact_ids_remaining": 0,
+    "exact_names_remaining": 0,
+    "initial_aggregate_check_required_bounded_retry": true,
+    "listeners_remaining": 0,
+    "phase": "zero_residual",
+    "port_mappings_remaining": 0,
+    "private_path_remaining": 0,
+    "task_label_remaining": 0,
+    "task_named_volumes": 0,
+    "test_processes_remaining": 0,
+    "timestamp": "2026-09-04T23:48:07.593768+00:00",
+    "unrelated_container_count": 5,
+    "unrelated_container_inventory_unchanged": true,
+    "verdict": "PASS",
+    "volume_count": 4,
+    "volume_inventory_unchanged": true
+  },
+  "audit_transcript": {
+    "directory_mode": "0700",
+    "file_mode": "0600",
+    "sha256": "2f27f0ef7dabd3f87e3e67f02ace5108ee1aba17cda7bd07699a8dbfa08b03cd",
+    "matched_secret_values_recorded": 0,
+    "hash_matches_independent_review": true
+  },
+  "independent_cleanup_review": {
+    "verdict": "CLEANUP_PASS",
+    "reviewed_head": "182a91f0e152149fd4e6b53a1b3fcc9ef9feb2e0",
+    "review_artifact_file_sha256": "60e60d0e267ca3e52b6f52d76abf100570530efb7e2ced70996bff6f4f12822e",
+    "review_artifact_canonical_self_sha256": "57b01488d7b860adfed99947322ed0724f04eacb74914249cfd7f51ca85d30a4",
+    "transcript_sha256_match": true,
+    "command_scope_verdict": "PASS",
+    "exact_full_id_stop_count": 2,
+    "exact_private_path_remove_count": 1,
+    "initial_aggregate_residual_assertion": "RETRY",
+    "bounded_read_only_recheck": "PASS",
+    "resource_mutations_after_retry": 0,
+    "secret_values_disclosed": 0,
+    "unrelated_container_inventory_unchanged": true,
+    "volume_inventory_unchanged": true
+  },
+  "task15_started": false
+}

@@ -277,6 +277,7 @@ func createAuthSessionTestUser(t *testing.T, db *gorm.DB) *models.User {
 	username := fixtureUsername(testSnowflake.Next())
 	user := &models.User{
 		AuditFields:   models.AuditFields{Guid: testSnowflake.Next(), CreatedAt: now, UpdatedAt: now, IsDeleted: 0},
+		GroupID:       testDefaultBusinessGroupID(t, db),
 		Phone:         &phone,
 		Username:      &username,
 		Status:        models.UserStatusActive,

@@ -1,0 +1,76 @@
+// Evidence-only extract from temporary go test overlay; not compiled from the repository.
+func TestH3IgnoreActiveUpdatedReadOnlyExperiment(t *testing.T) {
+	db := openTestMySQL(t)
+	actor := models.User{ID: -1, AuditFields: models.AuditFields{Guid: -1}, Role: models.UserRoleRoot}
+	q := AdminUsersReadQuery{Page: 1, PageSize: 20, Sort: "guid", Order: "desc"}
+	where, predicateArgs := usersReadWhere(actor, q)
+	t.Logf("predicate_source=usersReadWhere predicate=%q arg_count=%d", where, len(predicateArgs))
+
+	cloneArgs := func(in []interface{}) []interface{} { return append([]interface{}(nil), in...) }
+	b0 := "WITH filtered AS (SELECT id,guid FROM users WHERE " + where + "), counted AS (SELECT COUNT(*) AS total FROM filtered), paged AS (SELECT * FROM filtered ORDER BY guid DESC LIMIT ? OFFSET ?) SELECT counted.total,paged.guid FROM counted LEFT JOIN paged ON TRUE ORDER BY paged.guid DESC"
+	h3 := "WITH filtered AS (SELECT id,guid FROM users WHERE " + where + "), counted AS (SELECT COUNT(*) AS total FROM users IGNORE INDEX FOR JOIN (idx_users_active_updated) WHERE " + where + "), paged AS (SELECT * FROM filtered ORDER BY guid DESC LIMIT ? OFFSET ?) SELECT counted.total,paged.guid FROM counted LEFT JOIN paged ON TRUE ORDER BY paged.guid DESC"
+	b0Args := append(cloneArgs(predicateArgs), q.PageSize, q.Offset())
+	h3Args := cloneArgs(predicateArgs)
+	h3Args = append(h3Args, cloneArgs(predicateArgs)...)
+	h3Args = append(h3Args, q.PageSize, q.Offset())
+
+	type output struct { total int64; guids []int64 }
+	read := func(label, statement string, args []interface{}) output {
+		rows, err := db.Raw(statement, args...).Rows()
+		if err != nil { t.Fatalf("%s query: %v", label, err) }
+		defer rows.Close()
+		var out output
+		for rows.Next() {
+			var total, guid int64
+			if err := rows.Scan(&total, &guid); err != nil { t.Fatalf("%s scan: %v", label, err) }
+			out.total = total
+			out.guids = append(out.guids, guid)
+		}
+		t.Logf("%s_OUTPUT total=%d guids=%v", label, out.total, out.guids)
+		return out
+	}
+	b0Out := read("B0", b0, b0Args)
+	h3Out := read("H3", h3, h3Args)
+	if b0Out.total != 100000 || h3Out.total != b0Out.total || len(b0Out.guids) != 20 || !reflect.DeepEqual(h3Out.guids, b0Out.guids) {
+		t.Fatalf("B0/H3 output mismatch: b0=%+v h3=%+v", b0Out, h3Out)
+	}
+
+	explain := func(label, statement string, args []interface{}) {
+		rows, err := db.Raw("EXPLAIN ANALYZE "+statement, args...).Rows()
+		if err != nil { t.Fatalf("%s explain: %v", label, err) }
+		defer rows.Close()
+		for rows.Next() {
+			var line string
+			if err := rows.Scan(&line); err != nil { t.Fatalf("%s explain scan: %v", label, err) }
+			t.Logf("%s_EXPLAIN %s", label, line)
+		}
+	}
+	explain("B0_FULL", b0, b0Args)
+	explain("H3_FULL", h3, h3Args)
+	b0Count := "SELECT COUNT(*) FROM users WHERE " + where
+	h3Count := "SELECT COUNT(*) FROM users IGNORE INDEX FOR JOIN (idx_users_active_updated) WHERE " + where
+	explain("B0_COUNT", b0Count, cloneArgs(predicateArgs))
+	explain("H3_COUNT", h3Count, cloneArgs(predicateArgs))
+	page := "SELECT guid FROM users WHERE " + where + " ORDER BY guid DESC LIMIT ? OFFSET ?"
+	pageArgs := append(cloneArgs(predicateArgs), q.PageSize, q.Offset())
+	explain("PAGE", page, pageArgs)
+
+	runCount := func(label, statement string, args []interface{}) time.Duration {
+		start := time.Now()
+		var total int64
+		if err := db.Raw(statement, args...).Scan(&total).Error; err != nil { t.Fatalf("%s timing: %v", label, err) }
+		elapsed := time.Since(start)
+		if total != 100000 { t.Fatalf("%s timing total=%d", label, total) }
+		t.Logf("%s_TIMING duration_ms=%.3f total=%d", label, float64(elapsed.Microseconds())/1000, total)
+		return elapsed
+	}
+	for i := 1; i <= 7; i++ {
+		if i%2 == 1 {
+			runCount(fmt.Sprintf("B0_%d", i), b0Count, cloneArgs(predicateArgs))
+			runCount(fmt.Sprintf("H3_%d", i), h3Count, cloneArgs(predicateArgs))
+		} else {
+			runCount(fmt.Sprintf("H3_%d", i), h3Count, cloneArgs(predicateArgs))
+			runCount(fmt.Sprintf("B0_%d", i), b0Count, cloneArgs(predicateArgs))
+		}
+	}
+}

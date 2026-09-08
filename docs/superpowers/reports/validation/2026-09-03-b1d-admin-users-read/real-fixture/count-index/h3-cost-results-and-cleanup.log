@@ -1,0 +1,3 @@
+sample	rows_total	soft_deleted	status_role_changed
+with_index	10000	5000	5000
+without_index	10000	5000	5000

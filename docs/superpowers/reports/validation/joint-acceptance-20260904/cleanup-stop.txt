@@ -1,0 +1,9 @@
+Exact stop result (2026-09-04)
+================================
+
+Command scope: docker stop with only the two approved full container IDs.
+Docker returned both exact full IDs successfully.
+AutoRemove was true for both containers.
+No prune, volume removal, image removal, or other container operation was used.
+
+Private cleanup scope: only exact directory /private/tmp/porsche-joint-acceptance-260904-td1FYO was removed, with no glob.

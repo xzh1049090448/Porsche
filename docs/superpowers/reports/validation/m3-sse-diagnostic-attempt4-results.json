@@ -1,0 +1,50 @@
+{
+  "case": "valid-SSE-diagnostic-attempt4",
+  "status": "PASS",
+  "backendRevision": "ad3f5b4416854353ebb2b3647ae4b2a809b4a05c",
+  "backendContainerId": "1665e1118c949441909d8478bd1a88a7b058d5c02d8465701ee586d463ce9ef6",
+  "usageBefore": {
+    "daily_call_limit": 100,
+    "daily_calls_used": 3,
+    "plan_type": "free",
+    "remaining_daily_calls": 97,
+    "total_tokens_used": 0
+  },
+  "httpStatus": 200,
+  "contentType": "text/event-stream",
+  "requestIdSHA256": "b9477e5517ce1f52f9a503eb9a50e592320ac0e48a187d10bdc4ee51e6b2fba6",
+  "requestIdPresent": true,
+  "postCount": 1,
+  "refreshCount": 0,
+  "stream": {
+    "events": [
+      "meta",
+      "delta",
+      "delta",
+      "delta",
+      "delta",
+      "upstream_DONE",
+      "done"
+    ],
+    "done": {
+      "tokens": 1,
+      "total_tokens_used": 1
+    }
+  },
+  "usageAfter": {
+    "status": 200,
+    "daily_call_limit": 100,
+    "daily_calls_used": 4,
+    "plan_type": "free",
+    "remaining_daily_calls": 96,
+    "total_tokens_used": 1
+  },
+  "visibleReplyNonempty": true,
+  "cleanup": [
+    {
+      "resource": "test-conversation",
+      "status": 200
+    }
+  ],
+  "logout": 204
+}

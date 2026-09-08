@@ -1,0 +1,128 @@
+package service
+
+import (
+    "context"
+    "crypto/rand"
+    "encoding/hex"
+    "errors"
+    "net/url"
+    "os"
+    "strings"
+    "sync"
+    "testing"
+    "time"
+
+    "github.com/porsche/ai-gateway-go/internal/authz"
+    porscheDB "github.com/porsche/ai-gateway-go/internal/db"
+    "github.com/porsche/ai-gateway-go/internal/migration"
+    "github.com/porsche/ai-gateway-go/internal/models"
+    "gorm.io/gorm"
+    "gorm.io/gorm/clause"
+)
+
+func independentChildDB(t *testing.T) (*gorm.DB, string) {
+    t.Helper()
+    raw := strings.TrimSpace(os.Getenv("TEST_DATABASE_URL"))
+    parsed, err := url.Parse(raw)
+    if err != nil || !strings.HasSuffix(strings.TrimPrefix(parsed.Path, "/"), "_test") {
+        t.Fatal("authorized disposable TEST_DATABASE_URL is required")
+    }
+    parent, err := porscheDB.Open(raw, "test")
+    if err != nil { t.Fatal(err) }
+    parentSQL, err := parent.DB()
+    if err != nil { t.Fatal(err) }
+    t.Cleanup(func() { _ = parentSQL.Close() })
+    var token [12]byte
+    if _, err := rand.Read(token[:]); err != nil { t.Fatal(err) }
+    name := "porsche_b1b1_independent_" + hex.EncodeToString(token[:]) + "_test"
+    if err := parent.Exec("CREATE DATABASE `" + name + "`").Error; err != nil { t.Fatal(err) }
+    t.Cleanup(func() { _ = parent.Exec("DROP DATABASE `" + name + "`").Error })
+    parsed.Path, parsed.RawPath = "/"+name, ""
+    childURL := parsed.String()
+    child, err := porscheDB.Open(childURL, "test")
+    if err != nil { t.Fatal(err) }
+    childSQL, err := child.DB()
+    if err != nil { t.Fatal(err) }
+    t.Cleanup(func() { _ = childSQL.Close() })
+    next := int64(10000)
+    if err := migration.Up(context.Background(), child, func() int64 { next++; return next }, func() int64 { return 1700000000000 }); err != nil { t.Fatal(err) }
+    return child, childURL
+}
+
+func TestIndependentReaderShareLockBlocksWriterAndRefreshesVersion(t *testing.T) {
+    writerRoot, childURL := independentChildDB(t)
+    readerRoot, err := porscheDB.Open(childURL, "test")
+    if err != nil { t.Fatal(err) }
+    readerSQL, err := readerRoot.DB()
+    if err != nil { t.Fatal(err) }
+    t.Cleanup(func() { _ = readerSQL.Close() })
+
+    username, hash := "b1b1reader", "not-a-real-password-hash"
+    user := models.User{
+        AuditFields: models.AuditFields{Guid: 101, CreatedAt: 1, UpdatedAt: 1, IsDeleted: 0},
+        Username: &username, PasswordHash: &hash, AllowedModels: models.JSONSlice{},
+        PlanType: models.PlanFree, Status: models.UserStatusActive, Role: models.UserRoleAdmin, AuthVersion: 1,
+    }
+    if err := writerRoot.Create(&user).Error; err != nil { t.Fatal(err) }
+    head := models.PermissionPolicyHead{AuditFields: models.AuditFields{Guid: 201, CreatedAt: 1, UpdatedAt: 1}, UserID: user.ID, PolicyVersion: 1, CatalogVersion: models.PermissionCatalogVersion, RuleCount: 1}
+    rule := models.PermissionOverride{AuditFields: models.AuditFields{Guid: 301, CreatedAt: 1, UpdatedAt: 1}, UserID: user.ID, PolicyVersion: 1, Capability: 1, Effect: 2}
+    if err := writerRoot.Create(&head).Error; err != nil { t.Fatal(err) }
+    if err := writerRoot.Create(&rule).Error; err != nil { t.Fatal(err) }
+
+    readerAtRules := make(chan struct{})
+    releaseReader := make(chan struct{})
+    var pauseOnce sync.Once
+    hook := "independent_permission_snapshot_pause_before_commit"
+    if err := readerRoot.Callback().Query().After("gorm:query").Register(hook, func(tx *gorm.DB) {
+        if tx.Statement.Table == "user_permission_overrides" {
+            pauseOnce.Do(func() { close(readerAtRules); <-releaseReader })
+        }
+    }); err != nil { t.Fatal(err) }
+    defer readerRoot.Callback().Query().Remove(hook)
+
+    type loadResult struct { snapshot *PermissionSnapshot; err error }
+    loaded := make(chan loadResult, 1)
+    go func() { s, err := LoadPermissionSnapshot(context.Background(), readerRoot, user.ID); loaded <- loadResult{s, err} }()
+    select {
+    case <-readerAtRules:
+    case <-time.After(2 * time.Second):
+        t.Fatal("reader never reached rules query while holding its transaction")
+    }
+
+    writerDone := make(chan error, 1)
+    go func() {
+        err := writerRoot.Transaction(func(tx *gorm.DB) error {
+            var locked models.User
+            if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", user.ID).First(&locked).Error; err != nil { return err }
+            if err := tx.Model(&models.PermissionPolicyHead{}).Where("user_id = ?", user.ID).Update("policy_version", 2).Error; err != nil { return err }
+            return tx.Model(&models.PermissionOverride{}).Where("user_id = ?", user.ID).Updates(map[string]any{"policy_version": 2, "effect": 3}).Error
+        })
+        writerDone <- err
+    }()
+    select {
+    case err := <-writerDone:
+        t.Fatalf("writer escaped reader FOR SHARE lock before reader commit: %v", err)
+    case <-time.After(250 * time.Millisecond):
+    }
+
+    close(releaseReader)
+    select {
+    case got := <-loaded:
+        if got.err != nil || got.snapshot == nil || got.snapshot.PolicyVersion() != 1 || got.snapshot.Evaluator().Collection("users.read", false) != authz.Allowed {
+            t.Fatalf("reader did not return its as-of-load v1 allow snapshot: snapshot=%v err=%v", got.snapshot, got.err)
+        }
+    case <-time.After(2 * time.Second):
+        t.Fatal("reader did not commit after release")
+    }
+    select {
+    case err := <-writerDone:
+        if err != nil { t.Fatal(err) }
+    case <-time.After(2 * time.Second):
+        t.Fatal("writer did not acquire FOR UPDATE after reader commit")
+    }
+    after, err := LoadPermissionSnapshot(context.Background(), readerRoot, user.ID)
+    if err != nil || after == nil || after.PolicyVersion() != 2 || after.Evaluator().Collection("users.read", false) != authz.Denied {
+        t.Fatalf("subsequent load did not observe v2 deny: snapshot=%v err=%v", after, err)
+    }
+    if errors.Is(err, ErrPermissionReadUnavailable) { t.Fatal("unexpected unavailable snapshot") }
+}

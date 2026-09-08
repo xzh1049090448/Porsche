@@ -1,0 +1,121 @@
+{
+  "application_servers": {
+    "acceptance_pids": [
+      75433,
+      75488,
+      75497
+    ],
+    "actual_listener_counts": {
+      "51294": 0,
+      "51295": 0,
+      "51296": 0
+    },
+    "curl_actual_exit": {
+      "backend_51294": 7,
+      "tls_proxy_51296": 7
+    },
+    "curl_expected_exit": 7,
+    "curl_stdout_empty": true,
+    "expected_listener_counts": {
+      "51294": 0,
+      "51295": 0,
+      "51296": 0
+    },
+    "lsof_exit": {
+      "51294": 1,
+      "51295": 1,
+      "51296": 1
+    },
+    "ps_actual_exit": 1,
+    "ps_expected_exit": 1,
+    "ps_stdout_empty": true
+  },
+  "history": "backend, frontend, and TLS proxy ran for the visible-Chrome acceptance; their local exec sessions later ended and application listeners are intentionally absent",
+  "observed_at_utc": "2026-09-07T16:24:05Z",
+  "readonly_checks": [
+    {
+      "actual_exit": 1,
+      "command": "lsof -nP -iTCP:51294 -sTCP:LISTEN",
+      "cwd": "/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903",
+      "expected_exit": 1,
+      "interpretation": "no matching backend listener is the expected stopped state",
+      "observed_at_utc": "2026-09-07T16:21:19Z",
+      "stdout_empty": true
+    },
+    {
+      "actual_exit": 1,
+      "command": "lsof -nP -iTCP:51295 -sTCP:LISTEN",
+      "cwd": "/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903",
+      "expected_exit": 1,
+      "interpretation": "no matching frontend listener is the expected stopped state",
+      "observed_at_utc": "2026-09-07T16:21:19Z",
+      "stdout_empty": true
+    },
+    {
+      "actual_exit": 1,
+      "command": "lsof -nP -iTCP:51296 -sTCP:LISTEN",
+      "cwd": "/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903",
+      "expected_exit": 1,
+      "interpretation": "no matching TLS proxy listener is the expected stopped state",
+      "observed_at_utc": "2026-09-07T16:21:19Z",
+      "stdout_empty": true
+    },
+    {
+      "actual_exit": 7,
+      "command": "curl --silent --show-error --max-time 2 http://127.0.0.1:51294/health",
+      "cwd": "/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903",
+      "expected_exit": 7,
+      "interpretation": "connection unavailable is the expected stopped backend state",
+      "observed_at_utc": "2026-09-07T16:21:19Z",
+      "stdout_empty": true
+    },
+    {
+      "actual_exit": 7,
+      "command": "curl --insecure --silent --show-error --max-time 2 https://127.0.0.1:51296/health",
+      "cwd": "/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903",
+      "expected_exit": 7,
+      "interpretation": "connection unavailable is the expected stopped TLS proxy state",
+      "observed_at_utc": "2026-09-07T16:21:19Z",
+      "stdout_empty": true
+    },
+    {
+      "actual_exit": 1,
+      "command": "ps -p 75433,75488,75497 -o pid=,ppid=,state=,etime=,command=",
+      "cwd": "/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903",
+      "expected_exit": 1,
+      "interpretation": "the three acceptance process IDs have ended",
+      "observed_at_utc": "2026-09-07T16:24:05Z",
+      "stdout_empty": true
+    },
+    {
+      "actual_exit": 0,
+      "command": "docker ps --filter name=^/a03-task12-mysql-20260907182125-bfacc639$ --filter name=^/a03-task12-redis-20260907182125-bfacc639$",
+      "cwd": "/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903",
+      "expected_exit": 0,
+      "interpretation": "exact two retained fixture containers",
+      "observed_at_utc": "2026-09-07T16:21:19Z"
+    },
+    {
+      "actual_exit": 0,
+      "command": "ordinary fixture MySQL SELECT 1 and Redis DB9 PING through private runtime environment",
+      "cwd": "/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903",
+      "expected_exit": 0,
+      "interpretation": "retained database fixtures respond without application servers",
+      "observed_at_utc": "2026-09-07T16:21:19Z"
+    }
+  ],
+  "retained_fixtures": {
+    "container_rows": 2,
+    "docker_ps_exit": 0,
+    "identity_artifact": "runtime/task-fixtures-retained-current.txt",
+    "mysql_healthy": true,
+    "mysql_select_1_exit": 0,
+    "purpose": "retained for read-only database evidence review",
+    "redis_healthy": true,
+    "redis_ping_exit": 0
+  },
+  "safe_exit_interpretation": "lsof=1, curl=7, and ps=1 are expected observations; wrapper exit 0 means STOPPED_AFTER_ACCEPTANCE was proven while MySQL/Redis remained healthy",
+  "state": "STOPPED_AFTER_ACCEPTANCE",
+  "status": "PASS",
+  "wrapper_exit": 0
+}

@@ -32,12 +32,13 @@ func registerGatewayRoutes(r *gin.Engine, state *app.State) {
 			gatewayWhiteLabelError(c, whitelabel.ErrUpstreamUnavailable("white-label service unavailable"))
 			return
 		}
-		catalog, err := state.WhiteLabel.ListModels(c.Request.Context(), token.AllowedModels)
+		catalog, err := state.WhiteLabel.ListModels(c.Request.Context(), token.KeyAllowedModels())
 		if err != nil {
 			gatewayWhiteLabelError(c, err)
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{"object": "list", "data": catalog.Data})
+		c.Header("Cache-Control", "no-store")
+		c.JSON(http.StatusOK, gin.H{"object": "list", "data": filterGatewayCatalog(catalog.Data, token)})
 	})
 	g.GET("/models/detail", func(c *gin.Context) {
 		gatewayModelDetail(c, state, modelIDFromDetailQuery(c))
@@ -66,7 +67,7 @@ func registerGatewayRoutes(r *gin.Engine, state *app.State) {
 			return
 		}
 		modelID, stream := whitelabel.RequestModelAndStream(body)
-		if !modelAllowedForToken(token, modelID) {
+		if !token.AllowsModel(modelID) {
 			gatewayAuthenticationError(c, http.StatusForbidden, service.GatewayTokenModelDenied)
 			return
 		}
@@ -74,7 +75,7 @@ func registerGatewayRoutes(r *gin.Engine, state *app.State) {
 			gatewayWhiteLabelError(c, whitelabel.ErrUpstreamUnavailable("white-label service unavailable"))
 			return
 		}
-		catalog, catalogErr := state.WhiteLabel.ListModels(c.Request.Context(), token.AllowedModels)
+		catalog, catalogErr := state.WhiteLabel.ListModels(c.Request.Context(), token.KeyAllowedModels())
 		if catalogErr != nil {
 			gatewayWhiteLabelError(c, catalogErr)
 			return
@@ -83,7 +84,7 @@ func registerGatewayRoutes(r *gin.Engine, state *app.State) {
 			gatewayWhiteLabelError(c, &whitelabel.Error{Code: whitelabel.CodeModelUnavailable, Status: http.StatusNotFound, Type: whitelabel.TypeInvalidRequest})
 			return
 		}
-		if authErr := state.WhiteLabel.AuthorizeModel(modelID, token.AllowedModels); authErr != nil {
+		if authErr := state.WhiteLabel.AuthorizeModel(modelID, token.KeyAllowedModels()); authErr != nil {
 			gatewayWhiteLabelError(c, authErr)
 			return
 		}
@@ -136,15 +137,20 @@ func gatewayModelDetail(c *gin.Context, state *app.State, modelID string) {
 	if !ok {
 		return
 	}
+	if !token.AllowsModel(modelID) {
+		gatewayWhiteLabelError(c, &whitelabel.Error{Code: whitelabel.CodeModelUnavailable, Status: http.StatusNotFound, Type: whitelabel.TypeInvalidRequest})
+		return
+	}
 	if state.WhiteLabel == nil {
 		gatewayWhiteLabelError(c, whitelabel.ErrUpstreamUnavailable("white-label service unavailable"))
 		return
 	}
-	model, err := state.WhiteLabel.GetModel(c.Request.Context(), modelID, token.AllowedModels)
+	model, err := state.WhiteLabel.GetModel(c.Request.Context(), modelID, token.KeyAllowedModels())
 	if err != nil {
 		gatewayWhiteLabelError(c, err)
 		return
 	}
+	c.Header("Cache-Control", "no-store")
 	c.JSON(http.StatusOK, model)
 }
 
@@ -211,20 +217,24 @@ func RegisterGatewayTokens(r *gin.Engine, state *app.State) {
 	g.DELETE("/:guid", func(c *gin.Context) { revokeGatewayToken(c, state) })
 }
 
-type gatewayPrincipal struct {
-	AllowedModels models.JSONSlice
-}
-
-func authenticateGatewayToken(c *gin.Context, state *app.State, model string) (gatewayPrincipal, bool) {
+func authenticateGatewayToken(c *gin.Context, state *app.State, model string) (*service.GatewayTokenPrincipal, bool) {
+	if state == nil || state.GatewayTokens == nil {
+		gatewayWhiteLabelError(c, whitelabel.ErrGatewayAuthenticationUnavailable())
+		return nil, false
+	}
 	secret := httpx.BearerToken(c)
 	if secret == "" {
 		gatewayAuthenticationError(c, http.StatusUnauthorized, service.GatewayTokenInvalid)
-		return gatewayPrincipal{}, false
+		return nil, false
 	}
 	ip := httpx.ClientIP(c, state.Settings.TrustProxyHeaders, state.Settings.TrustedProxyCIDRs)
-	token, err := state.GatewayTokens.Authenticate(secret, ip, model, time.Now().UTC())
+	principal, err := state.GatewayTokens.AuthenticatePrincipal(secret, ip, model, time.Now().UTC())
 	if err == nil {
-		return gatewayPrincipal{AllowedModels: token.AllowedModels}, true
+		return principal, true
+	}
+	if service.IsGatewayTokenError(err, service.GatewayTokenUnavailable) {
+		gatewayWhiteLabelError(c, whitelabel.ErrGatewayAuthenticationUnavailable())
+		return nil, false
 	}
 	status := http.StatusUnauthorized
 	code := service.GatewayTokenInvalid
@@ -236,19 +246,17 @@ func authenticateGatewayToken(c *gin.Context, state *app.State, model string) (g
 		code = service.GatewayTokenError(err.Error())
 	}
 	gatewayAuthenticationError(c, status, code)
-	return gatewayPrincipal{}, false
+	return nil, false
 }
 
-func modelAllowedForToken(client gatewayPrincipal, model string) bool {
-	if len(client.AllowedModels) == 0 {
-		return true
-	}
-	for _, allowed := range client.AllowedModels {
-		if allowed == model {
-			return true
+func filterGatewayCatalog(in []whitelabel.Model, principal *service.GatewayTokenPrincipal) []whitelabel.Model {
+	out := make([]whitelabel.Model, 0, len(in))
+	for _, model := range in {
+		if principal.AllowsModel(model.ID) {
+			out = append(out, model)
 		}
 	}
-	return false
+	return out
 }
 func gatewayRequestID() gin.HandlerFunc {
 	return func(c *gin.Context) {

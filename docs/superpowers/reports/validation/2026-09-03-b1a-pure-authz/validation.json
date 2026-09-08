@@ -1,0 +1,23 @@
+{
+  "module": "B1-A pure authorization",
+  "full_json": {
+    "test_events": {"pass": 312, "skip": 98, "fail": 0},
+    "package_events": {"pass": 15, "no_test_files_skip": 4, "fail": 0},
+    "logs": [
+      "/private/tmp/admin-public-260903-b1a-full-go-test-json.log",
+      "/private/tmp/admin-public-260903-b1a-security-full-go-test-loopback.json"
+    ]
+  },
+  "source_sha256": {
+    "catalog.go": "d4360b588247d478d878e71a70b787785c6a3315a30b8bb5d8312692c6f94628",
+    "evaluator.go": "7df94e9ceaa4920526abc444764727801d1a5bbebbd98f56b10f095d44023c6e",
+    "evaluator_test.go": "a7ccfecdf6a9ed7ea4331e61b05e20a2958aaee9da632adeaed8fffb4ab0b63d"
+  },
+  "external_probe": {
+    "result": "PASS",
+    "tests": 2,
+    "concurrent_readers": 32,
+    "log": "/private/tmp/admin-public-260903-b1a-external-authz-probe-final.log",
+    "archived_source": "external_authz_test.go.txt"
+  }
+}

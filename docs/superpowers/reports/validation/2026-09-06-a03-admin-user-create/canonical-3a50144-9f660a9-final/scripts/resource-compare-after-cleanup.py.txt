@@ -1,0 +1,27 @@
+import json
+from pathlib import Path
+
+canonical = Path("/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/docs/superpowers/reports/validation/2026-09-06-a03-admin-user-create/canonical-3a50144-9f660a9-final")
+cleanup = json.loads((canonical / "cleanup/cleanup-evidence.json").read_text())
+checks = cleanup["checks"]
+result = {
+    "status": "PASS" if cleanup["status"] == "PASS" and all(checks.values()) else "FAIL",
+    "application_server_state": "STOPPED_AFTER_ACCEPTANCE",
+    "task_application_server_listeners_current": cleanup["residuals"]["listener_count"],
+    "task_processes_current": cleanup["residuals"]["process_count"],
+    "task_containers_before": cleanup["counts"]["task_containers_before"],
+    "task_containers_current": cleanup["residuals"]["task_container_count"],
+    "task_label_matches_current": cleanup["residuals"]["task_label_match_count"],
+    "task_named_volumes_current": cleanup["residuals"]["task_named_volume_count"],
+    "task_private_paths_current": cleanup["residuals"]["private_path_count"],
+    "unrelated_containers_added": cleanup["comparison"]["unrelated_containers_added"],
+    "unrelated_containers_removed": cleanup["comparison"]["unrelated_containers_removed"],
+    "images_added": cleanup["comparison"]["images_added"],
+    "images_removed": cleanup["comparison"]["images_removed"],
+    "volumes_added": cleanup["comparison"]["volumes_added"],
+    "volumes_removed": cleanup["comparison"]["volumes_removed"],
+    "cleanup_evidence": "cleanup/cleanup-evidence.json",
+}
+(canonical / "runtime/resource-comparison.json").write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
+print("resource_comparison=" + result["status"])
+raise SystemExit(0 if result["status"] == "PASS" else 1)

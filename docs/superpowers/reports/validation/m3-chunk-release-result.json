@@ -1,0 +1,14 @@
+{
+  "status": "deployed",
+  "sourceRevision": "6e70784e182a4bae1e5b8399053b45429e8e4400",
+  "imageId": "sha256:cb42daed3581c51a5e6f5ac5a237bec4b4e0c3540afb61d36acb27592dc2947f",
+  "archiveSHA256": "195a6f3870e64d79d6aa1f9dbe994baea230ae49c7ac5b92ec8711ec14b8fc2f",
+  "newContainerId": "13ada4aa4f1e4460265d778f3447957ea854b234b542e509ffcf6668ef7b3031",
+  "oldContainerId": "9425ea244ad71944ef78474cc405208fbbbe7eb22fdffd2b81e269d328d85b0c",
+  "rollbackName": "ai-gateway-go-acceptance-rollback-1788416221798672629",
+  "sourceHealth": 200,
+  "publicHealth": 200,
+  "frontendUnchanged": true,
+  "generationRequests": 0,
+  "utc": "2026-09-03T06:17:07Z"
+}

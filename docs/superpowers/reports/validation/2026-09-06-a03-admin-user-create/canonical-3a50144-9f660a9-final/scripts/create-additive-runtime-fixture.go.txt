@@ -1,0 +1,87 @@
+package main
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+	"net/url"
+	"os"
+	"strconv"
+	"strings"
+
+	"github.com/go-sql-driver/mysql"
+	"github.com/redis/go-redis/v9"
+)
+
+const (
+	parentDatabase = "a03_20260907182125bfacc639_test"
+	childDatabase  = "a03_20260907182125bfacc639_canonical_3a50144_runtime_test"
+	envPath        = "/tmp/a03-task12-0010-20260907182125-bfacc639/canonical-final-runtime-db-env.sh"
+)
+
+func quote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
+}
+
+func main() {
+	raw := strings.TrimSpace(os.Getenv("TEST_DATABASE_URL"))
+	u, err := url.Parse(raw)
+	if err != nil || u.Hostname() != "127.0.0.1" || u.Port() != "55877" || strings.TrimPrefix(u.Path, "/") != parentDatabase {
+		panic("refusing non-owned MySQL fixture")
+	}
+	password, ok := u.User.Password()
+	if !ok {
+		panic("fixture password missing")
+	}
+	cfg := mysql.NewConfig()
+	cfg.User, cfg.Passwd, cfg.Net, cfg.Addr = u.User.Username(), password, "tcp", u.Host
+	db, err := sql.Open("mysql", cfg.FormatDSN())
+	if err != nil {
+		panic("open task MySQL fixture")
+	}
+	defer db.Close()
+	var exists int
+	if err := db.QueryRow("SELECT COUNT(*) FROM information_schema.schemata WHERE schema_name=?", childDatabase).Scan(&exists); err != nil {
+		panic(fmt.Sprintf("inspect child database: %v", err))
+	}
+	if exists != 0 {
+		panic("refusing to reuse existing child database")
+	}
+	if _, err := db.Exec("CREATE DATABASE `" + childDatabase + "` CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci"); err != nil {
+		panic(fmt.Sprintf("create task child database: %v", err))
+	}
+	u.Path, u.RawPath = "/"+childDatabase, ""
+
+	redisRaw := strings.TrimSpace(os.Getenv("TEST_REDIS_URL"))
+	redisURL, err := url.Parse(redisRaw)
+	if err != nil || redisURL.Host != "127.0.0.1:55878" {
+		panic("refusing non-owned Redis fixture")
+	}
+	selected := -1
+	for candidate := 15; candidate >= 0; candidate-- {
+		candidateURL := *redisURL
+		candidateURL.Path = "/" + strconv.Itoa(candidate)
+		opts, err := redis.ParseURL(candidateURL.String())
+		if err != nil {
+			panic("parse task Redis URL")
+		}
+		client := redis.NewClient(opts)
+		count, sizeErr := client.DBSize(context.Background()).Result()
+		_ = client.Close()
+		if sizeErr == nil && count == 0 {
+			selected = candidate
+			redisURL = &candidateURL
+			break
+		}
+	}
+	if selected < 0 {
+		panic("no empty Redis logical database")
+	}
+	content := "export TEST_DATABASE_URL=" + quote(u.String()) + "\n" +
+		"export TEST_REDIS_URL=" + quote(redisURL.String()) + "\n" +
+		"export ACTION_SECURITY_HMAC_KEY=" + quote(strings.TrimSpace(os.Getenv("ACTION_SECURITY_HMAC_KEY"))) + "\n"
+	if err := os.WriteFile(envPath, []byte(content), 0o600); err != nil {
+		panic("write private child fixture env")
+	}
+	fmt.Printf("created additive child schema %s with empty Redis DB %d\n", childDatabase, selected)
+}

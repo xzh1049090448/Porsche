@@ -66,6 +66,18 @@ func TestHealthOK(t *testing.T) {
 	}
 }
 
+func TestAdminUsersGroupDirectoryRouteIsRegistered(t *testing.T) {
+	settings := &config.Settings{AppEnv: "test", AllowedHosts: "example.com"}
+	engine := router.New(&app.State{Settings: settings})
+	request := httptest.NewRequest(http.MethodGet, "/admin/v2/groups?status=active", nil)
+	request.Host = "example.com"
+	recorder := httptest.NewRecorder()
+	engine.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("registered group directory status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestHostAllowlistAcceptsDomainAndRejectsDirectIPAddress(t *testing.T) {
 	state := newGatewayTestState(t)
 	state.Settings.AllowedHosts = "aiportcloud.com"
@@ -90,7 +102,7 @@ func TestHostAllowlistAcceptsDomainAndRejectsDirectIPAddress(t *testing.T) {
 
 func TestGatewayModelsAreFilteredByDatabaseToken(t *testing.T) {
 	state := newGatewayTestState(t)
-	user := gatewayTestUserFixture("13900139000")
+	user := gatewayTestUserFixture(t, state, "13900139000")
 	if err := state.DB.Create(&user).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -124,7 +136,7 @@ func TestGatewayModelsAreFilteredByDatabaseToken(t *testing.T) {
 
 func TestGatewayRejectsTokenModelBeforeUpstream(t *testing.T) {
 	state := newGatewayTestState(t)
-	user := gatewayTestUserFixture("13900139001")
+	user := gatewayTestUserFixture(t, state, "13900139001")
 	if err := state.DB.Create(&user).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -157,7 +169,7 @@ func TestGatewayRejectsTokenModelBeforeUpstream(t *testing.T) {
 func TestGatewayRejectsSpoofedForwardedIPFromUntrustedPeer(t *testing.T) {
 	state := newGatewayTestState(t)
 	state.Settings.TrustProxyHeaders = true
-	user := gatewayTestUserFixture("13900139002")
+	user := gatewayTestUserFixture(t, state, "13900139002")
 	if err := state.DB.Create(&user).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -343,7 +355,7 @@ func TestGatewayErrorDoesNotEchoSecretAndSanitizesRequestID(t *testing.T) {
 
 func createGatewayTestUser(t *testing.T, state *app.State, phone string) *models.User {
 	t.Helper()
-	user := gatewayTestUserFixture(phone)
+	user := gatewayTestUserFixture(t, state, phone)
 	if err := state.DB.Create(&user).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -352,10 +364,12 @@ func createGatewayTestUser(t *testing.T, state *app.State, phone string) *models
 
 var gatewayTestSnowflake = persistence.NewSnowflake(os.Getpid()%1024, persistence.SystemClock())
 
-func gatewayTestUserFixture(_ string) models.User {
+func gatewayTestUserFixture(t *testing.T, state *app.State, _ string) models.User {
+	t.Helper()
 	now := time.Now().UTC().UnixMilli()
 	return models.User{
 		AuditFields:   models.AuditFields{Guid: gatewayTestSnowflake.Next(), CreatedAt: now, UpdatedAt: now, IsDeleted: 0},
+		GroupID:       gatewayTestDefaultBusinessGroupID(t, state),
 		Phone:         gatewayTestPhone(),
 		Status:        models.UserStatusActive,
 		Role:          models.UserRoleUser,
@@ -363,6 +377,21 @@ func gatewayTestUserFixture(_ string) models.User {
 		PlanType:      models.PlanFree,
 		AllowedModels: models.JSONSlice{},
 	}
+}
+
+func gatewayTestDefaultBusinessGroupID(t *testing.T, state *app.State) int64 {
+	t.Helper()
+	var groups []models.BusinessGroup
+	if state == nil || state.DB == nil {
+		t.Fatal("gateway test state has no database")
+	}
+	if err := state.DB.Where("group_key = ? AND is_deleted = 0", "default").Order("id ASC").Find(&groups).Error; err != nil {
+		t.Fatalf("load gateway default business group: %v", err)
+	}
+	if len(groups) != 1 || groups[0].ID <= 0 || groups[0].Guid <= 0 || groups[0].Key != "default" || groups[0].Status != models.BusinessGroupStatusActive || groups[0].IsDeleted != 0 {
+		t.Fatalf("invalid gateway default business group: %#v", groups)
+	}
+	return groups[0].ID
 }
 
 // gatewayTestPhone derives a database-safe phone value from the package test
@@ -447,3 +476,84 @@ func testRedisURL(t *testing.T) string {
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
+
+type routeContract struct {
+	Method string
+	Path   string
+}
+
+// preB1ERouteInventory freezes the complete production route multiset. Keep
+// duplicate method/path entries: silently registering the same route twice is
+// a regression even when the sorted set of routes would look unchanged.
+var preB1ERouteInventory = []routeContract{
+	{http.MethodGet, "/admin/dashboard"},
+	{http.MethodGet, "/admin/dashboard/models/health"},
+	{http.MethodPost, "/admin/dashboard/models/health/check"},
+	{http.MethodGet, "/admin/logs"},
+	{http.MethodGet, "/admin/logs/alerts"},
+	{http.MethodPut, "/admin/logs/alerts/:alert_type"},
+	{http.MethodPost, "/admin/models/:id/health-check"},
+	{http.MethodPost, "/admin/models/health-check"},
+	{http.MethodGet, "/admin/status"},
+	{http.MethodGet, "/admin/users"},
+	{http.MethodDelete, "/admin/users/:guid"},
+	{http.MethodGet, "/admin/users/:guid"},
+	{http.MethodPut, "/admin/users/:guid"},
+	{http.MethodGet, "/admin/users/:guid/behavior"},
+	{http.MethodGet, "/admin/v2/authz/catalog"},
+	{http.MethodGet, "/admin/v2/groups"},
+	{http.MethodGet, "/admin/v2/users"},
+	{http.MethodGet, "/admin/v2/users/:guid"},
+	{http.MethodGet, "/admin/v2/users/:guid/permissions"},
+	{http.MethodPost, "/api/v1/auth/login"},
+	{http.MethodPost, "/api/v1/auth/login/code"},
+	{http.MethodPost, "/api/v1/auth/login/password"},
+	{http.MethodPost, "/api/v1/auth/logout"},
+	{http.MethodPost, "/api/v1/auth/refresh"},
+	{http.MethodPost, "/api/v1/auth/register"},
+	{http.MethodGet, "/api/v1/auth/self"},
+	{http.MethodPost, "/api/v1/auth/self/password"},
+	{http.MethodPost, "/api/v1/auth/self/verify"},
+	{http.MethodPost, "/api/v1/auth/send-code"},
+	{http.MethodGet, "/api/v1/auth/sessions"},
+	{http.MethodDelete, "/api/v1/auth/sessions/:guid"},
+	{http.MethodPost, "/api/v1/auth/sessions/revoke-others"},
+	{http.MethodGet, "/api/v1/billing/analytics/access"},
+	{http.MethodGet, "/api/v1/billing/analytics/charts/:view"},
+	{http.MethodGet, "/api/v1/billing/analytics/export"},
+	{http.MethodGet, "/api/v1/billing/analytics/models"},
+	{http.MethodGet, "/api/v1/billing/analytics/summary"},
+	{http.MethodPost, "/api/v1/billing/invoice"},
+	{http.MethodGet, "/api/v1/billing/orders"},
+	{http.MethodPost, "/api/v1/billing/orders"},
+	{http.MethodPost, "/api/v1/billing/orders/:guid/pay"},
+	{http.MethodGet, "/api/v1/billing/plans"},
+	{http.MethodGet, "/api/v1/conversations"},
+	{http.MethodPost, "/api/v1/conversations"},
+	{http.MethodDelete, "/api/v1/conversations/:guid"},
+	{http.MethodGet, "/api/v1/conversations/:guid"},
+	{http.MethodPut, "/api/v1/conversations/:guid"},
+	{http.MethodGet, "/api/v1/conversations/:guid/export/markdown"},
+	{http.MethodPost, "/api/v1/platform/chat/compare"},
+	{http.MethodPost, "/api/v1/platform/chat/completions"},
+	{http.MethodGet, "/api/v1/platform/models"},
+	{http.MethodGet, "/api/v1/platform/models/:id"},
+	{http.MethodGet, "/api/v1/platform/models/detail"},
+	{http.MethodGet, "/api/v1/tokens"},
+	{http.MethodPost, "/api/v1/tokens"},
+	{http.MethodDelete, "/api/v1/tokens/:guid"},
+	{http.MethodGet, "/api/v1/tokens/:guid"},
+	{http.MethodPatch, "/api/v1/tokens/:guid"},
+	{http.MethodPost, "/api/v1/tokens/:guid/revoke"},
+	{http.MethodGet, "/api/v1/users/me"},
+	{http.MethodPut, "/api/v1/users/me"},
+	{http.MethodPost, "/api/v1/users/me/password"},
+	{http.MethodGet, "/api/v1/users/me/usage"},
+	{http.MethodPost, "/api/v1/users/me/verify"},
+	{http.MethodGet, "/health"},
+	{http.MethodGet, "/metrics"},
+	{http.MethodPost, "/v1/chat/completions"},
+	{http.MethodGet, "/v1/models"},
+	{http.MethodGet, "/v1/models/:id"},
+	{http.MethodGet, "/v1/models/detail"},
+}

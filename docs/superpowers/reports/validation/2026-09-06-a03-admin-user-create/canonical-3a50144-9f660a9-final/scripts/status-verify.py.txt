@@ -1,0 +1,130 @@
+#!/usr/bin/env python3
+import hashlib
+import json
+import subprocess
+from collections import Counter
+from pathlib import Path
+
+BE = Path("/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903")
+FE = Path("/Users/xuzhihao/code/Porsche-Web/.worktrees/admin-public-260903")
+CANONICAL = BE / "docs/superpowers/reports/validation/2026-09-06-a03-admin-user-create/canonical-3a50144-9f660a9-final"
+BE_HEAD = "3a50144e53268f6ef3ae704699ef9fa851e4a5ee"
+FE_HEAD = "9f660a9ca26f5738dd661652596a1e450ff34335"
+MATRIX_PATH = "docs/agents/validation/joint-acceptance-20260904/acceptance-matrix.json"
+FILES = [
+    ("backend", BE, "feature_list.json"),
+    ("backend", BE, "progress.md"),
+    ("frontend", FE, "feature_list.json"),
+    ("frontend", FE, "progress.md"),
+    ("frontend", FE, MATRIX_PATH),
+]
+
+
+def git(root, *args):
+    result = subprocess.run(["git", *args], cwd=root, text=True, capture_output=True)
+    if result.returncode:
+        raise RuntimeError("git command failed")
+    return result.stdout
+
+
+def sha(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+before_bytes = {}
+after_bytes = {}
+hash_rows = []
+for repo, root, relative in FILES:
+    before = subprocess.check_output(["git", "show", "HEAD:" + relative], cwd=root)
+    after = (root / relative).read_bytes()
+    before_bytes[(repo, relative)] = before
+    after_bytes[(repo, relative)] = after
+    hash_rows.append({"repo": repo, "path": relative, "before_sha256": sha(before), "after_sha256": sha(after)})
+
+before_be_feature = json.loads(before_bytes[("backend", "feature_list.json")])
+after_be_feature = json.loads(after_bytes[("backend", "feature_list.json")])
+before_fe_feature = json.loads(before_bytes[("frontend", "feature_list.json")])
+after_fe_feature = json.loads(after_bytes[("frontend", "feature_list.json")])
+before_matrix = json.loads(before_bytes[("frontend", MATRIX_PATH)])
+after_matrix = json.loads(after_bytes[("frontend", MATRIX_PATH)])
+
+before_be = next(item for item in before_be_feature["features"] if item["id"] == "go-017")
+after_be = next(item for item in after_be_feature["features"] if item["id"] == "go-017")
+before_be_rows = {item["id"]: item for item in before_be["joint_acceptance_blockers"]}
+after_be_rows = {item["id"]: item for item in after_be["joint_acceptance_blockers"]}
+changed_be_rows = sorted(key for key in before_be_rows if before_be_rows[key] != after_be_rows[key])
+
+before_items = {item["id"]: item for item in before_matrix["items"]}
+after_items = {item["id"]: item for item in after_matrix["items"]}
+changed_matrix_items = sorted(key for key in before_items if before_items[key] != after_items[key])
+counts = Counter(item["status"] for item in after_matrix["items"])
+derived_summary = {
+    "total": len(after_matrix["items"]),
+    "PASS_LIMITED_SCOPE": counts["PASS_LIMITED_SCOPE"],
+    "FAIL_LOCAL_DEV_ROUTE": counts["FAIL_LOCAL_DEV_ROUTE"],
+    "BLOCKED_NOT_IMPLEMENTED": counts["BLOCKED_NOT_IMPLEMENTED"],
+    "BLOCKED_PRODUCT": counts["BLOCKED_PRODUCT"],
+    "BLOCKED_ENV": counts["BLOCKED_ENV"],
+    "blocked_total": sum(value for key, value in counts.items() if key.startswith("BLOCKED")),
+}
+
+before_web = next(item for item in before_fe_feature["features"] if item["id"] == "web-012")
+after_web = next(item for item in after_fe_feature["features"] if item["id"] == "web-012")
+cleanup = json.loads((CANONICAL / "cleanup/cleanup-evidence.json").read_text())
+tracked_be = set(git(BE, "diff", "--name-only").splitlines())
+tracked_fe = set(git(FE, "diff", "--name-only").splitlines())
+
+checks = {
+    "backend_head_is_code_under_test": git(BE, "rev-parse", "HEAD").strip() == BE_HEAD,
+    "frontend_head_is_code_under_test": git(FE, "rev-parse", "HEAD").strip() == FE_HEAD,
+    "only_a03_backend_status_row_changed": changed_be_rows == ["A03"],
+    "backend_a03_pass_limited_scope": after_be_rows["A03"]["status"] == "PASS_LIMITED_SCOPE",
+    "backend_a14_row_preserved": before_be_rows["A14"] == after_be_rows["A14"],
+    "backend_other_features_preserved": before_be_feature["features"][1:] == after_be_feature["features"][1:],
+    "backend_blocker_count_derived": after_be["joint_acceptance_blocker_count"] == sum(item["status"].startswith("BLOCKED") for item in after_be["joint_acceptance_blockers"]) == 17,
+    "active_registry_count_recorded": after_be["active_production_consumers"] == 3,
+    "only_a03_matrix_item_changed": changed_matrix_items == ["A03"],
+    "matrix_a03_pass_limited_scope": after_items["A03"]["status"] == "PASS_LIMITED_SCOPE",
+    "matrix_a14_item_preserved": before_items["A14"] == after_items["A14"],
+    "matrix_summary_derived": after_matrix["summary"] == derived_summary == {"total": 26, "PASS_LIMITED_SCOPE": 11, "FAIL_LOCAL_DEV_ROUTE": 0, "BLOCKED_NOT_IMPLEMENTED": 13, "BLOCKED_PRODUCT": 1, "BLOCKED_ENV": 1, "blocked_total": 15},
+    "matrix_code_heads_recorded": after_matrix["code_under_test"] == {"backend": BE_HEAD, "frontend": FE_HEAD},
+    "web012_status_preserved": before_web["status"] == after_web["status"] == "in_progress",
+    "web012_other_features_preserved": [item for item in before_fe_feature["features"] if item["id"] != "web-012"] == [item for item in after_fe_feature["features"] if item["id"] != "web-012"],
+    "amount_mock_rows_still_blocked": all(after_items[key]["status"] == "BLOCKED_NOT_IMPLEMENTED" for key in ("A09", "A10", "A11")),
+    "production_deploy_still_blocked": after_items["R02"]["status"] == "BLOCKED_ENV" and after_matrix["production_touched"] is False,
+    "production_boundary_recorded": all(after_items["A03"]["scope_boundary"].find(token) >= 0 for token in ("Mock", "生产迁移", "部署", "NOT_RUN")),
+    "medium_key_rotation_restriction_recorded": "rotation is prohibited" in after_items["A03"]["key_rotation_restriction"] and "post-0010" in after_items["A03"]["key_rotation_restriction"],
+    "cleanup_pass_recorded": cleanup["status"] == "PASS" and after_matrix["approval"]["cleanup"] == "CLEANUP_PASS" and after_matrix["resources_retained"] is False,
+    "backend_tracked_diff_bounded": tracked_be == {"feature_list.json", "progress.md"},
+    "frontend_tracked_diff_bounded": tracked_fe == {"feature_list.json", "progress.md", MATRIX_PATH},
+    "backend_progress_only_prepended": False,
+    "frontend_progress_only_prepended": False,
+}
+
+# The byte-prefix checks above use language-neutral tail equality; compute the exact
+# UTF-8 title lengths without persisting source contents in the evidence.
+be_marker = "# Porsche 开发进度\n".encode()
+fe_marker = "# 当前验证进度\n".encode()
+checks["backend_progress_only_prepended"] = after_bytes[("backend", "progress.md")].endswith(before_bytes[("backend", "progress.md")][len(be_marker):])
+checks["frontend_progress_only_prepended"] = after_bytes[("frontend", "progress.md")].endswith(before_bytes[("frontend", "progress.md")][len(fe_marker):])
+
+status = "PASS" if all(checks.values()) else "FAIL"
+snapshot = {
+    "status": status,
+    "code_under_test": {"backend": BE_HEAD, "frontend": FE_HEAD},
+    "changed_status_rows": {"backend": changed_be_rows, "matrix": changed_matrix_items},
+    "matrix_summary": derived_summary,
+    "preserved": {"a14_backend": after_be_rows["A14"]["status"], "a14_matrix": after_items["A14"]["status"], "web012": after_web["status"]},
+    "boundaries": {"amounts": "MOCK_ONLY", "production_migration": "NOT_RUN", "deployment": "NOT_RUN", "business_accounts": "NOT_USED"},
+    "checks": checks,
+    "hashes": hash_rows,
+    "stored_source_contents": 0,
+}
+(CANONICAL / "status/final-status-snapshot.json").write_text(json.dumps(snapshot, indent=2, sort_keys=True) + "\n")
+lines = ["repo\tpath\tbefore_sha256\tafter_sha256"]
+for row in hash_rows:
+    lines.append("\t".join(row[key] for key in ("repo", "path", "before_sha256", "after_sha256")))
+(CANONICAL / "status/status-file-sha256.tsv").write_text("\n".join(lines) + "\n")
+(CANONICAL / "status/status-verify.exit").write_text(("0" if status == "PASS" else "1") + "\n")
+print("status_verify=" + status + " changed_rows=" + ",".join(changed_matrix_items))
+raise SystemExit(0 if status == "PASS" else 1)

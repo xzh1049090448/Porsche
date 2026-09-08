@@ -9,12 +9,14 @@ type HTTPError struct {
 
 func (e *HTTPError) Error() string { return e.Message }
 
-func errBadRequest(msg string) error   { return &HTTPError{Status: 400, Message: msg} }
-func errUnauthorized(msg string) error { return &HTTPError{Status: 401, Message: msg} }
-func errForbidden(msg string) error    { return &HTTPError{Status: 403, Message: msg} }
-func errNotFound(msg string) error     { return &HTTPError{Status: 404, Message: msg} }
-func errConflict(msg string) error     { return &HTTPError{Status: 409, Message: msg} }
-func errTooMany(msg string) error      { return &HTTPError{Status: 429, Message: msg} }
+func errBadRequest(msg string) error    { return &HTTPError{Status: 400, Message: msg} }
+func errUnprocessable(msg string) error { return &HTTPError{Status: 422, Message: msg} }
+func errUnauthorized(msg string) error  { return &HTTPError{Status: 401, Message: msg} }
+func errForbidden(msg string) error     { return &HTTPError{Status: 403, Message: msg} }
+func errNotFound(msg string) error      { return &HTTPError{Status: 404, Message: msg} }
+func errConflict(msg string) error      { return &HTTPError{Status: 409, Message: msg} }
+func errTooMany(msg string) error       { return &HTTPError{Status: 429, Message: msg} }
+func errUnavailable(msg string) error   { return &HTTPError{Status: 503, Message: msg} }
 
 func StatusFromError(err error) (int, string) {
 	if he, ok := err.(*HTTPError); ok {

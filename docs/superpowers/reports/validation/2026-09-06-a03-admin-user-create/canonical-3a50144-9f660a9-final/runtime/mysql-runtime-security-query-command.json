@@ -1,0 +1,8 @@
+{
+  "column_headers": true,
+  "command": "docker exec -i -e MYSQL_PWD <task-mysql-container> mysql -h127.0.0.1 -u<ordinary-fixture-user> --batch <runtime-schema>; queries: SELECT VERSION(), @@log_bin, @@log_bin_trust_function_creators; SHOW GRANTS FOR CURRENT_USER(); information_schema user/schema privileges",
+  "cwd": "/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903",
+  "environment": "MYSQL_PWD passed only through process environment from private 0600 runtime env; credential and values not written",
+  "exit": 0,
+  "output": "runtime/mysql-runtime-security-query.tsv"
+}

@@ -1,0 +1,5 @@
+before_tables=0 before_redis_keys=0 after_tables=18 after_redis_keys=0
+before_tables=18 before_redis_keys=42 after_tables=18 after_redis_keys=0
+before_tables=18 before_redis_keys=42 after_tables=18 after_redis_keys=0
+before_tables=18 before_redis_keys=500 after_tables=18 after_redis_keys=0
+before_tables=18 before_redis_keys=3 after_tables=18 after_redis_keys=0

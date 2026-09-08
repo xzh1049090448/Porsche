@@ -1,0 +1,62 @@
+const http = require('http')
+const https = require('https')
+const fs = require('fs')
+
+const backendPort = Number(process.env.A03_BACKEND_PORT)
+const frontendPort = Number(process.env.A03_FRONTEND_PORT)
+const proxyPort = Number(process.env.A03_PROXY_PORT)
+const disableFault = process.env.A03_DISABLE_FAULT_PROXY === '1'
+const faultUsername = process.env.A03_AMBIGUOUS_USERNAME
+if (!Number.isInteger(backendPort) || !faultUsername) throw new Error('missing proxy configuration')
+
+let faultDrops = 0
+function log(record) {
+  process.stdout.write(`${JSON.stringify({ at: new Date().toISOString(), ...record })}\n`)
+}
+
+const server = https.createServer({
+  key: fs.readFileSync(`${process.env.A03_PRIVATE_DIR}/proxy.key`),
+  cert: fs.readFileSync(`${process.env.A03_PRIVATE_DIR}/proxy.crt`),
+}, (request, response) => {
+  const chunks = []
+  let size = 0
+  request.on('data', chunk => {
+    size += chunk.length
+    if (size > 1024 * 1024) request.destroy()
+    else chunks.push(chunk)
+  })
+  request.on('end', () => {
+    const body = Buffer.concat(chunks)
+    let drop = false
+    if (!disableFault && faultDrops < 2 && request.method === 'POST' && request.url === '/admin/v2/users') {
+      try { drop = JSON.parse(body.toString('utf8')).username === faultUsername } catch {}
+    }
+    const backendPath = request.url === '/health' || request.url.startsWith('/api/') || request.url.startsWith('/admin/')
+    const upstreamPort = backendPath ? backendPort : frontendPort
+    const headers = { ...request.headers, host: `127.0.0.1:${upstreamPort}`, 'content-length': String(body.length) }
+    const upstream = http.request({ hostname: '127.0.0.1', port: upstreamPort, method: request.method, path: request.url, headers }, upstreamResponse => {
+      if (drop) {
+        const discarded = []
+        upstreamResponse.on('data', chunk => discarded.push(chunk))
+        upstreamResponse.on('end', () => {
+          faultDrops++
+          log({ method: request.method, path: request.url, status: upstreamResponse.statusCode, disposition: 'response_dropped_once' })
+          response.socket?.destroy()
+        })
+        return
+      }
+      response.writeHead(upstreamResponse.statusCode, upstreamResponse.headers)
+      upstreamResponse.pipe(response)
+      upstreamResponse.on('end', () => log({ method: request.method, path: request.url, status: upstreamResponse.statusCode, disposition: 'forwarded' }))
+    })
+    upstream.on('error', () => {
+      log({ method: request.method, path: request.url, status: 502, disposition: 'upstream_error' })
+      if (!response.headersSent) response.writeHead(502, { 'content-type': 'application/json' })
+      response.end('{"error":"fixture_proxy_unavailable"}')
+    })
+    upstream.end(body)
+  })
+})
+
+server.listen(proxyPort, '127.0.0.1', () => log({ event: 'listening', host: '127.0.0.1', port: proxyPort, tls: true, backend_port: backendPort }))
+for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => server.close(() => process.exit(0)))

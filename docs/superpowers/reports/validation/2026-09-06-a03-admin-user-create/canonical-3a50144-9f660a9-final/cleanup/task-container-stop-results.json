@@ -1,0 +1,50 @@
+[
+  {
+    "command": "docker stop --time 10 <full-id>",
+    "exit": 0,
+    "id": "8aaf7b392c005bdb9c8e896d4d0b81af6bcd23508e4bbd22f81f6730e31e7d52",
+    "name": "a03-task12-mysql-20260907091002-2b0f5583"
+  },
+  {
+    "command": "docker stop --time 10 <full-id>",
+    "exit": 0,
+    "id": "5901664047aa67c6cc6ed0d061c889f0fa8b39281405ee02b0321db8db9dbc8a",
+    "name": "a03-task12-mysql-20260907140441-9d83c897"
+  },
+  {
+    "command": "docker stop --time 10 <full-id>",
+    "exit": 0,
+    "id": "e028f8ae338d001bb2912a09d43b4897e0e5e332f19d44d9281253f2263f335e",
+    "name": "a03-task12-mysql-20260907181306-b8b409bc"
+  },
+  {
+    "command": "docker stop --time 10 <full-id>",
+    "exit": 0,
+    "id": "f3c761d618442224f7ccb994a7be5a51e5869eefe66ae29c2e138a0bcfd68cc7",
+    "name": "a03-task12-mysql-20260907182125-bfacc639"
+  },
+  {
+    "command": "docker stop --time 10 <full-id>",
+    "exit": 0,
+    "id": "e20764effd91373f6456f446e9546bd9ac0dce8780a0bdc05dfc35e0fa5e13d7",
+    "name": "a03-task12-redis-20260907091002-2b0f5583"
+  },
+  {
+    "command": "docker stop --time 10 <full-id>",
+    "exit": 0,
+    "id": "46a85d34a8fa6879134b8a291c9b335422cc131fab53bab04b23e63a8506aaa1",
+    "name": "a03-task12-redis-20260907140441-9d83c897"
+  },
+  {
+    "command": "docker stop --time 10 <full-id>",
+    "exit": 0,
+    "id": "f497b9d5439dde10d15c2edca6e782400aa941fcfd4377ddfa69effe634a201a",
+    "name": "a03-task12-redis-20260907181306-b8b409bc"
+  },
+  {
+    "command": "docker stop --time 10 <full-id>",
+    "exit": 0,
+    "id": "fadba43ab8145684dc3440ec0f61a139b0478384e9d95b25bd413734e421ed72",
+    "name": "a03-task12-redis-20260907182125-bfacc639"
+  }
+]

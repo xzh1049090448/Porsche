@@ -29,6 +29,8 @@ type SessionCreateInput struct {
 type IssuedSession struct {
 	Session      *models.Session
 	RefreshToken string
+	// refreshProof is set only after a successful internal refresh and publish.
+	refreshProof bool
 }
 
 // SessionService owns MySQL-backed session lifecycle transitions. Redis is a
@@ -211,6 +213,7 @@ func (s *SessionService) Refresh(ctx context.Context, refreshToken string) (*Iss
 		}
 		return nil, errors.New("rotation result publication unavailable")
 	}
+	rotated.refreshProof = true
 	return rotated, nil
 }
 
@@ -325,7 +328,15 @@ func (s *SessionService) revokeLocked(tx *gorm.DB, session *models.Session, acto
 	if err := tx.Model(&models.Session{}).Where("id = ? AND is_deleted = 0 AND revoked_at IS NULL", session.ID).Updates(map[string]any{"revoked_at": now, "updated_at": session.UpdatedAt, "updated_by": session.UpdatedBy}).Error; err != nil {
 		return err
 	}
-	return s.writeAuthAudit(tx, &session.UserID, &session.Guid, event, session.LoginMethod, input)
+	return tx.Create(&models.AuthAuditEvent{
+		AuditFields: auditFields(&actorID),
+		UserID:      &session.UserID,
+		SessionGuid: &session.Guid,
+		EventType:   event,
+		LoginMethod: &session.LoginMethod,
+		IP:          stringPointer(input.IP),
+		UserAgent:   stringPointer(input.UserAgent),
+	}).Error
 }
 
 func (s *SessionService) writeAuthAudit(tx *gorm.DB, userID, sessionGUID *int64, event models.AuthAuditEventType, method models.LoginMethod, input SessionCreateInput) error {

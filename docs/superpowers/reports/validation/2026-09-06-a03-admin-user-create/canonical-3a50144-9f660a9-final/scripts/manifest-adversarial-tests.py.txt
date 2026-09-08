@@ -1,0 +1,87 @@
+#!/usr/bin/env python3
+import argparse
+import json
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+arguments = argparse.ArgumentParser()
+arguments.add_argument("--payload-stdin", action="store_true")
+options = arguments.parse_args()
+payload = sys.stdin.read() if options.payload_stdin else None
+
+source = Path("/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/docs/superpowers/reports/validation/2026-09-06-a03-admin-user-create")
+canonical_name = "canonical-3a50144-9f660a9-final"
+verifier = str(source / canonical_name / "scripts/manifest.py.txt")
+
+def execute(mutate=None):
+    with tempfile.TemporaryDirectory(prefix="a03-manifest-adversarial-") as temp:
+        copied = Path(temp) / "report"
+        shutil.copytree(source, copied)
+        canonical = copied / canonical_name
+        if mutate:
+            mutate(canonical)
+        command = ["python3", verifier, "--report-root", str(copied), "--probe-mode"]
+        if payload is not None:
+            command.append("--payload-stdin")
+        result = subprocess.run(command, text=True, input=payload, capture_output=True)
+        manifest = json.loads((canonical / "manifest.json").read_text())
+        return {"exit": result.returncode, "manifest_status": manifest.get("status"), "validation_error_count": len(manifest.get("validation_errors", []))}
+
+def flip_exit(root):
+    (root / "gates/backend-build.exit").write_text("1\n")
+
+def flip_count(root):
+    path = root / "gates/backend-focused-counts.json"
+    data = json.loads(path.read_text())
+    data["leaf"]["pass"] -= 1
+    path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
+
+def flip_head(root):
+    path = root / "runtime/versions-and-heads.txt"
+    path.write_text(path.read_text().replace("3a50144e53268f6ef3ae704699ef9fa851e4a5ee", "0" * 40))
+
+def flip_ledger(root):
+    path = root / "runtime/runtime-migration-ledger.txt"
+    text = path.read_text()
+    path.write_text(text.replace("b6ddd5b7088f1617b9831186e08da622f7d06cbe985707ef9f5524ffe6057780", "b6ddd5b7088f1617b9831186e08da622f7d06cbe985707ef9f5524ffe6057781"))
+
+def flip_json_status(name):
+    def mutate(root):
+        path = root / name
+        data = json.loads(path.read_text())
+        data["status"] = "FAIL"
+        path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
+    return mutate
+
+baseline = execute()
+cases = [
+    ("exit", flip_exit),
+    ("count", flip_count),
+    ("head", flip_head),
+    ("ledger", flip_ledger),
+    ("browser", flip_json_status("browser/browser-acceptance.json")),
+    ("database", flip_json_status("db/database-evidence.json")),
+    ("secret", flip_json_status("secret-scan.json")),
+]
+mutations = []
+for name, mutate in cases:
+    result = execute(mutate)
+    mutations.append({"mutation": name, **result})
+
+passed = baseline == {"exit":0,"manifest_status":"PASS","validation_error_count":0} and all(
+    item["exit"] != 0 and item["manifest_status"] == "FAIL" and item["validation_error_count"] > 0
+    for item in mutations
+)
+evidence = {
+    "status": "PASS" if passed else "FAIL",
+    "strategy": "each case uses a fresh temporary full report copy; retained database fixtures, stopped application-server state, repositories, and evidence source remain unchanged",
+    "baseline": baseline,
+    "mutations": mutations,
+    "temporary_copies_retained": 0,
+}
+(source / canonical_name / "adversarial-manifest-tests.json").write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
+print(f"manifest_adversarial={evidence['status']} baseline_exit={baseline['exit']} rejected={sum(x['exit'] != 0 for x in mutations)}/{len(mutations)}")
+raise SystemExit(0 if passed else 1)

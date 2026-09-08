@@ -1,0 +1,752 @@
+{
+  "schema_version": 3,
+  "frozen_report_date": "2026-09-04",
+  "executed_date": "2026-09-05",
+  "baseline_commit": "a0056a9013b4d2572058c50c356bc492862ae073",
+  "commands": {
+    "migration_real": {
+      "sha256": "bfcfcb3879f73422fdfa0935b2f8414d551bac2fc5a9c8d14803342b7e6d4c1a"
+    },
+    "service_focused": {
+      "sha256": "b2d6bc63c4eb2d12824f1a7896573dffd3eda0807ceba2538931b7c66f171716"
+    },
+    "service_concurrency_race": {
+      "sha256": "74d2342a76e676134f3c217c2be7c1670a77db46686f9b04a51beb281fae6acc"
+    },
+    "serial_full": {
+      "sha256": "caea3fe8b7d8ce50267f07e888e56a5c06d104e2dc09f56210b460c8a3fc43c9"
+    },
+    "action_race": {
+      "sha256": "0bd3feb769ea016e97ae0d174750b162b95276a0b3b6f962a382535037be294d"
+    },
+    "build": {
+      "sha256": "854004a0c269ca4993dad170dc3f7d6e996493547b7c6b5c5c83cf20d113b42a"
+    },
+    "vet": {
+      "sha256": "3d4b424f6fcd11f530525ddea9a46aeaffec7c883b6c04b6baf7df36bf47800b"
+    },
+    "diff_check": {
+      "sha256": "dba58bb84e8b01223cda0205ae5e706c8d690acaef5399ca5844bcaf3fd2acf3"
+    },
+    "source_scan": {
+      "sha256": "f37173b5af6231b05a3d16eaf5d1aa5881788006928649d194d22a0ebea073ca"
+    }
+  },
+  "implementation_commits": [
+    "763c5f6debcb73ec0c745f7503b7f05e9225c312",
+    "38293033d30634fc73afa16531c333c23ae54e36",
+    "878cf2bc8f50c41c2355ed0d1a35f50a11f2a8d7",
+    "a0e75510a4e245af7d416e2b6146c97315c5c19a",
+    "3d63404",
+    "62ea11b",
+    "479915c6a2c224bfd1c25ab7054503e19bc05663"
+  ],
+  "commit_process_deviation": {
+    "reported_then_replaced": "b54dfc7",
+    "reachable_replacement": "a0e75510a4e245af7d416e2b6146c97315c5c19a",
+    "reason": "executor incorrectly amended after reporting b54dfc7; subsequent commits were additive and no further amend or rebase was used"
+  },
+  "independent_qa": {
+    "verdict": "QA_FAIL",
+    "result_sha256": "656da72a9f0101941da0b41fb3b45d48a6970708260575c26ef051c3b09abc4b",
+    "findings": [
+      "test.noop descriptor and real TargetUser/users.delete coverage incomplete",
+      "IP/session Redis thresholds not independently triggered",
+      "37 of 59 private files were mode 0644",
+      "four raw failed suite attempts were represented as two"
+    ]
+  },
+  "covered": [
+    "0001..0005 up/status/Verify and exact checksums",
+    "0005 down removes only two B1-E tables; 0001..0004 remain; re-up Verify passes",
+    "MySQL 8 CHECK metadata has non-empty clauses and ENFORCED=YES",
+    "single test.noop descriptor is 2147483000, TargetUser, users.delete, ticket-required and active; production registry remains empty",
+    "real actor auth-version, logical-session refresh/version, fresh policy allow-to-deny, target status/version/delete/hierarchy/hidden changes",
+    "consumer, Begin and Query stale-fact rejection with zero business side effects",
+    "production Redis Lua independently proves actor 5/15m, IP 20/15m with varied actor/session, logical session 10/hour with varied actor/IP, issuance SID 10/hour, Begin 60/minute, N+1 rejection and non-sliding TTL",
+    "300-second ticket equality, 30-second lease, 60-second recovery grace, 30-day tombstone, same-key two-goroutine locking, payload conflict, ticket reuse and cross-session",
+    "real success/rejection/fault rollback, commit unknown zero replay and one-shot Execute"
+  ],
+  "final": {
+    "migration_real": {
+      "pass_events": 1,
+      "leaf_pass": 1,
+      "top_level_pass": 1,
+      "skip_events": 0,
+      "fail_events": 0,
+      "package_pass": 1,
+      "package_skip": 0,
+      "package_fail": 0,
+      "log_sha256": "26e196dce33818ad5bfc4848ea813a6590dde0514d641f4a684ebd917ed8ca4a"
+    },
+    "service_focused": {
+      "pass_events": 26,
+      "leaf_pass": 22,
+      "top_level_pass": 7,
+      "skip_events": 0,
+      "fail_events": 0,
+      "package_pass": 1,
+      "package_skip": 0,
+      "package_fail": 0,
+      "leaf_names_sha256": "2b41551467a83dcdcc3ad5b2569b27009c3655a552c3fc796ba7e194494642f3",
+      "log_sha256": "4f1526c5559d4fd53ddb84b3fc40ded6d4e4f3661da8b02dc435a3e636219a99"
+    },
+    "service_concurrency_race": {
+      "pass_events": 2,
+      "leaf_pass": 2,
+      "top_level_pass": 2,
+      "skip_events": 0,
+      "fail_events": 0,
+      "package_pass": 1,
+      "package_skip": 0,
+      "package_fail": 0,
+      "log_sha256": "4474bbf5ba94944bd75841feb0d9066a183951cda2ebd70faa0c3d388cae8e30"
+    },
+    "serial_full": {
+      "pass_events": 1114,
+      "leaf_pass": 1012,
+      "top_level_pass": 410,
+      "skip_events": 1,
+      "fail_events": 0,
+      "explicit_skip": "TestAdminUsersReadPerformance requires separate 100k authorization",
+      "package_pass": 16,
+      "package_skip": 4,
+      "package_fail": 0,
+      "log_sha256": "980777580232c42d904a3ba119ff4711bdc7dfd88a6dc4f4c32dff0a6616873e"
+    },
+    "action_race": {
+      "pass_events": 261,
+      "leaf_pass": 232,
+      "top_level_pass": 81,
+      "skip_events": 0,
+      "fail_events": 0,
+      "package_pass": 2,
+      "package_skip": 0,
+      "package_fail": 0,
+      "log_sha256": "f1961b2deb1f28dbdf51863b3ddd50edece9ec41acd17d0fd782d81e8ee20be1"
+    },
+    "build": "PASS",
+    "vet": "PASS",
+    "diff_check": "PASS",
+    "source_scan": {
+      "production_test_action_refs": 0,
+      "unique_test_action_definitions": 1
+    },
+    "secret_scan": {
+      "verdict": "PASS",
+      "target_file_count": 183,
+      "target_manifest_sha256": "fc8be455c7ef5e5fc4e814db0fd1ea0791d3e2e96c8dd361ac24ef19dc853f5f",
+      "exact_match_count": 0,
+      "generic_unapproved_match_count": 0,
+      "allowlisted_public_operation_reference_count": 1,
+      "target_manifest_kind": "relative_path_list",
+      "exact_secret_classes": 6,
+      "generic_pattern_classes": 7,
+      "allowlisted_public_operation_reference_unique_count": 1,
+      "matched_lines_stored": 0,
+      "searched_values_stored": 0,
+      "includes_virtual_repo_working_diff": true
+    }
+  },
+  "historical_nonfinal_attempts": [
+    {
+      "gate": "initial_serial_full_overbroad_environment",
+      "status": "FAIL",
+      "reason": "two config tests rejected imported environment and permission ledger test hard-coded four migrations; raw log retained"
+    },
+    {
+      "gate": "serial_full_shared_main_database",
+      "status": "FAIL",
+      "reason": "retained real actor rows made a handler expectation return 503; raw log retained"
+    },
+    {
+      "gate": "serial_full_fresh_child_shared_redis_db0",
+      "status": "FAIL",
+      "reason": "ActionVerification rate key collided with prior Redis state; raw log retained"
+    },
+    {
+      "gate": "action_race_reused_full2_fixture",
+      "status": "FAIL",
+      "reason": "deterministic ticket HMAC collided with prior state; raw log retained"
+    },
+    {
+      "gate": "independent_qa_first_environment",
+      "status": "FAIL",
+      "reason": "first QA invocation used an invalid environment variable setup; independent raw result retained"
+    },
+    {
+      "gate": "qa2_harness",
+      "status": "ERROR",
+      "reason": "zsh status is read-only; suite output retained and rerun with rc"
+    },
+    {
+      "gate": "qa2_database_guard",
+      "status": "FAIL",
+      "reason": "DATABASE_URL equaled TEST_DATABASE_URL, then database name lacked _test suffix; both guard failures retained"
+    },
+    {
+      "gate": "qa2_wrong_migration_target",
+      "status": "FAIL",
+      "reason": "migration command reads DATABASE_URL and initially left the new _test child without tables; log retained and corrected"
+    },
+    {
+      "gate": "qa3_target_status_expectation",
+      "status": "FAIL",
+      "reason": "generic authorization intentionally permits disabled user targets; status freshness moved to the typed consumer and failure retained"
+    },
+    {
+      "gate": "qa3_serial_environment_and_legacy_real_test",
+      "status": "FAIL",
+      "reason": "two config failures from imported APP_ENV plus one old real test lacked its TargetUser row; log retained and both corrected"
+    },
+    {
+      "gate": "qa5_action_race_ip_window",
+      "status": "FAIL",
+      "reason": "first reused an old fixed IP key, then queried a non-canonical IPv6-derived key; both logs retained before unique canonical key fix"
+    },
+    {
+      "gate": "qa5_action_race_reused_database",
+      "status": "FAIL",
+      "reason": "post-fix rerun reused qa5 and collided with deterministic real verification ticket; raw log retained, final race moved to fresh qa7"
+    },
+    {
+      "gate": "second_qa_snowflake_environment",
+      "status": "ERROR",
+      "reason": "first second-QA environment attempt retained an incompatible SNOWFLAKE_NODE_ID; raw log retained and corrected without changing product code"
+    },
+    {
+      "gate": "second_qa_gocache_environment",
+      "status": "ERROR",
+      "reason": "second-QA default GOCACHE was not writable in its isolation context; raw log retained and corrected with the private task cache"
+    },
+    {
+      "gate": "spec_fault_matrix_red",
+      "status": "FAIL",
+      "reason": "five required real-MySQL Execute fault subtests were intentionally RED before implementation; raw log retained"
+    },
+    {
+      "gate": "spec_fault_matrix_first_green",
+      "status": "FAIL",
+      "reason": "ticket consume callback tracker did not count allowed record-not-found policy reads as completed prior locks; raw log retained and corrected without relaxing assertions"
+    }
+  ],
+  "private_permissions": {
+    "symlinks": 0,
+    "directories": 772,
+    "regular_files_at_first_repair": 2917,
+    "non_0700_directories": 0,
+    "non_0600_regular_files": 0,
+    "regular_files": 9832,
+    "nonconforming_directories": 0,
+    "nonconforming_regular_files": 0
+  },
+  "environment": {
+    "mysql_major": 8,
+    "redis_major": 7,
+    "network": "loopback-only",
+    "production_requests": 0,
+    "model_requests": 0,
+    "chat_requests": 0,
+    "sse_requests": 0,
+    "upstream_requests": 0
+  },
+  "limitations": [
+    "production active action registry remains empty",
+    "no production consumer, HTTP route, frontend adapter, deployment or production migration was activated",
+    "fixture remains alive after third independent QA; cleanup remains forbidden until Task14"
+  ],
+  "second_independent_qa": {
+    "verdict": "QA_PASS",
+    "signed_result_sha256": "8780e465351ab7a6da33b6a51f40565c892e07d79fa09916f9ea34a90f84bc8c",
+    "reviewed_head": "9dbad0512f5c5fa69d7202ab3a3cc2132f0cdc41",
+    "counts": {
+      "migration": {
+        "fail": 0,
+        "pass_events": 1,
+        "leaf_pass": 1,
+        "top_level_pass": 1,
+        "package_pass": 1
+      },
+      "service_real": {
+        "fail": 0,
+        "pass_events": 26,
+        "leaf_pass": 22,
+        "top_level_pass": 7,
+        "package_pass": 1
+      },
+      "service_concurrency": {
+        "fail": 0,
+        "pass_events": 2,
+        "leaf_pass": 2,
+        "top_level_pass": 2,
+        "package_pass": 1
+      },
+      "task8_focused": {
+        "events": 92,
+        "verdict": "PASS"
+      },
+      "task8_race": {
+        "events": 92,
+        "verdict": "PASS"
+      },
+      "task9_focused": {
+        "events": 75,
+        "verdict": "PASS"
+      },
+      "task9_race": {
+        "events": 75,
+        "verdict": "PASS"
+      },
+      "serial_full": {
+        "explicit_performance_skip": 1,
+        "fail": 0,
+        "pass_events": 1114,
+        "leaf_pass": 1012,
+        "top_level_pass": 410,
+        "package_pass": 16,
+        "package_skip": 4
+      },
+      "action_race": {
+        "skip": 0,
+        "fail": 0,
+        "pass_events": 261,
+        "leaf_pass": 232,
+        "top_level_pass": 81,
+        "package_pass": 2
+      },
+      "route_registry": {
+        "pass": 15,
+        "fail": 0
+      },
+      "router": {
+        "pass": 14,
+        "fixture_skip": 10,
+        "fail": 0
+      }
+    },
+    "gates": {
+      "build": "PASS",
+      "vet": "PASS",
+      "diff": "PASS",
+      "source": "PASS"
+    },
+    "secret_scan": {
+      "exact_secret_classes": 6,
+      "exact_matches": 0,
+      "generic_pattern_classes": 7,
+      "unapproved_generic_matches": 0,
+      "allowlisted_public_operation_reference_matches": 1
+    },
+    "private_permissions": {
+      "directories_0700": 515,
+      "regular_files_0600": 5813,
+      "symlinks": 0
+    },
+    "fixture_retained_alive": true,
+    "count_semantics": "pass_events count test pass actions and exclude package actions; leaf_pass excludes parent tests; top_level_pass counts passing tests without a slash; signed source values are preserved",
+    "temporal_scope": "QA_PASS was issued before the later SPEC_FAIL identified five missing Execute real-MySQL fault subtests"
+  },
+  "failure_archive": {
+    "pre_spec_snapshot": {
+      "failure_classes": 12,
+      "raw_json_files_with_fail_actions": 17,
+      "fail_action_events": 135
+    },
+    "current": {
+      "failure_classes": 14,
+      "raw_json_files_with_fail_actions": 19,
+      "fail_action_events": 145
+    },
+    "raw_logs_retained": true,
+    "first_qa_fail_retained": true,
+    "commit_process_deviation_retained": true,
+    "second_qa_pre_spec_pass_retained": true,
+    "later_spec_fail_retained": true
+  },
+  "spec_fail_after_second_qa": {
+    "verdict": "SPEC_FAIL",
+    "finding": "five real MySQL Execute fault points were absent: actor lock, session lock, operation lock, verification lock and ticket consume UPDATE",
+    "red_proof": {
+      "pass_events": 0,
+      "leaf_pass": 0,
+      "top_level_pass": 0,
+      "fail_action_events": 6,
+      "package_fail_actions": 1,
+      "log_sha256": "f618202e9b7278804dc7af6287f4955c083c519923fb7f8873885912803dc084"
+    },
+    "green_attempt": {
+      "pass_events": 4,
+      "leaf_pass": 4,
+      "top_level_pass": 0,
+      "fail_action_events": 2,
+      "package_fail_actions": 1,
+      "log_sha256": "e798036625440deb13554d121a5091580979335afc93f13c93dbafd5225daa2f"
+    },
+    "remediation_commit": "479915c6a2c224bfd1c25ab7054503e19bc05663",
+    "remediation": "each case invokes production Execute with a fresh operation, ticket and identity; a test-only exact-stage SQL callback injects one fixed sentinel and proves prior locks, no later consumer/audit/outbox/terminal SQL, outer rollback, unchanged processing lease, unconsumed verification and zero fixture effects",
+    "ten_point_matrix": "PASS"
+  },
+  "post_spec_remediation": {
+    "fresh_mysql_databases": [
+      "porsche_b1e_specverify_c71f_test",
+      "porsche_b1e_specserial_c71f_test",
+      "porsche_b1e_specrace_c71f_test"
+    ],
+    "redis_logical_databases": [
+      2,
+      3
+    ],
+    "migration": {
+      "verdict": "PASS",
+      "log_sha256": "e05301ef97b1692a8fa131fc2ddc7334b4a73c5670fcb2822cdcfd158aeee4cf"
+    },
+    "fault_matrix": {
+      "pass_events": 6,
+      "leaf_pass": 5,
+      "top_level_pass": 1,
+      "skip_events": 0,
+      "fail_events": 0,
+      "package_pass": 1,
+      "package_skip": 0,
+      "package_fail": 0,
+      "log_sha256": "feed83c4c03086c069029c38979817bf63d3f3ff226c2256ec0d10253d6bdb44"
+    },
+    "service_real": {
+      "pass_events": 32,
+      "leaf_pass": 27,
+      "top_level_pass": 8,
+      "skip_events": 0,
+      "fail_events": 0,
+      "package_pass": 1,
+      "package_skip": 0,
+      "package_fail": 0,
+      "log_sha256": "0ca46c56223f67f7c761300c0dfe4e77aaba312d2b44dde1adf68b07c5cd20e6"
+    },
+    "service_concurrency_race": {
+      "pass_events": 2,
+      "leaf_pass": 2,
+      "top_level_pass": 2,
+      "skip_events": 0,
+      "fail_events": 0,
+      "package_pass": 1,
+      "package_skip": 0,
+      "package_fail": 0,
+      "log_sha256": "e9436b7a1c901606755b1694db9f4702564df269be3f41a56481f56902518e02"
+    },
+    "serial_full": {
+      "pass_events": 1120,
+      "leaf_pass": 1017,
+      "top_level_pass": 411,
+      "skip_events": 1,
+      "fail_events": 0,
+      "package_pass": 16,
+      "package_skip": 4,
+      "package_fail": 0,
+      "explicit_skip": "TestAdminUsersReadPerformance requires separate 100k authorization",
+      "log_sha256": "67d0fb61f2eed03fec27e3814ffa10efcac8cb95fbdcfa56c14f26944e0f34df"
+    },
+    "action_race": {
+      "pass_events": 267,
+      "leaf_pass": 237,
+      "top_level_pass": 82,
+      "skip_events": 0,
+      "fail_events": 0,
+      "package_pass": 2,
+      "package_skip": 0,
+      "package_fail": 0,
+      "log_sha256": "c903ed05be9e6420b83f44c414a00964ac2a0b76f6ddc3865dff56fab5730f07"
+    },
+    "build": "PASS",
+    "vet": "PASS",
+    "diff_check": "PASS",
+    "source_scan": {
+      "production_test_action_refs": 0,
+      "unique_test_action_definitions": 1
+    },
+    "private_permissions": {
+      "directories_0700": 515,
+      "regular_files_0600": 5835,
+      "symlinks": 0,
+      "nonconforming_directories": 0,
+      "nonconforming_regular_files": 0
+    },
+    "secret_scan": {
+      "verdict": "PASS",
+      "target_file_count": 157,
+      "target_manifest_kind": "relative_path_list",
+      "target_manifest_sha256": "3a17a107eaec9ff4153f7e8ff14e699a2981bec4943e3e0dc103a5b77a900cdf",
+      "exact_secret_classes": 6,
+      "exact_match_count": 0,
+      "generic_pattern_classes": 7,
+      "generic_unapproved_match_count": 0,
+      "allowlisted_public_operation_reference_unique_count": 1,
+      "matched_lines_stored": 0,
+      "searched_values_stored": 0
+    }
+  },
+  "third_independent_qa": {
+    "verdict": "QA_PASS",
+    "signed_result_sha256": "5938c0be63d7739f227320f7b1880b165d4889bc3cb9dcc97b121228f4a9783a",
+    "reviewed_head": "2408ee3ace6f1a2ff07645653aed354a0ca245fa",
+    "count_semantics": "pass_events count test pass actions and exclude package actions; leaf_pass excludes parent tests; top_level_pass counts passing tests without a slash",
+    "checks": {
+      "action_race": {
+        "fail_events": 0,
+        "leaf_pass": 237,
+        "log_sha256": "0c2f9aeb76a0391574927f759431321059cf753e627ff880e61442f5344ef636",
+        "package_fail": 0,
+        "package_pass": 2,
+        "package_skip": 0,
+        "pass_events": 267,
+        "skip_events": 0,
+        "top_level_pass": 82
+      },
+      "build": "PASS",
+      "diff_check": "PASS",
+      "fault_matrix_new_five": {
+        "fail_events": 0,
+        "leaf_pass": 5,
+        "log_sha256": "8db1b157afd1654f00d9e720f4433e8ebdafaffcc5e76a3cf53dd7e6ecdad40e",
+        "package_fail": 0,
+        "package_pass": 1,
+        "package_skip": 0,
+        "pass_events": 6,
+        "skip_events": 0,
+        "top_level_pass": 1
+      },
+      "migration_real_down_up_verify": {
+        "fail_events": 0,
+        "leaf_pass": 1,
+        "log_sha256": "bf5266814239a5a27f4e95b0d2b9cbfbd74d301d0dec0b6496604ee9f17e4656",
+        "package_fail": 0,
+        "package_pass": 1,
+        "package_skip": 0,
+        "pass_events": 1,
+        "skip_events": 0,
+        "top_level_pass": 1
+      },
+      "route_registry": {
+        "fail_events": 0,
+        "leaf_pass": 13,
+        "log_sha256": "0b56c0267eb32648a6b3cc101c0344905225ec76095b67ee5c35b6977b333f98",
+        "package_fail": 0,
+        "package_pass": 2,
+        "package_skip": 0,
+        "pass_events": 15,
+        "skip_events": 0,
+        "top_level_pass": 3
+      },
+      "router_full_with_fixture": {
+        "fail_events": 0,
+        "leaf_pass": 22,
+        "log_sha256": "fed9701bc135e9de18da7758c94cb404cc545b9f360de17476b82c2042f2ca46",
+        "package_fail": 0,
+        "package_pass": 1,
+        "package_skip": 0,
+        "pass_events": 24,
+        "skip_events": 0,
+        "top_level_pass": 12
+      },
+      "secret_scan": "PASS",
+      "serial_full": {
+        "fail_events": 0,
+        "leaf_pass": 1017,
+        "log_sha256": "83c88e50c5b52f9a06ade7de8efd0e16cc199825b6ea5c89f5f1a377fe126fd8",
+        "package_fail": 0,
+        "package_pass": 16,
+        "package_skip": 4,
+        "pass_events": 1120,
+        "skip_events": 1,
+        "top_level_pass": 411
+      },
+      "service_concurrency_race": {
+        "fail_events": 0,
+        "leaf_pass": 2,
+        "log_sha256": "1545882f2ca1b7d6d5286efeffeae284e7fefc8fe655a9d1cf04439f21d18e78",
+        "package_fail": 0,
+        "package_pass": 1,
+        "package_skip": 0,
+        "pass_events": 2,
+        "skip_events": 0,
+        "top_level_pass": 2
+      },
+      "service_real_ten_point_matrix": {
+        "fail_events": 0,
+        "leaf_pass": 27,
+        "log_sha256": "20b59fb29671b87fb6a1db7e433fcee24496a33a56477e4bb14d96cb72ebca69",
+        "package_fail": 0,
+        "package_pass": 1,
+        "package_skip": 0,
+        "pass_events": 32,
+        "skip_events": 0,
+        "top_level_pass": 8
+      },
+      "source_scan": "PASS",
+      "vet": "PASS"
+    },
+    "explicit_skip": "TestAdminUsersReadPerformance requires separate 100k authorization",
+    "ten_point_matrix": {
+      "existing_five_invariants": {
+        "commit_unknown_zero_replay": "PASS",
+        "faults_rollback_to_processing_without_false_terminal": "PASS"
+      },
+      "new_five_invariants": {
+        "effect_audit_outbox_zero": "PASS",
+        "later_consumer_audit_outbox_terminal_sql_zero": "PASS",
+        "operation_processing_and_lease_unchanged": "PASS",
+        "outer_rollback": "PASS",
+        "preceding_locks": "PASS",
+        "production_execute": "PASS",
+        "real_mysql_read_committed_transaction": "PASS",
+        "sentinel_exactly_once": "PASS",
+        "verification_unconsumed": "PASS"
+      },
+      "points": {
+        "actor_lock": "PASS",
+        "audit": "PASS",
+        "commit_return_unknown": "PASS",
+        "effect": "PASS",
+        "operation_lock": "PASS",
+        "outbox": "PASS",
+        "session_lock": "PASS",
+        "terminal_update": "PASS",
+        "ticket_consume_update": "PASS",
+        "verification_lock": "PASS"
+      },
+      "verdict": "PASS"
+    },
+    "evidence_review": {
+      "commit_process_deviation_retained": true,
+      "failure_archive": {
+        "current_fail_action_events": 145,
+        "current_failure_classes": 14,
+        "current_raw_json_files_with_fail_actions": 19,
+        "pre_spec_fail_action_events": 135,
+        "pre_spec_failure_classes": 12,
+        "pre_spec_raw_json_files_with_fail_actions": 17,
+        "raw_logs_retained": true
+      },
+      "first_qa": {
+        "hash_matches_report": true,
+        "sha256": "656da72a9f0101941da0b41fb3b45d48a6970708260575c26ef051c3b09abc4b",
+        "verdict": "QA_FAIL"
+      },
+      "five_public_files_sha256": {
+        "fixture-identity.json": "e9ed36b4988046cb28db7032b286073deb85c55a5f897455dae478168af5d04a",
+        "fixture-plan.md": "86407a71ec5247b8215cd2ade497ad976bee76e3ae54c519e13b32acaf6ae21f",
+        "fixture-results.json": "af1e790440651c90be3d20ee55a082af345ecfca650a41782074ca53d19d81dc",
+        "migration-ledger.txt": "c6574f3b1c01561d19c1d630dbec7405c2790bff4e5981ad5b8be559f5da531a",
+        "secret-scan.txt": "ca8e4e78e0f8d8d9ab324f0188da0cefff6552c868c4482a4c3eb13e49769181"
+      },
+      "later_spec_fail_retained": true,
+      "post_spec_remediation_hashes_match_raw": true,
+      "second_qa": {
+        "hash_matches_report": true,
+        "sha256": "8780e465351ab7a6da33b6a51f40565c892e07d79fa09916f9ea34a90f84bc8c",
+        "verdict": "QA_PASS_PRE_SPEC_FAIL"
+      },
+      "secret_scan": {
+        "allowlisted_public_operation_reference_unique_count": 1,
+        "exact_counts": {
+          "action-root-key": 0,
+          "action-ticket-material": 0,
+          "actor-password": 0,
+          "idempotency-key": 0,
+          "mysql-root-password": 0,
+          "session-material": 0
+        },
+        "generic_unapproved_counts": {
+          "authorization_header_value": 0,
+          "cookie_header_value": 0,
+          "credentialed_mysql_url": 0,
+          "credentialed_redis_url": 0,
+          "private_key_material": 0,
+          "raw_action_external_value": 0,
+          "sensitive_env_assignment": 0
+        },
+        "matched_lines_stored": 0,
+        "searched_values_stored": 0,
+        "target_file_count": 177,
+        "target_manifest_sha256": "3d1850f0d91fce75cb556bc821631de6e5f52a7bd4ed3b67ee7175304dd9bc7e",
+        "verdict": "PASS"
+      },
+      "statistics_labels_corrected": true
+    },
+    "qa_isolation": {
+      "chat_requests": 0,
+      "fresh_mysql_databases": [
+        "porsche_b1e_thirdqa_c71f_test",
+        "porsche_b1e_thirdqa_serial_c71f_test",
+        "porsche_b1e_thirdqa_race_c71f_test"
+      ],
+      "model_requests": 0,
+      "production_requests": 0,
+      "redis_dbsize_before_run": {
+        "10": 0,
+        "13": 0,
+        "7": 0
+      },
+      "redis_flush_commands": 0,
+      "redis_logical_databases": [
+        10,
+        7,
+        13
+      ],
+      "redis_scope_note": "All 16 logical DBs have historical-use evidence. Reused currently-empty DB10/7/13 without FLUSH; production tests use fresh random or unique canonical identities. This is acceptable for the fresh reviewer repeat under the fixture plan distinct-logical-DB-or-unique-identity rule, but these logical DBs are not described as never-used.",
+      "sse_requests": 0,
+      "upstream_requests": 0
+    },
+    "nonproduct_execution_notes": [
+      "Initial migration environment attempt rejected an unset snowflake setting; corrected with an isolated valid node ID.",
+      "Sandbox-local migration attempt could not connect to loopback; rerun under authorized local-fixture network access passed.",
+      "Initial build/vet attempt used the default unwritable cache; rerun with the private GOCACHE passed.",
+      "An initial service-real selection omitted one exact concurrency test but passed 31 events; retained and superseded by the complete 32-event final run."
+    ],
+    "private_permissions": {
+      "directories_0700": 772,
+      "nonconforming_directories": 0,
+      "nonconforming_regular_files": 0,
+      "regular_files_0600": 9832,
+      "symlinks": 0
+    },
+    "fixture_identity": {
+      "alive": "PASS",
+      "auto_remove": true,
+      "exact_name_label_image": "PASS",
+      "loopback_only": "PASS",
+      "mount_contract": "PASS",
+      "mysql_full_id": "188d95b42424ca47a8d9cfddccc929ebe63537adff9a54515e54fd18c1be160a",
+      "mysql_host": "127.0.0.1:52104",
+      "mysql_select_1": "PASS",
+      "named_volumes": 0,
+      "read_only_rootfs": true,
+      "redis_full_id": "945419ecbc5e6fbe15615acfa7b652acca3d6ae6dc748f9bd863489c5c1258bf",
+      "redis_host": "127.0.0.1:52107",
+      "redis_ping": "PASS",
+      "retained_alive": true,
+      "task_label": "porsche-b1e-260905-t12-a0056a9-c71f",
+      "tmpfs": "PASS",
+      "verdict": "PASS"
+    },
+    "worktree_clean_at_review": true,
+    "limitations": [
+      "production active registry remains empty",
+      "no production consumer, HTTP activation, frontend adapter, deployment or production migration was performed",
+      "fixture remains alive; cleanup remains forbidden until Task14"
+    ],
+    "terminal_secret_scan": {
+      "verdict": "PASS",
+      "target_file_count": 183,
+      "target_manifest_kind": "relative_path_list",
+      "target_manifest_sha256": "fc8be455c7ef5e5fc4e814db0fd1ea0791d3e2e96c8dd361ac24ef19dc853f5f",
+      "exact_secret_classes": 6,
+      "exact_match_count": 0,
+      "generic_pattern_classes": 7,
+      "generic_unapproved_match_count": 0,
+      "allowlisted_public_operation_reference_unique_count": 1,
+      "matched_lines_stored": 0,
+      "searched_values_stored": 0,
+      "includes_virtual_repo_working_diff": true
+    }
+  }
+}

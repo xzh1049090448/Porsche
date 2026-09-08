@@ -1,0 +1,104 @@
+#!/bin/zsh
+set -euo pipefail
+umask 077
+
+base=/tmp/a03-task12-0010-20260907182125-bfacc639
+db_env="$base/canonical-final-runtime-db-env.sh"
+runtime_env="$base/canonical-final-runtime.env"
+root_credentials="$base/canonical-root.credentials"
+report=/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/docs/superpowers/reports/validation/2026-09-06-a03-admin-user-create/canonical-3a50144-9f660a9-final
+. "$db_env"
+
+free_port() {
+  python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()'
+}
+
+nonce=$(openssl rand -hex 4)
+backend_port=$(free_port)
+frontend_port=$(free_port)
+proxy_port=$(free_port)
+while [[ "$frontend_port" == "$backend_port" ]]; do frontend_port=$(free_port); done
+while [[ "$proxy_port" == "$backend_port" || "$proxy_port" == "$frontend_port" ]]; do proxy_port=$(free_port); done
+
+root_username="root_${nonce}"
+admin_username="admin_${nonce}"
+tombstone_username="tomb_${nonce}"
+ambiguous_username="amb_${nonce}"
+root_password="Aa1!$(openssl rand -hex 6)"
+admin_password="Bb2@$(openssl rand -hex 6)"
+ordinary_password="Cc3#$(openssl rand -hex 6)"
+jwt_secret=$(openssl rand -base64 48 | tr '+/' '-_' | tr -d '=\n')
+auth_hmac=$(openssl rand -base64 48 | tr '+/' '-_' | tr -d '=\n')
+admin_token=$(openssl rand -hex 32)
+metrics_token=$(openssl rand -hex 32)
+upstream_key=$(openssl rand -hex 32)
+fixed_phone="139$(python3 -c 'import secrets; print("".join(str(secrets.randbelow(10)) for _ in range(8)))')"
+fixed_password="Dd4%$(openssl rand -hex 6)"
+
+write_export() {
+  printf 'export %s=%q\n' "$1" "$2"
+}
+
+{
+  write_export A03_PRIVATE_DIR "$base"
+  write_export A03_REPORT_DIR "$report/browser"
+  write_export A03_MYSQL_NAME "a03-task12-mysql-20260907182125-bfacc639"
+  write_export A03_DATABASE_NAME "a03_20260907182125bfacc639_canonical_3a50144_runtime_test"
+  write_export A03_DATABASE_URL "$TEST_DATABASE_URL"
+  write_export A03_BACKEND_PORT "$backend_port"
+  write_export A03_FRONTEND_PORT "$frontend_port"
+  write_export A03_PROXY_PORT "$proxy_port"
+  write_export A03_BROWSER_BASE "https://127.0.0.1:${proxy_port}"
+  write_export A03_ROOT_USERNAME "$root_username"
+  write_export A03_ROOT_PASSWORD "$root_password"
+  write_export A03_ADMIN_USERNAME "$admin_username"
+  write_export A03_ADMIN_PASSWORD "$admin_password"
+  write_export A03_ORDINARY_PASSWORD "$ordinary_password"
+  write_export A03_TOMBSTONE_USERNAME "$tombstone_username"
+  write_export A03_AMBIGUOUS_USERNAME "$ambiguous_username"
+  write_export APP_ENV test
+  write_export HOST 127.0.0.1
+  write_export PORT "$backend_port"
+  write_export ALLOWED_HOSTS 127.0.0.1,localhost
+  write_export DATABASE_URL "$TEST_DATABASE_URL"
+  write_export TEST_DATABASE_URL "$TEST_DATABASE_URL"
+  write_export REDIS_URL "$TEST_REDIS_URL"
+  write_export TEST_REDIS_URL "$TEST_REDIS_URL"
+  write_export SNOWFLAKE_NODE_ID 903
+  write_export JWT_SECRET_KEY "$jwt_secret"
+  write_export AUTH_HMAC_KEY "$auth_hmac"
+  write_export ACTION_SECURITY_HMAC_KEY "$ACTION_SECURITY_HMAC_KEY"
+  write_export ADMIN_TOKEN "$admin_token"
+  write_export METRICS_TOKEN "$metrics_token"
+  write_export FIXED_LOGIN_ENABLED false
+  write_export FIXED_LOGIN_PHONE "$fixed_phone"
+  write_export FIXED_LOGIN_PASSWORD "$fixed_password"
+  write_export SMS_DEV_MODE false
+  write_export AUTH_TRUSTED_ORIGINS "https://127.0.0.1:${proxy_port}"
+  write_export JIEKOU_API_KEY "$upstream_key"
+  write_export JIEKOU_ALLOWED_MODELS fixture-model
+  write_export UPSTREAM_REGION cn
+} > "$runtime_env"
+chmod 600 "$runtime_env"
+
+{
+  printf 'username=%s\n' "$root_username"
+  printf 'password=%s\n' "$root_password"
+} > "$root_credentials"
+chmod 600 "$root_credentials"
+
+openssl req -x509 -newkey rsa:2048 -nodes -keyout "$base/proxy.key" -out "$base/proxy.crt" -days 1 -subj '/CN=127.0.0.1' -addext 'subjectAltName=IP:127.0.0.1' >/dev/null 2>&1
+chmod 600 "$base/proxy.key" "$base/proxy.crt"
+
+{
+  printf 'runtime_nonce=%s\n' "$nonce"
+  printf 'database=a03_20260907182125bfacc639_canonical_3a50144_runtime_test\n'
+  printf 'redis_logical_db=9\n'
+  printf 'backend=127.0.0.1:%s\n' "$backend_port"
+  printf 'frontend=127.0.0.1:%s\n' "$frontend_port"
+  printf 'proxy=https://127.0.0.1:%s\n' "$proxy_port"
+  printf 'private_dir_mode=%s\n' "$(stat -f %Sp "$base")"
+  printf 'runtime_env_mode=%s\n' "$(stat -f %Sp "$runtime_env")"
+  printf 'credentials_mode=%s\n' "$(stat -f %Sp "$root_credentials")"
+  printf 'credentials=generated_test_only_not_recorded\n'
+} > "$report/runtime/runtime-identity-sanitized.txt"

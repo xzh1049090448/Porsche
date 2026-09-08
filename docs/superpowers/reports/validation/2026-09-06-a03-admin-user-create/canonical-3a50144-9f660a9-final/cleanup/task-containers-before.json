@@ -1,0 +1,197 @@
+{
+  "containers": [
+    {
+      "auto_remove": true,
+      "configured_image": "mysql:8.4",
+      "id": "8aaf7b392c005bdb9c8e896d4d0b81af6bcd23508e4bbd22f81f6730e31e7d52",
+      "image_id": "sha256:b3b90af2a6552ae30c266fdb7d5dd55f3afb72404bb78d37fe8a23eb857fd3fb",
+      "labels": {
+        "com.porsche.fixture.owner": "a03-task12-fix-20260907091002-2b0f5583"
+      },
+      "mounts": [],
+      "name": "a03-task12-mysql-20260907091002-2b0f5583",
+      "ports": {
+        "3306/tcp": [
+          {
+            "HostIp": "127.0.0.1",
+            "HostPort": "62426"
+          }
+        ]
+      },
+      "state": "running",
+      "tmpfs": {
+        "/var/lib/mysql": "rw,nosuid,noexec,size=1073741824"
+      }
+    },
+    {
+      "auto_remove": true,
+      "configured_image": "sha256:7dcddc01f13bab2f15cde676d44d01f61fc9f99fe7785e86196dfc07d358ae2b",
+      "id": "5901664047aa67c6cc6ed0d061c889f0fa8b39281405ee02b0321db8db9dbc8a",
+      "image_id": "sha256:7dcddc01f13bab2f15cde676d44d01f61fc9f99fe7785e86196dfc07d358ae2b",
+      "labels": {
+        "codex.scope": "a03-task12",
+        "codex.task": "a03-task12-20260907140441-9d83c897"
+      },
+      "mounts": [],
+      "name": "a03-task12-mysql-20260907140441-9d83c897",
+      "ports": {
+        "3306/tcp": [
+          {
+            "HostIp": "127.0.0.1",
+            "HostPort": "58106"
+          }
+        ]
+      },
+      "state": "running",
+      "tmpfs": {
+        "/tmp": "rw,noexec,nosuid,nodev,size=64m",
+        "/var/lib/mysql": "rw,noexec,nosuid,nodev,size=1g",
+        "/var/lib/mysql-files": "rw,noexec,nosuid,nodev,size=16m",
+        "/var/run/mysqld": "rw,noexec,nosuid,nodev,size=16m"
+      }
+    },
+    {
+      "auto_remove": true,
+      "configured_image": "mysql:8.4",
+      "id": "e028f8ae338d001bb2912a09d43b4897e0e5e332f19d44d9281253f2263f335e",
+      "image_id": "sha256:b3b90af2a6552ae30c266fdb7d5dd55f3afb72404bb78d37fe8a23eb857fd3fb",
+      "labels": {
+        "codex.task": "a03-task12-0010-20260907181306-b8b409bc"
+      },
+      "mounts": [],
+      "name": "a03-task12-mysql-20260907181306-b8b409bc",
+      "ports": {
+        "3306/tcp": [
+          {
+            "HostIp": "127.0.0.1",
+            "HostPort": "51767"
+          }
+        ]
+      },
+      "state": "running",
+      "tmpfs": {
+        "/var/lib/mysql": "rw,noexec,nosuid,size=1073741824"
+      }
+    },
+    {
+      "auto_remove": true,
+      "configured_image": "mysql:8.4",
+      "id": "f3c761d618442224f7ccb994a7be5a51e5869eefe66ae29c2e138a0bcfd68cc7",
+      "image_id": "sha256:b3b90af2a6552ae30c266fdb7d5dd55f3afb72404bb78d37fe8a23eb857fd3fb",
+      "labels": {
+        "codex.task": "a03-task12-0010-20260907182125-bfacc639"
+      },
+      "mounts": [],
+      "name": "a03-task12-mysql-20260907182125-bfacc639",
+      "ports": {
+        "3306/tcp": [
+          {
+            "HostIp": "127.0.0.1",
+            "HostPort": "55877"
+          }
+        ]
+      },
+      "state": "running",
+      "tmpfs": {
+        "/var/lib/mysql": "rw,noexec,nosuid,size=1073741824"
+      }
+    },
+    {
+      "auto_remove": true,
+      "configured_image": "redis:7.4-alpine",
+      "id": "e20764effd91373f6456f446e9546bd9ac0dce8780a0bdc05dfc35e0fa5e13d7",
+      "image_id": "sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf",
+      "labels": {
+        "com.porsche.fixture.owner": "a03-task12-fix-20260907091002-2b0f5583"
+      },
+      "mounts": [],
+      "name": "a03-task12-redis-20260907091002-2b0f5583",
+      "ports": {
+        "6379/tcp": [
+          {
+            "HostIp": "127.0.0.1",
+            "HostPort": "62427"
+          }
+        ]
+      },
+      "state": "running",
+      "tmpfs": {
+        "/data": "rw,nosuid,noexec,size=134217728"
+      }
+    },
+    {
+      "auto_remove": true,
+      "configured_image": "sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf",
+      "id": "46a85d34a8fa6879134b8a291c9b335422cc131fab53bab04b23e63a8506aaa1",
+      "image_id": "sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf",
+      "labels": {
+        "codex.scope": "a03-task12",
+        "codex.task": "a03-task12-20260907140441-9d83c897"
+      },
+      "mounts": [],
+      "name": "a03-task12-redis-20260907140441-9d83c897",
+      "ports": {
+        "6379/tcp": [
+          {
+            "HostIp": "127.0.0.1",
+            "HostPort": "58107"
+          }
+        ]
+      },
+      "state": "running",
+      "tmpfs": {
+        "/data": "rw,noexec,nosuid,nodev,size=128m",
+        "/tmp": "rw,noexec,nosuid,nodev,size=32m"
+      }
+    },
+    {
+      "auto_remove": true,
+      "configured_image": "redis:7.4-alpine",
+      "id": "f497b9d5439dde10d15c2edca6e782400aa941fcfd4377ddfa69effe634a201a",
+      "image_id": "sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf",
+      "labels": {
+        "codex.task": "a03-task12-0010-20260907181306-b8b409bc"
+      },
+      "mounts": [],
+      "name": "a03-task12-redis-20260907181306-b8b409bc",
+      "ports": {
+        "6379/tcp": [
+          {
+            "HostIp": "127.0.0.1",
+            "HostPort": "51768"
+          }
+        ]
+      },
+      "state": "running",
+      "tmpfs": {
+        "/data": "rw,noexec,nosuid,size=67108864"
+      }
+    },
+    {
+      "auto_remove": true,
+      "configured_image": "redis:7.4-alpine",
+      "id": "fadba43ab8145684dc3440ec0f61a139b0478384e9d95b25bd413734e421ed72",
+      "image_id": "sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf",
+      "labels": {
+        "codex.task": "a03-task12-0010-20260907182125-bfacc639"
+      },
+      "mounts": [],
+      "name": "a03-task12-redis-20260907182125-bfacc639",
+      "ports": {
+        "6379/tcp": [
+          {
+            "HostIp": "127.0.0.1",
+            "HostPort": "55878"
+          }
+        ]
+      },
+      "state": "running",
+      "tmpfs": {
+        "/data": "rw,noexec,nosuid,size=67108864"
+      }
+    }
+  ],
+  "mysql_version_source": "runtime/mysql-runtime-security-query.tsv",
+  "observed_at_utc": "2026-09-07T17:15:34Z",
+  "redis_version": "Redis server v=7.4.11 sha=00000000:0 malloc=jemalloc-5.3.0 bits=64 build=c8d8130a4710f7c0"
+}

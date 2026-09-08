@@ -1,0 +1,48 @@
+=== RUN   TestH3IgnoreActiveUpdatedReadOnlyExperiment
+    admin_users_read_test.go:108: predicate_source=usersReadWhere predicate="id <> ? AND guid <> ? AND role IN (?) AND is_deleted = 0 AND status IN (?,?)" arg_count=5
+    admin_users_read_test.go:130: B0_OUTPUT total=100000 guids=[354103819515551859 354103819515551858 354103819515551857 354103819515551856 354103819515551855 354103819515551854 354103819515551853 354103819515551852 354103819515551851 354103819515551850 354103819515551849 354103819515551848 354103819515551847 354103819515551846 354103819515551845 354103819515551844 354103819515551843 354103819515551842 354103819515551841 354103819515551840]
+    admin_users_read_test.go:130: H3_OUTPUT total=100000 guids=[354103819515551859 354103819515551858 354103819515551857 354103819515551856 354103819515551855 354103819515551854 354103819515551853 354103819515551852 354103819515551851 354103819515551850 354103819515551849 354103819515551848 354103819515551847 354103819515551846 354103819515551845 354103819515551844 354103819515551843 354103819515551842 354103819515551841 354103819515551840]
+    admin_users_read_test.go:146: B0_FULL_EXPLAIN -> Sort: paged.guid DESC  (actual time=0.0697..0.0701 rows=20 loops=1)
+            -> Stream results  (cost=4.75 rows=20) (actual time=0.0559..0.059 rows=20 loops=1)
+                -> Nested loop left join  (cost=4.75 rows=20) (actual time=0.0547..0.0567 rows=20 loops=1)
+                    -> Rows fetched before execution  (cost=0..0 rows=1) (actual time=0..41e-6 rows=1 loops=1)
+                    -> Table scan on paged  (cost=574..4.75 rows=20) (actual time=0.0488..0.05 rows=20 loops=1)
+                        -> Materialize CTE paged  (cost=604..604 rows=20) (actual time=0.048..0.048 rows=20 loops=1)
+                            -> Limit: 20 row(s)  (cost=602 rows=20) (actual time=0.0377..0.041 rows=20 loops=1)
+                                -> Filter: ((users.is_deleted = 0) and (users.`role` in (1,10)) and (users.`status` in (1,2)))  (cost=602 rows=497) (actual time=0.0375..0.04 rows=20 loops=1)
+                                    -> Index range scan on users using uk_users_guid over (guid < -1) OR (-1 < guid) (reverse), with index condition: ((users.id <> -1) and (users.guid <> -1))  (cost=602 rows=49681) (actual time=0.0368..0.0384 rows=20 loops=1)
+    admin_users_read_test.go:146: H3_FULL_EXPLAIN -> Sort: paged.guid DESC  (actual time=0.074..0.0744 rows=20 loops=1)
+            -> Stream results  (cost=4.75 rows=20) (actual time=0.0617..0.0648 rows=20 loops=1)
+                -> Nested loop left join  (cost=4.75 rows=20) (actual time=0.0609..0.063 rows=20 loops=1)
+                    -> Rows fetched before execution  (cost=0..0 rows=1) (actual time=0..0 rows=1 loops=1)
+                    -> Table scan on paged  (cost=574..4.75 rows=20) (actual time=0.0587..0.0599 rows=20 loops=1)
+                        -> Materialize CTE paged  (cost=604..604 rows=20) (actual time=0.0578..0.0578 rows=20 loops=1)
+                            -> Limit: 20 row(s)  (cost=602 rows=20) (actual time=0.0453..0.0488 rows=20 loops=1)
+                                -> Filter: ((users.is_deleted = 0) and (users.`role` in (1,10)) and (users.`status` in (1,2)))  (cost=602 rows=497) (actual time=0.0449..0.0479 rows=20 loops=1)
+                                    -> Index range scan on users using uk_users_guid over (guid < -1) OR (-1 < guid) (reverse), with index condition: ((users.id <> -1) and (users.guid <> -1))  (cost=602 rows=49681) (actual time=0.0443..0.0461 rows=20 loops=1)
+    admin_users_read_test.go:146: B0_COUNT_EXPLAIN -> Aggregate: count(0)  (cost=652 rows=1) (actual time=70.9..70.9 rows=1 loops=1)
+            -> Filter: ((users.guid <> -1) and (users.`role` in (1,10)) and (users.`status` in (1,2)))  (cost=602 rows=497) (actual time=0.0482..68.1 rows=100000 loops=1)
+                -> Index lookup on users using idx_users_active_updated (is_deleted=0), with index condition: (users.id <> -1)  (cost=602 rows=49680) (actual time=0.0463..61.4 rows=100001 loops=1)
+    admin_users_read_test.go:146: H3_COUNT_EXPLAIN -> Aggregate: count(0)  (cost=7703 rows=1) (actual time=30..30 rows=1 loops=1)
+            -> Filter: ((users.is_deleted = 0) and (users.id <> -1) and (users.guid <> -1) and (users.`role` in (1,10)) and (users.`status` in (1,2)))  (cost=7603 rows=994) (actual time=0.0276..27.4 rows=100000 loops=1)
+                -> Index range scan on users using PRIMARY over (id < -1) OR (-1 < id)  (cost=7603 rows=49681) (actual time=0.0246..18.5 rows=100001 loops=1)
+    admin_users_read_test.go:146: PAGE_EXPLAIN -> Limit: 20 row(s)  (cost=602 rows=20) (actual time=0.0475..0.051 rows=20 loops=1)
+            -> Filter: ((users.is_deleted = 0) and (users.`role` in (1,10)) and (users.`status` in (1,2)))  (cost=602 rows=497) (actual time=0.047..0.0498 rows=20 loops=1)
+                -> Index range scan on users using uk_users_guid over (guid < -1) OR (-1 < guid) (reverse), with index condition: ((users.id <> -1) and (users.guid <> -1))  (cost=602 rows=49681) (actual time=0.0463..0.0478 rows=20 loops=1)
+    admin_users_read_test.go:165: B0_1_TIMING duration_ms=66.249 total=100000
+    admin_users_read_test.go:165: H3_1_TIMING duration_ms=24.351 total=100000
+    admin_users_read_test.go:165: H3_2_TIMING duration_ms=23.401 total=100000
+    admin_users_read_test.go:165: B0_2_TIMING duration_ms=65.179 total=100000
+    admin_users_read_test.go:165: B0_3_TIMING duration_ms=63.971 total=100000
+    admin_users_read_test.go:165: H3_3_TIMING duration_ms=23.307 total=100000
+    admin_users_read_test.go:165: H3_4_TIMING duration_ms=23.224 total=100000
+    admin_users_read_test.go:165: B0_4_TIMING duration_ms=63.040 total=100000
+    admin_users_read_test.go:165: B0_5_TIMING duration_ms=63.658 total=100000
+    admin_users_read_test.go:165: H3_5_TIMING duration_ms=23.299 total=100000
+    admin_users_read_test.go:165: H3_6_TIMING duration_ms=22.939 total=100000
+    admin_users_read_test.go:165: B0_6_TIMING duration_ms=62.858 total=100000
+    admin_users_read_test.go:165: B0_7_TIMING duration_ms=63.199 total=100000
+    admin_users_read_test.go:165: H3_7_TIMING duration_ms=23.580 total=100000
+--- PASS: TestH3IgnoreActiveUpdatedReadOnlyExperiment (0.94s)
+PASS
+ok  	github.com/porsche/ai-gateway-go/internal/service	1.825s

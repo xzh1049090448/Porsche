@@ -1,0 +1,112 @@
+{
+  "scope": "synthetic offline hypotheses; not captured upstream frames",
+  "codeRevision": "6e70784e182a4bae1e5b8399053b45429e8e4400",
+  "documentationHead": "66df28d",
+  "cases": [
+    {
+      "case": "standard",
+      "status": "pass"
+    },
+    {
+      "case": "missing",
+      "status": "pass"
+    },
+    {
+      "case": "null",
+      "status": "pass"
+    },
+    {
+      "case": "empty",
+      "status": "pass"
+    },
+    {
+      "case": "nonstream_completion",
+      "status": "pass"
+    },
+    {
+      "case": "response_object",
+      "status": "pass"
+    },
+    {
+      "case": "unknown_string",
+      "status": "pass"
+    },
+    {
+      "case": "whitespace",
+      "status": "pass"
+    },
+    {
+      "case": "number",
+      "status": "pass"
+    },
+    {
+      "case": "boolean",
+      "status": "pass"
+    },
+    {
+      "case": "array",
+      "status": "pass"
+    },
+    {
+      "case": "map",
+      "status": "pass"
+    },
+    {
+      "case": "case_key",
+      "status": "pass"
+    },
+    {
+      "case": "duplicate_bad_last",
+      "status": "pass"
+    },
+    {
+      "case": "duplicate_good_last",
+      "status": "pass"
+    },
+    {
+      "case": "duplicate_null_last",
+      "status": "pass"
+    },
+    {
+      "case": "duplicate_empty_last",
+      "status": "pass"
+    },
+    {
+      "case": "escaped_key",
+      "status": "pass"
+    },
+    {
+      "case": "null_then_standard",
+      "status": "pass"
+    },
+    {
+      "case": "nested_only",
+      "status": "pass"
+    },
+    {
+      "case": "nested_bad_ignored",
+      "status": "pass"
+    },
+    {
+      "case": "object_before_negative_created",
+      "status": "pass"
+    },
+    {
+      "case": "decode_error_before_object",
+      "status": "pass"
+    },
+    {
+      "case": "id_before_object",
+      "status": "pass"
+    },
+    {
+      "case": "case_collision",
+      "status": "pass"
+    }
+  ],
+  "caseCount": 25,
+  "failed": 0,
+  "generationRequests": 0,
+  "command": "GOPROXY=off GOSUMDB=off GOCACHE=/private/tmp/porsche-go-build-cache go test -overlay=/private/tmp/porsche-m3-object-investigation/overlay.json -vet=off ./internal/whitelabel -run ^TestM3ObjectHypotheses$ -count=1 -json",
+  "limitations": "Focused investigation with Go overlay, no business source changes, no full suite or real upstream verification; vet disabled for temporary overlay file."
+}

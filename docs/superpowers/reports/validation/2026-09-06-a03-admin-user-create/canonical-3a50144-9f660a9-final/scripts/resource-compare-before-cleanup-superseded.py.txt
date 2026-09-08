@@ -1,0 +1,72 @@
+import json
+from pathlib import Path
+
+root = Path("/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/docs/superpowers/reports/validation/2026-09-06-a03-admin-user-create/canonical-3a50144-9f660a9-final/runtime")
+before_lines = (root / "unrelated-baseline-before.txt").read_text().splitlines()
+
+sections = {"containers": [], "images": [], "volumes": []}
+current = None
+for line in before_lines:
+    if line in sections:
+        current = line
+    elif line and current:
+        sections[current].append(line)
+
+after = {
+    "containers": (root / "containers-after.txt").read_text().splitlines(),
+    "images": (root / "images-after.txt").read_text().splitlines(),
+    "volumes": (root / "volumes-after.txt").read_text().splitlines(),
+}
+
+def container_identity(line):
+    fields = line.split("\t")
+    if len(fields) < 6:
+        raise RuntimeError("invalid container identity row")
+    return tuple(fields[index] for index in (0, 1, 2, 4, 5))
+
+before_containers = {container_identity(line) for line in sections["containers"]}
+after_containers = {container_identity(line) for line in after["containers"]}
+task_names = {
+    "a03-task12-mysql-20260907182125-bfacc639",
+    "a03-task12-redis-20260907182125-bfacc639",
+}
+before_unrelated = {row for row in before_containers if row[1] not in task_names}
+after_unrelated = {row for row in after_containers if row[1] not in task_names}
+
+listener_lines = (root / "server-listeners-after.txt").read_text().splitlines()
+listener_values = {
+    key: value
+    for key, value in (
+        line.split("=", 1)
+        for line in listener_lines
+        if "=" in line
+    )
+}
+
+result = {
+    "status": None,
+    "comparison": "container status uptime ignored; immutable identity, ports, labels, image, image inventory, and volume inventory compared",
+    "unrelated_containers_before": len(before_unrelated),
+    "unrelated_containers_after": len(after_unrelated),
+    "unrelated_containers_added": len(after_unrelated - before_unrelated),
+    "unrelated_containers_removed": len(before_unrelated - after_unrelated),
+    "images_before": len(set(sections["images"])),
+    "images_after": len(set(after["images"])),
+    "images_added": len(set(after["images"]) - set(sections["images"])),
+    "images_removed": len(set(sections["images"]) - set(after["images"])),
+    "volumes_before": len(set(sections["volumes"])),
+    "volumes_after": len(set(after["volumes"])),
+    "volumes_added": len(set(after["volumes"]) - set(sections["volumes"])),
+    "volumes_removed": len(set(sections["volumes"]) - set(after["volumes"])),
+    "task_containers_retained": sum(1 for row in after_containers if row[1] in task_names),
+    "application_server_state": listener_values.get("state"),
+    "task_application_server_listeners_current": int(listener_values.get("actual_listener_count", "-1")),
+    "stored_changed_resource_identities": 0,
+}
+unchanged = not any(result[key] for key in ("unrelated_containers_added", "unrelated_containers_removed", "images_added", "images_removed", "volumes_added", "volumes_removed"))
+fixtures_retained = result["task_containers_retained"] == 2
+servers_stopped = result["application_server_state"] == "STOPPED_AFTER_ACCEPTANCE" and result["task_application_server_listeners_current"] == 0
+result["status"] = "PASS" if unchanged and fixtures_retained and servers_stopped else "FAIL"
+(root / "resource-comparison.json").write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
+print("resource_comparison=" + result["status"])
+raise SystemExit(0 if result["status"] == "PASS" else 1)

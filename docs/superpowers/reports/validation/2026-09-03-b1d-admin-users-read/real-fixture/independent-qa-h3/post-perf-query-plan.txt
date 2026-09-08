@@ -1,0 +1,21 @@
+mysql: [Warning] Using a password on the command line interface can be insecure.
+total_h3
+100000
+page_items
+20
+EXPLAIN
+-> Aggregate: count(0)  (cost=652 rows=1) (actual time=69.8..69.8 rows=1 loops=1)\n    -> Filter: ((users.guid <> -1) and (users.`role` in (1,10)) and (users.`status` in (1,2)))  (cost=602 rows=497) (actual time=0.0648..67.1 rows=100000 loops=1)\n        -> Index lookup on users using idx_users_active_updated (is_deleted=0), with index condition: (users.id <> -1)  (cost=602 rows=49680) (actual time=0.0633..60.4 rows=100001 loops=1)\n
+EXPLAIN
+-> Aggregate: count(0)  (cost=10087 rows=1) (actual time=29.4..29.4 rows=1 loops=1)\n    -> Filter: ((users.is_deleted = 0) and (users.id <> -1) and (users.guid <> -1) and (users.`role` in (1,10)) and (users.`status` in (1,2)))  (cost=9988 rows=994) (actual time=0.0215..26.9 rows=100000 loops=1)\n        -> Index range scan on users using PRIMARY over (id < -1) OR (-1 < id)  (cost=9988 rows=49681) (actual time=0.0198..18.1 rows=100001 loops=1)\n
+EXPLAIN
+-> Limit: 20 row(s)  (cost=602 rows=20) (actual time=0.0454..0.0489 rows=20 loops=1)\n    -> Filter: ((users.is_deleted = 0) and (users.`role` in (1,10)) and (users.`status` in (1,2)))  (cost=602 rows=497) (actual time=0.0452..0.0476 rows=20 loops=1)\n        -> Index range scan on users using uk_users_guid over (guid < -1) OR (-1 < guid) (reverse), with index condition: ((users.id <> -1) and (users.guid <> -1))  (cost=602 rows=49681) (actual time=0.0445..0.0459 rows=20 loops=1)\n
+Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_part	Packed	Null	Index_type	Comment	Index_comment	Visible	Expression
+users	0	PRIMARY	1	id	A	99360	NULL	NULL		BTREE			YES	NULL
+users	0	uk_users_guid	1	guid	A	99360	NULL	NULL		BTREE			YES	NULL
+users	0	uk_users_phone	1	phone	A	1	NULL	NULL	YES	BTREE			YES	NULL
+users	0	uk_users_username	1	username	A	99360	NULL	NULL	YES	BTREE			YES	NULL
+users	1	idx_users_active_updated	1	is_deleted	A	1	NULL	NULL		BTREE			YES	NULL
+users	1	idx_users_active_updated	2	updated_at	A	1	NULL	NULL		BTREE			YES	NULL
+users	1	idx_users_admin_read_count	1	is_deleted	A	1	NULL	NULL		BTREE			YES	NULL
+users	1	idx_users_admin_read_count	2	role	A	1	NULL	NULL		BTREE			YES	NULL
+users	1	idx_users_admin_read_count	3	status	A	1	NULL	NULL		BTREE			YES	NULL

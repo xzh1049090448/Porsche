@@ -1,0 +1,161 @@
+{
+  "action_verifications": {
+    "consumed_rows": 1,
+    "rows": 1,
+    "tombstoned_rows": 1
+  },
+  "administrator_permissions": {
+    "catalog_version": 1,
+    "head_rows": 1,
+    "overrides": [
+      {
+        "capability": "users.sessions.read",
+        "effect": "allow"
+      },
+      {
+        "capability": "users.plan.change",
+        "effect": "deny"
+      }
+    ],
+    "policy_version": 1,
+    "rule_count": 2
+  },
+  "auth_audit": [
+    {
+      "event_type": "registered",
+      "rows": 6
+    },
+    {
+      "event_type": "login_succeeded",
+      "rows": 2
+    },
+    {
+      "event_type": "refresh_succeeded",
+      "rows": 3
+    }
+  ],
+  "operation_responses": {
+    "active_rows": 4,
+    "body_sha256_match_rows": 4,
+    "http_201_rows": 4,
+    "json_rows": 4,
+    "rows": 4
+  },
+  "operations_terminal": [
+    {
+      "action": "users.create_admin",
+      "failure": null,
+      "http_status": 201,
+      "result_kind": "user",
+      "rows": 1,
+      "state": "succeeded"
+    },
+    {
+      "action": "users.create",
+      "failure": null,
+      "http_status": 201,
+      "result_kind": "user",
+      "rows": 3,
+      "state": "succeeded"
+    },
+    {
+      "action": "users.create",
+      "failure": "action_rejected",
+      "http_status": 403,
+      "result_kind": null,
+      "rows": 1,
+      "state": "failed"
+    },
+    {
+      "action": "users.create",
+      "failure": "consumer_validation_failed",
+      "http_status": 409,
+      "result_kind": null,
+      "rows": 1,
+      "state": "failed"
+    }
+  ],
+  "outbox": [
+    {
+      "action": "users.create_admin",
+      "delivery_state": "pending",
+      "rows": 1,
+      "state": "succeeded"
+    },
+    {
+      "action": "users.create",
+      "delivery_state": "pending",
+      "rows": 3,
+      "state": "succeeded"
+    },
+    {
+      "action": "users.create",
+      "delivery_state": "pending",
+      "rows": 2,
+      "state": "failed"
+    }
+  ],
+  "plaintext_fixture_password_matches": 0,
+  "sanitized": true,
+  "users": {
+    "active_rows": 5,
+    "aliases": {
+      "ambiguous_recovery": {
+        "group": "default",
+        "is_deleted": 0,
+        "password_hash_null": false,
+        "role": "user",
+        "rows": 1,
+        "status": "active"
+      },
+      "created_admin": {
+        "group": "default",
+        "is_deleted": 0,
+        "password_hash_null": false,
+        "role": "admin",
+        "rows": 1,
+        "status": "active"
+      },
+      "denied_admin_creation": {
+        "rows": 0
+      },
+      "denied_non_default_plan": {
+        "rows": 0
+      },
+      "double_submit": {
+        "group": "default",
+        "is_deleted": 0,
+        "password_hash_null": false,
+        "role": "user",
+        "rows": 1,
+        "status": "active"
+      },
+      "ordinary_default": {
+        "group": "default",
+        "is_deleted": 0,
+        "password_hash_null": false,
+        "role": "user",
+        "rows": 1,
+        "status": "active"
+      },
+      "root": {
+        "group": "default",
+        "is_deleted": 0,
+        "password_hash_null": false,
+        "role": "root",
+        "rows": 1,
+        "status": "active"
+      },
+      "tombstone_fixture": {
+        "group": "default",
+        "is_deleted": 1,
+        "password_hash_null": true,
+        "role": "user",
+        "rows": 1,
+        "status": "disabled"
+      }
+    },
+    "deleted_rows": 1,
+    "total_rows": 6
+  }
+}

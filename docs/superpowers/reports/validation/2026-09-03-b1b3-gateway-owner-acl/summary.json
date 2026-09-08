@@ -1,0 +1,8 @@
+{
+  "feature": "go-014",
+  "result": "PASS_LIMITED_SCOPE",
+  "pm": "final SPEC PASS",
+  "independent": {"verdict": "PASS", "test_pass": 544, "test_fail": 0, "test_skip": 0, "package_pass": 15, "package_no_test_files": 4, "risk_levels_zero": true},
+  "historical_writer_full": {"test_pass": 531, "test_fail": 0, "test_skip": 0, "note": "intermediate, not final evidence"},
+  "artifacts": ["final-full-test.jsonl", "final-security-report.txt", "final-sha256.txt", "validation.json"]
+}

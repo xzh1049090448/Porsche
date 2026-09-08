@@ -1,0 +1,99 @@
+{
+  "sourceRevision": "04ed72806f5ca139d219d166452e0473ba5bf1a1",
+  "codeBase": "0bab2b7fd7515789c7a853edab7db120771b6028",
+  "branch": "fix/m3-sse-diagnostics",
+  "target": "linux/amd64",
+  "goVersion": "go1.22.12",
+  "vcsModified": false,
+  "buildSource": "standalone local clone at exact candidate revision; nested worktree metadata was rejected",
+  "sha256": {
+    "server": "9dd1f8e6f7623a225c4f76907e708955f8303b8f2ddd2219fd6fc0dd78eab9d8",
+    "bootstrap-root": "454e07df782a21bd28a0b7c443f099d89740bb8be773289fa1f66b4f6aa96986",
+    "source.tar.gz": "496b037518cb3c92e2a985f4d27b6c4b9cea7d84cddf097bd5812f17ca36ee54",
+    "Dockerfile": "896fee3a35151bced501945409e0d8198810820fec1a9b55e1b9e1684d9efdc6",
+    "server.buildinfo.txt": "5bbca4b7a98c86a48e54f41d49c804f74bc9db2679b5d2747381dceac7ceffe3",
+    "bootstrap-root.buildinfo.txt": "26fea185f1975a6017317dd2664fd76f46b366e6e1d23c3f9f97ffcc81e8d31b"
+  },
+  "localVerification": {
+    "fullTestPassEvents": 293,
+    "raceTestPassEvents": 46,
+    "failures": 0,
+    "skips": 0,
+    "vet": "PASS",
+    "build": "PASS",
+    "specReview": "PASS (local scope)",
+    "qualityReview": "PASS (local scope)"
+  },
+  "imageBuilt": true,
+  "imageBuildBlocker": null,
+  "deployed": true,
+  "productionSSEStatus": "FAIL 503; correlated upstream HTTP200 then malformed_chunk before first frame; exact field unknown",
+  "generationBudget": {
+    "model": "gpt-5.4-nano",
+    "used": 2,
+    "maximumRequests": 3,
+    "remaining": 1,
+    "maxTokensPerRequest": 32
+  },
+  "createdUTC": "2026-09-03T05:13:46.617210+00:00",
+  "bundlePath": "/private/tmp/porsche-m3-backend-04ed728-linux-amd64.tar.gz",
+  "bundleSHA256": "257160c725d9222550b1a1d4bd6ca86f8b7733a95fef5734fc95e718262537a6",
+  "imageId": "sha256:a69cfdab1cc8e18056286ae3991669d37515994041664b3fed5b6290ac602316",
+  "imageArchive": "/private/tmp/porsche-m3-diagnostics-04ed728.image.tar",
+  "imageArchiveSHA256": "af8a122d1fa5018a981d4757aff03b0b204ef8048c38f2632eb47e343ad0c580",
+  "imageVerification": {
+    "imageId": "sha256:a69cfdab1cc8e18056286ae3991669d37515994041664b3fed5b6290ac602316",
+    "architecture": "amd64",
+    "os": "linux",
+    "sourceRevision": "04ed72806f5ca139d219d166452e0473ba5bf1a1",
+    "cmd": [
+      "./server"
+    ],
+    "workdir": "/app",
+    "binaryHashesMatch": true,
+    "caBundlePresent": true,
+    "isolatedStartup": "Expected fail-closed missing JIEKOU_API_KEY; no credentials/network/DB supplied",
+    "exitCode": 1,
+    "imageArchive": "/private/tmp/porsche-m3-diagnostics-04ed728.image.tar",
+    "archiveSHA256": "af8a122d1fa5018a981d4757aff03b0b204ef8048c38f2632eb47e343ad0c580",
+    "taskLabel": "m3-diagnostic-candidate",
+    "privateApplicationBinaries": true
+  },
+  "updatedUTC": "2026-09-03T05:51:54.287215608Z",
+  "imageBuild": {
+    "method": "Public runtime base built remotely, downloaded and hash-verified; private binaries assembled locally offline with --network=none --pull=false",
+    "publicBaseTag": "porsche-m3-public-runtime:alpine3.20-amd64",
+    "publicBaseLocalImageId": "sha256:7b56a9b85cbcec1994938accac2bf3dbd0ad667f1c67b37eb25a9619e57617e3",
+    "publicBaseArchiveSHA256": "ba9da7bf6b08229b5ff72be478bef5d2e4019cf39edd2278836cbe2b1c311271",
+    "alpineIndexDigest": "sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc",
+    "log": "/private/tmp/porsche-m3-image-offline-build.log"
+  },
+  "publication": {
+    "privateArtifactsUploaded": true,
+    "authorization": "User explicitly confirmed exact image upload and backend replacement on 2026-09-03; tool approval passed",
+    "previousSourceAndBinaryUpload": "rejected before execution by automatic approval review: private payload upload to the specific remote host was not explicitly authorized and destination trust was not established",
+    "targetSSH": "overseaCloud",
+    "targetIP": "172.245.142.21",
+    "containerName": "ai-gateway-go",
+    "currentContainerId": "9425ea244ad71944ef78474cc405208fbbbe7eb22fdffd2b81e269d328d85b0c",
+    "rollbackImageId": "sha256:31abaeb16799f1bfad6501cf7d765ea443d5682561bbeed3f74255c8d8733b9a",
+    "runtimeHealthVerified": true,
+    "rollbackExecuted": false,
+    "previousContainerId": "d2de587030c3055d4c4e913c3d0a1052297294810e6a4047b81b710edfe0b56b",
+    "rollbackName": "ai-gateway-go-acceptance-rollback-1788414605780771454"
+  },
+  "release": {
+    "status": "deployed",
+    "sourceRevision": "04ed72806f5ca139d219d166452e0473ba5bf1a1",
+    "imageId": "sha256:a69cfdab1cc8e18056286ae3991669d37515994041664b3fed5b6290ac602316",
+    "archiveSHA256": "af8a122d1fa5018a981d4757aff03b0b204ef8048c38f2632eb47e343ad0c580",
+    "newContainerId": "9425ea244ad71944ef78474cc405208fbbbe7eb22fdffd2b81e269d328d85b0c",
+    "oldContainerId": "d2de587030c3055d4c4e913c3d0a1052297294810e6a4047b81b710edfe0b56b",
+    "rollbackName": "ai-gateway-go-acceptance-rollback-1788414605780771454",
+    "sourceHealth": 200,
+    "publicHealth": 200,
+    "frontendUnchanged": true,
+    "generationRequests": 0,
+    "utc": "2026-09-03T05:50:10Z"
+  }
+}

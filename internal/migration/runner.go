@@ -24,6 +24,54 @@ var authCoreUp []byte
 //go:embed sql/0002_auth_core.down.sql
 var authCoreDown []byte
 
+//go:embed sql/0003_permission_policy.up.sql
+var permissionPolicyUp []byte
+
+//go:embed sql/0003_permission_policy.down.sql
+var permissionPolicyDown []byte
+
+//go:embed sql/0004_admin_users_read_count.up.sql
+var adminUsersReadCountUp []byte
+
+//go:embed sql/0004_admin_users_read_count.down.sql
+var adminUsersReadCountDown []byte
+
+//go:embed sql/0005_admin_operation_safety.up.sql
+var adminOperationSafetyUp []byte
+
+//go:embed sql/0005_admin_operation_safety.down.sql
+var adminOperationSafetyDown []byte
+
+//go:embed sql/0006_admin_action_outbox.up.sql
+var adminActionOutboxUp []byte
+
+//go:embed sql/0006_admin_action_outbox.down.sql
+var adminActionOutboxDown []byte
+
+//go:embed sql/0007_business_groups.up.sql
+var businessGroupsUp []byte
+
+//go:embed sql/0007_business_groups.down.sql
+var businessGroupsDown []byte
+
+//go:embed sql/0008_admin_operation_responses.up.sql
+var adminOperationResponsesUp []byte
+
+//go:embed sql/0008_admin_operation_responses.down.sql
+var adminOperationResponsesDown []byte
+
+//go:embed sql/0009_admin_response_integrity.up.sql
+var adminResponseIntegrityUp []byte
+
+//go:embed sql/0009_admin_response_integrity.down.sql
+var adminResponseIntegrityDown []byte
+
+//go:embed sql/0010_admin_operation_response_targets.up.sql
+var adminOperationResponseTargetsUp []byte
+
+//go:embed sql/0010_admin_operation_response_targets.down.sql
+var adminOperationResponseTargetsDown []byte
+
 // Migration is an immutable, embedded schema version.
 type Migration struct {
 	Version string
@@ -42,6 +90,14 @@ func All() ([]Migration, error) {
 	migrations := []Migration{
 		{Version: "0001", UpSQL: initialSchemaUp, DownSQL: initialSchemaDown},
 		{Version: "0002", UpSQL: authCoreUp, DownSQL: authCoreDown},
+		{Version: "0003", UpSQL: permissionPolicyUp, DownSQL: permissionPolicyDown},
+		{Version: "0004", UpSQL: adminUsersReadCountUp, DownSQL: adminUsersReadCountDown},
+		{Version: "0005", UpSQL: adminOperationSafetyUp, DownSQL: adminOperationSafetyDown},
+		{Version: "0006", UpSQL: adminActionOutboxUp, DownSQL: adminActionOutboxDown},
+		{Version: "0007", UpSQL: businessGroupsUp, DownSQL: businessGroupsDown},
+		{Version: "0008", UpSQL: adminOperationResponsesUp, DownSQL: adminOperationResponsesDown},
+		{Version: "0009", UpSQL: adminResponseIntegrityUp, DownSQL: adminResponseIntegrityDown},
+		{Version: "0010", UpSQL: adminOperationResponseTargetsUp, DownSQL: adminOperationResponseTargetsDown},
 	}
 	sort.Slice(migrations, func(i, j int) bool { return migrations[i].Version < migrations[j].Version })
 	return migrations, nil
@@ -100,11 +156,81 @@ func Up(ctx context.Context, db *gorm.DB, nextGUID func() int64, nowMillis func(
 				if applied.Checksum != checksum {
 					return fmt.Errorf("migration %s checksum mismatch", migration.Version)
 				}
+				if migration.Version == "0003" {
+					if err := VerifyPermissionSchema(ctx, conn); err != nil {
+						return err
+					}
+				}
+				if migration.Version == "0004" {
+					if err := VerifyAdminUsersReadCountIndex(ctx, conn); err != nil {
+						return err
+					}
+				}
+				if migration.Version == "0005" {
+					if err := VerifyAdminOperationSafetySchema(ctx, conn); err != nil {
+						return err
+					}
+				}
+				if migration.Version == "0007" {
+					if err := VerifyBusinessGroupsSchema(ctx, conn); err != nil {
+						return err
+					}
+				}
+				if migration.Version == "0010" {
+					if err := VerifyAdminActionOutboxSchema(ctx, conn); err != nil {
+						return err
+					}
+					if err := VerifyAdminOperationResponseSchema(ctx, conn); err != nil {
+						return err
+					}
+				}
 				continue
 			}
-			for _, statement := range splitStatements(string(migration.UpSQL)) {
-				if err := conn.Exec(statement).Error; err != nil {
+			if migration.Version == "0007" {
+				if err := applyBusinessGroupsMigration(conn, migration.UpSQL, nextGUID, nowMillis); err != nil {
 					return fmt.Errorf("apply migration %s: %w", migration.Version, err)
+				}
+			} else if migration.Version == "0009" {
+				if err := applyAdminResponseIntegrityMigration(conn, migration.UpSQL); err != nil {
+					return fmt.Errorf("apply migration %s: %w", migration.Version, err)
+				}
+			} else if migration.Version == "0010" {
+				if err := applyAdminOperationResponseTargetsMigration(conn, migration.UpSQL); err != nil {
+					return fmt.Errorf("apply migration %s: %w", migration.Version, err)
+				}
+			} else {
+				for _, statement := range splitStatements(string(migration.UpSQL)) {
+					if err := conn.Exec(statement).Error; err != nil {
+						return fmt.Errorf("apply migration %s: %w", migration.Version, err)
+					}
+				}
+			}
+			if migration.Version == "0010" {
+				if err := VerifyAdminActionOutboxSchema(ctx, conn); err != nil {
+					return err
+				}
+				if err := VerifyAdminOperationResponseSchema(ctx, conn); err != nil {
+					return err
+				}
+			}
+			if migration.Version == "0003" {
+				if err := VerifyPermissionSchema(ctx, conn); err != nil {
+					return err
+				}
+			}
+			if migration.Version == "0004" {
+				if err := VerifyAdminUsersReadCountIndex(ctx, conn); err != nil {
+					return err
+				}
+			}
+			if migration.Version == "0005" {
+				if err := VerifyAdminOperationSafetySchema(ctx, conn); err != nil {
+					return err
+				}
+			}
+			if migration.Version == "0007" {
+				if err := VerifyBusinessGroupsSchema(ctx, conn); err != nil {
+					return err
 				}
 			}
 			now := nowMillis()
@@ -146,7 +272,25 @@ func Verify(ctx context.Context, db *gorm.DB) error {
 	if err != nil {
 		return err
 	}
-	return VerifyApplied(migrations, status)
+	if err := VerifyApplied(migrations, status); err != nil {
+		return err
+	}
+	if err := VerifyPermissionSchema(ctx, db); err != nil {
+		return err
+	}
+	if err := VerifyAdminUsersReadCountIndex(ctx, db); err != nil {
+		return err
+	}
+	if err := VerifyAdminOperationSafetySchema(ctx, db); err != nil {
+		return err
+	}
+	if err := VerifyAdminActionOutboxSchema(ctx, db); err != nil {
+		return err
+	}
+	if err := VerifyBusinessGroupsSchema(ctx, db); err != nil {
+		return err
+	}
+	return VerifyAdminOperationResponseSchema(ctx, db)
 }
 
 // VerifyApplied is the side-effect-free portion of Verify, kept separate so

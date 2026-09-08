@@ -1,0 +1,1082 @@
+
+2026/09/07 22:07:26 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/db/db.go:46
+[0m[33m[0.722ms] [34;1m[rows:1][0m SELECT VERSION()
+
+2026/09/07 22:07:26 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/runner.go:133
+[0m[33m[0.534ms] [34;1m[rows:1][0m SELECT GET_LOCK('porsche_schema_migrations', 30)
+
+2026/09/07 22:07:26 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/runner.go:141
+[0m[33m[8.854ms] [34;1m[rows:0][0m CREATE TABLE IF NOT EXISTS schema_migrations (
+  id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  guid BIGINT NOT NULL,
+  version VARCHAR(64) NOT NULL,
+  checksum CHAR(64) NOT NULL,
+  created_at BIGINT NOT NULL,
+  created_by BIGINT NULL,
+  updated_at BIGINT NOT NULL,
+  updated_by BIGINT NULL,
+  is_deleted INT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_schema_migrations_guid (guid),
+  UNIQUE KEY uk_schema_migrations_version (version),
+  KEY idx_schema_migrations_active (is_deleted, updated_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+
+2026/09/07 22:07:26 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/runner.go:151
+[0m[33m[2.993ms] [34;1m[rows:0][0m SELECT version, checksum FROM schema_migrations WHERE version = '0001' AND is_deleted = 0
+
+2026/09/07 22:07:26 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/runner.go:203
+[0m[33m[7.420ms] [34;1m[rows:0][0m CREATE TABLE IF NOT EXISTS users (
+  id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  guid BIGINT NOT NULL,
+  phone VARCHAR(20) NOT NULL,
+  password_hash VARCHAR(255) NULL,
+  nickname VARCHAR(64) NULL,
+  real_name VARCHAR(64) NULL,
+  id_card_hash VARCHAR(128) NULL,
+  is_verified TINYINT(1) NOT NULL DEFAULT 0,
+  plan_type INT NOT NULL DEFAULT 1,
+  status INT NOT NULL DEFAULT 1,
+  allowed_models JSON NOT NULL,
+  daily_call_limit INT NOT NULL DEFAULT 100,
+  daily_calls_used INT NOT NULL DEFAULT 0,
+  daily_calls_reset_at BIGINT NULL,
+  total_tokens_used BIGINT NOT NULL DEFAULT 0,
+  created_at BIGINT NOT NULL,
+  created_by BIGINT NULL,
+  updated_at BIGINT NOT NULL,
+  updated_by BIGINT NULL,
+  is_deleted INT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_users_guid (guid),
+  UNIQUE KEY uk_users_phone (phone),
+  KEY idx_users_active_updated (is_deleted, updated_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+
+2026/09/07 22:07:26 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/runner.go:203
+[0m[33m[6.040ms] [34;1m[rows:0][0m CREATE TABLE IF NOT EXISTS conversations (
+  id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  guid BIGINT NOT NULL,
+  user_id BIGINT NOT NULL,
+  title VARCHAR(256) NOT NULL DEFAULT '新对话',
+  model VARCHAR(128) NULL,
+  created_at BIGINT NOT NULL,
+  created_by BIGINT NULL,
+  updated_at BIGINT NOT NULL,
+  updated_by BIGINT NULL,
+  is_deleted INT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_conversations_guid (guid),
+  KEY idx_conversations_user_active_updated (user_id, is_deleted, updated_at),
+  CONSTRAINT fk_conversations_user FOREIGN KEY (user_id) REFERENCES users(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+
+2026/09/07 22:07:26 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/runner.go:203
+[0m[33m[4.990ms] [34;1m[rows:0][0m CREATE TABLE IF NOT EXISTS messages (
+  id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  guid BIGINT NOT NULL,
+  conversation_id BIGINT NOT NULL,
+  role INT NOT NULL,
+  content TEXT NOT NULL,
+  model VARCHAR(128) NULL,
+  tokens INT NOT NULL DEFAULT 0,
+  created_at BIGINT NOT NULL,
+  created_by BIGINT NULL,
+  updated_at BIGINT NOT NULL,
+  updated_by BIGINT NULL,
+  is_deleted INT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_messages_guid (guid),
+  KEY idx_messages_conversation_active_created (conversation_id, is_deleted, created_at),
+  CONSTRAINT fk_messages_conversation FOREIGN KEY (conversation_id) REFERENCES conversations(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+
+2026/09/07 22:07:26 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/runner.go:203
+[0m[33m[5.002ms] [34;1m[rows:0][0m CREATE TABLE IF NOT EXISTS usage_records (
+  id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  guid BIGINT NOT NULL,
+  user_id BIGINT NOT NULL,
+  record_type INT NOT NULL,
+  tokens INT NOT NULL DEFAULT 0,
+  model VARCHAR(128) NULL,
+  created_at BIGINT NOT NULL,
+  created_by BIGINT NULL,
+  updated_at BIGINT NOT NULL,
+  updated_by BIGINT NULL,
+  is_deleted INT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_usage_records_guid (guid),
+  KEY idx_usage_records_user_active_created (user_id, is_deleted, created_at),
+  CONSTRAINT fk_usage_records_user FOREIGN KEY (user_id) REFERENCES users(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+
+2026/09/07 22:07:26 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/runner.go:203
+[0m[33m[4.199ms] [34;1m[rows:0][0m CREATE TABLE IF NOT EXISTS orders (
+  id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  guid BIGINT NOT NULL,
+  order_no VARCHAR(64) NOT NULL,
+  user_id BIGINT NOT NULL,
+  plan_type INT NOT NULL,
+  amount DECIMAL(12,2) NOT NULL DEFAULT 0,
+  status INT NOT NULL DEFAULT 1,
+  invoice_requested TINYINT(1) NOT NULL DEFAULT 0,
+  paid_at BIGINT NULL,
+  created_at BIGINT NOT NULL,
+  created_by BIGINT NULL,
+  updated_at BIGINT NOT NULL,
+  updated_by BIGINT NULL,
+  is_deleted INT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_orders_guid (guid),
+  UNIQUE KEY uk_orders_order_no (order_no),
+  KEY idx_orders_user_active_created (user_id, is_deleted, created_at),
+  CONSTRAINT fk_orders_user FOREIGN KEY (user_id) REFERENCES users(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+
+2026/09/07 22:07:26 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/runner.go:203
+[0m[33m[4.154ms] [34;1m[rows:0][0m CREATE TABLE IF NOT EXISTS audit_logs (
+  id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  guid BIGINT NOT NULL,
+  user_id BIGINT NULL,
+  action VARCHAR(64) NOT NULL,
+  resource VARCHAR(128) NULL,
+  detail JSON NOT NULL,
+  ip VARCHAR(64) NULL,
+  created_at BIGINT NOT NULL,
+  created_by BIGINT NULL,
+  updated_at BIGINT NOT NULL,
+  updated_by BIGINT NULL,
+  is_deleted INT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_audit_logs_guid (guid),
+  KEY idx_audit_logs_user_active_created (user_id, is_deleted, created_at),
+  KEY idx_audit_logs_action_active_created (action, is_deleted, created_at),
+  CONSTRAINT fk_audit_logs_user FOREIGN KEY (user_id) REFERENCES users(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+
+2026/09/07 22:07:26 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/runner.go:203
+[0m[33m[3.069ms] [34;1m[rows:0][0m CREATE TABLE IF NOT EXISTS model_health (
+  id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  guid BIGINT NOT NULL,
+  model_name VARCHAR(128) NOT NULL,
+  provider VARCHAR(64) NOT NULL,
+  is_available TINYINT(1) NOT NULL DEFAULT 1,
+  avg_latency_ms DOUBLE NOT NULL DEFAULT 0,
+  error_rate DOUBLE NOT NULL DEFAULT 0,
+  last_checked_at BIGINT NULL,
+  created_at BIGINT NOT NULL,
+  created_by BIGINT NULL,
+  updated_at BIGINT NOT NULL,
+  updated_by BIGINT NULL,
+  is_deleted INT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_model_health_guid (guid),
+  UNIQUE KEY uk_model_health_name (model_name),
+  KEY idx_model_health_active_updated (is_deleted, updated_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+
+2026/09/07 22:07:26 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/runner.go:203
+[0m[33m[5.274ms] [34;1m[rows:0][0m CREATE TABLE IF NOT EXISTS gateway_api_tokens (
+  id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  guid BIGINT NOT NULL,
+  user_id BIGINT NOT NULL,
+  name VARCHAR(128) NOT NULL,
+  token_hash VARCHAR(64) NOT NULL,
+  token_prefix VARCHAR(24) NOT NULL,
+  status INT NOT NULL DEFAULT 1,
+  allowed_models JSON NOT NULL,
+  ip_allowlist JSON NOT NULL,
+  expires_at BIGINT NULL,
+  last_used_at BIGINT NULL,
+  created_at BIGINT NOT NULL,
+  created_by BIGINT NULL,
+  updated_at BIGINT NOT NULL,
+  updated_by BIGINT NULL,
+  is_deleted INT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_gateway_api_tokens_guid (guid),
+  UNIQUE KEY uk_gateway_api_tokens_token_hash (token_hash),
+  KEY idx_gateway_api_tokens_user_active (user_id, is_deleted),
+  KEY idx_gateway_api_tokens_prefix_active (token_prefix, is_deleted),
+  KEY idx_gateway_api_tokens_status_active (status, is_deleted),
+  KEY idx_gateway_api_tokens_expiry_active (expires_at, is_deleted),
+  CONSTRAINT fk_gateway_api_tokens_user FOREIGN KEY (user_id) REFERENCES users(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+
+2026/09/07 22:07:26 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/runner.go:237
+[0m[33m[0.992ms] [34;1m[rows:1][0m INSERT INTO schema_migrations (guid, version, checksum, created_at, updated_at, is_deleted) VALUES (355353375664533504, '0001', '2da41ffd07c44d45cb05a705f867db2f2b8f01defb519000197dedce9998aedd', 1788790046904, 1788790046904, 0)
+
+2026/09/07 22:07:26 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/runner.go:151
+[0m[33m[0.614ms] [34;1m[rows:0][0m SELECT version, checksum FROM schema_migrations WHERE version = '0002' AND is_deleted = 0
+
+2026/09/07 22:07:26 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/runner.go:203
+[0m[33m[9.928ms] [34;1m[rows:0][0m -- 0002 is additive. Existing users keep username NULL until an approved
+-- account migration or registration flow assigns a username.
+ALTER TABLE users
+  MODIFY COLUMN phone VARCHAR(20) NULL,
+  ADD COLUMN username VARCHAR(20) NULL,
+  ADD COLUMN role INT NOT NULL DEFAULT 1,
+  ADD COLUMN auth_version INT NOT NULL DEFAULT 1,
+  ADD COLUMN last_login_at BIGINT NULL,
+  ADD UNIQUE KEY uk_users_username (username)
+
+2026/09/07 22:07:26 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/runner.go:203
+[0m[33m[3.793ms] [34;1m[rows:0][0m CREATE TABLE IF NOT EXISTS user_sessions (
+  id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  guid BIGINT NOT NULL,
+  sid CHAR(36) NOT NULL,
+  user_id BIGINT NOT NULL,
+  login_method INT NOT NULL,
+  ip VARCHAR(64) NULL,
+  user_agent VARCHAR(512) NULL,
+  session_version INT NOT NULL DEFAULT 1,
+  refresh_hmac CHAR(64) NOT NULL,
+  previous_refresh_hmac CHAR(64) NULL,
+  previous_refresh_expires_at BIGINT NULL,
+  last_active_at BIGINT NOT NULL,
+  expires_at BIGINT NOT NULL,
+  revoked_at BIGINT NULL,
+  created_at BIGINT NOT NULL,
+  created_by BIGINT NULL,
+  updated_at BIGINT NOT NULL,
+  updated_by BIGINT NULL,
+  is_deleted INT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_user_sessions_guid (guid),
+  UNIQUE KEY uk_user_sessions_sid (sid),
+  KEY idx_user_sessions_user_active_expires (user_id, is_deleted, expires_at),
+  KEY idx_user_sessions_active_expiry (is_deleted, expires_at),
+  CONSTRAINT fk_user_sessions_user FOREIGN KEY (user_id) REFERENCES users(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+
+2026/09/07 22:07:26 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/runner.go:203
+[0m[33m[3.282ms] [34;1m[rows:0][0m CREATE TABLE IF NOT EXISTS auth_audit_events (
+  id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  guid BIGINT NOT NULL,
+  user_id BIGINT NULL,
+  session_guid BIGINT NULL,
+  event_type INT NOT NULL,
+  login_method INT NULL,
+  ip VARCHAR(64) NULL,
+  user_agent VARCHAR(512) NULL,
+  created_at BIGINT NOT NULL,
+  created_by BIGINT NULL,
+  updated_at BIGINT NOT NULL,
+  updated_by BIGINT NULL,
+  is_deleted INT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_auth_audit_events_guid (guid),
+  KEY idx_auth_audit_events_user_active_created (user_id, is_deleted, created_at),
+  KEY idx_auth_audit_events_event_active_created (event_type, is_deleted, created_at),
+  CONSTRAINT fk_auth_audit_events_user FOREIGN KEY (user_id) REFERENCES users(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+
+2026/09/07 22:07:26 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/runner.go:237
+[0m[33m[0.701ms] [34;1m[rows:1][0m INSERT INTO schema_migrations (guid, version, checksum, created_at, updated_at, is_deleted) VALUES (355353375744225280, '0002', '58712428ca668fb1fea0943d71a2209b2e7faf26de043d870195a033ac0f413c', 1788790046923, 1788790046923, 0)
+
+2026/09/07 22:07:26 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/runner.go:151
+[0m[33m[0.585ms] [34;1m[rows:0][0m SELECT version, checksum FROM schema_migrations WHERE version = '0003' AND is_deleted = 0
+
+2026/09/07 22:07:26 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/runner.go:203
+[0m[33m[2.954ms] [34;1m[rows:0][0m CREATE TABLE IF NOT EXISTS user_permission_heads (
+ id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY, guid BIGINT NOT NULL, user_id BIGINT NOT NULL, policy_version BIGINT NOT NULL, catalog_version INT NOT NULL, rule_count INT NOT NULL,
+ created_at BIGINT NOT NULL, created_by BIGINT NULL, updated_at BIGINT NOT NULL, updated_by BIGINT NULL, is_deleted INT NOT NULL DEFAULT 0,
+ UNIQUE KEY uk_permission_heads_guid (guid), UNIQUE KEY uk_permission_heads_user (user_id), KEY idx_permission_heads_active (is_deleted, updated_at),
+ CONSTRAINT fk_permission_heads_user FOREIGN KEY (user_id) REFERENCES users(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+
+2026/09/07 22:07:26 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/runner.go:203
+[0m[33m[3.232ms] [34;1m[rows:0][0m CREATE TABLE IF NOT EXISTS user_permission_overrides (
+ id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY, guid BIGINT NOT NULL, user_id BIGINT NOT NULL, policy_version BIGINT NOT NULL, capability INT NOT NULL, effect INT NOT NULL,
+ created_at BIGINT NOT NULL, created_by BIGINT NULL, updated_at BIGINT NOT NULL, updated_by BIGINT NULL, is_deleted INT NOT NULL DEFAULT 0,
+ UNIQUE KEY uk_permission_overrides_guid (guid), UNIQUE KEY uk_permission_overrides_version_cap (user_id, policy_version, capability), KEY idx_permission_overrides_active (user_id, is_deleted, policy_version),
+ CONSTRAINT fk_permission_overrides_user FOREIGN KEY (user_id) REFERENCES users(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+
+2026/09/07 22:07:26 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/permission_schema.go:31
+[0m[33m[1.149ms] [34;1m[rows:-][0m SELECT engine FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name='user_permission_heads'
+
+2026/09/07 22:07:26 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/permission_schema.go:43
+[0m[33m[1.175ms] [34;1m[rows:11][0m SELECT column_name AS column_name,data_type AS data_type,column_type AS column_type,is_nullable AS is_nullable,COALESCE(column_default, '') AS column_default,extra AS extra FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='user_permission_heads'
+
+2026/09/07 22:07:26 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/permission_schema.go:91
+[0m[33m[0.885ms] [34;1m[rows:1][0m SELECT column_name AS column_name,non_unique AS non_unique FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='user_permission_heads' AND index_name='PRIMARY' ORDER BY seq_in_index
+
+2026/09/07 22:07:26 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/permission_schema.go:91
+[0m[33m[0.861ms] [34;1m[rows:1][0m SELECT column_name AS column_name,non_unique AS non_unique FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='user_permission_heads' AND index_name='uk_permission_heads_guid' ORDER BY seq_in_index
+
+2026/09/07 22:07:26 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/permission_schema.go:91
+[0m[33m[0.815ms] [34;1m[rows:1][0m SELECT column_name AS column_name,non_unique AS non_unique FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='user_permission_heads' AND index_name='uk_permission_heads_user' ORDER BY seq_in_index
+
+2026/09/07 22:07:26 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/permission_schema.go:91
+[0m[33m[0.744ms] [34;1m[rows:2][0m SELECT column_name AS column_name,non_unique AS non_unique FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='user_permission_heads' AND index_name='idx_permission_heads_active' ORDER BY seq_in_index
+
+2026/09/07 22:07:26 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/permission_schema.go:114
+[0m[33m[1.235ms] [34;1m[rows:1][0m SELECT k.column_name AS column_name,k.referenced_table_schema AS referenced_table_schema,k.referenced_table_name AS referenced_table_name,k.referenced_column_name AS referenced_column_name,r.delete_rule AS delete_rule,r.update_rule AS update_rule FROM information_schema.key_column_usage k JOIN information_schema.referential_constraints r ON r.constraint_schema=k.constraint_schema AND r.table_name=k.table_name AND r.constraint_name=k.constraint_name WHERE k.table_schema=DATABASE() AND k.table_name='user_permission_heads' AND k.constraint_name='fk_permission_heads_user'
+
+2026/09/07 22:07:26 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/permission_schema.go:118
+[0m[33m[0.358ms] [34;1m[rows:-][0m SELECT DATABASE()
+
+2026/09/07 22:07:26 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/permission_schema.go:31
+[0m[33m[0.790ms] [34;1m[rows:-][0m SELECT engine FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name='user_permission_overrides'
+
+2026/09/07 22:07:26 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/permission_schema.go:43
+[0m[33m[0.879ms] [34;1m[rows:11][0m SELECT column_name AS column_name,data_type AS data_type,column_type AS column_type,is_nullable AS is_nullable,COALESCE(column_default, '') AS column_default,extra AS extra FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='user_permission_overrides'
+
+2026/09/07 22:07:26 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/permission_schema.go:91
+[0m[33m[0.703ms] [34;1m[rows:1][0m SELECT column_name AS column_name,non_unique AS non_unique FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='user_permission_overrides' AND index_name='uk_permission_overrides_guid' ORDER BY seq_in_index
+
+2026/09/07 22:07:26 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/permission_schema.go:91
+[0m[33m[0.689ms] [34;1m[rows:3][0m SELECT column_name AS column_name,non_unique AS non_unique FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='user_permission_overrides' AND index_name='uk_permission_overrides_version_cap' ORDER BY seq_in_index
+
+2026/09/07 22:07:26 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/permission_schema.go:91
+[0m[33m[0.688ms] [34;1m[rows:3][0m SELECT column_name AS column_name,non_unique AS non_unique FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='user_permission_overrides' AND index_name='idx_permission_overrides_active' ORDER BY seq_in_index
+
+2026/09/07 22:07:26 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/permission_schema.go:91
+[0m[33m[0.676ms] [34;1m[rows:1][0m SELECT column_name AS column_name,non_unique AS non_unique FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='user_permission_overrides' AND index_name='PRIMARY' ORDER BY seq_in_index
+
+2026/09/07 22:07:26 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/permission_schema.go:114
+[0m[33m[0.853ms] [34;1m[rows:1][0m SELECT k.column_name AS column_name,k.referenced_table_schema AS referenced_table_schema,k.referenced_table_name AS referenced_table_name,k.referenced_column_name AS referenced_column_name,r.delete_rule AS delete_rule,r.update_rule AS update_rule FROM information_schema.key_column_usage k JOIN information_schema.referential_constraints r ON r.constraint_schema=k.constraint_schema AND r.table_name=k.table_name AND r.constraint_name=k.constraint_name WHERE k.table_schema=DATABASE() AND k.table_name='user_permission_overrides' AND k.constraint_name='fk_permission_overrides_user'
+
+2026/09/07 22:07:26 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/permission_schema.go:118
+[0m[33m[0.244ms] [34;1m[rows:-][0m SELECT DATABASE()
+
+2026/09/07 22:07:26 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/runner.go:237
+[0m[33m[0.625ms] [34;1m[rows:1][0m INSERT INTO schema_migrations (guid, version, checksum, created_at, updated_at, is_deleted) VALUES (355353375832305664, '0003', '31c49d9bb1f171d9ea6caab49714d9de05552b8f6e9cb73f2989760efd0a015c', 1788790046944, 1788790046944, 0)
+
+2026/09/07 22:07:26 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/runner.go:151
+[0m[33m[0.521ms] [34;1m[rows:0][0m SELECT version, checksum FROM schema_migrations WHERE version = '0004' AND is_deleted = 0
+
+2026/09/07 22:07:26 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/runner.go:203
+[0m[33m[9.575ms] [34;1m[rows:0][0m CREATE INDEX idx_users_admin_read_count
+  ON users (is_deleted, role, status)
+  ALGORITHM=INPLACE LOCK=NONE
+
+2026/09/07 22:07:26 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/admin_users_read_count.go:19
+[0m[33m[0.677ms] [34;1m[rows:-][0m SELECT column_name, seq_in_index, non_unique
+FROM information_schema.statistics
+WHERE table_schema = DATABASE() AND table_name = 'users' AND index_name = 'idx_users_admin_read_count'
+	ORDER BY seq_in_index
+
+2026/09/07 22:07:26 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/runner.go:237
+[0m[33m[0.686ms] [34;1m[rows:1][0m INSERT INTO schema_migrations (guid, version, checksum, created_at, updated_at, is_deleted) VALUES (355353375882637312, '0004', '44b5caba0473162c239e6b3035e6d9067e3af0b35e998a79c827a1424621494e', 1788790046956, 1788790046956, 0)
+
+2026/09/07 22:07:26 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/runner.go:151
+[0m[33m[0.696ms] [34;1m[rows:0][0m SELECT version, checksum FROM schema_migrations WHERE version = '0005' AND is_deleted = 0
+
+2026/09/07 22:07:26 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/runner.go:203
+[0m[33m[4.704ms] [34;1m[rows:0][0m CREATE TABLE IF NOT EXISTS admin_action_verifications (
+  id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  guid BIGINT NOT NULL,
+  actor_user_id BIGINT NOT NULL,
+  actor_auth_version INT NOT NULL,
+  session_id BIGINT NOT NULL,
+  action INT NOT NULL,
+  target_kind INT NOT NULL,
+  target_guid BIGINT NULL,
+  intent_hmac CHAR(64) NOT NULL,
+  ticket_hmac CHAR(64) NOT NULL,
+  expires_at BIGINT NOT NULL,
+  consumed_at BIGINT NULL,
+  created_at BIGINT NOT NULL,
+  created_by BIGINT NULL,
+  updated_at BIGINT NOT NULL,
+  updated_by BIGINT NULL,
+  is_deleted INT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_admin_action_verifications_guid (guid),
+  UNIQUE KEY uk_admin_action_verifications_ticket_hmac (ticket_hmac),
+  KEY idx_admin_action_verifications_actor_session_active (actor_user_id, session_id, is_deleted, expires_at),
+  KEY idx_admin_action_verifications_action_target_active (action, target_kind, target_guid, is_deleted),
+  KEY idx_admin_action_verifications_expiry (is_deleted, expires_at),
+  KEY fk_admin_action_verifications_session (session_id),
+  CONSTRAINT fk_admin_action_verifications_actor FOREIGN KEY (actor_user_id) REFERENCES users(id),
+  CONSTRAINT fk_admin_action_verifications_session FOREIGN KEY (session_id) REFERENCES user_sessions(id),
+  CONSTRAINT chk_admin_action_verifications_target CHECK (
+    (target_kind = 1 AND target_guid IS NULL) OR
+    (target_kind IN (2, 3) AND target_guid IS NOT NULL)
+  ),
+  CONSTRAINT chk_admin_action_verifications_times CHECK (
+    expires_at >= 0 AND (consumed_at IS NULL OR consumed_at >= 0)
+  ),
+  CONSTRAINT chk_admin_action_verifications_audit CHECK (
+    actor_auth_version >= 0 AND created_at >= 0 AND updated_at >= 0 AND is_deleted IN (0, 1) AND
+    (consumed_at IS NULL OR is_deleted = 1)
+  )
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+
+2026/09/07 22:07:26 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/runner.go:203
+[0m[33m[6.298ms] [34;1m[rows:0][0m CREATE TABLE IF NOT EXISTS admin_operations (
+  id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  guid BIGINT NOT NULL,
+  actor_user_id BIGINT NOT NULL,
+  actor_auth_version INT NOT NULL,
+  session_id BIGINT NOT NULL,
+  action INT NOT NULL,
+  idempotency_key_hmac CHAR(64) NOT NULL,
+  request_hmac CHAR(64) NOT NULL,
+  verification_id BIGINT NULL,
+  state INT NOT NULL,
+  public_ref CHAR(46) NOT NULL,
+  lease_owner_hmac CHAR(64) NULL,
+  lease_expires_at BIGINT NULL,
+  finished_at BIGINT NULL,
+  query_expires_at BIGINT NOT NULL,
+  error_code INT NULL,
+  result_kind INT NULL,
+  result_guid BIGINT NULL,
+  result_http_status INT NULL,
+  created_at BIGINT NOT NULL,
+  created_by BIGINT NULL,
+  updated_at BIGINT NOT NULL,
+  updated_by BIGINT NULL,
+  is_deleted INT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_admin_operations_guid (guid),
+  UNIQUE KEY uk_admin_operations_public_ref (public_ref),
+  UNIQUE KEY uk_admin_operations_actor_action_key (actor_user_id, action, idempotency_key_hmac),
+  UNIQUE KEY uk_admin_operations_verification (verification_id),
+  KEY idx_admin_operations_state_session (state, session_id, is_deleted, lease_expires_at),
+  KEY idx_admin_operations_recovery (state, is_deleted, lease_expires_at),
+  KEY idx_admin_operations_expiry (is_deleted, query_expires_at),
+  KEY fk_admin_operations_session (session_id),
+  CONSTRAINT fk_admin_operations_actor FOREIGN KEY (actor_user_id) REFERENCES users(id),
+  CONSTRAINT fk_admin_operations_session FOREIGN KEY (session_id) REFERENCES user_sessions(id),
+  CONSTRAINT fk_admin_operations_verification FOREIGN KEY (verification_id) REFERENCES admin_action_verifications(id),
+  CONSTRAINT chk_admin_operations_state CHECK (state IN (1, 2, 3, 4, 5)),
+  CONSTRAINT chk_admin_operations_lease CHECK (
+    (lease_owner_hmac IS NULL AND lease_expires_at IS NULL) OR
+    (lease_owner_hmac IS NOT NULL AND lease_expires_at IS NOT NULL AND lease_expires_at >= 0)
+  ),
+  CONSTRAINT chk_admin_operations_result CHECK (
+    (result_kind IS NULL AND result_guid IS NULL) OR
+    (result_kind = 1 AND result_guid IS NULL) OR
+    (result_kind IN (2, 3) AND result_guid IS NOT NULL)
+  ),
+  CONSTRAINT chk_admin_operations_terminal CHECK (
+    (state = 1 AND lease_owner_hmac IS NOT NULL AND finished_at IS NULL AND error_code IS NULL AND result_kind IS NULL AND result_http_status IS NULL) OR
+    (state = 2 AND lease_owner_hmac IS NULL AND finished_at IS NOT NULL AND error_code IS NULL AND result_kind IS NOT NULL AND result_http_status IS NOT NULL) OR
+    (state = 3 AND lease_owner_hmac IS NULL AND finished_at IS NOT NULL AND error_code IS NOT NULL AND result_kind IS NULL AND result_http_status IS NOT NULL) OR
+    (state = 4 AND lease_owner_hmac IS NULL AND finished_at IS NULL AND error_code IS NULL AND result_kind IS NULL AND result_http_status IS NULL) OR
+    (state = 5 AND lease_owner_hmac IS NULL AND error_code IS NULL AND result_kind IS NULL AND result_http_status IS NULL)
+  ),
+  CONSTRAINT chk_admin_operations_failure CHECK (error_code IS NULL OR error_code BETWEEN 1 AND 999),
+  CONSTRAINT chk_admin_operations_http_status CHECK (result_http_status IS NULL OR result_http_status BETWEEN 100 AND 599),
+  CONSTRAINT chk_admin_operations_times CHECK (
+    query_expires_at >= 0 AND (finished_at IS NULL OR finished_at >= 0)
+  ),
+  CONSTRAINT chk_admin_operations_audit CHECK (
+    actor_auth_version >= 0 AND created_at >= 0 AND updated_at >= 0 AND
+    ((state = 5 AND is_deleted = 1) OR (state IN (1, 2, 3, 4) AND is_deleted = 0))
+  )
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+
+2026/09/07 22:07:26 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/admin_operation_safety.go:195
+[0m[33m[0.434ms] [34;1m[rows:-][0m SELECT DATABASE()
+
+2026/09/07 22:07:26 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/admin_operation_safety.go:208
+[0m[33m[0.925ms] [34;1m[rows:-][0m SELECT engine, table_collation FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name='admin_action_verifications'
+
+2026/09/07 22:07:26 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/admin_operation_safety.go:211
+[0m[33m[0.830ms] [34;1m[rows:-][0m SELECT column_name, column_type, is_nullable, column_default, extra FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='admin_action_verifications' ORDER BY ordinal_position
+
+2026/09/07 22:07:26 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/admin_operation_safety.go:230
+[0m[33m[0.787ms] [34;1m[rows:-][0m SELECT index_name, column_name, seq_in_index, non_unique FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='admin_action_verifications' ORDER BY index_name, seq_in_index
+
+2026/09/07 22:07:26 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/admin_operation_safety.go:250
+[0m[33m[1.041ms] [34;1m[rows:-][0m SELECT k.constraint_name, k.column_name, k.ordinal_position, k.referenced_table_schema, k.referenced_table_name, k.referenced_column_name, r.delete_rule, r.update_rule FROM information_schema.key_column_usage k JOIN information_schema.referential_constraints r ON r.constraint_schema=k.constraint_schema AND r.table_name=k.table_name AND r.constraint_name=k.constraint_name WHERE k.table_schema=DATABASE() AND k.table_name='admin_action_verifications' AND k.referenced_table_name IS NOT NULL ORDER BY k.constraint_name, k.ordinal_position
+
+2026/09/07 22:07:26 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/admin_operation_safety.go:270
+[0m[33m[1.025ms] [34;1m[rows:-][0m SELECT tc.constraint_name, cc.check_clause, tc.enforced FROM information_schema.table_constraints tc JOIN information_schema.check_constraints cc ON cc.constraint_schema=tc.constraint_schema AND cc.constraint_name=tc.constraint_name WHERE tc.table_schema=DATABASE() AND tc.table_name='admin_action_verifications' AND tc.constraint_type='CHECK' ORDER BY tc.constraint_name
+
+2026/09/07 22:07:26 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/admin_operation_safety.go:208
+[0m[33m[0.863ms] [34;1m[rows:-][0m SELECT engine, table_collation FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name='admin_operations'
+
+2026/09/07 22:07:26 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/admin_operation_safety.go:211
+[0m[33m[0.896ms] [34;1m[rows:-][0m SELECT column_name, column_type, is_nullable, column_default, extra FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='admin_operations' ORDER BY ordinal_position
+
+2026/09/07 22:07:26 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/admin_operation_safety.go:230
+[0m[33m[0.898ms] [34;1m[rows:-][0m SELECT index_name, column_name, seq_in_index, non_unique FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='admin_operations' ORDER BY index_name, seq_in_index
+
+2026/09/07 22:07:26 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/admin_operation_safety.go:250
+[0m[33m[0.867ms] [34;1m[rows:-][0m SELECT k.constraint_name, k.column_name, k.ordinal_position, k.referenced_table_schema, k.referenced_table_name, k.referenced_column_name, r.delete_rule, r.update_rule FROM information_schema.key_column_usage k JOIN information_schema.referential_constraints r ON r.constraint_schema=k.constraint_schema AND r.table_name=k.table_name AND r.constraint_name=k.constraint_name WHERE k.table_schema=DATABASE() AND k.table_name='admin_operations' AND k.referenced_table_name IS NOT NULL ORDER BY k.constraint_name, k.ordinal_position
+
+2026/09/07 22:07:26 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/admin_operation_safety.go:270
+[0m[33m[0.840ms] [34;1m[rows:-][0m SELECT tc.constraint_name, cc.check_clause, tc.enforced FROM information_schema.table_constraints tc JOIN information_schema.check_constraints cc ON cc.constraint_schema=tc.constraint_schema AND cc.constraint_name=tc.constraint_name WHERE tc.table_schema=DATABASE() AND tc.table_name='admin_operations' AND tc.constraint_type='CHECK' ORDER BY tc.constraint_name
+
+2026/09/07 22:07:26 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/runner.go:237
+[0m[33m[0.605ms] [34;1m[rows:1][0m INSERT INTO schema_migrations (guid, version, checksum, created_at, updated_at, is_deleted) VALUES (355353375983300608, '0005', '4fc34da357e155c4a04548838153796803f618f0c7199adda17098ef5190cd68', 1788790046980, 1788790046980, 0)
+
+2026/09/07 22:07:26 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/runner.go:151
+[0m[33m[0.674ms] [34;1m[rows:0][0m SELECT version, checksum FROM schema_migrations WHERE version = '0006' AND is_deleted = 0
+
+2026/09/07 22:07:26 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/runner.go:203
+[0m[33m[4.100ms] [34;1m[rows:0][0m CREATE TABLE IF NOT EXISTS admin_action_outbox (
+  id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  guid BIGINT NOT NULL,
+  created_at BIGINT NOT NULL,
+  created_by BIGINT NULL,
+  updated_at BIGINT NOT NULL,
+  updated_by BIGINT NULL,
+  is_deleted INT NOT NULL DEFAULT 0,
+  operation_id BIGINT NOT NULL,
+  public_ref CHAR(46) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  action INT NOT NULL,
+  target_kind INT NOT NULL,
+  target_guid BIGINT NULL,
+  state INT NOT NULL,
+  result_guid BIGINT NULL,
+  delivery_state INT NOT NULL DEFAULT 1,
+  available_at BIGINT NOT NULL,
+  delivered_at BIGINT NULL,
+  attempt_count INT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_admin_action_outbox_guid (guid),
+  UNIQUE KEY uk_admin_action_outbox_operation (operation_id),
+  UNIQUE KEY uk_admin_action_outbox_public_ref (public_ref),
+  KEY idx_admin_action_outbox_delivery (delivery_state, is_deleted, available_at, id),
+  KEY idx_admin_action_outbox_target (target_kind, target_guid, is_deleted, created_at),
+  CONSTRAINT fk_admin_action_outbox_operation FOREIGN KEY (operation_id) REFERENCES admin_operations(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT chk_admin_action_outbox_action CHECK (action BETWEEN 1 AND 2147483647),
+  CONSTRAINT chk_admin_action_outbox_target_kind CHECK (target_kind IN (1, 2, 3)),
+  CONSTRAINT chk_admin_action_outbox_state CHECK (state IN (2, 3, 4)),
+  CONSTRAINT chk_admin_action_outbox_delivery_state CHECK (delivery_state IN (1, 2, 3)),
+  CONSTRAINT chk_admin_action_outbox_attempt_count CHECK (attempt_count BETWEEN 0 AND 2147483647),
+  CONSTRAINT chk_admin_action_outbox_delivery CHECK (
+    (delivery_state = 1 AND delivered_at IS NULL) OR
+    (delivery_state IN (2, 3) AND delivered_at IS NOT NULL)
+  ),
+  CONSTRAINT chk_admin_action_outbox_times CHECK (
+    available_at >= 0 AND (delivered_at IS NULL OR delivered_at >= 0)
+  ),
+  CONSTRAINT chk_admin_action_outbox_audit CHECK (
+    created_at >= 0 AND updated_at >= 0 AND is_deleted IN (0, 1)
+  )
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+
+2026/09/07 22:07:26 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/runner.go:237
+[0m[33m[0.735ms] [34;1m[rows:1][0m INSERT INTO schema_migrations (guid, version, checksum, created_at, updated_at, is_deleted) VALUES (355353376008466432, '0006', 'c0bc9f68370985315db711c0028ee644dafe4d9667c595a49193ed38e2d6f6b6', 1788790046986, 1788790046986, 0)
+
+2026/09/07 22:07:26 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/runner.go:151
+[0m[33m[0.576ms] [34;1m[rows:0][0m SELECT version, checksum FROM schema_migrations WHERE version = '0007' AND is_deleted = 0
+
+2026/09/07 22:07:26 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/business_groups.go:495
+[0m[33m[2.103ms] [34;1m[rows:0][0m CREATE TABLE IF NOT EXISTS business_groups (
+  id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  guid BIGINT NOT NULL,
+  group_key VARCHAR(64) NOT NULL,
+  display_name VARCHAR(64) NOT NULL,
+  status INT NOT NULL,
+  created_at BIGINT NOT NULL,
+  created_by BIGINT NULL,
+  updated_at BIGINT NOT NULL,
+  updated_by BIGINT NULL,
+  is_deleted INT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_business_groups_guid (guid),
+  UNIQUE KEY uk_business_groups_key_deleted (group_key, is_deleted),
+  KEY idx_business_groups_active (status, is_deleted, group_key),
+  CONSTRAINT chk_business_groups_status CHECK (status IN (1, 2)),
+  CONSTRAINT chk_business_groups_audit CHECK (created_at >= 0 AND updated_at >= 0 AND is_deleted IN (0, 1))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+
+2026/09/07 22:07:26 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/business_groups.go:560
+[0m[33m[0.489ms] [34;1m[rows:-][0m SELECT column_name,column_type,is_nullable,column_default,extra,COALESCE(character_set_name, '') AS character_set_name,COALESCE(collation_name, '') AS collation_name FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='users' AND column_name='group_id'
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/business_groups.go:503
+[0m[33m[12.237ms] [34;1m[rows:0][0m ALTER TABLE users ADD COLUMN group_id BIGINT NULL
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/business_groups.go:560
+[0m[33m[0.836ms] [34;1m[rows:-][0m SELECT column_name,column_type,is_nullable,column_default,extra,COALESCE(character_set_name, '') AS character_set_name,COALESCE(collation_name, '') AS collation_name FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='users' AND column_name='group_id'
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/business_groups.go:339
+[0m[33m[0.930ms] [34;1m[rows:-][0m SELECT t.engine, c.character_set_name, t.table_collation FROM information_schema.tables t JOIN information_schema.collation_character_set_applicability c ON c.collation_name=t.table_collation WHERE t.table_schema=DATABASE() AND t.table_name='business_groups'
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/business_groups.go:343
+[0m[33m[0.754ms] [34;1m[rows:-][0m SELECT column_name, column_type, is_nullable, column_default, extra, COALESCE(character_set_name, ''), COALESCE(collation_name, '') FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='business_groups' ORDER BY ordinal_position
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/business_groups.go:302
+[0m[33m[0.529ms] [34;1m[rows:-][0m SELECT column_name FROM information_schema.columns WHERE table_schema='information_schema' AND UPPER(table_name)='STATISTICS' AND UPPER(column_name) IN ('IS_VISIBLE','EXPRESSION')
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/business_groups.go:363
+[0m[33m[0.831ms] [34;1m[rows:-][0m SELECT index_name, column_name, seq_in_index, non_unique, sub_part, collation, index_type, is_visible, expression FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='business_groups' ORDER BY index_name, seq_in_index
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/business_groups.go:378
+[0m[33m[1.050ms] [34;1m[rows:-][0m SELECT k.constraint_name, k.column_name, k.ordinal_position, k.referenced_table_schema, k.referenced_table_name, k.referenced_column_name, r.delete_rule, r.update_rule FROM information_schema.key_column_usage k JOIN information_schema.referential_constraints r ON r.constraint_schema=k.constraint_schema AND r.table_name=k.table_name AND r.constraint_name=k.constraint_name WHERE k.table_schema=DATABASE() AND k.table_name='business_groups' AND k.referenced_table_name IS NOT NULL ORDER BY k.constraint_name, k.ordinal_position
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/business_groups.go:393
+[0m[33m[0.876ms] [34;1m[rows:-][0m SELECT tc.constraint_name, cc.check_clause, tc.enforced FROM information_schema.table_constraints tc JOIN information_schema.check_constraints cc ON cc.constraint_schema=tc.constraint_schema AND cc.constraint_name=tc.constraint_name WHERE tc.table_schema=DATABASE() AND tc.table_name='business_groups' AND tc.constraint_type='CHECK' ORDER BY tc.constraint_name
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/business_groups.go:597
+[0m[33m[0.685ms] [34;1m[rows:0][0m SELECT id,guid,group_key,status,is_deleted FROM business_groups WHERE group_key='default' AND is_deleted=0 ORDER BY id LIMIT 2
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/business_groups.go:615
+[0m[33m[0.925ms] [34;1m[rows:1][0m INSERT INTO business_groups (guid,group_key,display_name,status,created_at,created_by,updated_at,updated_by,is_deleted) VALUES (355353376109129728,'default','Default',1,1788790047010,NULL,1788790047010,NULL,0)
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/business_groups.go:623
+[0m[33m[0.528ms] [34;1m[rows:-][0m SELECT id FROM business_groups WHERE guid=355353376109129728 AND BINARY group_key=BINARY 'default' AND status=1 AND is_deleted=0
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/business_groups.go:523
+[0m[33m[0.571ms] [34;1m[rows:0][0m UPDATE users SET group_id = 1 WHERE group_id IS NULL
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/business_groups.go:560
+[0m[33m[0.355ms] [34;1m[rows:-][0m SELECT column_name,column_type,is_nullable,column_default,extra,COALESCE(character_set_name, '') AS character_set_name,COALESCE(collation_name, '') AS collation_name FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='users' AND column_name='group_id'
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/business_groups.go:531
+[0m[33m[12.031ms] [34;1m[rows:0][0m ALTER TABLE users MODIFY COLUMN group_id BIGINT NOT NULL
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/business_groups.go:302
+[0m[33m[0.627ms] [34;1m[rows:-][0m SELECT column_name FROM information_schema.columns WHERE table_schema='information_schema' AND UPPER(table_name)='STATISTICS' AND UPPER(column_name) IN ('IS_VISIBLE','EXPRESSION')
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/business_groups.go:642
+[0m[33m[0.462ms] [34;1m[rows:-][0m SELECT index_name, column_name, seq_in_index, non_unique, sub_part, collation, index_type, is_visible, expression FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='users' AND index_name='idx_users_group_id' ORDER BY seq_in_index
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/business_groups.go:540
+[0m[33m[10.426ms] [34;1m[rows:0][0m CREATE INDEX idx_users_group_id ON users (group_id)
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/business_groups.go:674
+[0m[33m[0.529ms] [34;1m[rows:-][0m SELECT DATABASE()
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/business_groups.go:681
+[0m[33m[0.645ms] [34;1m[rows:-][0m SELECT k.column_name,k.ordinal_position,k.referenced_table_schema,k.referenced_table_name,k.referenced_column_name,r.delete_rule,r.update_rule FROM information_schema.key_column_usage k JOIN information_schema.referential_constraints r ON r.constraint_schema=k.constraint_schema AND r.table_name=k.table_name AND r.constraint_name=k.constraint_name WHERE k.table_schema=DATABASE() AND k.table_name='users' AND k.constraint_name='fk_users_business_group' ORDER BY k.ordinal_position
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/business_groups.go:549
+[0m[33m[14.709ms] [34;1m[rows:0][0m ALTER TABLE users ADD CONSTRAINT fk_users_business_group FOREIGN KEY (group_id) REFERENCES business_groups(id) ON DELETE RESTRICT ON UPDATE RESTRICT
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/business_groups.go:163
+[0m[33m[0.390ms] [34;1m[rows:-][0m SELECT DATABASE()
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/business_groups.go:339
+[0m[33m[0.844ms] [34;1m[rows:-][0m SELECT t.engine, c.character_set_name, t.table_collation FROM information_schema.tables t JOIN information_schema.collation_character_set_applicability c ON c.collation_name=t.table_collation WHERE t.table_schema=DATABASE() AND t.table_name='business_groups'
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/business_groups.go:343
+[0m[33m[0.790ms] [34;1m[rows:-][0m SELECT column_name, column_type, is_nullable, column_default, extra, COALESCE(character_set_name, ''), COALESCE(collation_name, '') FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='business_groups' ORDER BY ordinal_position
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/business_groups.go:302
+[0m[33m[0.502ms] [34;1m[rows:-][0m SELECT column_name FROM information_schema.columns WHERE table_schema='information_schema' AND UPPER(table_name)='STATISTICS' AND UPPER(column_name) IN ('IS_VISIBLE','EXPRESSION')
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/business_groups.go:363
+[0m[33m[0.779ms] [34;1m[rows:-][0m SELECT index_name, column_name, seq_in_index, non_unique, sub_part, collation, index_type, is_visible, expression FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='business_groups' ORDER BY index_name, seq_in_index
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/business_groups.go:378
+[0m[33m[0.947ms] [34;1m[rows:-][0m SELECT k.constraint_name, k.column_name, k.ordinal_position, k.referenced_table_schema, k.referenced_table_name, k.referenced_column_name, r.delete_rule, r.update_rule FROM information_schema.key_column_usage k JOIN information_schema.referential_constraints r ON r.constraint_schema=k.constraint_schema AND r.table_name=k.table_name AND r.constraint_name=k.constraint_name WHERE k.table_schema=DATABASE() AND k.table_name='business_groups' AND k.referenced_table_name IS NOT NULL ORDER BY k.constraint_name, k.ordinal_position
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/business_groups.go:393
+[0m[33m[0.788ms] [34;1m[rows:-][0m SELECT tc.constraint_name, cc.check_clause, tc.enforced FROM information_schema.table_constraints tc JOIN information_schema.check_constraints cc ON cc.constraint_schema=tc.constraint_schema AND cc.constraint_name=tc.constraint_name WHERE tc.table_schema=DATABASE() AND tc.table_name='business_groups' AND tc.constraint_type='CHECK' ORDER BY tc.constraint_name
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/business_groups.go:413
+[0m[33m[0.467ms] [34;1m[rows:-][0m SELECT column_name, column_type, is_nullable, column_default, extra, COALESCE(character_set_name, ''), COALESCE(collation_name, '') FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='users' AND column_name='group_id' ORDER BY ordinal_position
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/business_groups.go:302
+[0m[33m[0.436ms] [34;1m[rows:-][0m SELECT column_name FROM information_schema.columns WHERE table_schema='information_schema' AND UPPER(table_name)='STATISTICS' AND UPPER(column_name) IN ('IS_VISIBLE','EXPRESSION')
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/business_groups.go:433
+[0m[33m[0.469ms] [34;1m[rows:-][0m SELECT index_name, column_name, seq_in_index, non_unique, sub_part, collation, index_type, is_visible, expression FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='users' AND index_name='idx_users_group_id' ORDER BY seq_in_index
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/business_groups.go:449
+[0m[33m[1.077ms] [34;1m[rows:-][0m SELECT k.constraint_name, k.column_name, k.ordinal_position, k.referenced_table_schema, k.referenced_table_name, k.referenced_column_name, r.delete_rule, r.update_rule FROM information_schema.key_column_usage k JOIN information_schema.referential_constraints r ON r.constraint_schema=k.constraint_schema AND r.table_name=k.table_name AND r.constraint_name=k.constraint_name WHERE k.table_schema=DATABASE() AND k.table_name='users' AND k.constraint_name IN (SELECT kg.constraint_name FROM information_schema.key_column_usage kg WHERE kg.table_schema=DATABASE() AND kg.table_name='users' AND kg.column_name='group_id' AND kg.referenced_table_name IS NOT NULL) ORDER BY k.constraint_name, k.ordinal_position
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/business_groups.go:181
+[0m[33m[0.603ms] [34;1m[rows:1][0m SELECT id,guid,group_key,status,is_deleted FROM business_groups WHERE group_key='default' AND is_deleted=0 ORDER BY id ASC
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/business_groups.go:189
+[0m[33m[0.321ms] [34;1m[rows:-][0m SELECT COUNT(*) FROM users WHERE group_id IS NULL
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/business_groups.go:192
+[0m[33m[0.303ms] [34;1m[rows:-][0m SELECT COUNT(*) FROM users u LEFT JOIN business_groups g ON g.id=u.group_id WHERE g.id IS NULL
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/runner.go:237
+[0m[33m[0.677ms] [34;1m[rows:1][0m INSERT INTO schema_migrations (guid, version, checksum, created_at, updated_at, is_deleted) VALUES (355353376327233536, '0007', 'b3c3351771fce2dbf5466d300cb92ffd5dbd183cffaff15671e46a8bc87e143e', 1788790047062, 1788790047062, 0)
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/runner.go:151
+[0m[33m[0.542ms] [34;1m[rows:0][0m SELECT version, checksum FROM schema_migrations WHERE version = '0008' AND is_deleted = 0
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/runner.go:203
+[0m[33m[3.511ms] [34;1m[rows:0][0m CREATE TABLE IF NOT EXISTS admin_operation_responses (
+  id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  guid BIGINT NOT NULL,
+  created_at BIGINT NOT NULL,
+  created_by BIGINT NULL,
+  updated_at BIGINT NOT NULL,
+  updated_by BIGINT NULL,
+  is_deleted INT NOT NULL DEFAULT 0,
+  operation_id BIGINT NOT NULL,
+  http_status INT NOT NULL,
+  media_type VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  response_body VARBINARY(4096) NOT NULL,
+  body_sha256 CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  UNIQUE KEY uk_admin_operation_responses_guid (guid),
+  UNIQUE KEY uk_admin_operation_responses_operation (operation_id),
+  KEY idx_admin_operation_responses_active (is_deleted, created_at),
+  CONSTRAINT fk_admin_operation_responses_operation FOREIGN KEY (operation_id) REFERENCES admin_operations(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT chk_admin_operation_responses_http CHECK (http_status = 201 AND media_type = 'application/json'),
+  CONSTRAINT chk_admin_operation_responses_body CHECK (OCTET_LENGTH(response_body) BETWEEN 2 AND 4096 AND OCTET_LENGTH(body_sha256) = 64),
+  CONSTRAINT chk_admin_operation_responses_immutable CHECK (
+    created_at >= 0 AND updated_at = created_at AND is_deleted = 0 AND
+    ((created_by IS NULL AND updated_by IS NULL) OR (created_by IS NOT NULL AND updated_by = created_by))
+  )
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/runner.go:237
+[0m[33m[0.672ms] [34;1m[rows:1][0m INSERT INTO schema_migrations (guid, version, checksum, created_at, updated_at, is_deleted) VALUES (355353376348205056, '0008', '21289da334e7ef4425f697c659e6f45227e88c4d86ac4c099867dd6895f666f2', 1788790047067, 1788790047067, 0)
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/runner.go:151
+[0m[33m[0.532ms] [34;1m[rows:0][0m SELECT version, checksum FROM schema_migrations WHERE version = '0009' AND is_deleted = 0
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/admin_response_integrity.go:66
+[0m[33m[0.403ms] [34;1m[rows:-][0m SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='admin_operation_responses' AND column_name IN ('lifecycle_state','integrity_version','response_hmac')
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/admin_response_integrity.go:69
+[0m[33m[0.440ms] [34;1m[rows:-][0m SELECT COUNT(*) FROM information_schema.table_constraints WHERE table_schema=DATABASE() AND table_name='admin_operation_responses' AND constraint_type='CHECK' AND constraint_name='chk_admin_operation_responses_immutable'
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/admin_response_integrity.go:72
+[0m[33m[0.402ms] [34;1m[rows:-][0m SELECT COUNT(*) FROM information_schema.table_constraints WHERE table_schema=DATABASE() AND table_name='admin_operation_responses' AND constraint_type='CHECK' AND constraint_name='chk_admin_operation_responses_lifecycle'
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/admin_response_integrity.go:75
+[0m[33m[0.447ms] [34;1m[rows:-][0m SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='admin_action_outbox' AND column_name='failure_code'
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/admin_response_integrity.go:78
+[0m[33m[0.343ms] [34;1m[rows:-][0m SELECT COUNT(*) FROM information_schema.table_constraints WHERE table_schema=DATABASE() AND table_name='admin_action_outbox' AND constraint_type='CHECK' AND constraint_name='chk_admin_action_outbox_outcome'
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/admin_response_integrity.go:24
+[0m[33m[6.460ms] [34;1m[rows:0][0m ALTER TABLE admin_operation_responses
+  DROP CHECK chk_admin_operation_responses_immutable,
+  ADD COLUMN lifecycle_state INT NOT NULL DEFAULT 1 AFTER operation_id,
+  ADD COLUMN integrity_version INT NOT NULL DEFAULT 0 AFTER lifecycle_state,
+  ADD COLUMN response_hmac CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NULL AFTER integrity_version,
+  ADD CONSTRAINT chk_admin_operation_responses_lifecycle CHECK (
+    (lifecycle_state = 1 AND is_deleted = 0 AND updated_at = created_at AND
+      ((integrity_version = 0 AND response_hmac IS NULL) OR (integrity_version = 1 AND OCTET_LENGTH(response_hmac) = 64)) AND
+      ((created_by IS NULL AND updated_by IS NULL) OR (created_by IS NOT NULL AND updated_by = created_by))) OR
+    (lifecycle_state = 2 AND is_deleted = 1 AND integrity_version = 1 AND OCTET_LENGTH(response_hmac) = 64 AND
+      OCTET_LENGTH(response_body) = 2 AND updated_at >= created_at AND updated_by IS NOT NULL)
+  )
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/admin_response_integrity.go:66
+[0m[33m[0.492ms] [34;1m[rows:-][0m SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='admin_operation_responses' AND column_name IN ('lifecycle_state','integrity_version','response_hmac')
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/admin_response_integrity.go:69
+[0m[33m[0.416ms] [34;1m[rows:-][0m SELECT COUNT(*) FROM information_schema.table_constraints WHERE table_schema=DATABASE() AND table_name='admin_operation_responses' AND constraint_type='CHECK' AND constraint_name='chk_admin_operation_responses_immutable'
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/admin_response_integrity.go:72
+[0m[33m[0.519ms] [34;1m[rows:-][0m SELECT COUNT(*) FROM information_schema.table_constraints WHERE table_schema=DATABASE() AND table_name='admin_operation_responses' AND constraint_type='CHECK' AND constraint_name='chk_admin_operation_responses_lifecycle'
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/admin_response_integrity.go:75
+[0m[33m[0.637ms] [34;1m[rows:-][0m SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='admin_action_outbox' AND column_name='failure_code'
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/admin_response_integrity.go:78
+[0m[33m[0.522ms] [34;1m[rows:-][0m SELECT COUNT(*) FROM information_schema.table_constraints WHERE table_schema=DATABASE() AND table_name='admin_action_outbox' AND constraint_type='CHECK' AND constraint_name='chk_admin_action_outbox_outcome'
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/admin_response_integrity.go:32
+[0m[33m[4.939ms] [34;1m[rows:0][0m ALTER TABLE admin_action_outbox ADD COLUMN failure_code INT NULL AFTER state
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/admin_response_integrity.go:66
+[0m[33m[0.553ms] [34;1m[rows:-][0m SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='admin_operation_responses' AND column_name IN ('lifecycle_state','integrity_version','response_hmac')
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/admin_response_integrity.go:69
+[0m[33m[0.417ms] [34;1m[rows:-][0m SELECT COUNT(*) FROM information_schema.table_constraints WHERE table_schema=DATABASE() AND table_name='admin_operation_responses' AND constraint_type='CHECK' AND constraint_name='chk_admin_operation_responses_immutable'
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/admin_response_integrity.go:72
+[0m[33m[0.444ms] [34;1m[rows:-][0m SELECT COUNT(*) FROM information_schema.table_constraints WHERE table_schema=DATABASE() AND table_name='admin_operation_responses' AND constraint_type='CHECK' AND constraint_name='chk_admin_operation_responses_lifecycle'
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/admin_response_integrity.go:75
+[0m[33m[0.438ms] [34;1m[rows:-][0m SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='admin_action_outbox' AND column_name='failure_code'
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/admin_response_integrity.go:78
+[0m[33m[0.432ms] [34;1m[rows:-][0m SELECT COUNT(*) FROM information_schema.table_constraints WHERE table_schema=DATABASE() AND table_name='admin_action_outbox' AND constraint_type='CHECK' AND constraint_name='chk_admin_action_outbox_outcome'
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/admin_response_integrity.go:42
+[0m[33m[0.590ms] [34;1m[rows:0][0m UPDATE admin_action_outbox AS outbox
+JOIN admin_operations AS operation ON operation.id = outbox.operation_id
+SET outbox.failure_code = operation.error_code
+WHERE outbox.state = 3 AND outbox.failure_code IS NULL
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/admin_response_integrity.go:46
+[0m[33m[7.278ms] [34;1m[rows:0][0m ALTER TABLE admin_action_outbox
+  ADD CONSTRAINT chk_admin_action_outbox_outcome CHECK (
+    (state = 2 AND failure_code IS NULL AND result_guid IS NOT NULL) OR
+    (state = 3 AND failure_code IN (1, 2, 3, 4, 5) AND result_guid IS NULL)
+  )
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/admin_response_integrity.go:66
+[0m[33m[0.623ms] [34;1m[rows:-][0m SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='admin_operation_responses' AND column_name IN ('lifecycle_state','integrity_version','response_hmac')
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/admin_response_integrity.go:69
+[0m[33m[0.439ms] [34;1m[rows:-][0m SELECT COUNT(*) FROM information_schema.table_constraints WHERE table_schema=DATABASE() AND table_name='admin_operation_responses' AND constraint_type='CHECK' AND constraint_name='chk_admin_operation_responses_immutable'
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/admin_response_integrity.go:72
+[0m[33m[0.385ms] [34;1m[rows:-][0m SELECT COUNT(*) FROM information_schema.table_constraints WHERE table_schema=DATABASE() AND table_name='admin_operation_responses' AND constraint_type='CHECK' AND constraint_name='chk_admin_operation_responses_lifecycle'
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/admin_response_integrity.go:75
+[0m[33m[0.421ms] [34;1m[rows:-][0m SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='admin_action_outbox' AND column_name='failure_code'
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/admin_response_integrity.go:78
+[0m[33m[0.387ms] [34;1m[rows:-][0m SELECT COUNT(*) FROM information_schema.table_constraints WHERE table_schema=DATABASE() AND table_name='admin_action_outbox' AND constraint_type='CHECK' AND constraint_name='chk_admin_action_outbox_outcome'
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/runner.go:237
+[0m[33m[0.702ms] [34;1m[rows:1][0m INSERT INTO schema_migrations (guid, version, checksum, created_at, updated_at, is_deleted) VALUES (355353376478228480, '0009', '4dc818d93180bb6777d2ec6d8318e728fe76add4c736a178f19b808ca2afedf7', 1788790047098, 1788790047098, 0)
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/runner.go:151
+[0m[33m[0.543ms] [34;1m[rows:0][0m SELECT version, checksum FROM schema_migrations WHERE version = '0010' AND is_deleted = 0
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/admin_response_targets.go:82
+[0m[33m[0.461ms] [34;1m[rows:-][0m SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='admin_operation_responses' AND column_name='target_guid'
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/admin_response_targets.go:85
+[0m[33m[0.519ms] [34;1m[rows:-][0m SELECT COUNT(DISTINCT index_name) FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='admin_operation_responses' AND index_name='idx_admin_operation_responses_target'
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/admin_response_targets.go:88
+[0m[33m[0.429ms] [34;1m[rows:-][0m SELECT COUNT(*) FROM information_schema.table_constraints WHERE table_schema=DATABASE() AND table_name='admin_operation_responses' AND constraint_type='FOREIGN KEY' AND constraint_name='fk_admin_operation_responses_target'
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/admin_response_targets.go:91
+[0m[33m[0.461ms] [34;1m[rows:-][0m SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='admin_action_outbox' AND column_name='result_kind'
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/admin_response_targets.go:94
+[0m[33m[0.700ms] [34;1m[rows:-][0m SELECT COUNT(*) FROM information_schema.table_constraints tc JOIN information_schema.check_constraints cc ON cc.constraint_schema=tc.constraint_schema AND cc.constraint_name=tc.constraint_name WHERE tc.table_schema=DATABASE() AND tc.table_name='admin_action_outbox' AND tc.constraint_type='CHECK' AND tc.constraint_name='chk_admin_action_outbox_outcome' AND LOWER(cc.check_clause) LIKE '%result_kind%'
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/admin_response_targets.go:37
+[0m[33m[5.038ms] [34;1m[rows:0][0m ALTER TABLE admin_operation_responses
+  ADD COLUMN target_guid BIGINT NULL AFTER operation_id
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/admin_response_targets.go:82
+[0m[33m[0.656ms] [34;1m[rows:-][0m SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='admin_operation_responses' AND column_name='target_guid'
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/admin_response_targets.go:85
+[0m[33m[0.516ms] [34;1m[rows:-][0m SELECT COUNT(DISTINCT index_name) FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='admin_operation_responses' AND index_name='idx_admin_operation_responses_target'
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/admin_response_targets.go:88
+[0m[33m[0.450ms] [34;1m[rows:-][0m SELECT COUNT(*) FROM information_schema.table_constraints WHERE table_schema=DATABASE() AND table_name='admin_operation_responses' AND constraint_type='FOREIGN KEY' AND constraint_name='fk_admin_operation_responses_target'
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/admin_response_targets.go:91
+[0m[33m[0.475ms] [34;1m[rows:-][0m SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='admin_action_outbox' AND column_name='result_kind'
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/admin_response_targets.go:94
+[0m[33m[0.583ms] [34;1m[rows:-][0m SELECT COUNT(*) FROM information_schema.table_constraints tc JOIN information_schema.check_constraints cc ON cc.constraint_schema=tc.constraint_schema AND cc.constraint_name=tc.constraint_name WHERE tc.table_schema=DATABASE() AND tc.table_name='admin_action_outbox' AND tc.constraint_type='CHECK' AND tc.constraint_name='chk_admin_action_outbox_outcome' AND LOWER(cc.check_clause) LIKE '%result_kind%'
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/admin_response_targets.go:46
+[0m[33m[4.731ms] [34;1m[rows:0][0m ALTER TABLE admin_action_outbox
+  ADD COLUMN result_kind INT NULL AFTER failure_code
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/admin_response_targets.go:82
+[0m[33m[0.564ms] [34;1m[rows:-][0m SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='admin_operation_responses' AND column_name='target_guid'
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/admin_response_targets.go:85
+[0m[33m[0.493ms] [34;1m[rows:-][0m SELECT COUNT(DISTINCT index_name) FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='admin_operation_responses' AND index_name='idx_admin_operation_responses_target'
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/admin_response_targets.go:88
+[0m[33m[0.437ms] [34;1m[rows:-][0m SELECT COUNT(*) FROM information_schema.table_constraints WHERE table_schema=DATABASE() AND table_name='admin_operation_responses' AND constraint_type='FOREIGN KEY' AND constraint_name='fk_admin_operation_responses_target'
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/admin_response_targets.go:91
+[0m[33m[0.485ms] [34;1m[rows:-][0m SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='admin_action_outbox' AND column_name='result_kind'
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/admin_response_targets.go:94
+[0m[33m[0.722ms] [34;1m[rows:-][0m SELECT COUNT(*) FROM information_schema.table_constraints tc JOIN information_schema.check_constraints cc ON cc.constraint_schema=tc.constraint_schema AND cc.constraint_name=tc.constraint_name WHERE tc.table_schema=DATABASE() AND tc.table_name='admin_action_outbox' AND tc.constraint_type='CHECK' AND tc.constraint_name='chk_admin_action_outbox_outcome' AND LOWER(cc.check_clause) LIKE '%result_kind%'
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/admin_response_targets.go:56
+[0m[33m[0.516ms] [34;1m[rows:0][0m UPDATE admin_action_outbox AS outbox
+JOIN admin_operations AS operation ON operation.id = outbox.operation_id
+JOIN users AS target ON target.guid = outbox.result_guid
+SET outbox.result_kind = 2
+WHERE outbox.result_kind IS NULL
+  AND outbox.operation_id = operation.id
+  AND outbox.action = operation.action
+  AND outbox.public_ref = operation.public_ref
+  AND outbox.action IN (1, 9)
+  AND outbox.public_ref REGEXP '^op_[A-Za-z0-9_-]{43}$'
+  AND outbox.target_kind = 1
+  AND outbox.target_guid IS NULL
+  AND outbox.state = 2
+  AND outbox.failure_code IS NULL
+  AND outbox.result_guid > 0
+  AND outbox.is_deleted = 0
+  AND target.guid = outbox.result_guid
+  AND (
+    (operation.state = 2 AND operation.is_deleted = 0 AND operation.finished_at IS NOT NULL AND operation.finished_at > 0 AND
+      operation.error_code IS NULL AND operation.result_kind = 2 AND operation.result_guid = outbox.result_guid AND
+      operation.result_http_status = 201 AND operation.lease_owner_hmac IS NULL AND operation.lease_expires_at IS NULL AND
+      operation.query_expires_at >= operation.finished_at) OR
+    (operation.state = 5 AND operation.is_deleted = 1 AND operation.finished_at IS NOT NULL AND operation.finished_at > 0 AND
+      operation.error_code IS NULL AND operation.result_kind IS NULL AND operation.result_guid IS NULL AND
+      operation.result_http_status IS NULL AND operation.lease_owner_hmac IS NULL AND operation.lease_expires_at IS NULL)
+  )
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/admin_response_targets.go:56
+[0m[33m[0.445ms] [34;1m[rows:0][0m UPDATE admin_operation_responses AS response
+JOIN admin_operations AS operation ON operation.id = response.operation_id
+SET response.lifecycle_state = 2,
+    response.integrity_version = 1,
+    response.response_hmac = REPEAT('0', 64),
+    response.http_status = 201,
+    response.media_type = 'application/json',
+    response.response_body=X'7B7D',
+    response.body_sha256 = '44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a',
+    response.is_deleted = 1,
+    response.updated_at = GREATEST(response.updated_at, response.created_at),
+    response.updated_by = COALESCE(response.updated_by, response.created_by, operation.actor_user_id)
+WHERE response.lifecycle_state = 2
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/admin_response_targets.go:56
+[0m[33m[0.334ms] [34;1m[rows:0][0m UPDATE admin_operation_responses AS response
+JOIN admin_operations AS operation ON operation.id = response.operation_id
+JOIN users AS target ON target.guid = operation.result_guid
+SET response.target_guid = operation.result_guid
+WHERE response.target_guid IS NULL
+  AND operation.action IN (1, 9)
+  AND operation.public_ref REGEXP '^op_[A-Za-z0-9_-]{43}$'
+  AND operation.state = 2
+  AND operation.is_deleted = 0
+  AND operation.finished_at IS NOT NULL
+  AND operation.finished_at > 0
+  AND operation.error_code IS NULL
+  AND operation.result_kind = 2
+  AND operation.result_guid > 0
+  AND operation.result_http_status = 201
+  AND operation.lease_owner_hmac IS NULL
+  AND operation.lease_expires_at IS NULL
+  AND operation.query_expires_at >= operation.finished_at
+  AND target.guid = operation.result_guid
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/admin_response_targets.go:56
+[0m[33m[0.378ms] [34;1m[rows:0][0m UPDATE admin_operation_responses AS response
+JOIN admin_operations AS operation ON operation.id = response.operation_id
+JOIN admin_action_outbox AS outbox ON outbox.operation_id = operation.id
+JOIN users AS target ON target.guid = outbox.result_guid
+SET response.target_guid = outbox.result_guid
+WHERE response.target_guid IS NULL
+  AND operation.action IN (1, 9)
+  AND operation.state = 5
+  AND operation.is_deleted = 1
+  AND operation.finished_at IS NOT NULL
+  AND operation.finished_at > 0
+  AND operation.error_code IS NULL
+  AND operation.result_kind IS NULL
+  AND operation.result_guid IS NULL
+  AND operation.result_http_status IS NULL
+  AND operation.lease_owner_hmac IS NULL
+  AND operation.lease_expires_at IS NULL
+  AND outbox.operation_id = operation.id
+  AND outbox.action = operation.action
+  AND outbox.public_ref = operation.public_ref
+  AND outbox.public_ref REGEXP '^op_[A-Za-z0-9_-]{43}$'
+  AND outbox.target_kind = 1
+  AND outbox.target_guid IS NULL
+  AND outbox.state = 2
+  AND outbox.failure_code IS NULL
+  AND outbox.result_kind = 2
+  AND outbox.result_guid > 0
+  AND outbox.is_deleted = 0
+  AND target.guid = outbox.result_guid
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/admin_response_targets.go:56
+[0m[33m[0.426ms] [34;1m[rows:0][0m UPDATE admin_operation_responses AS response
+JOIN admin_operations AS operation ON operation.id = response.operation_id
+LEFT JOIN users AS target ON target.guid = response.target_guid
+SET response.target_guid = CASE WHEN target.guid IS NULL THEN NULL ELSE response.target_guid END,
+    response.lifecycle_state = 2,
+    response.integrity_version = 1,
+    response.response_hmac = REPEAT('0', 64),
+    response.http_status = 201,
+    response.media_type = 'application/json',
+    response.response_body=X'7B7D',
+    response.body_sha256 = '44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a',
+    response.is_deleted = 1,
+    response.updated_at = GREATEST(response.updated_at, response.created_at),
+    response.updated_by = COALESCE(response.updated_by, response.created_by, operation.actor_user_id)
+WHERE response.lifecycle_state = 1
+  AND response.is_deleted = 0
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/admin_response_targets.go:56
+[0m[33m[7.377ms] [34;1m[rows:0][0m ALTER TABLE admin_action_outbox
+  DROP CHECK chk_admin_action_outbox_outcome,
+  ADD CONSTRAINT chk_admin_action_outbox_outcome CHECK (
+    (state = 2 AND failure_code IS NULL AND (result_kind IS NULL OR result_kind IN (1, 2, 3)) AND result_guid IS NOT NULL) OR
+    (state = 3 AND failure_code IN (1, 2, 3, 4, 5) AND result_kind IS NULL AND result_guid IS NULL)
+  )
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/admin_response_targets.go:82
+[0m[33m[0.554ms] [34;1m[rows:-][0m SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='admin_operation_responses' AND column_name='target_guid'
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/admin_response_targets.go:85
+[0m[33m[0.510ms] [34;1m[rows:-][0m SELECT COUNT(DISTINCT index_name) FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='admin_operation_responses' AND index_name='idx_admin_operation_responses_target'
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/admin_response_targets.go:88
+[0m[33m[0.503ms] [34;1m[rows:-][0m SELECT COUNT(*) FROM information_schema.table_constraints WHERE table_schema=DATABASE() AND table_name='admin_operation_responses' AND constraint_type='FOREIGN KEY' AND constraint_name='fk_admin_operation_responses_target'
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/admin_response_targets.go:91
+[0m[33m[0.461ms] [34;1m[rows:-][0m SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='admin_action_outbox' AND column_name='result_kind'
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/admin_response_targets.go:94
+[0m[33m[0.708ms] [34;1m[rows:-][0m SELECT COUNT(*) FROM information_schema.table_constraints tc JOIN information_schema.check_constraints cc ON cc.constraint_schema=tc.constraint_schema AND cc.constraint_name=tc.constraint_name WHERE tc.table_schema=DATABASE() AND tc.table_name='admin_action_outbox' AND tc.constraint_type='CHECK' AND tc.constraint_name='chk_admin_action_outbox_outcome' AND LOWER(cc.check_clause) LIKE '%result_kind%'
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/admin_response_targets.go:66
+[0m[33m[7.564ms] [34;1m[rows:0][0m ALTER TABLE admin_operation_responses
+  DROP CHECK chk_admin_operation_responses_lifecycle,
+  ADD KEY idx_admin_operation_responses_target (target_guid, lifecycle_state, is_deleted, id),
+  ADD CONSTRAINT fk_admin_operation_responses_target FOREIGN KEY (target_guid) REFERENCES users(guid) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  ADD CONSTRAINT chk_admin_operation_responses_lifecycle CHECK (
+    (lifecycle_state = 1 AND target_guid IS NOT NULL AND target_guid > 0 AND is_deleted = 0 AND updated_at = created_at AND
+      integrity_version = 1 AND OCTET_LENGTH(response_hmac) = 64 AND
+      ((created_by IS NULL AND updated_by IS NULL) OR (created_by IS NOT NULL AND updated_by = created_by))) OR
+    (lifecycle_state = 2 AND (target_guid IS NULL OR target_guid > 0) AND is_deleted = 1 AND integrity_version = 1 AND OCTET_LENGTH(response_hmac) = 64 AND
+      http_status = 201 AND media_type = 'application/json' AND
+      response_body = X'7B7D' AND body_sha256 = '44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a' AND
+      updated_at >= created_at AND updated_by IS NOT NULL)
+  )
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/admin_response_targets.go:82
+[0m[33m[0.472ms] [34;1m[rows:-][0m SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='admin_operation_responses' AND column_name='target_guid'
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/admin_response_targets.go:85
+[0m[33m[0.434ms] [34;1m[rows:-][0m SELECT COUNT(DISTINCT index_name) FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='admin_operation_responses' AND index_name='idx_admin_operation_responses_target'
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/admin_response_targets.go:88
+[0m[33m[0.387ms] [34;1m[rows:-][0m SELECT COUNT(*) FROM information_schema.table_constraints WHERE table_schema=DATABASE() AND table_name='admin_operation_responses' AND constraint_type='FOREIGN KEY' AND constraint_name='fk_admin_operation_responses_target'
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/admin_response_targets.go:91
+[0m[33m[0.378ms] [34;1m[rows:-][0m SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='admin_action_outbox' AND column_name='result_kind'
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/admin_response_targets.go:94
+[0m[33m[0.727ms] [34;1m[rows:-][0m SELECT COUNT(*) FROM information_schema.table_constraints tc JOIN information_schema.check_constraints cc ON cc.constraint_schema=tc.constraint_schema AND cc.constraint_name=tc.constraint_name WHERE tc.table_schema=DATABASE() AND tc.table_name='admin_action_outbox' AND tc.constraint_type='CHECK' AND tc.constraint_name='chk_admin_action_outbox_outcome' AND LOWER(cc.check_clause) LIKE '%result_kind%'
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/admin_action_outbox.go:133
+[0m[33m[0.236ms] [34;1m[rows:-][0m SELECT DATABASE()
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/admin_action_outbox.go:145
+[0m[33m[0.684ms] [34;1m[rows:-][0m SELECT t.engine, c.character_set_name, t.table_collation FROM information_schema.tables t JOIN information_schema.collation_character_set_applicability c ON c.collation_name=t.table_collation WHERE t.table_schema=DATABASE() AND t.table_name='admin_action_outbox'
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/admin_action_outbox.go:149
+[0m[33m[0.720ms] [34;1m[rows:-][0m SELECT column_name, column_type, is_nullable, column_default, extra, COALESCE(character_set_name, ''), COALESCE(collation_name, '') FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='admin_action_outbox' ORDER BY ordinal_position
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/admin_action_outbox.go:169
+[0m[33m[0.717ms] [34;1m[rows:-][0m SELECT index_name, column_name, seq_in_index, non_unique FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='admin_action_outbox' ORDER BY index_name, seq_in_index
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/admin_action_outbox.go:190
+[0m[33m[0.850ms] [34;1m[rows:-][0m SELECT k.constraint_name, k.column_name, k.ordinal_position, k.referenced_table_schema, k.referenced_table_name, k.referenced_column_name, r.delete_rule, r.update_rule FROM information_schema.key_column_usage k JOIN information_schema.referential_constraints r ON r.constraint_schema=k.constraint_schema AND r.table_name=k.table_name AND r.constraint_name=k.constraint_name WHERE k.table_schema=DATABASE() AND k.table_name='admin_action_outbox' AND k.referenced_table_name IS NOT NULL ORDER BY k.constraint_name, k.ordinal_position
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/admin_action_outbox.go:211
+[0m[33m[0.758ms] [34;1m[rows:-][0m SELECT tc.constraint_name, cc.check_clause, tc.enforced FROM information_schema.table_constraints tc JOIN information_schema.check_constraints cc ON cc.constraint_schema=tc.constraint_schema AND cc.constraint_name=tc.constraint_name WHERE tc.table_schema=DATABASE() AND tc.table_name='admin_action_outbox' AND tc.constraint_type='CHECK' ORDER BY tc.constraint_name
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/admin_operation_response.go:58
+[0m[33m[0.237ms] [34;1m[rows:-][0m SELECT DATABASE()
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/business_groups.go:339
+[0m[33m[0.684ms] [34;1m[rows:-][0m SELECT t.engine, c.character_set_name, t.table_collation FROM information_schema.tables t JOIN information_schema.collation_character_set_applicability c ON c.collation_name=t.table_collation WHERE t.table_schema=DATABASE() AND t.table_name='admin_operation_responses'
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/business_groups.go:343
+[0m[33m[0.765ms] [34;1m[rows:-][0m SELECT column_name, column_type, is_nullable, column_default, extra, COALESCE(character_set_name, ''), COALESCE(collation_name, '') FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='admin_operation_responses' ORDER BY ordinal_position
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/business_groups.go:302
+[0m[33m[0.433ms] [34;1m[rows:-][0m SELECT column_name FROM information_schema.columns WHERE table_schema='information_schema' AND UPPER(table_name)='STATISTICS' AND UPPER(column_name) IN ('IS_VISIBLE','EXPRESSION')
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/business_groups.go:363
+[0m[33m[0.701ms] [34;1m[rows:-][0m SELECT index_name, column_name, seq_in_index, non_unique, sub_part, collation, index_type, is_visible, expression FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='admin_operation_responses' ORDER BY index_name, seq_in_index
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/business_groups.go:378
+[0m[33m[0.755ms] [34;1m[rows:-][0m SELECT k.constraint_name, k.column_name, k.ordinal_position, k.referenced_table_schema, k.referenced_table_name, k.referenced_column_name, r.delete_rule, r.update_rule FROM information_schema.key_column_usage k JOIN information_schema.referential_constraints r ON r.constraint_schema=k.constraint_schema AND r.table_name=k.table_name AND r.constraint_name=k.constraint_name WHERE k.table_schema=DATABASE() AND k.table_name='admin_operation_responses' AND k.referenced_table_name IS NOT NULL ORDER BY k.constraint_name, k.ordinal_position
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/business_groups.go:393
+[0m[33m[0.801ms] [34;1m[rows:-][0m SELECT tc.constraint_name, cc.check_clause, tc.enforced FROM information_schema.table_constraints tc JOIN information_schema.check_constraints cc ON cc.constraint_schema=tc.constraint_schema AND cc.constraint_name=tc.constraint_name WHERE tc.table_schema=DATABASE() AND tc.table_name='admin_operation_responses' AND tc.constraint_type='CHECK' ORDER BY tc.constraint_name
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/runner.go:237
+[0m[33m[0.649ms] [34;1m[rows:1][0m INSERT INTO schema_migrations (guid, version, checksum, created_at, updated_at, is_deleted) VALUES (355353376700526592, '0010', 'b6ddd5b7088f1617b9831186e08da622f7d06cbe985707ef9f5524ffe6057780', 1788790047151, 1788790047151, 0)
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/runner.go:244
+[0m[33m[0.241ms] [34;1m[rows:0][0m SELECT RELEASE_LOCK('porsche_schema_migrations')
+
+2026/09/07 22:07:27 [32m/Users/xuzhihao/code/Porsche/.worktrees/admin-public-260903/internal/migration/runner.go:254
+[0m[33m[0.394ms] [34;1m[rows:10][0m SELECT version, checksum FROM schema_migrations WHERE is_deleted = 0 ORDER BY version
+0001 2da41ffd07c44d45cb05a705f867db2f2b8f01defb519000197dedce9998aedd
+0002 58712428ca668fb1fea0943d71a2209b2e7faf26de043d870195a033ac0f413c
+0003 31c49d9bb1f171d9ea6caab49714d9de05552b8f6e9cb73f2989760efd0a015c
+0004 44b5caba0473162c239e6b3035e6d9067e3af0b35e998a79c827a1424621494e
+0005 4fc34da357e155c4a04548838153796803f618f0c7199adda17098ef5190cd68
+0006 c0bc9f68370985315db711c0028ee644dafe4d9667c595a49193ed38e2d6f6b6
+0007 b3c3351771fce2dbf5466d300cb92ffd5dbd183cffaff15671e46a8bc87e143e
+0008 21289da334e7ef4425f697c659e6f45227e88c4d86ac4c099867dd6895f666f2
+0009 4dc818d93180bb6777d2ec6d8318e728fe76add4c736a178f19b808ca2afedf7
+0010 b6ddd5b7088f1617b9831186e08da622f7d06cbe985707ef9f5524ffe6057780

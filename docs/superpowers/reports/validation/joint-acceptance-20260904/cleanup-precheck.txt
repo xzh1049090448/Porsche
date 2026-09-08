@@ -1,0 +1,27 @@
+Exact cleanup precheck (2026-09-04)
+===================================
+
+Frontend exec session 23561: Ctrl-C sent; exited.
+Backend exec session 37608: Ctrl-C sent; exited.
+PID 22388 and PID 22213: no process rows.
+TCP 15173 and TCP 18080: no listeners.
+
+MySQL:
+- full ID: 868308ad13c424fc529e1b401eca1a13702af8adcf866711d5453111903e7b2a
+- name: b1d-joint-acceptance-260904-mysql
+- task label: b1d-joint-acceptance-260904
+- image: sha256:7dcddc01f13bab2f15cde676d44d01f61fc9f99fe7785e86196dfc07d358ae2b
+- loopback: 127.0.0.1:61998 -> 3306
+- running=true; AutoRemove=true; tmpfs=/tmp,/var/lib/mysql
+- mounts: exactly one planned read-only bind to /run/secrets/mysql-root-password; no named volume
+
+Redis:
+- full ID: 0f2bdaecb9e8da94e67667eea6487459c957ba62af469406aad41fa521d8f5f8
+- name: b1d-joint-acceptance-260904-redis
+- task label: b1d-joint-acceptance-260904
+- image: sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf
+- loopback: 127.0.0.1:62001 -> 6379
+- running=true; AutoRemove=true; tmpfs=/data
+- mounts: exactly one planned read-only bind to /usr/local/etc/redis/redis.conf; no named volume
+
+Same-label inventory: exactly these two containers. Identity precheck result: PASS.

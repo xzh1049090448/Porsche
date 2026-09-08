@@ -1,0 +1,20 @@
+{
+  "listeners": {
+    "51294": {
+      "exit": 1,
+      "stdout_empty": true
+    },
+    "51295": {
+      "exit": 1,
+      "stdout_empty": true
+    },
+    "51296": {
+      "exit": 1,
+      "stdout_empty": true
+    }
+  },
+  "processes": {
+    "exit": 1,
+    "stdout_empty": true
+  }
+}

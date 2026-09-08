@@ -1,0 +1,26 @@
+{
+  "leaf": {
+    "fail": 13,
+    "pass": 1726,
+    "skip": 1
+  },
+  "leaf_skips": [
+    {
+      "package": "github.com/porsche/ai-gateway-go/internal/handler",
+      "reason": "--- SKIP: TestAdminUsersReadPerformance (0.00s)",
+      "test": "TestAdminUsersReadPerformance"
+    }
+  ],
+  "packages": {
+    "fail": 2,
+    "pass": 14,
+    "skip": 5
+  },
+  "parse_failures": [],
+  "source": "backend-full.jsonl",
+  "terminal": {
+    "fail": 16,
+    "pass": 1896,
+    "skip": 1
+  }
+}

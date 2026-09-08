@@ -1,0 +1,39 @@
+package handler
+
+import (
+    "encoding/json"
+    "net/http"
+    "net/http/httptest"
+    "testing"
+
+    "github.com/gin-gonic/gin"
+    "github.com/porsche/ai-gateway-go/internal/app"
+    "github.com/porsche/ai-gateway-go/internal/service"
+)
+
+func TestIndependentAdminAuthzNoFixtureProbe(t *testing.T) {
+    gin.SetMode(gin.TestMode)
+    r := gin.New()
+    RegisterAdminAuthz(r, &app.State{})
+    for _, path := range []string{"/admin/v2/authz/catalog", "/admin/v2/users/01/permissions"} {
+        req := httptest.NewRequest(http.MethodGet, path, nil)
+        req.Header.Set("X-Request-ID", "independent-b1c-probe")
+        rec := httptest.NewRecorder()
+        r.ServeHTTP(rec, req)
+        if rec.Code != http.StatusUnauthorized || rec.Header().Get("Cache-Control") != "no-store" || rec.Header().Get("X-Request-ID") != "independent-b1c-probe" {
+            t.Fatalf("path=%s code=%d headers=%v", path, rec.Code, rec.Header())
+        }
+        var body map[string]any
+        if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil || len(body) != 1 || body["detail"] == "" {
+            t.Fatalf("path=%s non-minimal 401 envelope: %q", path, rec.Body.String())
+        }
+    }
+    for _, raw := range []string{"", "0", "00", "01", "+1", "-1", " 1", "1 ", "1.0", "9223372036854775808"} {
+        if _, err := service.ParseAdminPermissionGUID(raw); err == nil {
+            t.Fatalf("noncanonical GUID accepted: %q", raw)
+        }
+    }
+    if got, err := service.ParseAdminPermissionGUID("9223372036854775807"); err != nil || got != 9223372036854775807 {
+        t.Fatalf("max signed GUID got=%d err=%v", got, err)
+    }
+}

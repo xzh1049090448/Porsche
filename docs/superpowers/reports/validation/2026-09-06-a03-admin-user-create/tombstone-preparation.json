@@ -1,0 +1,7 @@
+{
+  "alias": "tombstone_fixture",
+  "rows": 1,
+  "is_deleted": 1,
+  "status": "disabled",
+  "password_hash": "null"
+}

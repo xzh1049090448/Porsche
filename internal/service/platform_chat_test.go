@@ -70,7 +70,7 @@ func TestCompareWhiteLabelStreamsKeepsOtherModelsRunningAfterOneFails(t *testing
 		t.Fatal(err)
 	}
 	database := openTestMySQL(t)
-	user := testUser("13900139100")
+	user := testUser(t, database, "13900139100")
 	user.PlanType = models.PlanEnterprise
 	if err := database.Create(&user).Error; err != nil {
 		t.Fatal(err)
@@ -124,7 +124,7 @@ func TestComparePendingModelErrorWriteFailureStopsFurtherFrames(t *testing.T) {
 		t.Fatal(err)
 	}
 	database := openTestMySQL(t)
-	user := testUser("13900139101")
+	user := testUser(t, database, "13900139101")
 	user.PlanType = models.PlanEnterprise
 	if err := database.Create(&user).Error; err != nil {
 		t.Fatal(err)

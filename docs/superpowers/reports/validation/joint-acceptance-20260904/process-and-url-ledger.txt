@@ -1,0 +1,6 @@
+backend_url=http://127.0.0.1:18080
+frontend_url=http://127.0.0.1:15173
+backend_exec_session=37608
+frontend_exec_session=23561
+credential_directory=/private/tmp/porsche-joint-acceptance-260904-td1FYO
+credential_values=not_recorded

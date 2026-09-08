@@ -1,0 +1,3 @@
+26c063e0d31a4aa10bbd41df3396e965cdb9d186a88eecb9e0d23577aa58e2a5  docs/superpowers/reports/validation/2026-09-03-b1d-admin-users-read/manifest.json
+7a20df0cb257feb393f930b0d006fc88795acbc0b9dead2784f5ae3b61d4f715  internal/service/admin_users_read.go
+44b5caba0473162c239e6b3035e6d9067e3af0b35e998a79c827a1424621494e  internal/migration/sql/0004_admin_users_read_count.up.sql
