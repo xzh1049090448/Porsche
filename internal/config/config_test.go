@@ -185,6 +185,102 @@ func TestLoadRejectsUnsafeAuthProductionConfiguration(t *testing.T) {
 	}
 }
 
+func TestLoadAllowsOmittedFixedLoginCredentialsOutsideDevelopment(t *testing.T) {
+	setSafeProductionAuthEnvironment(t)
+	unsetEnvironment(t, "FIXED_LOGIN_PHONE")
+	unsetEnvironment(t, "FIXED_LOGIN_PASSWORD")
+
+	if _, err := Load(); err != nil {
+		t.Fatalf("Load() error = %v, want omitted fixed-login credentials to be accepted", err)
+	}
+}
+
+func TestLoadRejectsDeclaredFixedLoginCredentialsOutsideDevelopment(t *testing.T) {
+	const wantErr = "FIXED_LOGIN credentials are not allowed outside development"
+	for _, tc := range []struct {
+		name, appEnv, key, value string
+	}{
+		{name: "production phone", appEnv: "production", key: "FIXED_LOGIN_PHONE", value: "13800138000"},
+		{name: "production empty phone", appEnv: "production", key: "FIXED_LOGIN_PHONE"},
+		{name: "staging password", appEnv: "staging", key: "FIXED_LOGIN_PASSWORD", value: "secret"},
+		{name: "test empty password", appEnv: "test", key: "FIXED_LOGIN_PASSWORD"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			setSafeProductionAuthEnvironment(t)
+			t.Setenv("APP_ENV", tc.appEnv)
+			unsetEnvironment(t, "FIXED_LOGIN_PHONE")
+			unsetEnvironment(t, "FIXED_LOGIN_PASSWORD")
+			t.Setenv(tc.key, tc.value)
+
+			_, err := Load()
+			if err == nil || err.Error() != wantErr {
+				t.Fatalf("Load() error = %v, want %q", err, wantErr)
+			}
+		})
+	}
+}
+
+func TestLoadRetainsDevelopmentFixedLoginCredentials(t *testing.T) {
+	setLoadTestEnvironment(t)
+	t.Setenv("APP_ENV", "development")
+	t.Setenv("FIXED_LOGIN_ENABLED", "true")
+	t.Setenv("FIXED_LOGIN_PHONE", "13900000000")
+	t.Setenv("FIXED_LOGIN_PASSWORD", "development-password")
+
+	got, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if !got.FixedLoginEnabled || got.FixedLoginPhone != "13900000000" || got.FixedLoginPassword != "development-password" {
+		t.Fatalf("fixed-login settings = (%t, %q, %q), want development values", got.FixedLoginEnabled, got.FixedLoginPhone, got.FixedLoginPassword)
+	}
+}
+
+func TestEnvironmentExampleDocumentsEveryRuntimeSettingExactlyOnce(t *testing.T) {
+	expected := []string{
+		"ACTION_SECURITY_HMAC_KEY", "ADMIN_TOKEN", "ALLOWED_HOSTS", "ANALYTICS_ADMIN_PHONES",
+		"ANALYTICS_TOKEN_PRICE_PER_1K", "APP_ENV", "AUTH_HMAC_KEY", "AUTH_TRUSTED_ORIGINS",
+		"BILLING_ALLOW_MOCK_PAYMENT", "CIRCUIT_FAILURE_THRESHOLD", "CIRCUIT_OPEN_SECONDS",
+		"DATABASE_URL", "FIXED_LOGIN_ENABLED", "FIXED_LOGIN_PASSWORD", "FIXED_LOGIN_PHONE",
+		"HOST", "JIEKOU_ALLOWED_MODELS", "JIEKOU_API_KEY", "JWT_EXPIRE_MINUTES", "JWT_SECRET_KEY",
+		"LOG_LEVEL", "METRICS_TOKEN", "PASSWORD_LOGIN_ENABLED", "PASSWORD_REGISTER_ENABLED",
+		"PLAN_ENTERPRISE_PRICE", "PLAN_PROFESSIONAL_PRICE", "PORT", "REAL_NAME_AUTO_VERIFY",
+		"REDIS_URL", "REFRESH_REPLAY_SECONDS", "REGISTER_ENABLED", "ROOT_BOOTSTRAP_PASSWORD",
+		"ROOT_BOOTSTRAP_USERNAME", "SESSION_ACCESS_MINUTES", "SESSION_DAYS", "SESSION_ISSUE_LIMIT_24H",
+		"SESSION_MAX_ACTIVE", "SMS_DEV_MODE", "SMS_SEND_LIMIT_PER_IP", "SMS_SEND_LIMIT_PER_PHONE",
+		"SMS_VERIFY_MAX_ATTEMPTS", "SNOWFLAKE_NODE_ID", "TRUSTED_PROXY_CIDRS", "TRUST_PROXY_HEADERS",
+		"UPSTREAM_REGION", "UPSTREAM_TIMEOUT_SECONDS",
+	}
+
+	raw, err := os.ReadFile("../../.env.example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	activeAssignment := regexp.MustCompile(`^([A-Z][A-Z0-9_]*)=`)
+	commentedEmptyAssignment := regexp.MustCompile(`^# ([A-Z][A-Z0-9_]*)=$`)
+	counts := make(map[string]int, len(expected))
+	for _, line := range strings.Split(string(raw), "\n") {
+		if match := activeAssignment.FindStringSubmatch(line); match != nil {
+			counts[match[1]]++
+		}
+		if match := commentedEmptyAssignment.FindStringSubmatch(line); match != nil {
+			counts[match[1]]++
+		}
+	}
+	for _, key := range expected {
+		if counts[key] != 1 {
+			t.Errorf(".env.example records %s %d times, want exactly once", key, counts[key])
+		}
+	}
+	if !strings.Contains(string(raw), "# ACTION_SECURITY_HMAC_KEY=\n") {
+		t.Error(".env.example must contain exact commented empty assignment # ACTION_SECURITY_HMAC_KEY=")
+	}
+	validActionKey := regexp.MustCompile(`(?m)^#? ?ACTION_SECURITY_HMAC_KEY=[A-Za-z0-9_-]{43}$`)
+	if validActionKey.Match(raw) {
+		t.Error(".env.example contains a valid action-security key")
+	}
+}
+
 func TestLoadRejectsProductionAuthSecretsAndOrigins(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -529,8 +625,8 @@ func setSafeProductionAuthEnvironment(t *testing.T) {
 	t.Setenv("METRICS_TOKEN", "metrics-secret-material-0123456789-AB")
 	t.Setenv("AUTH_TRUSTED_ORIGINS", "https://app.example.com")
 	t.Setenv("FIXED_LOGIN_ENABLED", "false")
-	t.Setenv("FIXED_LOGIN_PHONE", "disabled")
-	t.Setenv("FIXED_LOGIN_PASSWORD", "disabled")
+	unsetEnvironment(t, "FIXED_LOGIN_PHONE")
+	unsetEnvironment(t, "FIXED_LOGIN_PASSWORD")
 	t.Setenv("SMS_DEV_MODE", "false")
 	t.Setenv("ACTION_SECURITY_HMAC_KEY", base64.RawURLEncoding.EncodeToString([]byte("action-security-root-key-32-byte")))
 }
