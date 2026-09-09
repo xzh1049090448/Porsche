@@ -3,6 +3,7 @@ package dto
 import (
 	"bytes"
 	"encoding/json"
+	"github.com/porsche/ai-gateway-go/internal/service"
 	"strings"
 	"testing"
 )
@@ -53,6 +54,10 @@ func TestDecodeUpdatePublicModelDistinguishesOmittedValueAndNull(t *testing.T) {
 		}
 		if got.InputPriceUSDPerMillionTokens.Set != tc.set || !sameString(got.InputPriceUSDPerMillionTokens.Value, tc.value) {
 			t.Fatalf("%s: %#v", tc.body, got.InputPriceUSDPerMillionTokens)
+		}
+		var canonical service.UpdatePublicModelRequest = got
+		if canonical.InputPriceUSDPerMillionTokens.Set != tc.set {
+			t.Fatal("DTO/service presence drift")
 		}
 	}
 }

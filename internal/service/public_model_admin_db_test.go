@@ -71,12 +71,30 @@ func openPublicModelDBFixture(t *testing.T) *publicModelDBFixture {
 	return &publicModelDBFixture{db: db, actor: actor}
 }
 func (f *publicModelDBFixture) observe(t *testing.T, id string) {
+	f.observeAt(t, id, persistence.NowMillis())
+}
+func (f *publicModelDBFixture) observeAt(t *testing.T, id string, now int64) {
 	t.Helper()
-	now := persistence.NowMillis()
 	actor := f.actor.ID
 	o := models.UpstreamModelObservation{AuditFields: models.AuditFields{Guid: persistence.NextGUID(), CreatedAt: now, CreatedBy: &actor, UpdatedAt: now, UpdatedBy: &actor}, UpstreamModelID: id, Provider: "provider", CatalogComplete: 1, CatalogFresh: 1, ObservedAt: now, ResponseSummaryHash: strings.Repeat("a", 64)}
 	if err := f.db.Create(&o).Error; err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestPublicModelCreateObservationAgeBoundary(t *testing.T) {
+	f := openPublicModelDBFixture(t)
+	base := int64(1_900_000_000_000)
+	in := f.input(fmt.Sprint(persistence.NextGUID()))
+	f.observeAt(t, in.UpstreamModelID, base-publicModelObservationFreshnessMillis-1)
+	s := NewPublicModelAdminService(f.db)
+	s.now = func() int64 { return base }
+	if _, err := s.Create(context.Background(), f.actor.ID, in); status(err) != 409 {
+		t.Fatalf("stale observation=%v", err)
+	}
+	f.observeAt(t, in.UpstreamModelID, base-publicModelObservationFreshnessMillis)
+	if _, err := s.Create(context.Background(), f.actor.ID, in); err != nil {
+		t.Fatalf("boundary observation=%v", err)
 	}
 }
 func (f *publicModelDBFixture) input(s string) CreatePublicModelRequest {
@@ -98,6 +116,14 @@ func TestPublicModelDBLifecycleReservationOmissionAuditAndRollback(t *testing.T)
 	list, err := s.List(ctx, AdminModelListRequest{Search: suffix, Status: "draft", UpstreamState: "present", Page: 1, PageSize: 20})
 	if err != nil || list.Total != 1 {
 		t.Fatalf("list %#v %v", list, err)
+	}
+	if err = f.db.Model(&models.PublicModelConfig{}).Where("guid = ?", mustGUID(t, m.GUID)).Update("consecutive_absences", 1).Error; err != nil {
+		t.Fatal(err)
+	}
+	present, _ := s.List(ctx, AdminModelListRequest{Search: suffix, UpstreamState: "present", Page: 1, PageSize: 20})
+	missing, _ := s.List(ctx, AdminModelListRequest{Search: suffix, UpstreamState: "missing", Page: 1, PageSize: 20})
+	if present.Total != 0 || missing.Total != 1 {
+		t.Fatalf("present/missing transition=%d/%d", present.Total, missing.Total)
 	}
 	if got, err := s.Get(ctx, mustGUID(t, m.GUID)); err != nil || got.ModelKey != in.ModelKey {
 		t.Fatal(err)
@@ -128,6 +154,11 @@ func TestPublicModelDBLifecycleReservationOmissionAuditAndRollback(t *testing.T)
 	if _, err = s.Create(ctx, f.actor.ID, in); status(err) != 409 {
 		t.Fatalf("key reused %v", err)
 	}
+	differentKey := in
+	differentKey.ModelKey = in.ModelKey + "-new"
+	if _, err = s.Create(ctx, f.actor.ID, differentKey); status(err) != 409 {
+		t.Fatalf("upstream identity reused: %v", err)
+	}
 	var audits int64
 	f.db.Model(&models.AuditLog{}).Where("user_id = ? AND action LIKE 'public_models.%'", f.actor.ID).Count(&audits)
 	if audits != 5 {
@@ -152,6 +183,24 @@ func TestPublicModelDBLifecycleReservationOmissionAuditAndRollback(t *testing.T)
 	if count != 0 {
 		t.Fatal("audit failure committed")
 	}
+}
+
+func TestPublicModelConcurrentCreatorsSameUpstreamExactlyOneWinner(t *testing.T) {
+	f := openPublicModelDBFixture(t)
+	suffix := fmt.Sprint(persistence.NextGUID())
+	first := f.input(suffix)
+	second := first
+	second.ModelKey = first.ModelKey + "-other"
+	f.observe(t, first.UpstreamModelID)
+	s := NewPublicModelAdminService(f.db)
+	runTwo(t, func(i int) error {
+		in := first
+		if i == 1 {
+			in = second
+		}
+		_, err := s.Create(context.Background(), f.actor.ID, in)
+		return err
+	})
 }
 
 func TestPublicModelRevisionConcurrencyExactlyOneWinner(t *testing.T) {

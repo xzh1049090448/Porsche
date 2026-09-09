@@ -1,9 +1,12 @@
 package service
 
 import (
+	"errors"
 	"fmt"
+	drivermysql "github.com/go-sql-driver/mysql"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestPublicModelInputValidation(t *testing.T) {
@@ -13,6 +16,50 @@ func TestPublicModelInputValidation(t *testing.T) {
 	bad := "1.123456789"
 	if err := validatePublicModelCreate(CreatePublicModelRequest{UpstreamModelID: "u", ModelKey: "k", DisplayName: "n", Provider: "p", Capabilities: []string{}, ContextWindow: 1, InputPriceUSDPerMillionTokens: &bad}); err == nil {
 		t.Fatal("accepted excess precision")
+	}
+}
+
+func TestPublicModelObservationFreshnessBoundary(t *testing.T) {
+	now := int64(1_900_000_000_000)
+	if !publicModelObservationIsCurrent(now, now-publicModelObservationFreshnessMillis) {
+		t.Fatal("boundary rejected")
+	}
+	if publicModelObservationIsCurrent(now, now-publicModelObservationFreshnessMillis-1) {
+		t.Fatal("stale accepted")
+	}
+	if publicModelObservationIsCurrent(now, now+int64(time.Second/time.Millisecond)) {
+		t.Fatal("future accepted")
+	}
+}
+func TestPublicModelMapsIdentityUniqueRaceToStableConflict(t *testing.T) {
+	err := mapPublicModelWriteError(&drivermysql.MySQLError{Number: 1062, Message: "Duplicate entry secret DSN"})
+	if statusCode, _ := StatusFromError(err); statusCode != 409 || strings.Contains(err.Error(), "secret") {
+		t.Fatalf("mapped=%v", err)
+	}
+	sentinel := errors.New("storage")
+	if mapPublicModelWriteError(sentinel) != sentinel {
+		t.Fatal("non unique changed")
+	}
+}
+func TestPublicModelValidatesDatabaseBounds(t *testing.T) {
+	base := CreatePublicModelRequest{UpstreamModelID: "org/model", ModelKey: "model", DisplayName: "n", Provider: "p", Capabilities: []string{"chat"}, ContextWindow: 1}
+	for _, mutate := range []func(*CreatePublicModelRequest){func(v *CreatePublicModelRequest) { v.DisplayName = strings.Repeat("x", 129) }, func(v *CreatePublicModelRequest) { v.Provider = strings.Repeat("x", 129) }, func(v *CreatePublicModelRequest) { v.Capabilities = []string{"bad capability"} }, func(v *CreatePublicModelRequest) { v.Capabilities = []string{strings.Repeat("x", 65)} }, func(v *CreatePublicModelRequest) { v.Capabilities = make([]string, 33) }} {
+		v := base
+		mutate(&v)
+		if validatePublicModelCreate(v) == nil {
+			t.Fatalf("accepted %#v", v)
+		}
+	}
+}
+
+func TestPublicModelInactiveReasonDatabaseBounds(t *testing.T) {
+	for _, reason := range []string{"", strings.Repeat("x", 129), "line\nbreak", " padded "} {
+		if validPublicModelText(reason, 128) {
+			t.Fatalf("accepted reason %q", reason)
+		}
+	}
+	if !validPublicModelText(strings.Repeat("界", 128), 128) {
+		t.Fatal("rejected varchar boundary")
 	}
 }
 

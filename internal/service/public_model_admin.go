@@ -1,13 +1,17 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
+	drivermysql "github.com/go-sql-driver/mysql"
 	"github.com/porsche/ai-gateway-go/internal/models"
 	"github.com/porsche/ai-gateway-go/internal/persistence"
 	"github.com/porsche/ai-gateway-go/internal/publiccontent"
@@ -17,54 +21,114 @@ import (
 
 var publicModelDecimal = regexp.MustCompile(`^(0|[1-9][0-9]{0,11})(\.[0-9]{1,8})?$`)
 var publicModelSensitiveReason = regexp.MustCompile(`(?i)(api[ _-]?key|password|bearer|token|authorization|secret|credential|raw[ _-]?payload)`)
+var publicModelCapability = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,63}$`)
+
+// Ten minutes is two monitor intervals and permits one delayed five-minute tick.
+const publicModelObservationFreshnessMillis int64 = 10 * 60 * 1000
+const publicModelMaxCapabilities = 32
 
 type PublicModelAdmin struct {
-	GUID                           string
-	ModelKey                       string
-	UpstreamModelID                string
-	DisplayName                    string
-	Provider                       string
-	Capabilities                   []string
-	ContextWindow                  int64
-	InputPriceUSDPerMillionTokens  *string
-	OutputPriceUSDPerMillionTokens *string
-	Status                         string
-	Revision                       int64
-	LastUpstreamCheckAt            *int64
+	GUID                           string   `json:"guid"`
+	ModelKey                       string   `json:"model_key"`
+	UpstreamModelID                string   `json:"upstream_model_id"`
+	DisplayName                    string   `json:"display_name"`
+	Provider                       string   `json:"provider"`
+	Capabilities                   []string `json:"capabilities"`
+	ContextWindow                  int64    `json:"context_window"`
+	InputPriceUSDPerMillionTokens  *string  `json:"input_price_usd_per_million_tokens"`
+	OutputPriceUSDPerMillionTokens *string  `json:"output_price_usd_per_million_tokens"`
+	Status                         string   `json:"status"`
+	Revision                       int64    `json:"revision"`
+	LastUpstreamCheckAt            *int64   `json:"last_upstream_check_at"`
 }
 type CreatePublicModelRequest struct {
-	UpstreamModelID, ModelKey, DisplayName, Provider              string
-	Capabilities                                                  []string
-	ContextWindow                                                 int64
-	InputPriceUSDPerMillionTokens, OutputPriceUSDPerMillionTokens *string
+	UpstreamModelID                string   `json:"upstream_model_id"`
+	ModelKey                       string   `json:"model_key"`
+	DisplayName                    string   `json:"display_name"`
+	Provider                       string   `json:"provider"`
+	Capabilities                   []string `json:"capabilities"`
+	ContextWindow                  int64    `json:"context_window"`
+	InputPriceUSDPerMillionTokens  *string  `json:"input_price_usd_per_million_tokens"`
+	OutputPriceUSDPerMillionTokens *string  `json:"output_price_usd_per_million_tokens"`
 }
 type UpdatePublicModelRequest struct {
-	ExpectedRevision                                              int64
-	DisplayName, Provider                                         *string
-	Capabilities                                                  *[]string
-	ContextWindow                                                 *int64
-	InputPriceUSDPerMillionTokens, OutputPriceUSDPerMillionTokens OptionalNullableString
+	ExpectedRevision               int64                  `json:"expected_revision"`
+	DisplayName                    *string                `json:"display_name,omitempty"`
+	Provider                       *string                `json:"provider,omitempty"`
+	Capabilities                   *[]string              `json:"capabilities,omitempty"`
+	ContextWindow                  *int64                 `json:"context_window,omitempty"`
+	InputPriceUSDPerMillionTokens  OptionalNullableString `json:"input_price_usd_per_million_tokens,omitempty"`
+	OutputPriceUSDPerMillionTokens OptionalNullableString `json:"output_price_usd_per_million_tokens,omitempty"`
 }
+
+func (r UpdatePublicModelRequest) MarshalJSON() ([]byte, error) {
+	m := map[string]any{"expected_revision": r.ExpectedRevision}
+	if r.DisplayName != nil {
+		m["display_name"] = *r.DisplayName
+	}
+	if r.Provider != nil {
+		m["provider"] = *r.Provider
+	}
+	if r.Capabilities != nil {
+		m["capabilities"] = *r.Capabilities
+	}
+	if r.ContextWindow != nil {
+		m["context_window"] = *r.ContextWindow
+	}
+	if r.InputPriceUSDPerMillionTokens.Set {
+		m["input_price_usd_per_million_tokens"] = r.InputPriceUSDPerMillionTokens.Value
+	}
+	if r.OutputPriceUSDPerMillionTokens.Set {
+		m["output_price_usd_per_million_tokens"] = r.OutputPriceUSDPerMillionTokens.Value
+	}
+	return json.Marshal(m)
+}
+
 type OptionalNullableString struct {
 	Set   bool
 	Value *string
 }
+
+func (o *OptionalNullableString) UnmarshalJSON(raw []byte) error {
+	o.Set = true
+	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		o.Value = nil
+		return nil
+	}
+	var v string
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return err
+	}
+	o.Value = &v
+	return nil
+}
+func (o OptionalNullableString) MarshalJSON() ([]byte, error) {
+	if o.Value == nil {
+		return []byte("null"), nil
+	}
+	return json.Marshal(*o.Value)
+}
+
 type DeactivationRequest struct {
-	ExpectedRevision int64
-	Reason           string
+	ExpectedRevision int64  `json:"expected_revision"`
+	Reason           string `json:"reason"`
+}
+type RevisionRequest struct {
+	ExpectedRevision int64 `json:"expected_revision"`
 }
 type DeletePublicModelRequest struct {
-	ExpectedRevision int64
-	Reason           string
+	ExpectedRevision int64  `json:"expected_revision"`
+	Reason           string `json:"reason"`
 }
 type AdminModelListRequest struct {
 	Search, Status, UpstreamState string
 	Page, PageSize                int
 }
 type AdminModelListResponse struct {
-	Items          []PublicModelAdmin
-	Page, PageSize int
-	Total          int64
+	Items    []PublicModelAdmin `json:"items"`
+	Page     int                `json:"page"`
+	PageSize int                `json:"page_size"`
+	Total    int64              `json:"total"`
 }
 
 type PublicModelAdminService struct {
@@ -78,13 +142,39 @@ func NewPublicModelAdminService(db *gorm.DB) *PublicModelAdminService {
 }
 
 func validatePublicModelCreate(in CreatePublicModelRequest) error {
-	if !publiccontent.ValidUpstreamModelID(in.UpstreamModelID) || !publiccontent.ValidModelKey(in.ModelKey) || strings.TrimSpace(in.DisplayName) == "" || strings.TrimSpace(in.Provider) == "" || in.Capabilities == nil || in.ContextWindow <= 0 {
+	if !publiccontent.ValidUpstreamModelID(in.UpstreamModelID) || !publiccontent.ValidModelKey(in.ModelKey) || !validPublicModelText(in.DisplayName, 128) || !validPublicModelText(in.Provider, 128) || !validPublicModelCapabilities(in.Capabilities) || in.ContextWindow <= 0 {
 		return errBadRequest("invalid public model request")
 	}
 	if !validPublicPrice(in.InputPriceUSDPerMillionTokens) || !validPublicPrice(in.OutputPriceUSDPerMillionTokens) {
 		return errBadRequest("invalid public model price")
 	}
 	return nil
+}
+func validPublicModelText(v string, max int) bool {
+	return v == strings.TrimSpace(v) && v != "" && utf8.ValidString(v) && utf8.RuneCountInString(v) <= max && strings.IndexFunc(v, func(r rune) bool { return r < ' ' || r == 127 }) < 0
+}
+func validPublicModelCapabilities(values []string) bool {
+	if values == nil || len(values) > publicModelMaxCapabilities {
+		return false
+	}
+	seen := map[string]bool{}
+	for _, v := range values {
+		if !publicModelCapability.MatchString(v) || seen[v] {
+			return false
+		}
+		seen[v] = true
+	}
+	return true
+}
+func publicModelObservationIsCurrent(now, observed int64) bool {
+	return observed > 0 && observed <= now && now-observed <= publicModelObservationFreshnessMillis
+}
+func mapPublicModelWriteError(err error) error {
+	var mysqlErr *drivermysql.MySQLError
+	if errors.As(err, &mysqlErr) && mysqlErr.Number == 1062 {
+		return errConflict("public model identity is permanently reserved")
+	}
+	return err
 }
 func validPublicPrice(v *string) bool { return v == nil || publicModelDecimal.MatchString(*v) }
 func publicModelAuditDetail(key string, revision int64, reason string) models.JSONMap {
@@ -119,11 +209,11 @@ func (s *PublicModelAdminService) Create(ctx context.Context, actorID int64, in 
 			return err
 		}
 		var reserved int64
-		if err = tx.Model(&models.PublicModelConfig{}).Where("model_key = ?", in.ModelKey).Count(&reserved).Error; err != nil {
+		if err = tx.Model(&models.PublicModelConfig{}).Where("model_key = ? OR upstream_model_id = ?", in.ModelKey, in.UpstreamModelID).Count(&reserved).Error; err != nil {
 			return err
 		}
 		if reserved != 0 {
-			return errConflict("model_key is permanently reserved")
+			return errConflict("public model identity is permanently reserved")
 		}
 		var obs models.UpstreamModelObservation
 		err = tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("upstream_model_id = ? AND catalog_complete = 1 AND catalog_fresh = 1 AND is_deleted = 0", in.UpstreamModelID).Order("observed_at DESC, id DESC").First(&obs).Error
@@ -134,13 +224,16 @@ func (s *PublicModelAdminService) Create(ctx context.Context, actorID int64, in 
 			return err
 		}
 		now := s.now()
+		if !publicModelObservationIsCurrent(now, obs.ObservedAt) {
+			return errConflict("fresh accepted upstream observation required")
+		}
 		guid := s.nextGUID()
 		if now <= 0 || guid <= 0 {
 			return errUnavailable("public model persistence unavailable")
 		}
 		m := models.PublicModelConfig{AuditFields: models.AuditFields{Guid: guid, CreatedAt: now, CreatedBy: &actor.ID, UpdatedAt: now, UpdatedBy: &actor.ID}, ModelKey: in.ModelKey, UpstreamModelID: in.UpstreamModelID, DisplayName: strings.TrimSpace(in.DisplayName), Provider: strings.TrimSpace(in.Provider), Capabilities: models.JSONSlice(in.Capabilities), ContextWindow: in.ContextWindow, InputPriceUSDPerMillionTokens: in.InputPriceUSDPerMillionTokens, OutputPriceUSDPerMillionTokens: in.OutputPriceUSDPerMillionTokens, Status: models.PublicModelConfigStatusDraft, LastUpstreamObservedAt: &obs.ObservedAt, LastUpstreamCheckAt: &obs.ObservedAt, Revision: 1}
 		if err = tx.Create(&m).Error; err != nil {
-			return err
+			return mapPublicModelWriteError(err)
 		}
 		if err = writePublicModelAudit(tx, s.nextGUID(), now, actor.ID, "public_models.create", m.ModelKey, m.Guid, publicModelAuditDetail(m.ModelKey, m.Revision, "")); err != nil {
 			return err
@@ -180,11 +273,11 @@ func (s *PublicModelAdminService) List(ctx context.Context, q AdminModelListRequ
 		if q.UpstreamState != "present" && q.UpstreamState != "missing" {
 			return nil, errBadRequest("invalid upstream_state")
 		}
-		op := "IS NOT NULL"
+		op := "= 0"
 		if q.UpstreamState == "missing" {
-			op = "IS NULL"
+			op = "> 0"
 		}
-		db = db.Where("last_upstream_observed_at " + op)
+		db = db.Where("consecutive_absences " + op)
 	}
 	var total int64
 	if err := db.Count(&total).Error; err != nil {
@@ -219,10 +312,10 @@ func (s *PublicModelAdminService) Get(ctx context.Context, guid int64) (*PublicM
 func (s *PublicModelAdminService) Update(ctx context.Context, actorID, guid int64, in UpdatePublicModelRequest) (*PublicModelAdmin, error) {
 	return s.mutate(ctx, actorID, guid, in.ExpectedRevision, "public_models.update", "", func(m *models.PublicModelConfig) error {
 		if in.DisplayName != nil {
-			m.DisplayName = strings.TrimSpace(*in.DisplayName)
+			m.DisplayName = *in.DisplayName
 		}
 		if in.Provider != nil {
-			m.Provider = strings.TrimSpace(*in.Provider)
+			m.Provider = *in.Provider
 		}
 		if in.Capabilities != nil {
 			m.Capabilities = models.JSONSlice(*in.Capabilities)
@@ -236,7 +329,7 @@ func (s *PublicModelAdminService) Update(ctx context.Context, actorID, guid int6
 		if in.OutputPriceUSDPerMillionTokens.Set {
 			m.OutputPriceUSDPerMillionTokens = in.OutputPriceUSDPerMillionTokens.Value
 		}
-		if m.DisplayName == "" || m.Provider == "" || m.Capabilities == nil || m.ContextWindow <= 0 || !validPublicPrice(m.InputPriceUSDPerMillionTokens) || !validPublicPrice(m.OutputPriceUSDPerMillionTokens) {
+		if !validPublicModelText(m.DisplayName, 128) || !validPublicModelText(m.Provider, 128) || !validPublicModelCapabilities([]string(m.Capabilities)) || m.ContextWindow <= 0 || !validPublicPrice(m.InputPriceUSDPerMillionTokens) || !validPublicPrice(m.OutputPriceUSDPerMillionTokens) {
 			return errBadRequest("invalid public model request")
 		}
 		return nil
@@ -250,7 +343,7 @@ func (s *PublicModelAdminService) Activate(ctx context.Context, actorID, guid, r
 	})
 }
 func (s *PublicModelAdminService) Deactivate(ctx context.Context, actorID, guid int64, in DeactivationRequest) (*PublicModelAdmin, error) {
-	if strings.TrimSpace(in.Reason) == "" {
+	if !validPublicModelText(in.Reason, 128) {
 		return nil, errBadRequest("reason is required")
 	}
 	return s.mutate(ctx, actorID, guid, in.ExpectedRevision, "public_models.deactivate", in.Reason, func(m *models.PublicModelConfig) error {
@@ -261,7 +354,7 @@ func (s *PublicModelAdminService) Deactivate(ctx context.Context, actorID, guid 
 	})
 }
 func (s *PublicModelAdminService) Delete(ctx context.Context, actorID, guid int64, in DeletePublicModelRequest) error {
-	if strings.TrimSpace(in.Reason) == "" {
+	if !validPublicModelText(in.Reason, 128) {
 		return errBadRequest("reason is required")
 	}
 	_, err := s.mutate(ctx, actorID, guid, in.ExpectedRevision, "public_models.delete", in.Reason, func(m *models.PublicModelConfig) error {
