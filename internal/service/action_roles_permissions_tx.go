@@ -29,10 +29,25 @@ type rolePermissionTransactionalState struct {
 	mu        sync.Mutex
 	prelocked bool
 	started   bool
+	actorGUID int64
+	binding   rolePermissionOperationBinding
 	target    models.User
 	sessions  []models.Session
 	head      *models.PermissionPolicyHead
 	rules     []actionsecurity.PermissionOverrideIntent
+}
+
+type rolePermissionOperationBinding struct {
+	id, guid, createdAt, updatedAt                   int64
+	createdBy, updatedBy                             int64
+	createdBySet, updatedBySet                       bool
+	isDeleted                                        int
+	actorUserID, actorAuthVersion, sessionID, action int64
+	verificationID                                   int64
+	state                                            models.AdminOperationState
+	publicRef, requestHMAC, idempotencyKeyHMAC       string
+	leaseOwnerHMAC                                   string
+	leaseExpiresAt, queryExpiresAt                   int64
 }
 
 func newRolePermissionTransactionalExecution(base *RolePermissionExecution, revoker rolePermissionSessionRevoker) (*rolePermissionTransactionalExecution, error) {
@@ -48,6 +63,15 @@ func (execution *rolePermissionTransactionalExecution) prelockForAuthorization(c
 		return nil, ErrActionOperationForbidden
 	}
 	db := deleteWriterDB(ctx, tx)
+	var actor models.User
+	if err := db.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Select("id", "guid", "role", "status", "is_deleted", "auth_version").
+		Where("id = ? AND is_deleted = 0", operation.ActorUserID).First(&actor).Error; err != nil {
+		return nil, ErrActionOperationUnavailable
+	}
+	if actor.ID != operation.ActorUserID || actor.Guid <= 0 || actor.IsDeleted != 0 || actor.AuthVersion != operation.ActorAuthVersion {
+		return nil, ErrActionOperationForbidden
+	}
 	var target models.User
 	if err := db.Clauses(clause.Locking{Strength: "UPDATE"}).
 		Select("id", "guid", "role", "status", "is_deleted", "auth_version").
@@ -112,6 +136,8 @@ func (execution *rolePermissionTransactionalExecution) prelockForAuthorization(c
 		return nil, ErrActionOperationUnavailable
 	}
 	execution.state.prelocked = true
+	execution.state.actorGUID = actor.Guid
+	execution.state.binding = captureRolePermissionOperationBinding(operation)
 	execution.state.target = target
 	execution.state.sessions = append([]models.Session(nil), sessions...)
 	execution.state.head = lockedHead
@@ -120,13 +146,73 @@ func (execution *rolePermissionTransactionalExecution) prelockForAuthorization(c
 	return &copyTarget, nil
 }
 
+func captureRolePermissionOperationBinding(operation models.AdminOperation) rolePermissionOperationBinding {
+	binding := rolePermissionOperationBinding{
+		id: operation.ID, guid: operation.Guid, createdAt: operation.CreatedAt, updatedAt: operation.UpdatedAt,
+		isDeleted: operation.IsDeleted, actorUserID: operation.ActorUserID, actorAuthVersion: int64(operation.ActorAuthVersion),
+		sessionID: operation.SessionID, action: int64(operation.Action), state: operation.State,
+		publicRef: operation.PublicRef, requestHMAC: operation.RequestHMAC, idempotencyKeyHMAC: operation.IdempotencyKeyHMAC,
+		queryExpiresAt: operation.QueryExpiresAt,
+	}
+	if operation.CreatedBy != nil {
+		binding.createdBy, binding.createdBySet = *operation.CreatedBy, true
+	}
+	if operation.UpdatedBy != nil {
+		binding.updatedBy, binding.updatedBySet = *operation.UpdatedBy, true
+	}
+	if operation.VerificationID != nil {
+		binding.verificationID = *operation.VerificationID
+	}
+	if operation.LeaseOwnerHMAC != nil {
+		binding.leaseOwnerHMAC = *operation.LeaseOwnerHMAC
+	}
+	if operation.LeaseExpiresAt != nil {
+		binding.leaseExpiresAt = *operation.LeaseExpiresAt
+	}
+	return binding
+}
+
+func (binding rolePermissionOperationBinding) matches(operation models.AdminOperation) bool {
+	createdBy, createdBySet := int64(0), operation.CreatedBy != nil
+	if createdBySet {
+		createdBy = *operation.CreatedBy
+	}
+	updatedBy, updatedBySet := int64(0), operation.UpdatedBy != nil
+	if updatedBySet {
+		updatedBy = *operation.UpdatedBy
+	}
+	verificationID, leaseExpiresAt, leaseOwnerHMAC := int64(0), int64(0), ""
+	if operation.VerificationID != nil {
+		verificationID = *operation.VerificationID
+	}
+	if operation.LeaseExpiresAt != nil {
+		leaseExpiresAt = *operation.LeaseExpiresAt
+	}
+	if operation.LeaseOwnerHMAC != nil {
+		leaseOwnerHMAC = *operation.LeaseOwnerHMAC
+	}
+	return binding.id == operation.ID && binding.guid == operation.Guid && binding.createdAt == operation.CreatedAt &&
+		binding.updatedAt == operation.UpdatedAt && binding.createdBySet == createdBySet && binding.createdBy == createdBy &&
+		binding.updatedBySet == updatedBySet && binding.updatedBy == updatedBy && binding.isDeleted == operation.IsDeleted &&
+		binding.actorUserID == operation.ActorUserID && binding.actorAuthVersion == int64(operation.ActorAuthVersion) &&
+		binding.sessionID == operation.SessionID && binding.action == int64(operation.Action) &&
+		binding.verificationID == verificationID && binding.state == operation.State &&
+		constantTimeOperationStringEqual(binding.publicRef, operation.PublicRef) &&
+		constantTimeOperationStringEqual(binding.requestHMAC, operation.RequestHMAC) &&
+		constantTimeOperationStringEqual(binding.idempotencyKeyHMAC, operation.IdempotencyKeyHMAC) &&
+		constantTimeOperationStringEqual(binding.leaseOwnerHMAC, leaseOwnerHMAC) &&
+		binding.leaseExpiresAt == leaseExpiresAt && binding.queryExpiresAt == operation.QueryExpiresAt
+}
+
 func (execution *rolePermissionTransactionalExecution) validBinding(operation models.AdminOperation, verification models.AdminActionVerification) bool {
 	if execution == nil || execution.base == nil || !execution.base.validLocalInvariant() {
 		return false
 	}
 	_, publicRefErr := actionsecurity.ParsePublicRef(operation.PublicRef)
-	return publicRefErr == nil && operation.ID > 0 && operation.Guid > 0 && operation.ActorUserID > 0 &&
-		operation.ActorAuthVersion > 0 && operation.SessionID > 0 && operation.Action == int(execution.base.invariant.action) &&
+	return publicRefErr == nil && operation.ID > 0 && operation.Guid > 0 && operation.CreatedAt > 0 && operation.UpdatedAt >= operation.CreatedAt &&
+		operation.CreatedBy != nil && *operation.CreatedBy == operation.ActorUserID && operation.UpdatedBy != nil && *operation.UpdatedBy == operation.ActorUserID &&
+		operation.ActorUserID > 0 && operation.ActorAuthVersion > 0 && operation.ActorAuthVersion <= math.MaxInt32 &&
+		operation.SessionID > 0 && operation.Action == int(execution.base.invariant.action) &&
 		operation.VerificationID != nil && *operation.VerificationID > 0 && operation.State == models.OperationProcessing &&
 		operation.IsDeleted == 0 && operation.LeaseOwnerHMAC != nil && len(*operation.LeaseOwnerHMAC) == 64 &&
 		operation.LeaseExpiresAt != nil && *operation.LeaseExpiresAt > 0 && operation.QueryExpiresAt > 0 &&
@@ -179,6 +265,8 @@ func (execution *rolePermissionTransactionalExecution) Execute(ctx context.Conte
 		return TerminalOutcome{}, ErrActionOperationUnavailable
 	}
 	execution.state.started = true
+	actorGUID := execution.state.actorGUID
+	binding := execution.state.binding
 	target := execution.state.target
 	sessions := append([]models.Session(nil), execution.state.sessions...)
 	head := execution.state.head
@@ -187,6 +275,9 @@ func (execution *rolePermissionTransactionalExecution) Execute(ctx context.Conte
 	execution.state.rules = nil
 	execution.state.mu.Unlock()
 	defer clearRolePermissionSessions(sessions)
+	if !binding.matches(operation) || actorGUID <= 0 {
+		return TerminalOutcome{}, ErrActionOperationUnavailable
+	}
 	if err := execution.base.Begin(); err != nil || operation.Action != int(execution.base.invariant.action) || operation.ActorUserID <= 0 {
 		return TerminalOutcome{}, ErrActionOperationUnavailable
 	}
@@ -194,7 +285,7 @@ func (execution *rolePermissionTransactionalExecution) Execute(ctx context.Conte
 		return rolePermissionTransactionalFailure(models.FailureActionRejected), nil
 	}
 
-	targetSnapshot := RolePermissionTargetSnapshot{ActorGUID: operation.ActorUserID, TargetGUID: target.Guid, Role: target.Role, Status: target.Status, AuthVersion: target.AuthVersion, Deleted: target.IsDeleted != 0}
+	targetSnapshot := RolePermissionTargetSnapshot{ActorGUID: actorGUID, TargetGUID: target.Guid, Role: target.Role, Status: target.Status, AuthVersion: target.AuthVersion, Deleted: target.IsDeleted != 0}
 	var policySnapshot *RolePermissionPolicySnapshot
 	if head != nil {
 		policySnapshot = &RolePermissionPolicySnapshot{PolicyVersion: head.PolicyVersion, CatalogVersion: head.CatalogVersion}

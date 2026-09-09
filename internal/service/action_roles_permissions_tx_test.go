@@ -39,6 +39,7 @@ type rolePermissionTxCall struct {
 type rolePermissionTxScript struct {
 	mu            sync.Mutex
 	now           int64
+	actor         models.User
 	target        models.User
 	sessions      []models.Session
 	head          *models.PermissionPolicyHead
@@ -140,6 +141,9 @@ func (c *rolePermissionTxConn) QueryContext(_ context.Context, query string, arg
 	switch call.table {
 	case "users":
 		u := s.target
+		if strings.Contains(query, "WHERE id = ? AND is_deleted = 0") && strings.Contains(query, "FOR UPDATE") {
+			u = s.actor
+		}
 		if u.ID <= 0 || u.IsDeleted != 0 {
 			return &rolePermissionTxRows{columns: []string{"id", "guid", "role", "status", "is_deleted", "auth_version"}}, nil
 		}
@@ -282,7 +286,7 @@ func TestRolePermissionTransactionPromoteNoHeadPersistsCanonicalTransition(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	operation, verification := rolePermissionTxBinding(actionsecurity.ActionUsersPromote, base.requestHMAC)
+	operation, verification := rolePermissionTxBinding(actionsecurity.ActionUsersPromote, base.requestHMAC, base.targetGUID())
 	tx := db.Begin()
 	locked, err := execution.prelockForAuthorization(context.Background(), tx, operation, verification)
 	if err != nil || locked == nil {
@@ -305,6 +309,124 @@ func TestRolePermissionTransactionPromoteNoHeadPersistsCanonicalTransition(t *te
 		t.Fatalf("redis TTLs = %v", revoker.ttls)
 	}
 	assertRolePermissionTxHappyCalls(t, script)
+}
+
+func TestRolePermissionTransactionActorIDTargetGUIDNamespaceCollisionSucceeds(t *testing.T) {
+	script := rolePermissionHappyScript(models.UserRoleUser, nil, nil)
+	script.sessions = nil
+	script.target.Guid = 41
+	outcome, _, err := runRolePermissionTx(t, script, actionsecurity.ActionUsersPromote, actionsecurity.PromoteIntent{TargetGUID: 41, ExpectedAuthVersion: 7, ExpectedPermissionsVersion: 0, CatalogVersion: 1, Reason: "namespace collision"}, 0, nil)
+	if err != nil || outcome.Failure != nil || outcome.ResultGUID == nil || *outcome.ResultGUID != 41 || outcome.ResultRole == nil || *outcome.ResultRole != models.UserRoleAdmin {
+		t.Fatalf("namespace collision = %#v/%v", outcome, err)
+	}
+}
+
+func TestRolePermissionTransactionExecuteWithoutPrelockFailsWithoutSideEffects(t *testing.T) {
+	script := rolePermissionHappyScript(models.UserRoleUser, nil, nil)
+	db, _ := newRolePermissionTxDB(t, script)
+	revoker := &rolePermissionTxRevoker{}
+	base := rolePermissionTestExecution(t, actionsecurity.ActionUsersPromote, actionsecurity.PromoteIntent{TargetGUID: 6001, ExpectedAuthVersion: 7, ExpectedPermissionsVersion: 0, CatalogVersion: 1, Reason: "no prelock"})
+	execution, err := newRolePermissionTransactionalExecution(base, revoker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	operation, _ := rolePermissionTxBinding(actionsecurity.ActionUsersPromote, base.requestHMAC, base.targetGUID())
+	tx := db.Begin()
+	outcome, err := execution.Execute(context.Background(), tx, operation)
+	if outcome != (TerminalOutcome{}) || !errors.Is(err, ErrActionOperationUnavailable) {
+		t.Fatalf("direct execute = %#v/%v", outcome, err)
+	}
+	if err := tx.Rollback().Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(revoker.calls) != 0 || len(observedCalls(script, "exec", "")) != 0 || len(script.committed) != 0 || script.rollbackCount != 1 {
+		t.Fatalf("direct execute side effects: redis=%v exec=%d committed=%d rollback=%d", revoker.calls, len(observedCalls(script, "exec", "")), len(script.committed), script.rollbackCount)
+	}
+}
+
+func TestRolePermissionTransactionExecuteRejectsDifferentOperationBinding(t *testing.T) {
+	mutations := []struct {
+		name   string
+		mutate func(*models.AdminOperation)
+	}{
+		{"id", func(op *models.AdminOperation) { op.ID++ }},
+		{"actor", func(op *models.AdminOperation) { op.ActorUserID++ }},
+		{"session", func(op *models.AdminOperation) { op.SessionID++ }},
+		{"public ref", func(op *models.AdminOperation) { op.PublicRef = "op_BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBA" }},
+		{"request hmac", func(op *models.AdminOperation) { op.RequestHMAC = strings.Repeat("c", 64) }},
+	}
+	for _, tc := range mutations {
+		t.Run(tc.name, func(t *testing.T) {
+			script := rolePermissionHappyScript(models.UserRoleUser, nil, nil)
+			db, _ := newRolePermissionTxDB(t, script)
+			revoker := &rolePermissionTxRevoker{}
+			base := rolePermissionTestExecution(t, actionsecurity.ActionUsersPromote, actionsecurity.PromoteIntent{TargetGUID: 6001, ExpectedAuthVersion: 7, ExpectedPermissionsVersion: 0, CatalogVersion: 1, Reason: "binding"})
+			execution, err := newRolePermissionTransactionalExecution(base, revoker)
+			if err != nil {
+				t.Fatal(err)
+			}
+			operation, verification := rolePermissionTxBinding(actionsecurity.ActionUsersPromote, base.requestHMAC, base.targetGUID())
+			tx := db.Begin()
+			if _, err := execution.prelockForAuthorization(context.Background(), tx, operation, verification); err != nil {
+				t.Fatal(err)
+			}
+			different := operation
+			tc.mutate(&different)
+			outcome, err := execution.Execute(context.Background(), tx, different)
+			if outcome != (TerminalOutcome{}) || !errors.Is(err, ErrActionOperationUnavailable) {
+				t.Fatalf("different operation = %#v/%v", outcome, err)
+			}
+			_ = tx.Rollback().Error
+			if len(revoker.calls) != 0 || len(observedCalls(script, "exec", "")) != 0 || len(script.committed) != 0 {
+				t.Fatalf("different operation side effects: redis=%v exec=%d committed=%d", revoker.calls, len(observedCalls(script, "exec", "")), len(script.committed))
+			}
+		})
+	}
+}
+
+func TestRolePermissionTransactionPrelockRejectsBindingMismatch(t *testing.T) {
+	mutations := []struct {
+		name   string
+		mutate func(*models.AdminOperation, *models.AdminActionVerification)
+	}{
+		{"operation request", func(op *models.AdminOperation, _ *models.AdminActionVerification) {
+			op.RequestHMAC = strings.Repeat("c", 64)
+		}},
+		{"operation actor version", func(op *models.AdminOperation, _ *models.AdminActionVerification) { op.ActorAuthVersion++ }},
+		{"operation creator", func(op *models.AdminOperation, _ *models.AdminActionVerification) {
+			creator := op.ActorUserID + 1
+			op.CreatedBy = &creator
+		}},
+		{"verification actor", func(_ *models.AdminOperation, verification *models.AdminActionVerification) {
+			verification.ActorUserID++
+		}},
+		{"verification intent", func(_ *models.AdminOperation, verification *models.AdminActionVerification) {
+			verification.IntentHMAC = strings.Repeat("d", 64)
+		}},
+		{"verification target", func(_ *models.AdminOperation, verification *models.AdminActionVerification) {
+			target := *verification.TargetGUID + 1
+			verification.TargetGUID = &target
+		}},
+	}
+	for _, tc := range mutations {
+		t.Run(tc.name, func(t *testing.T) {
+			script := rolePermissionHappyScript(models.UserRoleUser, nil, nil)
+			db, _ := newRolePermissionTxDB(t, script)
+			base := rolePermissionTestExecution(t, actionsecurity.ActionUsersPromote, actionsecurity.PromoteIntent{TargetGUID: 6001, ExpectedAuthVersion: 7, ExpectedPermissionsVersion: 0, CatalogVersion: 1, Reason: "binding"})
+			execution, err := newRolePermissionTransactionalExecution(base, &rolePermissionTxRevoker{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			operation, verification := rolePermissionTxBinding(actionsecurity.ActionUsersPromote, base.requestHMAC, base.targetGUID())
+			tc.mutate(&operation, &verification)
+			tx := db.Begin()
+			locked, err := execution.prelockForAuthorization(context.Background(), tx, operation, verification)
+			if locked != nil || !errors.Is(err, ErrActionOperationForbidden) || len(script.observed) != 0 {
+				t.Fatalf("prelock mismatch = %#v/%v queries=%d", locked, err, len(script.observed))
+			}
+			_ = tx.Rollback().Error
+		})
+	}
 }
 
 func TestRolePermissionPolicyDemoteReplaceAndHistoricalPromotion(t *testing.T) {
@@ -388,7 +510,7 @@ func TestRolePermissionRedisFailuresPrecedeEveryBusinessWrite(t *testing.T) {
 
 func TestRolePermissionRollbackOnEverySQLStageAndLostUpdate(t *testing.T) {
 	intent := actionsecurity.PromoteIntent{TargetGUID: 6001, ExpectedAuthVersion: 7, ExpectedPermissionsVersion: 0, CatalogVersion: 1, Overrides: []actionsecurity.PermissionOverrideIntent{{Capability: "users.delete", Effect: 3}, {Capability: "users.sessions.read", Effect: 2}}, Reason: "promotion"}
-	for stage := 1; stage <= 12; stage++ {
+	for stage := 1; stage <= 13; stage++ {
 		t.Run(fmt.Sprintf("sql_error_%d", stage), func(t *testing.T) {
 			script := rolePermissionHappyScript(models.UserRoleUser, nil, nil)
 			outcome, _, err := runRolePermissionTx(t, script, actionsecurity.ActionUsersPromote, intent, 0, func(s *rolePermissionTxScript) { s.failAt = stage })
@@ -396,7 +518,7 @@ func TestRolePermissionRollbackOnEverySQLStageAndLostUpdate(t *testing.T) {
 				t.Fatalf("stage %d = %#v/%v committed=%d rollback=%d", stage, outcome, err, len(script.committed), script.rollbackCount)
 			}
 		})
-		if stage <= 4 {
+		if stage <= 5 {
 			continue
 		}
 		for _, affected := range []int64{0, 2} {
@@ -411,7 +533,7 @@ func TestRolePermissionRollbackOnEverySQLStageAndLostUpdate(t *testing.T) {
 	}
 
 	head, rules := rolePermissionPolicyRows(2, []struct{ capability, effect int }{{1, 3}})
-	for _, stage := range []int{10, 11} {
+	for _, stage := range []int{11, 12} {
 		t.Run(fmt.Sprintf("demote_stage_%d", stage), func(t *testing.T) {
 			script := rolePermissionHappyScript(models.UserRoleAdmin, head, rules)
 			outcome, _, err := runRolePermissionTx(t, script, actionsecurity.ActionUsersDemote, actionsecurity.DemoteIntent{TargetGUID: 6001, ExpectedAuthVersion: 7, ExpectedPermissionsVersion: 2, CatalogVersion: 1, Reason: "demote"}, 0, func(s *rolePermissionTxScript) { s.failAt = stage })
@@ -555,7 +677,7 @@ func runRolePermissionTxWithBinding(t *testing.T, script *rolePermissionTxScript
 	if err != nil {
 		t.Fatal(err)
 	}
-	operation, verification := rolePermissionTxBinding(action, base.requestHMAC)
+	operation, verification := rolePermissionTxBinding(action, base.requestHMAC, base.targetGUID())
 	if mutateBinding != nil {
 		mutateBinding(script, &operation, &verification)
 	}
@@ -643,20 +765,22 @@ func rolePermissionHappyScript(role models.UserRole, head *models.PermissionPoli
 	}
 	rowsAt := map[int]int64{}
 	if activeRules > 0 {
-		rowsAt[10] = activeRules
+		rowsAt[11] = activeRules
 	}
-	return &rolePermissionTxScript{now: 8001, target: models.User{ID: 61, AuditFields: models.AuditFields{Guid: 6001}, Role: role, Status: models.UserStatusActive, AuthVersion: 7},
+	return &rolePermissionTxScript{now: 8001,
+		actor:  models.User{ID: 41, AuditFields: models.AuditFields{Guid: 4001}, Role: models.UserRoleRoot, Status: models.UserStatusActive, AuthVersion: 3},
+		target: models.User{ID: 61, AuditFields: models.AuditFields{Guid: 6001}, Role: role, Status: models.UserStatusActive, AuthVersion: 7},
 		sessions: []models.Session{
 			{ID: 71, AuditFields: models.AuditFields{Guid: 7001}, SID: "sid-71", UserID: 61, LoginMethod: models.LoginMethodPassword, SessionVersion: 2, ExpiresAt: 9001},
 			{ID: 72, AuditFields: models.AuditFields{Guid: 7002}, SID: "sid-72", UserID: 61, LoginMethod: models.LoginMethodPassword, SessionVersion: 3, ExpiresAt: 10001},
 		}, head: ownedHead, rules: ownedRules, rowsAt: rowsAt}
 }
 
-func rolePermissionTxBinding(action actionsecurity.Action, requestHMAC string) (models.AdminOperation, models.AdminActionVerification) {
+func rolePermissionTxBinding(action actionsecurity.Action, requestHMAC string, targetGUID int64) (models.AdminOperation, models.AdminActionVerification) {
 	actor, verificationID, leaseUntil := int64(41), int64(51), int64(9001)
 	lease := strings.Repeat("b", 64)
 	operation := models.AdminOperation{ID: 31, AuditFields: models.AuditFields{Guid: 3001, CreatedAt: 7001, CreatedBy: &actor, UpdatedAt: 7001, UpdatedBy: &actor}, ActorUserID: actor, ActorAuthVersion: 3, SessionID: 45, Action: int(action), VerificationID: &verificationID, State: models.OperationProcessing, PublicRef: "op_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", RequestHMAC: requestHMAC, LeaseOwnerHMAC: &lease, LeaseExpiresAt: &leaseUntil, QueryExpiresAt: 10001}
-	target := int64(6001)
+	target := targetGUID
 	verification := models.AdminActionVerification{ID: verificationID, ActorUserID: actor, ActorAuthVersion: 3, SessionID: 45, Action: int(action), TargetKind: int(actionsecurity.TargetUser), TargetGUID: &target, IntentHMAC: requestHMAC, ExpiresAt: 9001}
 	return operation, verification
 }
@@ -668,7 +792,7 @@ func assertRolePermissionTxHappyCalls(t *testing.T, script *rolePermissionTxScri
 	if script.commitCount != 1 || script.rollbackCount != 0 || len(script.committed) != 8 {
 		t.Fatalf("commit/rollback/writes = %d/%d/%d; observed=%#v", script.commitCount, script.rollbackCount, len(script.committed), script.observed)
 	}
-	wantTables := []string{"users", "user_sessions", "user_permission_heads", "user_permission_overrides", "user_sessions", "auth_audit_events", "user_sessions", "auth_audit_events", "users", "user_permission_overrides", "user_permission_overrides", "user_permission_heads"}
+	wantTables := []string{"users", "users", "user_sessions", "user_permission_heads", "user_permission_overrides", "user_sessions", "auth_audit_events", "user_sessions", "auth_audit_events", "users", "user_permission_overrides", "user_permission_overrides", "user_permission_heads"}
 	if len(script.observed) != len(wantTables) {
 		t.Fatalf("calls = %d, want %d: %#v", len(script.observed), len(wantTables), script.observed)
 	}
@@ -677,8 +801,9 @@ func assertRolePermissionTxHappyCalls(t *testing.T, script *rolePermissionTxScri
 			t.Fatalf("call %d table = %s, want %s; sql=%s", i+1, script.observed[i].table, want, script.observed[i].sql)
 		}
 	}
-	queries := script.observed[:4]
+	queries := script.observed[:5]
 	wantQueries := []string{
+		"SELECT `id`,`guid`,`role`,`status`,`is_deleted`,`auth_version` FROM `users` WHERE id = ? AND is_deleted = 0 ORDER BY `users`.`id` LIMIT ? FOR UPDATE",
 		"SELECT `id`,`guid`,`role`,`status`,`is_deleted`,`auth_version` FROM `users` WHERE guid = ? AND is_deleted = 0 ORDER BY `users`.`id` LIMIT ? FOR UPDATE",
 		"SELECT `id`,`guid`,`sid`,`user_id`,`login_method`,`session_version`,`is_deleted`,`revoked_at`,`expires_at` FROM `user_sessions` WHERE user_id = ? AND is_deleted = 0 AND revoked_at IS NULL ORDER BY id ASC FOR UPDATE",
 		"SELECT `id`,`guid`,`user_id`,`is_deleted`,`policy_version`,`catalog_version`,`rule_count` FROM `user_permission_heads` WHERE user_id = ? AND is_deleted = 0 ORDER BY `user_permission_heads`.`id` LIMIT ? FOR UPDATE",
@@ -689,11 +814,14 @@ func assertRolePermissionTxHappyCalls(t *testing.T, script *rolePermissionTxScri
 			t.Fatalf("query %d = %q\nwant %q", i+1, queries[i].sql, wantQueries[i])
 		}
 	}
-	if got := rolePermissionArgValues(queries[0].args); fmt.Sprint(got) != "[6001 1]" {
+	if got := rolePermissionArgValues(queries[0].args); fmt.Sprint(got) != "[41 1]" {
+		t.Fatalf("actor args = %#v", got)
+	}
+	if got := rolePermissionArgValues(queries[1].args); fmt.Sprint(got) != "[6001 1]" {
 		t.Fatalf("target args = %#v", got)
 	}
-	for i := 1; i < 4; i++ {
-		if got := rolePermissionArgValues(queries[i].args); fmt.Sprint(got) != "[61]" && !(i == 2 && fmt.Sprint(got) == "[61 1]") {
+	for i := 2; i < 5; i++ {
+		if got := rolePermissionArgValues(queries[i].args); fmt.Sprint(got) != "[61]" && !(i == 3 && fmt.Sprint(got) == "[61 1]") {
 			t.Fatalf("query %d args = %#v", i+1, got)
 		}
 	}
@@ -705,7 +833,7 @@ func assertRolePermissionTxHappyCalls(t *testing.T, script *rolePermissionTxScri
 			}
 		}
 	}
-	writes := script.observed[4:]
+	writes := script.observed[5:]
 	wantWriteSQL := []string{
 		"UPDATE `user_sessions` SET `revoked_at`=?,`session_version`=?,`updated_at`=?,`updated_by`=? WHERE id = ? AND user_id = ? AND is_deleted = 0 AND revoked_at IS NULL AND session_version = ?",
 		"INSERT INTO `auth_audit_events` (`guid`,`created_at`,`created_by`,`updated_at`,`updated_by`,`is_deleted`,`user_id`,`session_guid`,`event_type`,`login_method`,`ip`,`user_agent`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
