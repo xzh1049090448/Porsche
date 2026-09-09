@@ -4,7 +4,7 @@ Date: 2026-09-09
 
 ## Scope and candidate
 
-BE04 code candidate is `23820acbccee28a291cf4bfacb6adf30e3cdfbee`. The evidence commit containing this report is its immediate child and changes only `progress.md`, `feature_list.json`, and this report; the final log and diff checks establish that relationship without changing candidate code.
+BE04 code candidate is `23820acbccee28a291cf4bfacb6adf30e3cdfbee`. Initial evidence commit `40a195dce72827edb85105fc449e2e394293641e` is its immediate child and changes only `progress.md`, `feature_list.json`, and this report. Cleanup-result correction `1f78b81b90d5ce31266b895d925980eb8444906d` is the next documentation-only commit. This report's final metadata revision is another documentation-only descendant; its exact HEAD and the full parent chain are established by `git log`, without changing candidate code.
 
 This tranche covers authenticated generation status and cancellation, cancellation-before-claim tombstones, owner-bound runner leases, restart-safe bounded convergence, strict completed-result hydration, and application lifecycle ownership. It does not implement BE05 or BE06 streaming orchestration.
 
@@ -63,7 +63,7 @@ GOCACHE=/private/tmp/porsche-be04-go-build-cache go test -race ./internal/servic
 
 The first affected-race attempt followed full without a fixture reset and hit the pre-existing A03 action-security rate limit in `TestCreateAccountRealWriteFaultsRollbackEveryStage/terminal_operation`. It is classified `FAIL_ENV_FIXTURE_NOT_FRESH`, not a BE04 or product pass. The fresh-reset rerun above is the final result.
 
-`gofmt`, `git diff --check`, `go vet ./...`, and `go build ./...` all exited zero before documentation. Final committed-tree full, vet, and diff checks are recorded by the immediate evidence commit workflow.
+`gofmt`, `git diff --check`, `go vet ./...`, and `go build ./...` all exited zero before documentation. After initial evidence commit `40a195dce72827edb85105fc449e2e394293641e`, committed-tree full, vet, and diff checks all passed for that exact HEAD. Those results do not claim to verify later documentation-only commits `1f78b81b90d5ce31266b895d925980eb8444906d` or this final metadata revision; the latter receives its own post-commit full, vet, diff, status, and cleanup verification outside this self-referential report.
 
 ## Security and privacy checks
 
