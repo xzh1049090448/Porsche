@@ -91,7 +91,7 @@ Issue uses action `users.permissions.write`. Execute PATCH has:
 }
 ```
 
-The path supplies the target GUID; Issue binds the same GUID. The canonical intent sorts by capability and binds target GUID, both expected versions, catalog version, every effect and the normalized reason. Duplicate capabilities are invalid. Unknown or unavailable capabilities are invalid. `allow` for a Root-only/ungrantable capability is forbidden. `inherit`, `allow` and `deny` are accepted UI values; canonical persistence omits `inherit` rows so absence means baseline inheritance.
+The path supplies the target GUID; Issue binds the same GUID. The canonical intent sorts by capability and binds target GUID, both expected versions, catalog version, every effect and the normalized reason. Duplicate capabilities are invalid. Unknown or unavailable capabilities are invalid. `allow` for a Root-only/ungrantable capability is forbidden. The UI may present `inherit`, `allow` and `deny`, but the wire accepts only `allow` and `deny`; selecting `inherit` omits that capability from `overrides`, and an explicit wire `effect: "inherit"` is invalid with HTTP 400. Canonical persistence likewise stores only `allow` and `deny`, so absence means baseline inheritance.
 
 The existing pre-activation `PermissionsWriteIntent` is extended with `expected_auth_version` and `reason`. This is allowed only before activation; existing action integers are preserved.
 
@@ -139,7 +139,7 @@ The user detail page derives controls from the fresh capability set and target p
 - Root viewing an Admin sees “权限设置” and “降级为普通用户”.
 - No target sees self-role controls; Root targets expose none of the three controls.
 
-The promote dialog offers Admin baseline as the default and an optional expanded permission editor. The editor groups catalog capabilities and shows `inherit`, `allow`, `deny`, final effective value and source. Unavailable and Root-only capabilities are visible as locked metadata only when useful for explanation and are never serializable as grants.
+The promote dialog offers Admin baseline as the default and an optional expanded permission editor. The editor groups catalog capabilities and shows `inherit`, `allow`, `deny`, final effective value and source. It serializes `allow` and `deny` entries only and omits every capability selected as `inherit`; explicit `inherit` is never sent on the wire. Unavailable and Root-only capabilities are visible as locked metadata only when useful for explanation and are never serializable as grants.
 
 The demote confirmation states that Admin permissions stop applying and all sessions become invalid. Permission-save confirmation states that all sessions become invalid. Every action requires a normalized reason and current Root password in the verification step.
 
@@ -167,4 +167,4 @@ Production migration, deployment and production acceptance remain `NOT_RUN` unti
 
 ## Written decisions still requiring review
 
-The user approved this written specification on 2026-09-09. The approval covers the precise intent fields, operation stable-result expansion, same-policy 409 behavior, `inherit` omission in persistence, policy-head preservation on demotion and Gateway Key runtime acceptance. Implementation must follow the paired TDD plan; external backend `project_manager` confirmation and final acceptance evidence remain separately pending.
+The user approved this written specification on 2026-09-09. The approval covers the precise intent fields, operation stable-result expansion, same-policy 409 behavior, UI `inherit` omission from the wire, allow/deny-only persistence, policy-head preservation on demotion and Gateway Key runtime acceptance. Implementation must follow the paired TDD plan; external backend `project_manager` confirmation and final acceptance evidence remain separately pending.

@@ -492,8 +492,6 @@ func decodeRolePermissionOverrides(raw json.RawMessage) ([]actionsecurity.Permis
 			return nil, false
 		}
 		switch effect {
-		case "inherit":
-			continue
 		case "allow":
 			if definition.RootOnly || !definition.Grantable {
 				return nil, false

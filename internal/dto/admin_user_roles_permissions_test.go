@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	validPromoteIssue    = `{"action":"users.promote","intent":{"target_guid":"123456789012345678","expected_auth_version":7,"expected_permissions_version":0,"catalog_version":1,"overrides":[{"capability":"users.sessions.read","effect":"allow"},{"capability":"users.delete","effect":"deny"},{"capability":"users.read","effect":"inherit"}],"reason":"  grant duties  "},"current_password":"current-secret"}`
+	validPromoteIssue    = `{"action":"users.promote","intent":{"target_guid":"123456789012345678","expected_auth_version":7,"expected_permissions_version":0,"catalog_version":1,"overrides":[{"capability":"users.sessions.read","effect":"allow"},{"capability":"users.delete","effect":"deny"}],"reason":"  grant duties  "},"current_password":"current-secret"}`
 	validDemoteIssue     = `{"action":"users.demote","intent":{"target_guid":"123456789012345678","expected_auth_version":7,"expected_permissions_version":3,"catalog_version":1,"reason":" remove duties "},"current_password":"current-secret"}`
 	validPermissionIssue = `{"action":"users.permissions.write","intent":{"target_guid":"123456789012345678","expected_auth_version":7,"expected_permissions_version":3,"catalog_version":1,"overrides":[{"capability":"users.sessions.read","effect":"allow"}],"reason":" rotate "},"current_password":"current-secret"}`
 )
@@ -156,6 +156,7 @@ func TestDecodePromoteDemotePermissionValidatesOverrides(t *testing.T) {
 	bad := []string{
 		`[{"capability":"users.read"}]`, `[{"capability":"users.read","effect":"allow","x":1}]`,
 		`[{"capability":"users.read","effect":"allow"},{"capability":"users.read","effect":"deny"}]`,
+		`[{"capability":"users.read","effect":"inherit"}]`,
 		`[{"capability":"users.read","effect":"bad"}]`, `[{"capability":"unknown","effect":"deny"}]`,
 		`[{"capability":"users.quota.adjust","effect":"deny"}]`, `[{"capability":"users.promote","effect":"allow"}]`,
 		`[{"capability":"users.read","effect":"allow"},{"Capability":"users.read","effect":"deny"}]`,
