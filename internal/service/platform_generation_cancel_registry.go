@@ -25,9 +25,10 @@ type platformGenerationCancellationEntry struct {
 // this process. Its registrations are deliberately independent from the
 // durable generation lifecycle record.
 type PlatformGenerationCancellationRegistry struct {
-	mu      sync.Mutex
-	entries map[platformGenerationCancellationKey]platformGenerationCancellationEntry
-	reader  io.Reader
+	mu        sync.Mutex
+	entropyMu sync.Mutex
+	entries   map[platformGenerationCancellationKey]platformGenerationCancellationEntry
+	reader    io.Reader
 }
 
 func NewPlatformGenerationCancellationRegistry() *PlatformGenerationCancellationRegistry {
@@ -56,6 +57,15 @@ func newPlatformGenerationCancellationRegistrationTokenFrom(reader io.Reader) (s
 	return base64.RawURLEncoding.EncodeToString(raw), nil
 }
 
+func (r *PlatformGenerationCancellationRegistry) newRegistrationToken() (string, error) {
+	r.entropyMu.Lock()
+	defer r.entropyMu.Unlock()
+	if r.reader == nil {
+		return newPlatformGenerationCancellationRegistrationToken()
+	}
+	return newPlatformGenerationCancellationRegistrationTokenFrom(r.reader)
+}
+
 func (r *PlatformGenerationCancellationRegistry) Register(userID int64, generationID string, cancel context.CancelFunc) (string, error) {
 	if validatePlatformGenerationIdentity(userID, generationID) != nil || cancel == nil {
 		return "", ErrPlatformGenerationInvalid
@@ -65,13 +75,14 @@ func (r *PlatformGenerationCancellationRegistry) Register(userID int64, generati
 	}
 
 	key := platformGenerationCancellationKey{UserID: userID, GenerationID: generationID}
-	var token string
-	var err error
-	if r.reader == nil {
-		token, err = newPlatformGenerationCancellationRegistrationToken()
-	} else {
-		token, err = newPlatformGenerationCancellationRegistrationTokenFrom(r.reader)
+	r.mu.Lock()
+	_, exists := r.entries[key]
+	r.mu.Unlock()
+	if exists {
+		return "", ErrPlatformGenerationConflict
 	}
+
+	token, err := r.newRegistrationToken()
 	if err != nil {
 		return "", err
 	}

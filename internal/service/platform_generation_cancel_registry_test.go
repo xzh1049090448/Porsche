@@ -127,6 +127,100 @@ func TestPlatformGenerationCancellationRegistryRegisterReturnsTokenAndPreservesD
 	}
 }
 
+func TestPlatformGenerationCancellationRegistryDuplicateWinsBeforeExhaustedEntropy(t *testing.T) {
+	registry := newPlatformGenerationCancellationRegistryFrom(bytes.NewReader(make([]byte, platformGenerationCancellationRegistrationTokenBytes)))
+	var originalCalls atomic.Int64
+	token, err := registry.Register(1, cancellationRegistryGenerationID, func() { originalCalls.Add(1) })
+	if err != nil {
+		t.Fatalf("first Register() error = %v", err)
+	}
+	if duplicateToken, err := registry.Register(1, cancellationRegistryGenerationID, func() {}); duplicateToken != "" || !errors.Is(err, ErrPlatformGenerationConflict) {
+		t.Fatalf("duplicate Register() with exhausted entropy = (%q, %v), want empty token and ErrPlatformGenerationConflict", duplicateToken, err)
+	}
+	if !registry.Cancel(1, cancellationRegistryGenerationID) {
+		t.Fatal("Cancel() original registration = false, want true")
+	}
+	if got := originalCalls.Load(); got != 1 {
+		t.Fatalf("original callback calls = %d, want 1", got)
+	}
+	if !registry.Unregister(1, cancellationRegistryGenerationID, token) {
+		t.Fatal("Unregister() original token = false, want true")
+	}
+}
+
+func TestPlatformGenerationCancellationRegistryConcurrentRegisterProtectsInjectedReader(t *testing.T) {
+	registry := newPlatformGenerationCancellationRegistryFrom(&nonThreadSafeDeterministicReader{})
+
+	const registrations = 64
+	start := make(chan struct{})
+	results := make(chan cancellationRegistryRegistrationResult, registrations)
+	var workers sync.WaitGroup
+	workers.Add(registrations)
+	for userID := int64(1); userID <= registrations; userID++ {
+		go func(userID int64) {
+			defer workers.Done()
+			<-start
+			token, err := registry.Register(userID, cancellationRegistryGenerationID, func() {})
+			results <- cancellationRegistryRegistrationResult{token: token, err: err}
+		}(userID)
+	}
+	close(start)
+	workers.Wait()
+	close(results)
+
+	tokens := make(map[string]struct{}, registrations)
+	for result := range results {
+		if result.err != nil {
+			t.Fatalf("concurrent Register() error = %v", result.err)
+		}
+		if !validPlatformGenerationLeaseToken(result.token) {
+			t.Fatalf("concurrent Register() token = %q, want canonical 32-byte RawURL token", result.token)
+		}
+		tokens[result.token] = struct{}{}
+	}
+	if len(tokens) != registrations {
+		t.Fatalf("unique registration tokens = %d, want %d", len(tokens), registrations)
+	}
+	if len(registry.entries) != registrations {
+		t.Fatalf("registry entries = %d, want %d", len(registry.entries), registrations)
+	}
+}
+
+func TestPlatformGenerationCancellationRegistryConcurrentSameKeyHasOneWinner(t *testing.T) {
+	registry := NewPlatformGenerationCancellationRegistry()
+
+	const registrations = 64
+	start := make(chan struct{})
+	results := make(chan cancellationRegistryRegistrationResult, registrations)
+	var workers sync.WaitGroup
+	workers.Add(registrations)
+	for range registrations {
+		go func() {
+			defer workers.Done()
+			<-start
+			token, err := registry.Register(1, cancellationRegistryGenerationID, func() {})
+			results <- cancellationRegistryRegistrationResult{token: token, err: err}
+		}()
+	}
+	close(start)
+	workers.Wait()
+	close(results)
+
+	var successes int
+	for result := range results {
+		if result.err == nil && validPlatformGenerationLeaseToken(result.token) {
+			successes++
+			continue
+		}
+		if result.token != "" || !errors.Is(result.err, ErrPlatformGenerationConflict) {
+			t.Fatalf("concurrent same-key Register() = (%q, %v), want empty token and ErrPlatformGenerationConflict", result.token, result.err)
+		}
+	}
+	if successes != 1 {
+		t.Fatalf("same-key registration successes = %d, want 1", successes)
+	}
+}
+
 func TestPlatformGenerationCancellationRegistryCancelInvokesCallbackOnce(t *testing.T) {
 	registry := NewPlatformGenerationCancellationRegistry()
 	var calls atomic.Int64
@@ -344,4 +438,22 @@ type errorReader struct{}
 
 func (errorReader) Read([]byte) (int, error) {
 	return 0, errors.New("entropy unavailable")
+}
+
+type cancellationRegistryRegistrationResult struct {
+	token string
+	err   error
+}
+
+type nonThreadSafeDeterministicReader struct {
+	next uint64
+}
+
+func (r *nonThreadSafeDeterministicReader) Read(raw []byte) (int, error) {
+	sequence := r.next
+	r.next++
+	for index := range raw {
+		raw[index] = byte(sequence + uint64(index))
+	}
+	return len(raw), nil
 }
