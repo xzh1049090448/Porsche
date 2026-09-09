@@ -205,8 +205,8 @@ func TestRolePermissionExecutionRedactsAndStartsOnlyOnceAcrossCopies(t *testing.
 		}(candidate)
 	}
 	group.Wait()
-	if successes.Load() != 1 || !execution.Started() || !copied.Started() {
-		t.Fatalf("single-use state = successes %d, started %t/%t", successes.Load(), execution.Started(), copied.Started())
+	if successes.Load() != 1 {
+		t.Fatalf("single-use successes = %d, want 1", successes.Load())
 	}
 }
 
@@ -275,6 +275,9 @@ func TestRolePermissionPlanSourceDoesNotResolveOrProjectGlobalRegistry(t *testin
 		if bytes.Contains(source, forbidden) {
 			t.Fatalf("role permission production file accesses forbidden registry path %q", forbidden)
 		}
+	}
+	if bytes.Contains(source, []byte("func (execution *RolePermissionExecution) Started()")) {
+		t.Fatal("RolePermissionExecution exposes test-only Started API")
 	}
 }
 
@@ -367,9 +370,10 @@ func TestRolePermissionPlanNoOpAndOutputAreMutationFree(t *testing.T) {
 	} {
 		execution := rolePermissionTestExecution(t, tc.action, tc.intent)
 		plan, failure := execution.PlanTransition(RolePermissionTargetSnapshot{ActorGUID: 50, TargetGUID: 91, Role: tc.role, Status: models.UserStatusActive, AuthVersion: 7}, &RolePermissionPolicySnapshot{PolicyVersion: 2, CatalogVersion: 1}, nil)
-		if plan != nil || failure == nil || *failure != models.FailureTargetStateConflict || execution.Started() {
-			t.Fatalf("same-role action %d = %#v %#v started=%t", tc.action, plan, failure, execution.Started())
+		if plan != nil || failure == nil || *failure != models.FailureTargetStateConflict {
+			t.Fatalf("same-role action %d = %#v %#v", tc.action, plan, failure)
 		}
+		assertRolePermissionGuardAvailableAfterPlan(t, execution)
 	}
 
 	intent := actionsecurity.PermissionsWriteIntent{TargetGUID: 91, ExpectedAuthVersion: 7, ExpectedPermissionsVersion: 2, CatalogVersion: 1, Overrides: []actionsecurity.PermissionOverrideIntent{{Capability: "users.read", Effect: 3}}, Reason: "reason"}
@@ -379,9 +383,10 @@ func TestRolePermissionPlanNoOpAndOutputAreMutationFree(t *testing.T) {
 	if plan != nil || failure == nil || *failure != models.FailureTargetStateConflict {
 		t.Fatalf("same policy = %#v %#v", plan, failure)
 	}
-	if execution.Started() || !reflect.DeepEqual(active, []actionsecurity.PermissionOverrideIntent{{Capability: "users.read", Effect: 3}}) {
+	if !reflect.DeepEqual(active, []actionsecurity.PermissionOverrideIntent{{Capability: "users.read", Effect: 3}}) {
 		t.Fatal("no-op planning mutated execution or input")
 	}
+	assertRolePermissionGuardAvailableAfterPlan(t, execution)
 
 	replacement := rolePermissionTestExecution(t, actionsecurity.ActionUsersPermissionsWrite, actionsecurity.PermissionsWriteIntent{TargetGUID: 91, ExpectedAuthVersion: 7, ExpectedPermissionsVersion: 2, CatalogVersion: 1, Overrides: []actionsecurity.PermissionOverrideIntent{{Capability: "users.sessions.read", Effect: 2}}, Reason: "reason"})
 	plan, failure = replacement.PlanTransition(RolePermissionTargetSnapshot{ActorGUID: 50, TargetGUID: 91, Role: models.UserRoleAdmin, Status: models.UserStatusActive, AuthVersion: 7}, &RolePermissionPolicySnapshot{PolicyVersion: 2, CatalogVersion: 1}, active)
@@ -392,6 +397,17 @@ func TestRolePermissionPlanNoOpAndOutputAreMutationFree(t *testing.T) {
 	second, failure := replacement.PlanTransition(RolePermissionTargetSnapshot{ActorGUID: 50, TargetGUID: 91, Role: models.UserRoleAdmin, Status: models.UserStatusActive, AuthVersion: 7}, &RolePermissionPolicySnapshot{PolicyVersion: 2, CatalogVersion: 1}, active)
 	if failure != nil || second.DesiredRules[0].Capability != "users.sessions.read" {
 		t.Fatal("caller mutated execution-owned desired rules")
+	}
+	assertRolePermissionGuardAvailableAfterPlan(t, replacement)
+}
+
+func assertRolePermissionGuardAvailableAfterPlan(t *testing.T, execution *RolePermissionExecution) {
+	t.Helper()
+	if err := execution.Begin(); err != nil {
+		t.Fatalf("planning consumed execution guard: %v", err)
+	}
+	if err := execution.Begin(); !errors.Is(err, ErrActionOperationUnavailable) {
+		t.Fatalf("second Begin error = %v, want unavailable", err)
 	}
 }
 

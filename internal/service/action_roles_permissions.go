@@ -201,16 +201,6 @@ func (execution *RolePermissionExecution) Begin() error {
 	return nil
 }
 
-// Started reports the shared single-use guard without changing it.
-func (execution *RolePermissionExecution) Started() bool {
-	if execution == nil || execution.state == nil {
-		return false
-	}
-	execution.state.mu.Lock()
-	defer execution.state.mu.Unlock()
-	return execution.state.started
-}
-
 func (execution *RolePermissionExecution) targetGUID() int64 {
 	if execution == nil {
 		return 0
