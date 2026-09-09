@@ -3,6 +3,8 @@ package publiccontent
 import (
 	"regexp"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 const (
@@ -60,6 +62,24 @@ func ValidModelKey(value string) bool {
 	return modelKeyPattern.MatchString(value) && !strings.HasSuffix(value, "-") && !strings.Contains(value, "--")
 }
 
+// ValidUpstreamModelID accepts the same opaque, slash-separated identifier
+// shape used by the configured white-label catalog. The public schema stores
+// it in VARCHAR(255), and it must remain safe to compare and use as a single
+// escaped upstream path segment.
+func ValidUpstreamModelID(value string) bool {
+	if value == "" || len(value) > 255 || value != strings.TrimSpace(value) || !utf8.ValidString(value) {
+		return false
+	}
+	for _, segment := range strings.Split(value, "/") {
+		if segment == "" || segment == "." || segment == ".." || strings.IndexFunc(segment, func(runeValue rune) bool {
+			return unicode.IsControl(runeValue) || unicode.Is(unicode.Cf, runeValue) || unicode.IsSpace(runeValue) || strings.ContainsRune("\\?#%", runeValue)
+		}) >= 0 {
+			return false
+		}
+	}
+	return true
+}
+
 // ValidatePublication deterministically validates an in-memory publication.
 // It has no network, database, filesystem, or clock dependency.
 func ValidatePublication(publication Publication) []ValidationIssue {
@@ -78,8 +98,13 @@ func ValidatePublication(publication Publication) []ValidationIssue {
 		} else {
 			modelKeys[model.ModelKey] = struct{}{}
 		}
-		if _, duplicate := upstreamIDs[model.UpstreamModelID]; duplicate {
-			issues = append(issues, ValidationIssue{Field: base + ".upstream_model_id", Code: "duplicate_upstream_model_id"})
+		upstreamField := base + ".upstream_model_id"
+		if strings.TrimSpace(model.UpstreamModelID) == "" {
+			issues = append(issues, ValidationIssue{Field: upstreamField, Code: "missing_upstream_model_id"})
+		} else if !ValidUpstreamModelID(model.UpstreamModelID) {
+			issues = append(issues, ValidationIssue{Field: upstreamField, Code: "invalid_upstream_model_id"})
+		} else if _, duplicate := upstreamIDs[model.UpstreamModelID]; duplicate {
+			issues = append(issues, ValidationIssue{Field: upstreamField, Code: "duplicate_upstream_model_id"})
 		} else {
 			upstreamIDs[model.UpstreamModelID] = struct{}{}
 		}

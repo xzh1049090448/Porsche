@@ -2,6 +2,7 @@ package publiccontent
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -85,6 +86,52 @@ func TestValidateModelKeyRequiresStablePermanentSafeShape(t *testing.T) {
 				t.Fatalf("ValidModelKey(%q) = true", key)
 			}
 		})
+	}
+}
+
+func TestValidatePublicationRequiresSafeUpstreamModelReference(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		id   string
+		code string
+	}{
+		{name: "empty", id: "", code: "missing_upstream_model_id"},
+		{name: "whitespace", id: " \t\n", code: "missing_upstream_model_id"},
+		{name: "empty_segment", id: "org//model", code: "invalid_upstream_model_id"},
+		{name: "traversal", id: "org/../model", code: "invalid_upstream_model_id"},
+		{name: "escaped_path", id: "org%2Fmodel", code: "invalid_upstream_model_id"},
+		{name: "query", id: "org/model?version=1", code: "invalid_upstream_model_id"},
+		{name: "control", id: "org/\u200bmodel", code: "invalid_upstream_model_id"},
+		{name: "internal_space", id: "org/model name", code: "invalid_upstream_model_id"},
+		{name: "overlong", id: strings.Repeat("a", 256), code: "invalid_upstream_model_id"},
+		{name: "invalid_utf8", id: string([]byte{0xff}), code: "invalid_upstream_model_id"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			issues := ValidatePublication(publicationWithModels(Model{ModelKey: "gpt-4o-mini", UpstreamModelID: test.id, Active: true, Price: validPrice()}))
+			if !hasIssue(issues, "models[0].upstream_model_id", test.code) {
+				t.Fatalf("ValidatePublication(%q) issues = %#v, missing %s", test.id, issues, test.code)
+			}
+		})
+	}
+}
+
+func TestValidatePublicationPreservesSafeUpstreamIDsAndDuplicateOrder(t *testing.T) {
+	validIDs := []string{"model-a", "zai-org/glm-5.1", "team/subteam/model-v2"}
+	for _, id := range validIDs {
+		t.Run("valid_"+id, func(t *testing.T) {
+			issues := ValidatePublication(publicationWithModels(Model{ModelKey: "gpt-4o-mini", UpstreamModelID: id, Active: true, Price: validPrice()}))
+			if hasIssueCode(issues, "missing_upstream_model_id") || hasIssueCode(issues, "invalid_upstream_model_id") {
+				t.Fatalf("valid upstream model ID %q issues = %#v", id, issues)
+			}
+		})
+	}
+	issues := ValidatePublication(publicationWithModels(
+		Model{ModelKey: "gpt-4o-mini", UpstreamModelID: "zai-org/glm-5.1", Active: true, Price: validPrice()},
+		Model{ModelKey: "gpt-4o", UpstreamModelID: "zai-org/glm-5.1", Active: true, Price: validPrice()},
+	))
+	want := []ValidationIssue{{Field: "models[1].upstream_model_id", Code: "duplicate_upstream_model_id"}}
+	if !reflect.DeepEqual(issues, want) {
+		t.Fatalf("duplicate upstream model ID issues = %#v, want %#v", issues, want)
 	}
 }
 
@@ -201,4 +248,54 @@ func publicationWithHome(body string) Publication {
 		{Kind: DocumentTerms, Reviewed: true, Body: "Terms"},
 		{Kind: DocumentPrivacy, Reviewed: true, Body: "Privacy"},
 	}}
+}
+
+func publicationWithModels(models ...Model) Publication {
+	return Publication{Models: models, Documents: []Document{
+		{Kind: DocumentHome, Reviewed: true, Body: "Home"},
+		{Kind: DocumentTerms, Reviewed: true, Body: "Terms"},
+		{Kind: DocumentPrivacy, Reviewed: true, Body: "Privacy"},
+	}}
+}
+
+func validPrice() Price {
+	return Price{Currency: CurrencyUSD, Unit: UnitMillionTokens, Input: "1", Output: "1"}
+}
+
+func hasIssue(issues []ValidationIssue, field, code string) bool {
+	for _, issue := range issues {
+		if issue.Field == field && issue.Code == code {
+			return true
+		}
+	}
+	return false
+}
+
+func FuzzValidateUpstreamModelReferenceDeterministically(f *testing.F) {
+	for _, seed := range []string{"", " \t", "model-a", "zai-org/glm-5.1", "org//model", "org/../model", "org%2Fmodel", "org/model?query=1"} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, id string) {
+		publication := publicationWithModels(Model{ModelKey: "gpt-4o-mini", UpstreamModelID: id, Active: true, Price: validPrice()})
+		first := ValidatePublication(publication)
+		second := ValidatePublication(publication)
+		if !reflect.DeepEqual(first, second) {
+			t.Fatalf("upstream reference validation was nondeterministic for %q: %#v != %#v", id, first, second)
+		}
+		if strings.TrimSpace(id) == "" {
+			if !hasIssue(first, "models[0].upstream_model_id", "missing_upstream_model_id") {
+				t.Fatalf("blank upstream reference missing required issue: %q, %#v", id, first)
+			}
+			return
+		}
+		if ValidUpstreamModelID(id) {
+			if hasIssueCode(first, "missing_upstream_model_id") || hasIssueCode(first, "invalid_upstream_model_id") {
+				t.Fatalf("valid upstream reference was rejected: %q, %#v", id, first)
+			}
+			return
+		}
+		if !hasIssue(first, "models[0].upstream_model_id", "invalid_upstream_model_id") {
+			t.Fatalf("invalid upstream reference lacked invalid issue: %q, %#v", id, first)
+		}
+	})
 }
