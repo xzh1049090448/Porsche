@@ -416,29 +416,32 @@ func verifyPublicContentRelease(release models.PublicContentRelease) error {
 		return errUnavailable("committed content integrity unavailable")
 	}
 	parsed, parseErr := strconv.ParseInt(guid, 10, 64)
-	if parseErr != nil || parsed <= 0 {
+	if parseErr != nil || parsed <= 0 || strconv.FormatInt(parsed, 10) != guid {
 		return errUnavailable("committed content integrity unavailable")
 	}
 	version, ok := jsonNumberInt64(release.Payload["price_snapshot_version"])
 	if !ok || version <= 0 {
 		return errUnavailable("committed content integrity unavailable")
 	}
+	var keys []string
 	switch refs := release.Payload["model_keys"].(type) {
 	case []string:
-		for _, key := range refs {
-			if !publiccontent.ValidModelKey(key) {
-				return errUnavailable("committed content integrity unavailable")
-			}
-		}
+		keys = refs
 	case []any:
 		for _, value := range refs {
 			key, ok := value.(string)
-			if !ok || !publiccontent.ValidModelKey(key) {
+			if !ok {
 				return errUnavailable("committed content integrity unavailable")
 			}
+			keys = append(keys, key)
 		}
 	default:
 		return errUnavailable("committed content integrity unavailable")
+	}
+	for i, key := range keys {
+		if !publiccontent.ValidModelKey(key) || (i > 0 && keys[i-1] >= key) {
+			return errUnavailable("committed content integrity unavailable")
+		}
 	}
 	return nil
 }

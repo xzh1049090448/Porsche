@@ -145,3 +145,43 @@ func TestPublicContentReleaseIntegrityRejectsTamperingAndMalformedPayload(t *tes
 		t.Fatalf("malformed=%v", err)
 	}
 }
+
+func TestPublicContentReleaseIntegrityRequiresCanonicalBindingFields(t *testing.T) {
+	canonical := models.JSONMap{"home": "Home", "about": "About", "terms": "Terms", "privacy": "Privacy", "legal_reviewed": true, "model_keys": []string{"alpha", "beta"}, "price_snapshot_guid": "80", "price_snapshot_version": int64(4)}
+	releaseFor := func(changes models.JSONMap) models.PublicContentRelease {
+		payload := models.JSONMap{}
+		for key, value := range canonical {
+			payload[key] = value
+		}
+		for key, value := range changes {
+			payload[key] = value
+		}
+		hash, err := hashPublicContentPayload(payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return models.PublicContentRelease{Payload: payload, ContentHash: hash}
+	}
+	if err := verifyPublicContentRelease(releaseFor(nil)); err != nil {
+		t.Fatalf("canonical payload rejected: %v", err)
+	}
+	for _, guid := range []string{"01", "+1", " 1", "1 ", "0", "-1", "9223372036854775808"} {
+		if err := verifyPublicContentRelease(releaseFor(models.JSONMap{"price_snapshot_guid": guid})); status(err) != 503 {
+			t.Fatalf("noncanonical guid %q accepted: %v", guid, err)
+		}
+	}
+	for name, keys := range map[string][]string{
+		"duplicate":    {"alpha", "alpha"},
+		"out_of_order": {"beta", "alpha"},
+		"empty":        {""},
+		"invalid":      {"Alpha"},
+	} {
+		bad := releaseFor(models.JSONMap{"model_keys": keys})
+		if err := verifyPublicContentRelease(bad); status(err) != 503 {
+			t.Fatalf("%s keys accepted: %v", name, err)
+		}
+		if err := validateContentReleaseForPriceItems(bad, nil); status(err) != 503 {
+			t.Fatalf("validation accepted %s keys: %v", name, err)
+		}
+	}
+}
