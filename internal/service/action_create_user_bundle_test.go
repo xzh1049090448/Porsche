@@ -166,7 +166,13 @@ func TestNewCreateAccountActionsRejectsRegistryOrderMetadataAndEncoderDrift(t *t
 		{name: "root only", mutate: func(d *actionsecurity.Descriptor) { d.RootOnly = !d.RootOnly }},
 		{name: "ticket", mutate: func(d *actionsecurity.Descriptor) { d.RequiresTicket = !d.RequiresTicket }},
 		{name: "inactive", mutate: func(d *actionsecurity.Descriptor) { d.Active = false }},
-		{name: "target", mutate: func(d *actionsecurity.Descriptor) { d.TargetKind = actionsecurity.TargetPublicContent }},
+		{name: "target", mutate: func(d *actionsecurity.Descriptor) {
+			if d.TargetKind == actionsecurity.TargetPublicContent {
+				d.TargetKind = actionsecurity.TargetNone
+			} else {
+				d.TargetKind = actionsecurity.TargetPublicContent
+			}
+		}},
 		{name: "nil encoder", mutate: func(d *actionsecurity.Descriptor) { d.Encode = nil }},
 		{name: "untyped encoder", mutate: func(d *actionsecurity.Descriptor) {
 			d.Encode = func(any) ([]byte, error) { return []byte("wrong"), nil }

@@ -45,7 +45,11 @@ func newUserDeleteActions(
 	case len(descriptors) == 1 && exactActiveUserDeleteDescriptor(descriptors[0]) && typedUserDeleteEncoder(descriptors[0].Encode):
 		descriptor = descriptors[0]
 	case exactActiveUserManagementDescriptors(descriptors):
-		descriptor = descriptors[2]
+		for _, candidate := range descriptors {
+			if candidate.Action == actionsecurity.ActionUsersDelete {
+				descriptor = candidate
+			}
+		}
 	default:
 		return nil, ErrActionVerificationUnavailable
 	}

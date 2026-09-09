@@ -152,6 +152,14 @@ func (s *ActionVerificationService) Issue(ctx context.Context, in VerificationIs
 			if err := validateLockedCreateAdminIntent(tx, descriptor, in.Intent, identity.actor); err != nil {
 				return err
 			}
+		case actionsecurity.ActionPublicModelDelete,
+			actionsecurity.ActionPublicPricingPublish,
+			actionsecurity.ActionPublicPricingRestore,
+			actionsecurity.ActionPublicContentPublish,
+			actionsecurity.ActionPublicContentRestore:
+			if err := validatePublicVerificationBinding(descriptor.Action, in.Intent, in.TargetGUID); err != nil {
+				return err
+			}
 		default:
 			return ErrActionVerificationUnavailable
 		}

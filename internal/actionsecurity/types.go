@@ -12,6 +12,10 @@ const (
 	ActionPublicContentPublish  Action = 7
 	ActionPublicContentRollback Action = 8
 	ActionUsersCreate           Action = 9
+	ActionPublicModelDelete     Action = 10
+	ActionPublicPricingPublish  Action = 11
+	ActionPublicPricingRestore  Action = 12
+	ActionPublicContentRestore  Action = 13
 )
 
 type TargetKind int

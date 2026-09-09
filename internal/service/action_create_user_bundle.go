@@ -124,12 +124,12 @@ func (bundle *UserManagementActions) DeleteActions() *UserDeleteActions {
 }
 
 func exactActiveUserManagementDescriptors(descriptors []actionsecurity.Descriptor) bool {
-	expected := actionsecurity.FutureActionDescriptors()
-	if len(descriptors) != 3 || len(expected) != len(descriptors) {
+	expected := actionsecurity.ActiveActionRegistry()
+	if len(descriptors) != len(expected) || len(expected) < 3 {
 		return false
 	}
-	for index := range expected {
-		got, want := descriptors[index], expected[index]
+	for index, want := range expected {
+		got := descriptors[index]
 		if got.Action != want.Action || got.Name != want.Name || got.Capability != want.Capability ||
 			got.RootOnly != want.RootOnly || got.RequiresTicket != want.RequiresTicket || !got.Active || !want.Active ||
 			got.TargetKind != want.TargetKind || got.Encode == nil || want.Encode == nil ||

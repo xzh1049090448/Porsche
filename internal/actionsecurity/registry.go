@@ -11,9 +11,13 @@ var canonicalActionDescriptors = [...]Descriptor{
 	{ActionUsersDemote, "users.demote", "users.demote", true, true, false, TargetUser, encodeDemoteAny},
 	{ActionUsersPermissionsWrite, "users.permissions.write", "users.permissions.write", true, true, false, TargetUser, encodePermissionsWriteAny},
 	{ActionUsersDelete, "users.delete", "users.delete", false, true, false, TargetUser, encodeDeleteUserAny},
-	{ActionPublicContentPublish, "public_content.publish", "public_content.publish", false, true, false, TargetPublicContent, encodePublishAny},
+	{ActionPublicContentPublish, "public_content.publish", "public_content.publish", true, true, false, TargetPublicContent, encodePublicContentPublishAny},
 	{ActionPublicContentRollback, "public_content.rollback", "public_content.rollback", false, true, false, TargetPublicContent, encodeRollbackAny},
 	{ActionUsersCreate, "users.create", "users.create", false, false, false, TargetNone, encodeCreateAny},
+	{ActionPublicModelDelete, "public_models.delete", "public_content.edit", true, true, false, TargetPublicContent, encodePublicModelDeleteAny},
+	{ActionPublicPricingPublish, "public_pricing.publish", "public_content.publish", true, true, false, TargetPublicContent, encodePublicPricingPublishAny},
+	{ActionPublicPricingRestore, "public_pricing.restore", "public_content.rollback", true, true, false, TargetPublicContent, encodePublicPricingRestoreAny},
+	{ActionPublicContentRestore, "public_content.restore", "public_content.rollback", true, true, false, TargetPublicContent, encodePublicContentRestoreAny},
 }
 
 var inactiveActionOrder = [...]Action{
@@ -26,10 +30,23 @@ var inactiveActionOrder = [...]Action{
 	ActionPublicContentPublish,
 	ActionPublicContentRollback,
 	ActionUsersCreate,
+	ActionPublicModelDelete,
+	ActionPublicPricingPublish,
+	ActionPublicPricingRestore,
+	ActionPublicContentRestore,
 }
 
 var futureActionOrder = [...]Action{ActionUsersCreate, ActionUsersCreateAdmin, ActionUsersDelete}
-var activeActionOrder = [...]Action{ActionUsersCreate, ActionUsersCreateAdmin, ActionUsersDelete}
+var activeActionOrder = [...]Action{
+	ActionUsersCreate,
+	ActionUsersCreateAdmin,
+	ActionUsersDelete,
+	ActionPublicModelDelete,
+	ActionPublicPricingPublish,
+	ActionPublicPricingRestore,
+	ActionPublicContentPublish,
+	ActionPublicContentRestore,
+}
 
 func InactiveActionDescriptors() []Descriptor {
 	return projectActionDescriptors(inactiveActionOrder[:], nil)
@@ -148,4 +165,47 @@ func encodeRollbackAny(value any) ([]byte, error) {
 		return nil, errWrongIntentType
 	}
 	return encodeRollbackIntent(intent)
+}
+
+func encodePublicModelDeleteAny(value any) ([]byte, error) {
+	intent, ok := value.(PublicModelDeleteIntent)
+	if !ok {
+		return nil, errWrongIntentType
+	}
+	return encodePublicModelDeleteIntent(intent)
+}
+
+func encodePublicPricingPublishAny(value any) ([]byte, error) {
+	intent, ok := value.(PublicPricingPublishIntent)
+	if !ok {
+		return nil, errWrongIntentType
+	}
+	return encodePublicPricingPublishIntent(intent)
+}
+
+func encodePublicPricingRestoreAny(value any) ([]byte, error) {
+	intent, ok := value.(PublicPricingRestoreIntent)
+	if !ok {
+		return nil, errWrongIntentType
+	}
+	return encodePublicPricingRestoreIntent(intent)
+}
+
+func encodePublicContentPublishAny(value any) ([]byte, error) {
+	switch intent := value.(type) {
+	case PublicContentPublishIntent:
+		return encodePublicContentPublishIntent(intent)
+	case PublishIntent:
+		return encodePublishIntent(intent)
+	default:
+		return nil, errWrongIntentType
+	}
+}
+
+func encodePublicContentRestoreAny(value any) ([]byte, error) {
+	intent, ok := value.(PublicContentRestoreIntent)
+	if !ok {
+		return nil, errWrongIntentType
+	}
+	return encodePublicContentRestoreIntent(intent)
 }
