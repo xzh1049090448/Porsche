@@ -2,10 +2,10 @@
 
 ## 2026-09-09：BE04 platform generation control 本地候选完成
 
-- BE04 代码候选为 `23820acbccee28a291cf4bfacb6adf30e3cdfbee`；其后仅追加本节、`feature_list.json` 和固定报告的证据提交，不改变候选代码。已激活认证后的 generation GET/cancel 路由、取消先到 tombstone、30 秒 owner-bound lease、状态/receipt 严格投影、进程内取消注册表、启动即执行且每 5 秒运行的有界重启收敛 worker，以及可重复关闭的应用生命周期。legacy chat 行为与 v2 SSE encoder 未改，BE05/BE06 stream 仍由稳定 503 门禁保护。
-- 最终夹具为 loopback-only、tmpfs MySQL 8.4.11 与 Redis 7.4.11，迁移账本 `0001`–`0011`；一次性 test-only `ACTION_SECURITY_HMAC_KEY` 只存在于测试 shell。原始无 `GOFLAGS` 的 `go test ./... -count=1` 通过；fresh-reset 后 affected race 通过（service 211.604s、handler 29.901s、app 1.735s、router 5.144s）；combined MySQL+Redis normal/race 均为 zero skip，Redis generation race `-count=10` 通过。
-- full JSON 复跑的唯一 opt-in skip 是 `TestAdminUsersReadPerformance`：需要另行授权的 100k synthetic-user 性能夹具；BE04 fixture 测试为 0 skip。gofmt、`git diff --check`、`go vet ./...`、`go build ./...`、内容/租约/范围扫描均通过。
-- 历史首次 Task 9 full 曾因共享 Redis DB 的跨包/同包测试串扰成为 `BLOCKED_TEST_ISOLATION`；`23820ac` 将 handler cleanup 改为 owned-key 证明并让 scan 测试使用专属前缀，新夹具上的原始并行 full 已通过。最终 affected race 的第一次尝试未在 full 后 fresh reset，触发 A03 action-security rate limit，分类为 `FAIL_ENV_FIXTURE_NOT_FRESH`；fresh reset 后同一原始 race 命令通过，失败历史不作为产品失败或 PASS。
+- BE04 最终代码候选为 `620dcd852222284e0d9c057d1e50ae6d3bb5e0cb`。早期 `23820acbccee28a291cf4bfacb6adf30e3cdfbee` 隔离修复之后曾有 `40a195d`、`1f78b81`、`412d790` 三个证据文档提交；最终审查又形成 `b114ef5` 中间修复、`9b7e925` 的逐记录损坏容忍与 caller cancellation 最终修复、`fee9ae4` 的 receipt pre-CAS 精确匹配，以及 `620dcd8` 的 cancel deadline/锁清理约束。本节证据重新绑定 `620dcd8`，不沿用旧候选结论。
+- 新候选夹具为 loopback-only、tmpfs MySQL 8.4.11 与 Redis 7.4.11，迁移账本 `0001`–`0011`；一次性 test-only `ACTION_SECURITY_HMAC_KEY` 只存在于测试 shell。原始无 `GOFLAGS` 的 `go test ./... -count=1` 通过（handler 21.606s、migration 50.417s、service 88.195s、router 7.040s）；fresh-reset 后 affected race 通过（service 183.393s、handler 21.594s、app 1.492s、router 4.020s）。三项最终修复的 focused normal/race 与 Task 8 combined normal/race 均通过且 zero skip。
+- full JSON 的唯一 opt-in skip 是 `TestAdminUsersReadPerformance`，原因为 `NOT_RUN: opt-in 100k synthetic-user performance fixture requires this batch authorization`；BE04 fixture 测试为 0 skip。`git diff --check`、`go vet ./...`、`go build ./...`、内容/租约/范围扫描均通过。
+- 历史首次 Task 9 full 曾因共享 Redis DB 的跨包/同包测试串扰成为 `BLOCKED_TEST_ISOLATION`；`23820ac` 将 handler cleanup 改为 owned-key 证明并让 scan 测试使用专属前缀。旧候选的 affected race 第一次尝试未在 full 后 fresh reset，触发 A03 action-security rate limit，分类为 `FAIL_ENV_FIXTURE_NOT_FRESH`；`620dcd8` 的每项主要门禁均使用 fresh reset，历史失败不作为产品失败或 PASS。
 - `go-018` 仍为 `in_progress`：BE01–BE04 完成，但 BE05 single v2 stream、BE06 compare v2 stream、前后端联合验收、生产迁移、部署和真实上游调用均未执行；本批也未 push 或 merge。完整证据见 `docs/superpowers/reports/2026-09-09-platform-generation-control.md`。
 
 ## 2026-09-08：Ubuntu GNU stat 环境合并兼容性修复候选
