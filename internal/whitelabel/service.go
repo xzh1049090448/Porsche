@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/porsche/ai-gateway-go/internal/config"
 )
@@ -49,7 +50,7 @@ func (s *WhiteLabelService) ObserveCatalog(ctx context.Context) (CatalogObservat
 		Complete *bool `json:"complete"`
 	}
 	raw, err := io.ReadAll(io.LimitReader(response.Body, catalogObservationMaxBytes+1))
-	if err != nil || len(raw) > catalogObservationMaxBytes || rejectDuplicateJSONFields(raw) != nil {
+	if err != nil || len(raw) > catalogObservationMaxBytes || !utf8.Valid(raw) || validateCatalogJSONKeys(raw) != nil {
 		return CatalogObservation{FetchedAt: fetchedAt}, ErrUpstreamUnavailable("catalog observation failed")
 	}
 	decoder := json.NewDecoder(bytes.NewReader(raw))
@@ -107,53 +108,81 @@ func requireJSONEOF(decoder *json.Decoder) error {
 	return nil
 }
 
-func rejectDuplicateJSONFields(raw []byte) error {
+func validateCatalogJSONKeys(raw []byte) error {
 	decoder := json.NewDecoder(bytes.NewReader(raw))
-	var walk func() error
-	walk = func() error {
-		token, err := decoder.Token()
-		if err != nil {
-			return err
+	token, err := decoder.Token()
+	if err != nil || token != json.Delim('{') {
+		return fmt.Errorf("catalog root must be object")
+	}
+	seen := map[string]struct{}{}
+	for decoder.More() {
+		keyToken, keyErr := decoder.Token()
+		if keyErr != nil {
+			return keyErr
 		}
-		delim, ok := token.(json.Delim)
-		if !ok {
-			return nil
+		key, ok := keyToken.(string)
+		if !ok || (key != "data" && key != "complete") {
+			return fmt.Errorf("unknown catalog field")
 		}
-		switch delim {
-		case '{':
-			seen := map[string]struct{}{}
-			for decoder.More() {
-				keyToken, keyErr := decoder.Token()
-				if keyErr != nil {
-					return keyErr
-				}
-				key, ok := keyToken.(string)
-				if !ok {
-					return fmt.Errorf("invalid JSON object key")
-				}
-				if _, duplicate := seen[key]; duplicate {
-					return fmt.Errorf("duplicate JSON field")
-				}
-				seen[key] = struct{}{}
-				if err := walk(); err != nil {
-					return err
-				}
+		if _, duplicate := seen[key]; duplicate {
+			return fmt.Errorf("duplicate catalog field")
+		}
+		seen[key] = struct{}{}
+		if key == "data" {
+			if err := validateCatalogDataKeys(decoder); err != nil {
+				return err
 			}
-			_, err = decoder.Token()
+		} else if err := skipCatalogJSONValue(decoder); err != nil {
 			return err
-		case '[':
-			for decoder.More() {
-				if err := walk(); err != nil {
-					return err
-				}
-			}
-			_, err = decoder.Token()
-			return err
-		default:
-			return fmt.Errorf("invalid JSON delimiter")
 		}
 	}
-	return walk()
+	_, err = decoder.Token()
+	return err
+}
+
+func validateCatalogDataKeys(decoder *json.Decoder) error {
+	token, err := decoder.Token()
+	if err != nil || token != json.Delim('[') {
+		return fmt.Errorf("catalog data must be array")
+	}
+	allowed := map[string]struct{}{"id": {}, "owned_by": {}, "input_token_price_per_m": {}, "output_token_price_per_m": {}}
+	for decoder.More() {
+		token, err = decoder.Token()
+		if err != nil || token != json.Delim('{') {
+			return fmt.Errorf("catalog model must be object")
+		}
+		seen := map[string]struct{}{}
+		for decoder.More() {
+			keyToken, keyErr := decoder.Token()
+			if keyErr != nil {
+				return keyErr
+			}
+			key, ok := keyToken.(string)
+			if !ok {
+				return fmt.Errorf("invalid catalog model field")
+			}
+			if _, known := allowed[key]; !known {
+				return fmt.Errorf("unknown catalog model field")
+			}
+			if _, duplicate := seen[key]; duplicate {
+				return fmt.Errorf("duplicate catalog model field")
+			}
+			seen[key] = struct{}{}
+			if err := skipCatalogJSONValue(decoder); err != nil {
+				return err
+			}
+		}
+		if _, err = decoder.Token(); err != nil {
+			return err
+		}
+	}
+	_, err = decoder.Token()
+	return err
+}
+
+func skipCatalogJSONValue(decoder *json.Decoder) error {
+	var value any
+	return decoder.Decode(&value)
 }
 
 func exactPrice(raw json.RawMessage) *string {

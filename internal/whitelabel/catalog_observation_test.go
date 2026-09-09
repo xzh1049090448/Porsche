@@ -1,6 +1,7 @@
 package whitelabel
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"net/http"
@@ -99,15 +100,55 @@ func TestCatalogObservationStrictBoundedDocument(t *testing.T) {
 }
 
 func catalogObservationService(t *testing.T, body string) *WhiteLabelService {
+	return catalogObservationBytesService(t, []byte(body))
+}
+
+func catalogObservationBytesService(t *testing.T, body []byte) *WhiteLabelService {
 	t.Helper()
 	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
-		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(bytes.NewReader(body)), Header: make(http.Header)}, nil
 	})}
 	s, err := NewWhiteLabelService(config.WhiteLabelSettings{BaseURL: "https://upstream.example/v1", APIKey: "secret", AllowedModels: map[string]struct{}{"alpha/model": {}}}, client, func() time.Time { return time.Unix(1_900_000_000, 0).UTC() })
 	if err != nil {
 		t.Fatal(err)
 	}
 	return s
+}
+
+func TestCatalogObservationRequiresExactCaseSensitiveUTF8SchemaKeys(t *testing.T) {
+	canonical := `{"data":[{"id":"alpha/model","owned_by":"p","input_token_price_per_m":"1","output_token_price_per_m":"2"}],"complete":true}`
+	cases := []struct {
+		name string
+		body []byte
+	}{
+		{name: "Complete alone", body: []byte(`{"data":[],"Complete":true}`)},
+		{name: "COMPLETE alone", body: []byte(`{"data":[],"COMPLETE":true}`)},
+		{name: "canonical then case variant", body: []byte(`{"data":[],"complete":false,"Complete":true}`)},
+		{name: "case variant then canonical", body: []byte(`{"data":[],"Complete":true,"complete":false}`)},
+		{name: "Data", body: []byte(`{"Data":[],"complete":true}`)},
+		{name: "ID", body: []byte(`{"data":[{"ID":"alpha/model"}],"complete":true}`)},
+		{name: "Owned_By", body: []byte(`{"data":[{"id":"alpha/model","Owned_By":"p"}],"complete":true}`)},
+		{name: "price case variant", body: []byte(`{"data":[{"id":"alpha/model","Input_token_price_per_m":"1"}],"complete":true}`)},
+		{name: "nested canonical then variant", body: []byte(`{"data":[{"id":"alpha/model","owned_by":"p","Owned_By":"q"}],"complete":true}`)},
+		{name: "nested variant then canonical", body: []byte(`{"data":[{"id":"alpha/model","Owned_By":"q","owned_by":"p"}],"complete":true}`)},
+		{name: "unicode lookalike complete", body: []byte(`{"data":[],"completе":true}`)},
+		{name: "unicode lookalike id", body: []byte(`{"data":[{"іd":"alpha/model"}],"complete":true}`)},
+		{name: "invalid utf8 key", body: append(append([]byte(`{"data":[],"`), 0xff), []byte(`":true,"complete":true}`)...)},
+		{name: "invalid utf8 value", body: append(append([]byte(`{"data":[{"id":"`), 0xff), []byte(`"}],"complete":true}`)...)},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := catalogObservationBytesService(t, test.body).ObserveCatalog(context.Background())
+			if err == nil || got.Successful || got.Complete || got.Fresh {
+				t.Fatalf("fail-closed observation=%#v err=%v", got, err)
+			}
+		})
+	}
+	exact := canonical + strings.Repeat(" ", catalogObservationMaxBytes-len(canonical))
+	got, err := catalogObservationService(t, exact).ObserveCatalog(context.Background())
+	if err != nil || !got.Successful || !got.Complete || !got.Fresh || len(got.Models) != 1 {
+		t.Fatalf("canonical exact-limit observation=%#v err=%v", got, err)
+	}
 }
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
