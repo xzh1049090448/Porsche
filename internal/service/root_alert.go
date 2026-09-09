@@ -110,6 +110,22 @@ var rootAlertPayloadSchemas = map[models.RootAlertType]rootAlertPayloadSchema{
 	models.RootAlertTypeRendererFailure:             {fields: map[string]rootAlertPayloadField{"release_version": rootAlertPositiveInt, "render_job_guid": rootAlertCode, "error_code": rootAlertCode, "observed_at": rootAlertTimestamp}, required: []string{"release_version", "render_job_guid", "error_code", "observed_at"}},
 }
 
+func rootAlertRequiresModelConfig(typ models.RootAlertType) bool {
+	schema, ok := rootAlertPayloadSchemas[typ]
+	return ok && schema.modelScoped
+}
+
+func validRootAlertConfigStatus(typ models.RootAlertType, status models.PublicModelConfigStatus) bool {
+	switch typ {
+	case models.RootAlertTypeAutomaticInactivation, models.RootAlertTypeUpstreamReappearance:
+		return status == models.PublicModelConfigStatusInactive
+	case models.RootAlertTypePublishedPriceBelowUpstream, models.RootAlertTypeUpstreamMissing, models.RootAlertTypePriceNotComparable:
+		return status == models.PublicModelConfigStatusActive
+	default:
+		return false
+	}
+}
+
 func projectRootAlertPayload(typ models.RootAlertType, modelKey string, in models.JSONMap) (models.JSONMap, error) {
 	schema, ok := rootAlertPayloadSchemas[typ]
 	if !ok {
@@ -252,7 +268,7 @@ func looksLikeRootAlertCredential(v string) bool {
 }
 
 func (s *RootAlertService) Occur(ctx context.Context, in RootAlertOccurrence) (*RootAlertView, error) {
-	if s == nil || s.db == nil || in.Type.String() == "unknown" || (in.ModelConfigID != nil && *in.ModelConfigID <= 0) || (in.ModelKey != "" && !publiccontent.ValidModelKey(in.ModelKey)) || !validRootAlertIdentity(in.Identity) {
+	if s == nil || s.db == nil || in.Type.String() == "unknown" || (rootAlertRequiresModelConfig(in.Type) && (in.ModelConfigID == nil || *in.ModelConfigID <= 0)) || (!rootAlertRequiresModelConfig(in.Type) && in.ModelConfigID != nil) || (in.ModelKey != "" && !publiccontent.ValidModelKey(in.ModelKey)) || !validRootAlertIdentity(in.Identity) {
 		return nil, errBadRequest("invalid root alert occurrence")
 	}
 	for attempt := 0; attempt < 3; attempt++ {
@@ -266,8 +282,11 @@ func (s *RootAlertService) Occur(ctx context.Context, in RootAlertOccurrence) (*
 			}
 			if in.ModelConfigID != nil {
 				var config models.PublicModelConfig
-				if e := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Select("id", "guid", "model_key", "is_deleted").Where("id=? AND is_deleted=0", *in.ModelConfigID).First(&config).Error; e != nil {
-					return e
+				if e := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Select("id", "guid", "model_key", "status", "is_deleted").Where("id=? AND is_deleted=0", *in.ModelConfigID).First(&config).Error; e != nil {
+					return errBadRequest("invalid root alert model config")
+				}
+				if !validRootAlertConfigStatus(in.Type, config.Status) {
+					return errBadRequest("invalid root alert model config")
 				}
 				if effectiveModelKey != "" && effectiveModelKey != config.ModelKey {
 					return errBadRequest("invalid root alert identity")

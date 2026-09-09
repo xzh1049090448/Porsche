@@ -146,9 +146,10 @@ func TestRootAlertDBExactLifecycleTimestampsCountsAndAudits(t *testing.T) {
 	f := openPublicModelDBFixture(t)
 	ctx := context.Background()
 	s := NewRootAlertService(f.db)
+	config := seedRootAlertConfig(t, f, models.PublicModelConfigStatusActive, 0)
 	current := int64(100)
 	s.now = func() int64 { return current }
-	in := RootAlertOccurrence{Type: models.RootAlertTypeUpstreamMissing, ModelKey: "exact-model", Identity: "exact", Payload: models.JSONMap{"model_key": "exact-model", "consecutive_absences": int64(1), "observed_at": current}}
+	in := RootAlertOccurrence{Type: models.RootAlertTypeUpstreamMissing, ModelConfigID: &config.ID, ModelKey: config.ModelKey, Identity: "exact", Payload: models.JSONMap{"model_key": config.ModelKey, "consecutive_absences": int64(1), "observed_at": current}}
 	fp := rootAlertFingerprint(in.Type, in.ModelKey, in.Identity)
 	t.Cleanup(func() {
 		var a models.RootAlert
@@ -187,6 +188,73 @@ func TestRootAlertDBExactLifecycleTimestampsCountsAndAudits(t *testing.T) {
 	var actions []string
 	if e := f.db.Model(&models.AuditLog{}).Where("resource=?", "root-alerts/"+fmt.Sprint(a.Guid)).Order("id").Pluck("action", &actions).Error; e != nil || !reflect.DeepEqual(actions, []string{"root_alert.occurred", "root_alert.occurred", "root_alert.resolved", "root_alert.occurred"}) {
 		t.Fatalf("audits=%v %v", actions, e)
+	}
+}
+
+func seedRootAlertConfig(t *testing.T, f *publicModelDBFixture, status models.PublicModelConfigStatus, deleted int) models.PublicModelConfig {
+	t.Helper()
+	now := persistence.NowMillis()
+	actor := f.actor.ID
+	suffix := fmt.Sprint(persistence.NextGUID() % 1e9)
+	price := "1.00000000"
+	m := models.PublicModelConfig{AuditFields: models.AuditFields{Guid: persistence.NextGUID(), CreatedAt: now, CreatedBy: &actor, UpdatedAt: now, UpdatedBy: &actor, IsDeleted: deleted}, ModelKey: "alert-model-" + suffix, UpstreamModelID: "vendor/alert-" + suffix, DisplayName: "Alert Model", Provider: "vendor", Capabilities: models.JSONSlice{"chat"}, ContextWindow: 1024, InputPriceUSDPerMillionTokens: &price, OutputPriceUSDPerMillionTokens: &price, Status: status, Revision: 1}
+	if e := f.db.Create(&m).Error; e != nil {
+		t.Fatal(e)
+	}
+	t.Cleanup(func() { _ = f.db.Exec("DELETE FROM public_model_configs WHERE id=?", m.ID).Error })
+	return m
+}
+
+func TestRootAlertDBConfiguredIdentityAndStatusValidation(t *testing.T) {
+	if os.Getenv("TEST_DATABASE_URL") == "" {
+		t.Skip("BLOCKED_FIXTURE: requires explicit disposable TEST_DATABASE_URL; .env is never read")
+	}
+	f := openPublicModelDBFixture(t)
+	ctx := context.Background()
+	s := NewRootAlertService(f.db)
+	active := seedRootAlertConfig(t, f, models.PublicModelConfigStatusActive, 0)
+	inactive := seedRootAlertConfig(t, f, models.PublicModelConfigStatusInactive, 0)
+	deleted := seedRootAlertConfig(t, f, models.PublicModelConfigStatusActive, 1)
+	t.Cleanup(func() {
+		var alerts []models.RootAlert
+		_ = f.db.Where("model_config_id IN ?", []int64{active.ID, inactive.ID, deleted.ID}).Find(&alerts).Error
+		for _, a := range alerts {
+			_ = f.db.Exec("DELETE FROM root_alert_receipts WHERE alert_id=?", a.ID).Error
+			_ = f.db.Exec("DELETE FROM audit_logs WHERE resource=?", "root-alerts/"+fmt.Sprint(a.Guid)).Error
+		}
+		_ = f.db.Exec("DELETE FROM root_alerts WHERE model_config_id IN ?", []int64{active.ID, inactive.ID, deleted.ID}).Error
+	})
+	payload := models.JSONMap{"model_key": active.ModelKey, "consecutive_absences": int64(1), "observed_at": int64(10)}
+	view, e := s.Occur(ctx, RootAlertOccurrence{Type: models.RootAlertTypeUpstreamMissing, ModelConfigID: &active.ID, Identity: "active", Payload: payload})
+	if e != nil {
+		t.Fatal(e)
+	}
+	var a models.RootAlert
+	if e = f.db.Where("guid=?", mustGUID(t, view.GUID)).First(&a).Error; e != nil || a.ModelKey == nil || *a.ModelKey != active.ModelKey || a.Payload["model_config_guid"] != fmt.Sprint(active.Guid) {
+		t.Fatalf("derived=%#v %v", a, e)
+	}
+	before := int64(0)
+	_ = f.db.Model(&models.RootAlert{}).Count(&before).Error
+	bad := []RootAlertOccurrence{{Type: models.RootAlertTypeUpstreamMissing, Identity: "missing-id", Payload: payload}, {Type: models.RootAlertTypeUpstreamMissing, ModelConfigID: &active.ID, ModelKey: "different-model", Identity: "mismatch", Payload: payload}, {Type: models.RootAlertTypeUpstreamMissing, ModelConfigID: func() *int64 { x := int64(9223372036854770000); return &x }(), Identity: "unknown", Payload: payload}, {Type: models.RootAlertTypeUpstreamMissing, ModelConfigID: &deleted.ID, Identity: "deleted", Payload: models.JSONMap{"model_key": deleted.ModelKey, "consecutive_absences": int64(1), "observed_at": int64(10)}}, {Type: models.RootAlertTypeUpstreamMissing, ModelConfigID: &inactive.ID, Identity: "wrong-status", Payload: models.JSONMap{"model_key": inactive.ModelKey, "consecutive_absences": int64(1), "observed_at": int64(10)}}}
+	for i, in := range bad {
+		if _, e = s.Occur(ctx, in); e == nil || status(e) != 400 {
+			t.Fatalf("bad %d err=%v", i, e)
+		}
+	}
+	var after int64
+	_ = f.db.Model(&models.RootAlert{}).Count(&after).Error
+	if after != before {
+		t.Fatalf("bad inputs created rows %d -> %d", before, after)
+	}
+	for i, typ := range []models.RootAlertType{models.RootAlertTypeAutomaticInactivation, models.RootAlertTypeUpstreamReappearance} {
+		p := models.JSONMap{"model_key": inactive.ModelKey, "observed_at": int64(20)}
+		if typ == models.RootAlertTypeAutomaticInactivation {
+			p["consecutive_absences"] = int64(3)
+			p["reason_code"] = "upstream_removed"
+		}
+		if _, e = s.Occur(ctx, RootAlertOccurrence{Type: typ, ModelConfigID: &inactive.ID, Identity: fmt.Sprintf("inactive-%d", i), Payload: p}); e != nil {
+			t.Fatalf("inactive %s: %v", typ.String(), e)
+		}
 	}
 }
 

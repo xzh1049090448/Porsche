@@ -38,6 +38,20 @@ func TestRootAlertPayloadSchemasAreExactRequiredAndIdentityBound(t *testing.T) {
 	}
 }
 
+func TestRootAlertModelScopeAndRequiredConfigAreExplicit(t *testing.T) {
+	modelScoped := []models.RootAlertType{models.RootAlertTypePublishedPriceBelowUpstream, models.RootAlertTypeUpstreamMissing, models.RootAlertTypeAutomaticInactivation, models.RootAlertTypeUpstreamReappearance, models.RootAlertTypePriceNotComparable}
+	for _, typ := range modelScoped {
+		if !rootAlertRequiresModelConfig(typ) {
+			t.Fatalf("%s must require config", typ.String())
+		}
+	}
+	for _, typ := range []models.RootAlertType{models.RootAlertTypeCatalogSyncFailure, models.RootAlertTypeRendererFailure} {
+		if rootAlertRequiresModelConfig(typ) {
+			t.Fatalf("%s must be global", typ.String())
+		}
+	}
+}
+
 func TestRootAlertPayloadRejectsMissingUnknownContradictoryEnumAndSecrets(t *testing.T) {
 	base := models.JSONMap{"model_key": "model-a", "price_component": "input", "current_price_usd_per_million_tokens": "1.25", "upstream_price_usd_per_million_tokens": "2.50", "observed_at": int64(9)}
 	bad := []models.JSONMap{}
