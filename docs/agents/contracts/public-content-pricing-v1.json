@@ -1,0 +1,779 @@
+{
+  "version": "v1",
+  "status": "approved_contract_pending_implementation",
+  "pricing": {
+    "currency": "USD",
+    "unit": "million_tokens",
+    "components": [
+      "input",
+      "output"
+    ],
+    "wire_type": "decimal_string",
+    "fractional_digits_maximum": 8,
+    "safe_examples": {
+      "input_price_usd_per_million_tokens": "12.34567890",
+      "output_price_usd_per_million_tokens": "3.21000000"
+    },
+    "billing_semantics": "references_only_no_automatic_charge"
+  },
+  "roles": {
+    "anonymous": "public_read_only",
+    "root": "authenticated_root_role_required"
+  },
+  "public_response_headers": {
+    "ETag": "required",
+    "X-Public-Release-Version": "required_release_version",
+    "Cache-Control": "public_max_age_60_stale_while_revalidate_300"
+  },
+  "admin_response_headers": {
+    "Cache-Control": "no-store",
+    "X-Request-ID": "required_non_empty"
+  },
+  "admin_request_headers": {
+    "Authorization": "required_authenticated_root_session_or_bearer"
+  },
+  "admin_publish_request_headers": {
+    "Authorization": "required_authenticated_root_session_or_bearer",
+    "Idempotency-Key": "required_exactly_once_unique_per_root_and_operation",
+    "X-Action-Ticket": "required_single_use_action_ticket"
+  },
+  "mutation_requirements": {
+    "optimistic_concurrency_field": "expected_revision",
+    "expected_revision_routes": [
+      "PATCH /admin/v2/public-models/{guid}",
+      "POST /admin/v2/public-models/{guid}/activate",
+      "POST /admin/v2/public-models/{guid}/deactivate",
+      "DELETE /admin/v2/public-models/{guid}",
+      "PUT /admin/v2/public-pricing/draft",
+      "POST /admin/v2/public-pricing/publish",
+      "POST /admin/v2/public-pricing/releases/{guid}/restore",
+      "PUT /admin/v2/public-content/draft",
+      "POST /admin/v2/public-content/publish",
+      "POST /admin/v2/public-content/releases/{guid}/restore"
+    ],
+    "idempotency_key_routes": [
+      "POST /admin/v2/public-pricing/publish",
+      "POST /admin/v2/public-pricing/releases/{guid}/restore",
+      "POST /admin/v2/public-content/publish",
+      "POST /admin/v2/public-content/releases/{guid}/restore"
+    ],
+    "idempotency_header": "Idempotency-Key required_exactly_once_unique_per_root_and_operation",
+    "action_ticket": "single_use_action_ticket_required_for_publish_and_restore"
+  },
+  "model_lookup_semantics": {
+    "unknown_or_never_published": "404",
+    "previously_published_inactive_or_deleted": "410"
+  },
+  "notifications": {
+    "delivery": "in_app_only",
+    "types": [
+      "published_price_below_upstream",
+      "upstream_missing",
+      "automatic_inactivation",
+      "upstream_reappearance",
+      "catalog_sync_failure",
+      "price_not_comparable",
+      "renderer_failure"
+    ],
+    "receipt_scope": "independent_read_and_acknowledgement_per_root"
+  },
+  "dto_definitions": {
+    "PublicModel": {
+      "fields": {
+        "model_key": "stable_public_string",
+        "display_name": "string",
+        "provider": "string",
+        "capabilities": "string_array",
+        "context_window": "positive_integer",
+        "input_price_usd_per_million_tokens": "decimal_string_or_null_when_price_hidden",
+        "output_price_usd_per_million_tokens": "decimal_string_or_null_when_price_hidden",
+        "price_visibility": "visible_or_authenticated_only",
+        "release_version": "positive_integer"
+      }
+    },
+    "PublicModelAdmin": {
+      "fields": {
+        "guid": "public_guid_string",
+        "model_key": "stable_public_string",
+        "upstream_model_id": "observed_catalog_identifier",
+        "display_name": "string",
+        "provider": "string",
+        "capabilities": "string_array",
+        "context_window": "positive_integer",
+        "input_price_usd_per_million_tokens": "decimal_string_or_null",
+        "output_price_usd_per_million_tokens": "decimal_string_or_null",
+        "status": "draft_active_or_inactive",
+        "revision": "positive_integer",
+        "last_upstream_check_at": "unix_milliseconds_or_null"
+      }
+    },
+    "PriceDraft": {
+      "fields": {
+        "revision": "positive_integer",
+        "models": "PublicModelAdmin_array",
+        "currency": "USD",
+        "unit": "million_tokens"
+      }
+    },
+    "ContentDraft": {
+      "fields": {
+        "revision": "positive_integer",
+        "home": "sanitized_document",
+        "about": "sanitized_document",
+        "terms": "sanitized_document",
+        "privacy": "sanitized_document",
+        "legal_reviewed": "boolean"
+      }
+    },
+    "Release": {
+      "fields": {
+        "guid": "public_guid_string",
+        "version": "positive_integer",
+        "reason": "root_publish_upstream_safety_or_restore",
+        "source_revision": "positive_integer",
+        "created_at": "unix_milliseconds"
+      }
+    },
+    "Notification": {
+      "fields": {
+        "guid": "public_guid_string",
+        "type": "notification_type",
+        "state": "active_or_resolved",
+        "read": "boolean",
+        "acknowledged": "boolean",
+        "created_at": "unix_milliseconds",
+        "updated_at": "unix_milliseconds"
+      }
+    },
+    "Error": {
+      "fields": {
+        "code": "stable_public_error_code",
+        "message": "safe_message",
+        "request_id": "request_correlation_string"
+      }
+    }
+  },
+  "routes": [
+    {
+      "method": "GET",
+      "path": "/api/v1/public/site",
+      "role": "anonymous",
+      "request_headers": "none",
+      "response_headers": "public_response_headers",
+      "request": null,
+      "response": {
+        "status": 200,
+        "body": "site_release_with_price_release_version"
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/public/home",
+      "role": "anonymous",
+      "request_headers": "none",
+      "response_headers": "public_response_headers",
+      "request": null,
+      "response": {
+        "status": 200,
+        "body": "published_home_document"
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/public/models",
+      "role": "anonymous",
+      "request_headers": "none",
+      "response_headers": "public_response_headers",
+      "request": {
+        "query": {
+          "search": "optional_string",
+          "provider": "optional_string",
+          "capability": "optional_string",
+          "page": "optional_positive_integer",
+          "page_size": "optional_bounded_positive_integer"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "items": "PublicModel_array",
+          "page": "positive_integer",
+          "page_size": "positive_integer",
+          "total": "non_negative_integer",
+          "release_version": "positive_integer"
+        }
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/public/models/{modelKey}",
+      "role": "anonymous",
+      "request_headers": "none",
+      "response_headers": "public_response_headers",
+      "request": {
+        "path": {
+          "modelKey": "stable_public_string"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": "PublicModel"
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/public/pages/about",
+      "role": "anonymous",
+      "request_headers": "none",
+      "response_headers": "public_response_headers",
+      "request": null,
+      "response": {
+        "status": 200,
+        "body": "published_about_document"
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/public/pages/terms",
+      "role": "anonymous",
+      "request_headers": "none",
+      "response_headers": "public_response_headers",
+      "request": null,
+      "response": {
+        "status": 200,
+        "body": "published_terms_document"
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/public/pages/privacy",
+      "role": "anonymous",
+      "request_headers": "none",
+      "response_headers": "public_response_headers",
+      "request": null,
+      "response": {
+        "status": 200,
+        "body": "published_privacy_document"
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/admin/v2/public-models",
+      "role": "root",
+      "request_headers": "admin_request_headers",
+      "response_headers": "admin_response_headers",
+      "request": {
+        "query": {
+          "search": "optional_string",
+          "status": "optional_draft_active_or_inactive",
+          "upstream_state": "optional_present_or_missing",
+          "page": "optional_positive_integer",
+          "page_size": "optional_bounded_positive_integer"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": "paginated_PublicModelAdmin_array"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/admin/v2/public-models",
+      "role": "root",
+      "request_headers": "admin_request_headers",
+      "response_headers": "admin_response_headers",
+      "request": {
+        "body": {
+          "upstream_model_id": "latest_accepted_observed_catalog_identifier",
+          "model_key": "stable_public_string",
+          "display_name": "string",
+          "provider": "string",
+          "capabilities": "string_array",
+          "context_window": "positive_integer",
+          "input_price_usd_per_million_tokens": "decimal_string_or_null",
+          "output_price_usd_per_million_tokens": "decimal_string_or_null"
+        }
+      },
+      "response": {
+        "status": 201,
+        "body": "PublicModelAdmin"
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/admin/v2/public-models/{guid}",
+      "role": "root",
+      "request_headers": "admin_request_headers",
+      "response_headers": "admin_response_headers",
+      "request": {
+        "path": {
+          "guid": "public_guid_string"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": "PublicModelAdmin"
+      }
+    },
+    {
+      "method": "PATCH",
+      "path": "/admin/v2/public-models/{guid}",
+      "role": "root",
+      "request_headers": "admin_request_headers",
+      "response_headers": "admin_response_headers",
+      "request": {
+        "path": {
+          "guid": "public_guid_string"
+        },
+        "body": {
+          "expected_revision": "positive_integer",
+          "display_name": "optional_string",
+          "provider": "optional_string",
+          "capabilities": "optional_string_array",
+          "context_window": "optional_positive_integer",
+          "input_price_usd_per_million_tokens": "optional_decimal_string_or_null",
+          "output_price_usd_per_million_tokens": "optional_decimal_string_or_null"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": "PublicModelAdmin"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/admin/v2/public-models/{guid}/activate",
+      "role": "root",
+      "request_headers": "admin_request_headers",
+      "response_headers": "admin_response_headers",
+      "request": {
+        "path": {
+          "guid": "public_guid_string"
+        },
+        "body": {
+          "expected_revision": "positive_integer"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": "PublicModelAdmin"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/admin/v2/public-models/{guid}/deactivate",
+      "role": "root",
+      "request_headers": "admin_request_headers",
+      "response_headers": "admin_response_headers",
+      "request": {
+        "path": {
+          "guid": "public_guid_string"
+        },
+        "body": {
+          "expected_revision": "positive_integer",
+          "reason": "safe_reason_string"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": "PublicModelAdmin"
+      }
+    },
+    {
+      "method": "DELETE",
+      "path": "/admin/v2/public-models/{guid}",
+      "role": "root",
+      "request_headers": "admin_request_headers",
+      "response_headers": "admin_response_headers",
+      "request": {
+        "path": {
+          "guid": "public_guid_string"
+        },
+        "body": {
+          "expected_revision": "positive_integer",
+          "reason": "safe_reason_string"
+        }
+      },
+      "response": {
+        "status": 204,
+        "body": null
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/admin/v2/public-models/missing",
+      "role": "root",
+      "request_headers": "admin_request_headers",
+      "response_headers": "admin_response_headers",
+      "request": null,
+      "response": {
+        "status": 200,
+        "body": {
+          "observed_without_configuration": "sanitized_catalog_identifier_array",
+          "configured_missing_upstream": "PublicModelAdmin_array"
+        }
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/admin/v2/public-models/sync",
+      "role": "root",
+      "request_headers": "admin_request_headers",
+      "response_headers": "admin_response_headers",
+      "request": null,
+      "response": {
+        "status": 202,
+        "body": {
+          "accepted": "boolean"
+        }
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/admin/v2/public-pricing/draft",
+      "role": "root",
+      "request_headers": "admin_request_headers",
+      "response_headers": "admin_response_headers",
+      "request": null,
+      "response": {
+        "status": 200,
+        "body": "PriceDraft"
+      }
+    },
+    {
+      "method": "PUT",
+      "path": "/admin/v2/public-pricing/draft",
+      "role": "root",
+      "request_headers": "admin_request_headers",
+      "response_headers": "admin_response_headers",
+      "request": {
+        "body": {
+          "expected_revision": "positive_integer",
+          "models": "price_draft_model_array"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": "PriceDraft"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/admin/v2/public-pricing/validate",
+      "role": "root",
+      "request_headers": "admin_request_headers",
+      "response_headers": "admin_response_headers",
+      "request": {
+        "body": {
+          "expected_revision": "positive_integer"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "valid": "boolean",
+          "issues": "safe_validation_issue_array"
+        }
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/admin/v2/public-pricing/publish",
+      "role": "root",
+      "request_headers": "admin_request_headers_plus_Idempotency-Key",
+      "response_headers": "admin_response_headers",
+      "request": {
+        "body": {
+          "expected_revision": "positive_integer",
+          "action_ticket": "single_use_string"
+        }
+      },
+      "response": {
+        "status": 201,
+        "body": "Release"
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/admin/v2/public-pricing/releases",
+      "role": "root",
+      "request_headers": "admin_request_headers",
+      "response_headers": "admin_response_headers",
+      "request": {
+        "query": {
+          "page": "optional_positive_integer",
+          "page_size": "optional_bounded_positive_integer"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": "paginated_Release_array"
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/admin/v2/public-pricing/releases/{guid}",
+      "role": "root",
+      "request_headers": "admin_request_headers",
+      "response_headers": "admin_response_headers",
+      "request": {
+        "path": {
+          "guid": "public_guid_string"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": "Release_with_immutable_price_items"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/admin/v2/public-pricing/releases/{guid}/restore",
+      "role": "root",
+      "request_headers": "admin_request_headers_plus_Idempotency-Key",
+      "response_headers": "admin_response_headers",
+      "request": {
+        "path": {
+          "guid": "public_guid_string"
+        },
+        "body": {
+          "expected_revision": "positive_integer",
+          "action_ticket": "single_use_string"
+        }
+      },
+      "response": {
+        "status": 201,
+        "body": "Release"
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/admin/v2/notifications",
+      "role": "root",
+      "request_headers": "admin_request_headers",
+      "response_headers": "admin_response_headers",
+      "request": {
+        "query": {
+          "state": "optional_active_or_resolved",
+          "page": "optional_positive_integer",
+          "page_size": "optional_bounded_positive_integer"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": "paginated_Notification_array"
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/admin/v2/notifications/unread-count",
+      "role": "root",
+      "request_headers": "admin_request_headers",
+      "response_headers": "admin_response_headers",
+      "request": null,
+      "response": {
+        "status": 200,
+        "body": {
+          "unread_count": "non_negative_integer"
+        }
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/admin/v2/notifications/{guid}/read",
+      "role": "root",
+      "request_headers": "admin_request_headers",
+      "response_headers": "admin_response_headers",
+      "request": {
+        "path": {
+          "guid": "public_guid_string"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": "Notification"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/admin/v2/notifications/{guid}/acknowledge",
+      "role": "root",
+      "request_headers": "admin_request_headers",
+      "response_headers": "admin_response_headers",
+      "request": {
+        "path": {
+          "guid": "public_guid_string"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": "Notification"
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/admin/v2/public-content/draft",
+      "role": "root",
+      "request_headers": "admin_request_headers",
+      "response_headers": "admin_response_headers",
+      "request": null,
+      "response": {
+        "status": 200,
+        "body": "ContentDraft"
+      }
+    },
+    {
+      "method": "PUT",
+      "path": "/admin/v2/public-content/draft",
+      "role": "root",
+      "request_headers": "admin_request_headers",
+      "response_headers": "admin_response_headers",
+      "request": {
+        "body": {
+          "expected_revision": "positive_integer",
+          "home": "sanitized_document",
+          "about": "sanitized_document",
+          "terms": "sanitized_document",
+          "privacy": "sanitized_document",
+          "legal_reviewed": "boolean"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": "ContentDraft"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/admin/v2/public-content/validate",
+      "role": "root",
+      "request_headers": "admin_request_headers",
+      "response_headers": "admin_response_headers",
+      "request": {
+        "body": {
+          "expected_revision": "positive_integer"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "valid": "boolean",
+          "issues": "safe_validation_issue_array"
+        }
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/admin/v2/public-content/preview",
+      "role": "root",
+      "request_headers": "admin_request_headers",
+      "response_headers": "admin_response_headers_plus_X-Robots-Tag_noindex",
+      "request": {
+        "query": {
+          "revision": "optional_positive_integer"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": "draft_preview_without_public_cacheability"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/admin/v2/public-content/publish",
+      "role": "root",
+      "request_headers": "admin_request_headers_plus_Idempotency-Key",
+      "response_headers": "admin_response_headers",
+      "request": {
+        "body": {
+          "expected_revision": "positive_integer",
+          "price_release_guid": "public_guid_string",
+          "action_ticket": "single_use_string"
+        }
+      },
+      "response": {
+        "status": 201,
+        "body": "Release"
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/admin/v2/public-content/releases",
+      "role": "root",
+      "request_headers": "admin_request_headers",
+      "response_headers": "admin_response_headers",
+      "request": {
+        "query": {
+          "page": "optional_positive_integer",
+          "page_size": "optional_bounded_positive_integer"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": "paginated_Release_array"
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/admin/v2/public-content/releases/{guid}",
+      "role": "root",
+      "request_headers": "admin_request_headers",
+      "response_headers": "admin_response_headers",
+      "request": {
+        "path": {
+          "guid": "public_guid_string"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": "Release_with_immutable_content"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/admin/v2/public-content/releases/{guid}/restore",
+      "role": "root",
+      "request_headers": "admin_request_headers_plus_Idempotency-Key",
+      "response_headers": "admin_response_headers",
+      "request": {
+        "path": {
+          "guid": "public_guid_string"
+        },
+        "body": {
+          "expected_revision": "positive_integer",
+          "action_ticket": "single_use_string"
+        }
+      },
+      "response": {
+        "status": 201,
+        "body": "Release"
+      }
+    }
+  ],
+  "errors": {
+    "envelope": {
+      "error": "Error"
+    },
+    "statuses": {
+      "400": "invalid_request_or_decimal_or_content",
+      "401": "authentication_required",
+      "403": "root_role_required",
+      "404": "unknown_or_never_published_public_model_or_missing_resource",
+      "409": "stale_expected_revision_or_idempotency_conflict",
+      "410": "previously_published_inactive_or_deleted_public_model",
+      "422": "publication_validation_failed",
+      "503": "dependency_or_publication_state_unavailable"
+    },
+    "prohibited_response_data": [
+      "raw_upstream_response",
+      "channel_address",
+      "draft_content_on_public_route"
+    ]
+  },
+  "deletion": {
+    "behavior": "non_recoverable_soft_delete",
+    "visibility": "omitted_from_management_search_detail_and_public_operational_routes",
+    "deleted_list_endpoint": "absent",
+    "identity_reservation": "model_key_and_upstream_model_id_remain_reserved"
+  }
+}
