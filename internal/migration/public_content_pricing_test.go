@@ -39,11 +39,14 @@ func TestPublicContentPricingMigrationContract(t *testing.T) {
 		"unique key uk_public_model_configs_upstream_model_id (upstream_model_id)",
 		"idx_public_model_configs_status_revision (status, is_deleted, revision)",
 		"idx_public_price_snapshots_version (version, is_deleted)",
+		"idx_public_publication_state_price_snapshot (price_snapshot_id)",
+		"idx_public_publication_state_content_release (content_release_id)",
 		"idx_public_content_drafts_document_revision (document_kind, revision, is_deleted)",
 		"idx_upstream_model_observations_observed_at (observed_at, is_deleted)",
 		"idx_root_alerts_active (state, is_deleted, updated_at)",
 		"idx_root_alert_receipts_root_unread (root_user_id, is_deleted, read_at)",
 		"idx_public_render_jobs_lease (state, is_deleted, lease_expires_at)",
+		"idx_public_render_jobs_content_release (content_release_id)",
 		"foreign key (snapshot_id) references public_price_snapshots(id)",
 		"foreign key (price_snapshot_id) references public_price_snapshots(id)",
 		"foreign key (content_release_id) references public_content_releases(id)",
@@ -249,10 +252,13 @@ func assertPublicContentPricingRealSchema(t *testing.T, db *gorm.DB, migration M
 		{"public_content_drafts", "idx_public_content_drafts_document_revision", false, []string{"document_kind", "revision", "is_deleted"}},
 		{"public_content_releases", "idx_public_content_releases_document_version", false, []string{"document_kind", "version", "is_deleted"}},
 		{"public_publication_state", "idx_public_publication_state_revision", false, []string{"revision", "is_deleted"}},
+		{"public_publication_state", "idx_public_publication_state_price_snapshot", false, []string{"price_snapshot_id"}},
+		{"public_publication_state", "idx_public_publication_state_content_release", false, []string{"content_release_id"}},
 		{"upstream_model_observations", "idx_upstream_model_observations_model_observed", false, []string{"upstream_model_id", "is_deleted", "observed_at"}},
 		{"root_alerts", "idx_root_alerts_active", false, []string{"state", "is_deleted", "updated_at"}},
 		{"root_alert_receipts", "idx_root_alert_receipts_root_unread", false, []string{"root_user_id", "is_deleted", "read_at"}},
 		{"public_render_jobs", "idx_public_render_jobs_lease", false, []string{"state", "is_deleted", "lease_expires_at"}},
+		{"public_render_jobs", "idx_public_render_jobs_content_release", false, []string{"content_release_id"}},
 	} {
 		assertPublicContentPricingIndex(t, db, index.table, index.name, index.unique, index.columns)
 	}

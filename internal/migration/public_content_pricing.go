@@ -66,7 +66,7 @@ func publicContentPricingTableContracts() []publicContentPricingTableContract {
 			foreignKeys: []publicContentPricingForeignKeyContract{{"fk_public_content_releases_restore", "restored_from_release_id", "public_content_releases", "id"}}},
 		{table: publicContentPricingTable("public_publication_state", publicContentPricingColumns(
 			publicColumn("state_key", "varchar(64)", "NO", "", "ascii", "ascii_bin"), publicColumn("price_snapshot_id", "bigint", "YES", "", "", ""), publicColumn("content_release_id", "bigint", "YES", "", "", ""), publicColumn("price_visibility", "int", "NO", "", "", ""), publicColumn("revision", "bigint", "NO", "1", "", ""),
-		), []businessGroupIndexContract{publicPrimary(), publicIndex("uk_public_publication_state_guid", true, "guid"), publicIndex("uk_public_publication_state_key", true, "state_key"), publicIndex("idx_public_publication_state_revision", false, "revision", "is_deleted")}),
+		), []businessGroupIndexContract{publicPrimary(), publicIndex("uk_public_publication_state_guid", true, "guid"), publicIndex("uk_public_publication_state_key", true, "state_key"), publicIndex("idx_public_publication_state_revision", false, "revision", "is_deleted"), publicIndex("idx_public_publication_state_price_snapshot", false, "price_snapshot_id"), publicIndex("idx_public_publication_state_content_release", false, "content_release_id")}),
 			foreignKeys: []publicContentPricingForeignKeyContract{{"fk_public_publication_state_price", "price_snapshot_id", "public_price_snapshots", "id"}, {"fk_public_publication_state_content", "content_release_id", "public_content_releases", "id"}}},
 		{table: publicContentPricingTable("upstream_model_observations", publicContentPricingColumns(
 			publicColumn("upstream_model_id", "varchar(255)", "NO", "", "utf8mb4", "utf8mb4_bin"), publicColumn("provider", "varchar(128)", "NO", "", "utf8mb4", "utf8mb4_unicode_ci"), publicColumn("input_price_usd_per_million_tokens", "decimal(20,8)", "YES", "", "", ""), publicColumn("output_price_usd_per_million_tokens", "decimal(20,8)", "YES", "", "", ""), publicColumn("catalog_complete", "int", "NO", "", "", ""), publicColumn("catalog_fresh", "int", "NO", "", "", ""), publicColumn("observed_at", "bigint", "NO", "", "", ""), publicColumn("response_summary_hash", "char(64)", "NO", "", "ascii", "ascii_bin"),
@@ -81,7 +81,7 @@ func publicContentPricingTableContracts() []publicContentPricingTableContract {
 			foreignKeys: []publicContentPricingForeignKeyContract{{"fk_root_alert_receipts_alert", "alert_id", "root_alerts", "id"}, {"fk_root_alert_receipts_root", "root_user_id", "users", "id"}}},
 		{table: publicContentPricingTable("public_render_jobs", publicContentPricingColumns(
 			publicColumn("price_snapshot_id", "bigint", "NO", "", "", ""), publicColumn("content_release_id", "bigint", "NO", "", "", ""), publicColumn("state", "int", "NO", "", "", ""), publicColumn("lease_owner_hmac", "char(64)", "YES", "", "ascii", "ascii_bin"), publicColumn("lease_expires_at", "bigint", "YES", "", "", ""), publicColumn("attempt_count", "int", "NO", "0", "", ""), publicColumn("last_failure", "varchar(1024)", "YES", "", "utf8mb4", "utf8mb4_unicode_ci"), publicColumn("completed_at", "bigint", "YES", "", "", ""),
-		), []businessGroupIndexContract{publicPrimary(), publicIndex("uk_public_render_jobs_guid", true, "guid"), publicIndex("uk_public_render_jobs_release_pair", true, "price_snapshot_id", "content_release_id"), publicIndex("idx_public_render_jobs_lease", false, "state", "is_deleted", "lease_expires_at")}),
+		), []businessGroupIndexContract{publicPrimary(), publicIndex("uk_public_render_jobs_guid", true, "guid"), publicIndex("uk_public_render_jobs_release_pair", true, "price_snapshot_id", "content_release_id"), publicIndex("idx_public_render_jobs_lease", false, "state", "is_deleted", "lease_expires_at"), publicIndex("idx_public_render_jobs_content_release", false, "content_release_id")}),
 			foreignKeys: []publicContentPricingForeignKeyContract{{"fk_public_render_jobs_price", "price_snapshot_id", "public_price_snapshots", "id"}, {"fk_public_render_jobs_content", "content_release_id", "public_content_releases", "id"}}},
 	}
 }
@@ -118,7 +118,49 @@ func publicIndex(name string, unique bool, columns ...string) businessGroupIndex
 }
 
 func publicContentPricingTable(name string, columns []businessGroupColumnContract, indexes []businessGroupIndexContract) businessGroupTableContract {
-	return businessGroupTableContract{name: name, columns: columns, indexes: indexes}
+	return businessGroupTableContract{name: name, columns: columns, indexes: indexes, checks: publicContentPricingCheckContracts()[name]}
+}
+
+func publicContentPricingCheckContracts() map[string][]businessGroupCheckContract {
+	return map[string][]businessGroupCheckContract{
+		"public_model_configs": {
+			{name: "chk_public_model_configs_status", clause: "status IN (1, 2, 3)", enforced: "YES"},
+			{name: "chk_public_model_configs_values", clause: "context_window > 0 AND consecutive_absences >= 0 AND revision > 0 AND ever_published IN (0, 1) AND is_deleted IN (0, 1)", enforced: "YES"},
+			{name: "chk_public_model_configs_prices", clause: "(input_price_usd_per_million_tokens IS NULL OR input_price_usd_per_million_tokens >= 0) AND (output_price_usd_per_million_tokens IS NULL OR output_price_usd_per_million_tokens >= 0)", enforced: "YES"},
+		},
+		"public_price_snapshots": {
+			{name: "chk_public_price_snapshots_reason", clause: "reason IN (1, 2, 3)", enforced: "YES"},
+			{name: "chk_public_price_snapshots_values", clause: "version > 0 AND source_revision > 0 AND published_at > 0 AND is_deleted IN (0, 1)", enforced: "YES"},
+		},
+		"public_price_snapshot_items": {{name: "chk_public_price_snapshot_items_values", clause: "context_window > 0 AND input_price_usd_per_million_tokens >= 0 AND output_price_usd_per_million_tokens >= 0 AND is_deleted IN (0, 1)", enforced: "YES"}},
+		"public_content_drafts": {
+			{name: "chk_public_content_drafts_kind", clause: "document_kind IN (1, 2, 3, 4, 5)", enforced: "YES"},
+			{name: "chk_public_content_drafts_review", clause: "review_state IN (1, 2)", enforced: "YES"},
+			{name: "chk_public_content_drafts_values", clause: "revision > 0 AND is_deleted IN (0, 1)", enforced: "YES"},
+		},
+		"public_content_releases": {
+			{name: "chk_public_content_releases_kind", clause: "document_kind IN (1, 2, 3, 4, 5)", enforced: "YES"},
+			{name: "chk_public_content_releases_values", clause: "version > 0 AND source_revision > 0 AND published_at > 0 AND is_deleted IN (0, 1)", enforced: "YES"},
+		},
+		"public_publication_state": {
+			{name: "chk_public_publication_state_visibility", clause: "price_visibility IN (1, 2)", enforced: "YES"},
+			{name: "chk_public_publication_state_values", clause: "revision > 0 AND is_deleted IN (0, 1)", enforced: "YES"},
+		},
+		"upstream_model_observations": {
+			{name: "chk_upstream_model_observations_catalog", clause: "catalog_complete IN (0, 1) AND catalog_fresh IN (0, 1) AND is_deleted IN (0, 1)", enforced: "YES"},
+			{name: "chk_upstream_model_observations_prices", clause: "(input_price_usd_per_million_tokens IS NULL OR input_price_usd_per_million_tokens >= 0) AND (output_price_usd_per_million_tokens IS NULL OR output_price_usd_per_million_tokens >= 0)", enforced: "YES"},
+		},
+		"root_alerts": {
+			{name: "chk_root_alerts_type", clause: "alert_type IN (1, 2, 3, 4, 5, 6, 7)", enforced: "YES"},
+			{name: "chk_root_alerts_state", clause: "state IN (1, 2)", enforced: "YES"},
+			{name: "chk_root_alerts_values", clause: "occurrence_count > 0 AND first_observed_at > 0 AND last_observed_at >= first_observed_at AND is_deleted IN (0, 1)", enforced: "YES"},
+		},
+		"root_alert_receipts": {{name: "chk_root_alert_receipts_deleted", clause: "is_deleted IN (0, 1)", enforced: "YES"}},
+		"public_render_jobs": {
+			{name: "chk_public_render_jobs_state", clause: "state IN (1, 2, 3, 4)", enforced: "YES"},
+			{name: "chk_public_render_jobs_values", clause: "attempt_count >= 0 AND is_deleted IN (0, 1)", enforced: "YES"},
+		},
+	}
 }
 
 // VerifyPublicContentPricingSchema fails closed when 0012 is missing, partial,
@@ -171,9 +213,6 @@ func matchesPublicContentPricingTableContract(want publicContentPricingTableCont
 	for _, index := range got.indexes {
 		indexes[index.name] = append(indexes[index.name], index)
 	}
-	if len(indexes) != len(want.table.indexes) {
-		return false
-	}
 	for _, expected := range want.table.indexes {
 		rows := indexes[expected.name]
 		if len(rows) != len(expected.columns) {
@@ -183,6 +222,14 @@ func matchesPublicContentPricingTableContract(want publicContentPricingTableCont
 			if row.sequence != i+1 || row.column != expected.columns[i] || (row.nonUnique == 0) != expected.unique || !validRequiredBusinessGroupIndexMetadata(row) {
 				return false
 			}
+		}
+	}
+	for name, rows := range indexes {
+		if _, required := requiredPublicContentPricingIndex(want.table.indexes, name); required {
+			continue
+		}
+		if !isPublicContentPricingImplicitForeignKeyIndex(name, rows, want.foreignKeys) {
+			return false
 		}
 	}
 	foreignKeys := make(map[string][]businessGroupForeignKeyMetadata, len(want.foreignKeys))
@@ -202,5 +249,47 @@ func matchesPublicContentPricingTableContract(want publicContentPricingTableCont
 			return false
 		}
 	}
+	checks := make(map[string][]businessGroupCheckMetadata, len(want.table.checks))
+	for _, check := range got.checks {
+		checks[check.name] = append(checks[check.name], check)
+	}
+	if len(checks) != len(want.table.checks) {
+		return false
+	}
+	for _, expected := range want.table.checks {
+		rows := checks[expected.name]
+		if len(rows) != 1 || expected.enforced != "YES" || rows[0].enforced != "YES" {
+			return false
+		}
+		wantClause, wantOK := canonicalizeCheckClause(expected.clause)
+		actualClause, actualOK := canonicalizeCheckClause(rows[0].clause)
+		if !wantOK || !actualOK || wantClause != actualClause {
+			return false
+		}
+	}
 	return true
+}
+
+func requiredPublicContentPricingIndex(indexes []businessGroupIndexContract, name string) (businessGroupIndexContract, bool) {
+	for _, index := range indexes {
+		if index.name == name {
+			return index, true
+		}
+	}
+	return businessGroupIndexContract{}, false
+}
+
+// MySQL may retain an automatically created one-column index for a foreign key
+// from an older table definition. Required named indexes stay exact, while
+// this narrowly scoped allowance avoids rejecting that legitimate artifact.
+func isPublicContentPricingImplicitForeignKeyIndex(name string, rows []businessGroupIndexMetadata, foreignKeys []publicContentPricingForeignKeyContract) bool {
+	if len(rows) != 1 || rows[0].name != name || rows[0].sequence != 1 || rows[0].nonUnique != 1 || !validRequiredBusinessGroupIndexMetadata(rows[0]) {
+		return false
+	}
+	for _, foreignKey := range foreignKeys {
+		if foreignKey.name == name && foreignKey.column == rows[0].column {
+			return true
+		}
+	}
+	return false
 }

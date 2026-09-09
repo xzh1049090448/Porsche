@@ -38,7 +38,7 @@ func TestBusinessGroupMigrationLatest(t *testing.T) {
 		"4dc818d93180bb6777d2ec6d8318e728fe76add4c736a178f19b808ca2afedf7",
 		"b6ddd5b7088f1617b9831186e08da622f7d06cbe985707ef9f5524ffe6057780",
 		"be6ea3beb18a64cf2a2e03b2730df5abbcc457900e9da6292eefee0dd15a2792",
-		"2a3ad84bce9ad3f8abfe589074505049846c0059d6152a5f87c12266da5d6623",
+		"7291cfeedc837702fb5f8de4125807fb1e475dceb8bf6687ec9509b74c366e11",
 	}
 	if len(wantPublished) != len(migrations) {
 		t.Fatalf("checksum list length = %d, migrations = %d", len(wantPublished), len(migrations))
