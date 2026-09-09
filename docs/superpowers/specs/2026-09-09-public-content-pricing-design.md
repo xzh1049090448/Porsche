@@ -28,7 +28,7 @@ The existing plan, call-limit, API key, chat, and billing behavior remains uncha
 
 `public_price_snapshots` stores immutable release metadata, reason (`root_publish`, `upstream_safety`, or `restore`), actor, source draft revision, content hash, timestamps, and restoration provenance. `public_price_snapshot_items` freezes every published model's public identity, metadata, USD input/output prices, and upstream check time. A singleton state row points atomically to the current snapshot.
 
-`public_price_draft_state` stores the independent singleton optimistic revision for the aggregate publishable model draft. Every model create, update, lifecycle change, or deletion locks and advances it in the same transaction; publication compares this revision without reusing the committed publication pointer revision.
+Additive migration `0013` introduces `public_price_draft_state`, which stores the independent singleton optimistic revision for the aggregate publishable model draft. Every model create, update, lifecycle change, or deletion locks and advances it in the same transaction; publication compares this revision without reusing the committed publication pointer revision.
 
 `public_content_drafts` stores the versioned site/home/about/terms/privacy document with optimistic revision. `public_content_releases` stores immutable validated releases. Site publication state binds exact content and price snapshot versions so homepage references cannot drift from the pricing catalog.
 

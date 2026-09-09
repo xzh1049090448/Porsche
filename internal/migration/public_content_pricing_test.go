@@ -337,18 +337,18 @@ func assertPublicContentPricingLedger(t *testing.T, db *gorm.DB, migration Migra
 	var checksum string
 	var isDeleted int
 	if err := db.Raw("SELECT checksum, is_deleted FROM schema_migrations WHERE version = ?", migration.Version).Row().Scan(&checksum, &isDeleted); err != nil {
-		t.Fatalf("read 0012 migration ledger: %v", err)
+		t.Fatalf("read %s migration ledger: %v", migration.Version, err)
 	}
 	wantChecksum := fmt.Sprintf("%x", sha256.Sum256(migration.UpSQL))
 	if checksum != wantChecksum {
-		t.Errorf("0012 checksum = %q, want %q", checksum, wantChecksum)
+		t.Errorf("%s checksum = %q, want %q", migration.Version, checksum, wantChecksum)
 	}
 	wantDeleted := 1
 	if active {
 		wantDeleted = 0
 	}
 	if isDeleted != wantDeleted {
-		t.Errorf("0012 is_deleted = %d, want %d", isDeleted, wantDeleted)
+		t.Errorf("%s is_deleted = %d, want %d", migration.Version, isDeleted, wantDeleted)
 	}
 }
 
