@@ -442,6 +442,9 @@ func (s *RootAlertService) resolveInTx(tx *gorm.DB, typ models.RootAlertType, mo
 	fp := rootAlertFingerprint(typ, modelKey, identity)
 	var a models.RootAlert
 	if e := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("fingerprint=? AND is_deleted=0", fp).First(&a).Error; e != nil {
+		if errors.Is(e, gorm.ErrRecordNotFound) {
+			return nil
+		}
 		return e
 	}
 	if a.State == models.RootAlertStateResolved {

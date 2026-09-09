@@ -239,6 +239,9 @@ func (m *UpstreamPriceMonitor) Tick(ctx context.Context) error {
 				return e
 			}
 		}
+		if e := m.alerts.ResolveInTx(leaseCtx, tx, models.RootAlertTypeCatalogSyncFailure, "", "catalog"); e != nil {
+			return e
+		}
 		if len(inactivated) > 0 {
 			if _, e := m.alerts.OccurInTx(leaseCtx, tx, RootAlertOccurrence{Type: models.RootAlertTypeCatalogSyncFailure, Identity: "safety", Payload: models.JSONMap{"error_code": "safety_publication_pending", "observed_at": observedAt}}); e != nil {
 				return e

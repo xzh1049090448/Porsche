@@ -21,6 +21,8 @@ import (
 
 var exactCatalogPrice = regexp.MustCompile(`^(0|[1-9][0-9]{0,11})(\.[0-9]{1,8})?$`)
 
+const catalogObservationMaxBytes = 2 << 20
+
 // ObserveCatalog bypasses the serving cache and returns a newly fetched,
 // allowlist-filtered, sanitized projection for safety monitoring.
 func (s *WhiteLabelService) ObserveCatalog(ctx context.Context) (CatalogObservation, error) {
@@ -46,13 +48,25 @@ func (s *WhiteLabelService) ObserveCatalog(ctx context.Context) (CatalogObservat
 		} `json:"data"`
 		Complete *bool `json:"complete"`
 	}
-	if err := json.NewDecoder(io.LimitReader(response.Body, 2<<20)).Decode(&payload); err != nil {
+	raw, err := io.ReadAll(io.LimitReader(response.Body, catalogObservationMaxBytes+1))
+	if err != nil || len(raw) > catalogObservationMaxBytes || rejectDuplicateJSONFields(raw) != nil {
+		return CatalogObservation{FetchedAt: fetchedAt}, ErrUpstreamUnavailable("catalog observation failed")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err = decoder.Decode(&payload); err != nil {
+		return CatalogObservation{FetchedAt: fetchedAt}, ErrUpstreamUnavailable("catalog observation failed")
+	}
+	if err = requireJSONEOF(decoder); err != nil {
 		return CatalogObservation{FetchedAt: fetchedAt}, ErrUpstreamUnavailable("catalog observation failed")
 	}
 	complete := payload.Complete != nil && *payload.Complete
 	seen := map[string]bool{}
 	models := make([]CatalogObservedModel, 0, len(payload.Data))
 	for _, raw := range payload.Data {
+		if !validCatalogPriceType(raw.Input) || !validCatalogPriceType(raw.Output) {
+			return CatalogObservation{FetchedAt: fetchedAt}, ErrUpstreamUnavailable("catalog observation failed")
+		}
 		id := strings.TrimSpace(raw.ID)
 		if !validModelID(id) || !s.globallyAllows(id) || seen[id] {
 			continue
@@ -62,6 +76,84 @@ func (s *WhiteLabelService) ObserveCatalog(ctx context.Context) (CatalogObservat
 	}
 	sort.Slice(models, func(i, j int) bool { return models[i].NormalizedID < models[j].NormalizedID })
 	return CatalogObservation{Models: models, FetchedAt: fetchedAt, Successful: true, Complete: complete, Fresh: true}, nil
+}
+
+func validCatalogPriceType(raw json.RawMessage) bool {
+	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
+		return true
+	}
+	var value any
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	if decoder.Decode(&value) != nil {
+		return false
+	}
+	switch value.(type) {
+	case string, json.Number:
+		return true
+	default:
+		return false
+	}
+}
+
+func requireJSONEOF(decoder *json.Decoder) error {
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return fmt.Errorf("multiple JSON documents")
+		}
+		return err
+	}
+	return nil
+}
+
+func rejectDuplicateJSONFields(raw []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	var walk func() error
+	walk = func() error {
+		token, err := decoder.Token()
+		if err != nil {
+			return err
+		}
+		delim, ok := token.(json.Delim)
+		if !ok {
+			return nil
+		}
+		switch delim {
+		case '{':
+			seen := map[string]struct{}{}
+			for decoder.More() {
+				keyToken, keyErr := decoder.Token()
+				if keyErr != nil {
+					return keyErr
+				}
+				key, ok := keyToken.(string)
+				if !ok {
+					return fmt.Errorf("invalid JSON object key")
+				}
+				if _, duplicate := seen[key]; duplicate {
+					return fmt.Errorf("duplicate JSON field")
+				}
+				seen[key] = struct{}{}
+				if err := walk(); err != nil {
+					return err
+				}
+			}
+			_, err = decoder.Token()
+			return err
+		case '[':
+			for decoder.More() {
+				if err := walk(); err != nil {
+					return err
+				}
+			}
+			_, err = decoder.Token()
+			return err
+		default:
+			return fmt.Errorf("invalid JSON delimiter")
+		}
+	}
+	return walk()
 }
 
 func exactPrice(raw json.RawMessage) *string {

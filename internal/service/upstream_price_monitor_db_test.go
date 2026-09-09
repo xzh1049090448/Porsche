@@ -105,6 +105,45 @@ func TestUpstreamPriceMonitorDBThreeStrikesDurableAlertsSafetyRetryReappearanceA
 		t.Fatal("catalog error not returned")
 	}
 	catalog.err = nil
+	setCatalog(base+300_000, true, true, missing.UpstreamModelID, keeper.UpstreamModelID, manual.UpstreamModelID)
+	var observationsBeforeRecovery int64
+	f.db.Model(&models.UpstreamModelObservation{}).Count(&observationsBeforeRecovery)
+	alerts.fail = func(point string) error {
+		if point == "resolve.audit" {
+			return errors.New("injected catalog recovery resolution failure")
+		}
+		return nil
+	}
+	base += 300_000
+	if err := m.Tick(ctx); err == nil {
+		t.Fatal("catalog recovery resolution failure not returned")
+	}
+	var observationsAfterFailedRecovery int64
+	f.db.Model(&models.UpstreamModelObservation{}).Count(&observationsAfterFailedRecovery)
+	if observationsAfterFailedRecovery != observationsBeforeRecovery {
+		t.Fatalf("failed catalog recovery committed observations %d -> %d", observationsBeforeRecovery, observationsAfterFailedRecovery)
+	}
+	var catalogFailure models.RootAlert
+	if err := f.db.Where("fingerprint=?", rootAlertFingerprint(models.RootAlertTypeCatalogSyncFailure, "", "catalog")).First(&catalogFailure).Error; err != nil || catalogFailure.State != models.RootAlertStateActive {
+		t.Fatalf("catalog failure lost on recovery rollback %#v %v", catalogFailure, err)
+	}
+	alerts.fail = func(string) error { return nil }
+	base += 300_000
+	setCatalog(base, true, true, missing.UpstreamModelID, keeper.UpstreamModelID, manual.UpstreamModelID)
+	if err := m.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.Where("id=?", catalogFailure.ID).First(&catalogFailure).Error; err != nil || catalogFailure.State != models.RootAlertStateResolved {
+		t.Fatalf("catalog recovery unresolved %#v %v", catalogFailure, err)
+	}
+	if err := m.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var resolvedAudits int64
+	f.db.Model(&models.AuditLog{}).Where("action=? AND resource=?", "root_alert.resolved", "root-alerts/"+fmt.Sprint(catalogFailure.Guid)).Count(&resolvedAudits)
+	if resolvedAudits != 1 {
+		t.Fatalf("catalog recovery resolution audits=%d", resolvedAudits)
+	}
 	base += 300_000
 	higher := "3.00000000"
 	catalog.observation = whitelabel.CatalogObservation{Models: []whitelabel.CatalogObservedModel{{NormalizedID: missing.UpstreamModelID, Provider: "provider", InputPriceUSDPerMillionTokens: &price, OutputPriceUSDPerMillionTokens: &price}, {NormalizedID: keeper.UpstreamModelID, Provider: "provider", InputPriceUSDPerMillionTokens: &higher, OutputPriceUSDPerMillionTokens: &price}, {NormalizedID: manual.UpstreamModelID, Provider: "provider", InputPriceUSDPerMillionTokens: &price, OutputPriceUSDPerMillionTokens: &price}}, FetchedAt: time.UnixMilli(base), Successful: true, Complete: true, Fresh: true}
