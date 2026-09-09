@@ -78,6 +78,12 @@ var platformGenerationReceiptsUp []byte
 //go:embed sql/0011_platform_generation_receipts.down.sql
 var platformGenerationReceiptsDown []byte
 
+//go:embed sql/0012_public_content_pricing.up.sql
+var publicContentPricingUp []byte
+
+//go:embed sql/0012_public_content_pricing.down.sql
+var publicContentPricingDown []byte
+
 // Migration is an immutable, embedded schema version.
 type Migration struct {
 	Version string
@@ -105,6 +111,7 @@ func All() ([]Migration, error) {
 		{Version: "0009", UpSQL: adminResponseIntegrityUp, DownSQL: adminResponseIntegrityDown},
 		{Version: "0010", UpSQL: adminOperationResponseTargetsUp, DownSQL: adminOperationResponseTargetsDown},
 		{Version: "0011", UpSQL: platformGenerationReceiptsUp, DownSQL: platformGenerationReceiptsDown},
+		{Version: "0012", UpSQL: publicContentPricingUp, DownSQL: publicContentPricingDown},
 	}
 	sort.Slice(migrations, func(i, j int) bool { return migrations[i].Version < migrations[j].Version })
 	return migrations, nil
