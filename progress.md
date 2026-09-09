@@ -1,5 +1,13 @@
 # Porsche 开发进度
 
+## 2026-09-09：BE04 platform generation control 本地候选完成
+
+- BE04 代码候选为 `23820acbccee28a291cf4bfacb6adf30e3cdfbee`；其后仅追加本节、`feature_list.json` 和固定报告的证据提交，不改变候选代码。已激活认证后的 generation GET/cancel 路由、取消先到 tombstone、30 秒 owner-bound lease、状态/receipt 严格投影、进程内取消注册表、启动即执行且每 5 秒运行的有界重启收敛 worker，以及可重复关闭的应用生命周期。legacy chat 行为与 v2 SSE encoder 未改，BE05/BE06 stream 仍由稳定 503 门禁保护。
+- 最终夹具为 loopback-only、tmpfs MySQL 8.4.11 与 Redis 7.4.11，迁移账本 `0001`–`0011`；一次性 test-only `ACTION_SECURITY_HMAC_KEY` 只存在于测试 shell。原始无 `GOFLAGS` 的 `go test ./... -count=1` 通过；fresh-reset 后 affected race 通过（service 211.604s、handler 29.901s、app 1.735s、router 5.144s）；combined MySQL+Redis normal/race 均为 zero skip，Redis generation race `-count=10` 通过。
+- full JSON 复跑的唯一 opt-in skip 是 `TestAdminUsersReadPerformance`：需要另行授权的 100k synthetic-user 性能夹具；BE04 fixture 测试为 0 skip。gofmt、`git diff --check`、`go vet ./...`、`go build ./...`、内容/租约/范围扫描均通过。
+- 历史首次 Task 9 full 曾因共享 Redis DB 的跨包/同包测试串扰成为 `BLOCKED_TEST_ISOLATION`；`23820ac` 将 handler cleanup 改为 owned-key 证明并让 scan 测试使用专属前缀，新夹具上的原始并行 full 已通过。最终 affected race 的第一次尝试未在 full 后 fresh reset，触发 A03 action-security rate limit，分类为 `FAIL_ENV_FIXTURE_NOT_FRESH`；fresh reset 后同一原始 race 命令通过，失败历史不作为产品失败或 PASS。
+- `go-018` 仍为 `in_progress`：BE01–BE04 完成，但 BE05 single v2 stream、BE06 compare v2 stream、前后端联合验收、生产迁移、部署和真实上游调用均未执行；本批也未 push 或 merge。完整证据见 `docs/superpowers/reports/2026-09-09-platform-generation-control.md`。
+
 ## 2026-09-08：Ubuntu GNU stat 环境合并兼容性修复候选
 
 - 生产执行 `restart-all.sh` 时，`merge-env-example.sh` 在 Ubuntu GNU coreutils 8.32 误报 `candidate metadata changed`。根因是脚本尝试 BSD `stat -f <format>` 后再回退 GNU `stat -c`；GNU `stat -f` 会把格式参数当作文件名，并可能在失败前输出包含候选路径的文件系统信息，使不同临时文件的元数据哈希必然不同。

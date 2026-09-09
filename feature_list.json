@@ -24,15 +24,17 @@
         "前端 npm test 与 npm run build",
         "后端 focused race、go test ./...、go vet ./... 与 git diff --check",
         "显式隔离 TEST_REDIS_URL 下的 generation claim/CAS 竞态测试",
+        "BE04 显式隔离 MySQL 8.4.11 / Redis 7.4.11 下的 generation GET/cancel、receipt hydration、restart/multi-instance convergence、owner isolation、full 与 affected race",
         "最终本地浏览器与 API 联合验收"
       ],
       "evidence": [
         "2026-09-07：前端 FE01-FE03 的字符簇播放、严格 SSE v2 parser 和 generation lifecycle 已提交；157 项测试与构建通过。",
         "2026-09-07：后端 BE01 协议原语、边界加固、race 修复和未激活 v2 的稳定 503 门禁已提交；完整 Go 回归、focused race、vet、diff 与独立安全复审通过。",
         "2026-09-08：BE02 Redis generation registry 在 loopback-only、tmpfs、无持久化 Redis 7 fixture 上完成真实 Lua/CAS race 与全量 Go 回归；typed duplicate conflict、24h KEEPTTL、cancel/commit winner-only、严格 seq/terminal、每模型唯一消息 GUID、稳定错误和记录脱敏通过独立规格与安全复审。报告 docs/superpowers/reports/2026-09-08-platform-generation-registry.md。",
-        "2026-09-08：BE03 新增 0011 generation receipt/result schema、原子 single/compare 持久化、每模型独立消息、成功项 quota/token/usage 一致性、精确会话来源约束的幂等与 commit-unknown 恢复锚点；隔离 MySQL/Redis race 在补足一次性本地 test-only HMAC 前置后无 fixture skip 通过，全量 Go、vet、diff 及独立规格/实现/安全复审通过，reconciliation 依赖错误保持稳定脱敏。报告 docs/superpowers/reports/2026-09-08-platform-generation-persistence.md。"
+        "2026-09-08：BE03 新增 0011 generation receipt/result schema、原子 single/compare 持久化、每模型独立消息、成功项 quota/token/usage 一致性、精确会话来源约束的幂等与 commit-unknown 恢复锚点；隔离 MySQL/Redis race 在补足一次性本地 test-only HMAC 前置后无 fixture skip 通过，全量 Go、vet、diff 及独立规格/实现/安全复审通过，reconciliation 依赖错误保持稳定脱敏。报告 docs/superpowers/reports/2026-09-08-platform-generation-persistence.md。",
+        "2026-09-09：BE04 候选 23820acbccee28a291cf4bfacb6adf30e3cdfbee 完成 authenticated generation GET/cancel、取消 tombstone、owner-bound lease、严格 receipt hydration、restart/multi-instance convergence 与应用生命周期；全新 loopback-only tmpfs MySQL 8.4.11 / Redis 7.4.11、0001–0011 下原始并行 full、fresh affected race、combined normal/race、Redis race -count=10、vet/build/diff/security scans 通过。full 唯一 skip 为非 BE04 的 opt-in TestAdminUsersReadPerformance；BE04 0 skip。首次 Task9 BLOCKED_TEST_ISOLATION 已由 23820ac 修复。报告 docs/superpowers/reports/2026-09-09-platform-generation-control.md。"
       ],
-      "notes": "BE01-BE03 已完成；generation GET/cancel、取消先到 tombstone、重启调度、真实 v2 single/compare stream 和联合验收仍待后续 BE04-BE06 tranche。未激活 v2 路由；未 push、merge、deploy、执行生产迁移或调用真实付费上游。"
+      "notes": "BE01-BE04 已完成；generation GET/cancel、取消先到 tombstone、runner lease 与重启收敛已激活。BE05 single v2 stream、BE06 compare v2 stream、前后端联合验收、生产迁移、部署和真实上游仍未完成；v2 completion/compare stream 继续稳定 503。未 push、merge、deploy、执行生产迁移或调用真实付费上游。"
     },
     {
       "id": "go-017",
