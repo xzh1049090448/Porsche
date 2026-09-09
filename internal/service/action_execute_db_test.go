@@ -925,6 +925,9 @@ func actionExecuteFixtureForAction(t *testing.T, action actionsecurity.Action) (
 		if action != actionsecurity.Action(operation.Action) {
 			return actionsecurity.Descriptor{}, false
 		}
+		if isA08RolePermissionAction(action) {
+			return actionsecurity.ResolveActiveAction(action)
+		}
 		name, capability := "test.noop", "users.delete"
 		for _, resolved := range actionsecurity.InactiveActionDescriptors() {
 			if resolved.Action == action {
@@ -932,7 +935,7 @@ func actionExecuteFixtureForAction(t *testing.T, action actionsecurity.Action) (
 				break
 			}
 		}
-		return actionsecurity.Descriptor{Action: action, Name: name, Capability: capability, RequiresTicket: true, RootOnly: isA08RolePermissionAction(action),
+		return actionsecurity.Descriptor{Action: action, Name: name, Capability: capability, RequiresTicket: true,
 			TargetKind: actionsecurity.TargetUser, Active: true, Encode: func(any) ([]byte, error) { return []byte("unused"), nil }}, true
 	}
 	service, err := newActionOperationService(db, limiter, authRedis, crypto, resolver, &actionIssueClock{now: now}, bytes.NewReader(nil), func() int64 { return 1 })

@@ -633,6 +633,107 @@ func TestActionVerificationIssueContractExists(t *testing.T) {
 	var _ *IssuedVerification
 }
 
+func TestA08ActionVerificationIssueAcceptsTypedIntentBeforeRoleEligibility(t *testing.T) {
+	const now int64 = 1_800_000_000_000
+	tests := []struct {
+		name       string
+		action     actionsecurity.Action
+		targetRole models.UserRole
+		intent     func(int64) any
+	}{
+		{"promote admin", actionsecurity.ActionUsersPromote, models.UserRoleAdmin, func(target int64) any {
+			return actionsecurity.PromoteIntent{TargetGUID: target, ExpectedAuthVersion: 4, ExpectedPermissionsVersion: 0, CatalogVersion: models.PermissionCatalogVersion, Overrides: []actionsecurity.PermissionOverrideIntent{}, Reason: "same role"}
+		}},
+		{"demote user", actionsecurity.ActionUsersDemote, models.UserRoleUser, func(target int64) any {
+			return actionsecurity.DemoteIntent{TargetGUID: target, ExpectedAuthVersion: 4, ExpectedPermissionsVersion: 1, CatalogVersion: models.PermissionCatalogVersion, Reason: "same role"}
+		}},
+		{"permissions user", actionsecurity.ActionUsersPermissionsWrite, models.UserRoleUser, func(target int64) any {
+			return actionsecurity.PermissionsWriteIntent{TargetGUID: target, ExpectedAuthVersion: 4, ExpectedPermissionsVersion: 1, CatalogVersion: models.PermissionCatalogVersion, Overrides: []actionsecurity.PermissionOverrideIntent{}, Reason: "wrong role"}
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			script, actor, passwordText := actionIssueScriptFixture(t, now)
+			script.target.Role = test.targetRole
+			password := []byte(passwordText)
+			target := script.target.Guid
+			verification := newTestActionVerificationService(t, openActionIssueScriptDB(t, script, nil), &actionIssueRedisClient{actionRateEvalClient: newActionRateEvalClient()}, &actionIssueClock{now: now}, bytes.NewReader(bytes.Repeat([]byte{0x61}, 32)), func() int64 { return 9801 })
+			intent := test.intent(target)
+			issued, err := verification.Issue(context.Background(), VerificationIssue{Action: test.action, Actor: actor, TargetGUID: &target, Intent: intent, CurrentPassword: password, TrustedIP: "203.0.113.20"})
+			if err != nil || issued == nil || issued.ExpiresAt != now+actionVerificationTTLMillis || script.commits != 1 || len(script.execs) != 2 {
+				t.Fatalf("Issue = %#v/%v commits=%d writes=%d", issued, err, script.commits, len(script.execs))
+			}
+			descriptor, ok := actionsecurity.ResolveActiveAction(test.action)
+			canonical, encodeErr := descriptor.Encode(intent)
+			if !ok || encodeErr != nil {
+				t.Fatalf("canonical descriptor/encoding unavailable ok=%v err=%v", ok, encodeErr)
+			}
+			digest := verification.crypto.IntentDigest(canonical)
+			wantHMAC := hex.EncodeToString(digest[:])
+			found := false
+			for _, argument := range script.execs[1].args {
+				found = found || argument.Value == wantHMAC
+			}
+			if !found {
+				t.Fatal("verification did not persist the typed canonical intent HMAC")
+			}
+		})
+	}
+}
+
+func TestA08ExecutePreauthorizationDefersRoleEligibilityButKeepsSecurityBoundaries(t *testing.T) {
+	const now int64 = 1_800_000_000_000
+	tests := []struct {
+		name      string
+		action    actionsecurity.Action
+		actorRole models.UserRole
+		target    models.User
+		want      error
+	}{
+		{"promote admin reaches consumer", actionsecurity.ActionUsersPromote, models.UserRoleRoot, models.User{ID: 30, AuditFields: models.AuditFields{Guid: testNoopTargetGUID}, Role: models.UserRoleAdmin, Status: models.UserStatusActive, AuthVersion: 4}, nil},
+		{"demote user reaches consumer", actionsecurity.ActionUsersDemote, models.UserRoleRoot, models.User{ID: 30, AuditFields: models.AuditFields{Guid: testNoopTargetGUID}, Role: models.UserRoleUser, Status: models.UserStatusActive, AuthVersion: 4}, nil},
+		{"permissions user reaches consumer", actionsecurity.ActionUsersPermissionsWrite, models.UserRoleRoot, models.User{ID: 30, AuditFields: models.AuditFields{Guid: testNoopTargetGUID}, Role: models.UserRoleUser, Status: models.UserStatusActive, AuthVersion: 4}, nil},
+		{"non root rejected", actionsecurity.ActionUsersPromote, models.UserRoleAdmin, models.User{ID: 30, AuditFields: models.AuditFields{Guid: testNoopTargetGUID}, Role: models.UserRoleUser, Status: models.UserStatusActive, AuthVersion: 4}, ErrActionOperationForbidden},
+		{"self hidden", actionsecurity.ActionUsersPromote, models.UserRoleRoot, models.User{ID: 10, AuditFields: models.AuditFields{Guid: 1001}, Role: models.UserRoleAdmin, Status: models.UserStatusActive, AuthVersion: 4}, ErrActionOperationHidden},
+		{"root target hidden", actionsecurity.ActionUsersDemote, models.UserRoleRoot, models.User{ID: 30, AuditFields: models.AuditFields{Guid: testNoopTargetGUID}, Role: models.UserRoleRoot, Status: models.UserStatusActive, AuthVersion: 4}, ErrActionOperationHidden},
+		{"deleted hidden", actionsecurity.ActionUsersPermissionsWrite, models.UserRoleRoot, models.User{ID: 30, AuditFields: models.AuditFields{Guid: testNoopTargetGUID, IsDeleted: 1}, Role: models.UserRoleAdmin, Status: models.UserStatusActive, AuthVersion: 4}, ErrActionOperationHidden},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			script, _, _ := actionIssueScriptFixture(t, now)
+			script.actor.Role = test.actorRole
+			target := test.target
+			script.target, script.targetGUID = &target, target.Guid
+			descriptor := rolePermissionTestDescriptor(t, test.action)
+			err := openActionIssueScriptDB(t, script, nil).Transaction(func(tx *gorm.DB) error {
+				return authorizeOperationDescriptor(tx, script.actor, descriptor, &target.Guid)
+			})
+			if !errors.Is(err, test.want) || (test.want == nil && err != nil) {
+				t.Fatalf("preauthorization error=%v want=%v", err, test.want)
+			}
+			if test.want == nil {
+				var intent any
+				switch test.action {
+				case actionsecurity.ActionUsersPromote:
+					intent = actionsecurity.PromoteIntent{TargetGUID: target.Guid, ExpectedAuthVersion: target.AuthVersion, ExpectedPermissionsVersion: 1, CatalogVersion: 1, Overrides: []actionsecurity.PermissionOverrideIntent{}, Reason: "same role"}
+				case actionsecurity.ActionUsersDemote:
+					intent = actionsecurity.DemoteIntent{TargetGUID: target.Guid, ExpectedAuthVersion: target.AuthVersion, ExpectedPermissionsVersion: 1, CatalogVersion: 1, Reason: "same role"}
+				case actionsecurity.ActionUsersPermissionsWrite:
+					intent = actionsecurity.PermissionsWriteIntent{TargetGUID: target.Guid, ExpectedAuthVersion: target.AuthVersion, ExpectedPermissionsVersion: 1, CatalogVersion: 1, Overrides: []actionsecurity.PermissionOverrideIntent{}, Reason: "wrong role"}
+				}
+				execution, createErr := NewRolePermissionExecution(descriptor, intent, func() int64 { return 1 }, &actionIssueClock{now: now}, createAccountTestCrypto(t))
+				if createErr != nil {
+					t.Fatal(createErr)
+				}
+				plan, failure := execution.PlanTransition(RolePermissionTargetSnapshot{ActorGUID: script.actor.Guid, TargetGUID: target.Guid, Role: target.Role, Status: target.Status, AuthVersion: target.AuthVersion}, &RolePermissionPolicySnapshot{PolicyVersion: 1, CatalogVersion: 1}, nil)
+				if plan != nil || failure == nil || *failure != models.FailureTargetStateConflict || len(script.execs) != 0 {
+					t.Fatalf("consumer boundary plan=%#v failure=%#v writes=%d", plan, failure, len(script.execs))
+				}
+			}
+		})
+	}
+}
+
 func TestActionVerificationIssueScriptedTransactionIsOrderedSecretFreeAndImmediateClear(t *testing.T) {
 	const now int64 = 1_800_000_000_000
 	script, actor, passwordText := actionIssueScriptFixture(t, now)

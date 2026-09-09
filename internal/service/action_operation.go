@@ -875,6 +875,9 @@ func operationDescriptorAuthorizationDecision(evaluator *authz.Evaluator, descri
 	case actionsecurity.TargetNone:
 		return evaluator.Resource(descriptor.Capability)
 	case actionsecurity.TargetUser:
+		if isA08RolePermissionAction(descriptor.Action) {
+			return rolePermissionPreauthorizationDecision(evaluator, descriptor, target)
+		}
 		return evaluator.User(descriptor.Capability, actionAccount(target))
 	default:
 		return authz.Denied

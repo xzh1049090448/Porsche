@@ -5,9 +5,11 @@ import (
 	"context"
 	"net/http"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/porsche/ai-gateway-go/internal/actionsecurity"
+	"github.com/porsche/ai-gateway-go/internal/dto"
 	"github.com/porsche/ai-gateway-go/internal/models"
 	"github.com/porsche/ai-gateway-go/internal/service"
 )
@@ -18,6 +20,33 @@ type scriptedRolePermissionBackend struct {
 	beginIntent  any
 	newCalls     int
 	executeCalls int
+}
+
+func TestA08OversizedBodiesReturnExact413Envelope(t *testing.T) {
+	for _, test := range []struct {
+		method  string
+		path    string
+		headers http.Header
+	}{
+		{http.MethodPost, "/admin/v2/action-verifications", nil},
+		{http.MethodPost, "/admin/v2/users/123/actions", http.Header{"Idempotency-Key": {testActionKey}, "X-Action-Ticket": {testActionTicket}}},
+		{http.MethodPatch, "/admin/v2/users/123/permissions", http.Header{"Idempotency-Key": {testActionKey}, "X-Action-Ticket": {testActionTicket}}},
+	} {
+		backend := &scriptedRolePermissionBackend{scriptedUserManagementBackend: &scriptedUserManagementBackend{}}
+		headers := test.headers.Clone()
+		if headers == nil {
+			headers = make(http.Header)
+		}
+		headers.Set("X-Request-ID", "a08-too-large")
+		recorder := performActionRequest(newScriptedUserManagementEngine(t, backend, models.UserRoleRoot), test.method, test.path, strings.Repeat(" ", int(dto.RolePermissionBodyLimit+1)), headers)
+		if recorder.Code != http.StatusRequestEntityTooLarge || recorder.Header().Get("Cache-Control") != "no-store" || recorder.Header().Get("X-Request-ID") != "a08-too-large" {
+			t.Fatalf("oversized response mismatch method=%s status=%d cache=%q request_id=%q body=%s", test.method, recorder.Code, recorder.Header().Get("Cache-Control"), recorder.Header().Get("X-Request-ID"), recorder.Body.String())
+		}
+		response := decodeActionTestResponse[actionTestErrorEnvelope](t, recorder)
+		if response.Error.Code != "request_body_too_large" || response.Error.Type != "admin_action_error" || response.Error.RequestID != "a08-too-large" || response.Error.OperationRef != "" || backend.issueCalls != 0 || backend.beginCalls != 0 {
+			t.Fatalf("oversized envelope/backend mismatch: %#v", response)
+		}
+	}
 }
 
 func (backend *scriptedRolePermissionBackend) Issue(_ context.Context, issue service.VerificationIssue) (*service.IssuedVerification, error) {

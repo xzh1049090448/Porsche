@@ -210,6 +210,10 @@ func issueUserManagementVerification(c *gin.Context, backend userManagementActio
 	}
 	raw, err := readUserManagementVerificationBody(c.Request.Body)
 	if err != nil {
+		if errors.Is(err, dto.ErrRolePermissionBodyTooLarge) {
+			adminUserActionFixedError(c, http.StatusRequestEntityTooLarge, "request_body_too_large", "")
+			return
+		}
 		adminUserActionError(c, errInvalidAdminUserAction, "")
 		return
 	}
@@ -241,6 +245,9 @@ func readUserManagementVerificationBody(body io.Reader) ([]byte, error) {
 	raw, err := io.ReadAll(io.LimitReader(body, dto.AdminUserCreateBodyLimit+1))
 	if err != nil || int64(len(raw)) > dto.AdminUserCreateBodyLimit {
 		clear(raw)
+		if err == nil {
+			return nil, dto.ErrRolePermissionBodyTooLarge
+		}
 		return nil, errInvalidAdminUserAction
 	}
 	return raw, nil
@@ -331,6 +338,10 @@ func issueAdminUserPasswordResetVerification(c *gin.Context, backend userManagem
 func executeUserManagementAction(c *gin.Context, backend userManagementActionBackend, settings *config.Settings) {
 	raw, err := readUserManagementVerificationBody(c.Request.Body)
 	if err != nil {
+		if errors.Is(err, dto.ErrRolePermissionBodyTooLarge) {
+			adminUserActionFixedError(c, http.StatusRequestEntityTooLarge, "request_body_too_large", "")
+			return
+		}
 		adminUserActionError(c, errInvalidAdminUserAction, "")
 		return
 	}

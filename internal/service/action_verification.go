@@ -156,6 +156,10 @@ func (s *ActionVerificationService) Issue(ctx context.Context, in VerificationIs
 			if err := validateLockedResetPasswordIntent(descriptor, in.Intent, identity.target); err != nil {
 				return err
 			}
+		case actionsecurity.ActionUsersPromote, actionsecurity.ActionUsersDemote, actionsecurity.ActionUsersPermissionsWrite:
+			if err := validateLockedRolePermissionIntent(descriptor, in.Intent, identity.target); err != nil {
+				return err
+			}
 		default:
 			return ErrActionVerificationUnavailable
 		}

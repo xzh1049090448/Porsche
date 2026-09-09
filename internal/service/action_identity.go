@@ -124,7 +124,11 @@ func lockActionIdentity(tx *gorm.DB, actor ActionActor, descriptor actionsecurit
 			decision = evaluator.Resource(descriptor.Capability)
 		}
 	case actionsecurity.TargetUser:
-		decision = evaluator.User(descriptor.Capability, actionAccount(target))
+		if isA08RolePermissionAction(descriptor.Action) {
+			decision = rolePermissionPreauthorizationDecision(evaluator, descriptor, target)
+		} else {
+			decision = evaluator.User(descriptor.Capability, actionAccount(target))
+		}
 	default:
 		return lockedActionIdentity{}, ErrActionVerificationUnavailable
 	}

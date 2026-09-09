@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"github.com/porsche/ai-gateway-go/internal/actionsecurity"
 	"github.com/porsche/ai-gateway-go/internal/authz"
@@ -126,6 +127,56 @@ func validRolePermissionDescriptor(descriptor actionsecurity.Descriptor) bool {
 			reflect.ValueOf(descriptor.Encode).Pointer() == reflect.ValueOf(expected.Encode).Pointer()
 	}
 	return false
+}
+
+// rolePermissionPreauthorizationDecision enforces actor capability and target
+// visibility without deciding whether the target's current role is eligible
+// for the requested transition. PlanTransition owns that locked-state decision.
+func rolePermissionPreauthorizationDecision(evaluator *authz.Evaluator, descriptor actionsecurity.Descriptor, target models.User) authz.Decision {
+	if evaluator == nil || !validRolePermissionDescriptor(descriptor) {
+		return authz.Denied
+	}
+	return evaluator.User("users.read", actionAccount(target))
+}
+
+func validateLockedRolePermissionIntent(descriptor actionsecurity.Descriptor, value any, target *models.User) error {
+	if !validRolePermissionDescriptor(descriptor) || target == nil || target.ID <= 0 || target.Guid <= 0 || target.IsDeleted != 0 ||
+		(target.Status != models.UserStatusActive && target.Status != models.UserStatusDisabled) || target.AuthVersion <= 0 || target.AuthVersion >= math.MaxInt32 {
+		return ErrActionVerificationConflict
+	}
+	var targetGUID int64
+	var expectedAuth int
+	var expectedPermissions int64
+	var catalog int
+	var overrides []actionsecurity.PermissionOverrideIntent
+	var reason string
+	switch intent := value.(type) {
+	case actionsecurity.PromoteIntent:
+		if descriptor.Action != actionsecurity.ActionUsersPromote {
+			return ErrActionVerificationConflict
+		}
+		targetGUID, expectedAuth, expectedPermissions, catalog, overrides, reason = intent.TargetGUID, intent.ExpectedAuthVersion, intent.ExpectedPermissionsVersion, intent.CatalogVersion, intent.Overrides, intent.Reason
+	case actionsecurity.DemoteIntent:
+		if descriptor.Action != actionsecurity.ActionUsersDemote {
+			return ErrActionVerificationConflict
+		}
+		targetGUID, expectedAuth, expectedPermissions, catalog, reason = intent.TargetGUID, intent.ExpectedAuthVersion, intent.ExpectedPermissionsVersion, intent.CatalogVersion, intent.Reason
+	case actionsecurity.PermissionsWriteIntent:
+		if descriptor.Action != actionsecurity.ActionUsersPermissionsWrite {
+			return ErrActionVerificationConflict
+		}
+		targetGUID, expectedAuth, expectedPermissions, catalog, overrides, reason = intent.TargetGUID, intent.ExpectedAuthVersion, intent.ExpectedPermissionsVersion, intent.CatalogVersion, intent.Overrides, intent.Reason
+	default:
+		return ErrActionVerificationConflict
+	}
+	if targetGUID != target.Guid || expectedAuth != target.AuthVersion || expectedPermissions < 0 || catalog != models.PermissionCatalogVersion ||
+		!utf8.ValidString(reason) || strings.TrimSpace(reason) != reason || utf8.RuneCountInString(reason) < 1 || utf8.RuneCountInString(reason) > 200 {
+		return ErrActionVerificationConflict
+	}
+	if _, valid := validateAndOwnRolePermissionRules(overrides); !valid {
+		return ErrActionVerificationConflict
+	}
+	return nil
 }
 
 func ownRolePermissionIntent(action actionsecurity.Action, value any) (rolePermissionIntent, bool) {

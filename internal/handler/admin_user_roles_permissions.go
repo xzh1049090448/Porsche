@@ -45,7 +45,7 @@ func issueRolePermissionVerification(c *gin.Context, backend userManagementActio
 	case "users.promote":
 		request, err := dto.DecodePromoteIssue(bytes.NewReader(raw))
 		if err != nil {
-			adminUserActionDecodeError(c, err)
+			rolePermissionDecodeError(c, err)
 			return
 		}
 		defer request.ClearSecrets()
@@ -53,7 +53,7 @@ func issueRolePermissionVerification(c *gin.Context, backend userManagementActio
 	case "users.demote":
 		request, err := dto.DecodeDemoteIssue(bytes.NewReader(raw))
 		if err != nil {
-			adminUserActionDecodeError(c, err)
+			rolePermissionDecodeError(c, err)
 			return
 		}
 		defer request.ClearSecrets()
@@ -61,7 +61,7 @@ func issueRolePermissionVerification(c *gin.Context, backend userManagementActio
 	case "users.permissions.write":
 		request, err := dto.DecodePermissionsWriteIssue(bytes.NewReader(raw))
 		if err != nil {
-			adminUserActionDecodeError(c, err)
+			rolePermissionDecodeError(c, err)
 			return
 		}
 		defer request.ClearSecrets()
@@ -102,14 +102,14 @@ func executeRoleChange(c *gin.Context, backend userManagementActionBackend, lite
 	case "promote":
 		request, err := dto.DecodePromoteExecute(c.Request.Body)
 		if err != nil {
-			adminUserActionDecodeError(c, err)
+			rolePermissionDecodeError(c, err)
 			return
 		}
 		action, intent = actionsecurity.ActionUsersPromote, request.Intent(guid)
 	case "demote":
 		request, err := dto.DecodeDemoteExecute(c.Request.Body)
 		if err != nil {
-			adminUserActionDecodeError(c, err)
+			rolePermissionDecodeError(c, err)
 			return
 		}
 		action, intent = actionsecurity.ActionUsersDemote, request.Intent(guid)
@@ -127,10 +127,18 @@ func executePermissionsWrite(c *gin.Context, backend userManagementActionBackend
 	}
 	request, err := dto.DecodePermissionsWriteExecute(c.Request.Body)
 	if err != nil {
-		adminUserActionDecodeError(c, err)
+		rolePermissionDecodeError(c, err)
 		return
 	}
 	executeRolePermissionIntent(c, backend, actionsecurity.ActionUsersPermissionsWrite, request.Intent(guid), keys, tickets)
+}
+
+func rolePermissionDecodeError(c *gin.Context, err error) {
+	if errors.Is(err, dto.ErrRolePermissionBodyTooLarge) {
+		adminUserActionFixedError(c, http.StatusRequestEntityTooLarge, "request_body_too_large", "")
+		return
+	}
+	adminUserActionDecodeError(c, err)
 }
 
 func rolePermissionMutationHeaders(c *gin.Context) (int64, []string, []string, bool) {

@@ -263,8 +263,8 @@ func TestRolePermissionPlanSourceDoesNotResolveOrProjectGlobalRegistry(t *testin
 	if count := bytes.Count(source, []byte("actionsecurity.InactiveActionDescriptors()")); count != 1 {
 		t.Fatalf("inactive registry access count = %d, want constructor validation only", count)
 	}
-	if count := bytes.Count(source, []byte("validRolePermissionDescriptor(")); count != 2 {
-		t.Fatalf("descriptor validator reference count = %d, want constructor call plus definition", count)
+	if count := bytes.Count(source, []byte("validRolePermissionDescriptor(")); count != 4 {
+		t.Fatalf("descriptor validator reference count = %d, want constructor, preauthorization, verification, and definition", count)
 	}
 	for _, forbidden := range [][]byte{
 		[]byte("actionsecurity.ActiveActionRegistry("),
