@@ -6,11 +6,17 @@ import (
 	"io"
 	"os"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 )
 
 const publicContentPricingContractPath = "../../docs/agents/contracts/public-content-pricing-v1.json"
+
+const (
+	publicContentPricingDecimalPattern = `^(0|[1-9][0-9]{0,11})(\.[0-9]{1,8})?$`
+	publicContentPricingDecimalMaximum = "999999999999.99999999"
+)
 
 func TestPublicContentPricingContract(t *testing.T) {
 	raw, err := os.ReadFile(publicContentPricingContractPath)
@@ -43,46 +49,44 @@ func TestPublicContentPricingContract(t *testing.T) {
 	publicContentPricingForbidText(t, raw, "per_request")
 	publicContentPricingForbidText(t, raw, "price_per_request")
 
-	publicRoutes := []publicContentPricingRoute{
-		{"GET", "/api/v1/public/site", "anonymous"},
-		{"GET", "/api/v1/public/home", "anonymous"},
-		{"GET", "/api/v1/public/models", "anonymous"},
-		{"GET", "/api/v1/public/models/{modelKey}", "anonymous"},
-		{"GET", "/api/v1/public/pages/about", "anonymous"},
-		{"GET", "/api/v1/public/pages/terms", "anonymous"},
-		{"GET", "/api/v1/public/pages/privacy", "anonymous"},
+	expectedRoutes := []publicContentPricingRouteContract{
+		{"GET", "/api/v1/public/site", "anonymous", "public_request_headers", "public_response_headers", "NoBody", "NoBody", "NoBody", "SiteReleaseResponse", json.Number("200")},
+		{"GET", "/api/v1/public/home", "anonymous", "public_request_headers", "public_response_headers", "NoBody", "NoBody", "NoBody", "PublishedDocumentResponse", json.Number("200")},
+		{"GET", "/api/v1/public/models", "anonymous", "public_request_headers", "public_response_headers", "NoBody", "PublicModelsListRequest", "NoBody", "PublicModelListResponse", json.Number("200")},
+		{"GET", "/api/v1/public/models/{modelKey}", "anonymous", "public_request_headers", "public_response_headers", "PublicModelDetailRequest", "NoBody", "NoBody", "PublicModelDetailResponse", json.Number("200")},
+		{"GET", "/api/v1/public/pages/about", "anonymous", "public_request_headers", "public_response_headers", "NoBody", "NoBody", "NoBody", "PublishedDocumentResponse", json.Number("200")},
+		{"GET", "/api/v1/public/pages/terms", "anonymous", "public_request_headers", "public_response_headers", "NoBody", "NoBody", "NoBody", "PublishedDocumentResponse", json.Number("200")},
+		{"GET", "/api/v1/public/pages/privacy", "anonymous", "public_request_headers", "public_response_headers", "NoBody", "NoBody", "NoBody", "PublishedDocumentResponse", json.Number("200")},
+		{"GET", "/admin/v2/public-models", "root", "admin_request_headers", "admin_response_headers", "NoBody", "AdminModelListRequest", "NoBody", "AdminModelListResponse", json.Number("200")},
+		{"POST", "/admin/v2/public-models", "root", "admin_request_headers", "admin_response_headers", "NoBody", "NoBody", "CreatePublicModelRequest", "PublicModelAdmin", json.Number("201")},
+		{"GET", "/admin/v2/public-models/{guid}", "root", "admin_request_headers", "admin_response_headers", "GUIDRequest", "NoBody", "NoBody", "PublicModelAdmin", json.Number("200")},
+		{"PATCH", "/admin/v2/public-models/{guid}", "root", "admin_request_headers", "admin_response_headers", "GUIDRequest", "NoBody", "UpdatePublicModelRequest", "PublicModelAdmin", json.Number("200")},
+		{"POST", "/admin/v2/public-models/{guid}/activate", "root", "admin_request_headers", "admin_response_headers", "GUIDRequest", "NoBody", "RevisionRequest", "PublicModelAdmin", json.Number("200")},
+		{"POST", "/admin/v2/public-models/{guid}/deactivate", "root", "admin_request_headers", "admin_response_headers", "GUIDRequest", "NoBody", "DeactivationRequest", "PublicModelAdmin", json.Number("200")},
+		{"DELETE", "/admin/v2/public-models/{guid}", "root", "admin_verified_action_request_headers", "admin_response_headers", "GUIDRequest", "NoBody", "DeletePublicModelRequest", "NoBody", json.Number("204")},
+		{"GET", "/admin/v2/public-models/missing", "root", "admin_request_headers", "admin_response_headers", "NoBody", "NoBody", "NoBody", "MissingModelsResponse", json.Number("200")},
+		{"POST", "/admin/v2/public-models/sync", "root", "admin_request_headers", "admin_response_headers", "NoBody", "NoBody", "NoBody", "SyncAcceptedResponse", json.Number("202")},
+		{"GET", "/admin/v2/public-pricing/draft", "root", "admin_request_headers", "admin_response_headers", "NoBody", "NoBody", "NoBody", "PriceDraft", json.Number("200")},
+		{"PUT", "/admin/v2/public-pricing/draft", "root", "admin_request_headers", "admin_response_headers", "NoBody", "NoBody", "PriceDraftSaveRequest", "PriceDraft", json.Number("200")},
+		{"POST", "/admin/v2/public-pricing/validate", "root", "admin_request_headers", "admin_response_headers", "NoBody", "NoBody", "RevisionRequest", "ValidationResponse", json.Number("200")},
+		{"POST", "/admin/v2/public-pricing/publish", "root", "admin_publish_request_headers", "admin_response_headers", "NoBody", "NoBody", "PublicationRequest", "Release", json.Number("201")},
+		{"GET", "/admin/v2/public-pricing/releases", "root", "admin_request_headers", "admin_response_headers", "NoBody", "PaginationRequest", "NoBody", "ReleaseListResponse", json.Number("200")},
+		{"GET", "/admin/v2/public-pricing/releases/{guid}", "root", "admin_request_headers", "admin_response_headers", "GUIDRequest", "NoBody", "NoBody", "ImmutablePriceReleaseResponse", json.Number("200")},
+		{"POST", "/admin/v2/public-pricing/releases/{guid}/restore", "root", "admin_publish_request_headers", "admin_response_headers", "GUIDRequest", "NoBody", "RevisionRequest", "Release", json.Number("201")},
+		{"GET", "/admin/v2/notifications", "root", "admin_request_headers", "admin_response_headers", "NoBody", "NotificationListRequest", "NoBody", "NotificationListResponse", json.Number("200")},
+		{"GET", "/admin/v2/notifications/unread-count", "root", "admin_request_headers", "admin_response_headers", "NoBody", "NoBody", "NoBody", "UnreadCountResponse", json.Number("200")},
+		{"POST", "/admin/v2/notifications/{guid}/read", "root", "admin_request_headers", "admin_response_headers", "GUIDRequest", "NoBody", "NoBody", "Notification", json.Number("200")},
+		{"POST", "/admin/v2/notifications/{guid}/acknowledge", "root", "admin_request_headers", "admin_response_headers", "GUIDRequest", "NoBody", "NoBody", "Notification", json.Number("200")},
+		{"GET", "/admin/v2/public-content/draft", "root", "admin_request_headers", "admin_response_headers", "NoBody", "NoBody", "NoBody", "ContentDraft", json.Number("200")},
+		{"PUT", "/admin/v2/public-content/draft", "root", "admin_request_headers", "admin_response_headers", "NoBody", "NoBody", "ContentDraftSaveRequest", "ContentDraft", json.Number("200")},
+		{"POST", "/admin/v2/public-content/validate", "root", "admin_request_headers", "admin_response_headers", "NoBody", "NoBody", "RevisionRequest", "ValidationResponse", json.Number("200")},
+		{"GET", "/admin/v2/public-content/preview", "root", "admin_request_headers", "admin_preview_response_headers", "NoBody", "PreviewRequest", "NoBody", "PreviewResponse", json.Number("200")},
+		{"POST", "/admin/v2/public-content/publish", "root", "admin_publish_request_headers", "admin_response_headers", "NoBody", "NoBody", "ContentPublicationRequest", "Release", json.Number("201")},
+		{"GET", "/admin/v2/public-content/releases", "root", "admin_request_headers", "admin_response_headers", "NoBody", "PaginationRequest", "NoBody", "ReleaseListResponse", json.Number("200")},
+		{"GET", "/admin/v2/public-content/releases/{guid}", "root", "admin_request_headers", "admin_response_headers", "GUIDRequest", "NoBody", "NoBody", "ImmutableContentReleaseResponse", json.Number("200")},
+		{"POST", "/admin/v2/public-content/releases/{guid}/restore", "root", "admin_publish_request_headers", "admin_response_headers", "GUIDRequest", "NoBody", "RevisionRequest", "Release", json.Number("201")},
 	}
-	adminRoutes := []publicContentPricingRoute{
-		{"GET", "/admin/v2/public-models", "root"},
-		{"POST", "/admin/v2/public-models", "root"},
-		{"GET", "/admin/v2/public-models/{guid}", "root"},
-		{"PATCH", "/admin/v2/public-models/{guid}", "root"},
-		{"POST", "/admin/v2/public-models/{guid}/activate", "root"},
-		{"POST", "/admin/v2/public-models/{guid}/deactivate", "root"},
-		{"DELETE", "/admin/v2/public-models/{guid}", "root"},
-		{"GET", "/admin/v2/public-models/missing", "root"},
-		{"POST", "/admin/v2/public-models/sync", "root"},
-		{"GET", "/admin/v2/public-pricing/draft", "root"},
-		{"PUT", "/admin/v2/public-pricing/draft", "root"},
-		{"POST", "/admin/v2/public-pricing/validate", "root"},
-		{"POST", "/admin/v2/public-pricing/publish", "root"},
-		{"GET", "/admin/v2/public-pricing/releases", "root"},
-		{"GET", "/admin/v2/public-pricing/releases/{guid}", "root"},
-		{"POST", "/admin/v2/public-pricing/releases/{guid}/restore", "root"},
-		{"GET", "/admin/v2/notifications", "root"},
-		{"GET", "/admin/v2/notifications/unread-count", "root"},
-		{"POST", "/admin/v2/notifications/{guid}/read", "root"},
-		{"POST", "/admin/v2/notifications/{guid}/acknowledge", "root"},
-		{"GET", "/admin/v2/public-content/draft", "root"},
-		{"PUT", "/admin/v2/public-content/draft", "root"},
-		{"POST", "/admin/v2/public-content/validate", "root"},
-		{"GET", "/admin/v2/public-content/preview", "root"},
-		{"POST", "/admin/v2/public-content/publish", "root"},
-		{"GET", "/admin/v2/public-content/releases", "root"},
-		{"GET", "/admin/v2/public-content/releases/{guid}", "root"},
-		{"POST", "/admin/v2/public-content/releases/{guid}/restore", "root"},
-	}
-	publicContentPricingRequireRoutes(t, contract, append(publicRoutes, adminRoutes...))
+	publicContentPricingRequireExactRoutes(t, contract, expectedRoutes)
 
 	for _, route := range publicContentPricingRoutes(t, contract) {
 		path := route["path"].(string)
@@ -146,8 +150,9 @@ func TestPublicContentPricingContract(t *testing.T) {
 	publicContentPricingRequireRouteValue(t, contract, preview, "admin_preview_response_headers", "response_headers")
 	publicContentPricingRequire(t, contract, "no-store", "admin_preview_response_headers", "Cache-Control")
 	publicContentPricingRequire(t, contract, "noindex_nofollow", "admin_preview_response_headers", "X-Robots-Tag")
-	publicContentPricingRequire(t, contract, []any{"draft", "active", "inactive"}, "schemas", "AdminModelListRequest", "properties", "status", "enum")
-	publicContentPricingRequire(t, contract, []any{
+	lifecycleStatuses := []any{"draft", "active", "inactive"}
+	priceVisibilities := []any{"visible", "authenticated_only"}
+	notificationTypes := []any{
 		"published_price_below_upstream",
 		"upstream_missing",
 		"automatic_inactivation",
@@ -155,7 +160,14 @@ func TestPublicContentPricingContract(t *testing.T) {
 		"catalog_sync_failure",
 		"price_not_comparable",
 		"renderer_failure",
-	}, "notifications", "types")
+	}
+	publicContentPricingRequire(t, contract, lifecycleStatuses, "schemas", "AdminModelListRequest", "properties", "status", "enum")
+	publicContentPricingRequire(t, contract, lifecycleStatuses, "schemas", "PublicModelAdmin", "properties", "status", "enum")
+	publicContentPricingRequire(t, contract, []any{"visible"}, "schemas", "PublicModelVisible", "properties", "price_visibility", "enum")
+	publicContentPricingRequire(t, contract, []any{"authenticated_only"}, "schemas", "PublicModelRedacted", "properties", "price_visibility", "enum")
+	publicContentPricingRequire(t, contract, priceVisibilities, "schemas", "SiteReleaseResponse", "properties", "price_visibility", "enum")
+	publicContentPricingRequire(t, contract, notificationTypes, "notifications", "types")
+	publicContentPricingRequire(t, contract, notificationTypes, "schemas", "Notification", "properties", "type", "enum")
 	publicContentPricingRequire(t, contract, "in_app_only", "notifications", "delivery")
 	publicContentPricingRequire(t, contract, "one_exact_json_object_no_unknown_duplicate_or_trailing_fields", "body_rules", "mutation")
 	publicContentPricingRequire(t, contract, []any{"action_ticket"}, "body_rules", "forbidden_body_fields")
@@ -172,9 +184,50 @@ func TestPublicContentPricingContract(t *testing.T) {
 	publicContentPricingRequire(t, contract, json.Number("1"), "schemas", "RevisionRequest", "properties", "expected_revision", "minimum")
 	publicContentPricingRequire(t, contract, []any{"20", "50", "100"}, "schemas", "PaginationRequest", "properties", "page_size", "enum")
 	publicContentPricingRequire(t, contract, "date-time-rfc3339-utc", "schemas", "Release", "properties", "created_at", "format")
+	publicContentPricingRequire(t, contract, "0", "pricing", "minimum")
+	publicContentPricingRequire(t, contract, publicContentPricingDecimalMaximum, "pricing", "maximum")
+	publicContentPricingAssertDecimalSchemas(t, contract)
+	publicContentPricingAssertDecimalPattern(t)
+	for _, path := range [][]string{
+		{"schemas", "PublicModelAdmin", "properties", "input_price_usd_per_million_tokens", "nullable"},
+		{"schemas", "PublicModelAdmin", "properties", "output_price_usd_per_million_tokens", "nullable"},
+		{"schemas", "PublicModelAdmin", "properties", "last_upstream_check_at", "nullable"},
+		{"schemas", "CreatePublicModelRequest", "properties", "input_price_usd_per_million_tokens", "nullable"},
+		{"schemas", "CreatePublicModelRequest", "properties", "output_price_usd_per_million_tokens", "nullable"},
+		{"schemas", "UpdatePublicModelRequest", "properties", "input_price_usd_per_million_tokens", "nullable"},
+		{"schemas", "UpdatePublicModelRequest", "properties", "output_price_usd_per_million_tokens", "nullable"},
+	} {
+		publicContentPricingRequire(t, contract, true, path...)
+	}
 
 	for _, forbidden := range []string{"credential_value", "api_key", "current_password", "internal_id", "database_id", "upstream_url"} {
 		publicContentPricingForbidText(t, raw, forbidden)
+	}
+}
+
+func publicContentPricingAssertDecimalSchemas(t *testing.T, contract map[string]any) {
+	t.Helper()
+	for _, schemaName := range []string{"PublicModelVisible", "PublicModelAdmin", "CreatePublicModelRequest", "UpdatePublicModelRequest"} {
+		for _, field := range []string{"input_price_usd_per_million_tokens", "output_price_usd_per_million_tokens"} {
+			publicContentPricingRequire(t, contract, publicContentPricingDecimalPattern, "schemas", schemaName, "properties", field, "pattern")
+			publicContentPricingRequire(t, contract, "0", "schemas", schemaName, "properties", field, "minimum")
+			publicContentPricingRequire(t, contract, publicContentPricingDecimalMaximum, "schemas", schemaName, "properties", field, "maximum")
+		}
+	}
+}
+
+func publicContentPricingAssertDecimalPattern(t *testing.T) {
+	t.Helper()
+	pattern := regexp.MustCompile(publicContentPricingDecimalPattern)
+	for _, value := range []string{"0", "0.00000000", "12.34567890", publicContentPricingDecimalMaximum} {
+		if !pattern.MatchString(value) {
+			t.Fatalf("decimal pattern rejects valid value %q", value)
+		}
+	}
+	for _, value := range []string{"-0.1", "+1", "01", ".1", "1.", "1.000000000", "1000000000000", "1e3"} {
+		if pattern.MatchString(value) {
+			t.Fatalf("decimal pattern accepts invalid value %q", value)
+		}
 	}
 }
 
@@ -293,23 +346,51 @@ type publicContentPricingRoute struct {
 	role   string
 }
 
-func publicContentPricingRequireRoutes(t *testing.T, contract map[string]any, want []publicContentPricingRoute) {
+type publicContentPricingRouteContract struct {
+	method          string
+	path            string
+	role            string
+	requestHeaders  string
+	responseHeaders string
+	pathSchema      string
+	querySchema     string
+	bodySchema      string
+	responseSchema  string
+	status          json.Number
+}
+
+func publicContentPricingRequireExactRoutes(t *testing.T, contract map[string]any, want []publicContentPricingRouteContract) {
 	t.Helper()
 	routes := publicContentPricingRoutes(t, contract)
-	if len(routes) != len(want) {
-		t.Fatalf("route count=%d, want %d", len(routes), len(want))
-	}
-	for _, expected := range want {
-		matched := false
-		for _, route := range routes {
-			if route["method"] == expected.method && route["path"] == expected.path && route["role"] == expected.role {
-				matched = true
-				break
+	got := make([]publicContentPricingRouteContract, 0, len(routes))
+	for index, route := range routes {
+		projected := publicContentPricingRouteContract{}
+		for field, target := range map[string]*string{
+			"method":           &projected.method,
+			"path":             &projected.path,
+			"role":             &projected.role,
+			"request_headers":  &projected.requestHeaders,
+			"response_headers": &projected.responseHeaders,
+			"path_schema":      &projected.pathSchema,
+			"query_schema":     &projected.querySchema,
+			"body_schema":      &projected.bodySchema,
+			"response_schema":  &projected.responseSchema,
+		} {
+			value, ok := route[field].(string)
+			if !ok {
+				t.Fatalf("route %d field %s must be a string", index, field)
 			}
+			*target = value
 		}
-		if !matched {
-			t.Fatalf("missing contract route %s %s role=%s", expected.method, expected.path, expected.role)
+		status, ok := route["status"].(json.Number)
+		if !ok {
+			t.Fatalf("route %d field status must be a number", index)
 		}
+		projected.status = status
+		got = append(got, projected)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("route contract mismatch\n got: %#v\nwant: %#v", got, want)
 	}
 }
 
