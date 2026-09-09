@@ -34,7 +34,7 @@ func TestPublicContentPricingContract(t *testing.T) {
 
 - [ ] **Step 2: Run the test and verify RED**
 
-Run: `GOCACHE=/private/tmp/porsche-go-build-cache go test ./internal/dto -run TestPublicContentPricingContract -count=1`
+Run: `GOCACHE=/private/tmp/porsche-go-build-cache go test ./internal/dto -run TestPublicContentPricingContract -count=1`  
 Expected: FAIL because the contract file does not exist.
 
 - [ ] **Step 3: Add the exact contract and interface entries**
@@ -43,7 +43,7 @@ Document request/response DTOs, errors, cache headers, roles, idempotency, and e
 
 - [ ] **Step 4: Run the test and verify GREEN**
 
-Run: `GOCACHE=/private/tmp/porsche-go-build-cache go test ./internal/dto -run TestPublicContentPricingContract -count=1`
+Run: `GOCACHE=/private/tmp/porsche-go-build-cache go test ./internal/dto -run TestPublicContentPricingContract -count=1`  
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
@@ -71,7 +71,7 @@ Require tables `public_model_configs`, `public_price_draft_state`, `public_price
 
 - [ ] **Step 2: Run migration tests and verify RED**
 
-Run: `GOCACHE=/private/tmp/porsche-go-build-cache go test ./internal/migration ./internal/models -run 'Public(Content|Pricing)' -count=1`
+Run: `GOCACHE=/private/tmp/porsche-go-build-cache go test ./internal/migration ./internal/models -run 'Public(Content|Pricing)' -count=1`  
 Expected: FAIL because migrations 0012/0013 and models are absent.
 
 - [ ] **Step 3: Implement migration and models**
@@ -80,7 +80,7 @@ Use integer enums for lifecycle and alert state, string decimals at DTO boundari
 
 - [ ] **Step 4: Run migration unit tests**
 
-Run: `GOCACHE=/private/tmp/porsche-go-build-cache go test ./internal/migration ./internal/models -run 'Public(Content|Pricing)' -count=1`
+Run: `GOCACHE=/private/tmp/porsche-go-build-cache go test ./internal/migration ./internal/models -run 'Public(Content|Pricing)' -count=1`  
 Expected: PASS.
 
 - [ ] **Step 5: Run real migration up/down in an isolated MySQL fixture**
@@ -111,7 +111,7 @@ Cover canonical decimal parsing with at most eight fractional digits, non-negati
 
 - [ ] **Step 2: Run RED**
 
-Run: `GOCACHE=/private/tmp/porsche-go-build-cache go test ./internal/publiccontent -count=1`
+Run: `GOCACHE=/private/tmp/porsche-go-build-cache go test ./internal/publiccontent -count=1`  
 Expected: compile failure because validation functions do not exist.
 
 - [ ] **Step 3: Implement minimal validators and allowlist sanitizer**
@@ -120,7 +120,7 @@ Expose typed validation issues with stable field/code pairs. Preserve safe Markd
 
 - [ ] **Step 4: Run GREEN and fuzz hostile URLs**
 
-Run: `GOCACHE=/private/tmp/porsche-go-build-cache go test ./internal/publiccontent -count=1`
+Run: `GOCACHE=/private/tmp/porsche-go-build-cache go test ./internal/publiccontent -count=1`  
 Expected: PASS with no network access.
 
 - [ ] **Step 5: Commit**
@@ -145,7 +145,7 @@ Cover create only from a fresh accepted observation, list/search/filter/page, de
 
 - [ ] **Step 2: Run RED**
 
-Run: `GOCACHE=/private/tmp/porsche-go-build-cache go test ./internal/service ./internal/dto -run 'PublicModel' -count=1`
+Run: `GOCACHE=/private/tmp/porsche-go-build-cache go test ./internal/service ./internal/dto -run 'PublicModel' -count=1`  
 Expected: compile failure for missing service/DTOs.
 
 - [ ] **Step 3: Implement service and DTOs**
@@ -154,12 +154,12 @@ Use transactions for every mutation, lock the actor as active Root inside the tr
 
 - [ ] **Step 4: Run unit and isolated DB tests**
 
-Run: `GOCACHE=/private/tmp/porsche-go-build-cache go test ./internal/service ./internal/dto -run 'PublicModel' -count=1`
+Run: `GOCACHE=/private/tmp/porsche-go-build-cache go test ./internal/service ./internal/dto -run 'PublicModel' -count=1`  
 Expected: PASS, zero fixture skip when explicit test URLs are set.
 
 - [ ] **Step 5: Run race tests**
 
-Run: `GOCACHE=/private/tmp/porsche-go-build-cache go test -race ./internal/service -run 'PublicModel.*(Revision|Delete|Identity)' -count=1`
+Run: `GOCACHE=/private/tmp/porsche-go-build-cache go test -race ./internal/service -run 'PublicModel.*(Revision|Delete|Identity)' -count=1`  
 Expected: PASS; exactly one concurrent revision wins.
 
 - [ ] **Step 6: Commit**
@@ -182,7 +182,7 @@ Assert validation before publication, one immutable item per active model, atomi
 
 - [ ] **Step 2: Run RED**
 
-Run: `GOCACHE=/private/tmp/porsche-go-build-cache go test ./internal/service -run 'PublicPriceSnapshot' -count=1`
+Run: `GOCACHE=/private/tmp/porsche-go-build-cache go test ./internal/service -run 'PublicPriceSnapshot' -count=1`  
 Expected: compile failure.
 
 - [ ] **Step 3: Implement snapshot transactions**
@@ -191,7 +191,7 @@ Lock publication state, verify draft revision and idempotency binding, insert im
 
 - [ ] **Step 4: Run GREEN and failure injection**
 
-Run: `GOCACHE=/private/tmp/porsche-go-build-cache go test ./internal/service -run 'PublicPriceSnapshot' -count=1`
+Run: `GOCACHE=/private/tmp/porsche-go-build-cache go test ./internal/service -run 'PublicPriceSnapshot' -count=1`  
 Expected: PASS; injected insert/audit/pointer failures leave the old pointer.
 
 - [ ] **Step 5: Commit**
@@ -216,7 +216,7 @@ Cover safe empty draft, optimistic save, preview, reviewed terms/privacy gate, m
 
 - [ ] **Step 2: Run RED**
 
-Run: `GOCACHE=/private/tmp/porsche-go-build-cache go test ./internal/service ./internal/dto -run 'PublicContent' -count=1`
+Run: `GOCACHE=/private/tmp/porsche-go-build-cache go test ./internal/service ./internal/dto -run 'PublicContent' -count=1`  
 Expected: compile failure.
 
 - [ ] **Step 3: Implement services and safe DTO projection**
@@ -225,7 +225,7 @@ Bind exact content and pricing releases in publication state. Preview uses draft
 
 - [ ] **Step 4: Run GREEN**
 
-Run: `GOCACHE=/private/tmp/porsche-go-build-cache go test ./internal/service ./internal/dto -run 'PublicContent' -count=1`
+Run: `GOCACHE=/private/tmp/porsche-go-build-cache go test ./internal/service ./internal/dto -run 'PublicContent' -count=1`  
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
@@ -249,7 +249,7 @@ Cover alert deduplication, occurrence updates, resolve/reopen, new-Root visibili
 
 - [ ] **Step 2: Run RED**
 
-Run: `GOCACHE=/private/tmp/porsche-go-build-cache go test ./internal/service -run 'RootAlert' -count=1`
+Run: `GOCACHE=/private/tmp/porsche-go-build-cache go test ./internal/service -run 'RootAlert' -count=1`  
 Expected: compile failure.
 
 - [ ] **Step 3: Implement alert service**
@@ -258,7 +258,7 @@ Use a unique active fingerprint and per-Root receipt upserts. Add an interface f
 
 - [ ] **Step 4: Run GREEN**
 
-Run: `GOCACHE=/private/tmp/porsche-go-build-cache go test ./internal/service -run 'RootAlert' -count=1`
+Run: `GOCACHE=/private/tmp/porsche-go-build-cache go test ./internal/service -run 'RootAlert' -count=1`  
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
@@ -285,7 +285,7 @@ Cover independent input/output comparisons, not-comparable alerts, five-minute s
 
 - [ ] **Step 2: Run RED**
 
-Run: `GOCACHE=/private/tmp/porsche-go-build-cache go test ./internal/service -run 'UpstreamPriceMonitor' -count=1`
+Run: `GOCACHE=/private/tmp/porsche-go-build-cache go test ./internal/service -run 'UpstreamPriceMonitor' -count=1`  
 Expected: compile failure.
 
 - [ ] **Step 3: Expose a sanitized fresh-catalog observation method**
@@ -302,8 +302,8 @@ Construct the monitor in `app.State`; start it from `cmd/server/main.go` with a 
 
 - [ ] **Step 6: Run GREEN and race tests**
 
-Run: `GOCACHE=/private/tmp/porsche-go-build-cache go test ./internal/whitelabel ./internal/service ./internal/app -run '(CatalogObservation|UpstreamPriceMonitor)' -count=1`
-Run: `GOCACHE=/private/tmp/porsche-go-build-cache go test -race ./internal/service -run 'UpstreamPriceMonitor.*Lease' -count=1`
+Run: `GOCACHE=/private/tmp/porsche-go-build-cache go test ./internal/whitelabel ./internal/service ./internal/app -run '(CatalogObservation|UpstreamPriceMonitor)' -count=1`  
+Run: `GOCACHE=/private/tmp/porsche-go-build-cache go test -race ./internal/service -run 'UpstreamPriceMonitor.*Lease' -count=1`  
 Expected: PASS; one concurrent owner mutates state.
 
 - [ ] **Step 7: Commit**
@@ -333,7 +333,7 @@ Require authenticated active Root, reject admin/user, reject unknown fields and 
 
 - [ ] **Step 2: Run RED**
 
-Run: `GOCACHE=/private/tmp/porsche-go-build-cache go test ./internal/handler ./internal/router -run '(PublicModel|PublicPricing|PublicContent|RootAlert)' -count=1`
+Run: `GOCACHE=/private/tmp/porsche-go-build-cache go test ./internal/handler ./internal/router -run '(PublicModel|PublicPricing|PublicContent|RootAlert)' -count=1`  
 Expected: FAIL because routes are absent.
 
 - [ ] **Step 3: Implement thin handlers and register static paths before parameters**
@@ -342,7 +342,7 @@ Decode strictly, project safe DTOs, and delegate transactions to services. Regis
 
 - [ ] **Step 4: Run GREEN**
 
-Run: `GOCACHE=/private/tmp/porsche-go-build-cache go test ./internal/handler ./internal/router -run '(PublicModel|PublicPricing|PublicContent|RootAlert)' -count=1`
+Run: `GOCACHE=/private/tmp/porsche-go-build-cache go test ./internal/handler ./internal/router -run '(PublicModel|PublicPricing|PublicContent|RootAlert)' -count=1`  
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
@@ -367,7 +367,7 @@ Cover anonymous site/home/pages/catalog/detail, published-only data, no internal
 
 - [ ] **Step 2: Run RED**
 
-Run: `GOCACHE=/private/tmp/porsche-go-build-cache go test ./internal/service ./internal/handler -run 'Public(Catalog|Read|Site|Home|Page)' -count=1`
+Run: `GOCACHE=/private/tmp/porsche-go-build-cache go test ./internal/service ./internal/handler -run 'Public(Catalog|Read|Site|Home|Page)' -count=1`  
 Expected: FAIL because public reads are absent.
 
 - [ ] **Step 3: Implement snapshot-consistent reads**
@@ -376,7 +376,7 @@ Load one publication-state generation and exact referenced releases per request.
 
 - [ ] **Step 4: Run GREEN**
 
-Run: `GOCACHE=/private/tmp/porsche-go-build-cache go test ./internal/service ./internal/handler -run 'Public(Catalog|Read|Site|Home|Page)' -count=1`
+Run: `GOCACHE=/private/tmp/porsche-go-build-cache go test ./internal/service ./internal/handler -run 'Public(Catalog|Read|Site|Home|Page)' -count=1`  
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
@@ -401,7 +401,7 @@ Cover lease/complete/fail transitions, sanitized failures, retry bounds, current
 
 - [ ] **Step 2: Run RED**
 
-Run: `GOCACHE=/private/tmp/porsche-go-build-cache go test ./cmd/public-render-job ./internal/service -run 'PublicRender' -count=1`
+Run: `GOCACHE=/private/tmp/porsche-go-build-cache go test ./cmd/public-render-job ./internal/service -run 'PublicRender' -count=1`  
 Expected: compile failure.
 
 - [ ] **Step 3: Implement job service and narrow CLI/API surface**
@@ -410,7 +410,7 @@ The frontend renderer obtains/finishes jobs through authenticated local executio
 
 - [ ] **Step 4: Run GREEN**
 
-Run: `GOCACHE=/private/tmp/porsche-go-build-cache go test ./cmd/public-render-job ./internal/service -run 'PublicRender' -count=1`
+Run: `GOCACHE=/private/tmp/porsche-go-build-cache go test ./cmd/public-render-job ./internal/service -run 'PublicRender' -count=1`  
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
