@@ -1698,7 +1698,7 @@ func TestPlatformGenerationLeaseRenewalAndCancelRejectClockRegression(t *testing
 	}
 }
 
-func TestDecodePlatformGenerationRejectsDuplicateObjectMembersRecursively(t *testing.T) {
+func TestPlatformGenerationStoreDecodeRejectsDuplicateObjectMembersRecursively(t *testing.T) {
 	digest := strings.Repeat("a", 64)
 	running := `{"generation_id":"` + generationTestID + `","mode":1,"models":["a"],"state":1,"model_states":{"a":{"seq":0,"state":1}},"created_at_ms":1000,"updated_at_ms":1000,"lease_owner_sha256":"` + digest + `","lease_until_ms":31000}`
 	failedNested := `{"generation_id":"` + generationTestID + `","mode":2,"models":["a","b"],"state":1,"model_states":{"a":{"seq":0,"state":6,"error_code":"timeout","error_code":"timeout"},"b":{"seq":0,"state":1}},"created_at_ms":1000,"updated_at_ms":1000,"lease_owner_sha256":"` + digest + `","lease_until_ms":31000}`
@@ -1723,7 +1723,7 @@ func TestDecodePlatformGenerationRejectsDuplicateObjectMembersRecursively(t *tes
 	}
 }
 
-func TestPlatformGenerationStoreMutatorsLeaveDuplicateMemberRecordsUntouched(t *testing.T) {
+func TestPlatformGenerationStoreDuplicateMemberRecordsRemainUntouchedByMutators(t *testing.T) {
 	store, client := openTestPlatformGenerationStore(t)
 	ctx := context.Background()
 	token := base64.RawURLEncoding.EncodeToString(make([]byte, platformGenerationLeaseBytes))
@@ -1791,7 +1791,7 @@ func TestPlatformGenerationStoreMutatorsLeaveDuplicateMemberRecordsUntouched(t *
 	}
 }
 
-func TestPlatformGenerationClaimVersusCancelMissingConvergesToOneLegalAuthority(t *testing.T) {
+func TestPlatformGenerationCancelClaimRaceOnMissingKeyConvergesToOneLegalAuthority(t *testing.T) {
 	store, client := openTestPlatformGenerationStore(t)
 	ctx := context.Background()
 	for iteration := 0; iteration < 24; iteration++ {
