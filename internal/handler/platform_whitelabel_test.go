@@ -16,6 +16,7 @@ import (
 	"github.com/porsche/ai-gateway-go/internal/app"
 	"github.com/porsche/ai-gateway-go/internal/config"
 	"github.com/porsche/ai-gateway-go/internal/db"
+	"github.com/porsche/ai-gateway-go/internal/middleware"
 	"github.com/porsche/ai-gateway-go/internal/migration"
 	"github.com/porsche/ai-gateway-go/internal/models"
 	"github.com/porsche/ai-gateway-go/internal/persistence"
@@ -235,6 +236,47 @@ func TestPlatformStreamFailureBeforeFirstFrameReturnsJSON(t *testing.T) {
 	}
 	if contentType := rec.Header().Get("Content-Type"); !strings.HasPrefix(contentType, "application/json") {
 		t.Fatalf("expected JSON content type before first frame, got %q", contentType)
+	}
+}
+
+func TestPlatformV2StreamReturnsUnavailableWithoutCallingLegacyService(t *testing.T) {
+	assertFixtureFreePlatformV2Unavailable(t, "/api/v1/platform/chat/completions", `{"model":"model-a","messages":[{"role":"user","content":"private prompt marker"}],"max_tokens":5,"stream":true,"stream_version":"platform-chat-sse.v2","generation_id":"550e8400-e29b-41d4-a716-446655440000"}`)
+}
+
+func TestPlatformCompareV2StreamReturnsUnavailableWithoutCallingLegacyService(t *testing.T) {
+	assertFixtureFreePlatformV2Unavailable(t, "/api/v1/platform/chat/compare", `{"model":"model-a","models":["model-a","model-b"],"messages":[{"role":"user","content":"private prompt marker"}],"max_tokens":5,"stream":true,"stream_version":"platform-chat-sse.v2","generation_id":"550e8400-e29b-41d4-a716-446655440000"}`)
+}
+
+func assertFixtureFreePlatformV2Unavailable(t *testing.T, path, body string) {
+	t.Helper()
+	t.Setenv("TEST_DATABASE_URL", "")
+	t.Setenv("TEST_REDIS_URL", "")
+	gin.SetMode(gin.TestMode)
+	// A nil legacy service turns any accidental legacy dispatch into a panic;
+	// the inactive v2 contract must be rejected before that boundary.
+	state := &app.State{Settings: &config.Settings{}, Platform: nil}
+	engine := gin.New()
+	registerPlatformWithAuthentication(engine, state, func(c *gin.Context) {
+		c.Set(middleware.ContextUser, &models.User{ID: 7})
+		c.Set(middleware.ContextUserID, int64(7))
+		c.Next()
+	})
+	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Request-ID", "fixture-free-v2-gate")
+	rec := httptest.NewRecorder()
+	engine.ServeHTTP(rec, req)
+	want := `{"error":{"code":"platform_stream_v2_unavailable","message":"Invalid request.","type":"api_error","request_id":"fixture-free-v2-gate"}}`
+	if rec.Code != http.StatusServiceUnavailable || strings.TrimSpace(rec.Body.String()) != want {
+		t.Fatalf("fixture-free inactive-v2 response status/body = %d/%q, want 503/%q", rec.Code, rec.Body.String(), want)
+	}
+	if contentType := rec.Header().Get("Content-Type"); !strings.HasPrefix(contentType, "application/json") {
+		t.Fatalf("fixture-free inactive-v2 content type=%q, want JSON", contentType)
+	}
+	for _, secret := range []string{"private prompt marker", "550e8400-e29b-41d4-a716-446655440000", "model-a", "model-b", "data:"} {
+		if strings.Contains(rec.Body.String(), secret) {
+			t.Fatalf("fixture-free inactive-v2 response leaked request data %q: %s", secret, rec.Body.String())
+		}
 	}
 }
 

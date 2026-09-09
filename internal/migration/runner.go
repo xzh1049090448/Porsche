@@ -72,17 +72,23 @@ var adminOperationResponseTargetsUp []byte
 //go:embed sql/0010_admin_operation_response_targets.down.sql
 var adminOperationResponseTargetsDown []byte
 
-//go:embed sql/0011_admin_operation_result_auth_version.up.sql
+//go:embed sql/0012_admin_operation_result_auth_version.up.sql
 var adminOperationResultAuthVersionUp []byte
 
-//go:embed sql/0011_admin_operation_result_auth_version.down.sql
+//go:embed sql/0012_admin_operation_result_auth_version.down.sql
 var adminOperationResultAuthVersionDown []byte
 
-//go:embed sql/0012_admin_operation_role_permission_results.up.sql
+//go:embed sql/0013_admin_operation_role_permission_results.up.sql
 var adminOperationRolePermissionResultsUp []byte
 
-//go:embed sql/0012_admin_operation_role_permission_results.down.sql
+//go:embed sql/0013_admin_operation_role_permission_results.down.sql
 var adminOperationRolePermissionResultsDown []byte
+
+//go:embed sql/0011_platform_generation_receipts.up.sql
+var platformGenerationReceiptsUp []byte
+
+//go:embed sql/0011_platform_generation_receipts.down.sql
+var platformGenerationReceiptsDown []byte
 
 // Migration is an immutable, embedded schema version.
 type Migration struct {
@@ -110,8 +116,9 @@ func All() ([]Migration, error) {
 		{Version: "0008", UpSQL: adminOperationResponsesUp, DownSQL: adminOperationResponsesDown},
 		{Version: "0009", UpSQL: adminResponseIntegrityUp, DownSQL: adminResponseIntegrityDown},
 		{Version: "0010", UpSQL: adminOperationResponseTargetsUp, DownSQL: adminOperationResponseTargetsDown},
-		{Version: "0011", UpSQL: adminOperationResultAuthVersionUp, DownSQL: adminOperationResultAuthVersionDown},
-		{Version: "0012", UpSQL: adminOperationRolePermissionResultsUp, DownSQL: adminOperationRolePermissionResultsDown},
+		{Version: "0011", UpSQL: platformGenerationReceiptsUp, DownSQL: platformGenerationReceiptsDown},
+		{Version: "0012", UpSQL: adminOperationResultAuthVersionUp, DownSQL: adminOperationResultAuthVersionDown},
+		{Version: "0013", UpSQL: adminOperationRolePermissionResultsUp, DownSQL: adminOperationRolePermissionResultsDown},
 	}
 	sort.Slice(migrations, func(i, j int) bool { return migrations[i].Version < migrations[j].Version })
 	return migrations, nil
@@ -193,8 +200,18 @@ func Up(ctx context.Context, db *gorm.DB, nextGUID func() int64, nowMillis func(
 						return err
 					}
 				}
-				if migration.Version == "0012" {
+				if migration.Version == "0013" {
 					if err := VerifyAdminOperationRolePermissionResultsSchema(ctx, conn); err != nil {
+						return err
+					}
+				}
+				if migration.Version == "0012" {
+					if err := VerifyAdminOperationSafetySchema(ctx, conn); err != nil {
+						return err
+					}
+				}
+				if migration.Version == "0011" {
+					if err := VerifyPlatformGenerationReceiptSchema(ctx, conn); err != nil {
 						return err
 					}
 				}
@@ -227,12 +244,12 @@ func Up(ctx context.Context, db *gorm.DB, nextGUID func() int64, nowMillis func(
 					return err
 				}
 			}
-			if migration.Version == "0011" {
+			if migration.Version == "0012" {
 				if err := VerifyAdminOperationSafetySchema(ctx, conn); err != nil {
 					return err
 				}
 			}
-			if migration.Version == "0012" {
+			if migration.Version == "0013" {
 				if err := VerifyAdminOperationRolePermissionResultsSchema(ctx, conn); err != nil {
 					return err
 				}
@@ -249,6 +266,11 @@ func Up(ctx context.Context, db *gorm.DB, nextGUID func() int64, nowMillis func(
 			}
 			if migration.Version == "0007" {
 				if err := VerifyBusinessGroupsSchema(ctx, conn); err != nil {
+					return err
+				}
+			}
+			if migration.Version == "0011" {
+				if err := VerifyPlatformGenerationReceiptSchema(ctx, conn); err != nil {
 					return err
 				}
 			}
@@ -309,7 +331,10 @@ func Verify(ctx context.Context, db *gorm.DB) error {
 	if err := VerifyBusinessGroupsSchema(ctx, db); err != nil {
 		return err
 	}
-	return VerifyAdminOperationResponseSchema(ctx, db)
+	if err := VerifyAdminOperationResponseSchema(ctx, db); err != nil {
+		return err
+	}
+	return VerifyPlatformGenerationReceiptSchema(ctx, db)
 }
 
 // VerifyApplied is the side-effect-free portion of Verify, kept separate so

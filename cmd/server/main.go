@@ -30,6 +30,11 @@ func main() {
 	if err != nil {
 		log.Fatalf("init app: %v", err)
 	}
+	defer func() {
+		if err := state.Close(); err != nil {
+			log.Printf("close app state: %v", err)
+		}
+	}()
 
 	engine := router.New(state)
 	addr := fmt.Sprintf("%s:%d", settings.Host, settings.Port)

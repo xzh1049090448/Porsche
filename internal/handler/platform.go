@@ -18,7 +18,16 @@ import (
 )
 
 func RegisterPlatform(r *gin.Engine, state *app.State) {
-	g := r.Group("/api/v1/platform", gatewayRequestID(), platformDiagnostics(), middleware.RequireUser(state), platformDiagnosticAuthenticated())
+	registerPlatformWithAuthentication(r, state, middleware.RequireUser(state))
+}
+
+func registerPlatformWithAuthentication(r *gin.Engine, state *app.State, authenticate gin.HandlerFunc) {
+	base := r.Group("/api/v1/platform", gatewayRequestID(), platformDiagnostics())
+	generations := base.Group("/chat/generations", platformGenerationNoStore(), authenticate, platformDiagnosticAuthenticated())
+	generations.GET("/:generation_id", platformGenerationGet(state))
+	generations.POST("/:generation_id/cancel", platformGenerationCancel(state))
+
+	g := base.Group("", authenticate, platformDiagnosticAuthenticated())
 
 	g.GET("/models", func(c *gin.Context) {
 		if state.WhiteLabel == nil {
@@ -49,6 +58,10 @@ func RegisterPlatform(r *gin.Engine, state *app.State) {
 		if err := decodePlatformRequest(c, &body, false); err != nil {
 			validationEnd(diagnostics.Invalid)
 			platformWhiteLabelError(c, err)
+			return
+		}
+		if body.StreamVersion == platformSSEV2Version {
+			platformSSEV2Unavailable(c)
 			return
 		}
 		params := body.toParams()
@@ -111,6 +124,10 @@ func RegisterPlatform(r *gin.Engine, state *app.State) {
 		var body platformCompareBody
 		if err := decodePlatformRequest(c, &body, true); err != nil {
 			platformWhiteLabelError(c, err)
+			return
+		}
+		if body.StreamVersion == platformSSEV2Version {
+			platformSSEV2Unavailable(c)
 			return
 		}
 		params := body.toParams()
@@ -237,9 +254,16 @@ func decodePlatformRequest(c *gin.Context, dest interface{}, compare bool) *whit
 	if _, legacy := fields["conversation_id"]; legacy {
 		return &whitelabel.Error{Code: whitelabel.CodeInvalidRequest, Status: http.StatusBadRequest, Type: whitelabel.TypeInvalidRequest}
 	}
+	if err := validatePlatformSSEV2Request(raw, fields); err != nil {
+		return err
+	}
 	for _, field := range []string{"conversation_guid", "context_window"} {
 		delete(fields, field)
 	}
+	// stream_version and generation_id are platform protocol controls. They
+	// deliberately never reach the OpenAI-compatible upstream payload.
+	delete(fields, "stream_version")
+	delete(fields, "generation_id")
 	if compare {
 		delete(fields, "models")
 	}
@@ -260,6 +284,53 @@ func decodePlatformRequest(c *gin.Context, dest interface{}, compare bool) *whit
 		body.WhiteLabelBody = upstreamBody
 	}
 	return nil
+}
+
+const platformSSEV2Version = "platform-chat-sse.v2"
+
+const platformSSEV2UnavailableCode whitelabel.Code = "platform_stream_v2_unavailable"
+
+// platformSSEV2Unavailable keeps the unimplemented lifecycle protocol from
+// falling through to legacy streaming until a later route explicitly wires it.
+func platformSSEV2Unavailable(c *gin.Context) {
+	platformWhiteLabelError(c, &whitelabel.Error{Code: platformSSEV2UnavailableCode, Status: http.StatusServiceUnavailable, Type: whitelabel.TypeAPI})
+}
+
+// validatePlatformSSEV2Request leaves legacy requests untouched. Once either
+// v2-only field is present, both controls must form a complete v2 request.
+func validatePlatformSSEV2Request(raw []byte, fields map[string]json.RawMessage) *whitelabel.Error {
+	_, hasVersion := fields["stream_version"]
+	_, hasGenerationID := fields["generation_id"]
+	if !hasVersion && !hasGenerationID {
+		return nil
+	}
+	var contract struct {
+		Stream        bool    `json:"stream"`
+		StreamVersion *string `json:"stream_version"`
+		GenerationID  *string `json:"generation_id"`
+	}
+	if err := json.Unmarshal(raw, &contract); err != nil || !contract.Stream || contract.StreamVersion == nil || *contract.StreamVersion != platformSSEV2Version || contract.GenerationID == nil || !isCanonicalUUID(*contract.GenerationID) {
+		return &whitelabel.Error{Code: whitelabel.CodeInvalidRequest, Status: http.StatusBadRequest, Type: whitelabel.TypeInvalidRequest}
+	}
+	return nil
+}
+
+func isCanonicalUUID(value string) bool {
+	if len(value) != 36 {
+		return false
+	}
+	for i, char := range value {
+		if i == 8 || i == 13 || i == 18 || i == 23 {
+			if char != '-' {
+				return false
+			}
+			continue
+		}
+		if !((char >= '0' && char <= '9') || (char >= 'a' && char <= 'f')) {
+			return false
+		}
+	}
+	return true
 }
 
 func platformSSEError(c *gin.Context) {
@@ -308,6 +379,8 @@ type platformChatBody struct {
 	MaxTokens        *int                     `json:"max_tokens"`
 	ContextWindow    *int                     `json:"context_window"`
 	Stream           bool                     `json:"stream"`
+	StreamVersion    string                   `json:"stream_version"`
+	GenerationID     string                   `json:"generation_id"`
 	WhiteLabelBody   []byte                   `json:"-"`
 }
 
@@ -331,6 +404,8 @@ type platformCompareBody struct {
 	MaxTokens        *int                     `json:"max_tokens"`
 	ContextWindow    *int                     `json:"context_window"`
 	Stream           bool                     `json:"stream"`
+	StreamVersion    string                   `json:"stream_version"`
+	GenerationID     string                   `json:"generation_id"`
 	WhiteLabelBody   []byte                   `json:"-"`
 }
 

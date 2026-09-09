@@ -8,15 +8,15 @@ import (
 	"testing"
 )
 
-func TestAdminOperationRolePermissionResults0012MigrationContract(t *testing.T) {
+func TestAdminOperationRolePermissionResults0013MigrationContract(t *testing.T) {
 	migrations, err := All()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(migrations) != 12 || migrations[11].Version != "0012" {
-		t.Fatalf("migration 0012 is missing or out of order: %#v", migrations)
+	if len(migrations) != 13 || migrations[12].Version != "0013" {
+		t.Fatalf("migration 0013 is missing or out of order: %#v", migrations)
 	}
-	up := strings.ToLower(strings.TrimSpace(string(migrations[11].UpSQL)))
+	up := strings.ToLower(strings.TrimSpace(string(migrations[12].UpSQL)))
 	for _, fragment := range []string{
 		"alter table admin_operations",
 		"add column result_permissions_version bigint null after result_auth_version",
@@ -25,15 +25,15 @@ func TestAdminOperationRolePermissionResults0012MigrationContract(t *testing.T) 
 		"add constraint chk_admin_operations_result_role_permission check",
 	} {
 		if !strings.Contains(up, fragment) {
-			t.Errorf("0012 up missing %q: %s", fragment, up)
+			t.Errorf("0013 up missing %q: %s", fragment, up)
 		}
 	}
 	for _, forbidden := range []string{"create index", "add index", "add key", "timestamp", "datetime", "update ", "delete "} {
 		if strings.Contains(up, forbidden) {
-			t.Errorf("0012 up contains forbidden %q: %s", forbidden, up)
+			t.Errorf("0013 up contains forbidden %q: %s", forbidden, up)
 		}
 	}
-	down := strings.ToLower(strings.TrimSpace(string(migrations[11].DownSQL)))
+	down := strings.ToLower(strings.TrimSpace(string(migrations[12].DownSQL)))
 	for _, fragment := range []string{
 		"drop check chk_admin_operations_result_role_permission",
 		"update admin_operations\nset state = 4,\n    finished_at = null,\n    error_code = null,\n    result_kind = null,\n    result_guid = null,\n    result_auth_version = null,\n    result_http_status = null\nwhere state = 2 and action in (3, 4, 5)",
@@ -41,7 +41,7 @@ func TestAdminOperationRolePermissionResults0012MigrationContract(t *testing.T) 
 		"add constraint chk_admin_operations_result_auth_version check",
 	} {
 		if !strings.Contains(down, fragment) {
-			t.Errorf("0012 down missing %q: %s", fragment, down)
+			t.Errorf("0013 down missing %q: %s", fragment, down)
 		}
 	}
 
@@ -56,9 +56,10 @@ func TestAdminOperationRolePermissionResults0012MigrationContract(t *testing.T) 
 		"0008": "21289da334e7ef4425f697c659e6f45227e88c4d86ac4c099867dd6895f666f2",
 		"0009": "4dc818d93180bb6777d2ec6d8318e728fe76add4c736a178f19b808ca2afedf7",
 		"0010": "b6ddd5b7088f1617b9831186e08da622f7d06cbe985707ef9f5524ffe6057780",
-		"0011": "d2f1f841f7176684cd6b953bc69f0f1143e64eca0d758ae7b9e3d1104c97de01",
+		"0011": "be6ea3beb18a64cf2a2e03b2730df5abbcc457900e9da6292eefee0dd15a2792",
+		"0012": "d2f1f841f7176684cd6b953bc69f0f1143e64eca0d758ae7b9e3d1104c97de01",
 	}
-	for _, migration := range migrations[:11] {
+	for _, migration := range migrations[:12] {
 		got := fmt.Sprintf("%x", sha256.Sum256(migration.UpSQL))
 		if got != wantPublished[migration.Version] {
 			t.Errorf("published migration %s checksum changed: %s", migration.Version, got)
@@ -66,11 +67,11 @@ func TestAdminOperationRolePermissionResults0012MigrationContract(t *testing.T) 
 	}
 }
 
-func TestAdminOperationRolePermissionResults0012RealMySQLDownPreservesCompatibleResults(t *testing.T) {
+func TestAdminOperationRolePermissionResults0013RealMySQLDownPreservesCompatibleResults(t *testing.T) {
 	gdb := permissionSchemaDB(t)
 	nextGUID := int64(9_120_000_000_000_000)
 	if err := Up(context.Background(), gdb, func() int64 { nextGUID++; return nextGUID }, func() int64 { return 1_900_000_000_000 }); err != nil {
-		t.Fatalf("apply migrations through 0012: %v", err)
+		t.Fatalf("apply migrations through 0013: %v", err)
 	}
 	if err := VerifyAdminOperationRolePermissionResultsSchema(context.Background(), gdb); err != nil {
 		t.Fatal(err)
@@ -112,8 +113,8 @@ func TestAdminOperationRolePermissionResults0012RealMySQLDownPreservesCompatible
 	}
 
 	migrations, _ := All()
-	if err := executeAdminOperationSafetyFixtureSQL(gdb, migrations[11].DownSQL); err != nil {
-		t.Fatalf("0012 down with A08 history: %v", err)
+	if err := executeAdminOperationSafetyFixtureSQL(gdb, migrations[12].DownSQL); err != nil {
+		t.Fatalf("0013 down with A08 history: %v", err)
 	}
 	var resetState, resetAuth, resetKind, resetStatus int
 	var resetResultGUID int64
@@ -128,13 +129,13 @@ func TestAdminOperationRolePermissionResults0012RealMySQLDownPreservesCompatible
 		t.Fatalf("down A08 conservative result: state/action/ref=%d/%d/%q terminal=%#v/%#v/%#v/%#v/%#v/%#v err=%v", a08State, a08Action, a08PublicRef, a08Finished, a08Failure, a08Kind, a08GUID, a08Auth, a08Status, err)
 	}
 	if err := VerifyAdminOperationSafetySchema(context.Background(), gdb); err != nil {
-		t.Fatalf("0011 verifier after down: %v", err)
+		t.Fatalf("0012 verifier after down: %v", err)
 	}
-	if err := executeAdminOperationSafetyFixtureSQL(gdb, migrations[11].UpSQL); err != nil {
-		t.Fatalf("0012 reapply: %v", err)
+	if err := executeAdminOperationSafetyFixtureSQL(gdb, migrations[12].UpSQL); err != nil {
+		t.Fatalf("0013 reapply: %v", err)
 	}
 	if err := VerifyAdminOperationRolePermissionResultsSchema(context.Background(), gdb); err != nil {
-		t.Fatalf("0012 verifier after reapply: %v", err)
+		t.Fatalf("0013 verifier after reapply: %v", err)
 	}
 	var reappliedState int
 	var reappliedAuth, reappliedPermissions, reappliedRole any
@@ -169,14 +170,14 @@ func TestAdminOperationRolePermissionResultsSchemaContractIsExact(t *testing.T) 
 		}
 	}
 	if len(contract.indexes) != 9 {
-		t.Fatalf("0012 added or removed indexes: %#v", contract.indexes)
+		t.Fatalf("0013 added or removed indexes: %#v", contract.indexes)
 	}
 	for _, check := range contract.checks {
 		if canonical, ok := canonicalizeCheckClause(check.clause); !ok || canonical == "" {
-			t.Errorf("0012 check %s is not supported by strict verifier grammar", check.name)
+			t.Errorf("0013 check %s is not supported by strict verifier grammar", check.name)
 		}
 		if check.name == "chk_admin_operations_result_role_permission" && strings.Count(strings.ToLower(check.clause), "result_role is not null") != 3 {
-			t.Errorf("0012 role CHECK must reject NULL roles in every A08 success branch: %s", check.clause)
+			t.Errorf("0013 role CHECK must reject NULL roles in every A08 success branch: %s", check.clause)
 		}
 	}
 	if err := VerifyAdminOperationRolePermissionResultsSchema(nil, nil); err != ErrAdminOperationRolePermissionResultsSchema {

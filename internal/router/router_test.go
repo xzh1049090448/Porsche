@@ -176,6 +176,52 @@ func TestAdminUserEntitlementRoutesAreRegisteredExactlyOnce(t *testing.T) {
 	}
 }
 
+func TestNewStateRegistersAuthenticatedGenerationRoutes(t *testing.T) {
+	settings := &config.Settings{AppEnv: "test", AllowedHosts: "example.com"}
+	engine := router.New(&app.State{Settings: settings})
+	wantExisting := []routeContract{
+		{http.MethodPost, "/api/v1/platform/chat/completions"},
+		{http.MethodPost, "/api/v1/platform/chat/compare"},
+		{http.MethodGet, "/api/v1/platform/chat/generations/:generation_id"},
+		{http.MethodPost, "/api/v1/platform/chat/generations/:generation_id/cancel"},
+	}
+	for _, want := range wantExisting {
+		count := 0
+		for _, route := range engine.Routes() {
+			if route.Method == want.Method && route.Path == want.Path {
+				count++
+			}
+		}
+		if count != 1 {
+			t.Fatalf("existing platform route %s %s count=%d, want 1", want.Method, want.Path, count)
+		}
+	}
+
+	for _, authenticated := range []routeContract{
+		{http.MethodGet, "/api/v1/platform/chat/generations/550e8400-e29b-41d4-a716-446655440000"},
+		{http.MethodPost, "/api/v1/platform/chat/generations/550e8400-e29b-41d4-a716-446655440000/cancel"},
+	} {
+		request := httptest.NewRequest(authenticated.Method, authenticated.Path, nil)
+		request.Host = "example.com"
+		recorder := httptest.NewRecorder()
+		engine.ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusUnauthorized {
+			t.Fatalf("generation route %s %s status=%d body=%s, want authenticated 401", authenticated.Method, authenticated.Path, recorder.Code, recorder.Body.String())
+		}
+		if recorder.Header().Get("Cache-Control") != "no-store" {
+			t.Fatalf("generation auth failure %s %s cache-control=%q, want no-store", authenticated.Method, authenticated.Path, recorder.Header().Get("Cache-Control"))
+		}
+	}
+
+	modelsRequest := httptest.NewRequest(http.MethodGet, "/api/v1/platform/models", nil)
+	modelsRequest.Host = "example.com"
+	modelsRecorder := httptest.NewRecorder()
+	engine.ServeHTTP(modelsRecorder, modelsRequest)
+	if modelsRecorder.Code != http.StatusUnauthorized || modelsRecorder.Header().Get("Cache-Control") != "" {
+		t.Fatalf("non-generation platform auth response changed: status=%d cache-control=%q", modelsRecorder.Code, modelsRecorder.Header().Get("Cache-Control"))
+	}
+}
+
 func TestHostAllowlistAcceptsDomainAndRejectsDirectIPAddress(t *testing.T) {
 	state := newGatewayTestState(t)
 	state.Settings.AllowedHosts = "aiportcloud.com"
@@ -638,6 +684,8 @@ var preB1ERouteInventory = []routeContract{
 	{http.MethodGet, "/api/v1/conversations/:guid/export/markdown"},
 	{http.MethodPost, "/api/v1/platform/chat/compare"},
 	{http.MethodPost, "/api/v1/platform/chat/completions"},
+	{http.MethodGet, "/api/v1/platform/chat/generations/:generation_id"},
+	{http.MethodPost, "/api/v1/platform/chat/generations/:generation_id/cancel"},
 	{http.MethodGet, "/api/v1/platform/models"},
 	{http.MethodGet, "/api/v1/platform/models/:id"},
 	{http.MethodGet, "/api/v1/platform/models/detail"},
