@@ -120,6 +120,30 @@ func TestValidatePublicationChecksRenderedSemanticPrototypeClaimsAndIgnoresCode(
 	}
 }
 
+func TestValidatePublicationChecksVisibleSafeHTMLBlockText(t *testing.T) {
+	for _, body := range []string{
+		"<p>40+ models</p>",
+		"<h1>100% uptime</h1>",
+		"<blockquote>MIT licensed</blockquote>",
+	} {
+		t.Run(body, func(t *testing.T) {
+			if !hasIssueCode(ValidatePublication(publicationWithHome(body)), "unsubstantiated_prototype_claim") {
+				t.Fatalf("safe HTML block claim was accepted: %q", body)
+			}
+		})
+	}
+}
+
+func TestValidatePublicationIgnoresCodeAndPreHTMLText(t *testing.T) {
+	for _, body := range []string{"<code>40+ models</code>", "<pre>100% uptime</pre>"} {
+		t.Run(body, func(t *testing.T) {
+			if hasIssueCode(ValidatePublication(publicationWithHome(body)), "unsubstantiated_prototype_claim") {
+				t.Fatalf("code-like HTML was treated as visible prose: %q", body)
+			}
+		})
+	}
+}
+
 func TestValidatePublicationUsesCommonMarkVisibleLinkLabelText(t *testing.T) {
 	for _, body := range []string{"[4](/pricing)0+ published models", "`40+``"} {
 		if !hasIssueCode(ValidatePublication(publicationWithHome(body)), "unsubstantiated_prototype_claim") {

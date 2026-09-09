@@ -43,9 +43,6 @@ var allowedHTMLTags = map[string]map[string]bool{
 func SanitizeMarkdown(raw string) (string, []ValidationIssue) {
 	source, document := parseCommonMark(raw)
 	issues := astValidationIssues(document, source)
-	if hasUnsafeExecutableText(commonMarkVisibleText(document, source)) {
-		issues = append(issues, ValidationIssue{Field: "content", Code: "unsafe_url"})
-	}
 	issues = uniqueIssues(issues)
 	if len(issues) != 0 {
 		return "", issues
@@ -60,24 +57,104 @@ func normalizedRenderedText(raw string) string {
 
 func commonMarkVisibleText(document ast.Node, source []byte) string {
 	var rendered strings.Builder
+	inlineHTML := htmlTextState{}
 	_ = ast.Walk(document, func(node ast.Node, entering bool) (ast.WalkStatus, error) {
 		if !entering {
 			return ast.WalkContinue, nil
 		}
 		switch typed := node.(type) {
-		case *ast.FencedCodeBlock, *ast.CodeBlock, *ast.CodeSpan, *ast.RawHTML, *ast.HTMLBlock:
+		case *ast.FencedCodeBlock, *ast.CodeBlock, *ast.CodeSpan:
+			return ast.WalkSkipChildren, nil
+		case *ast.RawHTML:
+			appendHTMLVisibleText(&rendered, string(typed.Text(source)), &inlineHTML)
+			return ast.WalkSkipChildren, nil
+		case *ast.HTMLBlock:
+			blockHTML := htmlTextState{}
+			appendHTMLVisibleText(&rendered, string(typed.Text(source)), &blockHTML)
 			return ast.WalkSkipChildren, nil
 		case *ast.Text:
-			rendered.Write(typed.Value(source))
+			if inlineHTML.hiddenDepth == 0 {
+				rendered.Write(typed.Value(source))
+			}
 		case *ast.String:
-			rendered.Write(typed.Value)
+			if inlineHTML.hiddenDepth == 0 {
+				rendered.Write(typed.Value)
+			}
 		case *ast.AutoLink:
-			rendered.Write(typed.Label(source))
+			if inlineHTML.hiddenDepth == 0 {
+				rendered.Write(typed.Label(source))
+			}
 			return ast.WalkSkipChildren, nil
 		}
 		return ast.WalkContinue, nil
 	})
 	return rendered.String()
+}
+
+type htmlTextState struct {
+	openTags    []htmlTextTag
+	hiddenDepth int
+}
+
+type htmlTextTag struct {
+	name   string
+	hidden bool
+}
+
+var htmlVoidTags = map[string]bool{"br": true, "img": true}
+
+// appendHTMLVisibleText uses the HTML tokenizer rather than matching markup
+// text. Only text in allowed non-code elements is part of the rendered claim
+// surface; unsafe markup is still reported separately by inspectHTML.
+func appendHTMLVisibleText(rendered *strings.Builder, raw string, state *htmlTextState) {
+	tokenizer := xhtml.NewTokenizer(strings.NewReader(raw))
+	for {
+		switch tokenizer.Next() {
+		case xhtml.ErrorToken:
+			return
+		case xhtml.TextToken:
+			if state.hiddenDepth == 0 {
+				rendered.Write(tokenizer.Text())
+			}
+		case xhtml.StartTagToken:
+			name, _ := tokenizer.TagName()
+			state.open(strings.ToLower(string(name)))
+		case xhtml.SelfClosingTagToken:
+			// Void and explicitly self-closing elements have no semantic text.
+		case xhtml.EndTagToken:
+			name, _ := tokenizer.TagName()
+			state.close(strings.ToLower(string(name)))
+		}
+	}
+}
+
+func (state *htmlTextState) open(name string) {
+	if htmlVoidTags[name] {
+		return
+	}
+	hidden := state.hiddenDepth > 0 || name == "code" || name == "pre"
+	if _, allowed := allowedHTMLTags[name]; !allowed {
+		hidden = true
+	}
+	state.openTags = append(state.openTags, htmlTextTag{name: name, hidden: hidden})
+	if hidden {
+		state.hiddenDepth++
+	}
+}
+
+func (state *htmlTextState) close(name string) {
+	for index := len(state.openTags) - 1; index >= 0; index-- {
+		if state.openTags[index].name != name {
+			continue
+		}
+		for _, tag := range state.openTags[index:] {
+			if tag.hidden {
+				state.hiddenDepth--
+			}
+		}
+		state.openTags = state.openTags[:index]
+		return
+	}
 }
 
 func parseCommonMark(raw string) ([]byte, ast.Node) {
@@ -110,6 +187,10 @@ func astValidationIssues(document ast.Node, source []byte) []ValidationIssue {
 			if !isAllowedLink(string(typed.URL(source))) {
 				issues = append(issues, ValidationIssue{Field: "content", Code: "unsafe_url"})
 			}
+		case *ast.Text:
+			if unsafeSoftBreakDestination(typed, source) {
+				issues = append(issues, ValidationIssue{Field: "content", Code: "unsafe_url"})
+			}
 		case *ast.RawHTML:
 			issues = append(issues, inspectHTML(string(typed.Text(source)))...)
 			return ast.WalkSkipChildren, nil
@@ -120,6 +201,33 @@ func astValidationIssues(document ast.Node, source []byte) []ValidationIssue {
 		return ast.WalkContinue, nil
 	})
 	return uniqueIssues(issues)
+}
+
+// Goldmark follows CommonMark by treating a physical line break in a
+// destination as ordinary text. Retain the prior rejection rule only for this
+// specific destination-shaped soft-break form, after code and HTML nodes have
+// already been excluded by the AST walk. Ordinary prose is never scanned.
+func unsafeSoftBreakDestination(node *ast.Text, source []byte) bool {
+	if !node.SoftLineBreak() {
+		return false
+	}
+	value := string(node.Value(source))
+	opening := strings.LastIndex(value, "](")
+	if opening < 0 {
+		return false
+	}
+	destination := value[opening+2:]
+	for sibling := node.NextSibling(); sibling != nil; sibling = sibling.NextSibling() {
+		textNode, ok := sibling.(*ast.Text)
+		if !ok {
+			return false
+		}
+		destination += string(textNode.Value(source))
+		if closing := strings.IndexByte(destination, ')'); closing >= 0 {
+			return isDangerousURL(destination[:closing])
+		}
+	}
+	return false
 }
 
 func isAllowedLink(raw string) bool {
@@ -199,11 +307,6 @@ func normalizeSemanticText(raw string) string {
 	}
 }
 
-func hasUnsafeExecutableText(value string) bool {
-	value = canonicalURL(value)
-	return strings.Contains(value, "javascript:") || strings.Contains(value, "vbscript:") || strings.Contains(value, "data:")
-}
-
 func unescapeMarkdownPunctuation(value string) string {
 	var unescaped strings.Builder
 	for i := 0; i < len(value); i++ {
@@ -250,6 +353,9 @@ func inspectHTML(raw string) []ValidationIssue {
 					issues = append(issues, ValidationIssue{Field: "content", Code: "unsafe_url"})
 				}
 				if attribute == "src" && (tag != "img" || !isControlledLocalAsset(string(value))) {
+					if isDangerousURL(string(value)) {
+						issues = append(issues, ValidationIssue{Field: "content", Code: "unsafe_url"})
+					}
 					issues = append(issues, ValidationIssue{Field: "content", Code: "unsafe_remote_image"})
 				}
 				hasAttributes = more

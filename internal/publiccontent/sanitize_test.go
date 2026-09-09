@@ -17,6 +17,20 @@ func TestSanitizeMarkdownPreservesSafeTextMarkdownAndControlledAssets(t *testing
 	}
 }
 
+func TestSanitizeMarkdownAllowsSchemeNamesInOrdinaryProse(t *testing.T) {
+	for _, raw := range []string{
+		"The javascript: URL scheme is not permitted in links.",
+		"A data: URL is not an allowed image source.",
+	} {
+		t.Run(raw, func(t *testing.T) {
+			got, issues := SanitizeMarkdown(raw)
+			if len(issues) != 0 || got != raw {
+				t.Fatalf("SanitizeMarkdown(%q) = (%q, %#v), want original prose without issues", raw, got, issues)
+			}
+		})
+	}
+}
+
 func TestSanitizeMarkdownRejectsExecutableMarkupAndUnsafeURLs(t *testing.T) {
 	tests := []struct {
 		name string
@@ -37,6 +51,7 @@ func TestSanitizeMarkdownRejectsExecutableMarkupAndUnsafeURLs(t *testing.T) {
 		{name: "backslash_protocol_relative", raw: "![x](\\\\169.254.169.254/latest/meta-data)", code: "unsafe_url"},
 		{name: "remote_image", raw: "![x](https://169.254.169.254/latest/meta-data)", code: "unsafe_remote_image"},
 		{name: "html_remote_image", raw: "<img src=\"https://example.test/logo.svg\">", code: "unsafe_remote_image"},
+		{name: "html_javascript_image", raw: "<img src=\"javascript:alert(1)\">", code: "unsafe_url"},
 	}
 
 	for _, test := range tests {
