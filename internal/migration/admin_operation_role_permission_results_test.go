@@ -36,7 +36,7 @@ func TestAdminOperationRolePermissionResults0012MigrationContract(t *testing.T) 
 	down := strings.ToLower(strings.TrimSpace(string(migrations[11].DownSQL)))
 	for _, fragment := range []string{
 		"drop check chk_admin_operations_result_role_permission",
-		"update admin_operations\nset result_auth_version = null\nwhere action in (3, 4, 5) and result_auth_version is not null",
+		"update admin_operations\nset state = 4,\n    finished_at = null,\n    error_code = null,\n    result_kind = null,\n    result_guid = null,\n    result_auth_version = null,\n    result_http_status = null\nwhere state = 2 and action in (3, 4, 5)",
 		"drop column result_role,\n  drop column result_permissions_version",
 		"add constraint chk_admin_operations_result_auth_version check",
 	} {
@@ -115,13 +115,17 @@ func TestAdminOperationRolePermissionResults0012RealMySQLDownPreservesCompatible
 	if err := executeAdminOperationSafetyFixtureSQL(gdb, migrations[11].DownSQL); err != nil {
 		t.Fatalf("0012 down with A08 history: %v", err)
 	}
-	var resetAuth int
-	var a08Auth any
-	if err := gdb.Raw("SELECT result_auth_version FROM admin_operations WHERE guid = ?", 9_120_010).Row().Scan(&resetAuth); err != nil || resetAuth != 8 {
-		t.Fatalf("down changed reset auth result: %d %v", resetAuth, err)
+	var resetState, resetAuth, resetKind, resetStatus int
+	var resetResultGUID int64
+	if err := gdb.Raw("SELECT state,result_kind,result_guid,result_auth_version,result_http_status FROM admin_operations WHERE guid = ?", 9_120_010).Row().Scan(&resetState, &resetKind, &resetResultGUID, &resetAuth, &resetStatus); err != nil || resetState != 2 || resetKind != 2 || resetResultGUID != 9_120_099 || resetAuth != 8 || resetStatus != 200 {
+		t.Fatalf("down changed reset result: state/kind/guid/auth/status=%d/%d/%d/%d/%d err=%v", resetState, resetKind, resetResultGUID, resetAuth, resetStatus, err)
 	}
-	if err := gdb.Raw("SELECT result_auth_version FROM admin_operations WHERE guid = ?", 9_120_011).Row().Scan(&a08Auth); err != nil || a08Auth != nil {
-		t.Fatalf("down retained A08 auth result: %#v %v", a08Auth, err)
+	var a08State, a08Action int
+	var a08Finished, a08Failure, a08Kind, a08GUID, a08Auth, a08Status any
+	var a08PublicRef string
+	if err := gdb.Raw("SELECT state,action,public_ref,finished_at,error_code,result_kind,result_guid,result_auth_version,result_http_status FROM admin_operations WHERE guid = ?", 9_120_011).Row().Scan(&a08State, &a08Action, &a08PublicRef, &a08Finished, &a08Failure, &a08Kind, &a08GUID, &a08Auth, &a08Status); err != nil ||
+		a08State != 4 || a08Action != 3 || a08PublicRef != "op_0000000000000000000000000000000000009120011" || a08Finished != nil || a08Failure != nil || a08Kind != nil || a08GUID != nil || a08Auth != nil || a08Status != nil {
+		t.Fatalf("down A08 conservative result: state/action/ref=%d/%d/%q terminal=%#v/%#v/%#v/%#v/%#v/%#v err=%v", a08State, a08Action, a08PublicRef, a08Finished, a08Failure, a08Kind, a08GUID, a08Auth, a08Status, err)
 	}
 	if err := VerifyAdminOperationSafetySchema(context.Background(), gdb); err != nil {
 		t.Fatalf("0011 verifier after down: %v", err)
@@ -131,6 +135,11 @@ func TestAdminOperationRolePermissionResults0012RealMySQLDownPreservesCompatible
 	}
 	if err := VerifyAdminOperationRolePermissionResultsSchema(context.Background(), gdb); err != nil {
 		t.Fatalf("0012 verifier after reapply: %v", err)
+	}
+	var reappliedState int
+	var reappliedAuth, reappliedPermissions, reappliedRole any
+	if err := gdb.Raw("SELECT state,result_auth_version,result_permissions_version,result_role FROM admin_operations WHERE guid = ?", 9_120_011).Row().Scan(&reappliedState, &reappliedAuth, &reappliedPermissions, &reappliedRole); err != nil || reappliedState != 4 || reappliedAuth != nil || reappliedPermissions != nil || reappliedRole != nil {
+		t.Fatalf("reapplied A08 row forged result: state=%d tuple=%#v/%#v/%#v err=%v", reappliedState, reappliedAuth, reappliedPermissions, reappliedRole, err)
 	}
 }
 

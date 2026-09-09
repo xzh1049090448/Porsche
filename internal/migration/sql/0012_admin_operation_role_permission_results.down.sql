@@ -3,8 +3,14 @@ ALTER TABLE admin_operations
   DROP CHECK chk_admin_operations_result_auth_version;
 
 UPDATE admin_operations
-SET result_auth_version = NULL
-WHERE action IN (3, 4, 5) AND result_auth_version IS NOT NULL;
+SET state = 4,
+    finished_at = NULL,
+    error_code = NULL,
+    result_kind = NULL,
+    result_guid = NULL,
+    result_auth_version = NULL,
+    result_http_status = NULL
+WHERE state = 2 AND action IN (3, 4, 5);
 
 ALTER TABLE admin_operations
   DROP COLUMN result_role,
