@@ -59,12 +59,31 @@ func TestRolePermissionOutboxWriterPersistsExactPendingEnvelope(t *testing.T) {
 	}
 }
 
+func TestRolePermissionOutboxWriterRejectsOperationVerificationIntentMismatch(t *testing.T) {
+	db, script := newA08WriterDB(t, actionsecurity.ActionUsersPermissionsWrite)
+	script.verification.IntentHMAC = strings.Repeat("b", 64)
+	writer, err := NewRolePermissionOutboxWriter(func() int64 { return 7102 }, deleteWriterClock(8001))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx := db.Begin()
+	if err := writer.Write(context.Background(), tx, a08OutboxEvent(actionsecurity.ActionUsersPermissionsWrite)); !errors.Is(err, ErrActionOperationUnavailable) {
+		t.Fatalf("mismatched operation/verification intent accepted: %v", err)
+	}
+	_ = tx.Rollback().Error
+	if script.committedCount() != 0 {
+		t.Fatal("mismatched operation/verification intent wrote outbox")
+	}
+}
+
 func TestRolePermissionAuditWriterPersistsExactPublicBeforeAfterFacts(t *testing.T) {
 	db, script := newA08WriterDB(t, actionsecurity.ActionUsersPromote)
 	base := rolePermissionTestExecution(t, actionsecurity.ActionUsersPromote, actionsecurity.PromoteIntent{
 		TargetGUID: 6001, ExpectedAuthVersion: 7, ExpectedPermissionsVersion: 2, CatalogVersion: 1,
 		Overrides: []actionsecurity.PermissionOverrideIntent{{Capability: "users.sessions.read", Effect: 2}}, Reason: " approved promotion ",
 	})
+	script.operation.RequestHMAC = base.requestHMAC
+	script.verification.IntentHMAC = base.requestHMAC
 	execution, err := newRolePermissionTransactionalExecution(base, &rolePermissionTxRevoker{})
 	if err != nil {
 		t.Fatal(err)
@@ -134,11 +153,44 @@ func TestRolePermissionAuditWriterRejectsDifferentA08ActionBinding(t *testing.T)
 	}
 }
 
+func TestRolePermissionAuditWriterRejectsSameActionTargetDifferentIntent(t *testing.T) {
+	db, script := newA08WriterDB(t, actionsecurity.ActionUsersPromote)
+	legitimate := rolePermissionTestExecution(t, actionsecurity.ActionUsersPromote, actionsecurity.PromoteIntent{
+		TargetGUID: 6001, ExpectedAuthVersion: 7, ExpectedPermissionsVersion: 0, CatalogVersion: 1,
+		Overrides: []actionsecurity.PermissionOverrideIntent{{Capability: "users.sessions.read", Effect: 2}}, Reason: "approved intent",
+	})
+	script.operation.RequestHMAC = legitimate.requestHMAC
+	script.verification.IntentHMAC = legitimate.requestHMAC
+	forged := rolePermissionTestExecution(t, actionsecurity.ActionUsersPromote, actionsecurity.PromoteIntent{
+		TargetGUID: 6001, ExpectedAuthVersion: 7, ExpectedPermissionsVersion: 0, CatalogVersion: 1,
+		Overrides: []actionsecurity.PermissionOverrideIntent{{Capability: "users.read", Effect: 3}}, Reason: "different intent",
+	})
+	execution, err := newRolePermissionTransactionalExecution(forged, &rolePermissionTxRevoker{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := RolePermissionTargetSnapshot{ActorGUID: 4001, TargetGUID: 6001, Role: models.UserRoleUser, Status: models.UserStatusActive, AuthVersion: 7}
+	plan := &RolePermissionTransitionPlan{DesiredRole: models.UserRoleAdmin, NextAuthVersion: 8, ExpectedPolicyVersion: 0, NextPolicyVersion: 1, CatalogVersion: 1, DesiredRules: forged.intent.Promote.Overrides}
+	if err := execution.recordAuditFacts(61, before, nil, nil, plan); err != nil {
+		t.Fatal(err)
+	}
+	tx := db.Begin()
+	if err := execution.Write(context.Background(), tx, a08AuditEvent(actionsecurity.ActionUsersPromote)); !errors.Is(err, ErrActionOperationUnavailable) {
+		t.Fatalf("different canonical intent accepted: %v", err)
+	}
+	_ = tx.Rollback().Error
+	if script.committedCount() != 0 {
+		t.Fatal("different canonical intent wrote audit")
+	}
+}
+
 func newA08WriterDB(t *testing.T, action actionsecurity.Action) (*gorm.DB, *deleteWriterScript) {
 	t.Helper()
 	db, script := newDeleteWriterDB(t)
 	script.operation.Action = int(action)
 	script.verification.Action = int(action)
+	script.operation.RequestHMAC = strings.Repeat("a", 64)
+	script.verification.IntentHMAC = script.operation.RequestHMAC
 	return db, script
 }
 

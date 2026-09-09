@@ -74,7 +74,7 @@ func (execution *rolePermissionTransactionalExecution) Write(ctx context.Context
 		return ErrActionOperationUnavailable
 	}
 
-	binding, err := loadRolePermissionWriterBinding(deleteWriterDB(ctx, tx), event.PublicRef, event.ActorGUID, event.SessionGUID, event.Action, *event.TargetGUID)
+	binding, err := loadRolePermissionWriterBinding(deleteWriterDB(ctx, tx), event.PublicRef, event.ActorGUID, event.SessionGUID, event.Action, *event.TargetGUID, execution.base.requestHMAC)
 	if err != nil {
 		return ErrActionOperationUnavailable
 	}
@@ -141,7 +141,7 @@ func (writer *RolePermissionOutboxWriter) Write(ctx context.Context, tx *gorm.DB
 		event.Action, event.TargetKind, event.TargetGUID, event.State, event.Failure, event.ResultKind, event.ResultGUID, event.OccurredAt, writer.clock) {
 		return ErrActionOperationUnavailable
 	}
-	binding, err := loadRolePermissionWriterBinding(deleteWriterDB(ctx, tx), event.PublicRef, event.ActorGUID, event.SessionGUID, event.Action, *event.TargetGUID)
+	binding, err := loadRolePermissionWriterBinding(deleteWriterDB(ctx, tx), event.PublicRef, event.ActorGUID, event.SessionGUID, event.Action, *event.TargetGUID, "")
 	if err != nil {
 		return ErrActionOperationUnavailable
 	}
@@ -189,15 +189,17 @@ func validRolePermissionTerminalEnvelope(publicRef string, actorGUID, sessionGUI
 	return now > 0 && occurredAt <= now
 }
 
-func loadRolePermissionWriterBinding(db *gorm.DB, publicRef string, actorGUID, sessionGUID int64, action actionsecurity.Action, targetGUID int64) (deleteWriterBinding, error) {
+func loadRolePermissionWriterBinding(db *gorm.DB, publicRef string, actorGUID, sessionGUID int64, action actionsecurity.Action, targetGUID int64, expectedRequestHMAC string) (deleteWriterBinding, error) {
 	if !isA08RolePermissionAction(action) {
 		return deleteWriterBinding{}, ErrActionOperationUnavailable
 	}
 	var operation models.AdminOperation
-	if err := db.Select("id", "actor_user_id", "actor_auth_version", "session_id", "action", "verification_id", "state", "public_ref").
+	if err := db.Select("id", "actor_user_id", "actor_auth_version", "session_id", "action", "verification_id", "state", "public_ref", "request_hmac").
 		Where("public_ref = ? AND is_deleted = 0", publicRef).First(&operation).Error; err != nil || operation.ID <= 0 || operation.ActorUserID <= 0 ||
 		operation.ActorAuthVersion <= 0 || operation.SessionID <= 0 || operation.Action != int(action) || operation.VerificationID == nil ||
-		*operation.VerificationID <= 0 || operation.State != models.OperationProcessing || !constantTimeOperationStringEqual(operation.PublicRef, publicRef) {
+		*operation.VerificationID <= 0 || operation.State != models.OperationProcessing || len(operation.RequestHMAC) != 64 ||
+		!constantTimeOperationStringEqual(operation.PublicRef, publicRef) ||
+		(expectedRequestHMAC != "" && (len(expectedRequestHMAC) != 64 || !constantTimeOperationStringEqual(operation.RequestHMAC, expectedRequestHMAC))) {
 		return deleteWriterBinding{}, ErrActionOperationUnavailable
 	}
 	var actor models.User
@@ -206,11 +208,12 @@ func loadRolePermissionWriterBinding(db *gorm.DB, publicRef string, actorGUID, s
 		return deleteWriterBinding{}, ErrActionOperationUnavailable
 	}
 	var verification models.AdminActionVerification
-	if err := db.Select("id", "actor_user_id", "actor_auth_version", "session_id", "action", "target_kind", "target_guid", "consumed_at", "is_deleted").
+	if err := db.Select("id", "actor_user_id", "actor_auth_version", "session_id", "action", "target_kind", "target_guid", "intent_hmac", "consumed_at", "is_deleted").
 		Where("id = ?", *operation.VerificationID).First(&verification).Error; err != nil || verification.ID != *operation.VerificationID ||
 		verification.ActorUserID != operation.ActorUserID || verification.ActorAuthVersion != operation.ActorAuthVersion || verification.SessionID != operation.SessionID ||
 		verification.Action != int(action) || verification.TargetKind != int(actionsecurity.TargetUser) || verification.TargetGUID == nil ||
-		*verification.TargetGUID != targetGUID || verification.ConsumedAt == nil || *verification.ConsumedAt <= 0 || verification.IsDeleted != 1 {
+		*verification.TargetGUID != targetGUID || len(verification.IntentHMAC) != 64 || !constantTimeOperationStringEqual(verification.IntentHMAC, operation.RequestHMAC) ||
+		verification.ConsumedAt == nil || *verification.ConsumedAt <= 0 || verification.IsDeleted != 1 {
 		return deleteWriterBinding{}, ErrActionOperationUnavailable
 	}
 	var session models.Session
