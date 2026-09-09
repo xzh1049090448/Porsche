@@ -434,12 +434,15 @@ func (c *PlatformGenerationControl) project(ctx context.Context, userID int64, g
 }
 
 func platformGenerationReceiptMatches(snapshot PlatformGenerationSnapshot, receipt PlatformGenerationReceiptSnapshot, userID int64, generationID string) bool {
-	if !validPlatformGenerationControlSnapshot(snapshot, generationID) || snapshot.State != PlatformGenerationStateCompleted ||
+	if !validPlatformGenerationControlSnapshot(snapshot, generationID) ||
+		(snapshot.State != PlatformGenerationStateCommitting && snapshot.State != PlatformGenerationStateCompleted) ||
 		receipt.UserID != userID || receipt.GenerationID != generationID ||
-		receipt.Mode != snapshot.Mode || receipt.ConversationGUID <= 0 || len(receipt.Results) != len(snapshot.Models) {
+		receipt.Mode != snapshot.Mode || receipt.ConversationGUID <= 0 || receipt.CommittedAtMillis <= 0 ||
+		!platformSSEV2SafeInteger(receipt.CommittedAtMillis) || len(receipt.Results) != len(snapshot.Models) {
 		return false
 	}
 	successes := 0
+	var totalTokens int64
 	for index, model := range snapshot.Models {
 		stored, found := snapshot.ModelStates[model]
 		committed := receipt.Results[index]
@@ -449,11 +452,16 @@ func platformGenerationReceiptMatches(snapshot PlatformGenerationSnapshot, recei
 		switch committed.State {
 		case PlatformGenerationStateCompleted:
 			successes++
-			if committed.AssistantMessageGUID != stored.AssistantMessageGUID || !platformGenerationMessageGUID(committed.AssistantMessageGUID) ||
+			if !platformGenerationMessageGUID(committed.AssistantMessageGUID) ||
+				(snapshot.State == PlatformGenerationStateCompleted && committed.AssistantMessageGUID != stored.AssistantMessageGUID) ||
 				committed.Content == "" || !utf8.ValidString(committed.Content) || len([]byte(committed.Content)) > platformGenerationMessageTextMaxBytes ||
 				committed.Tokens < 0 || committed.Tokens > math.MaxInt32 || committed.ErrorCode != "" {
 				return false
 			}
+			if totalTokens > math.MaxInt64-committed.Tokens {
+				return false
+			}
+			totalTokens += committed.Tokens
 		case PlatformGenerationStateFailed:
 			if committed.ErrorCode != stored.ErrorCode || !platformGenerationStableCode(committed.ErrorCode) || committed.AssistantMessageGUID != "" || committed.Content != "" || committed.Tokens != 0 {
 				return false
@@ -462,7 +470,7 @@ func platformGenerationReceiptMatches(snapshot PlatformGenerationSnapshot, recei
 			return false
 		}
 	}
-	if successes < 1 || successes != receipt.SuccessfulModelCount {
+	if successes < 1 || successes != receipt.SuccessfulModelCount || receipt.DailyCallsCharged != successes || receipt.TotalTokens != totalTokens {
 		return false
 	}
 	return snapshot.Mode != PlatformGenerationModeSingle || (len(receipt.Results) == 1 && receipt.Results[0].State == PlatformGenerationStateCompleted)

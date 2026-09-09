@@ -254,7 +254,7 @@ func TestPlatformGenerationViewHydratesCompletedSingleAndCompareExactly(t *testi
 		fake := newPlatformGenerationControlFake(snapshot)
 		fake.loadReceipt = func(context.Context, int64, string) (PlatformGenerationReceiptSnapshot, error) {
 			fake.receiptCalls.Add(1)
-			return PlatformGenerationReceiptSnapshot{UserID: 7, GenerationID: controlGenerationID, Mode: PlatformGenerationModeSingle, ConversationGUID: 8001, UserMessage: "never expose", Results: []PlatformGenerationCommittedResult{{Model: "model-a", State: PlatformGenerationStateCompleted, AssistantMessageGUID: "9001", Content: "answer", Tokens: 0}}, SuccessfulModelCount: 1}, nil
+			return PlatformGenerationReceiptSnapshot{UserID: 7, GenerationID: controlGenerationID, Mode: PlatformGenerationModeSingle, ConversationGUID: 8001, UserMessage: "never expose", Results: []PlatformGenerationCommittedResult{{Model: "model-a", State: PlatformGenerationStateCompleted, AssistantMessageGUID: "9001", Content: "answer", Tokens: 0}}, SuccessfulModelCount: 1, DailyCallsCharged: 1, CommittedAtMillis: now.UnixMilli()}, nil
 		}
 		fake.loadTotalTokens = func(context.Context, int64) (int64, error) { fake.totalCalls.Add(1); return 99, nil }
 		view, err := mustControl(t, fake, NewPlatformGenerationCancellationRegistry(), now).Get(context.Background(), 7, controlGenerationID)
@@ -284,7 +284,7 @@ func TestPlatformGenerationViewHydratesCompletedSingleAndCompareExactly(t *testi
 			return PlatformGenerationReceiptSnapshot{UserID: 7, GenerationID: controlGenerationID, Mode: PlatformGenerationModeCompare, ConversationGUID: 8001, Results: []PlatformGenerationCommittedResult{
 				{Model: "model-a", State: PlatformGenerationStateCompleted, AssistantMessageGUID: "9001", Content: "ok", Tokens: 4},
 				{Model: "model-b", State: PlatformGenerationStateFailed, ErrorCode: "upstream_error"},
-			}, SuccessfulModelCount: 1, UserMessage: "secret prompt"}, nil
+			}, SuccessfulModelCount: 1, DailyCallsCharged: 1, TotalTokens: 4, CommittedAtMillis: now.UnixMilli(), UserMessage: "secret prompt"}, nil
 		}
 		fake.loadTotalTokens = func(context.Context, int64) (int64, error) { return 123, nil }
 		view, err := mustControl(t, fake, NewPlatformGenerationCancellationRegistry(), now).Get(context.Background(), 7, controlGenerationID)
@@ -305,7 +305,7 @@ func TestPlatformGenerationViewHydratesCompletedSingleAndCompareExactly(t *testi
 func TestPlatformGenerationReceiptMatchesRejectsEveryRedisDifferenceAndNeverUsesUserMessage(t *testing.T) {
 	now := int64(1_800_000_000_000)
 	snapshot := controlSnapshot(PlatformGenerationStateCompleted, now)
-	receipt := PlatformGenerationReceiptSnapshot{UserID: 7, GenerationID: controlGenerationID, Mode: PlatformGenerationModeSingle, ConversationGUID: 8001, UserMessage: "ignored", SuccessfulModelCount: 1, Results: []PlatformGenerationCommittedResult{{Model: "model-a", State: PlatformGenerationStateCompleted, AssistantMessageGUID: "9001", Content: "answer", Tokens: 1}}}
+	receipt := PlatformGenerationReceiptSnapshot{UserID: 7, GenerationID: controlGenerationID, Mode: PlatformGenerationModeSingle, ConversationGUID: 8001, UserMessage: "ignored", SuccessfulModelCount: 1, DailyCallsCharged: 1, TotalTokens: 1, CommittedAtMillis: now, Results: []PlatformGenerationCommittedResult{{Model: "model-a", State: PlatformGenerationStateCompleted, AssistantMessageGUID: "9001", Content: "answer", Tokens: 1}}}
 	if !platformGenerationReceiptMatches(snapshot, receipt, 7, controlGenerationID) {
 		t.Fatal("valid graph rejected")
 	}
@@ -332,6 +332,9 @@ func TestPlatformGenerationReceiptMatchesRejectsEveryRedisDifferenceAndNeverUses
 		"guid": func(_ *PlatformGenerationSnapshot, r *PlatformGenerationReceiptSnapshot) {
 			r.Results[0].AssistantMessageGUID = "9002"
 		},
+		"commit provenance": func(_ *PlatformGenerationSnapshot, r *PlatformGenerationReceiptSnapshot) { r.CommittedAtMillis = 0 },
+		"charged count":     func(_ *PlatformGenerationSnapshot, r *PlatformGenerationReceiptSnapshot) { r.DailyCallsCharged = 0 },
+		"receipt total":     func(_ *PlatformGenerationSnapshot, r *PlatformGenerationReceiptSnapshot) { r.TotalTokens = 2 },
 		"redis code": func(s *PlatformGenerationSnapshot, _ *PlatformGenerationReceiptSnapshot) {
 			s.ModelStates["model-a"] = PlatformGenerationModel{State: PlatformGenerationStateFailed, ErrorCode: "internal_error"}
 		},
@@ -360,7 +363,7 @@ func TestPlatformGenerationReceiptMatchesRejectsEveryRedisDifferenceAndNeverUses
 		"model-a": {State: PlatformGenerationStateCompleted, AssistantMessageGUID: "9001"},
 		"model-b": {State: PlatformGenerationStateFailed, ErrorCode: "upstream_error"},
 	}
-	compareReceipt := PlatformGenerationReceiptSnapshot{UserID: 7, GenerationID: controlGenerationID, Mode: PlatformGenerationModeCompare, ConversationGUID: 8001, SuccessfulModelCount: 1, Results: []PlatformGenerationCommittedResult{
+	compareReceipt := PlatformGenerationReceiptSnapshot{UserID: 7, GenerationID: controlGenerationID, Mode: PlatformGenerationModeCompare, ConversationGUID: 8001, SuccessfulModelCount: 1, DailyCallsCharged: 1, TotalTokens: 1, CommittedAtMillis: now, Results: []PlatformGenerationCommittedResult{
 		{Model: "model-a", State: PlatformGenerationStateCompleted, AssistantMessageGUID: "9001", Content: "answer", Tokens: 1},
 		{Model: "model-b", State: PlatformGenerationStateFailed, ErrorCode: "upstream_error"},
 	}}
@@ -550,7 +553,7 @@ func TestPlatformGenerationControlCompletedDependenciesFailClosed(t *testing.T) 
 	snapshot := controlSnapshot(PlatformGenerationStateCompleted, now.UnixMilli())
 	validReceipt := PlatformGenerationReceiptSnapshot{
 		UserID: 7, GenerationID: controlGenerationID, Mode: PlatformGenerationModeSingle,
-		ConversationGUID: 8001, SuccessfulModelCount: 1,
+		ConversationGUID: 8001, SuccessfulModelCount: 1, DailyCallsCharged: 1, TotalTokens: 1, CommittedAtMillis: now.UnixMilli(),
 		Results: []PlatformGenerationCommittedResult{{Model: "model-a", State: PlatformGenerationStateCompleted, AssistantMessageGUID: "9001", Content: "answer", Tokens: 1}},
 	}
 	for _, test := range []struct {
@@ -648,7 +651,7 @@ func TestPlatformGenerationControlCommittingAlwaysReconcilesAcrossStaleBoundary(
 		fake := newPlatformGenerationControlFake(committing)
 		fake.reconcile = func(context.Context, int64, string, int64) (PlatformGenerationSnapshot, error) { return completed, nil }
 		fake.loadReceipt = func(context.Context, int64, string) (PlatformGenerationReceiptSnapshot, error) {
-			return PlatformGenerationReceiptSnapshot{UserID: 7, GenerationID: controlGenerationID, Mode: PlatformGenerationModeSingle, ConversationGUID: 8, SuccessfulModelCount: 1, Results: []PlatformGenerationCommittedResult{{Model: "model-a", State: PlatformGenerationStateCompleted, AssistantMessageGUID: "9001", Content: "done"}}}, nil
+			return PlatformGenerationReceiptSnapshot{UserID: 7, GenerationID: controlGenerationID, Mode: PlatformGenerationModeSingle, ConversationGUID: 8, SuccessfulModelCount: 1, DailyCallsCharged: 1, CommittedAtMillis: now.UnixMilli(), Results: []PlatformGenerationCommittedResult{{Model: "model-a", State: PlatformGenerationStateCompleted, AssistantMessageGUID: "9001", Content: "done"}}}, nil
 		}
 		view, err := mustControl(t, fake, NewPlatformGenerationCancellationRegistry(), now).Get(context.Background(), 7, controlGenerationID)
 		if err != nil || view.Status != "completed" || view.Result == nil || view.Result.Content != "done" {
@@ -665,7 +668,7 @@ func TestPlatformGenerationControlCancelPollRacesAndSingleDeadline(t *testing.T)
 		fake := newPlatformGenerationControlFake(committing)
 		fake.get = func(context.Context, int64, string) (PlatformGenerationSnapshot, error) { return completed, nil }
 		fake.loadReceipt = func(context.Context, int64, string) (PlatformGenerationReceiptSnapshot, error) {
-			return PlatformGenerationReceiptSnapshot{UserID: 7, GenerationID: controlGenerationID, Mode: PlatformGenerationModeSingle, ConversationGUID: 8, SuccessfulModelCount: 1, Results: []PlatformGenerationCommittedResult{{Model: "model-a", State: PlatformGenerationStateCompleted, AssistantMessageGUID: "9001", Content: "won"}}}, nil
+			return PlatformGenerationReceiptSnapshot{UserID: 7, GenerationID: controlGenerationID, Mode: PlatformGenerationModeSingle, ConversationGUID: 8, SuccessfulModelCount: 1, DailyCallsCharged: 1, CommittedAtMillis: now.UnixMilli(), Results: []PlatformGenerationCommittedResult{{Model: "model-a", State: PlatformGenerationStateCompleted, AssistantMessageGUID: "9001", Content: "won"}}}, nil
 		}
 		control := mustControl(t, fake, NewPlatformGenerationCancellationRegistry(), now)
 		control.cancelBudget, control.cancelPoll = 20*time.Millisecond, time.Millisecond
