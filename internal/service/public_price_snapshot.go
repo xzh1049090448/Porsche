@@ -37,7 +37,7 @@ type PublicPriceSnapshotRelease struct {
 	Version        int64  `json:"version"`
 	Reason         string `json:"reason"`
 	SourceRevision int64  `json:"source_revision"`
-	CreatedAt      int64  `json:"created_at"`
+	CreatedAt      string `json:"created_at"`
 }
 
 // PublicPriceProjectionItem is the safe dynamic projection of the current
@@ -448,5 +448,5 @@ func jsonNumberInt64(v any) (int64, bool) {
 	}
 }
 func projectPublicPriceSnapshot(v models.PublicPriceSnapshot) *PublicPriceSnapshotRelease {
-	return &PublicPriceSnapshotRelease{GUID: strconv.FormatInt(v.Guid, 10), Version: v.Version, Reason: v.Reason.String(), SourceRevision: v.SourceRevision, CreatedAt: v.PublishedAt}
+	return &PublicPriceSnapshotRelease{GUID: strconv.FormatInt(v.Guid, 10), Version: v.Version, Reason: v.Reason.String(), SourceRevision: v.SourceRevision, CreatedAt: releaseTime(v.PublishedAt)}
 }

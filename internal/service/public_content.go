@@ -62,7 +62,7 @@ type PublicContentRelease struct {
 	Version        int64  `json:"version"`
 	Reason         string `json:"reason"`
 	SourceRevision int64  `json:"source_revision"`
-	CreatedAt      int64  `json:"created_at"`
+	CreatedAt      string `json:"created_at"`
 }
 type PublicContentReleaseView struct {
 	Release PublicContentRelease `json:"release"`
@@ -708,7 +708,7 @@ func projectContentRelease(r models.PublicContentRelease, op string) *PublicCont
 	if op == "restore" {
 		reason = "restore"
 	}
-	return &PublicContentRelease{GUID: strconv.FormatInt(r.Guid, 10), Version: r.Version, Reason: reason, SourceRevision: r.SourceRevision, CreatedAt: r.PublishedAt}
+	return &PublicContentRelease{GUID: strconv.FormatInt(r.Guid, 10), Version: r.Version, Reason: reason, SourceRevision: r.SourceRevision, CreatedAt: releaseTime(r.PublishedAt)}
 }
 func mapPublicContentError(e error) error {
 	if _, ok := e.(*HTTPError); ok {
