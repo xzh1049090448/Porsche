@@ -97,11 +97,16 @@ func TestNewStateWiresAndStartsGenerationControlOnce(t *testing.T) {
 		return wantConverger, nil
 	}
 	starts := 0
+	workerCloses := 0
 	constructors.startPlatformGenerationConverger = func(converger *service.PlatformGenerationConverger) {
 		if converger != wantConverger {
 			t.Fatalf("started converger = %p, want %p", converger, wantConverger)
 		}
 		starts++
+	}
+	constructors.closePlatformGenerationConverger = func(context.Context, *service.PlatformGenerationConverger) error {
+		workerCloses++
+		return nil
 	}
 
 	state, err := newState(&config.Settings{RedisURL: "redis://configured", AuthHMACKey: "configured"}, &gorm.DB{Config: &gorm.Config{}}, constructors)
@@ -114,8 +119,17 @@ func TestNewStateWiresAndStartsGenerationControlOnce(t *testing.T) {
 	if starts != 1 {
 		t.Fatalf("generation converger starts = %d, want 1", starts)
 	}
+	if workerCloses != 0 || authClient.closes != 0 || generationClient.closes != 0 {
+		t.Fatalf("successful construction cleaned up before ownership transfer: worker=%d generation=%d auth=%d", workerCloses, generationClient.closes, authClient.closes)
+	}
 	if err := state.Close(); err != nil {
 		t.Fatal(err)
+	}
+	if workerCloses != 1 || authClient.closes != 1 || generationClient.closes != 1 {
+		t.Fatalf("state ownership cleanup counts = worker:%d generation:%d auth:%d, want 1/1/1", workerCloses, generationClient.closes, authClient.closes)
+	}
+	if err := state.Close(); err != nil || workerCloses != 1 || authClient.closes != 1 || generationClient.closes != 1 {
+		t.Fatalf("second state cleanup error/counts = %v worker:%d generation:%d auth:%d", err, workerCloses, generationClient.closes, authClient.closes)
 	}
 }
 
@@ -163,7 +177,12 @@ func TestNewStateGenerationConstructorFailureClosesOwnedRedisInOrder(t *testing.
 				return &service.PlatformGenerationConverger{}, nil
 			}
 			starts := 0
+			workerCloses := 0
 			constructors.startPlatformGenerationConverger = func(*service.PlatformGenerationConverger) { starts++ }
+			constructors.closePlatformGenerationConverger = func(context.Context, *service.PlatformGenerationConverger) error {
+				workerCloses++
+				return nil
+			}
 
 			state, err := newState(&config.Settings{RedisURL: "redis://configured", AuthHMACKey: "configured"}, &gorm.DB{Config: &gorm.Config{}}, constructors)
 			if state != nil || !errors.Is(err, service.ErrPlatformGenerationControlUnavailable) || err.Error() != service.ErrPlatformGenerationControlUnavailable.Error() {
@@ -172,6 +191,9 @@ func TestNewStateGenerationConstructorFailureClosesOwnedRedisInOrder(t *testing.
 			if starts != 0 {
 				t.Fatalf("failed construction started %d workers, want 0", starts)
 			}
+			if workerCloses != 0 {
+				t.Fatalf("failed construction closed an unconstructed worker %d times", workerCloses)
+			}
 			if got := events; len(got) != 2 || got[0] != "generation" || got[1] != "auth" {
 				t.Fatalf("partial cleanup order = %v, want [generation auth]", got)
 			}
@@ -179,6 +201,71 @@ func TestNewStateGenerationConstructorFailureClosesOwnedRedisInOrder(t *testing.
 				t.Fatalf("partial cleanup closes = generation:%d auth:%d, want 1/1", generationClient.closes, authClient.closes)
 			}
 		})
+	}
+}
+
+func TestNewStateLaterFailureClosesUnstartedGenerationWorkerBeforeRedis(t *testing.T) {
+	var events []string
+	authClient := newStateCloseTrackingRedisClientWithClose(func() error {
+		events = append(events, "auth")
+		return nil
+	})
+	generationClient := newStateCloseTrackingRedisClientWithClose(func() error {
+		events = append(events, "generation")
+		return nil
+	})
+	constructors := defaultStateConstructors()
+	constructors.newAuthRedisFromURL = func(context.Context, string, string) (*service.AuthRedis, error) {
+		return service.NewAuthRedis(authClient, "state-test-auth-hmac-key")
+	}
+	constructors.newPlatformGenerationStoreFromURL = func(context.Context, string) (*service.PlatformGenerationStore, error) {
+		return service.NewPlatformGenerationStore(generationClient)
+	}
+	control := &service.PlatformGenerationControl{}
+	converger := &service.PlatformGenerationConverger{}
+	constructors.newPlatformGenerationControl = func(*gorm.DB, *service.PlatformGenerationStore, *service.PlatformGenerationCancellationRegistry) (*service.PlatformGenerationControl, error) {
+		return control, nil
+	}
+	constructors.newPlatformGenerationConverger = func(*service.PlatformGenerationControl) (*service.PlatformGenerationConverger, error) {
+		return converger, nil
+	}
+	starts := 0
+	constructors.startPlatformGenerationConverger = func(*service.PlatformGenerationConverger) { starts++ }
+	workerCloses := 0
+	constructors.closePlatformGenerationConverger = func(ctx context.Context, got *service.PlatformGenerationConverger) error {
+		if got != converger {
+			t.Fatalf("closed converger = %p, want %p", got, converger)
+		}
+		if _, ok := ctx.Deadline(); !ok {
+			t.Fatal("partial worker close received an unbounded context")
+		}
+		workerCloses++
+		events = append(events, "worker")
+		return errors.New("redis://user:secret@backend/worker-close")
+	}
+	constructors.newUserManagementActions = func(*gorm.DB, *service.AuthRedis, *actionsecurity.Crypto) (*service.UserManagementActions, error) {
+		return nil, service.ErrActionVerificationUnavailable
+	}
+
+	state, err := newState(&config.Settings{
+		RedisURL:              "redis://configured",
+		AuthHMACKey:           "configured",
+		ActionSecurityHMACKey: bytes.Repeat([]byte{0x45}, 32),
+	}, &gorm.DB{Config: &gorm.Config{}}, constructors)
+	if state != nil || !errors.Is(err, service.ErrActionVerificationUnavailable) || err.Error() != service.ErrActionVerificationUnavailable.Error() {
+		t.Fatalf("state/error = %#v/%v, want nil/original fixed construction error", state, err)
+	}
+	if starts != 0 {
+		t.Fatalf("later failed construction started %d workers, want 0", starts)
+	}
+	if workerCloses != 1 {
+		t.Fatalf("later failed construction closed worker %d times, want 1", workerCloses)
+	}
+	if len(events) != 3 || events[0] != "worker" || events[1] != "generation" || events[2] != "auth" {
+		t.Fatalf("partial cleanup order = %v, want [worker generation auth]", events)
+	}
+	if generationClient.closes != 1 || authClient.closes != 1 {
+		t.Fatalf("partial cleanup closes = generation:%d auth:%d, want 1/1", generationClient.closes, authClient.closes)
 	}
 }
 

@@ -66,6 +66,7 @@ type stateConstructors struct {
 	newPlatformGenerationControl      func(*gorm.DB, *service.PlatformGenerationStore, *service.PlatformGenerationCancellationRegistry) (*service.PlatformGenerationControl, error)
 	newPlatformGenerationConverger    func(*service.PlatformGenerationControl) (*service.PlatformGenerationConverger, error)
 	startPlatformGenerationConverger  func(*service.PlatformGenerationConverger)
+	closePlatformGenerationConverger  func(context.Context, *service.PlatformGenerationConverger) error
 	newUserManagementActions          func(*gorm.DB, *service.AuthRedis, *actionsecurity.Crypto) (*service.UserManagementActions, error)
 }
 
@@ -76,7 +77,10 @@ func defaultStateConstructors() stateConstructors {
 		newPlatformGenerationControl:      service.NewPlatformGenerationControl,
 		newPlatformGenerationConverger:    service.NewPlatformGenerationConverger,
 		startPlatformGenerationConverger:  func(converger *service.PlatformGenerationConverger) { converger.Start() },
-		newUserManagementActions:          service.NewUserManagementActions,
+		closePlatformGenerationConverger: func(ctx context.Context, converger *service.PlatformGenerationConverger) error {
+			return converger.Close(ctx)
+		},
+		newUserManagementActions: service.NewUserManagementActions,
 	}
 }
 
@@ -89,10 +93,8 @@ func newState(settings *config.Settings, db *gorm.DB, constructors stateConstruc
 		Audit:    service.NewAuditService(),
 		HTTP:     &http.Client{},
 
-		closeTimeout: stateCloseTimeout,
-		closePlatformGenerationConverger: func(ctx context.Context, converger *service.PlatformGenerationConverger) error {
-			return converger.Close(ctx)
-		},
+		closeTimeout:                     stateCloseTimeout,
+		closePlatformGenerationConverger: constructors.closePlatformGenerationConverger,
 		closePlatformGenerations: func(generations *service.PlatformGenerationStore) error {
 			return generations.Close()
 		},
@@ -107,6 +109,11 @@ func newState(settings *config.Settings, db *gorm.DB, constructors stateConstruc
 	defer func() {
 		if dependenciesTransferred {
 			return
+		}
+		if generationConverger != nil && constructors.closePlatformGenerationConverger != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), stateCloseTimeout)
+			_ = constructors.closePlatformGenerationConverger(ctx, generationConverger)
+			cancel()
 		}
 		if s.PlatformGenerations != nil {
 			_ = s.PlatformGenerations.Close()
@@ -157,7 +164,7 @@ func newState(settings *config.Settings, db *gorm.DB, constructors stateConstruc
 		}
 		s.PlatformGenerationPersistence = generationPersistence
 		if db != nil {
-			if constructors.newPlatformGenerationControl == nil || constructors.newPlatformGenerationConverger == nil || constructors.startPlatformGenerationConverger == nil {
+			if constructors.newPlatformGenerationControl == nil || constructors.newPlatformGenerationConverger == nil || constructors.startPlatformGenerationConverger == nil || constructors.closePlatformGenerationConverger == nil {
 				return nil, service.ErrPlatformGenerationControlUnavailable
 			}
 			generationCancellations = service.NewPlatformGenerationCancellationRegistry()
