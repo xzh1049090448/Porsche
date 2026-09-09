@@ -26,6 +26,7 @@ type State struct {
 	AuthRedis                     *service.AuthRedis
 	PlatformGenerations           *service.PlatformGenerationStore
 	PlatformGenerationPersistence *service.PlatformGenerationPersistence
+	PlatformGenerationControl     service.PlatformGenerationController
 	Sessions                      *service.SessionService
 	ActionSecurityCrypto          *actionsecurity.Crypto
 	UserManagementActions         *service.UserManagementActions

@@ -78,12 +78,14 @@ func TestAdminUsersGroupDirectoryRouteIsRegistered(t *testing.T) {
 	}
 }
 
-func TestNewStateDoesNotRegisterGenerationRoutes(t *testing.T) {
+func TestNewStateRegistersAuthenticatedGenerationRoutes(t *testing.T) {
 	settings := &config.Settings{AppEnv: "test", AllowedHosts: "example.com"}
 	engine := router.New(&app.State{Settings: settings})
 	wantExisting := []routeContract{
 		{http.MethodPost, "/api/v1/platform/chat/completions"},
 		{http.MethodPost, "/api/v1/platform/chat/compare"},
+		{http.MethodGet, "/api/v1/platform/chat/generations/:generation_id"},
+		{http.MethodPost, "/api/v1/platform/chat/generations/:generation_id/cancel"},
 	}
 	for _, want := range wantExisting {
 		count := 0
@@ -97,17 +99,16 @@ func TestNewStateDoesNotRegisterGenerationRoutes(t *testing.T) {
 		}
 	}
 
-	for _, unregistered := range []routeContract{
+	for _, authenticated := range []routeContract{
 		{http.MethodGet, "/api/v1/platform/chat/generations/550e8400-e29b-41d4-a716-446655440000"},
 		{http.MethodPost, "/api/v1/platform/chat/generations/550e8400-e29b-41d4-a716-446655440000/cancel"},
 	} {
-		request := httptest.NewRequest(unregistered.Method, unregistered.Path, nil)
+		request := httptest.NewRequest(authenticated.Method, authenticated.Path, nil)
 		request.Host = "example.com"
-		request.Header.Set("Authorization", "Bearer syntactically-valid-test-token")
 		recorder := httptest.NewRecorder()
 		engine.ServeHTTP(recorder, request)
-		if recorder.Code != http.StatusNotFound {
-			t.Fatalf("generation route %s %s status=%d body=%s, want 404", unregistered.Method, unregistered.Path, recorder.Code, recorder.Body.String())
+		if recorder.Code != http.StatusUnauthorized {
+			t.Fatalf("generation route %s %s status=%d body=%s, want authenticated 401", authenticated.Method, authenticated.Path, recorder.Code, recorder.Body.String())
 		}
 	}
 }
@@ -570,6 +571,8 @@ var preB1ERouteInventory = []routeContract{
 	{http.MethodGet, "/api/v1/conversations/:guid/export/markdown"},
 	{http.MethodPost, "/api/v1/platform/chat/compare"},
 	{http.MethodPost, "/api/v1/platform/chat/completions"},
+	{http.MethodGet, "/api/v1/platform/chat/generations/:generation_id"},
+	{http.MethodPost, "/api/v1/platform/chat/generations/:generation_id/cancel"},
 	{http.MethodGet, "/api/v1/platform/models"},
 	{http.MethodGet, "/api/v1/platform/models/:id"},
 	{http.MethodGet, "/api/v1/platform/models/detail"},

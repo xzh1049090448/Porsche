@@ -45,6 +45,9 @@ func registerPlatformWithAuthentication(r *gin.Engine, state *app.State, authent
 		platformModelDetail(c, state, c.Param("id"))
 	})
 
+	g.GET("/chat/generations/:generation_id", platformGenerationGet(state))
+	g.POST("/chat/generations/:generation_id/cancel", platformGenerationCancel(state))
+
 	g.POST("/chat/completions", func(c *gin.Context) {
 		trace := diagnostics.From(c.Request.Context())
 		validationEnd := trace.Begin(diagnostics.Validation)
