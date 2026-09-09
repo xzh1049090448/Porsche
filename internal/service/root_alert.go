@@ -417,28 +417,44 @@ func (s *RootAlertService) Get(ctx context.Context, rootID int64, guid string) (
 }
 
 func (s *RootAlertService) Resolve(ctx context.Context, typ models.RootAlertType, modelKey, identity string) error {
+	if s == nil || s.db == nil {
+		return errBadRequest("invalid root alert resolution")
+	}
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		return s.resolveInTx(tx, typ, modelKey, identity)
+	})
+	return mapRootAlertError(err)
+}
+
+// ResolveInTx resolves an alert and writes its audit entry in the caller's
+// transaction. The caller owns commit, rollback, and retry policy.
+func (s *RootAlertService) ResolveInTx(ctx context.Context, tx *gorm.DB, typ models.RootAlertType, modelKey, identity string) error {
+	if s == nil || tx == nil {
+		return errBadRequest("invalid root alert resolution")
+	}
+	return mapRootAlertError(s.resolveInTx(tx.WithContext(ctx), typ, modelKey, identity))
+}
+
+func (s *RootAlertService) resolveInTx(tx *gorm.DB, typ models.RootAlertType, modelKey, identity string) error {
 	if typ.String() == "unknown" || (modelKey != "" && !publiccontent.ValidModelKey(modelKey)) || !validRootAlertIdentity(identity) {
 		return errBadRequest("invalid root alert resolution")
 	}
 	fp := rootAlertFingerprint(typ, modelKey, identity)
-	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var a models.RootAlert
-		if e := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("fingerprint=? AND is_deleted=0", fp).First(&a).Error; e != nil {
-			return e
-		}
-		if a.State == models.RootAlertStateResolved {
-			return nil
-		}
-		now := s.now()
-		if e := tx.Model(&a).Updates(map[string]any{"state": models.RootAlertStateResolved, "resolved_at": now, "updated_at": now, "updated_by": nil}).Error; e != nil {
-			return e
-		}
-		if e := s.fail("resolve.audit"); e != nil {
-			return e
-		}
-		return writeRootAlertAudit(tx, s.nextGUID(), now, nil, "root_alert.resolved", a.Guid, models.JSONMap{"alert_type": typ.String(), "fingerprint": fp})
-	})
-	return mapRootAlertError(err)
+	var a models.RootAlert
+	if e := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("fingerprint=? AND is_deleted=0", fp).First(&a).Error; e != nil {
+		return e
+	}
+	if a.State == models.RootAlertStateResolved {
+		return nil
+	}
+	now := s.now()
+	if e := tx.Model(&a).Updates(map[string]any{"state": models.RootAlertStateResolved, "resolved_at": now, "updated_at": now, "updated_by": nil}).Error; e != nil {
+		return e
+	}
+	if e := s.fail("resolve.audit"); e != nil {
+		return e
+	}
+	return writeRootAlertAudit(tx, s.nextGUID(), now, nil, "root_alert.resolved", a.Guid, models.JSONMap{"alert_type": typ.String(), "fingerprint": fp})
 }
 
 func validRootAlertIdentity(value string) bool {

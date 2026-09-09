@@ -300,7 +300,7 @@ Return normalized ID, input/output price, fetched-at, completeness, and freshnes
 
 - [ ] **Step 4: Implement one monitor tick and lease**
 
-Use a short database lease row with owner token/expiry, periodic renewal, and owner fencing before each mutation commit. A tick records observations, prunes sanitized observations older than 30 days in a bounded transactional batch, updates counters, and persists typed alerts through Task 7's transaction-aware seam. At the third valid absence it commits inactive state plus a durable safety-publication intent before the separately retryable safety snapshot attempt.
+Use a short database lease row with owner token/expiry, periodic renewal, and owner fencing before each mutation commit. A tick records observations, prunes sanitized observations older than 30 days in a bounded transactional batch, updates counters, and persists typed alerts through Task 7's transaction-aware seam. At the third valid absence it commits inactive state plus a durable safety-publication intent before the separately retryable safety snapshot attempt. The safety snapshot, rebound content release, render job, publication pointer, and resolution of that intent commit in one transaction; any failure retains the active intent for retry. Dynamic price reads filter inactive/deleted current configs, while the combined public projection returns a stable unavailable response until its immutable content/price pair is compatible with current lifecycle state.
 
 - [ ] **Step 5: Add cancellable scheduler lifecycle**
 

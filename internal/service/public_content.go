@@ -592,26 +592,48 @@ func (s *PublicContentService) transact(ctx context.Context, actorID, expected i
 	return out, nil
 }
 func (s *PublicContentService) PublicProjection(ctx context.Context) (*PublicContentPublicProjection, error) {
-	var state models.PublicPublicationState
-	if e := s.db.WithContext(ctx).Where("state_key=? AND is_deleted=0", publicPublicationStateKey).First(&state).Error; e != nil || state.ContentReleaseID == nil || state.PriceSnapshotID == nil {
-		return nil, errUnavailable("committed publication unavailable")
+	var out *PublicContentPublicProjection
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var state models.PublicPublicationState
+		if e := tx.Where("state_key=? AND is_deleted=0", publicPublicationStateKey).First(&state).Error; e != nil || state.ContentReleaseID == nil || state.PriceSnapshotID == nil {
+			return errUnavailable("committed publication unavailable")
+		}
+		var c models.PublicContentRelease
+		var p models.PublicPriceSnapshot
+		if e := tx.First(&c, *state.ContentReleaseID).Error; e != nil {
+			return errUnavailable("committed publication unavailable")
+		}
+		if e := verifyPublicContentRelease(c); e != nil {
+			return e
+		}
+		if e := tx.First(&p, *state.PriceSnapshotID).Error; e != nil {
+			return errUnavailable("committed publication unavailable")
+		}
+		boundVersion, ok := jsonNumberInt64(c.Payload["price_snapshot_version"])
+		if fmt.Sprint(c.Payload["price_snapshot_guid"]) != strconv.FormatInt(p.Guid, 10) || !ok || boundVersion != p.Version {
+			return errUnavailable("committed publication binding unavailable")
+		}
+		var allCount int64
+		if e := tx.Model(&models.PublicPriceSnapshotItem{}).Where("snapshot_id=? AND is_deleted=0", p.ID).Count(&allCount).Error; e != nil {
+			return errUnavailable("committed publication generation pending")
+		}
+		var activeItems []models.PublicPriceSnapshotItem
+		if e := tx.Model(&models.PublicPriceSnapshotItem{}).
+			Joins("JOIN public_model_configs m ON m.id=public_price_snapshot_items.model_config_id AND m.status=? AND m.is_deleted=0", models.PublicModelConfigStatusActive).
+			Where("public_price_snapshot_items.snapshot_id=? AND public_price_snapshot_items.is_deleted=0", p.ID).
+			Order("public_price_snapshot_items.model_key").Find(&activeItems).Error; e != nil || int64(len(activeItems)) != allCount {
+			return errUnavailable("committed publication generation pending")
+		}
+		if e := validateContentReleaseForPriceItems(c, activeItems); e != nil {
+			return errUnavailable("committed publication generation pending")
+		}
+		out = &PublicContentPublicProjection{Content: projectContentPayload(c.Payload, c.SourceRevision), ContentReleaseVersion: c.Version, PriceReleaseVersion: p.Version, ETag: `"` + c.ContentHash + `"`}
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
-	var c models.PublicContentRelease
-	var p models.PublicPriceSnapshot
-	if e := s.db.First(&c, *state.ContentReleaseID).Error; e != nil {
-		return nil, errUnavailable("committed publication unavailable")
-	}
-	if e := verifyPublicContentRelease(c); e != nil {
-		return nil, e
-	}
-	if e := s.db.First(&p, *state.PriceSnapshotID).Error; e != nil {
-		return nil, errUnavailable("committed publication unavailable")
-	}
-	boundVersion, ok := jsonNumberInt64(c.Payload["price_snapshot_version"])
-	if fmt.Sprint(c.Payload["price_snapshot_guid"]) != strconv.FormatInt(p.Guid, 10) || !ok || boundVersion != p.Version {
-		return nil, errUnavailable("committed publication binding unavailable")
-	}
-	return &PublicContentPublicProjection{Content: projectContentPayload(c.Payload, c.SourceRevision), ContentReleaseVersion: c.Version, PriceReleaseVersion: p.Version, ETag: `"` + c.ContentHash + `"`}, nil
+	return out, nil
 }
 
 func lockOrCreatePublicContentDraft(tx *gorm.DB, actor int64, nowFn func() int64, guidFn func() int64) (*models.PublicContentDraft, error) {

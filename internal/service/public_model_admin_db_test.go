@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	projectdb "github.com/porsche/ai-gateway-go/internal/db"
+	"github.com/porsche/ai-gateway-go/internal/migration"
 	"github.com/porsche/ai-gateway-go/internal/models"
 	"github.com/porsche/ai-gateway-go/internal/persistence"
 	"gorm.io/gorm"
@@ -46,20 +47,37 @@ func openPublicModelDBFixture(t *testing.T) *publicModelDBFixture {
 	if err = db.Raw("SELECT DATABASE()").Scan(&actual).Error; err != nil || actual != name {
 		t.Fatal("test database identity mismatch")
 	}
+	return newPublicModelDBFixture(t, db)
+}
+
+func openTask8MonitorDBFixture(t *testing.T) *publicModelDBFixture {
+	t.Helper()
+	if os.Getenv("TEST_DATABASE_URL") == "" {
+		t.Skip("BLOCKED_FIXTURE: requires explicit disposable TEST_DATABASE_URL; .env is never read")
+	}
+	db := openRootTestMySQL(t).Session(&gorm.Session{Logger: logger.Discard})
+	if err := migration.Up(context.Background(), db, persistence.NextGUID, persistence.NowMillis); err != nil {
+		t.Fatalf("migrate owned Task8 database: %v", err)
+	}
+	return newPublicModelDBFixture(t, db)
+}
+
+func newPublicModelDBFixture(t *testing.T, db *gorm.DB) *publicModelDBFixture {
+	t.Helper()
 	for _, table := range []string{"public_model_configs", "upstream_model_observations", "audit_logs", "users", "public_price_draft_state"} {
 		if !db.Migrator().HasTable(table) {
 			t.Fatalf("BLOCKED_FIXTURE: migration missing %s", table)
 		}
 	}
 	var group models.BusinessGroup
-	if err = db.Where("is_deleted = 0").First(&group).Error; err != nil {
+	if err := db.Where("is_deleted = 0").First(&group).Error; err != nil {
 		t.Fatal("BLOCKED_FIXTURE: active business group required")
 	}
 	now := persistence.NowMillis()
 	username := fmt.Sprintf("pm%d", persistence.NextGUID()%1e9)
 	hash := "test-only"
 	actor := models.User{AuditFields: models.AuditFields{Guid: persistence.NextGUID(), CreatedAt: now, UpdatedAt: now}, GroupID: group.ID, Username: &username, PasswordHash: &hash, PlanType: models.PlanFree, Status: models.UserStatusActive, Role: models.UserRoleRoot, AuthVersion: 1, AllowedModels: models.JSONSlice{}}
-	if err = db.Create(&actor).Error; err != nil {
+	if err := db.Create(&actor).Error; err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {

@@ -122,7 +122,7 @@ func TestRootAlertOccurInTxRollsBackWithCaller(t *testing.T) {
 	if os.Getenv("TEST_DATABASE_URL") == "" {
 		t.Skip("BLOCKED_FIXTURE: requires explicit disposable TEST_DATABASE_URL; .env is never read")
 	}
-	f := openPublicModelDBFixture(t)
+	f := openTask8MonitorDBFixture(t)
 	s := NewRootAlertService(f.db)
 	in := RootAlertOccurrence{Type: models.RootAlertTypeCatalogSyncFailure, Identity: "monitor-transaction", Payload: models.JSONMap{"error_code": "catalog_fetch_failed", "observed_at": int64(100)}}
 	err := f.db.Transaction(func(tx *gorm.DB) error {
@@ -137,6 +137,22 @@ func TestRootAlertOccurInTxRollsBackWithCaller(t *testing.T) {
 	var count int64
 	if e := f.db.Model(&models.RootAlert{}).Where("fingerprint=?", rootAlertFingerprint(in.Type, "", in.Identity)).Count(&count).Error; e != nil || count != 0 {
 		t.Fatalf("count=%d err=%v", count, e)
+	}
+	if _, err = s.Occur(context.Background(), in); err != nil {
+		t.Fatal(err)
+	}
+	err = f.db.Transaction(func(tx *gorm.DB) error {
+		if e := s.ResolveInTx(context.Background(), tx, in.Type, "", in.Identity); e != nil {
+			return e
+		}
+		return errors.New("rollback resolution")
+	})
+	if err == nil {
+		t.Fatal("resolution transaction did not roll back")
+	}
+	var alert models.RootAlert
+	if e := f.db.Where("fingerprint=?", rootAlertFingerprint(in.Type, "", in.Identity)).First(&alert).Error; e != nil || alert.State != models.RootAlertStateActive || alert.ResolvedAt != nil {
+		t.Fatalf("resolution rollback=%#v err=%v", alert, e)
 	}
 }
 

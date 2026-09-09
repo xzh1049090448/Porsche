@@ -274,7 +274,6 @@ func (m *UpstreamPriceMonitor) Tick(ctx context.Context) error {
 			_, _ = m.alerts.Occur(ctx, RootAlertOccurrence{Type: models.RootAlertTypeCatalogSyncFailure, Identity: "safety", Payload: models.JSONMap{"error_code": "safety_publication_failed", "observed_at": observedAt}})
 			return err
 		}
-		_ = m.alerts.Resolve(ctx, models.RootAlertTypeCatalogSyncFailure, "", "safety")
 	}
 	return nil
 }
@@ -385,6 +384,9 @@ func (m *UpstreamPriceMonitor) publishSafetySnapshot(ctx context.Context, owner 
 		res := tx.Model(&models.PublicPublicationState{}).Where("id=? AND revision=?", state.ID, state.Revision).Updates(map[string]any{"price_snapshot_id": snapshot.ID, "content_release_id": release.ID, "revision": state.Revision + 1, "updated_at": now, "updated_by": nil})
 		if res.Error != nil || res.RowsAffected != 1 {
 			return errors.New("publication state changed")
+		}
+		if err = m.alerts.ResolveInTx(ctx, tx, models.RootAlertTypeCatalogSyncFailure, "", "safety"); err != nil {
+			return err
 		}
 		return m.assertLeaseTx(tx, owner)
 	})

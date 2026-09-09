@@ -46,7 +46,7 @@ func TestUpstreamPriceMonitorDBThreeStrikesDurableAlertsSafetyRetryReappearanceA
 	if os.Getenv("TEST_DATABASE_URL") == "" {
 		t.Skip("BLOCKED_FIXTURE: requires explicit disposable TEST_DATABASE_URL; .env is never read")
 	}
-	f := openPublicModelDBFixture(t)
+	f := openTask8MonitorDBFixture(t)
 	ctx := context.Background()
 	cleanMonitorFixture(t, f.db)
 	t.Cleanup(func() { cleanMonitorFixture(t, f.db) })
@@ -190,6 +190,9 @@ func TestUpstreamPriceMonitorDBThreeStrikesDurableAlertsSafetyRetryReappearanceA
 			t.Fatal("dynamic projection exposed inactive model")
 		}
 	}
+	if stale, e := NewPublicContentService(f.db).PublicProjection(ctx); status(e) != 503 || stale != nil {
+		t.Fatalf("stale public projection=%#v err=%v", stale, e)
+	}
 	var autoAlerts, pendingAlerts, audits int64
 	f.db.Model(&models.RootAlert{}).Where("model_config_id=? AND alert_type=? AND state=?", missingID, models.RootAlertTypeAutomaticInactivation, models.RootAlertStateActive).Count(&autoAlerts)
 	f.db.Model(&models.RootAlert{}).Where("alert_type=? AND fingerprint=? AND state=?", models.RootAlertTypeCatalogSyncFailure, rootAlertFingerprint(models.RootAlertTypeCatalogSyncFailure, "", "safety"), models.RootAlertStateActive).Count(&pendingAlerts)
@@ -198,6 +201,37 @@ func TestUpstreamPriceMonitorDBThreeStrikesDurableAlertsSafetyRetryReappearanceA
 		t.Fatalf("durability auto=%d safety=%d audit=%d", autoAlerts, pendingAlerts, audits)
 	}
 	m.fail = func(string) error { return nil }
+	alerts.fail = func(point string) error {
+		if point == "resolve.audit" {
+			return errors.New("injected safety resolution failure")
+		}
+		return nil
+	}
+	var snapshotsBeforeResolutionFailure, releasesBeforeResolutionFailure, jobsBeforeResolutionFailure int64
+	f.db.Model(&models.PublicPriceSnapshot{}).Count(&snapshotsBeforeResolutionFailure)
+	f.db.Model(&models.PublicContentRelease{}).Count(&releasesBeforeResolutionFailure)
+	f.db.Model(&models.PublicRenderJob{}).Count(&jobsBeforeResolutionFailure)
+	base += 300_000
+	setCatalog(base, true, true, keeper.UpstreamModelID)
+	if err := m.Tick(ctx); err == nil {
+		t.Fatal("safety alert resolution failure not returned")
+	}
+	var pointerAfterResolutionFailure models.PublicPublicationState
+	if err := f.db.Where("state_key=?", publicPublicationStateKey).First(&pointerAfterResolutionFailure).Error; err != nil || pointerAfterResolutionFailure.PriceSnapshotID == nil || *pointerAfterResolutionFailure.PriceSnapshotID != *pointerBefore.PriceSnapshotID {
+		t.Fatalf("pointer changed on resolution failure %#v %v", pointerAfterResolutionFailure, err)
+	}
+	var snapshotsAfterResolutionFailure, releasesAfterResolutionFailure, jobsAfterResolutionFailure int64
+	f.db.Model(&models.PublicPriceSnapshot{}).Count(&snapshotsAfterResolutionFailure)
+	f.db.Model(&models.PublicContentRelease{}).Count(&releasesAfterResolutionFailure)
+	f.db.Model(&models.PublicRenderJob{}).Count(&jobsAfterResolutionFailure)
+	if snapshotsAfterResolutionFailure != snapshotsBeforeResolutionFailure || releasesAfterResolutionFailure != releasesBeforeResolutionFailure || jobsAfterResolutionFailure != jobsBeforeResolutionFailure {
+		t.Fatalf("resolution failure left partial publication snapshots=%d/%d releases=%d/%d jobs=%d/%d", snapshotsAfterResolutionFailure, snapshotsBeforeResolutionFailure, releasesAfterResolutionFailure, releasesBeforeResolutionFailure, jobsAfterResolutionFailure, jobsBeforeResolutionFailure)
+	}
+	var pendingAfterResolutionFailure models.RootAlert
+	if err := f.db.Where("fingerprint=?", rootAlertFingerprint(models.RootAlertTypeCatalogSyncFailure, "", "safety")).First(&pendingAfterResolutionFailure).Error; err != nil || pendingAfterResolutionFailure.State != models.RootAlertStateActive {
+		t.Fatalf("pending alert lost on resolution failure %#v %v", pendingAfterResolutionFailure, err)
+	}
+	alerts.fail = func(string) error { return nil }
 	base += 300_000
 	setCatalog(base, true, true, keeper.UpstreamModelID)
 	if err := m.Tick(ctx); err != nil {
@@ -211,6 +245,14 @@ func TestUpstreamPriceMonitorDBThreeStrikesDurableAlertsSafetyRetryReappearanceA
 	f.db.Model(&models.PublicPriceSnapshotItem{}).Where("snapshot_id=? AND model_config_id=?", *pointerAfterRetry.PriceSnapshotID, missingID).Count(&publishedMissing)
 	if publishedMissing != 0 {
 		t.Fatal("inactive model remained in safety snapshot")
+	}
+	publicProjection, projectionErr := NewPublicContentService(f.db).PublicProjection(ctx)
+	if projectionErr != nil || publicProjection == nil || publicProjection.ETag == "" {
+		t.Fatalf("compatible public projection=%#v err=%v", publicProjection, projectionErr)
+	}
+	var resolvedSafety models.RootAlert
+	if err := f.db.Where("fingerprint=?", rootAlertFingerprint(models.RootAlertTypeCatalogSyncFailure, "", "safety")).First(&resolvedSafety).Error; err != nil || resolvedSafety.State != models.RootAlertStateResolved {
+		t.Fatalf("safety alert unresolved after compatible commit %#v %v", resolvedSafety, err)
 	}
 	base += 300_000
 	setCatalog(base, true, true, missing.UpstreamModelID, keeper.UpstreamModelID)
@@ -302,7 +344,7 @@ func TestUpstreamPriceMonitorLeaseOneOwnerAndExpiry(t *testing.T) {
 	if os.Getenv("TEST_DATABASE_URL") == "" {
 		t.Skip("BLOCKED_FIXTURE: requires explicit disposable TEST_DATABASE_URL; .env is never read")
 	}
-	f := openPublicModelDBFixture(t)
+	f := openTask8MonitorDBFixture(t)
 	if !f.db.Migrator().HasTable("upstream_monitor_leases") {
 		t.Fatal("BLOCKED_FIXTURE: migration missing upstream_monitor_leases")
 	}
@@ -365,7 +407,7 @@ func TestUpstreamPriceMonitorLeaseRenewsAndCancellationStopsBlockedTick(t *testi
 	if os.Getenv("TEST_DATABASE_URL") == "" {
 		t.Skip("BLOCKED_FIXTURE: requires explicit disposable TEST_DATABASE_URL; .env is never read")
 	}
-	f := openPublicModelDBFixture(t)
+	f := openTask8MonitorDBFixture(t)
 	now := int64(1_900_000_000_000)
 	_ = f.db.Model(&models.UpstreamMonitorLease{}).Where("lease_key=?", "catalog").Updates(map[string]any{"owner_token": nil, "lease_expires_at": 0}).Error
 	renew := make(chan time.Time, 1)
@@ -416,7 +458,7 @@ func TestUpstreamPriceMonitorLeaseLossCancelsWorkAndPreservesNewOwner(t *testing
 	if os.Getenv("TEST_DATABASE_URL") == "" {
 		t.Skip("BLOCKED_FIXTURE: requires explicit disposable TEST_DATABASE_URL; .env is never read")
 	}
-	f := openPublicModelDBFixture(t)
+	f := openTask8MonitorDBFixture(t)
 	now := int64(1_900_000_000_000)
 	_ = f.db.Model(&models.UpstreamMonitorLease{}).Where("lease_key=?", "catalog").Updates(map[string]any{"owner_token": nil, "lease_expires_at": 0}).Error
 	renew := make(chan time.Time, 1)
