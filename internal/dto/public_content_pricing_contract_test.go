@@ -92,11 +92,13 @@ func TestPublicContentPricingContract(t *testing.T) {
 		if route["method"] != "GET" && route["role"] != "root" {
 			t.Fatalf("mutation %s %s must be Root-only", route["method"], path)
 		}
-		if _, ok := route["request"]; !ok {
-			t.Fatalf("route %s %s is missing its request DTO", route["method"], path)
+		if !reflect.DeepEqual(sortedRouteKeys(route), []string{"method", "path", "request_headers", "request_schema", "response_headers", "response_schema", "role", "status"}) {
+			t.Fatalf("route %s %s has unfrozen keys %v", route["method"], path, sortedRouteKeys(route))
 		}
-		if _, ok := route["response"]; !ok {
-			t.Fatalf("route %s %s is missing its response DTO", route["method"], path)
+		for _, field := range []string{"request_schema", "response_schema"} {
+			if _, ok := route[field].(string); !ok {
+				t.Fatalf("route %s %s is missing its %s reference", route["method"], path, field)
+			}
 		}
 	}
 
@@ -130,6 +132,7 @@ func TestPublicContentPricingContract(t *testing.T) {
 	publicContentPricingRequire(t, contract, "required_authenticated_root_session_or_bearer", "admin_request_headers", "Authorization")
 	publicContentPricingRequire(t, contract, "required_exactly_once_unique_per_root_and_operation", "admin_publish_request_headers", "Idempotency-Key")
 	publicContentPricingRequire(t, contract, "required_single_use_action_ticket", "admin_publish_request_headers", "X-Action-Ticket")
+	publicContentPricingRequire(t, contract, "required_single_use_action_ticket", "admin_verified_action_request_headers", "X-Action-Ticket")
 	for _, route := range []publicContentPricingRoute{
 		{"POST", "/admin/v2/public-pricing/publish", "root"},
 		{"POST", "/admin/v2/public-pricing/releases/{guid}/restore", "root"},
@@ -138,11 +141,12 @@ func TestPublicContentPricingContract(t *testing.T) {
 	} {
 		publicContentPricingRequireRouteValue(t, contract, route, "admin_publish_request_headers", "request_headers")
 	}
+	publicContentPricingRequireRouteValue(t, contract, publicContentPricingRoute{"DELETE", "/admin/v2/public-models/{guid}", "root"}, "admin_verified_action_request_headers", "request_headers")
 	preview := publicContentPricingRoute{"GET", "/admin/v2/public-content/preview", "root"}
 	publicContentPricingRequireRouteValue(t, contract, preview, "admin_preview_response_headers", "response_headers")
 	publicContentPricingRequire(t, contract, "no-store", "admin_preview_response_headers", "Cache-Control")
 	publicContentPricingRequire(t, contract, "noindex_nofollow", "admin_preview_response_headers", "X-Robots-Tag")
-	publicContentPricingRequireRouteValue(t, contract, publicContentPricingRoute{"GET", "/admin/v2/public-models", "root"}, []any{"draft", "active", "inactive"}, "request", "query", "status_values")
+	publicContentPricingRequire(t, contract, []any{"draft", "active", "inactive"}, "schemas", "AdminModelListRequest", "properties", "status", "enum")
 	publicContentPricingRequire(t, contract, []any{
 		"published_price_below_upstream",
 		"upstream_missing",
@@ -153,10 +157,130 @@ func TestPublicContentPricingContract(t *testing.T) {
 		"renderer_failure",
 	}, "notifications", "types")
 	publicContentPricingRequire(t, contract, "in_app_only", "notifications", "delivery")
+	publicContentPricingRequire(t, contract, "one_exact_json_object_no_unknown_duplicate_or_trailing_fields", "body_rules", "mutation")
+	publicContentPricingRequire(t, contract, []any{"action_ticket"}, "body_rules", "forbidden_body_fields")
+	publicContentPricingRequire(t, contract, "400_invalid_public_content_pricing_request", "body_rules", "rejection")
+	publicContentPricingRequire(t, contract, []any{
+		"DELETE /admin/v2/public-models/{guid}",
+		"POST /admin/v2/public-pricing/publish",
+		"POST /admin/v2/public-pricing/releases/{guid}/restore",
+		"POST /admin/v2/public-content/publish",
+		"POST /admin/v2/public-content/releases/{guid}/restore",
+	}, "mutation_requirements", "action_ticket_header_routes")
+	publicContentPricingAssertSchemas(t, contract)
 
 	for _, forbidden := range []string{"credential_value", "api_key", "current_password", "internal_id", "database_id", "upstream_url"} {
 		publicContentPricingForbidText(t, raw, forbidden)
 	}
+}
+
+func publicContentPricingAssertSchemas(t *testing.T, contract map[string]any) {
+	t.Helper()
+	schemas, ok := contract["schemas"].(map[string]any)
+	if !ok {
+		t.Fatal("contract schemas must be an object")
+	}
+	for name, rawSchema := range schemas {
+		publicContentPricingValidateSchema(t, schemas, name, rawSchema)
+	}
+	for _, route := range publicContentPricingRoutes(t, contract) {
+		for _, field := range []string{"request_schema", "response_schema"} {
+			name := route[field].(string)
+			if _, ok := schemas[name]; !ok {
+				t.Fatalf("route %s %s references undefined %s %q", route["method"], route["path"], field, name)
+			}
+		}
+		for _, field := range []string{"request_headers", "response_headers"} {
+			name := route[field].(string)
+			if _, ok := contract[name].(map[string]any); !ok {
+				t.Fatalf("route %s %s references undefined %s %q", route["method"], route["path"], field, name)
+			}
+		}
+	}
+	publicContentPricingRequire(t, contract, []any{"model_key", "display_name", "provider", "capabilities", "context_window", "input_price_usd_per_million_tokens", "output_price_usd_per_million_tokens", "price_visibility", "release_version"}, "schemas", "PublicModelVisible", "required")
+	publicContentPricingRequire(t, contract, []any{"model_key", "display_name", "provider", "capabilities", "context_window", "price_visibility", "release_version"}, "schemas", "PublicModelRedacted", "required")
+	for _, field := range []string{"input_price_usd_per_million_tokens", "output_price_usd_per_million_tokens"} {
+		if _, exists := publicContentPricingSchemaProperties(t, contract, "PublicModelRedacted")[field]; exists {
+			t.Fatalf("redacted model schema must omit %s", field)
+		}
+	}
+	publicContentPricingRequire(t, contract, []any{"content_release_version", "price_release_version", "price_visibility"}, "schemas", "SiteReleaseResponse", "required")
+	publicContentPricingRequire(t, contract, []any{"code", "message", "request_id"}, "schemas", "Error", "required")
+	publicContentPricingRequire(t, contract, []any{"error"}, "schemas", "ErrorEnvelope", "required")
+	publicContentPricingRequire(t, contract, "ErrorEnvelope", "errors", "envelope_schema")
+	publicContentPricingRequireSchemaKeys(t, contract, "PriceDraft", "revision", "models", "currency", "unit")
+	publicContentPricingRequireSchemaKeys(t, contract, "ValidationIssue", "field", "code")
+	publicContentPricingRequireSchemaKeys(t, contract, "ImmutablePriceReleaseResponse", "release", "items")
+	publicContentPricingRequireSchemaKeys(t, contract, "ImmutableContentReleaseResponse", "release", "content")
+}
+
+func publicContentPricingRequireSchemaKeys(t *testing.T, contract map[string]any, name string, want ...string) {
+	t.Helper()
+	got := sortedRouteKeys(publicContentPricingSchemaProperties(t, contract, name))
+	for left := range want {
+		for right := left + 1; right < len(want); right++ {
+			if want[right] < want[left] {
+				want[left], want[right] = want[right], want[left]
+			}
+		}
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("schema %s properties=%v, want %v", name, got, want)
+	}
+}
+
+func publicContentPricingValidateSchema(t *testing.T, schemas map[string]any, name string, rawSchema any) {
+	t.Helper()
+	schema, ok := rawSchema.(map[string]any)
+	if !ok {
+		t.Fatalf("schema %s must be an object", name)
+	}
+	if _, ok := schema["type"].(string); !ok {
+		t.Fatalf("schema %s must define type", name)
+	}
+	if reference, ok := schema["$ref"].(string); ok {
+		if _, exists := schemas[reference]; !exists {
+			t.Fatalf("schema %s references undefined schema %q", name, reference)
+		}
+	}
+	if properties, ok := schema["properties"].(map[string]any); ok {
+		for propertyName, rawProperty := range properties {
+			if propertyName == "action_ticket" {
+				t.Fatalf("schema %s must not place action_ticket in a request body", name)
+			}
+			publicContentPricingValidateSchema(t, schemas, name, rawProperty)
+		}
+	}
+	if items, ok := schema["items"]; ok {
+		publicContentPricingValidateSchema(t, schemas, name, items)
+	}
+	if alternatives, ok := schema["one_of"].([]any); ok {
+		for _, rawAlternative := range alternatives {
+			alternative, ok := rawAlternative.(string)
+			if !ok || schemas[alternative] == nil {
+				t.Fatalf("schema %s has undefined alternative %v", name, rawAlternative)
+			}
+		}
+	}
+	if required, ok := schema["required"].([]any); ok {
+		properties, _ := schema["properties"].(map[string]any)
+		for _, rawField := range required {
+			field, ok := rawField.(string)
+			if !ok || properties[field] == nil {
+				t.Fatalf("schema %s required field %v is not a property", name, rawField)
+			}
+		}
+	}
+}
+
+func publicContentPricingSchemaProperties(t *testing.T, contract map[string]any, name string) map[string]any {
+	t.Helper()
+	schemas := contract["schemas"].(map[string]any)
+	properties, ok := schemas[name].(map[string]any)["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("schema %s properties must be an object", name)
+	}
+	return properties
 }
 
 type publicContentPricingRoute struct {
@@ -257,4 +381,19 @@ func publicContentPricingForbidText(t *testing.T, raw []byte, forbidden string) 
 	if strings.Contains(strings.ToLower(string(raw)), forbidden) {
 		t.Fatalf("contract contains forbidden text %q", forbidden)
 	}
+}
+
+func sortedRouteKeys(route map[string]any) []string {
+	keys := make([]string, 0, len(route))
+	for key := range route {
+		keys = append(keys, key)
+	}
+	for left := range keys {
+		for right := left + 1; right < len(keys); right++ {
+			if keys[right] < keys[left] {
+				keys[left], keys[right] = keys[right], keys[left]
+			}
+		}
+	}
+	return keys
 }
