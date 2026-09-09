@@ -33,6 +33,9 @@ func reconcilePlatformGeneration(ctx context.Context, db *gorm.DB, store *Platfo
 	err = withLock(ctx, db, platformGenerationAdvisoryLockName(userID, generationID), func(conn *gorm.DB) error {
 		receipt, receiptErr := LoadPlatformGenerationReceipt(ctx, conn, userID, generationID)
 		if receiptErr == nil {
+			if !platformGenerationReceiptMatches(current, receipt, userID, generationID) {
+				return ErrPlatformGenerationPersistenceIntegrity
+			}
 			guids := make(map[string]string, receipt.SuccessfulModelCount)
 			for _, result := range receipt.Results {
 				if result.State == PlatformGenerationStateCompleted {

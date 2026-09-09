@@ -22,7 +22,12 @@ func RegisterPlatform(r *gin.Engine, state *app.State) {
 }
 
 func registerPlatformWithAuthentication(r *gin.Engine, state *app.State, authenticate gin.HandlerFunc) {
-	g := r.Group("/api/v1/platform", gatewayRequestID(), platformDiagnostics(), authenticate, platformDiagnosticAuthenticated())
+	base := r.Group("/api/v1/platform", gatewayRequestID(), platformDiagnostics())
+	generations := base.Group("/chat/generations", platformGenerationNoStore(), authenticate, platformDiagnosticAuthenticated())
+	generations.GET("/:generation_id", platformGenerationGet(state))
+	generations.POST("/:generation_id/cancel", platformGenerationCancel(state))
+
+	g := base.Group("", authenticate, platformDiagnosticAuthenticated())
 
 	g.GET("/models", func(c *gin.Context) {
 		if state.WhiteLabel == nil {

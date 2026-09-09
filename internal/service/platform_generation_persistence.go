@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/hex"
 	"errors"
 	"math"
@@ -111,7 +112,7 @@ func withPlatformGenerationAdvisoryLock(ctx context.Context, db *gorm.DB, lockNa
 		if err := platformGenerationPinnedSession(conn, ctx).Raw("SELECT GET_LOCK(?, 5)", lockName).Scan(&acquired).Error; err != nil || !acquired.Valid || acquired.Int64 != 1 {
 			return ErrPlatformGenerationPersistenceUnavailable
 		}
-		return runWithPlatformGenerationAdvisoryLockRelease(conn, lockName, fn)
+		return runWithPlatformGenerationAdvisoryLockRelease(ctx, conn, lockName, fn)
 	})
 }
 
@@ -123,18 +124,35 @@ func platformGenerationPinnedSession(conn *gorm.DB, ctx context.Context) *gorm.D
 	return conn.Session(&gorm.Session{NewDB: true, Context: ctx})
 }
 
-func runWithPlatformGenerationAdvisoryLockRelease(conn *gorm.DB, lockName string, fn func(*gorm.DB) error) (primaryErr error) {
+func runWithPlatformGenerationAdvisoryLockRelease(ctx context.Context, conn *gorm.DB, lockName string, fn func(*gorm.DB) error) (primaryErr error) {
 	defer func() {
-		cleanupCtx, cancel := context.WithTimeout(context.Background(), platformGenerationAdvisoryLockReleaseTimeout)
+		cleanupCtx, cancel := context.WithTimeout(ctx, platformGenerationAdvisoryLockReleaseTimeout)
 		defer cancel()
 		var released sql.NullInt64
 		releaseErr := platformGenerationPinnedSession(conn, cleanupCtx).Raw("SELECT RELEASE_LOCK(?)", lockName).Scan(&released).Error
-		if primaryErr == nil && (releaseErr != nil || !released.Valid || released.Int64 != 1) {
+		if releaseErr == nil && released.Valid && released.Int64 == 1 {
+			return
+		}
+		discardPlatformGenerationPinnedSession(conn)
+		if primaryErr == nil {
 			primaryErr = ErrPlatformGenerationPersistenceUnavailable
 		}
 	}()
 	primaryErr = fn(platformGenerationPinnedSession(conn, conn.Statement.Context))
 	return primaryErr
+}
+
+func discardPlatformGenerationPinnedSession(conn *gorm.DB) {
+	if conn == nil || conn.Statement == nil {
+		return
+	}
+	sqlConn, ok := conn.Statement.ConnPool.(*sql.Conn)
+	if !ok {
+		return
+	}
+	// A failed RELEASE_LOCK must not return its session-scoped lock to the
+	// pool. ErrBadConn makes database/sql close this exact physical session.
+	_ = sqlConn.Raw(func(any) error { return driver.ErrBadConn })
 }
 
 func validatePlatformGenerationPersistenceInput(input PlatformGenerationPersistenceInput) error {

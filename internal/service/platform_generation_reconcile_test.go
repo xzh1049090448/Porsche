@@ -2,14 +2,84 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/porsche/ai-gateway-go/internal/models"
 	"github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
 )
+
+func TestReconcilePlatformGenerationReceiptMatcherGuardsCommittingCAS(t *testing.T) {
+	committing := PlatformGenerationSnapshot{
+		GenerationID: generationTestID,
+		Mode:         PlatformGenerationModeCompare,
+		Models:       []string{"model-a", "model-b"},
+		State:        PlatformGenerationStateCommitting,
+		ModelStates: map[string]PlatformGenerationModel{
+			"model-a": {State: PlatformGenerationStateCompleted},
+			"model-b": {State: PlatformGenerationStateFailed, ErrorCode: "timeout"},
+		},
+		CreatedAtMillis: 1,
+		UpdatedAtMillis: 2,
+	}
+	receipt := PlatformGenerationReceiptSnapshot{
+		UserID: 1, GenerationID: generationTestID, Mode: PlatformGenerationModeCompare,
+		ConversationGUID: 101, UserMessage: "secret prompt must not participate",
+		SuccessfulModelCount: 1, DailyCallsCharged: 1, TotalTokens: 7, CommittedAtMillis: 3,
+		Results: []PlatformGenerationCommittedResult{
+			{Model: "model-a", State: PlatformGenerationStateCompleted, AssistantMessageGUID: "201", Content: "secret answer", Tokens: 7},
+			{Model: "model-b", State: PlatformGenerationStateFailed, ErrorCode: "timeout"},
+		},
+	}
+	if !platformGenerationReceiptMatches(committing, receipt, 1, generationTestID) {
+		t.Fatal("matching committing receipt was not eligible for reconciliation")
+	}
+
+	mutations := []struct {
+		name   string
+		mutate func(*PlatformGenerationSnapshot, *PlatformGenerationReceiptSnapshot)
+	}{
+		{name: "mode", mutate: func(_ *PlatformGenerationSnapshot, r *PlatformGenerationReceiptSnapshot) {
+			r.Mode = PlatformGenerationModeSingle
+		}},
+		{name: "order", mutate: func(_ *PlatformGenerationSnapshot, r *PlatformGenerationReceiptSnapshot) {
+			r.Results[0], r.Results[1] = r.Results[1], r.Results[0]
+		}},
+		{name: "state", mutate: func(_ *PlatformGenerationSnapshot, r *PlatformGenerationReceiptSnapshot) {
+			r.Results[1] = PlatformGenerationCommittedResult{Model: "model-b", State: PlatformGenerationStateCompleted, AssistantMessageGUID: "202", Content: "other secret", Tokens: 1}
+		}},
+		{name: "failed code", mutate: func(_ *PlatformGenerationSnapshot, r *PlatformGenerationReceiptSnapshot) {
+			r.Results[1].ErrorCode = "upstream_error"
+		}},
+		{name: "completed guid", mutate: func(s *PlatformGenerationSnapshot, r *PlatformGenerationReceiptSnapshot) {
+			s.State = PlatformGenerationStateCompleted
+			model := s.ModelStates["model-a"]
+			model.AssistantMessageGUID = "201"
+			s.ModelStates["model-a"] = model
+			r.Results[0].AssistantMessageGUID = "202"
+		}},
+	}
+	for _, test := range mutations {
+		t.Run(test.name, func(t *testing.T) {
+			snapshot := clonePlatformGeneration(committing)
+			candidate := receipt
+			candidate.Results = append([]PlatformGenerationCommittedResult(nil), receipt.Results...)
+			test.mutate(&snapshot, &candidate)
+			if platformGenerationReceiptMatches(snapshot, candidate, 1, generationTestID) {
+				t.Fatal("mismatched receipt was eligible for reconciliation")
+			}
+		})
+	}
+
+	receipt.UserMessage = "different ignored secret prompt"
+	if !platformGenerationReceiptMatches(committing, receipt, 1, generationTestID) {
+		t.Fatal("matcher must not compare or expose UserMessage")
+	}
+}
 
 func TestReconcilePlatformGenerationCompletesFromReceipt(t *testing.T) {
 	f := openPlatformGenerationFinalizationFixture(t)
@@ -30,6 +100,102 @@ func TestReconcilePlatformGenerationCompletesFromReceipt(t *testing.T) {
 	}
 	requirePlatformGenerationTTLNotIncreased(t, f.store.client, key, before)
 	assertPlatformGenerationRedisMetadataOnly(t, f.store.client, key)
+}
+
+func TestReconcilePlatformGenerationMismatchDoesNotCompleteRedisIntegration(t *testing.T) {
+	requirePlatformGenerationCombinedFixture(t)
+	for _, test := range []struct {
+		name   string
+		mutate func(*PlatformGenerationSnapshot)
+	}{
+		{name: "ordered models", mutate: func(snapshot *PlatformGenerationSnapshot) {
+			snapshot.Models[0], snapshot.Models[1] = snapshot.Models[1], snapshot.Models[0]
+		}},
+		{name: "mode", mutate: func(snapshot *PlatformGenerationSnapshot) {
+			model := snapshot.Models[0]
+			state := snapshot.ModelStates[model]
+			snapshot.Mode = PlatformGenerationModeSingle
+			snapshot.Models = []string{model}
+			snapshot.ModelStates = map[string]PlatformGenerationModel{
+				model: state,
+			}
+		}},
+		{name: "failed code", mutate: func(snapshot *PlatformGenerationSnapshot) {
+			model := snapshot.ModelStates["model-b"]
+			model.ErrorCode = "upstream_error"
+			snapshot.ModelStates["model-b"] = model
+		}},
+		{name: "model state", mutate: func(snapshot *PlatformGenerationSnapshot) {
+			model := snapshot.ModelStates["model-b"]
+			model.State = PlatformGenerationStateCompleted
+			model.ErrorCode = ""
+			snapshot.ModelStates["model-b"] = model
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := openPlatformGenerationFinalizationFixture(t)
+			input := f.committingResults(t, platformCompareGenerationID, PlatformGenerationModeCompare, partialCompareResults())
+			committing, err := f.store.Get(context.Background(), input.UserID, input.GenerationID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			persistence, err := NewPlatformGenerationPersistence(f.store)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := persistence.Finalize(context.Background(), f.db, input); err != nil {
+				t.Fatal(err)
+			}
+
+			mismatched := clonePlatformGeneration(committing)
+			test.mutate(&mismatched)
+			mismatchedRaw, err := encodePlatformGeneration(mismatched)
+			if err != nil {
+				t.Fatalf("encode valid mismatched authority: %v", err)
+			}
+			if err := f.store.client.Set(context.Background(), f.store.key(input.UserID, input.GenerationID), mismatchedRaw, platformGenerationTTL).Err(); err != nil {
+				t.Fatal(err)
+			}
+
+			resolved, err := ReconcilePlatformGeneration(context.Background(), f.db, f.store, input.UserID, input.GenerationID, input.NowMillis+1)
+			if !errors.Is(err, ErrPlatformGenerationPersistenceIntegrity) || err.Error() != ErrPlatformGenerationPersistenceIntegrity.Error() || resolved.State != PlatformGenerationStateCommitting {
+				t.Fatalf("mismatch reconcile snapshot=%#v error=%v", resolved, err)
+			}
+			authoritative, getErr := f.store.Get(context.Background(), input.UserID, input.GenerationID)
+			if getErr != nil || authoritative.State != PlatformGenerationStateCommitting {
+				t.Fatalf("Redis mutated after mismatch: snapshot=%#v error=%v", authoritative, getErr)
+			}
+
+			control, err := NewPlatformGenerationControl(f.db, f.store, NewPlatformGenerationCancellationRegistry())
+			if err != nil {
+				t.Fatal(err)
+			}
+			control.now = func() time.Time { return time.UnixMilli(input.NowMillis + 1).UTC() }
+			view, getErr := control.Get(context.Background(), input.UserID, input.GenerationID)
+			if !errors.Is(getErr, ErrPlatformGenerationControlUnavailable) {
+				t.Fatalf("GET mismatch view=%#v error=%v", view, getErr)
+			}
+			encoded, marshalErr := json.Marshal(view)
+			if marshalErr != nil {
+				t.Fatal(marshalErr)
+			}
+			if strings.Contains(string(encoded), "content") || strings.Contains(string(encoded), "answer") || strings.Contains(string(encoded), "prompt") {
+				t.Fatalf("GET mismatch leaked receipt data: %s", encoded)
+			}
+
+			committingRaw, err := encodePlatformGeneration(committing)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := f.store.client.Set(context.Background(), f.store.key(input.UserID, input.GenerationID), committingRaw, platformGenerationTTL).Err(); err != nil {
+				t.Fatal(err)
+			}
+			recovered, err := ReconcilePlatformGeneration(context.Background(), f.db, f.store, input.UserID, input.GenerationID, input.NowMillis+1)
+			if err != nil || recovered.State != PlatformGenerationStateCompleted {
+				t.Fatalf("recovered reconcile snapshot=%#v error=%v", recovered, err)
+			}
+		})
+	}
 }
 
 func TestReconcilePlatformGenerationRejectsInvalidUserMessageReceipt(t *testing.T) {

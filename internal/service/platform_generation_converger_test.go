@@ -1,0 +1,836 @@
+package service
+
+import (
+	"context"
+	"errors"
+	"reflect"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/redis/go-redis/v9"
+	"gorm.io/gorm"
+)
+
+type platformGenerationConvergerFakeTicker struct {
+	c       chan time.Time
+	stopped atomic.Bool
+}
+
+func newPlatformGenerationConvergerFakeTicker() *platformGenerationConvergerFakeTicker {
+	return &platformGenerationConvergerFakeTicker{c: make(chan time.Time, 8)}
+}
+
+func (t *platformGenerationConvergerFakeTicker) C() <-chan time.Time { return t.c }
+func (t *platformGenerationConvergerFakeTicker) Stop()               { t.stopped.Store(true) }
+
+func TestPlatformGenerationConvergerRunPassContinuesCursorAndProcessesSerially(t *testing.T) {
+	var scanCursors []uint64
+	var active atomic.Int32
+	var maximum atomic.Int32
+	var processed []int64
+	w := &PlatformGenerationConverger{
+		scan: func(_ context.Context, cursor uint64, count int64) ([]PlatformGenerationIdentity, uint64, error) {
+			scanCursors = append(scanCursors, cursor)
+			if cursor == 0 {
+				if count != platformGenerationConvergerMaxKeys {
+					t.Fatalf("first scan count = %d", count)
+				}
+				return []PlatformGenerationIdentity{{UserID: 1, GenerationID: generationTestID}}, 41, nil
+			}
+			if count != platformGenerationConvergerMaxKeys-1 {
+				t.Fatalf("second scan count = %d", count)
+			}
+			return []PlatformGenerationIdentity{{UserID: 2, GenerationID: generationTestID}}, 0, nil
+		},
+		converge: func(_ context.Context, identity PlatformGenerationIdentity, nowMillis int64) error {
+			current := active.Add(1)
+			defer active.Add(-1)
+			if current > maximum.Load() {
+				maximum.Store(current)
+			}
+			if nowMillis != 1_000 {
+				t.Fatalf("nowMillis = %d", nowMillis)
+			}
+			processed = append(processed, identity.UserID)
+			return nil
+		},
+		elapsedNow: time.Now,
+		nowMillis:  func() int64 { return 1_000 },
+		maxKeys:    platformGenerationConvergerMaxKeys,
+		budget:     platformGenerationConvergerBudget,
+	}
+
+	if err := w.RunPass(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(scanCursors) != 2 || scanCursors[0] != 0 || scanCursors[1] != 41 {
+		t.Fatalf("scan cursors = %v", scanCursors)
+	}
+	if len(processed) != 2 || processed[0] != 1 || processed[1] != 2 {
+		t.Fatalf("processed = %v", processed)
+	}
+	if maximum.Load() != 1 || w.currentCursor() != 0 {
+		t.Fatalf("maximum/cursor = %d/%d", maximum.Load(), w.currentCursor())
+	}
+}
+
+func TestPlatformGenerationConvergerRunPassIsBoundedByKeys(t *testing.T) {
+	ids := make([]PlatformGenerationIdentity, 600)
+	for i := range ids {
+		ids[i] = PlatformGenerationIdentity{UserID: int64(i + 1), GenerationID: generationTestID}
+	}
+	processed := 0
+	w := &PlatformGenerationConverger{
+		scan: func(context.Context, uint64, int64) ([]PlatformGenerationIdentity, uint64, error) {
+			return ids, 77, nil
+		},
+		converge: func(context.Context, PlatformGenerationIdentity, int64) error {
+			processed++
+			return nil
+		},
+		elapsedNow: time.Now,
+		nowMillis:  func() int64 { return 1_000 },
+		maxKeys:    platformGenerationConvergerMaxKeys,
+		budget:     platformGenerationConvergerBudget,
+	}
+
+	if err := w.RunPass(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if processed != platformGenerationConvergerMaxKeys || w.currentCursor() != 77 {
+		t.Fatalf("processed/cursor = %d/%d", processed, w.currentCursor())
+	}
+}
+
+func TestPlatformGenerationConvergerRunPassIsBoundedByElapsedBudget(t *testing.T) {
+	var elapsedCalls int
+	times := []time.Time{
+		time.Unix(0, 0),
+		time.Unix(0, 0),
+		time.Unix(0, 0),
+		time.Unix(0, int64(101*time.Millisecond)),
+	}
+	scans := 0
+	processed := 0
+	w := &PlatformGenerationConverger{
+		scan: func(context.Context, uint64, int64) ([]PlatformGenerationIdentity, uint64, error) {
+			scans++
+			return []PlatformGenerationIdentity{{UserID: int64(scans), GenerationID: generationTestID}}, uint64(scans), nil
+		},
+		converge: func(context.Context, PlatformGenerationIdentity, int64) error {
+			processed++
+			return nil
+		},
+		elapsedNow: func() time.Time {
+			value := times[elapsedCalls]
+			if elapsedCalls < len(times)-1 {
+				elapsedCalls++
+			}
+			return value
+		},
+		nowMillis: func() int64 { return 1_000 },
+		maxKeys:   platformGenerationConvergerMaxKeys,
+		budget:    platformGenerationConvergerBudget,
+	}
+
+	if err := w.RunPass(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if scans != 1 || processed != 1 || w.currentCursor() != 1 {
+		t.Fatalf("scans/processed/cursor = %d/%d/%d", scans, processed, w.currentCursor())
+	}
+}
+
+func TestPlatformGenerationConvergerRunPassContinuesBenignRecordErrors(t *testing.T) {
+	benign := []error{
+		ErrPlatformGenerationConflict,
+		ErrPlatformGenerationPersistenceConflict,
+		ErrPlatformGenerationPersistenceUnavailable,
+		ErrPlatformGenerationUnavailable,
+		ErrPlatformGenerationControlUnavailable,
+		ErrPlatformGenerationNotFound,
+	}
+	processed := 0
+	w := newPlatformGenerationConvergerTestWorker(
+		func(context.Context, uint64, int64) ([]PlatformGenerationIdentity, uint64, error) {
+			ids := make([]PlatformGenerationIdentity, len(benign)+1)
+			for i := range ids {
+				ids[i] = PlatformGenerationIdentity{UserID: int64(i + 1), GenerationID: generationTestID}
+			}
+			return ids, 0, nil
+		},
+		func(context.Context, PlatformGenerationIdentity, int64) error {
+			processed++
+			if processed <= len(benign) {
+				return benign[processed-1]
+			}
+			return nil
+		},
+	)
+	if err := w.RunPass(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if processed != len(benign)+1 {
+		t.Fatalf("processed = %d", processed)
+	}
+}
+
+func TestPlatformGenerationConvergerRunPassSanitizesUnexpectedDependencyError(t *testing.T) {
+	processed := 0
+	w := newPlatformGenerationConvergerTestWorker(
+		func(context.Context, uint64, int64) ([]PlatformGenerationIdentity, uint64, error) {
+			return []PlatformGenerationIdentity{{UserID: 1, GenerationID: generationTestID}, {UserID: 2, GenerationID: generationTestID}}, 0, nil
+		},
+		func(context.Context, PlatformGenerationIdentity, int64) error {
+			processed++
+			return errors.New("secret dependency detail")
+		},
+	)
+	if err := w.RunPass(context.Background()); err != ErrPlatformGenerationControlUnavailable {
+		t.Fatalf("RunPass() error = %v", err)
+	}
+	if processed != 1 {
+		t.Fatalf("processed = %d", processed)
+	}
+}
+
+func TestPlatformGenerationConvergerRunPassSkipsCorruptRecordAndConvergesNextIdentity(t *testing.T) {
+	client := redis.NewClient(&redis.Options{Addr: "127.0.0.1:1"})
+	t.Cleanup(func() { _ = client.Close() })
+	store, err := NewPlatformGenerationStore(client)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	nowMillis := int64(100_000)
+	valid := controlSnapshot(PlatformGenerationStateRunning, nowMillis-10_000)
+	converged := controlSnapshot(PlatformGenerationStateFailed, nowMillis)
+	fake := newPlatformGenerationControlFake(valid)
+	fake.get = func(_ context.Context, userID int64, _ string) (PlatformGenerationSnapshot, error) {
+		fake.getCalls.Add(1)
+		if userID == 1 {
+			return PlatformGenerationSnapshot{}, ErrPlatformGenerationInvalid
+		}
+		return valid, nil
+	}
+	fake.failExpiredRunning = func(_ context.Context, userID int64, _ string, _ int64) (PlatformGenerationSnapshot, error) {
+		fake.failCalls.Add(1)
+		if userID != 2 {
+			t.Fatalf("converged user = %d", userID)
+		}
+		return converged, nil
+	}
+	control := mustControl(t, fake, NewPlatformGenerationCancellationRegistry(), time.UnixMilli(nowMillis))
+	control.store = store
+	w, err := NewPlatformGenerationConverger(control)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var scans atomic.Int32
+	w.scan = func(context.Context, uint64, int64) ([]PlatformGenerationIdentity, uint64, error) {
+		scans.Add(1)
+		return []PlatformGenerationIdentity{
+			{UserID: 1, GenerationID: generationTestID},
+			{UserID: 2, GenerationID: generationTestID},
+		}, 0, nil
+	}
+	w.nowMillis = func() int64 { return nowMillis }
+
+	if err := w.RunPass(context.Background()); err != nil {
+		t.Fatalf("RunPass() error = %v", err)
+	}
+	if scans.Load() != 1 || fake.getCalls.Load() != 2 || fake.failCalls.Load() != 1 {
+		t.Fatalf("scans/get/fail = %d/%d/%d", scans.Load(), fake.getCalls.Load(), fake.failCalls.Load())
+	}
+}
+
+func TestPlatformGenerationConvergerRunPassReturnsScanDependencyError(t *testing.T) {
+	var scans atomic.Int32
+	w := newPlatformGenerationConvergerTestWorker(
+		func(context.Context, uint64, int64) ([]PlatformGenerationIdentity, uint64, error) {
+			scans.Add(1)
+			return nil, 0, errors.New("secret scan detail")
+		},
+		func(context.Context, PlatformGenerationIdentity, int64) error {
+			t.Fatal("converge called after scan failure")
+			return nil
+		},
+	)
+	if err := w.RunPass(context.Background()); err != ErrPlatformGenerationControlUnavailable {
+		t.Fatalf("RunPass() error = %v", err)
+	}
+	if scans.Load() != 1 {
+		t.Fatalf("scan calls = %d", scans.Load())
+	}
+}
+
+func TestPlatformGenerationConvergerRunPassReturnsCallerCancellationAfterBenignRecordError(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	w := newPlatformGenerationConvergerTestWorker(
+		func(context.Context, uint64, int64) ([]PlatformGenerationIdentity, uint64, error) {
+			return []PlatformGenerationIdentity{{UserID: 1, GenerationID: generationTestID}}, 0, nil
+		},
+		func(context.Context, PlatformGenerationIdentity, int64) error {
+			cancel()
+			return ErrPlatformGenerationInvalid
+		},
+	)
+	if err := w.RunPass(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("RunPass() error = %v", err)
+	}
+}
+
+func TestPlatformGenerationConvergerRunPassReturnsCallerDeadlineAfterBenignRecordError(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	w := newPlatformGenerationConvergerTestWorker(
+		func(context.Context, uint64, int64) ([]PlatformGenerationIdentity, uint64, error) {
+			return []PlatformGenerationIdentity{{UserID: 1, GenerationID: generationTestID}}, 0, nil
+		},
+		func(dependencyCtx context.Context, _ PlatformGenerationIdentity, _ int64) error {
+			<-dependencyCtx.Done()
+			return ErrPlatformGenerationInvalid
+		},
+	)
+	if err := w.RunPass(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("RunPass() error = %v", err)
+	}
+}
+
+func TestPlatformGenerationConvergerRunPassInternalBudgetRemainsNormalStop(t *testing.T) {
+	w := newPlatformGenerationConvergerTestWorker(
+		func(context.Context, uint64, int64) ([]PlatformGenerationIdentity, uint64, error) {
+			return []PlatformGenerationIdentity{{UserID: 1, GenerationID: generationTestID}}, 0, nil
+		},
+		func(dependencyCtx context.Context, _ PlatformGenerationIdentity, _ int64) error {
+			<-dependencyCtx.Done()
+			return ErrPlatformGenerationInvalid
+		},
+	)
+	w.budget = time.Millisecond
+	if err := w.RunPass(context.Background()); err != nil {
+		t.Fatalf("RunPass() error = %v", err)
+	}
+}
+
+func TestPlatformGenerationConvergerRunPassReturnsCallerCancellationAfterSuccessfulScan(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	w := newPlatformGenerationConvergerTestWorker(
+		func(context.Context, uint64, int64) ([]PlatformGenerationIdentity, uint64, error) {
+			cancel()
+			return nil, 0, nil
+		},
+		func(context.Context, PlatformGenerationIdentity, int64) error {
+			t.Fatal("converge called for empty scan")
+			return nil
+		},
+	)
+	if err := w.RunPass(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("RunPass() error = %v", err)
+	}
+}
+
+func TestPlatformGenerationConvergerRunPassReturnsCallerDeadlineAfterSuccessfulScan(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	w := newPlatformGenerationConvergerTestWorker(
+		func(scanCtx context.Context, _ uint64, _ int64) ([]PlatformGenerationIdentity, uint64, error) {
+			<-scanCtx.Done()
+			return nil, 0, nil
+		},
+		func(context.Context, PlatformGenerationIdentity, int64) error {
+			t.Fatal("converge called for empty scan")
+			return nil
+		},
+	)
+	if err := w.RunPass(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("RunPass() error = %v", err)
+	}
+}
+
+func TestPlatformGenerationConvergerStartRunsImmediatelyAndOnInjectedCadence(t *testing.T) {
+	ticker := newPlatformGenerationConvergerFakeTicker()
+	passes := make(chan struct{}, 3)
+	w := newPlatformGenerationConvergerTestWorker(
+		func(context.Context, uint64, int64) ([]PlatformGenerationIdentity, uint64, error) {
+			passes <- struct{}{}
+			return nil, 0, nil
+		},
+		func(context.Context, PlatformGenerationIdentity, int64) error { return nil },
+	)
+	w.newTicker = func(interval time.Duration) platformGenerationConvergerTicker {
+		if interval != platformGenerationConvergerInterval {
+			t.Fatalf("ticker interval = %s", interval)
+		}
+		return ticker
+	}
+	w.interval = platformGenerationConvergerInterval
+
+	w.Start()
+	waitPlatformGenerationConvergerSignal(t, passes, "immediate pass")
+	ticker.c <- time.Unix(1, 0)
+	waitPlatformGenerationConvergerSignal(t, passes, "cadence pass")
+	if err := w.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !ticker.stopped.Load() {
+		t.Fatal("ticker was not stopped")
+	}
+}
+
+func TestPlatformGenerationConvergerStartRetriesAfterDependencyFailure(t *testing.T) {
+	ticker := newPlatformGenerationConvergerFakeTicker()
+	attempts := make(chan int, 2)
+	var count atomic.Int32
+	w := newPlatformGenerationConvergerTestWorker(
+		func(context.Context, uint64, int64) ([]PlatformGenerationIdentity, uint64, error) {
+			attempt := int(count.Add(1))
+			attempts <- attempt
+			if attempt == 1 {
+				return nil, 0, ErrPlatformGenerationUnavailable
+			}
+			return nil, 0, nil
+		},
+		func(context.Context, PlatformGenerationIdentity, int64) error { return nil },
+	)
+	w.newTicker = func(time.Duration) platformGenerationConvergerTicker { return ticker }
+	w.interval = platformGenerationConvergerInterval
+	w.Start()
+	if got := waitPlatformGenerationConvergerAttempt(t, attempts); got != 1 {
+		t.Fatalf("first attempt = %d", got)
+	}
+	ticker.c <- time.Unix(1, 0)
+	if got := waitPlatformGenerationConvergerAttempt(t, attempts); got != 2 {
+		t.Fatalf("second attempt = %d", got)
+	}
+	if err := w.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPlatformGenerationConvergerRunPassStopsOnContextCancellation(t *testing.T) {
+	started := make(chan struct{})
+	w := newPlatformGenerationConvergerTestWorker(
+		func(ctx context.Context, _ uint64, _ int64) ([]PlatformGenerationIdentity, uint64, error) {
+			close(started)
+			<-ctx.Done()
+			return nil, 0, ctx.Err()
+		},
+		func(context.Context, PlatformGenerationIdentity, int64) error { return nil },
+	)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- w.RunPass(ctx) }()
+	<-started
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("RunPass() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("RunPass did not stop after cancellation")
+	}
+}
+
+func TestPlatformGenerationConvergerRunPassBoundsDependencyContext(t *testing.T) {
+	w := newPlatformGenerationConvergerTestWorker(
+		func(ctx context.Context, _ uint64, _ int64) ([]PlatformGenerationIdentity, uint64, error) {
+			deadline, ok := ctx.Deadline()
+			if !ok {
+				t.Fatal("scan context has no pass deadline")
+			}
+			remaining := time.Until(deadline)
+			if remaining <= 0 || remaining > platformGenerationConvergerBudget {
+				t.Fatalf("scan deadline remaining = %s", remaining)
+			}
+			return nil, 0, nil
+		},
+		func(context.Context, PlatformGenerationIdentity, int64) error { return nil },
+	)
+	if err := w.RunPass(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPlatformGenerationConvergerConcurrentStartAndCloseAreIdempotent(t *testing.T) {
+	started := make(chan struct{}, 4)
+	w := newPlatformGenerationConvergerTestWorker(
+		func(context.Context, uint64, int64) ([]PlatformGenerationIdentity, uint64, error) {
+			started <- struct{}{}
+			return nil, 0, nil
+		},
+		func(context.Context, PlatformGenerationIdentity, int64) error { return nil },
+	)
+	w.newTicker = func(time.Duration) platformGenerationConvergerTicker {
+		return newPlatformGenerationConvergerFakeTicker()
+	}
+	w.interval = platformGenerationConvergerInterval
+
+	var starts sync.WaitGroup
+	for i := 0; i < 16; i++ {
+		starts.Add(1)
+		go func() { defer starts.Done(); w.Start() }()
+	}
+	starts.Wait()
+	waitPlatformGenerationConvergerSignal(t, started, "single immediate pass")
+	select {
+	case <-started:
+		t.Fatal("Start launched more than one worker")
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	var closes sync.WaitGroup
+	errs := make(chan error, 16)
+	for i := 0; i < 16; i++ {
+		closes.Add(1)
+		go func() { defer closes.Done(); errs <- w.Close(context.Background()) }()
+	}
+	closes.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	}
+}
+
+func TestPlatformGenerationConvergerCloseHonorsContext(t *testing.T) {
+	blocked := make(chan struct{})
+	release := make(chan struct{})
+	w := newPlatformGenerationConvergerTestWorker(
+		func(context.Context, uint64, int64) ([]PlatformGenerationIdentity, uint64, error) {
+			close(blocked)
+			<-release
+			return nil, 0, nil
+		},
+		func(context.Context, PlatformGenerationIdentity, int64) error { return nil },
+	)
+	w.newTicker = func(time.Duration) platformGenerationConvergerTicker {
+		return newPlatformGenerationConvergerFakeTicker()
+	}
+	w.interval = platformGenerationConvergerInterval
+	w.Start()
+	<-blocked
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := w.Close(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Close() error = %v", err)
+	}
+	close(release)
+	if err := w.Close(context.Background()); err != nil {
+		t.Fatalf("second Close() error = %v", err)
+	}
+}
+
+func TestPlatformGenerationConvergerNilZeroAndConstructorSafety(t *testing.T) {
+	var nilWorker *PlatformGenerationConverger
+	nilWorker.Start()
+	if err := nilWorker.RunPass(context.Background()); err != ErrPlatformGenerationControlUnavailable {
+		t.Fatalf("nil RunPass() error = %v", err)
+	}
+	if err := nilWorker.Close(context.Background()); err != nil {
+		t.Fatalf("nil Close() error = %v", err)
+	}
+
+	zero := &PlatformGenerationConverger{}
+	zero.Start()
+	if err := zero.Close(context.Background()); err != nil {
+		t.Fatalf("zero Close() error = %v", err)
+	}
+	if _, err := NewPlatformGenerationConverger(nil); err != ErrPlatformGenerationControlUnavailable {
+		t.Fatalf("nil constructor error = %v", err)
+	}
+	fakeControl := &PlatformGenerationControl{}
+	if _, err := NewPlatformGenerationConverger(fakeControl); err != ErrPlatformGenerationControlUnavailable {
+		t.Fatalf("fake constructor error = %v", err)
+	}
+}
+
+func TestPlatformGenerationConvergerConstructorBindsProductionDependencies(t *testing.T) {
+	client := redis.NewClient(&redis.Options{Addr: "127.0.0.1:1"})
+	t.Cleanup(func() { _ = client.Close() })
+	store, err := NewPlatformGenerationStore(client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db := &gorm.DB{Config: &gorm.Config{}}
+	control, err := NewPlatformGenerationControl(db, store, NewPlatformGenerationCancellationRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := NewPlatformGenerationConverger(control)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w.control != control || w.store != store || w.scan == nil || w.converge == nil || w.elapsedNow == nil || w.nowMillis == nil || w.newTicker == nil {
+		t.Fatal("constructor did not bind production dependencies")
+	}
+	if w.interval != platformGenerationConvergerInterval || w.maxKeys != platformGenerationConvergerMaxKeys || w.budget != platformGenerationConvergerBudget {
+		t.Fatalf("defaults = %s/%d/%s", w.interval, w.maxKeys, w.budget)
+	}
+	if err := w.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPlatformGenerationConvergerEmptyScanPagePreservesMalformedOmissionContract(t *testing.T) {
+	converged := false
+	w := newPlatformGenerationConvergerTestWorker(
+		func(context.Context, uint64, int64) ([]PlatformGenerationIdentity, uint64, error) {
+			// ScanGenerationKeys omits malformed keys before returning identities.
+			return nil, 0, nil
+		},
+		func(context.Context, PlatformGenerationIdentity, int64) error {
+			converged = true
+			return nil
+		},
+	)
+	if err := w.RunPass(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if converged {
+		t.Fatal("worker converged an identity omitted by the scanner")
+	}
+}
+
+func newPlatformGenerationConvergerTestWorker(
+	scan func(context.Context, uint64, int64) ([]PlatformGenerationIdentity, uint64, error),
+	converge func(context.Context, PlatformGenerationIdentity, int64) error,
+) *PlatformGenerationConverger {
+	return &PlatformGenerationConverger{
+		scan:       scan,
+		converge:   converge,
+		elapsedNow: time.Now,
+		nowMillis:  func() int64 { return 1_000 },
+		maxKeys:    platformGenerationConvergerMaxKeys,
+		budget:     platformGenerationConvergerBudget,
+	}
+}
+
+func waitPlatformGenerationConvergerSignal(t *testing.T, signal <-chan struct{}, name string) {
+	t.Helper()
+	select {
+	case <-signal:
+	case <-time.After(time.Second):
+		t.Fatalf("timed out waiting for %s", name)
+	}
+}
+
+func waitPlatformGenerationConvergerAttempt(t *testing.T, attempts <-chan int) int {
+	t.Helper()
+	select {
+	case attempt := <-attempts:
+		return attempt
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for attempt")
+		return 0
+	}
+}
+
+func TestPlatformGenerationConvergerMultiInstanceRestartIntegration(t *testing.T) {
+	requirePlatformGenerationCombinedFixture(t)
+	f := openPlatformGenerationFinalizationFixture(t)
+	input := f.committingSingle(t)
+	committing, err := f.store.Get(context.Background(), f.user.ID, input.GenerationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	committingRaw, err := encodePlatformGeneration(committing)
+	if err != nil {
+		t.Fatal(err)
+	}
+	persistence, err := NewPlatformGenerationPersistence(f.store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := persistence.Finalize(context.Background(), f.db, input); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.store.client.Set(context.Background(), f.store.key(f.user.ID, input.GenerationID), committingRaw, platformGenerationTTL).Err(); err != nil {
+		t.Fatal(err)
+	}
+	durableBefore, err := LoadPlatformGenerationReceipt(context.Background(), f.db, f.user.ID, input.GenerationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sqlMutationAttempts atomic.Int32
+	recordMutation := func(*gorm.DB) { sqlMutationAttempts.Add(1) }
+	callbackSuffix := stringInt64(testSnowflake.Next())
+	createCallback := "task8:multi-instance:create:" + callbackSuffix
+	updateCallback := "task8:multi-instance:update:" + callbackSuffix
+	deleteCallback := "task8:multi-instance:delete:" + callbackSuffix
+	if err := f.db.Callback().Create().Before("gorm:create").Register(createCallback, recordMutation); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.Callback().Update().Before("gorm:update").Register(updateCallback, recordMutation); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.Callback().Delete().Before("gorm:delete").Register(deleteCallback, recordMutation); err != nil {
+		t.Fatal(err)
+	}
+
+	type observedAuthority struct {
+		worker int
+		raw    string
+		state  PlatformGenerationState
+		err    error
+	}
+	identity := PlatformGenerationIdentity{UserID: f.user.ID, GenerationID: input.GenerationID}
+	observed := make(chan observedAuthority, 2)
+	release := make(chan struct{})
+	var attempts atomic.Int32
+	workers := make([]*PlatformGenerationConverger, 2)
+	for index := range workers {
+		control, controlErr := NewPlatformGenerationControl(f.db, f.store, NewPlatformGenerationCancellationRegistry())
+		if controlErr != nil {
+			t.Fatal(controlErr)
+		}
+		worker, workerErr := NewPlatformGenerationConverger(control)
+		if workerErr != nil {
+			t.Fatal(workerErr)
+		}
+		worker.scan = func(context.Context, uint64, int64) ([]PlatformGenerationIdentity, uint64, error) {
+			return []PlatformGenerationIdentity{identity}, 0, nil
+		}
+		workerIndex := index
+		worker.converge = func(ctx context.Context, gotIdentity PlatformGenerationIdentity, nowMillis int64) error {
+			attempts.Add(1)
+			snapshot, getErr := control.deps.get(ctx, gotIdentity.UserID, gotIdentity.GenerationID)
+			raw := ""
+			if getErr == nil {
+				raw, getErr = encodePlatformGeneration(snapshot)
+			}
+			select {
+			case observed <- observedAuthority{worker: workerIndex, raw: raw, state: snapshot.State, err: getErr}:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+			if getErr != nil {
+				return getErr
+			}
+			select {
+			case <-release:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+			_, convergeErr := control.converge(ctx, gotIdentity.UserID, gotIdentity.GenerationID, nowMillis, snapshot)
+			return convergeErr
+		}
+		worker.nowMillis = func() int64 { return committing.UpdatedAtMillis + 1 }
+		worker.budget = 2 * time.Second
+		workers[index] = worker
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	var wg sync.WaitGroup
+	errs := make(chan error, len(workers))
+	for _, worker := range workers {
+		wg.Add(1)
+		go func(worker *PlatformGenerationConverger) {
+			defer wg.Done()
+			errs <- worker.RunPass(ctx)
+		}(worker)
+	}
+	seenWorkers := make(map[int]bool, len(workers))
+	for len(seenWorkers) < len(workers) {
+		select {
+		case sighting := <-observed:
+			if sighting.err != nil || sighting.state != PlatformGenerationStateCommitting || sighting.raw != committingRaw || seenWorkers[sighting.worker] {
+				close(release)
+				wg.Wait()
+				t.Fatalf("worker observation=%#v want distinct committing authority", sighting)
+			}
+			seenWorkers[sighting.worker] = true
+		case <-ctx.Done():
+			close(release)
+			wg.Wait()
+			t.Fatalf("workers did not both observe committing authority: seen=%v error=%v", seenWorkers, ctx.Err())
+		}
+	}
+	close(release)
+	wg.Wait()
+	close(errs)
+	for runErr := range errs {
+		if runErr != nil {
+			t.Fatalf("multi-instance pass: %v", runErr)
+		}
+	}
+	completed, err := f.store.Get(context.Background(), f.user.ID, input.GenerationID)
+	if err != nil || completed.State != PlatformGenerationStateCompleted || completed.ModelStates["model-a"].AssistantMessageGUID == "" {
+		t.Fatalf("authority=%#v error=%v", completed, err)
+	}
+	if attempts.Load() != 2 || completed.ModelStates["model-a"].AssistantMessageGUID != durableBefore.Results[0].AssistantMessageGUID {
+		t.Fatalf("attempts/authority=%d/%#v durable=%#v", attempts.Load(), completed, durableBefore)
+	}
+	durableAfter, err := LoadPlatformGenerationReceipt(context.Background(), f.db, f.user.ID, input.GenerationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sqlMutationAttempts.Load() != 0 || !reflect.DeepEqual(durableAfter, durableBefore) {
+		t.Fatalf("reconcile SQL mutation attempts=%d durable before/after=%#v/%#v", sqlMutationAttempts.Load(), durableBefore, durableAfter)
+	}
+	assertPlatformGenerationFinalizationEffects(t, f, 1, 2, 1, 1, 1, 3, 17)
+}
+
+func TestPlatformGenerationConvergerLeaseAndTerminalIntegration(t *testing.T) {
+	requirePlatformGenerationCombinedFixture(t)
+	f := openPlatformGenerationFinalizationFixture(t)
+	const (
+		activeID     = "550e8400-e29b-41d4-a716-446655440201"
+		expiredID    = "550e8400-e29b-41d4-a716-446655440202"
+		cancellingID = "550e8400-e29b-41d4-a716-446655440203"
+	)
+	for _, generationID := range []string{activeID, expiredID, cancellingID} {
+		t.Cleanup(func() { _ = f.store.client.Del(context.Background(), f.store.key(f.user.ID, generationID)).Err() })
+	}
+	claim := func(generationID string) PlatformGenerationClaimResult {
+		return claimTestGeneration(t, f.store, PlatformGenerationClaimInput{
+			UserID: f.user.ID, GenerationID: generationID, Mode: PlatformGenerationModeSingle, Models: []string{"model-a"}, NowMillis: f.now,
+		})
+	}
+	activeClaim := claim(activeID)
+	claim(expiredID)
+	claim(cancellingID)
+	if decision, err := f.store.CancelOrCreate(context.Background(), f.user.ID, cancellingID, f.now+1); err != nil || !decision.Transitioned || decision.Snapshot.State != PlatformGenerationStateCancelling {
+		t.Fatalf("cancel transition=%#v error=%v", decision, err)
+	}
+
+	control, err := NewPlatformGenerationControl(f.db, f.store, NewPlatformGenerationCancellationRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker, err := NewPlatformGenerationConverger(control)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nowMillis := f.now + 10_000
+	worker.nowMillis = func() int64 { return nowMillis }
+	if err := worker.RunPass(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if renewed, err := f.store.RenewLease(context.Background(), f.user.ID, activeID, activeClaim.LeaseToken, f.now+20_000); err != nil || renewed.State != PlatformGenerationStateRunning || renewed.LeaseUntilMillis != f.now+50_000 {
+		t.Fatalf("renewed=%#v error=%v", renewed, err)
+	}
+	for _, passTime := range []int64{f.now + 31_000, f.now + 49_999} {
+		nowMillis = passTime
+		if err := worker.RunPass(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		active, getErr := f.store.Get(context.Background(), f.user.ID, activeID)
+		if getErr != nil || active.State != PlatformGenerationStateRunning {
+			t.Fatalf("active at %d = %#v error=%v", passTime, active, getErr)
+		}
+	}
+	expired, err := f.store.Get(context.Background(), f.user.ID, expiredID)
+	if err != nil || expired.State != PlatformGenerationStateFailed || expired.ErrorCode != "internal_error" {
+		t.Fatalf("expired=%#v error=%v", expired, err)
+	}
+	cancelled, err := f.store.Get(context.Background(), f.user.ID, cancellingID)
+	if err != nil || cancelled.State != PlatformGenerationStateCancelled {
+		t.Fatalf("cancelled=%#v error=%v", cancelled, err)
+	}
+}

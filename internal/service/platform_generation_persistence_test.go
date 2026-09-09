@@ -286,6 +286,52 @@ func TestWithPlatformGenerationAdvisoryLockUsesPinnedConnectionAndAlwaysReleases
 	}
 }
 
+func TestWithPlatformGenerationAdvisoryLockReleaseFailureDiscardsPinnedSession(t *testing.T) {
+	lockedDB := openPlatformGenerationAdvisoryLockMySQL(t).Session(&gorm.Session{Logger: gormlogger.Discard})
+	observerDB := openPlatformGenerationAdvisoryLockMySQL(t)
+	lockedSQL, err := lockedDB.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	lockedSQL.SetMaxOpenConns(1)
+	lockedSQL.SetMaxIdleConns(1)
+	observerSQL, err := observerDB.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	observerSQL.SetMaxOpenConns(1)
+	if err := observerDB.Exec("SELECT 1").Error; err != nil {
+		t.Fatal(err)
+	}
+
+	releaseFailure := errors.New("simulated release failure")
+	var releaseAttempts atomic.Int32
+	callbackName := fmt.Sprintf("platform_generation_release_failure_%d", testSnowflake.Next())
+	if err := lockedDB.Callback().Row().Before("gorm:row").Register(callbackName, func(tx *gorm.DB) {
+		if strings.Contains(tx.Statement.SQL.String(), "RELEASE_LOCK") {
+			releaseAttempts.Add(1)
+			tx.AddError(releaseFailure)
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = lockedDB.Callback().Row().Remove(callbackName) })
+
+	lockName := platformGenerationAdvisoryLockName(testSnowflake.Next(), generationTestID)
+	err = withPlatformGenerationAdvisoryLock(context.Background(), lockedDB, lockName, func(*gorm.DB) error { return nil })
+	if !errors.Is(err, ErrPlatformGenerationPersistenceUnavailable) {
+		t.Fatalf("release failure error=%v, want unavailable", err)
+	}
+	if releaseAttempts.Load() != 1 {
+		t.Fatalf("release attempts=%d, want 1", releaseAttempts.Load())
+	}
+	assertPlatformGenerationLockFree(t, observerDB, lockName)
+	stats := lockedSQL.Stats()
+	if stats.InUse != 0 || stats.Idle != 0 {
+		t.Fatalf("locked pool in-use/idle=%d/%d, want discarded session", stats.InUse, stats.Idle)
+	}
+}
+
 func TestWithPlatformGenerationAdvisoryLockDoesNotLeakScalarStatementModel(t *testing.T) {
 	db := openPlatformGenerationAdvisoryLockMySQL(t)
 	lockName := platformGenerationAdvisoryLockName(99, generationTestID)
