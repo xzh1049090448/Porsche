@@ -87,6 +87,8 @@ func TestPublicContentPricingContract(t *testing.T) {
 		{"POST", "/admin/v2/public-content/releases/{guid}/restore", "root", "admin_publish_request_headers", "admin_response_headers", "GUIDRequest", "NoBody", "RevisionRequest", "Release", json.Number("201")},
 	}
 	publicContentPricingRequireExactRoutes(t, contract, expectedRoutes)
+	publicContentPricingAssertRevisionedMutationBodies(t, contract)
+	publicContentPricingAssertPathGUIDAbsentFromBodies(t, contract)
 
 	for _, route := range publicContentPricingRoutes(t, contract) {
 		path := route["path"].(string)
@@ -162,6 +164,7 @@ func TestPublicContentPricingContract(t *testing.T) {
 		"renderer_failure",
 	}
 	publicContentPricingRequire(t, contract, lifecycleStatuses, "schemas", "AdminModelListRequest", "properties", "status", "enum")
+	publicContentPricingRequire(t, contract, []any{"present", "missing"}, "schemas", "AdminModelListRequest", "properties", "upstream_state", "enum")
 	publicContentPricingRequire(t, contract, lifecycleStatuses, "schemas", "PublicModelAdmin", "properties", "status", "enum")
 	publicContentPricingRequire(t, contract, []any{"visible"}, "schemas", "PublicModelVisible", "properties", "price_visibility", "enum")
 	publicContentPricingRequire(t, contract, []any{"authenticated_only"}, "schemas", "PublicModelRedacted", "properties", "price_visibility", "enum")
@@ -203,6 +206,67 @@ func TestPublicContentPricingContract(t *testing.T) {
 	for _, forbidden := range []string{"credential_value", "api_key", "current_password", "internal_id", "database_id", "upstream_url"} {
 		publicContentPricingForbidText(t, raw, forbidden)
 	}
+}
+
+func publicContentPricingAssertRevisionedMutationBodies(t *testing.T, contract map[string]any) {
+	t.Helper()
+	rawRoutes, ok := contract["mutation_requirements"].(map[string]any)["expected_revision_routes"].([]any)
+	if !ok {
+		t.Fatal("mutation_requirements.expected_revision_routes must be an array")
+	}
+	for _, rawRoute := range rawRoutes {
+		routeID, ok := rawRoute.(string)
+		if !ok {
+			t.Fatalf("expected_revision_routes entry must be a string: %v", rawRoute)
+		}
+		parts := strings.SplitN(routeID, " ", 2)
+		if len(parts) != 2 {
+			t.Fatalf("invalid expected_revision_routes entry %q", routeID)
+		}
+		route := publicContentPricingFindRoute(t, contract, parts[0], parts[1])
+		bodySchema := route["body_schema"].(string)
+		publicContentPricingRequire(t, contract, "integer", "schemas", bodySchema, "properties", "expected_revision", "type")
+		publicContentPricingRequire(t, contract, json.Number("1"), "schemas", bodySchema, "properties", "expected_revision", "minimum")
+		publicContentPricingRequireRequiredField(t, contract, bodySchema, "expected_revision")
+	}
+}
+
+func publicContentPricingAssertPathGUIDAbsentFromBodies(t *testing.T, contract map[string]any) {
+	t.Helper()
+	for _, route := range publicContentPricingRoutes(t, contract) {
+		if !strings.Contains(route["path"].(string), "{guid}") || route["body_schema"] == "NoBody" {
+			continue
+		}
+		bodySchema := route["body_schema"].(string)
+		if _, exists := publicContentPricingSchemaProperties(t, contract, bodySchema)["guid"]; exists {
+			t.Fatalf("path-guid route %s %s duplicates guid in body schema %s", route["method"], route["path"], bodySchema)
+		}
+	}
+}
+
+func publicContentPricingFindRoute(t *testing.T, contract map[string]any, method, path string) map[string]any {
+	t.Helper()
+	for _, route := range publicContentPricingRoutes(t, contract) {
+		if route["method"] == method && route["path"] == path {
+			return route
+		}
+	}
+	t.Fatalf("route %s %s not found", method, path)
+	return nil
+}
+
+func publicContentPricingRequireRequiredField(t *testing.T, contract map[string]any, schemaName, field string) {
+	t.Helper()
+	required, ok := contract["schemas"].(map[string]any)[schemaName].(map[string]any)["required"].([]any)
+	if !ok {
+		t.Fatalf("schema %s required must be an array", schemaName)
+	}
+	for _, rawField := range required {
+		if rawField == field {
+			return
+		}
+	}
+	t.Fatalf("schema %s must require field %s", schemaName, field)
 }
 
 func publicContentPricingAssertDecimalSchemas(t *testing.T, contract map[string]any) {
