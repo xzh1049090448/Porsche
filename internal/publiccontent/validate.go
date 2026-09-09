@@ -95,15 +95,16 @@ func ValidatePublication(publication Publication) []ValidationIssue {
 		}
 	}
 
-	documents := make(map[DocumentKind]Document, len(publication.Documents))
-	for _, document := range publication.Documents {
-		if _, exists := documents[document.Kind]; !exists {
-			documents[document.Kind] = document
-		}
-	}
 	for _, kind := range []DocumentKind{DocumentTerms, DocumentPrivacy} {
-		document, exists := documents[kind]
-		if !exists || !document.Reviewed {
+		count := 0
+		reviewed := true
+		for _, document := range publication.Documents {
+			if document.Kind == kind {
+				count++
+				reviewed = reviewed && document.Reviewed
+			}
+		}
+		if count != 1 || !reviewed {
 			issues = append(issues, ValidationIssue{Field: "documents." + string(kind) + ".review", Code: "legal_review_required"})
 		}
 	}

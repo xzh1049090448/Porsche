@@ -100,3 +100,58 @@ func TestValidatePublicationDecodesRenderedTextBeforeCheckingPrototypeClaims(t *
 		t.Fatalf("encoded prototype claim was accepted")
 	}
 }
+
+func TestValidatePublicationChecksRenderedSemanticPrototypeClaimsAndIgnoresCode(t *testing.T) {
+	for _, body := range []string{
+		"40\\+ models", "100\\% uptime", "M*I*T licensed", "4<strong>0+</strong> models",
+	} {
+		t.Run(body, func(t *testing.T) {
+			if !hasIssueCode(ValidatePublication(publicationWithHome(body)), "unsubstantiated_prototype_claim") {
+				t.Fatalf("rendered claim was accepted: %q", body)
+			}
+		})
+	}
+	for _, body := range []string{"`40+ models`", "```text\n100% uptime\n```"} {
+		t.Run("code_"+body, func(t *testing.T) {
+			if hasIssueCode(ValidatePublication(publicationWithHome(body)), "unsubstantiated_prototype_claim") {
+				t.Fatalf("code claim was treated as rendered text: %q", body)
+			}
+		})
+	}
+}
+
+func TestValidatePublicationRequiresExactlyOneReviewedTermsAndPrivacyDocument(t *testing.T) {
+	for _, documents := range [][]Document{
+		{
+			{Kind: DocumentHome, Reviewed: true, Body: "Home"},
+			{Kind: DocumentTerms, Reviewed: true, Body: "Terms 1"},
+			{Kind: DocumentTerms, Reviewed: true, Body: "Terms 2"},
+			{Kind: DocumentPrivacy, Reviewed: true, Body: "Privacy"},
+		},
+		{
+			{Kind: DocumentHome, Reviewed: true, Body: "Home"},
+			{Kind: DocumentTerms, Reviewed: true, Body: "Terms 1"},
+			{Kind: DocumentTerms, Reviewed: false, Body: "Terms 2"},
+			{Kind: DocumentPrivacy, Reviewed: true, Body: "Privacy"},
+		},
+		{
+			{Kind: DocumentHome, Reviewed: true, Body: "Home"},
+			{Kind: DocumentTerms, Reviewed: true, Body: "Terms"},
+			{Kind: DocumentPrivacy, Reviewed: true, Body: "Privacy 1"},
+			{Kind: DocumentPrivacy, Reviewed: false, Body: "Privacy 2"},
+		},
+	} {
+		issues := ValidatePublication(Publication{Documents: documents})
+		if !hasIssueCode(issues, "legal_review_required") {
+			t.Fatalf("duplicate or unreviewed legal documents were accepted: %#v", issues)
+		}
+	}
+}
+
+func publicationWithHome(body string) Publication {
+	return Publication{Documents: []Document{
+		{Kind: DocumentHome, Reviewed: true, Body: body},
+		{Kind: DocumentTerms, Reviewed: true, Body: "Terms"},
+		{Kind: DocumentPrivacy, Reviewed: true, Body: "Privacy"},
+	}}
+}

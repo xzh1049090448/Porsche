@@ -54,12 +54,39 @@ func TestSanitizeMarkdownParsesNestedAndReferenceImages(t *testing.T) {
 		"![x[y]](https://169.254.169.254/latest/meta-data)",
 		"![logo][metadata]\n\n[metadata]: https://169.254.169.254/latest/meta-data",
 		"![logo][]\n\n[logo]: https://169.254.169.254/latest/meta-data",
+		"![remote]\n\n[remote]: https://169.254.169.254/latest/meta-data",
 	}
 	for _, raw := range tests {
 		t.Run(raw, func(t *testing.T) {
 			_, issues := SanitizeMarkdown(raw)
 			if !hasIssueCode(issues, "unsafe_remote_image") {
 				t.Fatalf("SanitizeMarkdown(%q) issues = %#v, missing unsafe_remote_image", raw, issues)
+			}
+		})
+	}
+}
+
+func TestSanitizeMarkdownUnescapesCommonMarkURLPunctuationWithoutBackslashPathCoercion(t *testing.T) {
+	_, issues := SanitizeMarkdown("[x](javascript\\:alert(1))")
+	if !hasIssueCode(issues, "unsafe_url") {
+		t.Fatalf("escaped javascript URL issues = %#v, missing unsafe_url", issues)
+	}
+}
+
+func TestSanitizeMarkdownDoesNotMaskHTMLAfterInvalidBacktickFence(t *testing.T) {
+	raw := "``` markdown `\n<script>alert(1)</script>"
+	_, issues := SanitizeMarkdown(raw)
+	if !hasIssueCode(issues, "unsafe_html") {
+		t.Fatalf("invalid backtick fence masked HTML: %#v", issues)
+	}
+}
+
+func TestSanitizeMarkdownRejectsStandaloneDangerousEndTags(t *testing.T) {
+	for _, raw := range []string{"</script>", "</iframe>"} {
+		t.Run(raw, func(t *testing.T) {
+			_, issues := SanitizeMarkdown(raw)
+			if !hasIssueCode(issues, "unsafe_html") {
+				t.Fatalf("SanitizeMarkdown(%q) issues = %#v, missing unsafe_html", raw, issues)
 			}
 		})
 	}

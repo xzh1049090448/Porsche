@@ -114,7 +114,7 @@ func fencedCodeSpans(raw string) []markdownSpan {
 	spans := make([]markdownSpan, 0)
 	for lineStart := 0; lineStart < len(raw); {
 		lineEnd := nextLineEnd(raw, lineStart)
-		markerAt, marker, width, ok := fenceAt(raw[lineStart:lineEnd])
+		markerAt, marker, width, ok := openingFenceAt(raw[lineStart:lineEnd])
 		if !ok {
 			lineStart = lineEnd
 			continue
@@ -123,7 +123,7 @@ func fencedCodeSpans(raw string) []markdownSpan {
 		end := len(raw)
 		for candidate := lineEnd; candidate < len(raw); {
 			candidateEnd := nextLineEnd(raw, candidate)
-			_, closingMarker, closingWidth, closing := fenceAt(raw[candidate:candidateEnd])
+			_, closingMarker, closingWidth, closing := closingFenceAt(raw[candidate:candidateEnd])
 			if closing && closingMarker == marker && closingWidth >= width {
 				end = candidateEnd
 				break
@@ -136,7 +136,26 @@ func fencedCodeSpans(raw string) []markdownSpan {
 	return spans
 }
 
-func fenceAt(line string) (int, byte, int, bool) {
+func openingFenceAt(line string) (int, byte, int, bool) {
+	i, marker, width, ok := fencePrefix(line)
+	if !ok {
+		return 0, 0, 0, false
+	}
+	if marker == '`' && strings.Contains(line[i+width:], "`") {
+		return 0, 0, 0, false
+	}
+	return i, marker, width, true
+}
+
+func closingFenceAt(line string) (int, byte, int, bool) {
+	i, marker, width, ok := fencePrefix(line)
+	if !ok || strings.Trim(line[i+width:], " \t\r\n") != "" {
+		return 0, 0, 0, false
+	}
+	return i, marker, width, true
+}
+
+func fencePrefix(line string) (int, byte, int, bool) {
 	i := 0
 	for i < len(line) && i < 3 && line[i] == ' ' {
 		i++
@@ -231,6 +250,9 @@ func markdownLinks(raw string, ignored []markdownSpan) ([]markdownLink, []markdo
 				continue
 			}
 		}
+		if isImage {
+			links = append(links, markdownLink{isImage: true, reference: normalizeReference(label)})
+		}
 		i = labelEnd
 	}
 	return links, autolinks
@@ -290,19 +312,19 @@ func markdownDestination(content string) string {
 	content = strings.TrimSpace(content)
 	if strings.HasPrefix(content, "<") {
 		if end := strings.IndexByte(content, '>'); end >= 0 {
-			return content[1:end]
+			return unescapeMarkdownPunctuation(content[1:end])
 		}
-		return content
+		return unescapeMarkdownPunctuation(content)
 	}
 	for i, runeValue := range content {
 		if unicode.IsSpace(runeValue) {
 			remaining := strings.TrimSpace(content[i:])
 			if strings.HasPrefix(remaining, "\"") || strings.HasPrefix(remaining, "'") || strings.HasPrefix(remaining, "(") {
-				return content[:i]
+				return unescapeMarkdownPunctuation(content[:i])
 			}
 		}
 	}
-	return content
+	return unescapeMarkdownPunctuation(content)
 }
 
 func isAutolinkCandidate(value string) bool {
@@ -315,7 +337,7 @@ func isAutolinkCandidate(value string) bool {
 
 func isAllowedLink(raw string) bool {
 	value := canonicalURL(raw)
-	if value == "" || strings.HasPrefix(value, "//") {
+	if value == "" || strings.HasPrefix(value, "//") || strings.Contains(value, "\\") {
 		return false
 	}
 	parsed, err := url.Parse(value)
@@ -330,7 +352,7 @@ func isAllowedLink(raw string) bool {
 
 func isDangerousURL(raw string) bool {
 	value := canonicalURL(raw)
-	return value != "" && (strings.HasPrefix(value, "//") || (hasSchemeLikePrefix(value) && !isAllowedLink(value)))
+	return value != "" && (strings.Contains(value, "\\") || strings.HasPrefix(value, "//") || (hasSchemeLikePrefix(value) && !isAllowedLink(value)))
 }
 
 func isControlledLocalAsset(raw string) bool {
@@ -376,23 +398,33 @@ func canonicalURL(raw string) string {
 		if unicode.IsSpace(runeValue) || unicode.IsControl(runeValue) || unicode.Is(unicode.Cf, runeValue) {
 			continue
 		}
-		if runeValue == '\\' {
-			normalized.WriteByte('/')
-			continue
-		}
 		normalized.WriteRune(unicode.ToLower(runeValue))
 	}
 	return normalized.String()
 }
 
 func normalizedRenderedText(raw string) string {
-	value := raw
+	value := maskMarkdownSpans(raw, markdownCodeSpans(raw))
 	for {
 		decoded := norm.NFKC.String(html.UnescapeString(value))
 		if decoded == value {
-			return decoded
+			value = decoded
+			break
 		}
 		value = decoded
+	}
+	value = unescapeMarkdownPunctuation(value)
+	value = strings.ReplaceAll(value, "*", "")
+	value = strings.ReplaceAll(value, "_", "")
+	tokenizer := xhtml.NewTokenizer(strings.NewReader(value))
+	var rendered strings.Builder
+	for {
+		switch tokenizer.Next() {
+		case xhtml.ErrorToken:
+			return rendered.String()
+		case xhtml.TextToken:
+			rendered.Write(tokenizer.Text())
+		}
 	}
 }
 
@@ -405,6 +437,11 @@ func inspectHTML(raw string) []ValidationIssue {
 			return issues
 		case xhtml.CommentToken, xhtml.DoctypeToken:
 			issues = append(issues, ValidationIssue{Field: "content", Code: "unsafe_html"})
+		case xhtml.EndTagToken:
+			name, _ := tokenizer.TagName()
+			if _, allowed := allowedHTMLTags[strings.ToLower(string(name))]; !allowed {
+				issues = append(issues, ValidationIssue{Field: "content", Code: "unsafe_html"})
+			}
 		case xhtml.StartTagToken, xhtml.SelfClosingTagToken:
 			name, hasAttributes := tokenizer.TagName()
 			tag := strings.ToLower(string(name))
@@ -428,6 +465,21 @@ func inspectHTML(raw string) []ValidationIssue {
 			}
 		}
 	}
+}
+
+func unescapeMarkdownPunctuation(value string) string {
+	var unescaped strings.Builder
+	for i := 0; i < len(value); i++ {
+		if value[i] == '\\' && i+1 < len(value) && isMarkdownPunctuation(value[i+1]) {
+			i++
+		}
+		unescaped.WriteByte(value[i])
+	}
+	return unescaped.String()
+}
+
+func isMarkdownPunctuation(value byte) bool {
+	return strings.ContainsRune(`!"#$%&'()*+,-./:;<=>?@[\]^_`+"`"+`{|}~`, rune(value))
 }
 
 func maskMarkdownSpans(raw string, spans []markdownSpan) string {
