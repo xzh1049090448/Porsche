@@ -161,6 +161,9 @@ func TestCompleteUserManagementBundleLeavesGenericAndOtherActionPaths404(t *test
 	for caseIndex, route := range []routeContract{
 		{http.MethodPost, "/admin/v2/actions"},
 		{http.MethodPost, "/admin/v2/actions/users.delete"},
+		{http.MethodPost, "/admin/v2/actions/users.quota.adjust"},
+		{http.MethodPost, "/admin/v2/users/123/balance-adjustments"},
+		{http.MethodPatch, "/admin/v2/users/123/balance"},
 		{http.MethodPost, "/admin/v2/users/123/actions/promote"},
 		{http.MethodPost, "/admin/v2/public-content/announcements/publish"},
 		{http.MethodPost, "/admin/v2/public-content/announcements/rollback"},
