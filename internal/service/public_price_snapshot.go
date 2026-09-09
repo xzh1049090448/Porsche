@@ -328,6 +328,9 @@ func (s *PublicPriceSnapshotService) transact(ctx context.Context, actorID, expe
 		if contentRelease.Guid <= 0 {
 			return errUnavailable("content release persistence unavailable")
 		}
+		if err = s.fail("content_release"); err != nil {
+			return errUnavailable("content release persistence unavailable")
+		}
 		if err = tx.Create(&contentRelease).Error; err != nil {
 			return errUnavailable("content release persistence unavailable")
 		}

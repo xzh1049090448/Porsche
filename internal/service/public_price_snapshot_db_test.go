@@ -106,7 +106,7 @@ func TestPublicPriceSnapshotDBAtomicPublicationIdempotencyAndRestore(t *testing.
 	newDraftRevision = publicPriceDraftRevision(t, f.db)
 	assertPublicModelEverPublished(t, f.db, publicModelIDByGUID(t, f.db, created3.GUID), false)
 	after, _ := loadPublicPriceSnapshotFixtureState(f.db)
-	for _, point := range []string{"snapshot", "ever_published", "item", "render_job", "audit", "pointer", "after_pointer"} {
+	for _, point := range []string{"snapshot", "ever_published", "item", "content_release", "render_job", "audit", "pointer", "after_pointer"} {
 		beforeCounts := publicPriceSnapshotFixtureCounts(t, f.db, f.actor.ID)
 		broken := NewPublicPriceSnapshotService(f.db)
 		itemCalls := 0
@@ -284,7 +284,11 @@ func TestPublicPriceSnapshotDBRejectsContentBindingDriftAndRebindsCompatibleGene
 	if e := f.db.First(&content, *state.ContentReleaseID).Error; e != nil {
 		t.Fatal(e)
 	}
-	payload := models.JSONMap{"home": "[model](/pricing/" + a.ModelKey + ")", "about": "About", "terms": "Terms", "privacy": "Privacy", "legal_reviewed": true, "model_keys": []string{a.ModelKey}}
+	var boundPrice models.PublicPriceSnapshot
+	if e := f.db.First(&boundPrice, *state.PriceSnapshotID).Error; e != nil {
+		t.Fatal(e)
+	}
+	payload := models.JSONMap{"home": "[model](/pricing/" + a.ModelKey + ")", "about": "About", "terms": "Terms", "privacy": "Privacy", "legal_reviewed": true, "model_keys": []string{a.ModelKey}, "price_snapshot_guid": fmt.Sprint(boundPrice.Guid), "price_snapshot_version": boundPrice.Version}
 	encoded, _ := json.Marshal(payload)
 	sum := sha256.Sum256(encoded)
 	if e := f.db.Model(&content).Updates(map[string]any{"payload": payload, "content_hash": hex.EncodeToString(sum[:])}).Error; e != nil {
@@ -308,7 +312,31 @@ func TestPublicPriceSnapshotDBRejectsContentBindingDriftAndRebindsCompatibleGene
 	if _, e = admin.Activate(ctx, f.actor.ID, mustGUID(t, a.GUID), deactivated.Revision); e != nil {
 		t.Fatal(e)
 	}
-	release, e := NewPublicPriceSnapshotService(f.db).Publish(ctx, PublicPriceSnapshotRequest{ActorID: f.actor.ID, ExpectedRevision: publicPriceDraftRevision(t, f.db), IdempotencyKey: "compatible"})
+	compatibleRevision := publicPriceDraftRevision(t, f.db)
+	compatibleRequest := PublicPriceSnapshotRequest{ActorID: f.actor.ID, ExpectedRevision: compatibleRevision, IdempotencyKey: "compatible"}
+	beforeCompatibleCounts := publicPriceSnapshotFixtureCounts(t, f.db, f.actor.ID)
+	var beforeCompatibleState models.PublicPublicationState
+	if e := f.db.Where("state_key=?", publicPublicationStateKey).First(&beforeCompatibleState).Error; e != nil {
+		t.Fatal(e)
+	}
+	broken := NewPublicPriceSnapshotService(f.db)
+	broken.fail = func(point string) error {
+		if point == "content_release" {
+			return fmt.Errorf("injected content release failure")
+		}
+		return nil
+	}
+	if _, e = broken.Publish(ctx, compatibleRequest); status(e) != 503 {
+		t.Fatalf("compatible injected failure=%v", e)
+	}
+	var afterCompatibleFailure models.PublicPublicationState
+	if e := f.db.Where("state_key=?", publicPublicationStateKey).First(&afterCompatibleFailure).Error; e != nil {
+		t.Fatal(e)
+	}
+	if afterCompatibleFailure.Revision != beforeCompatibleState.Revision || !sameOptionalInt64(afterCompatibleFailure.PriceSnapshotID, beforeCompatibleState.PriceSnapshotID) || !sameOptionalInt64(afterCompatibleFailure.ContentReleaseID, beforeCompatibleState.ContentReleaseID) || publicPriceSnapshotFixtureCounts(t, f.db, f.actor.ID) != beforeCompatibleCounts {
+		t.Fatal("failed compatible rebind left partial state")
+	}
+	release, e := NewPublicPriceSnapshotService(f.db).Publish(ctx, compatibleRequest)
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -325,6 +353,10 @@ func TestPublicPriceSnapshotDBRejectsContentBindingDriftAndRebindsCompatibleGene
 	_ = f.db.First(&latestContent, *latestState.ContentReleaseID).Error
 	if fmt.Sprint(latestContent.Payload["price_snapshot_guid"]) != release.GUID || latestContent.Payload["price_snapshot_version"].(float64) != float64(release.Version) {
 		t.Fatalf("content binding=%#v release=%#v", latestContent.Payload, release)
+	}
+	verifiedHash, hashErr := hashPublicContentPayload(latestContent.Payload)
+	if hashErr != nil || latestContent.ContentHash != verifiedHash || latestContent.Version != content.Version+1 {
+		t.Fatalf("rebound content release is not truthful or monotonic: %#v hashErr=%v", latestContent, hashErr)
 	}
 	_ = b
 }
@@ -349,7 +381,7 @@ func assertPublicModelEverPublished(t *testing.T, db *gorm.DB, id int64, want bo
 	}
 }
 
-type publicPriceSnapshotCounts struct{ snapshots, items, jobs, audits int64 }
+type publicPriceSnapshotCounts struct{ snapshots, items, contentReleases, jobs, audits int64 }
 
 func publicPriceSnapshotFixtureCounts(t *testing.T, db *gorm.DB, actor int64) publicPriceSnapshotCounts {
 	t.Helper()
@@ -358,6 +390,9 @@ func publicPriceSnapshotFixtureCounts(t *testing.T, db *gorm.DB, actor int64) pu
 		t.Fatal(err)
 	}
 	if err := db.Model(&models.PublicPriceSnapshotItem{}).Where("created_by = ?", actor).Count(&c.items).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&models.PublicContentRelease{}).Where("created_by = ?", actor).Count(&c.contentReleases).Error; err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Model(&models.PublicRenderJob{}).Where("created_by = ?", actor).Count(&c.jobs).Error; err != nil {
@@ -393,7 +428,7 @@ func requirePublicPriceSnapshotFixture(db *gorm.DB, actor int64) error {
 		if err = db.Model(&models.PublicContentRelease{}).Where("document_kind=?", models.PublicContentDocumentSite).Select("COALESCE(MAX(version),0)").Scan(&maxVersion).Error; err != nil {
 			return err
 		}
-		payload := models.JSONMap{"home": "", "about": "About", "terms": "Terms", "privacy": "Privacy", "legal_reviewed": true, "model_keys": []string{}}
+		payload := models.JSONMap{"home": "", "about": "About", "terms": "Terms", "privacy": "Privacy", "legal_reviewed": true, "model_keys": []string{}, "price_snapshot_guid": "1", "price_snapshot_version": int64(1)}
 		encoded, _ := json.Marshal(payload)
 		sum := sha256.Sum256(encoded)
 		release := models.PublicContentRelease{Guid: persistence.NextGUID(), CreatedAt: now, CreatedBy: &actor, UpdatedAt: now, UpdatedBy: &actor, DocumentKind: models.PublicContentDocumentSite, Version: maxVersion + 1, SourceRevision: 1, Payload: payload, ContentHash: hex.EncodeToString(sum[:]), PublishedAt: now}

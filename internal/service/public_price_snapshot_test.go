@@ -70,7 +70,9 @@ func TestPublicPriceSnapshotIdempotencyBindingUsesActorOperationAndPayload(t *te
 }
 
 func TestPublicPriceSnapshotContentCompatibilityRejectsMissingReferencedModel(t *testing.T) {
-	release := models.PublicContentRelease{Payload: models.JSONMap{"home": "[alpha](/pricing/alpha)", "about": "About", "terms": "Terms", "privacy": "Privacy", "legal_reviewed": true}}
+	payload := models.JSONMap{"home": "[alpha](/pricing/alpha)", "about": "About", "terms": "Terms", "privacy": "Privacy", "legal_reviewed": true, "model_keys": []string{"alpha"}, "price_snapshot_guid": "1", "price_snapshot_version": int64(1)}
+	hash, _ := hashPublicContentPayload(payload)
+	release := models.PublicContentRelease{Payload: payload, ContentHash: hash}
 	alpha := models.PublicPriceSnapshotItem{ModelKey: "alpha", UpstreamModelID: "org/alpha", InputPriceUSDPerMillionTokens: "1", OutputPriceUSDPerMillionTokens: "2"}
 	if err := validateContentReleaseForPriceItems(release, []models.PublicPriceSnapshotItem{alpha}); err != nil {
 		t.Fatal(err)

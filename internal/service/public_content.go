@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -218,12 +219,11 @@ func preparePublicContent(d PublicContentDraft, price models.PublicPriceSnapshot
 	}
 	sort.Strings(refs)
 	payload := models.JSONMap{"home": docs["home"], "about": docs["about"], "terms": docs["terms"], "privacy": docs["privacy"], "legal_reviewed": true, "model_keys": refs, "price_snapshot_guid": strconv.FormatInt(price.Guid, 10), "price_snapshot_version": price.Version}
-	b, e := json.Marshal(payload)
+	hash, e := hashPublicContentPayload(payload)
 	if e != nil {
 		return nil, []publiccontent.ValidationIssue{{Field: "content", Code: "serialization_failed"}}
 	}
-	sum := sha256.Sum256(b)
-	return &preparedPublicContent{Payload: payload, Hash: hex.EncodeToString(sum[:]), Documents: docs, PriceSnapshotID: price.ID, PriceSnapshotGUID: price.Guid, PriceSnapshotVersion: price.Version}, nil
+	return &preparedPublicContent{Payload: payload, Hash: hash, Documents: docs, PriceSnapshotID: price.ID, PriceSnapshotGUID: price.Guid, PriceSnapshotVersion: price.Version}, nil
 }
 
 type publicContentHTMLTag struct {
@@ -368,6 +368,9 @@ func hasPublicContentIssue(v []publiccontent.ValidationIssue, code string) bool 
 }
 
 func validateContentReleaseForPriceItems(release models.PublicContentRelease, items []models.PublicPriceSnapshotItem) error {
+	if err := verifyPublicContentRelease(release); err != nil {
+		return err
+	}
 	_, issues := preparePublicContent(projectContentPayload(release.Payload, release.SourceRevision), models.PublicPriceSnapshot{ID: 1, Guid: 1, Version: 1}, items)
 	if len(issues) != 0 {
 		return errConflict("published content is incompatible with candidate price snapshot")
@@ -376,11 +379,68 @@ func validateContentReleaseForPriceItems(release models.PublicContentRelease, it
 }
 
 func prepareContentReleaseRebinding(release models.PublicContentRelease, snapshot models.PublicPriceSnapshot, items []models.PublicPriceSnapshotItem) (*preparedPublicContent, error) {
+	if err := verifyPublicContentRelease(release); err != nil {
+		return nil, err
+	}
 	prepared, issues := preparePublicContent(projectContentPayload(release.Payload, release.SourceRevision), snapshot, items)
 	if len(issues) != 0 {
 		return nil, errConflict("published content is incompatible with candidate price snapshot")
 	}
 	return prepared, nil
+}
+
+func hashPublicContentPayload(payload models.JSONMap) (string, error) {
+	b, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+func verifyPublicContentRelease(release models.PublicContentRelease) error {
+	computed, err := hashPublicContentPayload(release.Payload)
+	if err != nil || len(release.ContentHash) != 64 || !hmac.Equal([]byte(computed), []byte(release.ContentHash)) {
+		return errUnavailable("committed content integrity unavailable")
+	}
+	for _, key := range []string{"home", "about", "terms", "privacy"} {
+		if _, ok := release.Payload[key].(string); !ok {
+			return errUnavailable("committed content integrity unavailable")
+		}
+	}
+	if reviewed, ok := release.Payload["legal_reviewed"].(bool); !ok || !reviewed {
+		return errUnavailable("committed content integrity unavailable")
+	}
+	guid, ok := release.Payload["price_snapshot_guid"].(string)
+	if !ok {
+		return errUnavailable("committed content integrity unavailable")
+	}
+	parsed, parseErr := strconv.ParseInt(guid, 10, 64)
+	if parseErr != nil || parsed <= 0 {
+		return errUnavailable("committed content integrity unavailable")
+	}
+	version, ok := jsonNumberInt64(release.Payload["price_snapshot_version"])
+	if !ok || version <= 0 {
+		return errUnavailable("committed content integrity unavailable")
+	}
+	switch refs := release.Payload["model_keys"].(type) {
+	case []string:
+		for _, key := range refs {
+			if !publiccontent.ValidModelKey(key) {
+				return errUnavailable("committed content integrity unavailable")
+			}
+		}
+	case []any:
+		for _, value := range refs {
+			key, ok := value.(string)
+			if !ok || !publiccontent.ValidModelKey(key) {
+				return errUnavailable("committed content integrity unavailable")
+			}
+		}
+	default:
+		return errUnavailable("committed content integrity unavailable")
+	}
+	return nil
 }
 
 func (s *PublicContentService) Publish(ctx context.Context, in PublicContentPublicationRequest) (*PublicContentRelease, error) {
@@ -537,6 +597,9 @@ func (s *PublicContentService) PublicProjection(ctx context.Context) (*PublicCon
 	var p models.PublicPriceSnapshot
 	if e := s.db.First(&c, *state.ContentReleaseID).Error; e != nil {
 		return nil, errUnavailable("committed publication unavailable")
+	}
+	if e := verifyPublicContentRelease(c); e != nil {
+		return nil, e
 	}
 	if e := s.db.First(&p, *state.PriceSnapshotID).Error; e != nil {
 		return nil, errUnavailable("committed publication unavailable")

@@ -106,3 +106,42 @@ func TestPublicContentStableRequestPayloadBinding(t *testing.T) {
 		t.Fatal("unstable or incomplete request payload")
 	}
 }
+
+func TestPublicContentReleaseIntegrityRejectsTamperingAndMalformedPayload(t *testing.T) {
+	payload := models.JSONMap{"home": "Home", "about": "About", "terms": "Terms", "privacy": "Privacy", "legal_reviewed": true, "model_keys": []string{"alpha"}, "price_snapshot_guid": "80", "price_snapshot_version": int64(4)}
+	hash, err := hashPublicContentPayload(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	release := models.PublicContentRelease{Payload: payload, ContentHash: hash}
+	if err = verifyPublicContentRelease(release); err != nil {
+		t.Fatal(err)
+	}
+	badHash := release
+	badHash.ContentHash = strings.Repeat("0", 64)
+	if err = verifyPublicContentRelease(badHash); status(err) != 503 {
+		t.Fatalf("bad hash=%v", err)
+	}
+	items := []models.PublicPriceSnapshotItem{{ModelKey: "alpha", UpstreamModelID: "org/alpha", InputPriceUSDPerMillionTokens: "1", OutputPriceUSDPerMillionTokens: "2"}}
+	if err = validateContentReleaseForPriceItems(badHash, items); status(err) != 503 {
+		t.Fatalf("validation accepted bad hash=%v", err)
+	}
+	if _, err = prepareContentReleaseRebinding(badHash, models.PublicPriceSnapshot{ID: 9, Guid: 90, Version: 5}, items); status(err) != 503 {
+		t.Fatalf("rebinding accepted bad hash=%v", err)
+	}
+	tampered := release
+	tampered.Payload = models.JSONMap{}
+	for k, v := range payload {
+		tampered.Payload[k] = v
+	}
+	tampered.Payload["home"] = "changed"
+	if err = verifyPublicContentRelease(tampered); status(err) != 503 {
+		t.Fatalf("tampered=%v", err)
+	}
+	malformed := release
+	malformed.Payload = models.JSONMap{"home": 7, "about": "About", "terms": "Terms", "privacy": "Privacy", "legal_reviewed": true, "price_snapshot_guid": "80", "price_snapshot_version": 4}
+	malformed.ContentHash, _ = hashPublicContentPayload(malformed.Payload)
+	if err = verifyPublicContentRelease(malformed); status(err) != 503 {
+		t.Fatalf("malformed=%v", err)
+	}
+}
