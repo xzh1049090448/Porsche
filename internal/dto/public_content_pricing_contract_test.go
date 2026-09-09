@@ -92,10 +92,10 @@ func TestPublicContentPricingContract(t *testing.T) {
 		if route["method"] != "GET" && route["role"] != "root" {
 			t.Fatalf("mutation %s %s must be Root-only", route["method"], path)
 		}
-		if !reflect.DeepEqual(sortedRouteKeys(route), []string{"method", "path", "request_headers", "request_schema", "response_headers", "response_schema", "role", "status"}) {
+		if !reflect.DeepEqual(sortedRouteKeys(route), []string{"body_schema", "method", "path", "path_schema", "query_schema", "request_headers", "response_headers", "response_schema", "role", "status"}) {
 			t.Fatalf("route %s %s has unfrozen keys %v", route["method"], path, sortedRouteKeys(route))
 		}
-		for _, field := range []string{"request_schema", "response_schema"} {
+		for _, field := range []string{"path_schema", "query_schema", "body_schema", "response_schema"} {
 			if _, ok := route[field].(string); !ok {
 				t.Fatalf("route %s %s is missing its %s reference", route["method"], path, field)
 			}
@@ -184,7 +184,7 @@ func publicContentPricingAssertSchemas(t *testing.T, contract map[string]any) {
 		publicContentPricingValidateSchema(t, schemas, name, rawSchema)
 	}
 	for _, route := range publicContentPricingRoutes(t, contract) {
-		for _, field := range []string{"request_schema", "response_schema"} {
+		for _, field := range []string{"path_schema", "query_schema", "body_schema", "response_schema"} {
 			name := route[field].(string)
 			if _, ok := schemas[name]; !ok {
 				t.Fatalf("route %s %s references undefined %s %q", route["method"], route["path"], field, name)
