@@ -4,7 +4,6 @@ import (
 	"html"
 	"net/url"
 	"path"
-	"sort"
 	"strings"
 	"unicode"
 
@@ -49,82 +48,6 @@ func SanitizeMarkdown(raw string) (string, []ValidationIssue) {
 		return "", issues
 	}
 	return raw, nil
-}
-
-// PublicModelReferences returns stable model keys referenced by exact local
-// /pricing/:modelKey links using the same CommonMark, HTML and URL parsing as
-// the sanitizer. Code literals and non-model links are ignored.
-func PublicModelReferences(raw string) ([]string, []ValidationIssue) {
-	source, document := parseCommonMark(raw)
-	issues := uniqueIssues(astValidationIssues(document, source))
-	keys := map[string]struct{}{}
-	add := func(destination string) {
-		if key, ok := publicModelKeyFromURL(destination); ok {
-			keys[key] = struct{}{}
-		}
-	}
-	_ = ast.Walk(document, func(node ast.Node, entering bool) (ast.WalkStatus, error) {
-		if !entering {
-			return ast.WalkContinue, nil
-		}
-		switch typed := node.(type) {
-		case *ast.FencedCodeBlock, *ast.CodeBlock, *ast.CodeSpan:
-			return ast.WalkSkipChildren, nil
-		case *ast.Link:
-			add(string(typed.Destination))
-		case *ast.AutoLink:
-			add(string(typed.URL(source)))
-		case *ast.RawHTML:
-			collectHTMLModelLinks(string(typed.Text(source)), add)
-			return ast.WalkSkipChildren, nil
-		case *ast.HTMLBlock:
-			collectHTMLModelLinks(string(typed.Text(source)), add)
-			return ast.WalkSkipChildren, nil
-		}
-		return ast.WalkContinue, nil
-	})
-	out := make([]string, 0, len(keys))
-	for key := range keys {
-		out = append(out, key)
-	}
-	sort.Strings(out)
-	return out, issues
-}
-
-func publicModelKeyFromURL(raw string) (string, bool) {
-	value := canonicalURL(raw)
-	if !isAllowedLink(value) {
-		return "", false
-	}
-	parsed, err := url.Parse(value)
-	if err != nil || parsed.Scheme != "" || parsed.Host != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
-		return "", false
-	}
-	parts := strings.Split(strings.TrimPrefix(parsed.Path, "/"), "/")
-	if len(parts) != 2 || parts[0] != "pricing" || !ValidModelKey(parts[1]) || parsed.Path != "/pricing/"+parts[1] {
-		return "", false
-	}
-	return parts[1], true
-}
-
-func collectHTMLModelLinks(raw string, add func(string)) {
-	tokenizer := xhtml.NewTokenizer(strings.NewReader(raw))
-	for {
-		switch tokenizer.Next() {
-		case xhtml.ErrorToken:
-			return
-		case xhtml.StartTagToken, xhtml.SelfClosingTagToken:
-			name, more := tokenizer.TagName()
-			tag := strings.ToLower(string(name))
-			for more {
-				key, value, next := tokenizer.TagAttr()
-				if tag == "a" && strings.EqualFold(string(key), "href") {
-					add(string(value))
-				}
-				more = next
-			}
-		}
-	}
 }
 
 func normalizedRenderedText(raw string) string {

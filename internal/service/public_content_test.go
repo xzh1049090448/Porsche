@@ -1,6 +1,7 @@
 package service
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
@@ -58,6 +59,32 @@ func TestPublicContentAboutTruthGateAndParserReferences(t *testing.T) {
 	_, issues := preparePublicContent(d, price, items)
 	if !hasPublicContentIssue(issues, "unsubstantiated_prototype_claim") || !hasPublicContentIssue(issues, "unknown_home_model") {
 		t.Fatalf("issues=%#v", issues)
+	}
+}
+
+func TestPublicContentModelReferencesSuppressHTMLAndMarkdownCode(t *testing.T) {
+	raw := "prefix <CoDe class='sample'>\n<a href='/pricing/code-a'>code</a>\n<strong><a href='/pricing/code-b'>nested</a></strong>\n</cOdE> after\ninside <PRE data-x='1'>\n<a href='/pricing/pre-a'>pre</a>\n</pre> after\n\n`[span](/pricing/span)`\n```md\n[fence](/pricing/fence)\n```\n[real][m] <a title='ok' HREF='/pricing/html'>html</a>\n\n[m]: /pricing/reference"
+	got := extractPublicContentModelReferences(raw)
+	want := []string{"html", "reference"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got=%#v want=%#v", got, want)
+	}
+}
+
+func TestPublicContentModelReferencesHandleMalformedAllowedHTMLState(t *testing.T) {
+	for _, tc := range []struct {
+		name, raw string
+		want      []string
+	}{
+		{"open_code_fragment", "<code>example\n\n<a href='/pricing/hidden'>hidden</a>\n\n</code> <a href='/pricing/visible'>visible</a>", []string{"visible"}},
+		{"nested_code_pre", "<pre><code><a href='/pricing/hidden'>x</a></code></pre><a href='/pricing/visible'>v</a>", []string{"visible"}},
+		{"malformed_unclosed_code", "<code><a href='/pricing/hidden'>x</a><strong>still code</strong>", []string{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := extractPublicContentModelReferences(tc.raw); !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("got=%#v want=%#v", got, tc.want)
+			}
+		})
 	}
 }
 

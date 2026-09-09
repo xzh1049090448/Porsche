@@ -6,16 +6,6 @@ import (
 	"testing"
 )
 
-func TestValidatePublicationRejectsPrototypeClaimsInAbout(t *testing.T) {
-	for _, claim := range []string{"40+ models", "100% reliable", "MIT licensed"} {
-		publication := publicationWithHome("safe")
-		publication.Documents = append(publication.Documents, Document{Kind: DocumentAbout, Body: claim})
-		if issues := ValidatePublication(publication); !hasIssueCode(issues, "unsubstantiated_prototype_claim") {
-			t.Fatalf("claim %q accepted: %#v", claim, issues)
-		}
-	}
-}
-
 func TestValidatePublicationAcceptsReviewedSafePublication(t *testing.T) {
 	publication := Publication{
 		Models: []Model{

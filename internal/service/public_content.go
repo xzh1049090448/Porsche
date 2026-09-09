@@ -6,13 +6,21 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"html"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/porsche/ai-gateway-go/internal/models"
 	"github.com/porsche/ai-gateway-go/internal/persistence"
 	"github.com/porsche/ai-gateway-go/internal/publiccontent"
+	"github.com/yuin/goldmark"
+	"github.com/yuin/goldmark/ast"
+	"github.com/yuin/goldmark/text"
+	xhtml "golang.org/x/net/html"
+	"golang.org/x/text/unicode/norm"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -203,8 +211,8 @@ func preparePublicContent(d PublicContentDraft, price models.PublicPriceSnapshot
 	for _, i := range items {
 		modelsV = append(modelsV, publiccontent.Model{ModelKey: i.ModelKey, UpstreamModelID: i.UpstreamModelID, Active: true, Price: publiccontent.Price{Currency: publiccontent.CurrencyUSD, Unit: publiccontent.UnitMillionTokens, Input: i.InputPriceUSDPerMillionTokens, Output: i.OutputPriceUSDPerMillionTokens}})
 	}
-	refs, _ := publiccontent.PublicModelReferences(d.Home)
-	pub := publiccontent.Publication{Models: modelsV, HomeModelKeys: refs, Documents: []publiccontent.Document{{Kind: publiccontent.DocumentHome, Body: d.Home}, {Kind: publiccontent.DocumentAbout, Body: d.About}, {Kind: publiccontent.DocumentTerms, Body: d.Terms, Reviewed: d.LegalReviewed}, {Kind: publiccontent.DocumentPrivacy, Body: d.Privacy, Reviewed: d.LegalReviewed}}}
+	refs := extractPublicContentModelReferences(d.Home)
+	pub := publiccontent.Publication{Models: modelsV, HomeModelKeys: refs, Documents: []publiccontent.Document{{Kind: publiccontent.DocumentHome, Body: d.Home}, {Kind: publiccontent.DocumentKind("about"), Body: d.About}, {Kind: publiccontent.DocumentTerms, Body: d.Terms, Reviewed: d.LegalReviewed}, {Kind: publiccontent.DocumentPrivacy, Body: d.Privacy, Reviewed: d.LegalReviewed}}}
 	issues = append(issues, publiccontent.ValidatePublication(pub)...)
 	docs, sanitizeIssues := sanitizeContentDocuments(d)
 	issues = append(issues, sanitizeIssues...)
@@ -219,6 +227,141 @@ func preparePublicContent(d PublicContentDraft, price models.PublicPriceSnapshot
 	}
 	sum := sha256.Sum256(b)
 	return &preparedPublicContent{Payload: payload, Hash: hex.EncodeToString(sum[:]), Documents: docs, PriceSnapshotID: price.ID, PriceSnapshotGUID: price.Guid, PriceSnapshotVersion: price.Version}, nil
+}
+
+type publicContentHTMLTag struct {
+	name       string
+	suppressed bool
+}
+type publicContentHTMLState struct {
+	stack      []publicContentHTMLTag
+	suppressed int
+}
+
+func extractPublicContentModelReferences(raw string) []string {
+	source := []byte(raw)
+	document := goldmark.New().Parser().Parse(text.NewReader(source))
+	keys := map[string]struct{}{}
+	state := publicContentHTMLState{}
+	add := func(rawURL string) {
+		if key, ok := publicContentModelKey(rawURL); ok {
+			keys[key] = struct{}{}
+		}
+	}
+	_ = ast.Walk(document, func(node ast.Node, entering bool) (ast.WalkStatus, error) {
+		if !entering {
+			return ast.WalkContinue, nil
+		}
+		switch typed := node.(type) {
+		case *ast.FencedCodeBlock, *ast.CodeBlock, *ast.CodeSpan:
+			return ast.WalkSkipChildren, nil
+		case *ast.Link:
+			add(string(typed.Destination))
+		case *ast.AutoLink:
+			add(string(typed.URL(source)))
+		case *ast.RawHTML:
+			state.consume(string(typed.Text(source)), add)
+			return ast.WalkSkipChildren, nil
+		case *ast.HTMLBlock:
+			state.consume(string(typed.Text(source)), add)
+			return ast.WalkSkipChildren, nil
+		}
+		return ast.WalkContinue, nil
+	})
+	out := make([]string, 0, len(keys))
+	for key := range keys {
+		out = append(out, key)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func publicContentModelKey(raw string) (string, bool) {
+	value := strings.TrimSpace(raw)
+	for {
+		decoded := norm.NFKC.String(html.UnescapeString(value))
+		if unescaped, err := url.PathUnescape(decoded); err == nil {
+			decoded = unescaped
+		}
+		if decoded == value {
+			break
+		}
+		value = decoded
+	}
+	var normalized strings.Builder
+	for _, r := range value {
+		if unicode.IsSpace(r) || unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
+			continue
+		}
+		normalized.WriteRune(unicode.ToLower(r))
+	}
+	value = normalized.String()
+	if value == "" || strings.Contains(value, "\\") || strings.HasPrefix(value, "//") {
+		return "", false
+	}
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Scheme != "" || parsed.Host != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", false
+	}
+	parts := strings.Split(strings.TrimPrefix(parsed.Path, "/"), "/")
+	if len(parts) != 2 || parts[0] != "pricing" || !publiccontent.ValidModelKey(parts[1]) || parsed.Path != "/pricing/"+parts[1] {
+		return "", false
+	}
+	return parts[1], true
+}
+
+func (state *publicContentHTMLState) consume(raw string, add func(string)) {
+	tokenizer := xhtml.NewTokenizer(strings.NewReader(raw))
+	for {
+		switch tokenizer.Next() {
+		case xhtml.ErrorToken:
+			return
+		case xhtml.StartTagToken:
+			name, more := tokenizer.TagName()
+			tag := strings.ToLower(string(name))
+			visible := state.suppressed == 0
+			for more {
+				key, value, next := tokenizer.TagAttr()
+				if visible && tag == "a" && strings.EqualFold(string(key), "href") {
+					add(string(value))
+				}
+				more = next
+			}
+			suppressed := state.suppressed > 0 || tag == "code" || tag == "pre"
+			state.stack = append(state.stack, publicContentHTMLTag{tag, suppressed})
+			if suppressed {
+				state.suppressed++
+			}
+		case xhtml.SelfClosingTagToken:
+			name, more := tokenizer.TagName()
+			tag := strings.ToLower(string(name))
+			visible := state.suppressed == 0
+			for more {
+				key, value, next := tokenizer.TagAttr()
+				if visible && tag == "a" && strings.EqualFold(string(key), "href") {
+					add(string(value))
+				}
+				more = next
+			}
+		case xhtml.EndTagToken:
+			name, _ := tokenizer.TagName()
+			state.close(strings.ToLower(string(name)))
+		}
+	}
+}
+func (state *publicContentHTMLState) close(name string) {
+	for i := len(state.stack) - 1; i >= 0; i-- {
+		if state.stack[i].name != name {
+			continue
+		}
+		for _, tag := range state.stack[i:] {
+			if tag.suppressed {
+				state.suppressed--
+			}
+		}
+		state.stack = state.stack[:i]
+		return
+	}
 }
 func sanitizeContentDocuments(d PublicContentDraft) (map[string]string, []publiccontent.ValidationIssue) {
 	out := map[string]string{}
