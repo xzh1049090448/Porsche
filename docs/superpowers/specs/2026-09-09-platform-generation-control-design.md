@@ -71,14 +71,14 @@ A claimed generation retains the BE02 immutable identity and state machine:
 - one model state for every model;
 - generation state and timestamps satisfying the existing BE02 invariants.
 
-While the generation state is `running`, the record also contains:
+Every newly claimed generation in `running` contains:
 
 - `lease_owner_sha256`: lowercase SHA-256 hex of a random runner capability;
 - `lease_until_ms`: a positive JS-safe Unix millisecond timestamp exactly 30 seconds after claim or the latest valid renewal.
 
 The raw lease capability is generated from 32 cryptographically random bytes and returned only to the successful internal claimant. Redis stores only its digest. Duplicate claims never receive the original capability. Neither the raw capability nor its digest may enter an HTTP DTO, application log, diagnostic event, error, receipt, or database row.
 
-Terminal, `cancelling`, and `committing` records carry no usable lease. A transition out of `running` clears both lease fields in the same CAS update. Existing terminal records written by BE02 without lease fields remain valid. A legacy `running` record without a complete lease is treated as an expired orphan by the reconciler, not as a renewable active generation.
+Terminal, `cancelling`, and `committing` records carry no usable lease. A transition out of `running` clears both lease fields in the same CAS update. Existing terminal records written by BE02 without lease fields remain valid. For rolling compatibility, a legacy `running` record with both lease fields absent remains decodable but is treated immediately as an expired orphan; a record with only one lease field or malformed lease material is invalid.
 
 ### 5.2 Cancellation tombstone
 
