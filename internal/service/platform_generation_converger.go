@@ -248,7 +248,8 @@ func (w *PlatformGenerationConverger) setCursor(cursor uint64) {
 }
 
 func platformGenerationConvergerBenignRecordError(err error) bool {
-	return errors.Is(err, ErrPlatformGenerationConflict) ||
+	return errors.Is(err, ErrPlatformGenerationInvalid) ||
+		errors.Is(err, ErrPlatformGenerationConflict) ||
 		errors.Is(err, ErrPlatformGenerationPersistenceConflict) ||
 		errors.Is(err, ErrPlatformGenerationPersistenceUnavailable) ||
 		errors.Is(err, ErrPlatformGenerationUnavailable) ||

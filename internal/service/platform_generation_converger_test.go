@@ -196,6 +196,76 @@ func TestPlatformGenerationConvergerRunPassSanitizesUnexpectedDependencyError(t 
 	}
 }
 
+func TestPlatformGenerationConvergerRunPassSkipsCorruptRecordAndConvergesNextIdentity(t *testing.T) {
+	client := redis.NewClient(&redis.Options{Addr: "127.0.0.1:1"})
+	t.Cleanup(func() { _ = client.Close() })
+	store, err := NewPlatformGenerationStore(client)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	nowMillis := int64(100_000)
+	valid := controlSnapshot(PlatformGenerationStateRunning, nowMillis-10_000)
+	converged := controlSnapshot(PlatformGenerationStateFailed, nowMillis)
+	fake := newPlatformGenerationControlFake(valid)
+	fake.get = func(_ context.Context, userID int64, _ string) (PlatformGenerationSnapshot, error) {
+		fake.getCalls.Add(1)
+		if userID == 1 {
+			return PlatformGenerationSnapshot{}, ErrPlatformGenerationInvalid
+		}
+		return valid, nil
+	}
+	fake.failExpiredRunning = func(_ context.Context, userID int64, _ string, _ int64) (PlatformGenerationSnapshot, error) {
+		fake.failCalls.Add(1)
+		if userID != 2 {
+			t.Fatalf("converged user = %d", userID)
+		}
+		return converged, nil
+	}
+	control := mustControl(t, fake, NewPlatformGenerationCancellationRegistry(), time.UnixMilli(nowMillis))
+	control.store = store
+	w, err := NewPlatformGenerationConverger(control)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var scans atomic.Int32
+	w.scan = func(context.Context, uint64, int64) ([]PlatformGenerationIdentity, uint64, error) {
+		scans.Add(1)
+		return []PlatformGenerationIdentity{
+			{UserID: 1, GenerationID: generationTestID},
+			{UserID: 2, GenerationID: generationTestID},
+		}, 0, nil
+	}
+	w.nowMillis = func() int64 { return nowMillis }
+
+	if err := w.RunPass(context.Background()); err != nil {
+		t.Fatalf("RunPass() error = %v", err)
+	}
+	if scans.Load() != 1 || fake.getCalls.Load() != 2 || fake.failCalls.Load() != 1 {
+		t.Fatalf("scans/get/fail = %d/%d/%d", scans.Load(), fake.getCalls.Load(), fake.failCalls.Load())
+	}
+}
+
+func TestPlatformGenerationConvergerRunPassReturnsScanDependencyError(t *testing.T) {
+	var scans atomic.Int32
+	w := newPlatformGenerationConvergerTestWorker(
+		func(context.Context, uint64, int64) ([]PlatformGenerationIdentity, uint64, error) {
+			scans.Add(1)
+			return nil, 0, errors.New("secret scan detail")
+		},
+		func(context.Context, PlatformGenerationIdentity, int64) error {
+			t.Fatal("converge called after scan failure")
+			return nil
+		},
+	)
+	if err := w.RunPass(context.Background()); err != ErrPlatformGenerationControlUnavailable {
+		t.Fatalf("RunPass() error = %v", err)
+	}
+	if scans.Load() != 1 {
+		t.Fatalf("scan calls = %d", scans.Load())
+	}
+}
+
 func TestPlatformGenerationConvergerStartRunsImmediatelyAndOnInjectedCadence(t *testing.T) {
 	ticker := newPlatformGenerationConvergerFakeTicker()
 	passes := make(chan struct{}, 3)
