@@ -1613,3 +1613,48 @@ func TestPlatformGenerationCancelPreservesMaximumSafeIntegersExactly(t *testing.
 		t.Fatalf("max-safe cancellation=%#v error=%v", decision, err)
 	}
 }
+
+func TestPlatformGenerationLeaseRenewalAndCancelRejectClockRegression(t *testing.T) {
+	store, client := openTestPlatformGenerationStore(t)
+	ctx := context.Background()
+	input := PlatformGenerationClaimInput{UserID: 950030, GenerationID: "88000000-0000-4000-8000-000000000030", Mode: PlatformGenerationModeSingle, Models: []string{"a"}, NowMillis: 1000}
+	key := store.key(input.UserID, input.GenerationID)
+	preparePlatformGenerationTestKey(t, client, key)
+	claim := claimTestGeneration(t, store, input)
+	renewed, err := store.RenewLease(ctx, input.UserID, input.GenerationID, claim.LeaseToken, 2000)
+	if err != nil || renewed.LeaseUntilMillis != 32000 || renewed.UpdatedAtMillis != 1000 {
+		t.Fatalf("initial renewal=%#v error=%v", renewed, err)
+	}
+	rawAfterRenewal, err := client.Get(ctx, key).Result()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ttlAfterRenewal := requirePositivePlatformGenerationTTL(t, client, key)
+
+	authoritative, err := store.RenewLease(ctx, input.UserID, input.GenerationID, claim.LeaseToken, 1500)
+	if !errors.Is(err, ErrPlatformGenerationConflict) || !reflect.DeepEqual(authoritative, renewed) {
+		t.Fatalf("regressed renewal authority=%#v error=%v", authoritative, err)
+	}
+	if raw, err := client.Get(ctx, key).Result(); err != nil || raw != rawAfterRenewal {
+		t.Fatalf("regressed renewal mutated raw=%s error=%v", raw, err)
+	}
+	ttlAfterRejectedRenewal := requirePlatformGenerationTTLNotIncreased(t, client, key, ttlAfterRenewal)
+
+	decision, err := store.CancelOrCreate(ctx, input.UserID, input.GenerationID, 1500)
+	if !errors.Is(err, ErrPlatformGenerationConflict) || decision.CreatedTombstone || decision.Transitioned || !reflect.DeepEqual(decision.Snapshot, renewed) {
+		t.Fatalf("regressed cancel decision=%#v error=%v", decision, err)
+	}
+	if raw, err := client.Get(ctx, key).Result(); err != nil || raw != rawAfterRenewal {
+		t.Fatalf("regressed cancel mutated raw=%s error=%v", raw, err)
+	}
+	requirePlatformGenerationTTLNotIncreased(t, client, key, ttlAfterRejectedRenewal)
+
+	decision, err = store.CancelOrCreate(ctx, input.UserID, input.GenerationID, 2000)
+	if err != nil || decision.CreatedTombstone || !decision.Transitioned || decision.Snapshot.State != PlatformGenerationStateCancelling || decision.Snapshot.UpdatedAtMillis != 2000 || decision.Snapshot.LeaseUntilMillis != 0 {
+		t.Fatalf("boundary cancel decision=%#v error=%v", decision, err)
+	}
+	decision, err = store.CancelOrCreate(ctx, input.UserID, input.GenerationID, 2001)
+	if err != nil || decision.CreatedTombstone || decision.Transitioned || decision.Snapshot.State != PlatformGenerationStateCancelling || decision.Snapshot.UpdatedAtMillis != 2000 {
+		t.Fatalf("idempotent cancel decision=%#v error=%v", decision, err)
+	}
+}

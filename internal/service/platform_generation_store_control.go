@@ -52,7 +52,7 @@ func (s *PlatformGenerationStore) CancelOrCreate(ctx context.Context, userID int
 		current, decodeErr := decodePlatformGeneration(currentRaw)
 		if decodeErr == nil && current.GenerationID == generationID {
 			expectedState = int64(current.State)
-			if current.State == PlatformGenerationStateRunning && nowMillis >= current.UpdatedAtMillis {
+			if current.State == PlatformGenerationStateRunning && nowMillis >= platformGenerationLatestRunningActivity(current) {
 				next := clonePlatformGeneration(current)
 				next.State = PlatformGenerationStateCancelling
 				next.UpdatedAtMillis = nowMillis
@@ -144,12 +144,23 @@ func (s *PlatformGenerationStore) RenewLease(ctx context.Context, userID int64, 
 	if err != nil {
 		return PlatformGenerationSnapshot{}, err
 	}
-	if current.State != PlatformGenerationStateRunning || current.LeaseOwnerSHA256 == "" || current.LeaseOwnerSHA256 != digest || nowMillis < current.UpdatedAtMillis || nowMillis > current.LeaseUntilMillis {
+	if current.State != PlatformGenerationStateRunning || current.LeaseOwnerSHA256 == "" || current.LeaseOwnerSHA256 != digest || nowMillis < platformGenerationLatestRunningActivity(current) || nowMillis > current.LeaseUntilMillis {
 		return current, ErrPlatformGenerationConflict
 	}
 	next := clonePlatformGeneration(current)
 	next.LeaseUntilMillis = nowMillis + platformGenerationLeaseDuration.Milliseconds()
 	return s.writePlatformGenerationControlCAS(ctx, userID, generationID, raw, next)
+}
+
+func platformGenerationLatestRunningActivity(snapshot PlatformGenerationSnapshot) int64 {
+	latest := snapshot.UpdatedAtMillis
+	if snapshot.LeaseUntilMillis != 0 {
+		leaseActivity := snapshot.LeaseUntilMillis - platformGenerationLeaseDuration.Milliseconds()
+		if leaseActivity > latest {
+			latest = leaseActivity
+		}
+	}
+	return latest
 }
 
 func validPlatformGenerationLeaseToken(token string) bool {
