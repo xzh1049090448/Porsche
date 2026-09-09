@@ -233,6 +233,16 @@ func (s *PublicPriceSnapshotService) transact(ctx context.Context, actorID, expe
 		if draft.Revision != expected {
 			return errConflict("public price draft revision conflict")
 		}
+		if state.ContentReleaseID == nil {
+			return errUnprocessable("published content release required")
+		}
+		var currentContent models.PublicContentRelease
+		if err = tx.Where("id = ? AND document_kind = ? AND is_deleted = 0", *state.ContentReleaseID, models.PublicContentDocumentSite).First(&currentContent).Error; err != nil {
+			return errUnavailable("published content release unavailable")
+		}
+		if err = validateContentReleaseForPriceItems(currentContent, prepared.Items); err != nil {
+			return err
+		}
 		sourceRevision := draft.Revision
 		if operation == "restore" {
 			now := s.now()
@@ -256,9 +266,6 @@ func (s *PublicPriceSnapshotService) transact(ctx context.Context, actorID, expe
 				return err
 			}
 			sourceRevision = draft.Revision
-		}
-		if state.ContentReleaseID == nil {
-			return errUnprocessable("published content release required")
 		}
 		now, guid := s.now(), s.nextGUID()
 		if now <= 0 || guid <= 0 {
@@ -313,7 +320,18 @@ func (s *PublicPriceSnapshotService) transact(ctx context.Context, actorID, expe
 				return errUnavailable("price snapshot persistence unavailable")
 			}
 		}
-		job := models.PublicRenderJob{AuditFields: models.AuditFields{Guid: s.nextGUID(), CreatedAt: now, CreatedBy: &actor.ID, UpdatedAt: now, UpdatedBy: &actor.ID}, PriceSnapshotID: snapshot.ID, ContentReleaseID: *state.ContentReleaseID, State: models.PublicRenderJobQueued}
+		rebound, bindErr := prepareContentReleaseRebinding(currentContent, snapshot, prepared.Items)
+		if bindErr != nil {
+			return bindErr
+		}
+		contentRelease := models.PublicContentRelease{Guid: s.nextGUID(), CreatedAt: now, CreatedBy: &actor.ID, UpdatedAt: now, UpdatedBy: &actor.ID, DocumentKind: models.PublicContentDocumentSite, Version: currentContent.Version + 1, SourceRevision: currentContent.SourceRevision, Payload: rebound.Payload, ContentHash: rebound.Hash, PublishedAt: now}
+		if contentRelease.Guid <= 0 {
+			return errUnavailable("content release persistence unavailable")
+		}
+		if err = tx.Create(&contentRelease).Error; err != nil {
+			return errUnavailable("content release persistence unavailable")
+		}
+		job := models.PublicRenderJob{AuditFields: models.AuditFields{Guid: s.nextGUID(), CreatedAt: now, CreatedBy: &actor.ID, UpdatedAt: now, UpdatedBy: &actor.ID}, PriceSnapshotID: snapshot.ID, ContentReleaseID: contentRelease.ID, State: models.PublicRenderJobQueued}
 		if job.Guid <= 0 {
 			return errUnavailable("render job persistence unavailable")
 		}
@@ -333,7 +351,7 @@ func (s *PublicPriceSnapshotService) transact(ctx context.Context, actorID, expe
 		if err = s.fail("pointer"); err != nil {
 			return errUnavailable("publication state unavailable")
 		}
-		result := tx.Model(&models.PublicPublicationState{}).Where("id = ? AND revision = ?", state.ID, state.Revision).Updates(map[string]any{"price_snapshot_id": snapshot.ID, "revision": state.Revision + 1, "updated_at": now, "updated_by": actor.ID})
+		result := tx.Model(&models.PublicPublicationState{}).Where("id = ? AND revision = ?", state.ID, state.Revision).Updates(map[string]any{"price_snapshot_id": snapshot.ID, "content_release_id": contentRelease.ID, "revision": state.Revision + 1, "updated_at": now, "updated_by": actor.ID})
 		if result.Error != nil || result.RowsAffected != 1 {
 			return errConflict("publication state revision conflict")
 		}

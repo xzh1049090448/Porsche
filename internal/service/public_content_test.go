@@ -88,6 +88,18 @@ func TestPublicContentModelReferencesHandleMalformedAllowedHTMLState(t *testing.
 	}
 }
 
+func TestPublicContentModelReferencesRequireExactRoutableURL(t *testing.T) {
+	valid := "[inline](/pricing/alpha) [ref][m] <a href='/pricing/html'>h</a>\n\n[m]: /pricing/reference"
+	if got := extractPublicContentModelReferences(valid); !reflect.DeepEqual(got, []string{"alpha", "html", "reference"}) {
+		t.Fatalf("valid=%#v", got)
+	}
+	for _, raw := range []string{"[x](/PRICING/ALPHA)", "[x](/pricing/al%0Apha)", "[x](/pricing/al%E2%80%8Bpha)", "[x](/pricing/al\\ pha)", "[x](/pricing/alpha?q=1)", "[x](/pricing/alpha#x)", "[x](/pricing/alpha/)", "[x](/pricing/alpha/more)", "<a href='/pricing/ALPHA'>x</a>", "<a href='/pricing/al&#x0A;pha'>x</a>"} {
+		if got := extractPublicContentModelReferences(raw); len(got) != 0 {
+			t.Fatalf("manufactured model reference from %q: %#v", raw, got)
+		}
+	}
+}
+
 func TestPublicContentStableRequestPayloadBinding(t *testing.T) {
 	a := publicContentRequestPayload("publish", 3, "91", 0)
 	if a != publicContentRequestPayload("publish", 3, "91", 0) || a == publicContentRequestPayload("publish", 4, "91", 0) || a == publicContentRequestPayload("publish", 3, "92", 0) {

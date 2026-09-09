@@ -69,6 +69,20 @@ func TestPublicPriceSnapshotIdempotencyBindingUsesActorOperationAndPayload(t *te
 	}
 }
 
+func TestPublicPriceSnapshotContentCompatibilityRejectsMissingReferencedModel(t *testing.T) {
+	release := models.PublicContentRelease{Payload: models.JSONMap{"home": "[alpha](/pricing/alpha)", "about": "About", "terms": "Terms", "privacy": "Privacy", "legal_reviewed": true}}
+	alpha := models.PublicPriceSnapshotItem{ModelKey: "alpha", UpstreamModelID: "org/alpha", InputPriceUSDPerMillionTokens: "1", OutputPriceUSDPerMillionTokens: "2"}
+	if err := validateContentReleaseForPriceItems(release, []models.PublicPriceSnapshotItem{alpha}); err != nil {
+		t.Fatal(err)
+	}
+	beta := alpha
+	beta.ModelKey = "beta"
+	beta.UpstreamModelID = "org/beta"
+	if err := validateContentReleaseForPriceItems(release, []models.PublicPriceSnapshotItem{beta}); status(err) != 409 {
+		t.Fatalf("missing reference err=%v", err)
+	}
+}
+
 func TestPublicPriceSnapshotRestoreRevalidatesAndRehashesHistoricalItems(t *testing.T) {
 	prepared, err := preparePublicPriceSnapshot([]models.PublicModelConfig{snapshotModelFixture("alpha")})
 	if err != nil {

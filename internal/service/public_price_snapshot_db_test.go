@@ -2,6 +2,9 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"reflect"
@@ -239,6 +242,93 @@ func TestPublicPriceSnapshotDBAtomicPublicationIdempotencyAndRestore(t *testing.
 	}
 }
 
+func TestPublicPriceSnapshotDBRejectsContentBindingDriftAndRebindsCompatibleGeneration(t *testing.T) {
+	if os.Getenv("TEST_DATABASE_URL") == "" {
+		t.Skip("BLOCKED_FIXTURE: requires explicit disposable TEST_DATABASE_URL; .env is never read")
+	}
+	f := openPublicModelDBFixture(t)
+	tx := f.db.Begin()
+	if tx.Error != nil {
+		t.Fatal(tx.Error)
+	}
+	f.db = tx
+	t.Cleanup(func() {
+		if e := tx.Rollback().Error; e != nil && e != gorm.ErrInvalidTransaction {
+			t.Error(e)
+		}
+	})
+	if err := requirePublicPriceSnapshotFixture(f.db, f.actor.ID); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	admin := NewPublicModelAdminService(f.db)
+	createActive := func(label string) *PublicModelAdmin {
+		in := f.input(label + fmt.Sprint(persistence.NextGUID()))
+		f.observe(t, in.UpstreamModelID)
+		m, e := admin.Create(ctx, f.actor.ID, in)
+		if e != nil {
+			t.Fatal(e)
+		}
+		m, e = admin.Activate(ctx, f.actor.ID, mustGUID(t, m.GUID), 1)
+		if e != nil {
+			t.Fatal(e)
+		}
+		return m
+	}
+	a, b := createActive("content-a-"), createActive("content-b-")
+	var state models.PublicPublicationState
+	if e := f.db.Where("state_key=?", publicPublicationStateKey).First(&state).Error; e != nil {
+		t.Fatal(e)
+	}
+	var content models.PublicContentRelease
+	if e := f.db.First(&content, *state.ContentReleaseID).Error; e != nil {
+		t.Fatal(e)
+	}
+	payload := models.JSONMap{"home": "[model](/pricing/" + a.ModelKey + ")", "about": "About", "terms": "Terms", "privacy": "Privacy", "legal_reviewed": true, "model_keys": []string{a.ModelKey}}
+	encoded, _ := json.Marshal(payload)
+	sum := sha256.Sum256(encoded)
+	if e := f.db.Model(&content).Updates(map[string]any{"payload": payload, "content_hash": hex.EncodeToString(sum[:])}).Error; e != nil {
+		t.Fatal(e)
+	}
+	deactivated, e := admin.Deactivate(ctx, f.actor.ID, mustGUID(t, a.GUID), DeactivationRequest{ExpectedRevision: a.Revision, Reason: "binding test"})
+	if e != nil {
+		t.Fatal(e)
+	}
+	beforeCounts := publicPriceSnapshotFixtureCounts(t, f.db, f.actor.ID)
+	var before models.PublicPublicationState
+	_ = f.db.Where("state_key=?", publicPublicationStateKey).First(&before).Error
+	if _, e = NewPublicPriceSnapshotService(f.db).Publish(ctx, PublicPriceSnapshotRequest{ActorID: f.actor.ID, ExpectedRevision: publicPriceDraftRevision(t, f.db), IdempotencyKey: "incompatible"}); status(e) != 409 {
+		t.Fatalf("incompatible publish=%v", e)
+	}
+	var unchanged models.PublicPublicationState
+	_ = f.db.Where("state_key=?", publicPublicationStateKey).First(&unchanged).Error
+	if unchanged.Revision != before.Revision || !sameOptionalInt64(unchanged.PriceSnapshotID, before.PriceSnapshotID) || !sameOptionalInt64(unchanged.ContentReleaseID, before.ContentReleaseID) || publicPriceSnapshotFixtureCounts(t, f.db, f.actor.ID) != beforeCounts {
+		t.Fatal("incompatible publish changed committed state")
+	}
+	if _, e = admin.Activate(ctx, f.actor.ID, mustGUID(t, a.GUID), deactivated.Revision); e != nil {
+		t.Fatal(e)
+	}
+	release, e := NewPublicPriceSnapshotService(f.db).Publish(ctx, PublicPriceSnapshotRequest{ActorID: f.actor.ID, ExpectedRevision: publicPriceDraftRevision(t, f.db), IdempotencyKey: "compatible"})
+	if e != nil {
+		t.Fatal(e)
+	}
+	projection, e := NewPublicContentService(f.db).PublicProjection(ctx)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if projection.PriceReleaseVersion != release.Version {
+		t.Fatalf("projection=%#v release=%#v", projection, release)
+	}
+	var latestState models.PublicPublicationState
+	_ = f.db.Where("state_key=?", publicPublicationStateKey).First(&latestState).Error
+	var latestContent models.PublicContentRelease
+	_ = f.db.First(&latestContent, *latestState.ContentReleaseID).Error
+	if fmt.Sprint(latestContent.Payload["price_snapshot_guid"]) != release.GUID || latestContent.Payload["price_snapshot_version"].(float64) != float64(release.Version) {
+		t.Fatalf("content binding=%#v release=%#v", latestContent.Payload, release)
+	}
+	_ = b
+}
+
 func publicModelIDByGUID(t *testing.T, db *gorm.DB, guid string) int64 {
 	t.Helper()
 	var model models.PublicModelConfig
@@ -303,7 +393,10 @@ func requirePublicPriceSnapshotFixture(db *gorm.DB, actor int64) error {
 		if err = db.Model(&models.PublicContentRelease{}).Where("document_kind=?", models.PublicContentDocumentSite).Select("COALESCE(MAX(version),0)").Scan(&maxVersion).Error; err != nil {
 			return err
 		}
-		release := models.PublicContentRelease{Guid: persistence.NextGUID(), CreatedAt: now, CreatedBy: &actor, UpdatedAt: now, UpdatedBy: &actor, DocumentKind: models.PublicContentDocumentSite, Version: maxVersion + 1, SourceRevision: 1, Payload: models.JSONMap{"fixture": true}, ContentHash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", PublishedAt: now}
+		payload := models.JSONMap{"home": "", "about": "About", "terms": "Terms", "privacy": "Privacy", "legal_reviewed": true, "model_keys": []string{}}
+		encoded, _ := json.Marshal(payload)
+		sum := sha256.Sum256(encoded)
+		release := models.PublicContentRelease{Guid: persistence.NextGUID(), CreatedAt: now, CreatedBy: &actor, UpdatedAt: now, UpdatedBy: &actor, DocumentKind: models.PublicContentDocumentSite, Version: maxVersion + 1, SourceRevision: 1, Payload: payload, ContentHash: hex.EncodeToString(sum[:]), PublishedAt: now}
 		if err = db.Create(&release).Error; err != nil {
 			return err
 		}

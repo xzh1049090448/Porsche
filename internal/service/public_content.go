@@ -6,12 +6,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"html"
 	"net/url"
 	"sort"
 	"strconv"
 	"strings"
-	"unicode"
 
 	"github.com/porsche/ai-gateway-go/internal/models"
 	"github.com/porsche/ai-gateway-go/internal/persistence"
@@ -20,7 +18,6 @@ import (
 	"github.com/yuin/goldmark/ast"
 	"github.com/yuin/goldmark/text"
 	xhtml "golang.org/x/net/html"
-	"golang.org/x/text/unicode/norm"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -277,29 +274,15 @@ func extractPublicContentModelReferences(raw string) []string {
 }
 
 func publicContentModelKey(raw string) (string, bool) {
-	value := strings.TrimSpace(raw)
-	for {
-		decoded := norm.NFKC.String(html.UnescapeString(value))
-		if unescaped, err := url.PathUnescape(decoded); err == nil {
-			decoded = unescaped
-		}
-		if decoded == value {
-			break
-		}
-		value = decoded
-	}
-	var normalized strings.Builder
-	for _, r := range value {
-		if unicode.IsSpace(r) || unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
-			continue
-		}
-		normalized.WriteRune(unicode.ToLower(r))
-	}
-	value = normalized.String()
-	if value == "" || strings.Contains(value, "\\") || strings.HasPrefix(value, "//") {
+	if raw == "" || raw != strings.TrimSpace(raw) || strings.ContainsAny(raw, "%\\") || strings.HasPrefix(raw, "//") {
 		return "", false
 	}
-	parsed, err := url.Parse(value)
+	for _, r := range raw {
+		if r < 0x20 || r == 0x7f {
+			return "", false
+		}
+	}
+	parsed, err := url.Parse(raw)
 	if err != nil || parsed.Scheme != "" || parsed.Host != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
 		return "", false
 	}
@@ -382,6 +365,22 @@ func hasPublicContentIssue(v []publiccontent.ValidationIssue, code string) bool 
 		}
 	}
 	return false
+}
+
+func validateContentReleaseForPriceItems(release models.PublicContentRelease, items []models.PublicPriceSnapshotItem) error {
+	_, issues := preparePublicContent(projectContentPayload(release.Payload, release.SourceRevision), models.PublicPriceSnapshot{ID: 1, Guid: 1, Version: 1}, items)
+	if len(issues) != 0 {
+		return errConflict("published content is incompatible with candidate price snapshot")
+	}
+	return nil
+}
+
+func prepareContentReleaseRebinding(release models.PublicContentRelease, snapshot models.PublicPriceSnapshot, items []models.PublicPriceSnapshotItem) (*preparedPublicContent, error) {
+	prepared, issues := preparePublicContent(projectContentPayload(release.Payload, release.SourceRevision), snapshot, items)
+	if len(issues) != 0 {
+		return nil, errConflict("published content is incompatible with candidate price snapshot")
+	}
+	return prepared, nil
 }
 
 func (s *PublicContentService) Publish(ctx context.Context, in PublicContentPublicationRequest) (*PublicContentRelease, error) {
@@ -541,6 +540,10 @@ func (s *PublicContentService) PublicProjection(ctx context.Context) (*PublicCon
 	}
 	if e := s.db.First(&p, *state.PriceSnapshotID).Error; e != nil {
 		return nil, errUnavailable("committed publication unavailable")
+	}
+	boundVersion, ok := jsonNumberInt64(c.Payload["price_snapshot_version"])
+	if fmt.Sprint(c.Payload["price_snapshot_guid"]) != strconv.FormatInt(p.Guid, 10) || !ok || boundVersion != p.Version {
+		return nil, errUnavailable("committed publication binding unavailable")
 	}
 	return &PublicContentPublicProjection{Content: projectContentPayload(c.Payload, c.SourceRevision), ContentReleaseVersion: c.Version, PriceReleaseVersion: p.Version, ETag: `"` + c.ContentHash + `"`}, nil
 }
