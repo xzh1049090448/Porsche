@@ -57,6 +57,11 @@ func newPlatformGenerationCancellationRegistrationTokenFrom(reader io.Reader) (s
 	return base64.RawURLEncoding.EncodeToString(raw), nil
 }
 
+func validPlatformGenerationCancellationRegistrationToken(token string) bool {
+	raw, err := base64.RawURLEncoding.DecodeString(token)
+	return err == nil && len(raw) == platformGenerationCancellationRegistrationTokenBytes && base64.RawURLEncoding.EncodeToString(raw) == token
+}
+
 func (r *PlatformGenerationCancellationRegistry) newRegistrationToken() (string, error) {
 	r.entropyMu.Lock()
 	defer r.entropyMu.Unlock()
@@ -120,7 +125,7 @@ func (r *PlatformGenerationCancellationRegistry) Cancel(userID int64, generation
 }
 
 func (r *PlatformGenerationCancellationRegistry) Unregister(userID int64, generationID, token string) bool {
-	if r == nil || validatePlatformGenerationIdentity(userID, generationID) != nil || !validPlatformGenerationLeaseToken(token) {
+	if r == nil || validatePlatformGenerationIdentity(userID, generationID) != nil || !validPlatformGenerationCancellationRegistrationToken(token) {
 		return false
 	}
 

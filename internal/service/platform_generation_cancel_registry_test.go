@@ -173,7 +173,7 @@ func TestPlatformGenerationCancellationRegistryConcurrentRegisterProtectsInjecte
 		if result.err != nil {
 			t.Fatalf("concurrent Register() error = %v", result.err)
 		}
-		if !validPlatformGenerationLeaseToken(result.token) {
+		if !validPlatformGenerationCancellationRegistrationToken(result.token) {
 			t.Fatalf("concurrent Register() token = %q, want canonical 32-byte RawURL token", result.token)
 		}
 		tokens[result.token] = struct{}{}
@@ -208,7 +208,7 @@ func TestPlatformGenerationCancellationRegistryConcurrentSameKeyHasOneWinner(t *
 
 	var successes int
 	for result := range results {
-		if result.err == nil && validPlatformGenerationLeaseToken(result.token) {
+		if result.err == nil && validPlatformGenerationCancellationRegistrationToken(result.token) {
 			successes++
 			continue
 		}
