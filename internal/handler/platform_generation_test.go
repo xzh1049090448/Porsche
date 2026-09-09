@@ -3,15 +3,19 @@ package handler
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/porsche/ai-gateway-go/internal/app"
 	"github.com/porsche/ai-gateway-go/internal/config"
 	"github.com/porsche/ai-gateway-go/internal/middleware"
+	"github.com/porsche/ai-gateway-go/internal/migration"
 	"github.com/porsche/ai-gateway-go/internal/models"
 	"github.com/porsche/ai-gateway-go/internal/service"
 )
@@ -42,23 +46,31 @@ func (f *platformGenerationHandlerFake) Cancel(ctx context.Context, userID int64
 }
 
 func platformGenerationHandlerEngine(controller service.PlatformGenerationController) *gin.Engine {
+	return platformGenerationHandlerEngineForUser(controller, 47)
+}
+
+func platformGenerationHandlerEngineForUser(controller service.PlatformGenerationController, userID int64) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	engine := gin.New()
 	state := &app.State{Settings: &config.Settings{}, PlatformGenerationControl: controller}
 	registerPlatformWithAuthentication(engine, state, func(c *gin.Context) {
-		c.Set(middleware.ContextUser, &models.User{ID: 47})
-		c.Set(middleware.ContextUserID, int64(47))
+		c.Set(middleware.ContextUser, &models.User{ID: userID})
+		c.Set(middleware.ContextUserID, userID)
 		c.Next()
 	})
 	return engine
 }
 
 func platformGenerationRequest(t *testing.T, controller service.PlatformGenerationController, method, path string) *httptest.ResponseRecorder {
+	return platformGenerationRequestForUser(t, controller, 47, method, path)
+}
+
+func platformGenerationRequestForUser(t *testing.T, controller service.PlatformGenerationController, userID int64, method, path string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(method, path, nil)
 	req.Header.Set("X-Request-ID", "generation-request-1")
 	rec := httptest.NewRecorder()
-	platformGenerationHandlerEngine(controller).ServeHTTP(rec, req)
+	platformGenerationHandlerEngineForUser(controller, userID).ServeHTTP(rec, req)
 	return rec
 }
 
@@ -208,5 +220,77 @@ func assertPlatformGenerationError(t *testing.T, rec *httptest.ResponseRecorder,
 	}
 	if rec.Header().Get("Cache-Control") != "no-store" || rec.Header().Get("Retry-After") != "" {
 		t.Fatalf("error headers cache=%q retry=%q", rec.Header().Get("Cache-Control"), rec.Header().Get("Retry-After"))
+	}
+}
+
+func TestPlatformGenerationHandlerIntegrationReceiptAndOwnerIsolation(t *testing.T) {
+	if strings.TrimSpace(os.Getenv("TEST_DATABASE_URL")) == "" || strings.TrimSpace(os.Getenv("TEST_REDIS_URL")) == "" {
+		t.Skip("BLOCKED_FIXTURE: requires TEST_DATABASE_URL and TEST_REDIS_URL")
+	}
+	state := ownedRealUserCreateHTTPState(t)
+	t.Cleanup(func() {
+		if err := state.Close(); err != nil {
+			t.Errorf("close generation integration state: %v", err)
+		}
+	})
+	if err := migration.Verify(context.Background(), state.DB); err != nil {
+		t.Fatalf("verify owned handler migration ledger: %v", err)
+	}
+	user := platformTestUser(t, state, "generation-owner", nil)
+	user.DailyCallLimit = 100
+	user.DailyCallsUsed = 2
+	user.TotalTokensUsed = 41
+	resetAt := time.Now().UTC().UnixMilli()
+	user.DailyCallsResetAt = &resetAt
+	if err := state.DB.Create(&user).Error; err != nil {
+		t.Fatal(err)
+	}
+	generationID := fmt.Sprintf("550e8400-e29b-41d4-a716-%012x", platformTestSnowflake.Next()&0xffffffffffff)
+	nowMillis := time.Now().UTC().UnixMilli()
+	claim, err := state.PlatformGenerations.Claim(context.Background(), service.PlatformGenerationClaimInput{
+		UserID: user.ID, GenerationID: generationID, Mode: service.PlatformGenerationModeSingle, Models: []string{"model-a"}, NowMillis: nowMillis,
+	})
+	if err != nil || claim.Duplicate || claim.LeaseToken == "" {
+		t.Fatalf("claim=%#v error=%v", claim, err)
+	}
+	if _, err := state.PlatformGenerations.MarkModelDone(context.Background(), user.ID, generationID, "model-a", 0, nowMillis+1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := state.PlatformGenerations.BeginCommit(context.Background(), user.ID, generationID, nowMillis+2); err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := state.PlatformGenerationPersistence.Finalize(context.Background(), state.DB, service.PlatformGenerationPersistenceInput{
+		UserID: user.ID, GenerationID: generationID, Mode: service.PlatformGenerationModeSingle,
+		Models: []string{"model-a"}, UserMessage: "private prompt bytes", NowMillis: nowMillis + 3,
+		Results: []service.PlatformGenerationPersistenceResult{{Model: "model-a", State: service.PlatformGenerationStateCompleted, Content: "real receipt answer", Tokens: 7, Seq: 0}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const currentTotal = int64(909)
+	if err := state.DB.Model(&models.User{}).Where("id = ?", user.ID).Update("total_tokens_used", currentTotal).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	ownerPath := "/api/v1/platform/chat/generations/" + generationID
+	owner := platformGenerationRequestForUser(t, state.PlatformGenerationControl, user.ID, http.MethodGet, ownerPath)
+	if owner.Code != http.StatusOK || !strings.Contains(owner.Body.String(), `"status":"completed"`) ||
+		!strings.Contains(owner.Body.String(), `"content":"real receipt answer"`) ||
+		!strings.Contains(owner.Body.String(), `"assistant_message_guid":"`+receipt.Results[0].AssistantMessageGUID+`"`) ||
+		!strings.Contains(owner.Body.String(), `"total_tokens_used":909`) || strings.Contains(owner.Body.String(), "private prompt bytes") {
+		t.Fatalf("real owner HTTP status/body=%d/%s", owner.Code, owner.Body.String())
+	}
+
+	foreignUserID := user.ID + 1_000_000
+	foreignGet := platformGenerationRequestForUser(t, state.PlatformGenerationControl, foreignUserID, http.MethodGet, ownerPath)
+	assertPlatformGenerationError(t, foreignGet, http.StatusNotFound, "generation_not_found", "Generation not found.", "invalid_request_error")
+	foreignCancel := platformGenerationRequestForUser(t, state.PlatformGenerationControl, foreignUserID, http.MethodPost, ownerPath+"/cancel")
+	wantForeign := `{"generation_id":"` + generationID + `","status":"cancelled","mode":null,"conversation_guid":null}`
+	if foreignCancel.Code != http.StatusOK || strings.TrimSpace(foreignCancel.Body.String()) != wantForeign {
+		t.Fatalf("foreign cancel status/body=%d/%s", foreignCancel.Code, foreignCancel.Body.String())
+	}
+	ownerAfter := platformGenerationRequestForUser(t, state.PlatformGenerationControl, user.ID, http.MethodGet, ownerPath)
+	if ownerAfter.Code != http.StatusOK || !strings.Contains(ownerAfter.Body.String(), `"content":"real receipt answer"`) {
+		t.Fatalf("owner changed by foreign cancel status/body=%d/%s", ownerAfter.Code, ownerAfter.Body.String())
 	}
 }

@@ -474,3 +474,122 @@ func waitPlatformGenerationConvergerAttempt(t *testing.T, attempts <-chan int) i
 		return 0
 	}
 }
+
+func TestPlatformGenerationConvergerMultiInstanceRestartIntegration(t *testing.T) {
+	requirePlatformGenerationCombinedFixture(t)
+	f := openPlatformGenerationFinalizationFixture(t)
+	input := f.committingSingle(t)
+	committing, err := f.store.Get(context.Background(), f.user.ID, input.GenerationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	committingRaw, err := encodePlatformGeneration(committing)
+	if err != nil {
+		t.Fatal(err)
+	}
+	persistence, err := NewPlatformGenerationPersistence(f.store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := persistence.Finalize(context.Background(), f.db, input); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.store.client.Set(context.Background(), f.store.key(f.user.ID, input.GenerationID), committingRaw, platformGenerationTTL).Err(); err != nil {
+		t.Fatal(err)
+	}
+
+	workers := make([]*PlatformGenerationConverger, 2)
+	for index := range workers {
+		control, controlErr := NewPlatformGenerationControl(f.db, f.store, NewPlatformGenerationCancellationRegistry())
+		if controlErr != nil {
+			t.Fatal(controlErr)
+		}
+		worker, workerErr := NewPlatformGenerationConverger(control)
+		if workerErr != nil {
+			t.Fatal(workerErr)
+		}
+		worker.nowMillis = func() int64 { return committing.UpdatedAtMillis + 1 }
+		workers[index] = worker
+	}
+
+	var wg sync.WaitGroup
+	errs := make(chan error, len(workers))
+	for _, worker := range workers {
+		wg.Add(1)
+		go func(worker *PlatformGenerationConverger) {
+			defer wg.Done()
+			errs <- worker.RunPass(context.Background())
+		}(worker)
+	}
+	wg.Wait()
+	close(errs)
+	for runErr := range errs {
+		if runErr != nil {
+			t.Fatalf("multi-instance pass: %v", runErr)
+		}
+	}
+	completed, err := f.store.Get(context.Background(), f.user.ID, input.GenerationID)
+	if err != nil || completed.State != PlatformGenerationStateCompleted || completed.ModelStates["model-a"].AssistantMessageGUID == "" {
+		t.Fatalf("authority=%#v error=%v", completed, err)
+	}
+	assertPlatformGenerationFinalizationEffects(t, f, 1, 2, 1, 1, 1, 3, 17)
+}
+
+func TestPlatformGenerationConvergerLeaseAndTerminalIntegration(t *testing.T) {
+	requirePlatformGenerationCombinedFixture(t)
+	f := openPlatformGenerationFinalizationFixture(t)
+	const (
+		activeID     = "550e8400-e29b-41d4-a716-446655440201"
+		expiredID    = "550e8400-e29b-41d4-a716-446655440202"
+		cancellingID = "550e8400-e29b-41d4-a716-446655440203"
+	)
+	for _, generationID := range []string{activeID, expiredID, cancellingID} {
+		t.Cleanup(func() { _ = f.store.client.Del(context.Background(), f.store.key(f.user.ID, generationID)).Err() })
+	}
+	claim := func(generationID string) PlatformGenerationClaimResult {
+		return claimTestGeneration(t, f.store, PlatformGenerationClaimInput{
+			UserID: f.user.ID, GenerationID: generationID, Mode: PlatformGenerationModeSingle, Models: []string{"model-a"}, NowMillis: f.now,
+		})
+	}
+	activeClaim := claim(activeID)
+	claim(expiredID)
+	claim(cancellingID)
+	if decision, err := f.store.CancelOrCreate(context.Background(), f.user.ID, cancellingID, f.now+1); err != nil || !decision.Transitioned || decision.Snapshot.State != PlatformGenerationStateCancelling {
+		t.Fatalf("cancel transition=%#v error=%v", decision, err)
+	}
+
+	control, err := NewPlatformGenerationControl(f.db, f.store, NewPlatformGenerationCancellationRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker, err := NewPlatformGenerationConverger(control)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nowMillis := f.now + 10_000
+	worker.nowMillis = func() int64 { return nowMillis }
+	if err := worker.RunPass(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if renewed, err := f.store.RenewLease(context.Background(), f.user.ID, activeID, activeClaim.LeaseToken, f.now+20_000); err != nil || renewed.State != PlatformGenerationStateRunning || renewed.LeaseUntilMillis != f.now+50_000 {
+		t.Fatalf("renewed=%#v error=%v", renewed, err)
+	}
+	for _, passTime := range []int64{f.now + 31_000, f.now + 49_999} {
+		nowMillis = passTime
+		if err := worker.RunPass(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		active, getErr := f.store.Get(context.Background(), f.user.ID, activeID)
+		if getErr != nil || active.State != PlatformGenerationStateRunning {
+			t.Fatalf("active at %d = %#v error=%v", passTime, active, getErr)
+		}
+	}
+	expired, err := f.store.Get(context.Background(), f.user.ID, expiredID)
+	if err != nil || expired.State != PlatformGenerationStateFailed || expired.ErrorCode != "internal_error" {
+		t.Fatalf("expired=%#v error=%v", expired, err)
+	}
+	cancelled, err := f.store.Get(context.Background(), f.user.ID, cancellingID)
+	if err != nil || cancelled.State != PlatformGenerationStateCancelled {
+		t.Fatalf("cancelled=%#v error=%v", cancelled, err)
+	}
+}

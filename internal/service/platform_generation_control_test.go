@@ -4,10 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/porsche/ai-gateway-go/internal/migration"
 )
 
 const controlGenerationID = "550e8400-e29b-41d4-a716-446655440000"
@@ -116,6 +120,13 @@ func mustControl(t *testing.T, fake *platformGenerationControlFake, registry *Pl
 	}
 	control.now = func() time.Time { return now }
 	return control
+}
+
+func requirePlatformGenerationCombinedFixture(t *testing.T) {
+	t.Helper()
+	if strings.TrimSpace(os.Getenv("TEST_DATABASE_URL")) == "" || strings.TrimSpace(os.Getenv("TEST_REDIS_URL")) == "" {
+		t.Skip("BLOCKED_FIXTURE: requires TEST_DATABASE_URL and TEST_REDIS_URL")
+	}
 }
 
 func TestPlatformGenerationControlConstructorAndInputValidationFailClosed(t *testing.T) {
@@ -883,4 +894,264 @@ func TestPlatformGenerationControlCancelRetriesReuseOriginalBoundedDeadline(t *t
 			t.Fatalf("deadline[%d] = %s, want original %s", index, deadlines[index], deadlines[0])
 		}
 	}
+}
+
+func TestPlatformGenerationControlIntegrationReceiptViews(t *testing.T) {
+	requirePlatformGenerationCombinedFixture(t)
+
+	t.Run("completed single hydrates real receipt and current account total", func(t *testing.T) {
+		f := openPlatformGenerationFinalizationFixture(t)
+		if err := migration.Verify(context.Background(), f.db); err != nil {
+			t.Fatalf("verify 0001-0011 migrated fixture: %v", err)
+		}
+		ledger, err := migration.Status(context.Background(), f.db)
+		if err != nil || len(ledger) != 11 || ledger[0].Version != "0001" || ledger[len(ledger)-1].Version != "0011" {
+			t.Fatalf("migration ledger=%#v error=%v", ledger, err)
+		}
+		input := f.committingSingle(t)
+		persistence, err := NewPlatformGenerationPersistence(f.store)
+		if err != nil {
+			t.Fatal(err)
+		}
+		receipt, err := persistence.Finalize(context.Background(), f.db, input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		const currentTotal = int64(731)
+		if currentTotal == receipt.TotalTokens {
+			t.Fatal("fixture account total must differ from generation-local total")
+		}
+		if err := f.db.Exec("UPDATE users SET total_tokens_used = ? WHERE id = ?", currentTotal, f.user.ID).Error; err != nil {
+			t.Fatal(err)
+		}
+		control, err := NewPlatformGenerationControl(f.db, f.store, NewPlatformGenerationCancellationRegistry())
+		if err != nil {
+			t.Fatal(err)
+		}
+		control.now = func() time.Time { return time.UnixMilli(input.NowMillis + 1).UTC() }
+		view, err := control.Get(context.Background(), f.user.ID, input.GenerationID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if view.Status != "completed" || view.Result == nil || view.Result.Content != input.Results[0].Content ||
+			view.Result.AssistantMessageGUID != receipt.Results[0].AssistantMessageGUID || view.Result.Tokens == nil ||
+			*view.Result.Tokens != input.Results[0].Tokens || view.TotalTokensUsed == nil || *view.TotalTokensUsed != currentTotal ||
+			view.ConversationGUID == nil || *view.ConversationGUID != stringInt64(receipt.ConversationGUID) {
+			t.Fatalf("real single view = %#v, receipt = %#v", view, receipt)
+		}
+	})
+
+	t.Run("partial compare preserves real receipt order and failure shape", func(t *testing.T) {
+		f := openPlatformGenerationFinalizationFixture(t)
+		input := f.committingResults(t, platformCompareGenerationID, PlatformGenerationModeCompare, partialCompareResults())
+		persistence, err := NewPlatformGenerationPersistence(f.store)
+		if err != nil {
+			t.Fatal(err)
+		}
+		receipt, err := persistence.Finalize(context.Background(), f.db, input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		control, err := NewPlatformGenerationControl(f.db, f.store, NewPlatformGenerationCancellationRegistry())
+		if err != nil {
+			t.Fatal(err)
+		}
+		control.now = func() time.Time { return time.UnixMilli(input.NowMillis + 1).UTC() }
+		view, err := control.Get(context.Background(), f.user.ID, input.GenerationID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if view.Status != "completed" || len(view.Results) != 2 || view.Results[0].Model != input.Models[0] ||
+			view.Results[0].Content != input.Results[0].Content || view.Results[0].AssistantMessageGUID != receipt.Results[0].AssistantMessageGUID ||
+			view.Results[1].Model != input.Models[1] || view.Results[1].Status != "failed" || view.Results[1].Code != input.Results[1].ErrorCode ||
+			view.Results[1].Content != "" || view.Results[1].AssistantMessageGUID != "" || view.Results[1].Tokens != nil {
+			t.Fatalf("real partial compare view = %#v", view)
+		}
+	})
+}
+
+func TestPlatformGenerationControlReceiptMismatchIntegration(t *testing.T) {
+	requirePlatformGenerationCombinedFixture(t)
+	tests := []struct {
+		name     string
+		mutate   func(*PlatformGenerationSnapshot)
+		mutateDB func(*testing.T, platformGenerationFinalizationFixture, PlatformGenerationPersistenceInput)
+	}{
+		{name: "assistant GUID", mutate: func(snapshot *PlatformGenerationSnapshot) {
+			model := snapshot.ModelStates[snapshot.Models[0]]
+			model.AssistantMessageGUID = "999999999999999999"
+			snapshot.ModelStates[snapshot.Models[0]] = model
+		}},
+		{name: "mode", mutate: func(*PlatformGenerationSnapshot) {}, mutateDB: func(t *testing.T, f platformGenerationFinalizationFixture, input PlatformGenerationPersistenceInput) {
+			t.Helper()
+			if err := f.db.Exec("UPDATE platform_chat_generation_receipts SET mode = 1 WHERE user_id = ? AND generation_id = ?", f.user.ID, input.GenerationID).Error; err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "order", mutate: func(snapshot *PlatformGenerationSnapshot) {
+			snapshot.Models[0], snapshot.Models[1] = snapshot.Models[1], snapshot.Models[0]
+		}},
+		{name: "state", mutate: func(snapshot *PlatformGenerationSnapshot) {
+			model := snapshot.ModelStates[snapshot.Models[1]]
+			model.State = PlatformGenerationStateCompleted
+			model.ErrorCode = ""
+			model.AssistantMessageGUID = "888888888888888888"
+			snapshot.ModelStates[snapshot.Models[1]] = model
+		}},
+		{name: "code", mutate: func(snapshot *PlatformGenerationSnapshot) {
+			model := snapshot.ModelStates[snapshot.Models[1]]
+			model.ErrorCode = "gateway_upstream_error"
+			snapshot.ModelStates[snapshot.Models[1]] = model
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			f := openPlatformGenerationFinalizationFixture(t)
+			input := f.committingResults(t, platformCompareGenerationID, PlatformGenerationModeCompare, partialCompareResults())
+			persistence, err := NewPlatformGenerationPersistence(f.store)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := persistence.Finalize(context.Background(), f.db, input); err != nil {
+				t.Fatal(err)
+			}
+			snapshot, err := ReconcilePlatformGeneration(context.Background(), f.db, f.store, f.user.ID, input.GenerationID, input.NowMillis+1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			test.mutate(&snapshot)
+			if test.mutateDB != nil {
+				test.mutateDB(t, f, input)
+			}
+			raw, err := encodePlatformGeneration(snapshot)
+			if err != nil {
+				t.Fatalf("encode mutated snapshot: %v snapshot=%#v", err, snapshot)
+			}
+			if err := f.store.client.Set(context.Background(), f.store.key(f.user.ID, input.GenerationID), raw, platformGenerationTTL).Err(); err != nil {
+				t.Fatal(err)
+			}
+			control, err := NewPlatformGenerationControl(f.db, f.store, NewPlatformGenerationCancellationRegistry())
+			if err != nil {
+				t.Fatal(err)
+			}
+			control.now = func() time.Time { return time.UnixMilli(input.NowMillis + 1).UTC() }
+			view, err := control.Get(context.Background(), f.user.ID, input.GenerationID)
+			if !errors.Is(err, ErrPlatformGenerationControlUnavailable) {
+				t.Fatalf("mismatch view=%#v error=%v", view, err)
+			}
+			encoded, marshalErr := json.Marshal(view)
+			if marshalErr != nil {
+				t.Fatal(marshalErr)
+			}
+			if strings.Contains(string(encoded), "content") || strings.Contains(string(encoded), "answer") {
+				t.Fatalf("mismatch leaked content: %s", encoded)
+			}
+		})
+	}
+}
+
+func TestPlatformGenerationControlRestartRecovery(t *testing.T) {
+	requirePlatformGenerationCombinedFixture(t)
+
+	t.Run("receipt present committing completes after controller restart", func(t *testing.T) {
+		f := openPlatformGenerationFinalizationFixture(t)
+		input := f.committingSingle(t)
+		committing, err := f.store.Get(context.Background(), f.user.ID, input.GenerationID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		committingRaw, err := encodePlatformGeneration(committing)
+		if err != nil {
+			t.Fatal(err)
+		}
+		persistence, err := NewPlatformGenerationPersistence(f.store)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := persistence.Finalize(context.Background(), f.db, input); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.store.client.Set(context.Background(), f.store.key(f.user.ID, input.GenerationID), committingRaw, platformGenerationTTL).Err(); err != nil {
+			t.Fatal(err)
+		}
+		restarted, err := NewPlatformGenerationControl(f.db, f.store, NewPlatformGenerationCancellationRegistry())
+		if err != nil {
+			t.Fatal(err)
+		}
+		restarted.now = func() time.Time { return time.UnixMilli(committing.UpdatedAtMillis + 1).UTC() }
+		view, err := restarted.Get(context.Background(), f.user.ID, input.GenerationID)
+		if err != nil || view.Status != "completed" || view.Result == nil || view.Result.Content != input.Results[0].Content {
+			t.Fatalf("restart view=%#v error=%v", view, err)
+		}
+	})
+
+	for _, test := range []struct {
+		name   string
+		age    int64
+		status string
+	}{
+		{name: "receipt absent before thirty seconds remains committing", age: platformGenerationConvergenceWindow.Milliseconds() - 1, status: "committing"},
+		{name: "receipt absent at thirty seconds fails", age: platformGenerationConvergenceWindow.Milliseconds(), status: "failed"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := openPlatformGenerationFinalizationFixture(t)
+			input := f.committingSingle(t)
+			committing, err := f.store.Get(context.Background(), f.user.ID, input.GenerationID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			control, err := NewPlatformGenerationControl(f.db, f.store, NewPlatformGenerationCancellationRegistry())
+			if err != nil {
+				t.Fatal(err)
+			}
+			control.now = func() time.Time { return time.UnixMilli(committing.UpdatedAtMillis + test.age).UTC() }
+			view, err := control.Get(context.Background(), f.user.ID, input.GenerationID)
+			if err != nil || view.Status != test.status {
+				t.Fatalf("view=%#v error=%v want status=%q", view, err, test.status)
+			}
+		})
+	}
+}
+
+func TestPlatformGenerationControlOwnerIsolationIntegration(t *testing.T) {
+	requirePlatformGenerationCombinedFixture(t)
+	f := openPlatformGenerationFinalizationFixture(t)
+	input := PlatformGenerationClaimInput{UserID: f.user.ID, GenerationID: generationTestID, Mode: PlatformGenerationModeSingle, Models: []string{"model-a"}, NowMillis: f.now}
+	claimTestGeneration(t, f.store, input)
+	foreignUserID := f.user.ID + 1_000_000
+	t.Cleanup(func() {
+		_ = f.store.client.Del(context.Background(), f.store.key(foreignUserID, input.GenerationID)).Err()
+	})
+	control, err := NewPlatformGenerationControl(f.db, f.store, NewPlatformGenerationCancellationRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
+	control.now = func() time.Time { return time.UnixMilli(f.now + 1).UTC() }
+	if view, err := control.Get(context.Background(), foreignUserID, input.GenerationID); !errors.Is(err, ErrPlatformGenerationControlNotFound) || view.GenerationID != "" {
+		t.Fatalf("foreign GET view=%#v error=%v", view, err)
+	}
+	foreignView, pending, err := control.Cancel(context.Background(), foreignUserID, input.GenerationID)
+	if err != nil || pending || foreignView.Status != "cancelled" || foreignView.Mode != nil {
+		t.Fatalf("foreign cancel view=%#v pending=%v error=%v", foreignView, pending, err)
+	}
+	owner, err := f.store.Get(context.Background(), f.user.ID, input.GenerationID)
+	if err != nil || owner.State != PlatformGenerationStateRunning {
+		t.Fatalf("owner changed by foreign cancel snapshot=%#v error=%v", owner, err)
+	}
+	foreign, err := f.store.Get(context.Background(), foreignUserID, input.GenerationID)
+	if err != nil || foreign.State != PlatformGenerationStateCancelled || foreign.Mode != 0 || len(foreign.Models) != 0 {
+		t.Fatalf("foreign tombstone=%#v error=%v", foreign, err)
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	for _, userID := range []int64{f.user.ID, foreignUserID} {
+		go func(userID int64) {
+			defer wg.Done()
+			if _, getErr := f.store.Get(context.Background(), userID, input.GenerationID); getErr != nil {
+				t.Errorf("scoped authority %d: %v", userID, getErr)
+			}
+		}(userID)
+	}
+	wg.Wait()
 }
