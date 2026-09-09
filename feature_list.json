@@ -1,6 +1,6 @@
 {
   "project": "Porsche Go AI Gateway",
-  "last_updated": "2026-09-09",
+  "last_updated": "2026-09-10",
   "rules": {
     "single_active_feature": true,
     "passing_requires_evidence": true,
@@ -43,9 +43,9 @@
       "title": "B1-E 管理动作安全底座内部原语",
       "status": "passing",
       "acceptance_status": "limited_subscope",
-      "a14_status": "BLOCKED_NOT_IMPLEMENTED",
+      "a14_status": "PASS_LIMITED_SCOPE",
       "active_production_consumers": 7,
-      "joint_acceptance_blocker_count": 16,
+      "joint_acceptance_blocker_count": 8,
       "joint_acceptance_blockers": [
         {
           "id": "A03",
@@ -101,32 +101,64 @@
         },
         {
           "id": "A08",
-          "status": "BLOCKED_FIXTURE",
+          "status": "PASS_LIMITED_SCOPE",
           "code_candidate": {
             "backend": "9fdc07b3bcf4cb06049e4af0f5adde28e36facab"
           },
           "contract_sha256": "dd202cb5019b10a891e10f03f77629b5f54e993110f148f417e05d089df35698",
-          "evidence": "backend:docs/superpowers/reports/validation/2026-09-09-a08-managed-user-roles-permissions/backend/manifest.json"
+          "evidence": "backend:docs/superpowers/reports/validation/2026-09-09-a08-managed-user-roles-permissions/backend/manifest.json",
+          "accepted_candidate": {
+            "backend": "f2f976005c2331c0409c1b27da79e3a43d25bcb0",
+            "frontend": "25b073164dc3fccecbf3b74309f12dd7589c024b"
+          }
         },
         {
           "id": "A09",
-          "status": "BLOCKED_NOT_IMPLEMENTED"
+          "status": "PASS_LIMITED_SCOPE",
+          "accepted_candidate": {
+            "backend": "258abb42a9e1f018845b3175e7dbca0a013231f1",
+            "frontend": "86122422a8234db3d5ee486eda8a0def6646dcc6"
+          },
+          "evidence": "frontend:docs/agents/validation/a09-a12-balance-mock-20260910/manifest.json"
         },
         {
           "id": "A10",
-          "status": "BLOCKED_NOT_IMPLEMENTED"
+          "status": "PASS_LIMITED_SCOPE",
+          "accepted_candidate": {
+            "backend": "258abb42a9e1f018845b3175e7dbca0a013231f1",
+            "frontend": "86122422a8234db3d5ee486eda8a0def6646dcc6"
+          },
+          "evidence": "frontend:docs/agents/validation/a09-a12-balance-mock-20260910/manifest.json"
         },
         {
           "id": "A11",
-          "status": "BLOCKED_NOT_IMPLEMENTED"
+          "status": "PASS_LIMITED_SCOPE",
+          "accepted_candidate": {
+            "backend": "258abb42a9e1f018845b3175e7dbca0a013231f1",
+            "frontend": "86122422a8234db3d5ee486eda8a0def6646dcc6"
+          },
+          "evidence": "frontend:docs/agents/validation/a09-a12-balance-mock-20260910/manifest.json"
         },
         {
           "id": "A12",
-          "status": "BLOCKED_NOT_IMPLEMENTED"
+          "status": "PASS_LIMITED_SCOPE",
+          "accepted_candidate": {
+            "backend": "811213d557eea7b6b9523a584245252ba4dd7d80",
+            "frontend": "bace6d167b94b693abd6be4c720152dc0eb905bb"
+          },
+          "current_revalidation": {
+            "backend": "258abb42a9e1f018845b3175e7dbca0a013231f1",
+            "frontend": "86122422a8234db3d5ee486eda8a0def6646dcc6",
+            "result": "PASS"
+          }
         },
         {
           "id": "A14",
-          "status": "BLOCKED_NOT_IMPLEMENTED"
+          "status": "PASS_LIMITED_SCOPE",
+          "accepted_candidate": {
+            "backend": "811213d557eea7b6b9523a584245252ba4dd7d80",
+            "frontend": "bace6d167b94b693abd6be4c720152dc0eb905bb"
+          }
         },
         {
           "id": "P01",
@@ -193,7 +225,7 @@
         "A08 managed-user roles/permissions：后端候选 9fdc07b；合同 SHA-256 dd202cb5019b10a891e10f03f77629b5f54e993110f148f417e05d089df35698；代码评审 findings 已闭环，但真实 fixture 与独立 SECURITY_REVIEW 均未完成，状态 BLOCKED_FIXTURE。",
         "2026-09-09：A08 本地联合切片 PASS_LIMITED_SCOPE。BE f2f9760 / FE 25b0731；真实 MySQL 8.0.46、Redis 7.4.11、0012 down/up、事务/并发/运行时、可见 Chromium 提升/权限修改/降级、375/390 与 exact cleanup 通过；生产和外部 PM 未运行。"
       ],
-      "notes": "PASS_LIMITED_SUBSCOPE：B1-E 内部安全原语及 A03/A05/A06/A07 本地联合切片已验证；A07 为 PASS_LIMITED_SCOPE。代码注册的 active consumer 为 7 项（users.create、users.create_admin、users.delete、users.reset_password、users.promote、users.demote、users.permissions.write），不表示已部署生产。A08 后端已实现但真实 fixture 与独立 SECURITY_REVIEW 未完成，保持 BLOCKED_FIXTURE。go-017 历史 joint_acceptance_blocker_count 保持 16；current_joint_acceptance_blocker_count 为 12，权威矩阵为 14 limited / 12 blocked；A12/A14 历史行未在本次重写。Gateway Key owner plan/quota 消费仍未实现。生产迁移、部署、生产验收和真实业务账号均 NOT_RUN。ACTION_SECURITY_HMAC_KEY v1 lacks key ID/multi-key verification; rotation is prohibited while replayable post-0010 active snapshots exist unless a separately approved multi-key verifier or atomic full re-HMAC migration is delivered.",
+      "notes": "当前权威本地矩阵为 18 PASS_LIMITED_SCOPE、6 BLOCKED_NOT_IMPLEMENTED、1 BLOCKED_PRODUCT、1 BLOCKED_ENV，合计 8 项阻塞。A09/A10 为前端开发专用 CNY Mock；A11 的后端职责仅为保持真实调额动作和代表性写路径 404；A12/A14 沿用 users.delete 限定切片并在当前候选复验。真实金额/账本/充值/退款/扣费、生产迁移、部署、生产验收和真实业务账号均 NOT_RUN。外部后端 project_manager 本轮书面确认未获得。ACTION_SECURITY_HMAC_KEY v1 lacks key ID/multi-key verification; rotation is prohibited while replayable post-0010 active snapshots exist unless a separately approved multi-key verifier or atomic full re-HMAC migration is delivered.",
       "a03_joint_acceptance": {
         "status": "PASS_LIMITED_SCOPE",
         "code_under_test": {
@@ -296,7 +328,7 @@
         },
         "scope_boundary": "仅本地A06禁用/启用切片；生产migration、deploy、production acceptance及真实business accounts均NOT_RUN；拒绝管理动作审计仍为后续PRD残留。"
       },
-      "current_joint_acceptance_blocker_count": 11,
+      "current_joint_acceptance_blocker_count": 8,
       "a07_joint_acceptance": {
         "status": "PASS_LIMITED_SCOPE",
         "code_under_test": {
@@ -339,7 +371,7 @@
         },
         "canonical_evidence_commits": {
           "backend": "3f41ef2dc1f38fc363cbdcf1e2205b26f7a9da09",
-        "frontend": "1b47efeb6473e7f8e94452b3f833808f0942d413"
+          "frontend": "1b47efeb6473e7f8e94452b3f833808f0942d413"
         },
         "contract_sha256": "dd202cb5019b10a891e10f03f77629b5f54e993110f148f417e05d089df35698",
         "tests": {
@@ -353,6 +385,16 @@
         },
         "scope_boundary": "仅本地 A08 角色与权限切片；可见 commit-unknown、disabled target 与 override-at-promotion 为自动化覆盖。外部 PM、生产 migration/deploy/acceptance 与真实 business accounts 均 NOT_RUN。",
         "evidence": "docs/superpowers/reports/validation/2026-09-09-a08-managed-user-roles-permissions/backend/manifest.json"
+      },
+      "a09_a12_joint_acceptance": {
+        "status": "PASS_LIMITED_SCOPE",
+        "code_under_test": {
+          "backend": "258abb42a9e1f018845b3175e7dbca0a013231f1",
+          "frontend": "86122422a8234db3d5ee486eda8a0def6646dcc6"
+        },
+        "evidence": "frontend:docs/agents/validation/a09-a12-balance-mock-20260910/manifest.json",
+        "backend_project_manager_confirmation": "NOT_OBTAINED",
+        "scope_boundary": "A09/A10 only development CNY Mock; A11 proves production isolation; A12 is current-candidate revalidation of the existing soft-delete slice. No production or real money capability was run."
       }
     },
     {

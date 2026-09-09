@@ -477,3 +477,11 @@
 - 初次编辑保留了本地旧 main 的既有修改。用户随后明确要求推送远端 main，因此从 `origin/main` 的 `90abbdc49513039fa9218a6ce72d3147fbf1721e` 创建隔离提交，只收录本次六个说明文件、实施计划和本节记录；不包含遗留文档提交、旧 PRD 或其他无关文件。
 - 最新 main 基线及修改后的 `GOCACHE=/private/tmp/porsche-go-build-cache bash ./init.sh`、`go test ./... -count=1`、`go build ./...`、`go vet ./...`（均使用该 GOCACHE）和 `git diff --check` 验证通过。TOML 校验器确认 5 个文件可解析、非说明设置与 Git 原件一致、34 个代码路径存在、文档链接有效；负向探针拒绝损坏 TOML 和 sandbox 模式变化。
 - 未修改业务代码、数据库规范或业务功能状态；未执行生产操作、读取生产凭据或启动 Agent。语法/静态检查不代表当前会话已重新加载角色，也不代表模型执行行为已验证。计划见 `docs/superpowers/plans/2026-09-02-agent-guidance-refresh.md`。
+
+## 2026-09-10：A09–A12 金额 Mock 隔离与软删除复验
+
+- 当前分支先合入后端 `origin/main@fd243c6`。主分支占用 `0011` 后，本地 A07/A08 迁移顺延为 `0012/0013`，runner、校验和、顺序与测试同步更新；合并提交为 `af6fe2d`。
+- A11 新增 404 路由边界，明确 `users.quota.adjust`、用户 `balance-adjustments` 与直接 `balance` PATCH 未进入生产路由；候选为 `258abb4`。A09/A10 的实现全部位于前端开发专用内存 Mock。
+- 当前后端 `go test ./... -count=1`、`GOCACHE=/tmp/porsche-a09-a12-go-cache go build ./...` 与 focused 路由测试通过；A12 的 authz/dto/handler/router/service 定向回归通过。
+- disposable MySQL 8/Redis 7 补验中，合并后的 `0011–0013` up 与 A08 `0013` down 兼容测试通过。后续完整 A08 service fixture 复跑因一次 host mapping 连接失败未闭环，原 A08 真实服务证据仍单独保留，不把本次结果扩写为完整 service PASS。三次本轮容器均由 trap 精确删除，label 检查零残留。
+- 权威矩阵更新为 18 项 `PASS_LIMITED_SCOPE`、8 项阻塞；A09/A10 只代表开发环境 CNY Mock，真实余额、账本、充值、退款与扣费仍未开发。外部后端 `project_manager` 对当前候选的书面确认、生产迁移、部署及生产验收均未执行。
