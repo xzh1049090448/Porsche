@@ -476,6 +476,9 @@ func (s *PublicContentService) transact(ctx context.Context, actorID, expected i
 		requestPayload := publicContentRequestPayload(op, expected, priceGUID, restoreGUID)
 		binding := publicContentIdempotencyBinding(actor.ID, op, key, requestPayload)
 		keyHash := publicContentKeyDigest(key)
+		if e = s.fail("replay_lookup"); e != nil {
+			return errUnavailable("content replay unavailable")
+		}
 		if replay, found, replayErr := findPublicContentReplay(tx, actor.ID, op, keyHash, binding); found || replayErr != nil {
 			out = replay
 			return replayErr

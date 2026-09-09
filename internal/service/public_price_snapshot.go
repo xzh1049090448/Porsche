@@ -272,6 +272,9 @@ func (s *PublicPriceSnapshotService) transact(ctx context.Context, actorID, expe
 		}
 		payload := operation + ":" + prepared.Hash + ":" + strconv.FormatInt(expected, 10) + ":" + strconv.FormatInt(restoreGUID, 10)
 		binding, keyDigest := publicPriceIdempotencyBinding(actor.ID, operation, key, payload), publicPriceIdempotencyKeyDigest(key)
+		if err = s.fail("replay_lookup"); err != nil {
+			return errUnavailable("price snapshot replay unavailable")
+		}
 		if replay, found, conflictErr := findPublicPriceSnapshotReplay(tx, actor.ID, operation, keyDigest, binding); found || conflictErr != nil {
 			out = replay
 			return conflictErr
