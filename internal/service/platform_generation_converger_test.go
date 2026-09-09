@@ -266,6 +266,90 @@ func TestPlatformGenerationConvergerRunPassReturnsScanDependencyError(t *testing
 	}
 }
 
+func TestPlatformGenerationConvergerRunPassReturnsCallerCancellationAfterBenignRecordError(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	w := newPlatformGenerationConvergerTestWorker(
+		func(context.Context, uint64, int64) ([]PlatformGenerationIdentity, uint64, error) {
+			return []PlatformGenerationIdentity{{UserID: 1, GenerationID: generationTestID}}, 0, nil
+		},
+		func(context.Context, PlatformGenerationIdentity, int64) error {
+			cancel()
+			return ErrPlatformGenerationInvalid
+		},
+	)
+	if err := w.RunPass(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("RunPass() error = %v", err)
+	}
+}
+
+func TestPlatformGenerationConvergerRunPassReturnsCallerDeadlineAfterBenignRecordError(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	w := newPlatformGenerationConvergerTestWorker(
+		func(context.Context, uint64, int64) ([]PlatformGenerationIdentity, uint64, error) {
+			return []PlatformGenerationIdentity{{UserID: 1, GenerationID: generationTestID}}, 0, nil
+		},
+		func(dependencyCtx context.Context, _ PlatformGenerationIdentity, _ int64) error {
+			<-dependencyCtx.Done()
+			return ErrPlatformGenerationInvalid
+		},
+	)
+	if err := w.RunPass(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("RunPass() error = %v", err)
+	}
+}
+
+func TestPlatformGenerationConvergerRunPassInternalBudgetRemainsNormalStop(t *testing.T) {
+	w := newPlatformGenerationConvergerTestWorker(
+		func(context.Context, uint64, int64) ([]PlatformGenerationIdentity, uint64, error) {
+			return []PlatformGenerationIdentity{{UserID: 1, GenerationID: generationTestID}}, 0, nil
+		},
+		func(dependencyCtx context.Context, _ PlatformGenerationIdentity, _ int64) error {
+			<-dependencyCtx.Done()
+			return ErrPlatformGenerationInvalid
+		},
+	)
+	w.budget = time.Millisecond
+	if err := w.RunPass(context.Background()); err != nil {
+		t.Fatalf("RunPass() error = %v", err)
+	}
+}
+
+func TestPlatformGenerationConvergerRunPassReturnsCallerCancellationAfterSuccessfulScan(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	w := newPlatformGenerationConvergerTestWorker(
+		func(context.Context, uint64, int64) ([]PlatformGenerationIdentity, uint64, error) {
+			cancel()
+			return nil, 0, nil
+		},
+		func(context.Context, PlatformGenerationIdentity, int64) error {
+			t.Fatal("converge called for empty scan")
+			return nil
+		},
+	)
+	if err := w.RunPass(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("RunPass() error = %v", err)
+	}
+}
+
+func TestPlatformGenerationConvergerRunPassReturnsCallerDeadlineAfterSuccessfulScan(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	w := newPlatformGenerationConvergerTestWorker(
+		func(scanCtx context.Context, _ uint64, _ int64) ([]PlatformGenerationIdentity, uint64, error) {
+			<-scanCtx.Done()
+			return nil, 0, nil
+		},
+		func(context.Context, PlatformGenerationIdentity, int64) error {
+			t.Fatal("converge called for empty scan")
+			return nil
+		},
+	)
+	if err := w.RunPass(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("RunPass() error = %v", err)
+	}
+}
+
 func TestPlatformGenerationConvergerStartRunsImmediatelyAndOnInjectedCadence(t *testing.T) {
 	ticker := newPlatformGenerationConvergerFakeTicker()
 	passes := make(chan struct{}, 3)

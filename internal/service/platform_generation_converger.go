@@ -162,6 +162,12 @@ func (w *PlatformGenerationConverger) RunPass(ctx context.Context) error {
 			return ErrPlatformGenerationControlUnavailable
 		}
 		w.setCursor(next)
+		if callerErr := ctx.Err(); callerErr != nil {
+			return callerErr
+		}
+		if passCtx.Err() != nil {
+			return nil
+		}
 		for _, identity := range identities {
 			if processed >= w.maxKeys || w.elapsedNow().Sub(startedAt) >= w.budget {
 				return nil
@@ -181,6 +187,9 @@ func (w *PlatformGenerationConverger) RunPass(ctx context.Context) error {
 			}
 			processed++
 			err = w.converge(passCtx, identity, nowMillis)
+			if callerErr := ctx.Err(); callerErr != nil {
+				return callerErr
+			}
 			if err == nil || platformGenerationConvergerBenignRecordError(err) {
 				continue
 			}
