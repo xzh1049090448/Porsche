@@ -50,3 +50,20 @@ func TestPublicContentIdempotencyBindingUsesActorOperationKeyAndPayload(t *testi
 		}
 	}
 }
+
+func TestPublicContentAboutTruthGateAndParserReferences(t *testing.T) {
+	d := PublicContentDraft{Revision: 2, Home: "[alpha][model] <a href='/pricing/html'>html</a> `[/pricing/code]`\n\n[model]: /pricing/alpha", About: "100% reliable", Terms: "Terms", Privacy: "Privacy", LegalReviewed: true}
+	price := models.PublicPriceSnapshot{ID: 8, Guid: 80, Version: 4}
+	items := []models.PublicPriceSnapshotItem{{ModelKey: "alpha", UpstreamModelID: "org/alpha", InputPriceUSDPerMillionTokens: "1", OutputPriceUSDPerMillionTokens: "2"}}
+	_, issues := preparePublicContent(d, price, items)
+	if !hasPublicContentIssue(issues, "unsubstantiated_prototype_claim") || !hasPublicContentIssue(issues, "unknown_home_model") {
+		t.Fatalf("issues=%#v", issues)
+	}
+}
+
+func TestPublicContentStableRequestPayloadBinding(t *testing.T) {
+	a := publicContentRequestPayload("publish", 3, "91", 0)
+	if a != publicContentRequestPayload("publish", 3, "91", 0) || a == publicContentRequestPayload("publish", 4, "91", 0) || a == publicContentRequestPayload("publish", 3, "92", 0) {
+		t.Fatal("unstable or incomplete request payload")
+	}
+}

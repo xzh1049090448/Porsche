@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -19,8 +18,6 @@ import (
 )
 
 const PublicContentDocumentLimit = 256 << 10
-
-var publicContentModelLink = regexp.MustCompile(`\]\(/pricing/([a-z][a-z0-9-]{0,127})\)`)
 
 type PublicContentDraft struct {
 	Revision      int64  `json:"revision"`
@@ -203,20 +200,11 @@ func preparePublicContent(d PublicContentDraft, price models.PublicPriceSnapshot
 		}
 	}
 	modelsV := make([]publiccontent.Model, 0, len(items))
-	keys := map[string]bool{}
 	for _, i := range items {
 		modelsV = append(modelsV, publiccontent.Model{ModelKey: i.ModelKey, UpstreamModelID: i.UpstreamModelID, Active: true, Price: publiccontent.Price{Currency: publiccontent.CurrencyUSD, Unit: publiccontent.UnitMillionTokens, Input: i.InputPriceUSDPerMillionTokens, Output: i.OutputPriceUSDPerMillionTokens}})
-		keys[i.ModelKey] = true
 	}
-	refs := []string{}
-	seen := map[string]bool{}
-	for _, m := range publicContentModelLink.FindAllStringSubmatch(d.Home, -1) {
-		if !seen[m[1]] {
-			refs = append(refs, m[1])
-			seen[m[1]] = true
-		}
-	}
-	pub := publiccontent.Publication{Models: modelsV, HomeModelKeys: refs, Documents: []publiccontent.Document{{Kind: publiccontent.DocumentHome, Body: d.Home}, {Kind: publiccontent.DocumentTerms, Body: d.Terms, Reviewed: d.LegalReviewed}, {Kind: publiccontent.DocumentPrivacy, Body: d.Privacy, Reviewed: d.LegalReviewed}}}
+	refs, _ := publiccontent.PublicModelReferences(d.Home)
+	pub := publiccontent.Publication{Models: modelsV, HomeModelKeys: refs, Documents: []publiccontent.Document{{Kind: publiccontent.DocumentHome, Body: d.Home}, {Kind: publiccontent.DocumentAbout, Body: d.About}, {Kind: publiccontent.DocumentTerms, Body: d.Terms, Reviewed: d.LegalReviewed}, {Kind: publiccontent.DocumentPrivacy, Body: d.Privacy, Reviewed: d.LegalReviewed}}}
 	issues = append(issues, publiccontent.ValidatePublication(pub)...)
 	docs, sanitizeIssues := sanitizeContentDocuments(d)
 	issues = append(issues, sanitizeIssues...)
@@ -273,6 +261,13 @@ func (s *PublicContentService) transact(ctx context.Context, actorID, expected i
 		if e != nil {
 			return e
 		}
+		requestPayload := publicContentRequestPayload(op, expected, priceGUID, restoreGUID)
+		binding := publicContentIdempotencyBinding(actor.ID, op, key, requestPayload)
+		keyHash := publicContentKeyDigest(key)
+		if replay, found, replayErr := findPublicContentReplay(tx, actor.ID, op, keyHash, binding); found || replayErr != nil {
+			out = replay
+			return replayErr
+		}
 		draft, e := lockOrCreatePublicContentDraft(tx, actor.ID, s.now, s.nextGUID)
 		if e != nil {
 			return e
@@ -281,7 +276,7 @@ func (s *PublicContentService) transact(ctx context.Context, actorID, expected i
 		var restoreDraft *PublicContentDraft
 		if op == "restore" {
 			var source models.PublicContentRelease
-			if e = tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("guid=? AND document_kind=? AND is_deleted=0", restoreGUID, models.PublicContentDocumentSite).First(&source).Error; e == gorm.ErrRecordNotFound {
+			if e = tx.Where("guid=? AND document_kind=? AND is_deleted=0", restoreGUID, models.PublicContentDocumentSite).First(&source).Error; e == gorm.ErrRecordNotFound {
 				return errNotFound("content release not found")
 			}
 			if e != nil {
@@ -328,13 +323,6 @@ func (s *PublicContentService) transact(ctx context.Context, actorID, expected i
 		if len(issues) > 0 {
 			return errUnprocessable("public content publication validation failed")
 		}
-		payloadSig := op + ":" + prepared.Hash + ":" + strconv.FormatInt(expected, 10) + ":" + strconv.FormatInt(restoreGUID, 10) + ":" + strconv.FormatInt(price.Guid, 10)
-		binding := publicContentIdempotencyBinding(actor.ID, op, key, payloadSig)
-		keyHash := publicContentKeyDigest(key)
-		if replay, found, re := findPublicContentReplay(tx, actor.ID, op, keyHash, binding); found || re != nil {
-			out = replay
-			return re
-		}
 		if draft.Revision != expected {
 			return errConflict("public content draft revision conflict")
 		}
@@ -373,7 +361,7 @@ func (s *PublicContentService) transact(ctx context.Context, actorID, expected i
 		if e = tx.Create(&job).Error; e != nil {
 			return errUnavailable("render job persistence unavailable")
 		}
-		detail := models.JSONMap{"idempotency_key_hash": keyHash, "idempotency_binding": binding, "payload_hash": prepared.Hash, "content_release_id": rel.ID, "version": rel.Version, "operation": op, "price_snapshot_guid": strconv.FormatInt(price.Guid, 10)}
+		detail := models.JSONMap{"idempotency_key_hash": keyHash, "idempotency_binding": binding, "payload_hash": requestPayload, "content_hash": prepared.Hash, "content_release_id": rel.ID, "version": rel.Version, "operation": op, "price_snapshot_guid": strconv.FormatInt(price.Guid, 10)}
 		if e = s.fail("audit"); e != nil {
 			return errUnavailable("audit persistence unavailable")
 		}
@@ -445,6 +433,16 @@ func publicContentIdempotencyBinding(actor int64, op, key, payload string) strin
 	s := sha256.Sum256([]byte(strconv.FormatInt(actor, 10) + "\x00" + op + "\x00" + key + "\x00" + payload))
 	return hex.EncodeToString(s[:])
 }
+func publicContentRequestPayload(op string, expected int64, priceGUID string, restoreGUID int64) string {
+	b, _ := json.Marshal(struct {
+		Operation          string `json:"operation"`
+		ExpectedRevision   int64  `json:"expected_revision"`
+		PriceReleaseGUID   string `json:"price_release_guid,omitempty"`
+		RestoreReleaseGUID int64  `json:"restore_release_guid,omitempty"`
+	}{op, expected, priceGUID, restoreGUID})
+	s := sha256.Sum256(b)
+	return hex.EncodeToString(s[:])
+}
 func publicContentKeyDigest(key string) string {
 	s := sha256.Sum256([]byte(key))
 	return hex.EncodeToString(s[:])
@@ -483,26 +481,4 @@ func mapPublicContentError(e error) error {
 		return e
 	}
 	return errUnavailable("public content unavailable")
-}
-func (s *PublicContentService) loadPrice(ctx context.Context, guid string, lock bool) (models.PublicPriceSnapshot, []models.PublicPriceSnapshotItem, error) {
-	n, e := strconv.ParseInt(guid, 10, 64)
-	if e != nil || n <= 0 {
-		return models.PublicPriceSnapshot{}, nil, errBadRequest("invalid price snapshot guid")
-	}
-	q := s.db.WithContext(ctx)
-	if lock {
-		q = q.Clauses(clause.Locking{Strength: "UPDATE"})
-	}
-	var p models.PublicPriceSnapshot
-	if e = q.Where("guid=? AND is_deleted=0", n).First(&p).Error; e == gorm.ErrRecordNotFound {
-		return p, nil, errNotFound("price snapshot not found")
-	}
-	if e != nil {
-		return p, nil, errUnavailable("price snapshot unavailable")
-	}
-	var items []models.PublicPriceSnapshotItem
-	if e = s.db.WithContext(ctx).Where("snapshot_id=? AND is_deleted=0", p.ID).Find(&items).Error; e != nil {
-		return p, nil, errUnavailable("price snapshot unavailable")
-	}
-	return p, items, nil
 }

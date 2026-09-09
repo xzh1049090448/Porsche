@@ -2,9 +2,33 @@ package publiccontent
 
 import (
 	"net/url"
+	"reflect"
 	"strings"
 	"testing"
 )
+
+func TestPublicModelReferencesUseSanitizerCommonMarkAndHTMLParser(t *testing.T) {
+	raw := "[inline](/pricing/alpha) [ref][m] [collapsed][] [shortcut] <a href=\"/pricing/html\">h</a> `[/pricing/code]`\n\n[m]: /pricing/reference\n[collapsed]: /pricing/collapsed\n[shortcut]: /pricing/shortcut"
+	got, issues := PublicModelReferences(raw)
+	if len(issues) != 0 {
+		t.Fatal(issues)
+	}
+	want := []string{"alpha", "collapsed", "html", "reference", "shortcut"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got=%#v want=%#v", got, want)
+	}
+}
+
+func TestPublicModelReferencesNormalizesExactPathsAndIgnoresNonModels(t *testing.T) {
+	raw := "[encoded](/pricing/%61lpha) [query](/pricing/alpha?q=1) [nested](/pricing/alpha/more) [external](https://example.test/pricing/alpha) <https://example.test/pricing/alpha>"
+	got, issues := PublicModelReferences(raw)
+	if len(issues) != 0 {
+		t.Fatal(issues)
+	}
+	if !reflect.DeepEqual(got, []string{"alpha"}) {
+		t.Fatalf("got=%#v", got)
+	}
+}
 
 func TestSanitizeMarkdownPreservesSafeTextMarkdownAndControlledAssets(t *testing.T) {
 	raw := "# Hello\n\n[Terms](/terms)\n\n![Logo](/assets/logo.svg)\n\n<strong>Safe</strong>"

@@ -40,6 +40,7 @@ type DocumentKind string
 
 const (
 	DocumentHome    DocumentKind = "home"
+	DocumentAbout   DocumentKind = "about"
 	DocumentTerms   DocumentKind = "terms"
 	DocumentPrivacy DocumentKind = "privacy"
 )
