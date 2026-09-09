@@ -904,3 +904,712 @@ func TestPlatformGenerationStoreRejectsRecordWhoseGenerationIDDoesNotMatchKey(t 
 		t.Fatalf("duplicate mismatched record result=%#v error=%v", result, err)
 	}
 }
+
+func TestPlatformGenerationCancelOrCreateCreatesOneCanonicalTombstone(t *testing.T) {
+	store, client := openTestPlatformGenerationStore(t)
+	const userID int64 = 930001
+	const generationID = "80000000-0000-4000-8000-000000000001"
+	key := store.key(userID, generationID)
+	preparePlatformGenerationTestKey(t, client, key)
+
+	start := make(chan struct{})
+	results := make(chan PlatformGenerationCancelDecision, 12)
+	errors := make(chan error, 12)
+	var wg sync.WaitGroup
+	for range 12 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			decision, err := store.CancelOrCreate(context.Background(), userID, generationID, 1000)
+			results <- decision
+			errors <- err
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+	close(errors)
+	for err := range errors {
+		if err != nil {
+			t.Fatalf("CancelOrCreate error=%v", err)
+		}
+	}
+	created := 0
+	for decision := range results {
+		if decision.CreatedTombstone {
+			created++
+		}
+		if decision.Transitioned || decision.Snapshot.State != PlatformGenerationStateCancelled {
+			t.Fatalf("unexpected cancel decision=%#v", decision)
+		}
+	}
+	if created != 1 {
+		t.Fatalf("created tombstones=%d, want 1", created)
+	}
+	raw, err := client.Get(context.Background(), key).Result()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"generation_id":"` + generationID + `","models":[],"state":3,"model_states":{},"created_at_ms":1000,"updated_at_ms":1000}`
+	if raw != want {
+		t.Fatalf("tombstone JSON=%s, want=%s", raw, want)
+	}
+	ttl := requirePositivePlatformGenerationTTL(t, client, key)
+	if ttl <= 23*time.Hour || ttl > platformGenerationTTL {
+		t.Fatalf("tombstone TTL=%v, want approximately 24h", ttl)
+	}
+}
+
+func TestPlatformGenerationCancelBeforeClaimEnrichesOnlyMatchingIdentity(t *testing.T) {
+	store, client := openTestPlatformGenerationStore(t)
+	input := PlatformGenerationClaimInput{UserID: 930002, GenerationID: "80000000-0000-4000-8000-000000000002", Mode: PlatformGenerationModeCompare, Models: []string{"a", "b"}, NowMillis: 2000}
+	key := store.key(input.UserID, input.GenerationID)
+	preparePlatformGenerationTestKey(t, client, key)
+	if _, err := store.CancelOrCreate(context.Background(), input.UserID, input.GenerationID, 1000); err != nil {
+		t.Fatal(err)
+	}
+	before := requirePositivePlatformGenerationTTL(t, client, key)
+
+	result, err := store.Claim(context.Background(), input)
+	if !errors.Is(err, ErrPlatformGenerationConflict) || !result.Duplicate || result.LeaseToken != "" {
+		t.Fatalf("enriched Claim=%#v error=%v", result, err)
+	}
+	if result.Snapshot.State != PlatformGenerationStateCancelled || result.Snapshot.Mode != input.Mode || !reflect.DeepEqual(result.Snapshot.Models, input.Models) || result.Snapshot.CreatedAtMillis != 1000 || result.Snapshot.UpdatedAtMillis != 1000 {
+		t.Fatalf("enriched snapshot=%#v", result.Snapshot)
+	}
+	for _, model := range input.Models {
+		if state := result.Snapshot.ModelStates[model]; state.State != PlatformGenerationStateCancelled || state.Seq != 0 || state.ErrorCode != "" || state.AssistantMessageGUID != "" {
+			t.Fatalf("model %q state=%#v", model, state)
+		}
+	}
+	if result.Snapshot.LeaseOwnerSHA256 != "" || result.Snapshot.LeaseUntilMillis != 0 {
+		t.Fatalf("enriched tombstone retained lease: %#v", result.Snapshot)
+	}
+	requirePlatformGenerationTTLNotIncreased(t, client, key, before)
+
+	different := input
+	different.Models = []string{"a", "c"}
+	different.NowMillis = 3000
+	second, err := store.Claim(context.Background(), different)
+	if !errors.Is(err, ErrPlatformGenerationConflict) || !second.Duplicate || !reflect.DeepEqual(second.Snapshot.Models, input.Models) {
+		t.Fatalf("different identity overwrote tombstone: result=%#v error=%v", second, err)
+	}
+}
+
+func TestPlatformGenerationCancelRunningTransitionsOnlyOnceAndKeepsTTL(t *testing.T) {
+	store, client := openTestPlatformGenerationStore(t)
+	input := PlatformGenerationClaimInput{UserID: 930003, GenerationID: "80000000-0000-4000-8000-000000000003", Mode: PlatformGenerationModeSingle, Models: []string{"a"}, NowMillis: 1000}
+	key := store.key(input.UserID, input.GenerationID)
+	preparePlatformGenerationTestKey(t, client, key)
+	claim := claimTestGeneration(t, store, input)
+	before := requirePositivePlatformGenerationTTL(t, client, key)
+
+	start := make(chan struct{})
+	results := make(chan PlatformGenerationCancelDecision, 12)
+	errors := make(chan error, 12)
+	var wg sync.WaitGroup
+	for range 12 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			decision, err := store.CancelOrCreate(context.Background(), input.UserID, input.GenerationID, 1001)
+			results <- decision
+			errors <- err
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+	close(errors)
+	for err := range errors {
+		if err != nil {
+			t.Fatalf("CancelOrCreate error=%v", err)
+		}
+	}
+	winners := 0
+	for decision := range results {
+		if decision.Transitioned {
+			winners++
+		}
+		if decision.CreatedTombstone || decision.Snapshot.State != PlatformGenerationStateCancelling || decision.Snapshot.LeaseOwnerSHA256 != "" || decision.Snapshot.LeaseUntilMillis != 0 {
+			t.Fatalf("unexpected cancel decision=%#v", decision)
+		}
+	}
+	if winners != 1 {
+		t.Fatalf("transition winners=%d, want 1", winners)
+	}
+	if claim.LeaseToken == "" {
+		t.Fatal("claim did not return raw lease token")
+	}
+	requirePlatformGenerationTTLNotIncreased(t, client, key, before)
+}
+
+func TestPlatformGenerationLeaseRenewalValidatesRawTokenBeforeRedis(t *testing.T) {
+	store, err := NewPlatformGenerationStore(redis.NewClient(&redis.Options{Addr: "127.0.0.1:1"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	for _, token := range []string{"", "x", strings.Repeat("a", 44), "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"} {
+		if _, err := store.RenewLease(context.Background(), 1, generationTestID, token, 1); !errors.Is(err, ErrPlatformGenerationInvalid) {
+			t.Fatalf("RenewLease token=%q error=%v, want invalid", token, err)
+		}
+	}
+	validToken := base64.RawURLEncoding.EncodeToString(make([]byte, platformGenerationLeaseBytes))
+	if _, err := store.RenewLease(context.Background(), 1, generationTestID, validToken, platformSSEV2MaxSafeInteger-platformGenerationLeaseDuration.Milliseconds()+1); !errors.Is(err, ErrPlatformGenerationInvalid) {
+		t.Fatalf("RenewLease unsafe deadline error=%v, want invalid", err)
+	}
+}
+
+func TestPlatformGenerationLeaseRenewalUsesDigestAndPreservesUpdatedAtAndTTL(t *testing.T) {
+	store, client := openTestPlatformGenerationStore(t)
+	input := PlatformGenerationClaimInput{UserID: 930010, GenerationID: "81000000-0000-4000-8000-000000000010", Mode: PlatformGenerationModeSingle, Models: []string{"a"}, NowMillis: 1000}
+	key := store.key(input.UserID, input.GenerationID)
+	preparePlatformGenerationTestKey(t, client, key)
+	claim := claimTestGeneration(t, store, input)
+	before := requirePositivePlatformGenerationTTL(t, client, key)
+
+	renewed, err := store.RenewLease(context.Background(), input.UserID, input.GenerationID, claim.LeaseToken, 2000)
+	if err != nil || renewed.LeaseUntilMillis != 32000 || renewed.CreatedAtMillis != 1000 || renewed.UpdatedAtMillis != 1000 {
+		t.Fatalf("renewed=%#v error=%v", renewed, err)
+	}
+	if renewed.LeaseOwnerSHA256 != platformGenerationLeaseDigest(claim.LeaseToken) || strings.Contains(fmt.Sprint(renewed), claim.LeaseToken) {
+		t.Fatalf("lease token was not represented only by digest: %#v", renewed)
+	}
+	requirePlatformGenerationTTLNotIncreased(t, client, key, before)
+	raw, err := client.Get(context.Background(), key).Result()
+	if err != nil || strings.Contains(raw, claim.LeaseToken) {
+		t.Fatalf("stored raw lease token: raw=%s error=%v", raw, err)
+	}
+
+	authoritative, err := store.RenewLease(context.Background(), input.UserID, input.GenerationID, claim.LeaseToken+"x", 2001)
+	if !errors.Is(err, ErrPlatformGenerationInvalid) || authoritative.GenerationID != "" {
+		t.Fatalf("malformed token result=%#v error=%v", authoritative, err)
+	}
+	wrongRaw := make([]byte, platformGenerationLeaseBytes)
+	wrongRaw[0] = 1
+	wrong := base64.RawURLEncoding.EncodeToString(wrongRaw)
+	authoritative, err = store.RenewLease(context.Background(), input.UserID, input.GenerationID, wrong, 2001)
+	if !errors.Is(err, ErrPlatformGenerationConflict) || authoritative.LeaseUntilMillis != renewed.LeaseUntilMillis {
+		t.Fatalf("wrong token authority=%#v error=%v", authoritative, err)
+	}
+}
+
+func TestPlatformGenerationLeaseRenewalRejectsLateLegacyAndNonRunningRecords(t *testing.T) {
+	store, client := openTestPlatformGenerationStore(t)
+	ctx := context.Background()
+	token := base64.RawURLEncoding.EncodeToString(make([]byte, platformGenerationLeaseBytes))
+	digest := platformGenerationLeaseDigest(token)
+	tests := []struct {
+		name     string
+		userID   int64
+		snapshot PlatformGenerationSnapshot
+		now      int64
+	}{
+		{"late", 930011, PlatformGenerationSnapshot{GenerationID: "81000000-0000-4000-8000-000000000011", Mode: PlatformGenerationModeSingle, Models: []string{"a"}, State: PlatformGenerationStateRunning, ModelStates: map[string]PlatformGenerationModel{"a": {State: PlatformGenerationStateRunning}}, CreatedAtMillis: 1000, UpdatedAtMillis: 1000, LeaseOwnerSHA256: digest, LeaseUntilMillis: 31000}, 31001},
+		{"legacy", 930012, PlatformGenerationSnapshot{GenerationID: "81000000-0000-4000-8000-000000000012", Mode: PlatformGenerationModeSingle, Models: []string{"a"}, State: PlatformGenerationStateRunning, ModelStates: map[string]PlatformGenerationModel{"a": {State: PlatformGenerationStateRunning}}, CreatedAtMillis: 1000, UpdatedAtMillis: 1000}, 2000},
+		{"cancelled", 930013, PlatformGenerationSnapshot{GenerationID: "81000000-0000-4000-8000-000000000013", Mode: PlatformGenerationModeSingle, Models: []string{"a"}, State: PlatformGenerationStateCancelled, ModelStates: map[string]PlatformGenerationModel{"a": {State: PlatformGenerationStateCancelled}}, CreatedAtMillis: 1000, UpdatedAtMillis: 1001}, 2000},
+		{"committing", 930014, PlatformGenerationSnapshot{GenerationID: "81000000-0000-4000-8000-000000000014", Mode: PlatformGenerationModeSingle, Models: []string{"a"}, State: PlatformGenerationStateCommitting, ModelStates: map[string]PlatformGenerationModel{"a": {State: PlatformGenerationStateCompleted}}, CreatedAtMillis: 1000, UpdatedAtMillis: 1001}, 2000},
+		{"completed", 930015, PlatformGenerationSnapshot{GenerationID: "81000000-0000-4000-8000-000000000015", Mode: PlatformGenerationModeSingle, Models: []string{"a"}, State: PlatformGenerationStateCompleted, ModelStates: map[string]PlatformGenerationModel{"a": {State: PlatformGenerationStateCompleted, AssistantMessageGUID: "900000000000000015"}}, CreatedAtMillis: 1000, UpdatedAtMillis: 1001}, 2000},
+		{"failed", 930016, PlatformGenerationSnapshot{GenerationID: "81000000-0000-4000-8000-000000000016", Mode: PlatformGenerationModeSingle, Models: []string{"a"}, State: PlatformGenerationStateFailed, ModelStates: map[string]PlatformGenerationModel{"a": {State: PlatformGenerationStateFailed, ErrorCode: "internal_error"}}, CreatedAtMillis: 1000, UpdatedAtMillis: 1001, ErrorCode: "internal_error"}, 2000},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			key := store.key(test.userID, test.snapshot.GenerationID)
+			preparePlatformGenerationTestKey(t, client, key)
+			raw, err := encodePlatformGeneration(test.snapshot)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := client.Set(ctx, key, raw, platformGenerationTTL).Err(); err != nil {
+				t.Fatal(err)
+			}
+			before := requirePositivePlatformGenerationTTL(t, client, key)
+			authoritative, err := store.RenewLease(ctx, test.userID, test.snapshot.GenerationID, token, test.now)
+			if !errors.Is(err, ErrPlatformGenerationConflict) || !reflect.DeepEqual(authoritative, test.snapshot) {
+				t.Fatalf("RenewLease authority=%#v error=%v", authoritative, err)
+			}
+			requirePlatformGenerationTTLNotIncreased(t, client, key, before)
+		})
+	}
+}
+
+func TestPlatformGenerationExpiredRunningFailsOnlyRemainingModels(t *testing.T) {
+	store, client := openTestPlatformGenerationStore(t)
+	ctx := context.Background()
+	const userID int64 = 930020
+	const generationID = "82000000-0000-4000-8000-000000000020"
+	snapshot := PlatformGenerationSnapshot{
+		GenerationID: generationID, Mode: PlatformGenerationModeCompare, Models: []string{"done", "failed", "running"}, State: PlatformGenerationStateRunning,
+		ModelStates: map[string]PlatformGenerationModel{
+			"done":    {Seq: 2, State: PlatformGenerationStateCompleted},
+			"failed":  {Seq: 1, State: PlatformGenerationStateFailed, ErrorCode: "timeout"},
+			"running": {Seq: 3, State: PlatformGenerationStateRunning},
+		},
+		CreatedAtMillis: 1000, UpdatedAtMillis: 2000, LeaseOwnerSHA256: strings.Repeat("a", 64), LeaseUntilMillis: 32000,
+	}
+	key := store.key(userID, generationID)
+	preparePlatformGenerationTestKey(t, client, key)
+	raw, err := encodePlatformGeneration(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Set(ctx, key, raw, platformGenerationTTL).Err(); err != nil {
+		t.Fatal(err)
+	}
+	before := requirePositivePlatformGenerationTTL(t, client, key)
+	failed, err := store.FailExpiredRunning(ctx, userID, generationID, 32000)
+	if err != nil || failed.State != PlatformGenerationStateFailed || failed.ErrorCode != "internal_error" || failed.UpdatedAtMillis != 32000 {
+		t.Fatalf("expired snapshot=%#v error=%v", failed, err)
+	}
+	if failed.ModelStates["done"] != snapshot.ModelStates["done"] || failed.ModelStates["failed"] != snapshot.ModelStates["failed"] || failed.ModelStates["running"].State != PlatformGenerationStateFailed || failed.ModelStates["running"].ErrorCode != "internal_error" {
+		t.Fatalf("expired model states=%#v", failed.ModelStates)
+	}
+	if failed.LeaseOwnerSHA256 != "" || failed.LeaseUntilMillis != 0 {
+		t.Fatalf("expired lease retained: %#v", failed)
+	}
+	requirePlatformGenerationTTLNotIncreased(t, client, key, before)
+}
+
+func TestPlatformGenerationExpiredRunningConflictsWithActiveLeaseAndExpiresLegacyOrphan(t *testing.T) {
+	store, client := openTestPlatformGenerationStore(t)
+	ctx := context.Background()
+	input := PlatformGenerationClaimInput{UserID: 930021, GenerationID: "82000000-0000-4000-8000-000000000021", Mode: PlatformGenerationModeSingle, Models: []string{"a"}, NowMillis: 1000}
+	key := store.key(input.UserID, input.GenerationID)
+	preparePlatformGenerationTestKey(t, client, key)
+	claim := claimTestGeneration(t, store, input)
+	authoritative, err := store.FailExpiredRunning(ctx, input.UserID, input.GenerationID, 30999)
+	if !errors.Is(err, ErrPlatformGenerationConflict) || authoritative.LeaseOwnerSHA256 != platformGenerationLeaseDigest(claim.LeaseToken) {
+		t.Fatalf("active authority=%#v error=%v", authoritative, err)
+	}
+
+	legacyID := "82000000-0000-4000-8000-000000000022"
+	legacy := PlatformGenerationSnapshot{GenerationID: legacyID, Mode: PlatformGenerationModeSingle, Models: []string{"a"}, State: PlatformGenerationStateRunning, ModelStates: map[string]PlatformGenerationModel{"a": {State: PlatformGenerationStateRunning}}, CreatedAtMillis: 1000, UpdatedAtMillis: 1000}
+	legacyKey := store.key(input.UserID, legacyID)
+	preparePlatformGenerationTestKey(t, client, legacyKey)
+	raw, err := encodePlatformGeneration(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Set(ctx, legacyKey, raw, platformGenerationTTL).Err(); err != nil {
+		t.Fatal(err)
+	}
+	if expired, err := store.FailExpiredRunning(ctx, input.UserID, legacyID, 1000); err != nil || expired.State != PlatformGenerationStateFailed {
+		t.Fatalf("legacy expiry=%#v error=%v", expired, err)
+	}
+}
+
+func TestPlatformGenerationExpiredRunningRejectsClockRegressionWithoutMutation(t *testing.T) {
+	store, client := openTestPlatformGenerationStore(t)
+	ctx := context.Background()
+	const userID int64 = 930023
+	const generationID = "82000000-0000-4000-8000-000000000023"
+	snapshot := PlatformGenerationSnapshot{GenerationID: generationID, Mode: PlatformGenerationModeSingle, Models: []string{"a"}, State: PlatformGenerationStateRunning, ModelStates: map[string]PlatformGenerationModel{"a": {State: PlatformGenerationStateRunning}}, CreatedAtMillis: 1000, UpdatedAtMillis: 2000}
+	key := store.key(userID, generationID)
+	preparePlatformGenerationTestKey(t, client, key)
+	raw, err := encodePlatformGeneration(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Set(ctx, key, raw, platformGenerationTTL).Err(); err != nil {
+		t.Fatal(err)
+	}
+	authoritative, err := store.FailExpiredRunning(ctx, userID, generationID, 1999)
+	if !errors.Is(err, ErrPlatformGenerationConflict) || !reflect.DeepEqual(authoritative, snapshot) {
+		t.Fatalf("clock regression authority=%#v error=%v", authoritative, err)
+	}
+	if stored, err := client.Get(ctx, key).Result(); err != nil || stored != raw {
+		t.Fatalf("clock regression mutated record: raw=%s error=%v", stored, err)
+	}
+}
+
+func TestPlatformGenerationLeaseRenewVersusExpireHasOneAuthority(t *testing.T) {
+	store, client := openTestPlatformGenerationStore(t)
+	ctx := context.Background()
+	for iteration := 0; iteration < 24; iteration++ {
+		generationID := fmt.Sprintf("83000000-0000-4000-8000-%012x", iteration+1)
+		input := PlatformGenerationClaimInput{UserID: 930030 + int64(iteration), GenerationID: generationID, Mode: PlatformGenerationModeSingle, Models: []string{"a"}, NowMillis: 1000}
+		key := store.key(input.UserID, generationID)
+		preparePlatformGenerationTestKey(t, client, key)
+		claim := claimTestGeneration(t, store, input)
+
+		start := make(chan struct{})
+		type outcome struct {
+			snapshot PlatformGenerationSnapshot
+			err      error
+		}
+		outcomes := make(chan outcome, 2)
+		go func() {
+			<-start
+			snapshot, err := store.RenewLease(ctx, input.UserID, generationID, claim.LeaseToken, 31000)
+			outcomes <- outcome{snapshot, err}
+		}()
+		go func() {
+			<-start
+			snapshot, err := store.FailExpiredRunning(ctx, input.UserID, generationID, 31000)
+			outcomes <- outcome{snapshot, err}
+		}()
+		close(start)
+		first, second := <-outcomes, <-outcomes
+		winners := 0
+		for _, result := range []outcome{first, second} {
+			if result.err == nil {
+				winners++
+			} else if !errors.Is(result.err, ErrPlatformGenerationConflict) {
+				t.Fatalf("iteration %d unexpected error=%v snapshot=%#v", iteration, result.err, result.snapshot)
+			}
+		}
+		if winners != 1 {
+			t.Fatalf("iteration %d winners=%d first=%#v second=%#v", iteration, winners, first, second)
+		}
+		authoritative, err := store.Get(ctx, input.UserID, generationID)
+		if err != nil || (authoritative.State == PlatformGenerationStateRunning && authoritative.LeaseUntilMillis != 61000) || (authoritative.State != PlatformGenerationStateRunning && authoritative.State != PlatformGenerationStateFailed) {
+			t.Fatalf("iteration %d authority=%#v error=%v", iteration, authoritative, err)
+		}
+	}
+}
+
+func TestPlatformGenerationCancelVersusBeginCommitHasOneWinner(t *testing.T) {
+	store, client := openTestPlatformGenerationStore(t)
+	ctx := context.Background()
+	for iteration := 0; iteration < 24; iteration++ {
+		generationID := fmt.Sprintf("84000000-0000-4000-8000-%012x", iteration+1)
+		input := PlatformGenerationClaimInput{UserID: 930060 + int64(iteration), GenerationID: generationID, Mode: PlatformGenerationModeSingle, Models: []string{"a"}, NowMillis: 1000}
+		preparePlatformGenerationTestKey(t, client, store.key(input.UserID, generationID))
+		claimTestGeneration(t, store, input)
+		if _, err := store.MarkModelDone(ctx, input.UserID, generationID, "a", 0, 1001); err != nil {
+			t.Fatal(err)
+		}
+
+		start := make(chan struct{})
+		cancelResults := make(chan struct {
+			decision PlatformGenerationCancelDecision
+			err      error
+		}, 1)
+		commitResults := make(chan error, 1)
+		go func() {
+			<-start
+			decision, err := store.CancelOrCreate(ctx, input.UserID, generationID, 1002)
+			cancelResults <- struct {
+				decision PlatformGenerationCancelDecision
+				err      error
+			}{decision, err}
+		}()
+		go func() {
+			<-start
+			_, err := store.BeginCommit(ctx, input.UserID, generationID, 1002)
+			commitResults <- err
+		}()
+		close(start)
+		cancel := <-cancelResults
+		commitErr := <-commitResults
+		winners := 0
+		if cancel.err == nil && cancel.decision.Transitioned {
+			winners++
+		}
+		if commitErr == nil {
+			winners++
+		}
+		if winners != 1 || (cancel.err != nil && !errors.Is(cancel.err, ErrPlatformGenerationConflict)) || (commitErr != nil && !errors.Is(commitErr, ErrPlatformGenerationConflict)) {
+			t.Fatalf("iteration %d cancel=%#v commitErr=%v winners=%d", iteration, cancel, commitErr, winners)
+		}
+	}
+}
+
+func TestPlatformGenerationCancelFailsClosedOnMalformedRecordAndSanitizesRedisError(t *testing.T) {
+	store, client := openTestPlatformGenerationStore(t)
+	ctx := context.Background()
+	const userID int64 = 930090
+	const generationID = "85000000-0000-4000-8000-000000000090"
+	key := store.key(userID, generationID)
+	preparePlatformGenerationTestKey(t, client, key)
+	malformed := `{"generation_id":"` + generationID + `","mode":1,"models":["a"],"state":1,"model_states":{},"created_at_ms":1000,"updated_at_ms":1000}`
+	if err := client.Set(ctx, key, malformed, time.Hour).Err(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CancelOrCreate(ctx, userID, generationID, 1001); !errors.Is(err, ErrPlatformGenerationInvalid) {
+		t.Fatalf("malformed CancelOrCreate error=%v, want invalid", err)
+	}
+	if raw, err := client.Get(ctx, key).Result(); err != nil || raw != malformed {
+		t.Fatalf("malformed record mutated: raw=%s error=%v", raw, err)
+	}
+
+	disconnected, err := NewPlatformGenerationStore(redis.NewClient(&redis.Options{Addr: "127.0.0.1:1"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = disconnected.Close() }()
+	_, err = disconnected.CancelOrCreate(ctx, userID, generationID, 1001)
+	if err != ErrPlatformGenerationUnavailable || err.Error() != "Redis generation store is unavailable" {
+		t.Fatalf("disconnected error=%q, want exact sanitized sentinel", err)
+	}
+}
+
+func TestPlatformGenerationCancelConvergesAtThirtySecondBoundary(t *testing.T) {
+	store, client := openTestPlatformGenerationStore(t)
+	ctx := context.Background()
+	const userID int64 = 930100
+	const generationID = "86000000-0000-4000-8000-000000000100"
+	snapshot := PlatformGenerationSnapshot{
+		GenerationID: generationID, Mode: PlatformGenerationModeCompare, Models: []string{"done", "failed", "running"}, State: PlatformGenerationStateCancelling,
+		ModelStates: map[string]PlatformGenerationModel{
+			"done":    {Seq: 2, State: PlatformGenerationStateCompleted},
+			"failed":  {Seq: 1, State: PlatformGenerationStateFailed, ErrorCode: "timeout"},
+			"running": {Seq: 3, State: PlatformGenerationStateRunning},
+		},
+		CreatedAtMillis: 1000, UpdatedAtMillis: 2000,
+	}
+	key := store.key(userID, generationID)
+	preparePlatformGenerationTestKey(t, client, key)
+	raw, err := encodePlatformGeneration(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Set(ctx, key, raw, platformGenerationTTL).Err(); err != nil {
+		t.Fatal(err)
+	}
+	before := requirePositivePlatformGenerationTTL(t, client, key)
+	authoritative, err := store.ConvergeStaleCancelling(ctx, userID, generationID, 31999)
+	if !errors.Is(err, ErrPlatformGenerationConflict) || !reflect.DeepEqual(authoritative, snapshot) {
+		t.Fatalf("29999ms authority=%#v error=%v", authoritative, err)
+	}
+	converged, err := store.ConvergeStaleCancelling(ctx, userID, generationID, 32000)
+	if err != nil || converged.State != PlatformGenerationStateCancelled || converged.UpdatedAtMillis != 32000 {
+		t.Fatalf("30000ms convergence=%#v error=%v", converged, err)
+	}
+	if converged.ModelStates["done"] != snapshot.ModelStates["done"] || converged.ModelStates["failed"] != snapshot.ModelStates["failed"] || converged.ModelStates["running"].State != PlatformGenerationStateCancelled {
+		t.Fatalf("converged models=%#v", converged.ModelStates)
+	}
+	requirePlatformGenerationTTLNotIncreased(t, client, key, before)
+}
+
+func TestPlatformGenerationScanContinuesCursorAndStrictlyParsesKeys(t *testing.T) {
+	store, client := openTestPlatformGenerationStore(t)
+	ctx := context.Background()
+	valid := make(map[PlatformGenerationIdentity]struct{})
+	keys := make([]string, 0, 80)
+	for index := 1; index <= 64; index++ {
+		identity := PlatformGenerationIdentity{UserID: 940000 + int64(index), GenerationID: fmt.Sprintf("87000000-0000-4000-8000-%012x", index)}
+		valid[identity] = struct{}{}
+		keys = append(keys, store.key(identity.UserID, identity.GenerationID))
+	}
+	malformed := []string{
+		platformGenerationPrefix + "0:" + generationTestID,
+		platformGenerationPrefix + "+1:" + generationTestID,
+		platformGenerationPrefix + "-1:" + generationTestID,
+		platformGenerationPrefix + "01:" + generationTestID,
+		platformGenerationPrefix + "9223372036854775808:" + generationTestID,
+		platformGenerationPrefix + "1:" + generationTestID + ":extra",
+		platformGenerationPrefix + "1:" + strings.ToUpper(generationTestID),
+		platformGenerationPrefix + "1:not-a-uuid",
+	}
+	keys = append(keys, malformed...)
+	unrelated := "porsche:platform:generation:v20:1:" + generationTestID
+	keys = append(keys, unrelated)
+	if err := client.MSet(ctx, func() []any {
+		values := make([]any, 0, len(keys)*2)
+		for _, key := range keys {
+			values = append(values, key, "sentinel")
+		}
+		return values
+	}()...).Err(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := client.Del(context.Background(), keys...).Err(); err != nil {
+			t.Errorf("scan key cleanup: %v", err)
+		}
+	})
+
+	found := make(map[PlatformGenerationIdentity]int)
+	cursor := uint64(0)
+	calls := 0
+	for {
+		identities, next, err := store.ScanGenerationKeys(ctx, cursor, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		calls++
+		for _, identity := range identities {
+			if _, ok := valid[identity]; !ok {
+				continue
+			}
+			found[identity]++
+		}
+		cursor = next
+		if cursor == 0 {
+			break
+		}
+		if calls > 10000 {
+			t.Fatal("SCAN cursor did not terminate")
+		}
+	}
+	if calls < 2 || len(found) != len(valid) {
+		t.Fatalf("scan calls=%d identities=%d want=%d", calls, len(found), len(valid))
+	}
+	for identity, occurrences := range found {
+		if occurrences != 1 {
+			t.Fatalf("identity=%#v occurrences=%d", identity, occurrences)
+		}
+	}
+	for _, key := range append(malformed, unrelated) {
+		if raw, err := client.Get(ctx, key).Result(); err != nil || raw != "sentinel" {
+			t.Fatalf("malformed key was touched: key=%q raw=%q error=%v", key, raw, err)
+		}
+	}
+}
+
+func TestPlatformGenerationScanValidatesCountBeforeRedisAndSanitizesErrors(t *testing.T) {
+	disconnected, err := NewPlatformGenerationStore(redis.NewClient(&redis.Options{Addr: "127.0.0.1:1"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = disconnected.Close() }()
+	for _, count := range []int64{0, -1, 1001} {
+		identities, next, err := disconnected.ScanGenerationKeys(context.Background(), 91, count)
+		if !errors.Is(err, ErrPlatformGenerationInvalid) || identities != nil || next != 91 {
+			t.Fatalf("count=%d identities=%#v next=%d error=%v", count, identities, next, err)
+		}
+	}
+	_, next, err := disconnected.ScanGenerationKeys(context.Background(), 91, 1)
+	if err != ErrPlatformGenerationUnavailable || err.Error() != "Redis generation store is unavailable" || next != 91 {
+		t.Fatalf("disconnected next=%d error=%q, want exact sanitized sentinel", next, err)
+	}
+}
+
+func TestPlatformGenerationLeaseAndExpiryControlsFailClosedWithoutMutation(t *testing.T) {
+	store, client := openTestPlatformGenerationStore(t)
+	ctx := context.Background()
+	token := base64.RawURLEncoding.EncodeToString(make([]byte, platformGenerationLeaseBytes))
+	digest := platformGenerationLeaseDigest(token)
+	tests := []struct {
+		name         string
+		userID       int64
+		generationID string
+		raw          string
+		call         func(int64, string) error
+	}{
+		{
+			name: "renew malformed shape", userID: 950001, generationID: "88000000-0000-4000-8000-000000000001",
+			raw: `{"generation_id":"88000000-0000-4000-8000-000000000001","mode":1,"models":["a"],"state":1,"model_states":{},"created_at_ms":1000,"updated_at_ms":1000,"lease_owner_sha256":"` + digest + `","lease_until_ms":31000}`,
+			call: func(userID int64, generationID string) error {
+				_, err := store.RenewLease(ctx, userID, generationID, token, 2000)
+				return err
+			},
+		},
+		{
+			name: "expire half lease", userID: 950002, generationID: "88000000-0000-4000-8000-000000000002",
+			raw: `{"generation_id":"88000000-0000-4000-8000-000000000002","mode":1,"models":["a"],"state":1,"model_states":{"a":{"seq":0,"state":1}},"created_at_ms":1000,"updated_at_ms":1000,"lease_owner_sha256":"` + digest + `"}`,
+			call: func(userID int64, generationID string) error {
+				_, err := store.FailExpiredRunning(ctx, userID, generationID, 31000)
+				return err
+			},
+		},
+		{
+			name: "converge malformed models", userID: 950003, generationID: "88000000-0000-4000-8000-000000000003",
+			raw: `{"generation_id":"88000000-0000-4000-8000-000000000003","mode":1,"models":["a"],"state":2,"model_states":{},"created_at_ms":1000,"updated_at_ms":1000}`,
+			call: func(userID int64, generationID string) error {
+				_, err := store.ConvergeStaleCancelling(ctx, userID, generationID, 31000)
+				return err
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			key := store.key(test.userID, test.generationID)
+			preparePlatformGenerationTestKey(t, client, key)
+			if err := client.Set(ctx, key, test.raw, time.Hour).Err(); err != nil {
+				t.Fatal(err)
+			}
+			if err := test.call(test.userID, test.generationID); !errors.Is(err, ErrPlatformGenerationInvalid) {
+				t.Fatalf("control error=%v, want invalid", err)
+			}
+			if stored, err := client.Get(ctx, key).Result(); err != nil || stored != test.raw {
+				t.Fatalf("malformed record mutated: raw=%s error=%v", stored, err)
+			}
+		})
+	}
+}
+
+func TestPlatformGenerationCancelClaimDoesNotEnrichUnsafePristineTombstone(t *testing.T) {
+	store, client := openTestPlatformGenerationStore(t)
+	ctx := context.Background()
+	input := PlatformGenerationClaimInput{UserID: 950010, GenerationID: "88000000-0000-4000-8000-000000000010", Mode: PlatformGenerationModeSingle, Models: []string{"a"}, NowMillis: 1000}
+	key := store.key(input.UserID, input.GenerationID)
+	preparePlatformGenerationTestKey(t, client, key)
+	unsafe := fmt.Sprintf(`{"generation_id":"%s","models":[],"state":%d,"model_states":{},"created_at_ms":9007199254740992,"updated_at_ms":9007199254740992}`, input.GenerationID, PlatformGenerationStateCancelled)
+	if err := client.Set(ctx, key, unsafe, time.Hour).Err(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Claim(ctx, input); !errors.Is(err, ErrPlatformGenerationInvalid) {
+		t.Fatalf("unsafe tombstone Claim error=%v, want invalid", err)
+	}
+	if stored, err := client.Get(ctx, key).Result(); err != nil || stored != unsafe {
+		t.Fatalf("unsafe tombstone enriched: raw=%s error=%v", stored, err)
+	}
+}
+
+func TestPlatformGenerationStoreControlRedisErrorsAreExactSanitizedSentinels(t *testing.T) {
+	disconnected, err := NewPlatformGenerationStore(redis.NewClient(&redis.Options{Addr: "127.0.0.1:1"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = disconnected.Close() }()
+	ctx := context.Background()
+	token := base64.RawURLEncoding.EncodeToString(make([]byte, platformGenerationLeaseBytes))
+	checks := []struct {
+		name string
+		call func() error
+	}{
+		{"claim", func() error {
+			_, err := disconnected.Claim(ctx, PlatformGenerationClaimInput{UserID: 1, GenerationID: generationTestID, Mode: PlatformGenerationModeSingle, Models: []string{"a"}, NowMillis: 1})
+			return err
+		}},
+		{"renew", func() error {
+			_, err := disconnected.RenewLease(ctx, 1, generationTestID, token, 1)
+			return err
+		}},
+		{"expire", func() error {
+			_, err := disconnected.FailExpiredRunning(ctx, 1, generationTestID, 1)
+			return err
+		}},
+		{"converge", func() error {
+			_, err := disconnected.ConvergeStaleCancelling(ctx, 1, generationTestID, 1)
+			return err
+		}},
+	}
+	for _, check := range checks {
+		t.Run(check.name, func(t *testing.T) {
+			if err := check.call(); err != ErrPlatformGenerationUnavailable || err.Error() != "Redis generation store is unavailable" {
+				t.Fatalf("error=%q, want exact sanitized sentinel", err)
+			}
+		})
+	}
+}
+
+func TestPlatformGenerationCancelPreservesMaximumSafeIntegersExactly(t *testing.T) {
+	store, client := openTestPlatformGenerationStore(t)
+	ctx := context.Background()
+	const userID int64 = 950020
+	const generationID = "88000000-0000-4000-8000-000000000020"
+	snapshot := PlatformGenerationSnapshot{
+		GenerationID: generationID, Mode: PlatformGenerationModeSingle, Models: []string{"a"}, State: PlatformGenerationStateRunning,
+		ModelStates:     map[string]PlatformGenerationModel{"a": {Seq: platformSSEV2MaxSafeInteger, State: PlatformGenerationStateRunning}},
+		CreatedAtMillis: platformSSEV2MaxSafeInteger - 1, UpdatedAtMillis: platformSSEV2MaxSafeInteger - 1,
+	}
+	key := store.key(userID, generationID)
+	preparePlatformGenerationTestKey(t, client, key)
+	raw, err := encodePlatformGeneration(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Set(ctx, key, raw, platformGenerationTTL).Err(); err != nil {
+		t.Fatal(err)
+	}
+	decision, err := store.CancelOrCreate(ctx, userID, generationID, platformSSEV2MaxSafeInteger)
+	if err != nil || !decision.Transitioned || decision.Snapshot.UpdatedAtMillis != platformSSEV2MaxSafeInteger || decision.Snapshot.ModelStates["a"].Seq != platformSSEV2MaxSafeInteger {
+		t.Fatalf("max-safe cancellation=%#v error=%v", decision, err)
+	}
+}

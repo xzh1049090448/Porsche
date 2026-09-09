@@ -176,11 +176,27 @@ func (s *PlatformGenerationStore) Claim(ctx context.Context, input PlatformGener
 	if err != nil {
 		return PlatformGenerationClaimResult{}, err
 	}
-	result, err := s.client.Eval(ctx, platformGenerationClaimScript, []string{s.key(input.UserID, input.GenerationID)}, encoded, platformGenerationTTL.Milliseconds()).Result()
-	if err != nil {
-		return PlatformGenerationClaimResult{}, fmt.Errorf("claim Redis generation: %w", err)
+	enrichedStates := make(map[string]PlatformGenerationModel, len(models))
+	for _, model := range models {
+		enrichedStates[model] = PlatformGenerationModel{State: PlatformGenerationStateCancelled}
 	}
-	created, stored, err := platformGenerationEvalResult(result)
+	enriched, err := encodePlatformGeneration(PlatformGenerationSnapshot{
+		GenerationID:    input.GenerationID,
+		Mode:            input.Mode,
+		Models:          models,
+		State:           PlatformGenerationStateCancelled,
+		ModelStates:     enrichedStates,
+		CreatedAtMillis: input.NowMillis,
+		UpdatedAtMillis: input.NowMillis,
+	})
+	if err != nil {
+		return PlatformGenerationClaimResult{}, err
+	}
+	result, err := s.client.Eval(ctx, platformGenerationClaimScript, []string{s.key(input.UserID, input.GenerationID)}, encoded, enriched, platformGenerationTTL.Milliseconds(), input.GenerationID, int64(PlatformGenerationStateCancelled), platformSSEV2MaxSafeInteger).Result()
+	if err != nil {
+		return PlatformGenerationClaimResult{}, ErrPlatformGenerationUnavailable
+	}
+	decision, stored, err := platformGenerationDecisionResult(result)
 	if err != nil {
 		return PlatformGenerationClaimResult{}, err
 	}
@@ -188,7 +204,7 @@ func (s *PlatformGenerationStore) Claim(ctx context.Context, input PlatformGener
 	if err != nil {
 		return PlatformGenerationClaimResult{}, err
 	}
-	duplicate := !created
+	duplicate := decision != platformGenerationDecisionCreated
 	if decoded.GenerationID != input.GenerationID {
 		return PlatformGenerationClaimResult{Snapshot: decoded, Duplicate: duplicate}, ErrPlatformGenerationInvalid
 	}
@@ -762,8 +778,23 @@ func platformGenerationEvalResult(value any) (bool, string, error) {
 
 const platformGenerationClaimScript = `
 local old = redis.call('GET', KEYS[1])
-if old then return {0, old} end
-redis.call('SET', KEYS[1], ARGV[1], 'PX', ARGV[2])
+if old then
+  local decoded, existing = pcall(cjson.decode, old)
+  local prefix = '{"generation_id":"' .. ARGV[4] .. '","models":[],"state":' .. ARGV[5] .. ',"model_states":{},"created_at_ms":'
+  if decoded and type(existing) == 'table' and existing.generation_id == ARGV[4] and existing.state == tonumber(ARGV[5]) and existing.mode == nil and existing.error_code == nil and existing.lease_owner_sha256 == nil and existing.lease_until_ms == nil and string.sub(old, 1, string.len(prefix)) == prefix then
+    local tail = string.sub(old, string.len(prefix) + 1)
+    local created, updated = string.match(tail, '^([1-9][0-9]*),"updated_at_ms":([1-9][0-9]*)}$')
+    if created and created == updated and tonumber(created) <= tonumber(ARGV[6]) then
+      local next, replacements = string.gsub(ARGV[2], '"created_at_ms":[0-9]+,"updated_at_ms":[0-9]+}', '"created_at_ms":' .. created .. ',"updated_at_ms":' .. updated .. '}')
+      if replacements == 1 then
+        redis.call('SET', KEYS[1], next, 'KEEPTTL')
+        return {2, next}
+      end
+    end
+  end
+  return {0, old}
+end
+redis.call('SET', KEYS[1], ARGV[1], 'PX', ARGV[3])
 return {1, ARGV[1]}
 `
 
