@@ -60,10 +60,18 @@ func TestA08RolePermissionRealOutboxFailureRollsBackEverySQLFact(t *testing.T) {
 		t.Fatalf("rolled-back target = %#v/%v", stored, err)
 	}
 	var revoked, authEvents, managementAudits, outboxRows int64
-	_ = f.db.Model(&models.Session{}).Where("user_id = ? AND revoked_at IS NOT NULL", f.targetRow.ID).Count(&revoked).Error
-	_ = f.db.Model(&models.AuthAuditEvent{}).Where("user_id = ?", f.targetRow.ID).Count(&authEvents).Error
-	_ = f.db.Model(&models.AuditLog{}).Where("user_id = ? AND action = ?", f.targetRow.ID, "users.promote").Count(&managementAudits).Error
-	_ = f.db.Model(&models.AdminActionOutbox{}).Where("public_ref = ?", identity.PublicRef).Count(&outboxRows).Error
+	if err := f.db.Model(&models.Session{}).Where("user_id = ? AND revoked_at IS NOT NULL", f.targetRow.ID).Count(&revoked).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.Model(&models.AuthAuditEvent{}).Where("user_id = ?", f.targetRow.ID).Count(&authEvents).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.Model(&models.AuditLog{}).Where("user_id = ? AND action = ?", f.targetRow.ID, "users.promote").Count(&managementAudits).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.Model(&models.AdminActionOutbox{}).Where("public_ref = ?", identity.PublicRef).Count(&outboxRows).Error; err != nil {
+		t.Fatal(err)
+	}
 	if revoked != 0 || authEvents != 0 || managementAudits != 0 || outboxRows != 0 || len(targetSessions) != 2 {
 		t.Fatalf("partial SQL facts revoked/auth/audit/outbox = %d/%d/%d/%d", revoked, authEvents, managementAudits, outboxRows)
 	}
@@ -121,8 +129,12 @@ func TestA08RolePermissionRealDemoteAndRepromoteNeverRevivesHistory(t *testing.T
 	if err := f.db.Where("user_id = ? AND is_deleted = 0", f.targetRow.ID).First(&head).Error; err != nil {
 		t.Fatal(err)
 	}
-	_ = f.db.Model(&models.PermissionOverride{}).Where("user_id = ? AND is_deleted = 0", f.targetRow.ID).Count(&active).Error
-	_ = f.db.Model(&models.PermissionOverride{}).Where("user_id = ? AND is_deleted = 1", f.targetRow.ID).Count(&history).Error
+	if err := f.db.Model(&models.PermissionOverride{}).Where("user_id = ? AND is_deleted = 0", f.targetRow.ID).Count(&active).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.Model(&models.PermissionOverride{}).Where("user_id = ? AND is_deleted = 1", f.targetRow.ID).Count(&history).Error; err != nil {
+		t.Fatal(err)
+	}
 	if head.PolicyVersion != 3 || head.RuleCount != 0 || active != 0 || history != 1 {
 		t.Fatalf("history head/active/deleted = %#v/%d/%d", head, active, history)
 	}
