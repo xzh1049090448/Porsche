@@ -24,7 +24,7 @@ func TestRootAlertDBLifecycleReceiptsAndConcurrentOccurrence(t *testing.T) {
 	}
 	ctx := context.Background()
 	s := NewRootAlertService(f.db)
-	in := RootAlertOccurrence{Type: models.RootAlertTypeCatalogSyncFailure, Identity: "catalog", Payload: models.JSONMap{"reason": "timeout"}}
+	in := RootAlertOccurrence{Type: models.RootAlertTypeCatalogSyncFailure, Identity: "catalog", Payload: models.JSONMap{"error_code": "timeout", "observed_at": int64(100)}}
 	fp := rootAlertFingerprint(in.Type, in.ModelKey, in.Identity)
 	t.Cleanup(func() {
 		_ = f.db.Exec("DELETE r FROM root_alert_receipts r JOIN root_alerts a ON a.id=r.alert_id WHERE a.fingerprint=?", fp).Error
@@ -130,7 +130,7 @@ func TestRootAlertDBFailureInjectionRollsBack(t *testing.T) {
 		}
 		return nil
 	}
-	if _, err := s.Occur(context.Background(), RootAlertOccurrence{Type: models.RootAlertTypeRendererFailure, Identity: "render"}); err == nil {
+	if _, err := s.Occur(context.Background(), RootAlertOccurrence{Type: models.RootAlertTypeRendererFailure, Identity: "render", Payload: models.JSONMap{"release_version": int64(1), "render_job_guid": "123", "error_code": "failed", "observed_at": int64(100)}}); err == nil {
 		t.Fatal("expected rollback")
 	}
 	var n int64
@@ -148,7 +148,7 @@ func TestRootAlertDBExactLifecycleTimestampsCountsAndAudits(t *testing.T) {
 	s := NewRootAlertService(f.db)
 	current := int64(100)
 	s.now = func() int64 { return current }
-	in := RootAlertOccurrence{Type: models.RootAlertTypeUpstreamMissing, ModelKey: "exact-model", Identity: "exact", Payload: models.JSONMap{"model_key": "exact-model", "provider": "vendor", "consecutive_absences": int64(1), "observed_at": current}}
+	in := RootAlertOccurrence{Type: models.RootAlertTypeUpstreamMissing, ModelKey: "exact-model", Identity: "exact", Payload: models.JSONMap{"model_key": "exact-model", "consecutive_absences": int64(1), "observed_at": current}}
 	fp := rootAlertFingerprint(in.Type, in.ModelKey, in.Identity)
 	t.Cleanup(func() {
 		var a models.RootAlert
@@ -197,7 +197,7 @@ func TestRootAlertDBMutationAuditFailuresRollback(t *testing.T) {
 	f := openPublicModelDBFixture(t)
 	ctx := context.Background()
 	clean := NewRootAlertService(f.db)
-	in := RootAlertOccurrence{Type: models.RootAlertTypeCatalogSyncFailure, Identity: "rollback", Payload: models.JSONMap{"provider": "vendor", "error_code": "timeout", "observed_at": int64(100)}}
+	in := RootAlertOccurrence{Type: models.RootAlertTypeCatalogSyncFailure, Identity: "rollback", Payload: models.JSONMap{"error_code": "timeout", "observed_at": int64(100)}}
 	view, e := clean.Occur(ctx, in)
 	if e != nil {
 		t.Fatal(e)

@@ -17,70 +17,97 @@ func TestRootAlertFingerprintStableAndSeparatesIdentity(t *testing.T) {
 	}
 }
 
-func TestRootAlertPayloadSanitizedAndBounded(t *testing.T) {
-	p, err := projectRootAlertPayload(models.RootAlertTypeCatalogSyncFailure, models.JSONMap{"provider": "safe-provider", "error_code": "upstream_timeout", "observed_at": int64(1900000000000), "authorization": "Bearer secret", "upstream_response": map[string]any{"key": "secret", "body": "secret"}, "wrapper": map[string]any{"safe": "secret"}, "array": []any{"secret"}})
-	if err != nil {
-		t.Fatal(err)
+func TestRootAlertPayloadSchemasAreExactRequiredAndIdentityBound(t *testing.T) {
+	tests := []struct {
+		typ     models.RootAlertType
+		key     string
+		payload models.JSONMap
+	}{
+		{models.RootAlertTypePublishedPriceBelowUpstream, "model-a", models.JSONMap{"model_key": "model-a", "price_component": "input", "current_price_usd_per_million_tokens": "1.25", "upstream_price_usd_per_million_tokens": "2.50", "observed_at": int64(9)}},
+		{models.RootAlertTypeUpstreamMissing, "model-a", models.JSONMap{"model_key": "model-a", "consecutive_absences": int64(1), "observed_at": int64(9)}},
+		{models.RootAlertTypeAutomaticInactivation, "model-a", models.JSONMap{"model_key": "model-a", "consecutive_absences": int64(3), "reason_code": "upstream_removed", "observed_at": int64(9)}},
+		{models.RootAlertTypeUpstreamReappearance, "model-a", models.JSONMap{"model_key": "model-a", "observed_at": int64(9)}},
+		{models.RootAlertTypeCatalogSyncFailure, "", models.JSONMap{"error_code": "timeout", "observed_at": int64(9)}},
+		{models.RootAlertTypePriceNotComparable, "model-a", models.JSONMap{"model_key": "model-a", "price_component": "output", "reason_code": "invalid_upstream_price", "observed_at": int64(9)}},
+		{models.RootAlertTypeRendererFailure, "", models.JSONMap{"release_version": int64(7), "render_job_guid": "123", "error_code": "validation_failed", "observed_at": int64(9)}},
 	}
-	b, err := json.Marshal(p)
-	if err != nil || len(b) > rootAlertPayloadLimit || strings.Contains(strings.ToLower(string(b)), "secret") || strings.Contains(string(b), strings.Repeat("x", 600)) {
-		t.Fatalf("unsafe payload %s err=%v", b, err)
+	for _, tc := range tests {
+		if got, err := projectRootAlertPayload(tc.typ, tc.key, tc.payload); err != nil || len(got) == 0 {
+			t.Fatalf("type=%s got=%#v err=%v", tc.typ.String(), got, err)
+		}
 	}
 }
 
-func TestRootAlertPayloadUsesPerKindTypedAllowlist(t *testing.T) {
-	tests := []struct {
-		name    string
-		typ     models.RootAlertType
-		payload models.JSONMap
-		want    []string
-	}{
-		{"price", models.RootAlertTypePublishedPriceBelowUpstream, models.JSONMap{"model_key": "model-a", "provider": "vendor", "price_component": "input", "published_price_usd_per_million_tokens": "1.25", "upstream_price_usd_per_million_tokens": "2.50", "observed_at": int64(1900000000000), "body": "secret"}, []string{"model_key", "observed_at", "price_component", "provider", "published_price_usd_per_million_tokens", "upstream_price_usd_per_million_tokens"}},
-		{"missing", models.RootAlertTypeUpstreamMissing, models.JSONMap{"model_key": "model-a", "provider": "vendor", "consecutive_absences": 3, "observed_at": int64(1900000000000), "nested": map[string]any{"body": "secret"}}, []string{"consecutive_absences", "model_key", "observed_at", "provider"}},
-		{"renderer", models.RootAlertTypeRendererFailure, models.JSONMap{"release_version": int64(7), "render_job_guid": "123", "error_code": "render_validation_failed", "observed_at": int64(1900000000000), "headers": map[string]any{"x": "secret"}}, []string{"error_code", "observed_at", "release_version", "render_job_guid"}},
+func TestRootAlertPayloadRejectsMissingUnknownContradictoryEnumAndSecrets(t *testing.T) {
+	base := models.JSONMap{"model_key": "model-a", "price_component": "input", "current_price_usd_per_million_tokens": "1.25", "upstream_price_usd_per_million_tokens": "2.50", "observed_at": int64(9)}
+	bad := []models.JSONMap{}
+	for _, remove := range []string{"model_key", "price_component", "current_price_usd_per_million_tokens", "upstream_price_usd_per_million_tokens", "observed_at"} {
+		p := models.JSONMap{}
+		for k, v := range base {
+			if k != remove {
+				p[k] = v
+			}
+		}
+		bad = append(bad, p)
 	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			got, err := projectRootAlertPayload(tc.typ, tc.payload)
-			if err != nil {
-				t.Fatal(err)
-			}
-			keys := make([]string, 0, len(got))
-			for k := range got {
-				keys = append(keys, k)
-			}
-			sort.Strings(keys)
-			if !reflect.DeepEqual(keys, tc.want) {
-				t.Fatalf("keys=%v want=%v", keys, tc.want)
-			}
-		})
+	for _, extra := range []models.JSONMap{{"provider": "AKIAIOSFODNN7EXAMPLE"}, {"provider": "ghp_abcdefghijklmnopqrstuvwxyz123456"}, {"provider": "sk_live_placeholder"}, {"provider": "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.signature"}, {"wrapper": map[string]any{"body": "secret"}}, {"array": []any{"secret"}}} {
+		p := models.JSONMap{}
+		for k, v := range base {
+			p[k] = v
+		}
+		for k, v := range extra {
+			p[k] = v
+		}
+		bad = append(bad, p)
+	}
+	for _, change := range []any{"both", "INPUT", map[string]any{"body": "secret"}} {
+		p := models.JSONMap{}
+		for k, v := range base {
+			p[k] = v
+		}
+		p["price_component"] = change
+		bad = append(bad, p)
+	}
+	for _, credential := range []string{"ghp_abcdefghijklmnopqrstuvwxyz123456", "sk_live_placeholder", "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.signature"} {
+		p := models.JSONMap{}
+		for k, v := range base {
+			p[k] = v
+		}
+		p["price_component"] = "input"
+		p["model_key"] = "model-a"
+		p["current_price_usd_per_million_tokens"] = "1"
+		p["upstream_price_usd_per_million_tokens"] = "2"
+		p["observed_at"] = int64(9)
+		p["unexpected"] = credential
+		bad = append(bad, p)
+		c := models.JSONMap{"error_code": credential, "observed_at": int64(9)}
+		if got, err := projectRootAlertPayload(models.RootAlertTypeCatalogSyncFailure, "", c); err == nil || got != nil {
+			t.Fatalf("credential accepted %q", credential)
+		}
+	}
+	contradict := models.JSONMap{}
+	for k, v := range base {
+		contradict[k] = v
+	}
+	contradict["model_key"] = "model-b"
+	bad = append(bad, contradict)
+	for i, p := range bad {
+		if got, err := projectRootAlertPayload(models.RootAlertTypePublishedPriceBelowUpstream, "model-a", p); err == nil || got != nil {
+			t.Fatalf("case %d accepted %#v", i, got)
+		}
+	}
+	if got, err := projectRootAlertPayload(models.RootAlertTypeCatalogSyncFailure, "", models.JSONMap{}); err == nil || got != nil {
+		t.Fatal("empty payload accepted")
 	}
 }
 
 func TestRootAlertPayloadCanonicalEncodingIsDeterministic(t *testing.T) {
-	a, _ := projectRootAlertPayload(models.RootAlertTypeCatalogSyncFailure, models.JSONMap{"observed_at": int64(9), "error_code": "timeout", "provider": "vendor"})
-	b, _ := projectRootAlertPayload(models.RootAlertTypeCatalogSyncFailure, models.JSONMap{"provider": "vendor", "observed_at": int64(9), "error_code": "timeout"})
+	a, _ := projectRootAlertPayload(models.RootAlertTypeCatalogSyncFailure, "", models.JSONMap{"observed_at": int64(9), "error_code": "timeout"})
+	b, _ := projectRootAlertPayload(models.RootAlertTypeCatalogSyncFailure, "", models.JSONMap{"error_code": "timeout", "observed_at": int64(9)})
 	aj, _ := json.Marshal(a)
 	bj, _ := json.Marshal(b)
 	if string(aj) != string(bj) {
 		t.Fatalf("canonical mismatch %s %s", aj, bj)
-	}
-}
-
-func TestRootAlertPayloadRejectsUnsafeAllowedValues(t *testing.T) {
-	bad := []models.JSONMap{
-		{"provider": "Bearer secret", "error_code": "timeout", "observed_at": int64(1)},
-		{"provider": "vendor\u0000hidden", "error_code": "timeout", "observed_at": int64(1)},
-		{"provider": "vendor\u200bhidden", "error_code": "timeout", "observed_at": int64(1)},
-		{"provider": strings.Repeat("界", 129), "error_code": "timeout", "observed_at": int64(1)},
-		{"provider": "vendor", "error_code": "secret", "observed_at": int64(1)},
-		{"provider": "vendor", "error_code": map[string]any{"body": "secret"}, "observed_at": int64(1)},
-		{"provider": "vendor", "error_code": "timeout", "observed_at": "1900000000000"},
-	}
-	for i, p := range bad {
-		if got, err := projectRootAlertPayload(models.RootAlertTypeCatalogSyncFailure, p); err == nil || got != nil {
-			t.Fatalf("case %d accepted %#v", i, got)
-		}
 	}
 }
 

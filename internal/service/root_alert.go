@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sort"
 	"strconv"
 	"strings"
 	"unicode"
@@ -85,45 +84,63 @@ func rootAlertFingerprint(t models.RootAlertType, modelKey, identity string) str
 type rootAlertPayloadField int
 
 const (
-	rootAlertText rootAlertPayloadField = iota + 1
-	rootAlertCode
+	rootAlertCode rootAlertPayloadField = iota + 1
 	rootAlertDecimal
 	rootAlertPositiveInt
 	rootAlertTimestamp
 	rootAlertModelKey
+	rootAlertPriceComponent
+	rootAlertInactivationReason
+	rootAlertNotComparableReason
 )
 
-var rootAlertPayloadSchemas = map[models.RootAlertType]map[string]rootAlertPayloadField{
-	models.RootAlertTypePublishedPriceBelowUpstream: {"model_key": rootAlertModelKey, "provider": rootAlertText, "price_component": rootAlertCode, "published_price_usd_per_million_tokens": rootAlertDecimal, "upstream_price_usd_per_million_tokens": rootAlertDecimal, "observed_at": rootAlertTimestamp},
-	models.RootAlertTypeUpstreamMissing:             {"model_key": rootAlertModelKey, "provider": rootAlertText, "consecutive_absences": rootAlertPositiveInt, "observed_at": rootAlertTimestamp},
-	models.RootAlertTypeAutomaticInactivation:       {"model_key": rootAlertModelKey, "provider": rootAlertText, "consecutive_absences": rootAlertPositiveInt, "reason_code": rootAlertCode, "observed_at": rootAlertTimestamp},
-	models.RootAlertTypeUpstreamReappearance:        {"model_key": rootAlertModelKey, "provider": rootAlertText, "observed_at": rootAlertTimestamp},
-	models.RootAlertTypeCatalogSyncFailure:          {"provider": rootAlertText, "error_code": rootAlertCode, "observed_at": rootAlertTimestamp},
-	models.RootAlertTypePriceNotComparable:          {"model_key": rootAlertModelKey, "provider": rootAlertText, "price_component": rootAlertCode, "reason_code": rootAlertCode, "observed_at": rootAlertTimestamp},
-	models.RootAlertTypeRendererFailure:             {"release_version": rootAlertPositiveInt, "render_job_guid": rootAlertCode, "error_code": rootAlertCode, "observed_at": rootAlertTimestamp},
+type rootAlertPayloadSchema struct {
+	fields      map[string]rootAlertPayloadField
+	required    []string
+	modelScoped bool
 }
 
-func projectRootAlertPayload(typ models.RootAlertType, in models.JSONMap) (models.JSONMap, error) {
+var rootAlertPayloadSchemas = map[models.RootAlertType]rootAlertPayloadSchema{
+	models.RootAlertTypePublishedPriceBelowUpstream: {fields: map[string]rootAlertPayloadField{"model_key": rootAlertModelKey, "price_component": rootAlertPriceComponent, "current_price_usd_per_million_tokens": rootAlertDecimal, "upstream_price_usd_per_million_tokens": rootAlertDecimal, "observed_at": rootAlertTimestamp}, required: []string{"model_key", "price_component", "current_price_usd_per_million_tokens", "upstream_price_usd_per_million_tokens", "observed_at"}, modelScoped: true},
+	models.RootAlertTypeUpstreamMissing:             {fields: map[string]rootAlertPayloadField{"model_key": rootAlertModelKey, "consecutive_absences": rootAlertPositiveInt, "observed_at": rootAlertTimestamp}, required: []string{"model_key", "consecutive_absences", "observed_at"}, modelScoped: true},
+	models.RootAlertTypeAutomaticInactivation:       {fields: map[string]rootAlertPayloadField{"model_key": rootAlertModelKey, "consecutive_absences": rootAlertPositiveInt, "reason_code": rootAlertInactivationReason, "observed_at": rootAlertTimestamp}, required: []string{"model_key", "consecutive_absences", "reason_code", "observed_at"}, modelScoped: true},
+	models.RootAlertTypeUpstreamReappearance:        {fields: map[string]rootAlertPayloadField{"model_key": rootAlertModelKey, "observed_at": rootAlertTimestamp}, required: []string{"model_key", "observed_at"}, modelScoped: true},
+	models.RootAlertTypeCatalogSyncFailure:          {fields: map[string]rootAlertPayloadField{"error_code": rootAlertCode, "observed_at": rootAlertTimestamp}, required: []string{"error_code", "observed_at"}},
+	models.RootAlertTypePriceNotComparable:          {fields: map[string]rootAlertPayloadField{"model_key": rootAlertModelKey, "price_component": rootAlertPriceComponent, "reason_code": rootAlertNotComparableReason, "observed_at": rootAlertTimestamp}, required: []string{"model_key", "price_component", "reason_code", "observed_at"}, modelScoped: true},
+	models.RootAlertTypeRendererFailure:             {fields: map[string]rootAlertPayloadField{"release_version": rootAlertPositiveInt, "render_job_guid": rootAlertCode, "error_code": rootAlertCode, "observed_at": rootAlertTimestamp}, required: []string{"release_version", "render_job_guid", "error_code", "observed_at"}},
+}
+
+func projectRootAlertPayload(typ models.RootAlertType, modelKey string, in models.JSONMap) (models.JSONMap, error) {
 	schema, ok := rootAlertPayloadSchemas[typ]
 	if !ok {
 		return nil, errBadRequest("invalid root alert payload")
 	}
-	out := models.JSONMap{}
-	keys := make([]string, 0, len(schema))
-	for k := range schema {
-		keys = append(keys, k)
+	if schema.modelScoped {
+		if !publiccontent.ValidModelKey(modelKey) {
+			return nil, errBadRequest("invalid root alert payload")
+		}
+	} else if modelKey != "" {
+		return nil, errBadRequest("invalid root alert payload")
 	}
-	sort.Strings(keys)
-	for _, key := range keys {
+	for key := range in {
+		if _, ok := schema.fields[key]; !ok {
+			return nil, errBadRequest("invalid root alert payload")
+		}
+	}
+	out := models.JSONMap{}
+	for _, key := range schema.required {
 		raw, exists := in[key]
 		if !exists {
-			continue
+			return nil, errBadRequest("invalid root alert payload")
 		}
-		value, valid := normalizeRootAlertField(schema[key], raw)
+		value, valid := normalizeRootAlertField(schema.fields[key], raw)
 		if !valid {
 			return nil, errBadRequest("invalid root alert payload")
 		}
 		out[key] = value
+	}
+	if schema.modelScoped && out["model_key"] != modelKey {
+		return nil, errBadRequest("invalid root alert payload")
 	}
 	b, _ := json.Marshal(out)
 	if len(b) > rootAlertPayloadLimit {
@@ -133,7 +150,7 @@ func projectRootAlertPayload(typ models.RootAlertType, in models.JSONMap) (model
 }
 func normalizeRootAlertField(kind rootAlertPayloadField, raw any) (any, bool) {
 	switch kind {
-	case rootAlertText, rootAlertCode, rootAlertDecimal, rootAlertModelKey:
+	case rootAlertCode, rootAlertDecimal, rootAlertModelKey, rootAlertPriceComponent, rootAlertInactivationReason, rootAlertNotComparableReason:
 		v, ok := raw.(string)
 		if !ok || !validRootAlertScalar(v) {
 			return nil, false
@@ -143,12 +160,20 @@ func normalizeRootAlertField(kind rootAlertPayloadField, raw any) (any, bool) {
 			if !publiccontent.ValidModelKey(v) {
 				return nil, false
 			}
-		case rootAlertText:
-			if utf8.RuneCountInString(v) > 128 {
+		case rootAlertPriceComponent:
+			if v != "input" && v != "output" {
+				return nil, false
+			}
+		case rootAlertInactivationReason:
+			if v != "upstream_removed" {
+				return nil, false
+			}
+		case rootAlertNotComparableReason:
+			if v != "missing_current_price" && v != "missing_upstream_price" && v != "invalid_current_price" && v != "invalid_upstream_price" {
 				return nil, false
 			}
 		case rootAlertCode:
-			if len(v) < 1 || len(v) > 128 {
+			if len(v) > 128 {
 				return nil, false
 			}
 			for _, r := range v {
@@ -198,36 +223,72 @@ func validRootAlertScalar(v string) bool {
 			return false
 		}
 	}
-	lower := strings.ToLower(v)
-	if lower == "secret" || lower == "password" || lower == "token" || strings.HasPrefix(lower, "sk-") {
+	if looksLikeRootAlertCredential(v) {
 		return false
-	}
-	for _, bad := range []string{"bearer ", "api_key", "apikey", "password", "authorization", "credential", "secret=", "token="} {
-		if strings.Contains(lower, bad) {
-			return false
-		}
 	}
 	return true
 }
 
-func (s *RootAlertService) Occur(ctx context.Context, in RootAlertOccurrence) (*RootAlertView, error) {
-	if s == nil || s.db == nil || in.Type.String() == "unknown" || (in.ModelKey != "" && !publiccontent.ValidModelKey(in.ModelKey)) || !validRootAlertIdentity(in.Identity) {
-		return nil, errBadRequest("invalid root alert occurrence")
+func looksLikeRootAlertCredential(v string) bool {
+	lower := strings.ToLower(v)
+	for _, prefix := range []string{"akia", "ghp_", "github_pat_", "sk_live_", "sk_test_", "sk-"} {
+		if strings.HasPrefix(lower, prefix) {
+			return true
+		}
 	}
-	fp := rootAlertFingerprint(in.Type, in.ModelKey, in.Identity)
-	payload, payloadErr := projectRootAlertPayload(in.Type, in.Payload)
-	if payloadErr != nil {
-		return nil, payloadErr
+	if len(v) >= 32 {
+		encoded := true
+		for _, r := range v {
+			if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '+' || r == '/' || r == '=' || r == '_' || r == '-' || r == '.') {
+				encoded = false
+				break
+			}
+		}
+		if encoded {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *RootAlertService) Occur(ctx context.Context, in RootAlertOccurrence) (*RootAlertView, error) {
+	if s == nil || s.db == nil || in.Type.String() == "unknown" || (in.ModelConfigID != nil && *in.ModelConfigID <= 0) || (in.ModelKey != "" && !publiccontent.ValidModelKey(in.ModelKey)) || !validRootAlertIdentity(in.Identity) {
+		return nil, errBadRequest("invalid root alert occurrence")
 	}
 	for attempt := 0; attempt < 3; attempt++ {
 		var row models.RootAlert
 		err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+			effectiveModelKey := in.ModelKey
+			modelConfigGUID := ""
+			payloadInput := models.JSONMap{}
+			for k, v := range in.Payload {
+				payloadInput[k] = v
+			}
+			if in.ModelConfigID != nil {
+				var config models.PublicModelConfig
+				if e := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Select("id", "guid", "model_key", "is_deleted").Where("id=? AND is_deleted=0", *in.ModelConfigID).First(&config).Error; e != nil {
+					return e
+				}
+				if effectiveModelKey != "" && effectiveModelKey != config.ModelKey {
+					return errBadRequest("invalid root alert identity")
+				}
+				effectiveModelKey = config.ModelKey
+				modelConfigGUID = fmt.Sprint(config.Guid)
+			}
+			payload, payloadErr := projectRootAlertPayload(in.Type, effectiveModelKey, payloadInput)
+			if payloadErr != nil {
+				return payloadErr
+			}
+			if modelConfigGUID != "" {
+				payload["model_config_guid"] = modelConfigGUID
+			}
+			fp := rootAlertFingerprint(in.Type, effectiveModelKey, in.Identity)
 			e := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("fingerprint=? AND is_deleted=0", fp).First(&row).Error
 			now := s.now()
 			if errors.Is(e, gorm.ErrRecordNotFound) {
 				row = models.RootAlert{AuditFields: models.AuditFields{Guid: s.nextGUID(), CreatedAt: now, UpdatedAt: now}, ModelConfigID: in.ModelConfigID, AlertType: in.Type, State: models.RootAlertStateActive, Fingerprint: fp, Payload: payload, OccurrenceCount: 1, FirstObservedAt: now, LastObservedAt: now}
-				if in.ModelKey != "" {
-					key := in.ModelKey
+				if effectiveModelKey != "" {
+					key := effectiveModelKey
 					row.ModelKey = &key
 				}
 				if e = tx.Create(&row).Error; e != nil {
