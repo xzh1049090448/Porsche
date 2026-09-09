@@ -168,6 +168,10 @@ func TestPublicContentPricingContract(t *testing.T) {
 		"POST /admin/v2/public-content/releases/{guid}/restore",
 	}, "mutation_requirements", "action_ticket_header_routes")
 	publicContentPricingAssertSchemas(t, contract)
+	publicContentPricingRequire(t, contract, "^[1-9][0-9]{0,18}$", "schemas", "GUIDRequest", "properties", "guid", "pattern")
+	publicContentPricingRequire(t, contract, json.Number("1"), "schemas", "RevisionRequest", "properties", "expected_revision", "minimum")
+	publicContentPricingRequire(t, contract, []any{"20", "50", "100"}, "schemas", "PaginationRequest", "properties", "page_size", "enum")
+	publicContentPricingRequire(t, contract, "date-time-rfc3339-utc", "schemas", "Release", "properties", "created_at", "format")
 
 	for _, forbidden := range []string{"credential_value", "api_key", "current_password", "internal_id", "database_id", "upstream_url"} {
 		publicContentPricingForbidText(t, raw, forbidden)
