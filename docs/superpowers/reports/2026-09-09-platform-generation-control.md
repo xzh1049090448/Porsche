@@ -4,11 +4,11 @@ Date: 2026-09-09
 
 ## Scope and candidate
 
-BE04 final code candidate is `620dcd852222284e0d9c057d1e50ae6d3bb5e0cb`. Earlier evidence commits `40a195dce72827edb85105fc449e2e394293641e`, `1f78b81b90d5ce31266b895d925980eb8444906d`, and `412d790c1c0c929a47b36c5774f9295b246a032c` described candidate `23820acbccee28a291cf4bfacb6adf30e3cdfbee`. Final review then added intermediate corrupt-record handling commit `b114ef5290f6c6566d32ffc1bcd1921ca4016ba6`, final fix 1 `9b7e925cee306c36039d141eb3b19149857b71a2`, fix 2 `fee9ae4044639917300168b99e85870111e2b7bd`, and fix 3/current candidate `620dcd852222284e0d9c057d1e50ae6d3bb5e0cb`. This report binds executable evidence to that final code candidate. Its final documentation revision is identified by `git log`; post-documentation committed-tree verification is recorded by the Task 9 runner rather than asserted self-referentially here.
+BE04 production code HEAD is `620dcd852222284e0d9c057d1e50ae6d3bb5e0cb`; the deliverable candidate is `c55ca7f52bc92ecfae08411cf0d0b9d50f5bdf10`, which adds only test-only uppercase scan fixture stabilization. Earlier evidence commits `40a195dce72827edb85105fc449e2e394293641e`, `1f78b81b90d5ce31266b895d925980eb8444906d`, and `412d790c1c0c929a47b36c5774f9295b246a032c` described candidate `23820acbccee28a291cf4bfacb6adf30e3cdfbee`. Final production review then added intermediate commit `b114ef5290f6c6566d32ffc1bcd1921ca4016ba6`, final fix 1 `9b7e925cee306c36039d141eb3b19149857b71a2`, fix 2 `fee9ae4044639917300168b99e85870111e2b7bd`, and fix 3/production HEAD `620dcd852222284e0d9c057d1e50ae6d3bb5e0cb`. This report binds executable evidence to deliverable `c55ca7f`; its final documentation revision is identified by `git log`, with post-documentation verification recorded externally to avoid self-reference.
 
 This tranche covers authenticated generation status and cancellation, cancellation-before-claim tombstones, owner-bound runner leases, restart-safe bounded convergence, strict completed-result hydration, and application lifecycle ownership. It does not implement BE05 or BE06 streaming orchestration.
 
-The first Task 9 attempt was `BLOCKED_TEST_ISOLATION`: shared Redis fixture activity made two handler tests compare global `DBSIZE` and made the store scan test observe another valid generation key. Commit `23820ac` replaced global cleanup assumptions with owned-key evidence and a dedicated scan prefix. The refreshed evidence below comes from a new fixture and an unmodified, parallel `go test ./... -count=1`; the historical blocker is not hidden or counted as a pass.
+The first Task 9 attempt was `BLOCKED_TEST_ISOLATION`: shared Redis fixture activity made two handler tests compare global `DBSIZE` and made the store scan test observe another valid generation key. Commit `23820ac` replaced global cleanup assumptions with owned-key evidence and a dedicated scan prefix. Later, post-documentation full at `99594f58ac6cef064e9e8cb34ef261d62ad330ef` genuinely failed as `FAIL_TEST_FIXTURE_FLAKE`: the random `%012x` suffix contained digits only, so `strings.ToUpper` was a no-op and a canonical UUID was incorrectly placed in the uppercase-invalid fixture set. That failure was reported and the fixture was cleaned without a masking rerun. Commit `c55ca7f` makes the fixture deterministically contain lowercase hexadecimal letters and adds a self-check; its focused `-count=100`, race `-count=50`, and two independent fresh-fixture full runs passed.
 
 ## Implemented contracts
 
@@ -59,6 +59,15 @@ GOCACHE=/private/tmp/porsche-be04-go-build-cache go test ./... -count=1
 
 Notable package times were handler 21.606s, migration 50.417s, service 88.195s, and router 7.040s; every package passed. The JSON evidence identified one opt-in test skip, `TestAdminUsersReadPerformance`, whose exact reason is `NOT_RUN: opt-in 100k synthetic-user performance fixture requires this batch authorization`. No BE04 fixture test skipped.
 
+After test-only stabilization `c55ca7f`, the following focused gates and two independent fresh-fixture executions of the original full command passed. These replace `99594f5` as the deliverable evidence; they do not rewrite its recorded failure:
+
+```text
+GOCACHE=/private/tmp/porsche-be04-go-build-cache go test ./internal/service -run 'TestPlatformGenerationScan(UppercaseFixtureIsDeterministicallyNoncanonical|ContinuesCursorAndStrictlyParsesKeys)$' -count=100
+GOCACHE=/private/tmp/porsche-be04-go-build-cache go test -race ./internal/service -run 'TestPlatformGenerationScan(UppercaseFixtureIsDeterministicallyNoncanonical|ContinuesCursorAndStrictlyParsesKeys)$' -count=50
+GOCACHE=/private/tmp/porsche-be04-go-build-cache go test ./... -count=1
+GOCACHE=/private/tmp/porsche-be04-go-build-cache go test ./... -count=1
+```
+
 ```text
 GOCACHE=/private/tmp/porsche-be04-go-build-cache go test ./... -run '^TestAdminUsersReadPerformance$' -count=1 -json
 ```
@@ -71,7 +80,7 @@ GOCACHE=/private/tmp/porsche-be04-go-build-cache go test -race ./internal/servic
 
 An earlier candidate's first affected-race attempt followed full without a fixture reset and hit the pre-existing A03 action-security rate limit in `TestCreateAccountRealWriteFaultsRollbackEveryStage/terminal_operation`. It remains classified `FAIL_ENV_FIXTURE_NOT_FRESH`, not a BE04 or product pass. For `620dcd`, each major gate used a fresh reset and the race result above is final.
 
-`git diff --check origin/main...HEAD`, `go vet ./...`, and `go build ./...` all exited zero for code candidate `620dcd852222284e0d9c057d1e50ae6d3bb5e0cb` before this documentation revision. Earlier committed-tree verification at `40a195dce72827edb85105fc449e2e394293641e` covered only that exact old evidence HEAD and does not verify later code or documentation. The final documentation commit receives a separate fresh-fixture full, vet, diff, JSON, status, and cleanup verification outside this self-referential report.
+`git diff --check origin/main...HEAD`, `go vet ./...`, and `go build ./...` exited zero for production code HEAD `620dcd852222284e0d9c057d1e50ae6d3bb5e0cb`; the final documentation commit receives a separate fresh-fixture full, affected race, vet, build, diff, JSON, status, and cleanup verification outside this self-referential report.
 
 ## Security and privacy checks
 
