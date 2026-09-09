@@ -23,10 +23,9 @@ func TestPublicContentDBConcurrentSameKeyUsesOneReleaseWithoutDeadlock(t *testin
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		for _, q := range []string{"DELETE FROM public_render_jobs WHERE created_by=?", "DELETE FROM audit_logs WHERE user_id=? AND action LIKE 'public_content.%'", "DELETE FROM public_publication_state WHERE created_by=?", "DELETE FROM public_content_releases WHERE created_by=?", "DELETE FROM public_content_drafts WHERE created_by=?", "DELETE FROM public_price_snapshot_items WHERE created_by=?", "DELETE FROM public_price_snapshots WHERE created_by=?"} {
-			if e := f.db.Exec(q, f.actor.ID).Error; e != nil {
-				t.Error(e)
-			}
+		cleanPublicContentDBFixture(t, f.db)
+		if e := f.db.Exec("DELETE FROM audit_logs WHERE user_id=? AND action LIKE 'public_content.%'", f.actor.ID).Error; e != nil {
+			t.Errorf("fixture audit cleanup: %v", e)
 		}
 	})
 	s := NewPublicContentService(f.db)
