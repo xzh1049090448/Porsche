@@ -2,12 +2,15 @@ package service
 
 import (
 	"encoding/json"
+	"errors"
 	"reflect"
 	"sort"
 	"strings"
 	"testing"
 
+	drivermysql "github.com/go-sql-driver/mysql"
 	"github.com/porsche/ai-gateway-go/internal/models"
+	"gorm.io/gorm"
 )
 
 func TestRootAlertFingerprintStableAndSeparatesIdentity(t *testing.T) {
@@ -49,6 +52,39 @@ func TestRootAlertModelScopeAndRequiredConfigAreExplicit(t *testing.T) {
 		if rootAlertRequiresModelConfig(typ) {
 			t.Fatalf("%s must be global", typ.String())
 		}
+	}
+}
+
+func TestRootAlertConfigLoadErrorClassificationPreservesDatabaseFailures(t *testing.T) {
+	if got := mapRootAlertConfigLoadError(gorm.ErrRecordNotFound); status(got) != 400 {
+		t.Fatalf("not found=%v", got)
+	}
+	for _, source := range []error{&drivermysql.MySQLError{Number: 1213, Message: "deadlock raw"}, &drivermysql.MySQLError{Number: 1205, Message: "timeout raw"}, errors.New("driver raw query detail")} {
+		if got := mapRootAlertConfigLoadError(source); !errors.Is(got, source) {
+			t.Fatalf("error replaced: %v", got)
+		}
+	}
+}
+
+func TestRootAlertTransactionRetrySuccessAndSafeExhaustion(t *testing.T) {
+	for _, number := range []uint16{1213, 1205} {
+		calls := 0
+		err := runRootAlertTransaction(func() error {
+			calls++
+			if calls < 3 {
+				return &drivermysql.MySQLError{Number: number, Message: "raw secret"}
+			}
+			return nil
+		})
+		if err != nil || calls != 3 {
+			t.Fatalf("number=%d calls=%d err=%v", number, calls, err)
+		}
+	}
+	calls := 0
+	raw := &drivermysql.MySQLError{Number: 1213, Message: "raw secret"}
+	err := runRootAlertTransaction(func() error { calls++; return raw })
+	if calls != 3 || status(mapRootAlertError(err)) != 503 || strings.Contains(mapRootAlertError(err).Error(), "raw secret") {
+		t.Fatalf("calls=%d err=%v", calls, mapRootAlertError(err))
 	}
 }
 

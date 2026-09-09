@@ -271,9 +271,10 @@ func (s *RootAlertService) Occur(ctx context.Context, in RootAlertOccurrence) (*
 	if s == nil || s.db == nil || in.Type.String() == "unknown" || (rootAlertRequiresModelConfig(in.Type) && (in.ModelConfigID == nil || *in.ModelConfigID <= 0)) || (!rootAlertRequiresModelConfig(in.Type) && in.ModelConfigID != nil) || (in.ModelKey != "" && !publiccontent.ValidModelKey(in.ModelKey)) || !validRootAlertIdentity(in.Identity) {
 		return nil, errBadRequest("invalid root alert occurrence")
 	}
-	for attempt := 0; attempt < 3; attempt++ {
-		var row models.RootAlert
-		err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	var row models.RootAlert
+	err := runRootAlertTransaction(func() error {
+		row = models.RootAlert{}
+		return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 			effectiveModelKey := in.ModelKey
 			modelConfigGUID := ""
 			payloadInput := models.JSONMap{}
@@ -283,7 +284,7 @@ func (s *RootAlertService) Occur(ctx context.Context, in RootAlertOccurrence) (*
 			if in.ModelConfigID != nil {
 				var config models.PublicModelConfig
 				if e := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Select("id", "guid", "model_key", "status", "is_deleted").Where("id=? AND is_deleted=0", *in.ModelConfigID).First(&config).Error; e != nil {
-					return errBadRequest("invalid root alert model config")
+					return mapRootAlertConfigLoadError(e)
 				}
 				if !validRootAlertConfigStatus(in.Type, config.Status) {
 					return errBadRequest("invalid root alert model config")
@@ -334,16 +335,33 @@ func (s *RootAlertService) Occur(ctx context.Context, in RootAlertOccurrence) (*
 			}
 			return writeRootAlertAudit(tx, s.nextGUID(), now, nil, "root_alert.occurred", row.Guid, models.JSONMap{"alert_type": in.Type.String(), "fingerprint": fp})
 		})
-		if err == nil {
-			return &RootAlertView{GUID: fmt.Sprint(row.Guid), Type: row.AlertType.String(), State: models.RootAlertStateActive.String(), CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt}, nil
-		}
-		var me *drivermysql.MySQLError
-		if attempt < 2 && errors.As(err, &me) && (me.Number == 1062 || me.Number == 1205 || me.Number == 1213) {
-			continue
-		}
+	})
+	if err != nil {
 		return nil, mapRootAlertError(err)
 	}
-	return nil, errUnavailable("root alert unavailable")
+	return &RootAlertView{GUID: fmt.Sprint(row.Guid), Type: row.AlertType.String(), State: models.RootAlertStateActive.String(), CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt}, nil
+}
+
+func mapRootAlertConfigLoadError(err error) error {
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return errBadRequest("invalid root alert model config")
+	}
+	return err
+}
+
+func runRootAlertTransaction(run func() error) error {
+	var err error
+	for attempt := 0; attempt < 3; attempt++ {
+		err = run()
+		if err == nil {
+			return nil
+		}
+		var mysqlErr *drivermysql.MySQLError
+		if !(errors.As(err, &mysqlErr) && (mysqlErr.Number == 1062 || mysqlErr.Number == 1205 || mysqlErr.Number == 1213)) {
+			return err
+		}
+	}
+	return err
 }
 
 func (s *RootAlertService) Get(ctx context.Context, rootID int64, guid string) (*RootAlertView, error) {
