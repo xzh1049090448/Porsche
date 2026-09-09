@@ -152,6 +152,21 @@ func TestValidatePublicationUsesCommonMarkVisibleLinkLabelText(t *testing.T) {
 	}
 }
 
+func TestValidatePublicationChecksVisibleLinkAndImageTitles(t *testing.T) {
+	for _, body := range []string{
+		`[pricing](/pricing "40+ published models")`,
+		`![catalog](/assets/catalog.svg "100% uptime")`,
+		`<a href="/pricing" title="MIT licensed">pricing</a>`,
+		`<img src="/assets/catalog.svg" alt="40+ published models">`,
+	} {
+		t.Run(body, func(t *testing.T) {
+			if !hasIssueCode(ValidatePublication(publicationWithHome(body)), "unsubstantiated_prototype_claim") {
+				t.Fatalf("visible title or alt claim was accepted: %q", body)
+			}
+		})
+	}
+}
+
 func TestValidatePublicationRequiresExactlyOneReviewedTermsAndPrivacyDocument(t *testing.T) {
 	for _, documents := range [][]Document{
 		{

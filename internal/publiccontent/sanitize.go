@@ -85,6 +85,14 @@ func commonMarkVisibleText(document ast.Node, source []byte) string {
 				rendered.Write(typed.Label(source))
 			}
 			return ast.WalkSkipChildren, nil
+		case *ast.Link:
+			if inlineHTML.hiddenDepth == 0 {
+				rendered.Write(typed.Title)
+			}
+		case *ast.Image:
+			if inlineHTML.hiddenDepth == 0 {
+				rendered.Write(typed.Title)
+			}
 		}
 		return ast.WalkContinue, nil
 	})
@@ -117,14 +125,30 @@ func appendHTMLVisibleText(rendered *strings.Builder, raw string, state *htmlTex
 				rendered.Write(tokenizer.Text())
 			}
 		case xhtml.StartTagToken:
-			name, _ := tokenizer.TagName()
-			state.open(strings.ToLower(string(name)))
+			name, hasAttributes := tokenizer.TagName()
+			tag := strings.ToLower(string(name))
+			appendHTMLVisibleAttributes(rendered, tokenizer, tag, hasAttributes, state.hiddenDepth == 0)
+			state.open(tag)
 		case xhtml.SelfClosingTagToken:
-			// Void and explicitly self-closing elements have no semantic text.
+			name, hasAttributes := tokenizer.TagName()
+			tag := strings.ToLower(string(name))
+			appendHTMLVisibleAttributes(rendered, tokenizer, tag, hasAttributes, state.hiddenDepth == 0)
 		case xhtml.EndTagToken:
 			name, _ := tokenizer.TagName()
 			state.close(strings.ToLower(string(name)))
 		}
+	}
+}
+
+func appendHTMLVisibleAttributes(rendered *strings.Builder, tokenizer *xhtml.Tokenizer, tag string, hasAttributes, visible bool) {
+	allowedAttributes, allowed := allowedHTMLTags[tag]
+	for hasAttributes {
+		key, value, more := tokenizer.TagAttr()
+		attribute := strings.ToLower(string(key))
+		if visible && allowed && allowedAttributes[attribute] && (attribute == "title" || (tag == "img" && attribute == "alt")) {
+			rendered.Write(value)
+		}
+		hasAttributes = more
 	}
 }
 
