@@ -204,3 +204,31 @@ func TestCreateEncodersRejectWrongDTOType(t *testing.T) {
 		}
 	}
 }
+
+func TestA08InactiveDescriptorsUseDedicatedTypedEncoders(t *testing.T) {
+	tests := []struct {
+		action    Action
+		wantValue int
+		valid     any
+		wrong     any
+	}{
+		{ActionUsersPromote, 3, PromoteIntent{TargetGUID: 1, ExpectedAuthVersion: 1, ExpectedPermissionsVersion: 0, CatalogVersion: 1, Reason: "case"}, DemoteIntent{}},
+		{ActionUsersDemote, 4, DemoteIntent{TargetGUID: 1, ExpectedAuthVersion: 1, ExpectedPermissionsVersion: 1, CatalogVersion: 1, Reason: "case"}, PromoteIntent{}},
+		{ActionUsersPermissionsWrite, 5, PermissionsWriteIntent{TargetGUID: 1, ExpectedAuthVersion: 1, ExpectedPermissionsVersion: 1, CatalogVersion: 1, Reason: "case"}, PromoteIntent{}},
+	}
+	for _, tc := range tests {
+		descriptor := descriptorByAction(t, InactiveActionDescriptors(), tc.action)
+		if int(descriptor.Action) != tc.wantValue || descriptor.Active {
+			t.Fatalf("action %d descriptor = %+v, want integer %d and inactive", tc.action, descriptor, tc.wantValue)
+		}
+		if _, err := descriptor.Encode(tc.valid); err != nil {
+			t.Fatalf("action %d rejected dedicated intent: %v", tc.action, err)
+		}
+		if _, err := descriptor.Encode(tc.wrong); err != errWrongIntentType {
+			t.Fatalf("action %d wrong type error = %v, want %v", tc.action, err, errWrongIntentType)
+		}
+	}
+	if got := ActiveActionRegistry(); len(got) != 4 {
+		t.Fatalf("active registry length = %d, want 4", len(got))
+	}
+}

@@ -108,18 +108,18 @@ func encodeResetPasswordAny(value any) ([]byte, error) {
 	return encodeResetPasswordIntent(intent)
 }
 func encodePromoteAny(value any) ([]byte, error) {
-	intent, ok := value.(RoleIntent)
+	intent, ok := value.(PromoteIntent)
 	if !ok {
 		return nil, errWrongIntentType
 	}
-	return encodeRoleIntent(intent, "admin")
+	return encodePromoteIntent(intent)
 }
 func encodeDemoteAny(value any) ([]byte, error) {
-	intent, ok := value.(RoleIntent)
+	intent, ok := value.(DemoteIntent)
 	if !ok {
 		return nil, errWrongIntentType
 	}
-	return encodeRoleIntent(intent, "user")
+	return encodeDemoteIntent(intent)
 }
 func encodePermissionsWriteAny(value any) ([]byte, error) {
 	intent, ok := value.(PermissionsWriteIntent)

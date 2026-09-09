@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/porsche/ai-gateway-go/internal/authz"
 )
 
 var errInvalidIntent = errors.New("invalid action intent")
@@ -40,6 +42,8 @@ func (i ResetPasswordIntent) Format(state fmt.State, _ rune) {
 }
 func (ResetPasswordIntent) MarshalJSON() ([]byte, error) { return json.Marshal(struct{}{}) }
 
+// RoleIntent remains available to compile pre-activation service code. A08
+// descriptors reject it in favor of the dedicated promote and demote intents.
 type RoleIntent struct {
 	TargetGUID          int64
 	ExpectedAuthVersion int
@@ -49,11 +53,28 @@ type PermissionOverrideIntent struct {
 	Capability string
 	Effect     int
 }
-type PermissionsWriteIntent struct {
+type PromoteIntent struct {
 	TargetGUID                 int64
+	ExpectedAuthVersion        int
 	ExpectedPermissionsVersion int64
 	CatalogVersion             int
 	Overrides                  []PermissionOverrideIntent
+	Reason                     string
+}
+type DemoteIntent struct {
+	TargetGUID                 int64
+	ExpectedAuthVersion        int
+	ExpectedPermissionsVersion int64
+	CatalogVersion             int
+	Reason                     string
+}
+type PermissionsWriteIntent struct {
+	TargetGUID                 int64
+	ExpectedAuthVersion        int
+	ExpectedPermissionsVersion int64
+	CatalogVersion             int
+	Overrides                  []PermissionOverrideIntent
+	Reason                     string
 }
 type DeleteUserIntent struct {
 	TargetGUID          int64
@@ -206,12 +227,42 @@ func encodeResetPasswordIntent(intent ResetPasswordIntent) ([]byte, error) {
 	})
 }
 
-func encodeRoleIntent(intent RoleIntent, role string) ([]byte, error) {
-	if intent.TargetGUID <= 0 || intent.ExpectedAuthVersion <= 0 || intent.ExpectedAuthVersion > math.MaxInt32 || intent.Reason == "" {
+func encodePromoteIntent(intent PromoteIntent) ([]byte, error) {
+	reason, ok := normalizeIntentReason(intent.Reason)
+	if intent.TargetGUID <= 0 || intent.ExpectedAuthVersion <= 0 || intent.ExpectedAuthVersion > math.MaxInt32 ||
+		intent.ExpectedPermissionsVersion < 0 || intent.CatalogVersion <= 0 || intent.CatalogVersion > math.MaxInt32 || !ok {
 		return nil, errInvalidIntent
 	}
-	if _, err := checkedU32Length(uint64(len(intent.Reason))); err != nil {
+	items, err := encodePermissionOverrides(intent.Overrides)
+	if err != nil {
 		return nil, err
+	}
+	defer clearIntentItems(items)
+	return encodeIntent(func(w *intentWriter) error {
+		if err := w.fieldInt64(1, intent.TargetGUID); err != nil {
+			return err
+		}
+		if err := w.fieldInt32(2, intent.ExpectedAuthVersion); err != nil {
+			return err
+		}
+		if err := w.fieldInt64(3, intent.ExpectedPermissionsVersion); err != nil {
+			return err
+		}
+		if err := w.fieldInt32(4, intent.CatalogVersion); err != nil {
+			return err
+		}
+		if err := w.fieldArray(5, items); err != nil {
+			return err
+		}
+		return w.fieldString(6, reason)
+	})
+}
+
+func encodeDemoteIntent(intent DemoteIntent) ([]byte, error) {
+	reason, ok := normalizeIntentReason(intent.Reason)
+	if intent.TargetGUID <= 0 || intent.ExpectedAuthVersion <= 0 || intent.ExpectedAuthVersion > math.MaxInt32 ||
+		intent.ExpectedPermissionsVersion <= 0 || intent.CatalogVersion <= 0 || intent.CatalogVersion > math.MaxInt32 || !ok {
+		return nil, errInvalidIntent
 	}
 	return encodeIntent(func(w *intentWriter) error {
 		if err := w.fieldInt64(1, intent.TargetGUID); err != nil {
@@ -220,22 +271,53 @@ func encodeRoleIntent(intent RoleIntent, role string) ([]byte, error) {
 		if err := w.fieldInt32(2, intent.ExpectedAuthVersion); err != nil {
 			return err
 		}
-		if err := w.fieldString(3, role); err != nil {
+		if err := w.fieldInt64(3, intent.ExpectedPermissionsVersion); err != nil {
 			return err
 		}
-		return w.fieldString(4, intent.Reason)
+		if err := w.fieldInt32(4, intent.CatalogVersion); err != nil {
+			return err
+		}
+		return w.fieldString(5, reason)
 	})
 }
 
 func encodePermissionsWriteIntent(intent PermissionsWriteIntent) ([]byte, error) {
-	if intent.TargetGUID <= 0 || intent.ExpectedPermissionsVersion <= 0 || intent.CatalogVersion <= 0 || intent.CatalogVersion > math.MaxInt32 {
+	reason, ok := normalizeIntentReason(intent.Reason)
+	if intent.TargetGUID <= 0 || intent.ExpectedAuthVersion <= 0 || intent.ExpectedAuthVersion > math.MaxInt32 ||
+		intent.ExpectedPermissionsVersion <= 0 || intent.CatalogVersion <= 0 || intent.CatalogVersion > math.MaxInt32 || !ok {
 		return nil, errInvalidIntent
 	}
-	if _, err := checkedU32Length(uint64(len(intent.Overrides))); err != nil {
+	items, err := encodePermissionOverrides(intent.Overrides)
+	if err != nil {
+		return nil, err
+	}
+	defer clearIntentItems(items)
+	return encodeIntent(func(w *intentWriter) error {
+		if err := w.fieldInt64(1, intent.TargetGUID); err != nil {
+			return err
+		}
+		if err := w.fieldInt32(2, intent.ExpectedAuthVersion); err != nil {
+			return err
+		}
+		if err := w.fieldInt64(3, intent.ExpectedPermissionsVersion); err != nil {
+			return err
+		}
+		if err := w.fieldInt32(4, intent.CatalogVersion); err != nil {
+			return err
+		}
+		if err := w.fieldArray(5, items); err != nil {
+			return err
+		}
+		return w.fieldString(6, reason)
+	})
+}
+
+func encodePermissionOverrides(source []PermissionOverrideIntent) ([][]byte, error) {
+	if _, err := checkedU32Length(uint64(len(source))); err != nil {
 		return nil, err
 	}
 	arrayLength := uint64(4)
-	for _, override := range intent.Overrides {
+	for _, override := range source {
 		if _, err := checkedU32Length(uint64(len(override.Capability))); err != nil {
 			return nil, err
 		}
@@ -245,9 +327,16 @@ func encodePermissionsWriteIntent(intent PermissionsWriteIntent) ([]byte, error)
 			return nil, err
 		}
 	}
-	overrides := append([]PermissionOverrideIntent(nil), intent.Overrides...)
+	catalog := authz.Catalog()
+	definitions := make(map[string]authz.Definition, len(catalog))
+	for _, definition := range catalog {
+		definitions[definition.Name] = definition
+	}
+	overrides := append([]PermissionOverrideIntent(nil), source...)
 	for _, override := range overrides {
-		if override.Capability == "" || override.Effect < 1 || override.Effect > 3 {
+		definition, known := definitions[override.Capability]
+		if !known || definition.Unavailable || (override.Effect != 2 && override.Effect != 3) ||
+			(override.Effect == 2 && (!definition.Grantable || definition.RootOnly)) {
 			return nil, errInvalidIntent
 		}
 	}
@@ -255,6 +344,7 @@ func encodePermissionsWriteIntent(intent PermissionsWriteIntent) ([]byte, error)
 	items := make([][]byte, len(overrides))
 	for i, override := range overrides {
 		if i > 0 && overrides[i-1].Capability == override.Capability {
+			clearIntentItems(items)
 			return nil, errInvalidIntent
 		}
 		item, err := encodeIntent(func(w *intentWriter) error {
@@ -264,31 +354,22 @@ func encodePermissionsWriteIntent(intent PermissionsWriteIntent) ([]byte, error)
 			return w.fieldInt32(2, override.Effect)
 		})
 		if err != nil {
+			clearIntentItems(items)
 			return nil, err
 		}
 		items[i] = item
 	}
-	defer func() {
-		for _, item := range items {
-			clear(item)
-		}
-	}()
-	return encodeIntent(func(w *intentWriter) error {
-		if err := w.fieldInt64(1, intent.TargetGUID); err != nil {
-			return err
-		}
-		if err := w.fieldInt64(2, intent.ExpectedPermissionsVersion); err != nil {
-			return err
-		}
-		if err := w.fieldInt32(3, intent.CatalogVersion); err != nil {
-			return err
-		}
-		return w.fieldArray(4, items)
-	})
+	return items, nil
+}
+
+func clearIntentItems(items [][]byte) {
+	for _, item := range items {
+		clear(item)
+	}
 }
 
 func encodeDeleteUserIntent(intent DeleteUserIntent) ([]byte, error) {
-	reason, ok := normalizeDeleteUserReason(intent.Reason)
+	reason, ok := normalizeIntentReason(intent.Reason)
 	if intent.TargetGUID <= 0 || intent.ExpectedAuthVersion <= 0 || intent.ExpectedAuthVersion > math.MaxInt32 || !ok {
 		return nil, errInvalidIntent
 	}
@@ -306,7 +387,7 @@ func encodeDeleteUserIntent(intent DeleteUserIntent) ([]byte, error) {
 	})
 }
 
-func normalizeDeleteUserReason(raw string) (string, bool) {
+func normalizeIntentReason(raw string) (string, bool) {
 	normalized := strings.TrimSpace(raw)
 	count := utf8.RuneCountInString(normalized)
 	return normalized, utf8.ValidString(normalized) && count >= 1 && count <= 200
