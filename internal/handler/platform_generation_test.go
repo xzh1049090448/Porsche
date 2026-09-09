@@ -294,3 +294,78 @@ func TestPlatformGenerationHandlerIntegrationReceiptAndOwnerIsolation(t *testing
 		t.Fatalf("owner changed by foreign cancel status/body=%d/%s", ownerAfter.Code, ownerAfter.Body.String())
 	}
 }
+
+func TestPlatformGenerationHandlerIntegrationPartialCompareReceipt(t *testing.T) {
+	if strings.TrimSpace(os.Getenv("TEST_DATABASE_URL")) == "" || strings.TrimSpace(os.Getenv("TEST_REDIS_URL")) == "" {
+		t.Skip("BLOCKED_FIXTURE: requires TEST_DATABASE_URL and TEST_REDIS_URL")
+	}
+	state := ownedRealUserCreateHTTPState(t)
+	t.Cleanup(func() {
+		if err := state.Close(); err != nil {
+			t.Errorf("close compare integration state: %v", err)
+		}
+	})
+	if err := migration.Verify(context.Background(), state.DB); err != nil {
+		t.Fatalf("verify owned compare migration ledger: %v", err)
+	}
+	user := platformTestUser(t, state, "generation-compare-owner", nil)
+	user.DailyCallLimit = 100
+	user.DailyCallsUsed = 1
+	user.TotalTokensUsed = 23
+	resetAt := time.Now().UTC().UnixMilli()
+	user.DailyCallsResetAt = &resetAt
+	if err := state.DB.Create(&user).Error; err != nil {
+		t.Fatal(err)
+	}
+	generationID := fmt.Sprintf("650e8400-e29b-41d4-a716-%012x", platformTestSnowflake.Next()&0xffffffffffff)
+	nowMillis := time.Now().UTC().UnixMilli()
+	modelsInOrder := []string{"Model-A", "model-b"}
+	claim, err := state.PlatformGenerations.Claim(context.Background(), service.PlatformGenerationClaimInput{
+		UserID: user.ID, GenerationID: generationID, Mode: service.PlatformGenerationModeCompare, Models: modelsInOrder, NowMillis: nowMillis,
+	})
+	if err != nil || claim.Duplicate || claim.LeaseToken == "" {
+		t.Fatalf("compare claim=%#v error=%v", claim, err)
+	}
+	if _, err := state.PlatformGenerations.MarkModelDone(context.Background(), user.ID, generationID, modelsInOrder[0], 0, nowMillis+1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := state.PlatformGenerations.MarkModelFailed(context.Background(), user.ID, generationID, modelsInOrder[1], "timeout", nowMillis+2); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := state.PlatformGenerations.BeginCommit(context.Background(), user.ID, generationID, nowMillis+3); err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := state.PlatformGenerationPersistence.Finalize(context.Background(), state.DB, service.PlatformGenerationPersistenceInput{
+		UserID: user.ID, GenerationID: generationID, Mode: service.PlatformGenerationModeCompare,
+		Models: modelsInOrder, UserMessage: "private compare prompt", NowMillis: nowMillis + 4,
+		Results: []service.PlatformGenerationPersistenceResult{
+			{Model: modelsInOrder[0], State: service.PlatformGenerationStateCompleted, Content: "compare receipt answer", Tokens: 7, Seq: 0},
+			{Model: modelsInOrder[1], State: service.PlatformGenerationStateFailed, ErrorCode: "timeout", Seq: 0},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const currentTotal = int64(919)
+	if receipt.TotalTokens == currentTotal {
+		t.Fatal("fixture current total must differ from generation-local tokens")
+	}
+	if err := state.DB.Model(&models.User{}).Where("id = ?", user.ID).Update("total_tokens_used", currentTotal).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	path := "/api/v1/platform/chat/generations/" + generationID
+	rec := platformGenerationRequestForUser(t, state.PlatformGenerationControl, user.ID, http.MethodGet, path)
+	want := fmt.Sprintf(
+		`{"generation_id":"%s","status":"completed","mode":"compare","conversation_guid":"%d","results":[{"model":"Model-A","status":"completed","assistant_message_guid":"%s","content":"compare receipt answer","tokens":7},{"model":"model-b","status":"failed","code":"timeout"}],"total_tokens_used":919}`,
+		generationID, receipt.ConversationGUID, receipt.Results[0].AssistantMessageGUID,
+	)
+	if rec.Code != http.StatusOK || strings.TrimSpace(rec.Body.String()) != want {
+		t.Fatalf("compare HTTP status/body=%d/%q want 200/%q", rec.Code, rec.Body.String(), want)
+	}
+	if rec.Header().Get("Cache-Control") != "no-store" || rec.Header().Get("Retry-After") != "" ||
+		strings.Contains(rec.Body.String(), "private compare prompt") || strings.Contains(rec.Body.String(), `"model":"model-b","status":"failed","assistant_message_guid"`) ||
+		strings.Contains(rec.Body.String(), `"model":"model-b","status":"failed","content"`) || strings.Contains(rec.Body.String(), `"model":"model-b","status":"failed","tokens"`) {
+		t.Fatalf("compare HTTP metadata/content boundary violated: headers=%v body=%s", rec.Header(), rec.Body.String())
+	}
+}
