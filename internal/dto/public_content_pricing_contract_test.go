@@ -107,9 +107,11 @@ func TestPublicContentPricingContract(t *testing.T) {
 		"POST /admin/v2/public-models/{guid}/deactivate",
 		"DELETE /admin/v2/public-models/{guid}",
 		"PUT /admin/v2/public-pricing/draft",
+		"POST /admin/v2/public-pricing/validate",
 		"POST /admin/v2/public-pricing/publish",
 		"POST /admin/v2/public-pricing/releases/{guid}/restore",
 		"PUT /admin/v2/public-content/draft",
+		"POST /admin/v2/public-content/validate",
 		"POST /admin/v2/public-content/publish",
 		"POST /admin/v2/public-content/releases/{guid}/restore",
 	}, "mutation_requirements", "expected_revision_routes")
@@ -128,6 +130,19 @@ func TestPublicContentPricingContract(t *testing.T) {
 	publicContentPricingRequire(t, contract, "required_authenticated_root_session_or_bearer", "admin_request_headers", "Authorization")
 	publicContentPricingRequire(t, contract, "required_exactly_once_unique_per_root_and_operation", "admin_publish_request_headers", "Idempotency-Key")
 	publicContentPricingRequire(t, contract, "required_single_use_action_ticket", "admin_publish_request_headers", "X-Action-Ticket")
+	for _, route := range []publicContentPricingRoute{
+		{"POST", "/admin/v2/public-pricing/publish", "root"},
+		{"POST", "/admin/v2/public-pricing/releases/{guid}/restore", "root"},
+		{"POST", "/admin/v2/public-content/publish", "root"},
+		{"POST", "/admin/v2/public-content/releases/{guid}/restore", "root"},
+	} {
+		publicContentPricingRequireRouteValue(t, contract, route, "admin_publish_request_headers", "request_headers")
+	}
+	preview := publicContentPricingRoute{"GET", "/admin/v2/public-content/preview", "root"}
+	publicContentPricingRequireRouteValue(t, contract, preview, "admin_preview_response_headers", "response_headers")
+	publicContentPricingRequire(t, contract, "no-store", "admin_preview_response_headers", "Cache-Control")
+	publicContentPricingRequire(t, contract, "noindex_nofollow", "admin_preview_response_headers", "X-Robots-Tag")
+	publicContentPricingRequireRouteValue(t, contract, publicContentPricingRoute{"GET", "/admin/v2/public-models", "root"}, []any{"draft", "active", "inactive"}, "request", "query", "status_values")
 	publicContentPricingRequire(t, contract, []any{
 		"published_price_below_upstream",
 		"upstream_missing",
@@ -190,6 +205,32 @@ func publicContentPricingRoutes(t *testing.T, contract map[string]any) []map[str
 		routes = append(routes, route)
 	}
 	return routes
+}
+
+func publicContentPricingRequireRouteValue(t *testing.T, contract map[string]any, expected publicContentPricingRoute, want any, path ...string) {
+	t.Helper()
+	for _, route := range publicContentPricingRoutes(t, contract) {
+		if route["method"] != expected.method || route["path"] != expected.path || route["role"] != expected.role {
+			continue
+		}
+		value := any(route)
+		for _, part := range path {
+			object, ok := value.(map[string]any)
+			if !ok {
+				t.Fatalf("route %s %s path %v expected object before %s", expected.method, expected.path, path, part)
+			}
+			var exists bool
+			value, exists = object[part]
+			if !exists {
+				t.Fatalf("route %s %s path %v missing %s", expected.method, expected.path, path, part)
+			}
+		}
+		if !reflect.DeepEqual(value, want) {
+			t.Fatalf("route %s %s path %v=%#v, want %#v", expected.method, expected.path, path, value, want)
+		}
+		return
+	}
+	t.Fatalf("route %s %s role=%s not found", expected.method, expected.path, expected.role)
 }
 
 func publicContentPricingRequire(t *testing.T, root map[string]any, want any, path ...string) {

@@ -37,6 +37,11 @@
     "Idempotency-Key": "required_exactly_once_unique_per_root_and_operation",
     "X-Action-Ticket": "required_single_use_action_ticket"
   },
+  "admin_preview_response_headers": {
+    "Cache-Control": "no-store",
+    "X-Request-ID": "required_non_empty",
+    "X-Robots-Tag": "noindex_nofollow"
+  },
   "mutation_requirements": {
     "optimistic_concurrency_field": "expected_revision",
     "expected_revision_routes": [
@@ -45,9 +50,11 @@
       "POST /admin/v2/public-models/{guid}/deactivate",
       "DELETE /admin/v2/public-models/{guid}",
       "PUT /admin/v2/public-pricing/draft",
+      "POST /admin/v2/public-pricing/validate",
       "POST /admin/v2/public-pricing/publish",
       "POST /admin/v2/public-pricing/releases/{guid}/restore",
       "PUT /admin/v2/public-content/draft",
+      "POST /admin/v2/public-content/validate",
       "POST /admin/v2/public-content/publish",
       "POST /admin/v2/public-content/releases/{guid}/restore"
     ],
@@ -266,6 +273,11 @@
         "query": {
           "search": "optional_string",
           "status": "optional_draft_active_or_inactive",
+          "status_values": [
+            "draft",
+            "active",
+            "inactive"
+          ],
           "upstream_state": "optional_present_or_missing",
           "page": "optional_positive_integer",
           "page_size": "optional_bounded_positive_integer"
@@ -480,7 +492,7 @@
       "method": "POST",
       "path": "/admin/v2/public-pricing/publish",
       "role": "root",
-      "request_headers": "admin_request_headers_plus_Idempotency-Key",
+      "request_headers": "admin_publish_request_headers",
       "response_headers": "admin_response_headers",
       "request": {
         "body": {
@@ -530,7 +542,7 @@
       "method": "POST",
       "path": "/admin/v2/public-pricing/releases/{guid}/restore",
       "role": "root",
-      "request_headers": "admin_request_headers_plus_Idempotency-Key",
+      "request_headers": "admin_publish_request_headers",
       "response_headers": "admin_response_headers",
       "request": {
         "path": {
@@ -667,7 +679,7 @@
       "path": "/admin/v2/public-content/preview",
       "role": "root",
       "request_headers": "admin_request_headers",
-      "response_headers": "admin_response_headers_plus_X-Robots-Tag_noindex",
+      "response_headers": "admin_preview_response_headers",
       "request": {
         "query": {
           "revision": "optional_positive_integer"
@@ -682,7 +694,7 @@
       "method": "POST",
       "path": "/admin/v2/public-content/publish",
       "role": "root",
-      "request_headers": "admin_request_headers_plus_Idempotency-Key",
+      "request_headers": "admin_publish_request_headers",
       "response_headers": "admin_response_headers",
       "request": {
         "body": {
@@ -733,7 +745,7 @@
       "method": "POST",
       "path": "/admin/v2/public-content/releases/{guid}/restore",
       "role": "root",
-      "request_headers": "admin_request_headers_plus_Idempotency-Key",
+      "request_headers": "admin_publish_request_headers",
       "response_headers": "admin_response_headers",
       "request": {
         "path": {
