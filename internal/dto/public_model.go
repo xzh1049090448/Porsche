@@ -3,11 +3,16 @@ package dto
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 
 	"github.com/porsche/ai-gateway-go/internal/service"
 )
+
+const PublicModelRequestBodyLimit = 1 << 20
+
+var ErrPublicModelRequestTooLarge = errors.New("public model request body too large")
 
 type OptionalNullableString = service.OptionalNullableString
 type PublicModelAdmin = service.PublicModelAdmin
@@ -20,9 +25,12 @@ type AdminModelListRequest = service.AdminModelListRequest
 type AdminModelListResponse = service.AdminModelListResponse
 
 func DecodeUpdatePublicModelRequest(r io.Reader) (UpdatePublicModelRequest, error) {
-	raw, err := io.ReadAll(io.LimitReader(r, 1<<20))
+	raw, err := io.ReadAll(io.LimitReader(r, PublicModelRequestBodyLimit+1))
 	if err != nil {
 		return UpdatePublicModelRequest{}, err
+	}
+	if len(raw) > PublicModelRequestBodyLimit {
+		return UpdatePublicModelRequest{}, ErrPublicModelRequestTooLarge
 	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	tok, err := dec.Token()

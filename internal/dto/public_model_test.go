@@ -3,6 +3,7 @@ package dto
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"github.com/porsche/ai-gateway-go/internal/service"
 	"strings"
 	"testing"
@@ -66,6 +67,26 @@ func TestDecodeUpdatePublicModelRejectsUnknownDuplicateTrailingAndMissingRevisio
 	for _, body := range []string{`{"expected_revision":1,"unknown":1}`, `{"expected_revision":1,"expected_revision":2}`, `{"expected_revision":1}{}`, `{}`} {
 		if _, err := DecodeUpdatePublicModelRequest(bytes.NewBufferString(body)); err == nil {
 			t.Fatalf("accepted %s", body)
+		}
+	}
+}
+
+func TestDecodeUpdatePublicModelBodyLimit(t *testing.T) {
+	prefix := `{"expected_revision":1}`
+	exact := prefix + strings.Repeat(" ", PublicModelRequestBodyLimit-len(prefix))
+	if _, err := DecodeUpdatePublicModelRequest(strings.NewReader(exact)); err != nil {
+		t.Fatalf("exact limit: %v", err)
+	}
+	for _, body := range []string{
+		exact + " ",
+		prefix + strings.Repeat(" ", PublicModelRequestBodyLimit-len(prefix)) + `{}`,
+		prefix + strings.Repeat("x", PublicModelRequestBodyLimit-len(prefix)+1),
+	} {
+		if _, err := DecodeUpdatePublicModelRequest(strings.NewReader(body)); !errors.Is(err, ErrPublicModelRequestTooLarge) {
+			t.Fatalf("oversize error=%v", err)
+		}
+		if err := func() error { _, e := DecodeUpdatePublicModelRequest(strings.NewReader(body)); return e }(); err == nil || strings.Contains(err.Error(), "expected_revision") {
+			t.Fatalf("unstable or content-bearing error=%v", err)
 		}
 	}
 }
