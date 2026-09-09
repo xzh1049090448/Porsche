@@ -720,9 +720,9 @@ func TestPlatformGenerationControlCancelPollRacesAndSingleDeadline(t *testing.T)
 		control := mustControl(t, fake, NewPlatformGenerationCancellationRegistry(), now)
 		control.cancelBudget, control.cancelPoll = 4*time.Millisecond, time.Millisecond
 		started := time.Now()
-		_, _, err := control.Cancel(context.Background(), 7, controlGenerationID)
-		if err != ErrPlatformGenerationControlUnavailable || time.Since(started) > 20*time.Millisecond {
-			t.Fatalf("error/duration = %v/%s", err, time.Since(started))
+		view, pending, err := control.Cancel(context.Background(), 7, controlGenerationID)
+		if err != nil || !pending || view.Status != "cancelling" || time.Since(started) > 20*time.Millisecond {
+			t.Fatalf("view/pending/error/duration = %#v/%v/%v/%s", view, pending, err, time.Since(started))
 		}
 	})
 }
@@ -755,5 +755,132 @@ func TestPlatformGenerationControlCancelInitialDestructiveNotFoundRetriesWithinD
 	view, pending, err := control.Cancel(context.Background(), 7, controlGenerationID)
 	if err != nil || pending || view.Status != "cancelled" || fake.cancelCalls.Load() != 2 {
 		t.Fatalf("Cancel() = %#v/%v/%v calls=%d", view, pending, err, fake.cancelCalls.Load())
+	}
+}
+
+func TestPlatformGenerationControlCancelBoundsEveryDependencyWithOneContext(t *testing.T) {
+	now := time.UnixMilli(1_800_000_000_000).UTC()
+	const budget = 12 * time.Millisecond
+	assertBoundedFailure := func(t *testing.T, started time.Time, view PlatformGenerationView, pending bool, err error) {
+		t.Helper()
+		elapsed := time.Since(started)
+		if err != ErrPlatformGenerationControlUnavailable || pending || view.Status == "running" || elapsed < budget/2 || elapsed > 100*time.Millisecond {
+			t.Fatalf("Cancel() = %#v/%v/%v after %s", view, pending, err, elapsed)
+		}
+		if strings.Contains(err.Error(), "deadline") || strings.Contains(err.Error(), "dependency-secret") {
+			t.Fatalf("Cancel() leaked dependency detail: %q", err)
+		}
+	}
+	blockUntilDone := func(ctx context.Context) error {
+		select {
+		case <-ctx.Done():
+			return errors.New("dependency-secret: " + ctx.Err().Error())
+		case <-time.After(250 * time.Millisecond):
+			return errors.New("dependency ignored cancellation")
+		}
+	}
+
+	t.Run("initial cancel decision", func(t *testing.T) {
+		fake := newPlatformGenerationControlFake(controlSnapshot(PlatformGenerationStateRunning, now.UnixMilli()))
+		fake.cancelOrCreate = func(ctx context.Context, _ int64, _ string, _ int64) (PlatformGenerationCancelDecision, error) {
+			fake.cancelCalls.Add(1)
+			return PlatformGenerationCancelDecision{}, blockUntilDone(ctx)
+		}
+		control := mustControl(t, fake, NewPlatformGenerationCancellationRegistry(), now)
+		control.cancelBudget, control.cancelPoll = budget, time.Millisecond
+		started := time.Now()
+		view, pending, err := control.Cancel(context.Background(), 7, controlGenerationID)
+		assertBoundedFailure(t, started, view, pending, err)
+		if fake.cancelCalls.Load() != 1 {
+			t.Fatalf("cancel dependency calls = %d", fake.cancelCalls.Load())
+		}
+	})
+
+	t.Run("poll get", func(t *testing.T) {
+		cancelling := controlSnapshot(PlatformGenerationStateCancelling, now.UnixMilli())
+		fake := newPlatformGenerationControlFake(cancelling)
+		fake.get = func(ctx context.Context, _ int64, _ string) (PlatformGenerationSnapshot, error) {
+			fake.getCalls.Add(1)
+			return PlatformGenerationSnapshot{}, blockUntilDone(ctx)
+		}
+		control := mustControl(t, fake, NewPlatformGenerationCancellationRegistry(), now)
+		control.cancelBudget, control.cancelPoll = budget, time.Millisecond
+		started := time.Now()
+		view, pending, err := control.Cancel(context.Background(), 7, controlGenerationID)
+		assertBoundedFailure(t, started, view, pending, err)
+		if fake.getCalls.Load() != 1 {
+			t.Fatalf("get dependency calls = %d", fake.getCalls.Load())
+		}
+	})
+
+	t.Run("completed receipt", func(t *testing.T) {
+		completed := controlSnapshot(PlatformGenerationStateCompleted, now.UnixMilli())
+		fake := newPlatformGenerationControlFake(completed)
+		fake.loadReceipt = func(ctx context.Context, _ int64, _ string) (PlatformGenerationReceiptSnapshot, error) {
+			fake.receiptCalls.Add(1)
+			return PlatformGenerationReceiptSnapshot{}, blockUntilDone(ctx)
+		}
+		control := mustControl(t, fake, NewPlatformGenerationCancellationRegistry(), now)
+		control.cancelBudget, control.cancelPoll = budget, time.Millisecond
+		started := time.Now()
+		view, pending, err := control.Cancel(context.Background(), 7, controlGenerationID)
+		assertBoundedFailure(t, started, view, pending, err)
+		if fake.receiptCalls.Load() != 1 || fake.totalCalls.Load() != 0 {
+			t.Fatalf("receipt/total calls = %d/%d", fake.receiptCalls.Load(), fake.totalCalls.Load())
+		}
+	})
+}
+
+func TestPlatformGenerationControlCancelUsesEarlierCallerDeadline(t *testing.T) {
+	now := time.UnixMilli(1_800_000_000_000).UTC()
+	fake := newPlatformGenerationControlFake(controlSnapshot(PlatformGenerationStateRunning, now.UnixMilli()))
+	var seenDeadline time.Time
+	fake.cancelOrCreate = func(ctx context.Context, _ int64, _ string, _ int64) (PlatformGenerationCancelDecision, error) {
+		seenDeadline, _ = ctx.Deadline()
+		<-ctx.Done()
+		return PlatformGenerationCancelDecision{}, ctx.Err()
+	}
+	control := mustControl(t, fake, NewPlatformGenerationCancellationRegistry(), now)
+	control.cancelBudget, control.cancelPoll = 200*time.Millisecond, time.Millisecond
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Millisecond)
+	defer cancel()
+	wantDeadline, _ := ctx.Deadline()
+	started := time.Now()
+	view, pending, err := control.Cancel(ctx, 7, controlGenerationID)
+	if elapsed := time.Since(started); err != ErrPlatformGenerationControlUnavailable || pending || view.Status != "" || elapsed > 80*time.Millisecond {
+		t.Fatalf("Cancel() = %#v/%v/%v after %s", view, pending, err, elapsed)
+	}
+	if !seenDeadline.Equal(wantDeadline) {
+		t.Fatalf("dependency deadline = %s, want caller deadline %s", seenDeadline, wantDeadline)
+	}
+}
+
+func TestPlatformGenerationControlCancelRetriesReuseOriginalBoundedDeadline(t *testing.T) {
+	now := time.UnixMilli(1_800_000_000_000).UTC()
+	tombstone := controlTombstone(now.UnixMilli())
+	fake := newPlatformGenerationControlFake(tombstone)
+	var deadlines []time.Time
+	fake.cancelOrCreate = func(ctx context.Context, _ int64, _ string, _ int64) (PlatformGenerationCancelDecision, error) {
+		deadline, ok := ctx.Deadline()
+		if !ok {
+			return PlatformGenerationCancelDecision{}, errors.New("missing bounded deadline")
+		}
+		deadlines = append(deadlines, deadline)
+		return PlatformGenerationCancelDecision{}, ErrPlatformGenerationNotFound
+	}
+	control := mustControl(t, fake, NewPlatformGenerationCancellationRegistry(), now)
+	control.cancelBudget, control.cancelPoll = 12*time.Millisecond, time.Millisecond
+	started := time.Now()
+	view, pending, err := control.Cancel(context.Background(), 7, controlGenerationID)
+	if elapsed := time.Since(started); err != ErrPlatformGenerationControlUnavailable || pending || view.Status != "" || elapsed > 100*time.Millisecond {
+		t.Fatalf("Cancel() = %#v/%v/%v after %s", view, pending, err, elapsed)
+	}
+	if len(deadlines) < 2 {
+		t.Fatalf("retry deadlines = %d, want at least 2", len(deadlines))
+	}
+	for index := 1; index < len(deadlines); index++ {
+		if !deadlines[index].Equal(deadlines[0]) {
+			t.Fatalf("deadline[%d] = %s, want original %s", index, deadlines[index], deadlines[0])
+		}
 	}
 }

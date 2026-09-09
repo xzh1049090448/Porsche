@@ -21,6 +21,7 @@ var (
 	ErrPlatformGenerationControlInvalid     = errors.New("invalid platform generation control request")
 	ErrPlatformGenerationControlNotFound    = errors.New("platform generation control not found")
 	ErrPlatformGenerationControlUnavailable = errors.New("platform generation control unavailable")
+	errPlatformGenerationControlContextDone = errors.New("platform generation control context done before dependency")
 )
 
 type PlatformGenerationResultView struct {
@@ -121,8 +122,16 @@ func loadPlatformGenerationControlTotalTokens(ctx context.Context, db *gorm.DB, 
 }
 
 func (c *PlatformGenerationControl) Get(ctx context.Context, userID int64, generationID string) (PlatformGenerationView, error) {
+	view, err := c.get(ctx, userID, generationID)
+	return view, platformGenerationControlPublicError(err)
+}
+
+func (c *PlatformGenerationControl) get(ctx context.Context, userID int64, generationID string) (PlatformGenerationView, error) {
 	if !validPlatformGenerationControlRequest(c, ctx, userID, generationID) {
 		return PlatformGenerationView{}, ErrPlatformGenerationControlInvalid
+	}
+	if ctx.Err() != nil {
+		return PlatformGenerationView{}, errPlatformGenerationControlContextDone
 	}
 	nowMillis, ok := c.controlNowMillis()
 	if !ok {
@@ -141,6 +150,9 @@ func (c *PlatformGenerationControl) Get(ctx context.Context, userID int64, gener
 
 func (c *PlatformGenerationControl) converge(ctx context.Context, userID int64, generationID string, nowMillis int64, snapshot PlatformGenerationSnapshot) (PlatformGenerationSnapshot, error) {
 	for attempt := 0; attempt < 2; attempt++ {
+		if ctx.Err() != nil {
+			return PlatformGenerationSnapshot{}, errPlatformGenerationControlContextDone
+		}
 		if !validPlatformGenerationControlSnapshot(snapshot, generationID) || nowMillis < snapshot.UpdatedAtMillis {
 			return PlatformGenerationSnapshot{}, ErrPlatformGenerationControlUnavailable
 		}
@@ -179,6 +191,9 @@ func (c *PlatformGenerationControl) converge(ctx context.Context, userID int64, 
 		if attempt == 1 {
 			return PlatformGenerationSnapshot{}, ErrPlatformGenerationControlUnavailable
 		}
+		if ctx.Err() != nil {
+			return PlatformGenerationSnapshot{}, errPlatformGenerationControlContextDone
+		}
 		snapshot, err = c.deps.get(ctx, userID, generationID)
 		if err != nil {
 			return PlatformGenerationSnapshot{}, platformGenerationControlReadError(err)
@@ -194,13 +209,19 @@ func (c *PlatformGenerationControl) Cancel(ctx context.Context, userID int64, ge
 	if c.cancelBudget <= 0 || c.cancelPoll <= 0 {
 		return PlatformGenerationView{}, false, ErrPlatformGenerationControlUnavailable
 	}
-	return c.cancelUntil(ctx, userID, generationID, time.Now().Add(c.cancelBudget), false)
+	boundedCtx, cancel := context.WithDeadline(ctx, time.Now().Add(c.cancelBudget))
+	defer cancel()
+	deadline, ok := boundedCtx.Deadline()
+	if !ok {
+		return PlatformGenerationView{}, false, ErrPlatformGenerationControlUnavailable
+	}
+	return c.cancelUntil(boundedCtx, ctx, userID, generationID, deadline, false)
 }
 
-func (c *PlatformGenerationControl) cancelUntil(ctx context.Context, userID int64, generationID string, deadline time.Time, callbackInvoked bool) (PlatformGenerationView, bool, error) {
+func (c *PlatformGenerationControl) cancelUntil(ctx, callerCtx context.Context, userID int64, generationID string, deadline time.Time, callbackInvoked bool) (PlatformGenerationView, bool, error) {
 	var latest PlatformGenerationSnapshot
 	for {
-		if err := ctx.Err(); err != nil {
+		if callerCtx.Err() != nil || ctx.Err() != nil {
 			return PlatformGenerationView{}, false, ErrPlatformGenerationControlUnavailable
 		}
 		nowMillis, ok := c.controlNowMillis()
@@ -227,7 +248,7 @@ func (c *PlatformGenerationControl) cancelUntil(ctx context.Context, userID int6
 		}
 		if decision.CreatedTombstone || platformGenerationControlTerminal(latest.State) {
 			view, projectErr := c.project(ctx, userID, generationID, latest)
-			return view, false, projectErr
+			return view, false, platformGenerationControlPublicError(projectErr)
 		}
 		if latest.State == PlatformGenerationStateCancelling || latest.State == PlatformGenerationStateCommitting {
 			break
@@ -241,35 +262,43 @@ func (c *PlatformGenerationControl) cancelUntil(ctx context.Context, userID int6
 	}
 
 	for {
-		if ctx.Err() != nil {
+		if callerCtx.Err() != nil {
 			return PlatformGenerationView{}, false, ErrPlatformGenerationControlUnavailable
+		}
+		if ctx.Err() != nil {
+			return c.pendingCancellationView(ctx, userID, generationID, latest)
 		}
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
-			view, err := c.project(ctx, userID, generationID, latest)
-			if err != nil {
-				return PlatformGenerationView{}, false, err
-			}
-			if latest.State != PlatformGenerationStateCancelling && latest.State != PlatformGenerationStateCommitting {
-				return PlatformGenerationView{}, false, ErrPlatformGenerationControlUnavailable
-			}
-			return view, true, nil
+			return c.pendingCancellationView(ctx, userID, generationID, latest)
 		}
 		wait := c.cancelPoll
 		if remaining < wait {
 			wait = remaining
 		}
 		if !platformGenerationControlWait(ctx, wait, deadline) {
-			if ctx.Err() != nil {
+			if callerCtx.Err() != nil {
 				return PlatformGenerationView{}, false, ErrPlatformGenerationControlUnavailable
 			}
 			continue
 		}
 
-		view, err := c.Get(ctx, userID, generationID)
+		view, err := c.get(ctx, userID, generationID)
 		if err != nil {
-			if err == ErrPlatformGenerationControlNotFound && time.Now().Before(deadline) {
-				return c.cancelUntil(ctx, userID, generationID, deadline, callbackInvoked)
+			if errors.Is(err, errPlatformGenerationControlContextDone) {
+				if callerCtx.Err() != nil {
+					return PlatformGenerationView{}, false, ErrPlatformGenerationControlUnavailable
+				}
+				return c.pendingCancellationView(ctx, userID, generationID, latest)
+			}
+			if err == ErrPlatformGenerationControlNotFound {
+				if callerCtx.Err() != nil {
+					return PlatformGenerationView{}, false, ErrPlatformGenerationControlUnavailable
+				}
+				if time.Now().Before(deadline) && ctx.Err() == nil {
+					return c.cancelUntil(ctx, callerCtx, userID, generationID, deadline, callbackInvoked)
+				}
+				return c.pendingCancellationView(ctx, userID, generationID, latest)
 			}
 			return PlatformGenerationView{}, false, ErrPlatformGenerationControlUnavailable
 		}
@@ -280,7 +309,7 @@ func (c *PlatformGenerationControl) cancelUntil(ctx context.Context, userID int6
 			latest.State = platformGenerationControlState(view.Status)
 			latest.Mode = platformGenerationControlMode(view.Mode)
 		case "running":
-			if !time.Now().Before(deadline) {
+			if !time.Now().Before(deadline) || ctx.Err() != nil {
 				return PlatformGenerationView{}, false, ErrPlatformGenerationControlUnavailable
 			}
 			nowMillis, ok := c.controlNowMillis()
@@ -301,10 +330,21 @@ func (c *PlatformGenerationControl) cancelUntil(ctx context.Context, userID int6
 			}
 			if platformGenerationControlTerminal(latest.State) {
 				projected, projectErr := c.project(ctx, userID, generationID, latest)
-				return projected, false, projectErr
+				return projected, false, platformGenerationControlPublicError(projectErr)
 			}
 		}
 	}
+}
+
+func (c *PlatformGenerationControl) pendingCancellationView(ctx context.Context, userID int64, generationID string, latest PlatformGenerationSnapshot) (PlatformGenerationView, bool, error) {
+	if latest.State != PlatformGenerationStateCancelling && latest.State != PlatformGenerationStateCommitting {
+		return PlatformGenerationView{}, false, ErrPlatformGenerationControlUnavailable
+	}
+	view, err := c.project(ctx, userID, generationID, latest)
+	if err != nil {
+		return PlatformGenerationView{}, false, err
+	}
+	return view, true, nil
 }
 
 func platformGenerationControlWait(ctx context.Context, wait time.Duration, deadline time.Time) bool {
@@ -349,9 +389,15 @@ func (c *PlatformGenerationControl) project(ctx context.Context, userID int64, g
 	if snapshot.State != PlatformGenerationStateCompleted {
 		return view, nil
 	}
+	if ctx.Err() != nil {
+		return PlatformGenerationView{}, errPlatformGenerationControlContextDone
+	}
 	receipt, err := c.deps.loadReceipt(ctx, userID, generationID)
 	if err != nil || !platformGenerationReceiptMatches(snapshot, receipt, userID, generationID) {
 		return PlatformGenerationView{}, ErrPlatformGenerationControlUnavailable
+	}
+	if ctx.Err() != nil {
+		return PlatformGenerationView{}, errPlatformGenerationControlContextDone
 	}
 	totalTokens, err := c.deps.loadTotalTokens(ctx, userID)
 	if err != nil || totalTokens < 0 {
@@ -437,6 +483,13 @@ func platformGenerationControlReadError(err error) error {
 		return ErrPlatformGenerationControlNotFound
 	}
 	return ErrPlatformGenerationControlUnavailable
+}
+
+func platformGenerationControlPublicError(err error) error {
+	if errors.Is(err, errPlatformGenerationControlContextDone) {
+		return ErrPlatformGenerationControlUnavailable
+	}
+	return err
 }
 
 func platformGenerationControlTerminal(state PlatformGenerationState) bool {
