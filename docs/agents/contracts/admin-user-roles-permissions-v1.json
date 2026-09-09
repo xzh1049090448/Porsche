@@ -16,10 +16,10 @@
     "reason": "Unicode-trimmed 1..200 code points",
     "versions": {
       "expected_auth_version": "integer 1..2147483647",
-      "expected_permissions_version": "integer 0..9223372036854775807; zero is allowed only for promote when no target policy head exists; permissions.write requires a positive current version",
-      "catalog_version": "positive integer matching the current capability catalog"
+      "expected_permissions_version": "integer 0..9223372036854775807; zero is allowed only for promote when no target policy head exists; demote and permissions.write require a positive current version",
+      "catalog_version": "integer 1..2147483647 matching the current capability catalog"
     },
-    "overrides": "complete array of unique capabilities, each with exact capability and effect keys; effect is inherit, allow, or deny; canonical persistence omits inherit; unknown, unavailable, duplicate, and allow on Root-only or ungrantable capabilities are invalid",
+    "overrides": "complete array of unique capabilities, each item an exact object with only capability and effect; effect is inherit, allow, or deny; canonical persistence omits inherit; reject unknown, unavailable, duplicate, case-folded duplicate, and allow on Root-only or ungrantable capabilities",
     "response_headers": {
       "Cache-Control": "no-store",
       "X-Request-ID": "required non-empty; error body request_id equals this header"
@@ -63,7 +63,7 @@
         "required_headers": ["Idempotency-Key", "X-Action-Ticket"],
         "header_rules": {
           "Idempotency-Key": "exactly one unique original value",
-          "X-Action-Ticket": "exactly one valid users.promote ticket bound to the complete canonical intent"
+          "X-Action-Ticket": "exactly one valid users.promote ticket bound to the path target and complete canonical intent"
         },
         "body": {
           "type": "object",
@@ -117,7 +117,7 @@
         "required_headers": ["Idempotency-Key", "X-Action-Ticket"],
         "header_rules": {
           "Idempotency-Key": "exactly one unique original value",
-          "X-Action-Ticket": "exactly one valid users.demote ticket bound to the complete canonical intent"
+          "X-Action-Ticket": "exactly one valid users.demote ticket bound to the path target and complete canonical intent"
         },
         "body": {
           "type": "object",
@@ -217,25 +217,56 @@
   "operation_query": {
     "statuses": ["processing", "succeeded", "failed", "pending_recovery"],
     "response_keys": ["operation_ref", "scope", "status", "finished_at", "failure_code", "target_guid", "resulting_auth_version", "resulting_permissions_version", "resulting_role"],
-    "nullable_result_rule": "target_guid, resulting_auth_version, resulting_permissions_version, and resulting_role are nullable; present only from the stored stable result for succeeded",
+    "nullable_result_rule": "all four nullable result keys are always present; succeeded uses the stored stable result and processing, failed, and pending_recovery use null for every result key",
     "state_rules": {
-      "processing": "null finished_at, failure_code, and result fields; Retry-After is required",
-      "succeeded": "positive finished_at, null failure_code, and all four stored result fields",
-      "failed": "positive finished_at, allowlisted failure_code, and null result fields",
-      "pending_recovery": "null finished_at, failure_code, and result fields; no Retry-After"
+      "processing": {
+        "finished_at": null,
+        "failure_code": null,
+        "result_keys": "all present and null",
+        "Retry-After": "required integer seconds 1..30"
+      },
+      "succeeded": {
+        "finished_at": "positive Unix milliseconds",
+        "failure_code": null,
+        "result_keys": "all present from stored stable result",
+        "Retry-After": "forbidden"
+      },
+      "failed": {
+        "finished_at": "positive Unix milliseconds",
+        "failure_code": "one operation_failure_codes value",
+        "result_keys": "all present and null",
+        "Retry-After": "forbidden"
+      },
+      "pending_recovery": {
+        "finished_at": null,
+        "failure_code": null,
+        "result_keys": "all present and null",
+        "Retry-After": "forbidden"
+      }
     },
     "retry_after": "processing only; integer seconds 1..30",
     "visibility": "only the originating actor, current originating logical session, exact scope, and original key can query; hidden or unverifiable combinations return 404 and expired or tombstoned results return 410",
     "refresh": "a succeeded query authorizes one owned target detail and permissions refresh; query never triggers mutation callbacks or consumes begin rate limit"
   },
   "errors": {
-    "authentication_401": "existing authentication middleware body with exact {detail}; never wrap as admin_action_error",
+    "authentication_401": {
+      "exact_body_keys": ["detail"],
+      "additionalProperties": false,
+      "details": ["未登录", "Token无效或已过期"]
+    },
     "envelope": {
       "exact_body_keys": ["error"],
-      "required_error_keys": ["code", "message", "type", "request_id"],
-      "optional_error_key": "operation_ref only for operation_commit_unknown",
-      "message": "请求无法完成",
-      "type": "admin_action_error"
+      "base_error": {
+        "exact_keys": ["code", "message", "type", "request_id"],
+        "additionalProperties": false,
+        "message": "请求无法完成",
+        "type": "admin_action_error"
+      },
+      "operation_commit_unknown_error": {
+        "exact_keys": ["code", "message", "type", "request_id", "operation_ref"],
+        "additionalProperties": false,
+        "operation_ref": "required only when code is operation_commit_unknown"
+      }
     },
     "status_code_allowlist": {
       "400": ["invalid_admin_action_request"],
@@ -249,7 +280,11 @@
       "503": ["action_dependency_unavailable", "operation_commit_unknown"]
     },
     "operation_failure_codes": ["action_rejected", "target_version_conflict", "policy_version_conflict", "target_state_conflict", "consumer_validation_failed"],
-    "header_rules": "all matched responses carry Cache-Control no-store and nonempty X-Request-ID; Retry-After appears only for action_rate_limited or processing query; operation_ref appears only for operation_commit_unknown",
+    "header_rules": {
+      "matched": "Cache-Control no-store and nonempty X-Request-ID; admin_action_error request_id equals X-Request-ID",
+      "Retry-After": "required only for action_rate_limited and processing query; forbidden otherwise",
+      "operation_ref": "present only in operation_commit_unknown error"
+    },
     "prohibited_fields": ["ticket", "idempotency_key", "current_password", "password_material", "HMAC_input", "digest", "dependency_raw_text"]
   },
   "frontend_security": {
