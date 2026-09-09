@@ -62,6 +62,7 @@ type platformGenerationControlDeps struct {
 
 type PlatformGenerationControl struct {
 	deps          platformGenerationControlDeps
+	store         *PlatformGenerationStore
 	cancellations *PlatformGenerationCancellationRegistry
 	now           func() time.Time
 	cancelBudget  time.Duration
@@ -74,7 +75,7 @@ func NewPlatformGenerationControl(db *gorm.DB, store *PlatformGenerationStore, c
 	if db == nil || db.Config == nil || store == nil || store.client == nil || cancellations == nil {
 		return nil, ErrPlatformGenerationControlUnavailable
 	}
-	return newPlatformGenerationControl(platformGenerationControlDeps{
+	control, err := newPlatformGenerationControl(platformGenerationControlDeps{
 		get:                     store.Get,
 		cancelOrCreate:          store.CancelOrCreate,
 		failExpiredRunning:      store.FailExpiredRunning,
@@ -89,6 +90,11 @@ func NewPlatformGenerationControl(db *gorm.DB, store *PlatformGenerationStore, c
 			return loadPlatformGenerationControlTotalTokens(ctx, db, userID)
 		},
 	}, cancellations)
+	if err != nil {
+		return nil, err
+	}
+	control.store = store
+	return control, nil
 }
 
 func newPlatformGenerationControl(deps platformGenerationControlDeps, cancellations *PlatformGenerationCancellationRegistry) (*PlatformGenerationControl, error) {
