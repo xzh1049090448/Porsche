@@ -317,32 +317,42 @@ type PublicModelConfig struct {
 func (PublicModelConfig) TableName() string { return "public_model_configs" }
 
 type PublicPriceSnapshot struct {
-	ID                     int64 `gorm:"column:id;type:bigint;not null;primaryKey;autoIncrement" json:"-"`
-	AuditFields            `gorm:"embedded" json:"-"`
-	Version                int64                     `gorm:"column:version;type:bigint;not null" json:"-"`
-	Reason                 PublicPriceSnapshotReason `gorm:"column:reason;type:int;not null" json:"-"`
-	SourceRevision         int64                     `gorm:"column:source_revision;type:bigint;not null" json:"-"`
-	ContentHash            string                    `gorm:"column:content_hash;type:char(64);not null" json:"-"`
-	RestoredFromSnapshotID *int64                    `gorm:"column:restored_from_snapshot_id;type:bigint" json:"-"`
-	PublishedAt            int64                     `gorm:"column:published_at;type:bigint;not null" json:"-"`
+	ID                     int64                     `gorm:"column:id;type:bigint;not null;primaryKey;autoIncrement" json:"-"`
+	Guid                   int64                     `gorm:"column:guid;type:bigint;not null;<-:create" json:"guid"`
+	CreatedAt              int64                     `gorm:"column:created_at;type:bigint;not null;<-:create" json:"created_at"`
+	CreatedBy              *int64                    `gorm:"column:created_by;type:bigint;<-:create" json:"created_by,omitempty"`
+	UpdatedAt              int64                     `gorm:"column:updated_at;type:bigint;not null;<-:create" json:"updated_at"`
+	UpdatedBy              *int64                    `gorm:"column:updated_by;type:bigint;<-:create" json:"updated_by,omitempty"`
+	IsDeleted              int                       `gorm:"column:is_deleted;type:int;not null;default:0" json:"-"`
+	Version                int64                     `gorm:"column:version;type:bigint;not null;<-:create" json:"-"`
+	Reason                 PublicPriceSnapshotReason `gorm:"column:reason;type:int;not null;<-:create" json:"-"`
+	SourceRevision         int64                     `gorm:"column:source_revision;type:bigint;not null;<-:create" json:"-"`
+	ContentHash            string                    `gorm:"column:content_hash;type:char(64);not null;<-:create" json:"-"`
+	RestoredFromSnapshotID *int64                    `gorm:"column:restored_from_snapshot_id;type:bigint;<-:create" json:"-"`
+	PublishedAt            int64                     `gorm:"column:published_at;type:bigint;not null;<-:create" json:"-"`
 }
 
 func (PublicPriceSnapshot) TableName() string { return "public_price_snapshots" }
 
 type PublicPriceSnapshotItem struct {
-	ID                             int64 `gorm:"column:id;type:bigint;not null;primaryKey;autoIncrement" json:"-"`
-	AuditFields                    `gorm:"embedded" json:"-"`
-	SnapshotID                     int64     `gorm:"column:snapshot_id;type:bigint;not null" json:"-"`
-	ModelConfigID                  int64     `gorm:"column:model_config_id;type:bigint;not null" json:"-"`
-	ModelKey                       string    `gorm:"column:model_key;type:varchar(128);not null" json:"model_key"`
-	UpstreamModelID                string    `gorm:"column:upstream_model_id;type:varchar(255);not null" json:"-"`
-	DisplayName                    string    `gorm:"column:display_name;type:varchar(128);not null" json:"display_name"`
-	Provider                       string    `gorm:"column:provider;type:varchar(128);not null" json:"provider"`
-	Capabilities                   JSONSlice `gorm:"column:capabilities;type:json;not null" json:"capabilities"`
-	ContextWindow                  int64     `gorm:"column:context_window;type:bigint;not null" json:"context_window"`
-	InputPriceUSDPerMillionTokens  string    `gorm:"column:input_price_usd_per_million_tokens;type:decimal(20,8);not null" json:"-"`
-	OutputPriceUSDPerMillionTokens string    `gorm:"column:output_price_usd_per_million_tokens;type:decimal(20,8);not null" json:"-"`
-	UpstreamCheckedAt              *int64    `gorm:"column:upstream_checked_at;type:bigint" json:"-"`
+	ID                             int64     `gorm:"column:id;type:bigint;not null;primaryKey;autoIncrement" json:"-"`
+	Guid                           int64     `gorm:"column:guid;type:bigint;not null;<-:create" json:"guid"`
+	CreatedAt                      int64     `gorm:"column:created_at;type:bigint;not null;<-:create" json:"created_at"`
+	CreatedBy                      *int64    `gorm:"column:created_by;type:bigint;<-:create" json:"created_by,omitempty"`
+	UpdatedAt                      int64     `gorm:"column:updated_at;type:bigint;not null;<-:create" json:"updated_at"`
+	UpdatedBy                      *int64    `gorm:"column:updated_by;type:bigint;<-:create" json:"updated_by,omitempty"`
+	IsDeleted                      int       `gorm:"column:is_deleted;type:int;not null;default:0" json:"-"`
+	SnapshotID                     int64     `gorm:"column:snapshot_id;type:bigint;not null;<-:create" json:"-"`
+	ModelConfigID                  int64     `gorm:"column:model_config_id;type:bigint;not null;<-:create" json:"-"`
+	ModelKey                       string    `gorm:"column:model_key;type:varchar(128);not null;<-:create" json:"model_key"`
+	UpstreamModelID                string    `gorm:"column:upstream_model_id;type:varchar(255);not null;<-:create" json:"-"`
+	DisplayName                    string    `gorm:"column:display_name;type:varchar(128);not null;<-:create" json:"display_name"`
+	Provider                       string    `gorm:"column:provider;type:varchar(128);not null;<-:create" json:"provider"`
+	Capabilities                   JSONSlice `gorm:"column:capabilities;type:json;not null;<-:create" json:"capabilities"`
+	ContextWindow                  int64     `gorm:"column:context_window;type:bigint;not null;<-:create" json:"context_window"`
+	InputPriceUSDPerMillionTokens  string    `gorm:"column:input_price_usd_per_million_tokens;type:decimal(20,8);not null;<-:create" json:"-"`
+	OutputPriceUSDPerMillionTokens string    `gorm:"column:output_price_usd_per_million_tokens;type:decimal(20,8);not null;<-:create" json:"-"`
+	UpstreamCheckedAt              *int64    `gorm:"column:upstream_checked_at;type:bigint;<-:create" json:"-"`
 }
 
 func (PublicPriceSnapshotItem) TableName() string { return "public_price_snapshot_items" }
@@ -371,15 +381,20 @@ type PublicContentDraft struct {
 func (PublicContentDraft) TableName() string { return "public_content_drafts" }
 
 type PublicContentRelease struct {
-	ID                    int64 `gorm:"column:id;type:bigint;not null;primaryKey;autoIncrement" json:"-"`
-	AuditFields           `gorm:"embedded" json:"-"`
-	DocumentKind          PublicContentDocumentKind `gorm:"column:document_kind;type:int;not null" json:"-"`
-	Version               int64                     `gorm:"column:version;type:bigint;not null" json:"-"`
-	SourceRevision        int64                     `gorm:"column:source_revision;type:bigint;not null" json:"-"`
-	Payload               JSONMap                   `gorm:"column:payload;type:json;not null" json:"-"`
-	ContentHash           string                    `gorm:"column:content_hash;type:char(64);not null" json:"-"`
-	RestoredFromReleaseID *int64                    `gorm:"column:restored_from_release_id;type:bigint" json:"-"`
-	PublishedAt           int64                     `gorm:"column:published_at;type:bigint;not null" json:"-"`
+	ID                    int64                     `gorm:"column:id;type:bigint;not null;primaryKey;autoIncrement" json:"-"`
+	Guid                  int64                     `gorm:"column:guid;type:bigint;not null;<-:create" json:"guid"`
+	CreatedAt             int64                     `gorm:"column:created_at;type:bigint;not null;<-:create" json:"created_at"`
+	CreatedBy             *int64                    `gorm:"column:created_by;type:bigint;<-:create" json:"created_by,omitempty"`
+	UpdatedAt             int64                     `gorm:"column:updated_at;type:bigint;not null;<-:create" json:"updated_at"`
+	UpdatedBy             *int64                    `gorm:"column:updated_by;type:bigint;<-:create" json:"updated_by,omitempty"`
+	IsDeleted             int                       `gorm:"column:is_deleted;type:int;not null;default:0" json:"-"`
+	DocumentKind          PublicContentDocumentKind `gorm:"column:document_kind;type:int;not null;<-:create" json:"-"`
+	Version               int64                     `gorm:"column:version;type:bigint;not null;<-:create" json:"-"`
+	SourceRevision        int64                     `gorm:"column:source_revision;type:bigint;not null;<-:create" json:"-"`
+	Payload               JSONMap                   `gorm:"column:payload;type:json;not null;<-:create" json:"-"`
+	ContentHash           string                    `gorm:"column:content_hash;type:char(64);not null;<-:create" json:"-"`
+	RestoredFromReleaseID *int64                    `gorm:"column:restored_from_release_id;type:bigint;<-:create" json:"-"`
+	PublishedAt           int64                     `gorm:"column:published_at;type:bigint;not null;<-:create" json:"-"`
 }
 
 func (PublicContentRelease) TableName() string { return "public_content_releases" }

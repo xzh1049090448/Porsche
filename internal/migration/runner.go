@@ -203,6 +203,11 @@ func Up(ctx context.Context, db *gorm.DB, nextGUID func() int64, nowMillis func(
 						return err
 					}
 				}
+				if migration.Version == "0012" {
+					if err := VerifyPublicContentPricingSchema(ctx, conn); err != nil {
+						return err
+					}
+				}
 				continue
 			}
 			if migration.Version == "0007" {
@@ -254,6 +259,11 @@ func Up(ctx context.Context, db *gorm.DB, nextGUID func() int64, nowMillis func(
 			}
 			if migration.Version == "0011" {
 				if err := VerifyPlatformGenerationReceiptSchema(ctx, conn); err != nil {
+					return err
+				}
+			}
+			if migration.Version == "0012" {
+				if err := VerifyPublicContentPricingSchema(ctx, conn); err != nil {
 					return err
 				}
 			}
@@ -317,7 +327,10 @@ func Verify(ctx context.Context, db *gorm.DB) error {
 	if err := VerifyAdminOperationResponseSchema(ctx, db); err != nil {
 		return err
 	}
-	return VerifyPlatformGenerationReceiptSchema(ctx, db)
+	if err := VerifyPlatformGenerationReceiptSchema(ctx, db); err != nil {
+		return err
+	}
+	return VerifyPublicContentPricingSchema(ctx, db)
 }
 
 // VerifyApplied is the side-effect-free portion of Verify, kept separate so

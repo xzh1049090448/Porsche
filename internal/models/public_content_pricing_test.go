@@ -74,6 +74,40 @@ func TestPublicContentPricingModelsPreserveSchemaColumnTypes(t *testing.T) {
 	}
 }
 
+func TestPublishedPublicContentPricingModelsAreCreateOnly(t *testing.T) {
+	tests := []struct {
+		model  interface{}
+		fields []string
+	}{
+		{PublicModelConfig{}, []string{"ModelKey", "UpstreamModelID"}},
+		{PublicPriceSnapshot{}, []string{
+			"Guid", "CreatedAt", "CreatedBy", "UpdatedAt", "UpdatedBy", "Version", "Reason", "SourceRevision", "ContentHash", "RestoredFromSnapshotID", "PublishedAt",
+		}},
+		{PublicPriceSnapshotItem{}, []string{
+			"Guid", "CreatedAt", "CreatedBy", "UpdatedAt", "UpdatedBy", "SnapshotID", "ModelConfigID", "ModelKey", "UpstreamModelID", "DisplayName", "Provider", "Capabilities", "ContextWindow", "InputPriceUSDPerMillionTokens", "OutputPriceUSDPerMillionTokens", "UpstreamCheckedAt",
+		}},
+		{PublicContentRelease{}, []string{
+			"Guid", "CreatedAt", "CreatedBy", "UpdatedAt", "UpdatedBy", "DocumentKind", "Version", "SourceRevision", "Payload", "ContentHash", "RestoredFromReleaseID", "PublishedAt",
+		}},
+	}
+	for _, tc := range tests {
+		parsed, err := schema.Parse(tc.model, &sync.Map{}, schema.NamingStrategy{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, name := range tc.fields {
+			field := parsed.LookUpField(name)
+			if field == nil {
+				t.Errorf("%T missing %s", tc.model, name)
+				continue
+			}
+			if !field.Creatable || field.Updatable {
+				t.Errorf("%T.%s permissions = create:%t update:%t, want create-only", tc.model, name, field.Creatable, field.Updatable)
+			}
+		}
+	}
+}
+
 func TestPublicContentPricingCapabilitiesAreStringArrays(t *testing.T) {
 	wantType := reflect.TypeOf(JSONSlice{})
 	for _, tc := range []struct {

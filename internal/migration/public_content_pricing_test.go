@@ -104,6 +104,12 @@ func TestPublicContentPricingMigrationRealMySQL(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertPublicContentPricingRealSchema(t, db, migration)
+	if err := VerifyPublicContentPricingSchema(context.Background(), db); err != nil {
+		t.Fatalf("verify 0012 immediately after apply: %v", err)
+	}
+	if err := Verify(context.Background(), db); err != nil {
+		t.Fatalf("global verify immediately after apply: %v", err)
+	}
 	if err := executePublicContentPricingSQL(db, migration.DownSQL); err != nil {
 		t.Fatal(err)
 	}
@@ -119,6 +125,43 @@ func TestPublicContentPricingMigrationRealMySQL(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertPublicContentPricingRealSchema(t, db, migration)
+	if err := Up(context.Background(), db, generator.Next, func() int64 { return 1_900_000_000_000 }); err != nil {
+		t.Fatalf("rerun with active 0012 ledger entry: %v", err)
+	}
+	if err := Verify(context.Background(), db); err != nil {
+		t.Fatalf("global verify after active-ledger rerun: %v", err)
+	}
+}
+
+func TestUpRejectsInterruptedPublicContentPricingCreateWithActiveLedger(t *testing.T) {
+	if strings.TrimSpace(os.Getenv("TEST_DATABASE_URL")) == "" {
+		t.Skip("BLOCKED_FIXTURE: requires explicit isolated TEST_DATABASE_URL MySQL fixture")
+	}
+	db := permissionSchemaDB(t)
+	generator := persistence.NewSnowflake(42, persistence.SystemClock())
+	migration := publicContentPricingMigration(t)
+	if err := Up(context.Background(), db, generator.Next, func() int64 { return 1_900_000_000_000 }); err != nil {
+		t.Fatal(err)
+	}
+	if err := executePublicContentPricingSQL(db, migration.DownSQL); err != nil {
+		t.Fatal(err)
+	}
+	if err := setFixtureMigrationActive(db, migration.Version, false); err != nil {
+		t.Fatal(err)
+	}
+	statements := splitStatements(string(migration.UpSQL))
+	if len(statements) == 0 {
+		t.Fatal("0012 has no create statements")
+	}
+	if err := db.Exec(statements[0]).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := setFixtureMigrationActive(db, migration.Version, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := Up(context.Background(), db, generator.Next, func() int64 { return 1_900_000_000_000 }); err != ErrPublicContentPricingSchema {
+		t.Fatalf("Up with interrupted 0012 and checksum-correct ledger = %v, want %v", err, ErrPublicContentPricingSchema)
+	}
 }
 
 var publicContentPricingTables = []string{
