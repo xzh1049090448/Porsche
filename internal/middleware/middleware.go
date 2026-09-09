@@ -77,6 +77,21 @@ func RequireRoot(state *app.State) gin.HandlerFunc {
 	}
 }
 
+// RequireRootWithError applies the same persisted-session Root policy while
+// allowing a scoped API family to own its error envelope.
+func RequireRootWithError(state *app.State, abort func(*gin.Context, int, string)) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if abort == nil || !authenticateUserWithError(c, state, abort) {
+			return
+		}
+		if !hasMinimumRole(CurrentUser(c).Role, models.UserRoleRoot) {
+			abort(c, http.StatusForbidden, "root role required")
+			return
+		}
+		c.Next()
+	}
+}
+
 func RequireAnalyticsAdmin(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		userVal, ok := c.Get(ContextUser)
@@ -105,27 +120,32 @@ func hasAnalyticsAccess(user *models.User) bool {
 func HasAnalyticsAccess(user *models.User) bool { return hasAnalyticsAccess(user) }
 
 func authenticateUser(c *gin.Context, state *app.State) bool {
+	return authenticateUserWithError(c, state, func(c *gin.Context, status int, message string) { httpx.AbortJSON(c, status, message) })
+}
+
+func authenticateUserWithError(c *gin.Context, state *app.State, abort func(*gin.Context, int, string)) bool {
 	if state == nil || state.Settings == nil || state.DB == nil || state.Sessions == nil {
-		httpx.AbortJSON(c, http.StatusUnauthorized, "Token无效或已过期")
+		abort(c, http.StatusUnauthorized, "Token无效或已过期")
 		return false
 	}
-	token, ok := httpx.RequireBearer(c)
-	if !ok {
+	token := httpx.BearerToken(c)
+	if token == "" {
+		abort(c, http.StatusUnauthorized, "未登录")
 		return false
 	}
 	claims, err := security.DecodeAccessToken(token, state.Settings.JWTSecretKey)
 	sessionClaims, ok := parseSessionClaims(claims)
 	if err != nil || !ok {
-		httpx.AbortJSON(c, http.StatusUnauthorized, "Token无效或已过期")
+		abort(c, http.StatusUnauthorized, "Token无效或已过期")
 		return false
 	}
 	var user models.User
 	if err := state.DB.Where("guid = ? AND is_deleted = 0", sessionClaims.UserGUID).First(&user).Error; err != nil || !user.Status.IsActive() || user.AuthVersion != sessionClaims.AuthVersion || user.Role != sessionClaims.Role {
-		httpx.AbortJSON(c, http.StatusUnauthorized, "Token无效或已过期")
+		abort(c, http.StatusUnauthorized, "Token无效或已过期")
 		return false
 	}
 	if _, err := state.Sessions.Validate(c.Request.Context(), sessionClaims.SID, user.ID, sessionClaims.SessionVersion, sessionClaims.AuthVersion); err != nil {
-		httpx.AbortJSON(c, http.StatusUnauthorized, "Token无效或已过期")
+		abort(c, http.StatusUnauthorized, "Token无效或已过期")
 		return false
 	}
 	c.Set(ContextUserID, user.ID)

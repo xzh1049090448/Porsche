@@ -7,7 +7,7 @@ import (
 	"github.com/porsche/ai-gateway-go/internal/security"
 )
 
-func serviceHashPassword(p string) (string, error) { return security.HashPassword(p) }
+func serviceHashPassword(p string) (string, error)  { return security.HashPassword(p) }
 func serviceVerifyPassword(plain, hash string) bool { return security.VerifyPassword(plain, hash) }
 
 var idCardRe = regexp.MustCompile(`^\d{15}$|^\d{17}[\dXx]$`)

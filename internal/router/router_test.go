@@ -27,9 +27,11 @@ import (
 
 func TestPublicContentPricingAdminRoutesMatchFrozenContract(t *testing.T) {
 	state := &app.State{Settings: &config.Settings{}}
-	got := map[string]bool{}
+	got := map[string]int{}
 	for _, route := range router.New(state).Routes() {
-		got[route.Method+" "+route.Path] = true
+		if strings.HasPrefix(route.Path, "/admin/v2/public-models") || strings.HasPrefix(route.Path, "/admin/v2/public-pricing") || strings.HasPrefix(route.Path, "/admin/v2/public-content") || strings.HasPrefix(route.Path, "/admin/v2/notifications") {
+			got[route.Method+" "+route.Path]++
+		}
 	}
 	raw, err := os.ReadFile("../../docs/agents/contracts/public-content-pricing-v1.json")
 	if err != nil {
@@ -41,13 +43,24 @@ func TestPublicContentPricingAdminRoutesMatchFrozenContract(t *testing.T) {
 	if err := json.Unmarshal(raw, &contract); err != nil {
 		t.Fatal(err)
 	}
+	want := map[string]bool{}
 	for _, route := range contract.Routes {
 		if route.Role != "root" {
 			continue
 		}
 		path := strings.ReplaceAll(route.Path, "{guid}", ":guid")
-		if !got[route.Method+" "+path] {
+		key := route.Method + " " + path
+		want[key] = true
+		if got[key] != 1 {
 			t.Errorf("missing route %s %s", route.Method, path)
+		}
+	}
+	if len(want) != 28 || len(got) != len(want) {
+		t.Fatalf("route count got=%d want=%d", len(got), len(want))
+	}
+	for route, count := range got {
+		if !want[route] || count != 1 {
+			t.Errorf("extra or duplicate route %s count=%d", route, count)
 		}
 	}
 }

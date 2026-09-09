@@ -11,10 +11,10 @@ import (
 )
 
 func RegisterPublicModelAdmin(r *gin.Engine, state *app.State) {
-	g := r.Group("/admin/v2/public-models", gatewayRequestID(), publicAdminNoStore, middleware.RequireRoot(state))
+	g := r.Group("/admin/v2/public-models", gatewayRequestID(), publicAdminNoStore, middleware.RequireRootWithError(state, publicAdminAuthError))
 	// Static paths must precede the GUID parameter.
 	g.GET("/missing", func(c *gin.Context) {
-		if c.Request.URL.RawQuery != "" {
+		if c.Request.URL.RawQuery != "" || !publicAdminRequestHasNoBody(c.Request) {
 			publicAdminError(c, &service.HTTPError{Status: 400, Message: "invalid request"})
 			return
 		}
@@ -26,7 +26,7 @@ func RegisterPublicModelAdmin(r *gin.Engine, state *app.State) {
 		c.JSON(http.StatusOK, out)
 	})
 	g.POST("/sync", func(c *gin.Context) {
-		if c.Request.URL.RawQuery != "" || c.Request.ContentLength > 0 {
+		if c.Request.URL.RawQuery != "" || !publicAdminRequestHasNoBody(c.Request) {
 			publicAdminError(c, &service.HTTPError{Status: 400, Message: "invalid request"})
 			return
 		}
@@ -37,6 +37,10 @@ func RegisterPublicModelAdmin(r *gin.Engine, state *app.State) {
 		c.JSON(http.StatusAccepted, gin.H{"accepted": true})
 	})
 	g.GET("", func(c *gin.Context) {
+		if !publicAdminRequestHasNoBody(c.Request) {
+			publicAdminError(c, &service.HTTPError{Status: 400, Message: "invalid request"})
+			return
+		}
 		q, ok := publicAdminQuery(c.Request.URL.RawQuery, map[string]bool{"search": true, "status": true, "upstream_state": true, "page": true, "page_size": true})
 		if !ok {
 			publicAdminError(c, &service.HTTPError{Status: 400, Message: "invalid request"})
@@ -69,7 +73,7 @@ func RegisterPublicModelAdmin(r *gin.Engine, state *app.State) {
 	})
 	g.GET("/:guid", func(c *gin.Context) {
 		guid, ok := publicAdminGUID(c.Param("guid"))
-		if !ok || c.Request.URL.RawQuery != "" {
+		if !ok || c.Request.URL.RawQuery != "" || !publicAdminRequestHasNoBody(c.Request) {
 			publicAdminError(c, &service.HTTPError{Status: 400, Message: "invalid guid"})
 			return
 		}

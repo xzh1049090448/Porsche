@@ -12,9 +12,9 @@ import (
 )
 
 func RegisterPublicContentAdmin(r *gin.Engine, state *app.State) {
-	g := r.Group("/admin/v2/public-content", gatewayRequestID(), publicAdminNoStore, middleware.RequireRoot(state))
+	g := r.Group("/admin/v2/public-content", gatewayRequestID(), publicAdminNoStore, middleware.RequireRootWithError(state, publicAdminAuthError))
 	g.GET("/draft", func(c *gin.Context) {
-		if c.Request.URL.RawQuery != "" {
+		if c.Request.URL.RawQuery != "" || !publicAdminRequestHasNoBody(c.Request) {
 			publicAdminError(c, &service.HTTPError{Status: 400, Message: "invalid request"})
 			return
 		}
@@ -52,6 +52,10 @@ func RegisterPublicContentAdmin(r *gin.Engine, state *app.State) {
 		c.JSON(200, gin.H{"valid": len(issues) == 0, "issues": issues})
 	})
 	g.GET("/preview", func(c *gin.Context) {
+		if !publicAdminRequestHasNoBody(c.Request) {
+			publicAdminError(c, &service.HTTPError{Status: 400, Message: "invalid request"})
+			return
+		}
 		q, ok := publicAdminQuery(c.Request.URL.RawQuery, map[string]bool{"revision": true})
 		if !ok {
 			publicAdminError(c, &service.HTTPError{Status: 400, Message: "invalid request"})
@@ -98,6 +102,10 @@ func RegisterPublicContentAdmin(r *gin.Engine, state *app.State) {
 		c.JSON(201, out)
 	})
 	g.GET("/releases", func(c *gin.Context) {
+		if !publicAdminRequestHasNoBody(c.Request) {
+			publicAdminError(c, &service.HTTPError{Status: 400, Message: "invalid request"})
+			return
+		}
 		q, ok := publicAdminQuery(c.Request.URL.RawQuery, map[string]bool{"page": true, "page_size": true})
 		if !ok {
 			publicAdminError(c, &service.HTTPError{Status: 400, Message: "invalid request"})
@@ -117,7 +125,7 @@ func RegisterPublicContentAdmin(r *gin.Engine, state *app.State) {
 	})
 	g.GET("/releases/:guid", func(c *gin.Context) {
 		guid, ok := publicAdminGUID(c.Param("guid"))
-		if !ok || c.Request.URL.RawQuery != "" {
+		if !ok || c.Request.URL.RawQuery != "" || !publicAdminRequestHasNoBody(c.Request) {
 			publicAdminError(c, &service.HTTPError{Status: 400, Message: "invalid guid"})
 			return
 		}

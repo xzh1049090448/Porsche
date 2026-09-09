@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
-	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/porsche/ai-gateway-go/internal/actionsecurity"
@@ -31,6 +31,14 @@ func publicAdminError(c *gin.Context, err error) {
 	c.AbortWithStatusJSON(status, gin.H{"error": gin.H{"code": code, "message": message, "request_id": c.Writer.Header().Get("X-Request-ID")}})
 }
 
+func publicAdminAuthError(c *gin.Context, status int, _ string) {
+	message := "authentication required"
+	if status == http.StatusForbidden {
+		message = "root role required"
+	}
+	publicAdminError(c, &service.HTTPError{Status: status, Message: message})
+}
+
 func publicAdminGUID(raw string) (int64, bool) {
 	if raw == "" || raw[0] == '0' || len(raw) > 19 {
 		return 0, false
@@ -44,15 +52,15 @@ func publicAdminQuery(raw string, allowed map[string]bool) (map[string]string, b
 	if raw == "" {
 		return out, true
 	}
-	for _, part := range strings.Split(raw, "&") {
-		p := strings.SplitN(part, "=", 2)
-		if len(p) != 2 || !allowed[p[0]] || p[1] == "" {
+	values, err := url.ParseQuery(raw)
+	if err != nil {
+		return nil, false
+	}
+	for key, entries := range values {
+		if !allowed[key] || len(entries) != 1 || entries[0] == "" {
 			return nil, false
 		}
-		if _, exists := out[p[0]]; exists {
-			return nil, false
-		}
-		out[p[0]] = p[1]
+		out[key] = entries[0]
 	}
 	return out, true
 }
@@ -107,6 +115,18 @@ func publicAdminStrictJSON(c *gin.Context, out any) bool {
 	return true
 }
 
+func publicAdminRequestHasNoBody(r *http.Request) bool {
+	if r == nil || r.Body == nil || r.Body == http.NoBody {
+		return true
+	}
+	if r.ContentLength > 0 {
+		return false
+	}
+	one := make([]byte, 1)
+	n, err := r.Body.Read(one)
+	return n == 0 && err == io.EOF
+}
+
 func publicAdminActorID(c *gin.Context) int64 {
 	u := middleware.CurrentUser(c)
 	if u == nil {
@@ -144,9 +164,9 @@ func consumePublicAdminTicket(c *gin.Context, state *app.State, action actionsec
 }
 
 func RegisterRootAlerts(r *gin.Engine, state *app.State) {
-	g := r.Group("/admin/v2/notifications", gatewayRequestID(), publicAdminNoStore, middleware.RequireRoot(state))
+	g := r.Group("/admin/v2/notifications", gatewayRequestID(), publicAdminNoStore, middleware.RequireRootWithError(state, publicAdminAuthError))
 	g.GET("/unread-count", func(c *gin.Context) {
-		if c.Request.URL.RawQuery != "" || c.Request.URL.RawPath != "" {
+		if c.Request.URL.RawQuery != "" || c.Request.URL.RawPath != "" || !publicAdminRequestHasNoBody(c.Request) {
 			publicAdminError(c, &service.HTTPError{Status: 400, Message: "invalid request"})
 			return
 		}
@@ -158,6 +178,10 @@ func RegisterRootAlerts(r *gin.Engine, state *app.State) {
 		c.JSON(200, out)
 	})
 	g.GET("", func(c *gin.Context) {
+		if !publicAdminRequestHasNoBody(c.Request) {
+			publicAdminError(c, &service.HTTPError{Status: 400, Message: "invalid request"})
+			return
+		}
 		q, ok := publicAdminQuery(c.Request.URL.RawQuery, map[string]bool{"state": true, "page": true, "page_size": true})
 		if !ok {
 			publicAdminError(c, &service.HTTPError{Status: 400, Message: "invalid request"})
@@ -177,7 +201,7 @@ func RegisterRootAlerts(r *gin.Engine, state *app.State) {
 	})
 	mutate := func(ack bool) gin.HandlerFunc {
 		return func(c *gin.Context) {
-			if c.Request.URL.RawQuery != "" || c.Request.ContentLength > 0 {
+			if c.Request.URL.RawQuery != "" || !publicAdminRequestHasNoBody(c.Request) {
 				publicAdminError(c, &service.HTTPError{Status: 400, Message: "invalid request"})
 				return
 			}
