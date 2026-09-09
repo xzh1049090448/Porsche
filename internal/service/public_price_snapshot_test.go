@@ -99,6 +99,46 @@ func TestPublicPriceSnapshotRestoreRevalidatesAndRehashesHistoricalItems(t *test
 	}
 }
 
+func TestPublicPriceSnapshotRestoreRequiresCurrentActiveExactIdentity(t *testing.T) {
+	prepared, err := preparePublicPriceSnapshot([]models.PublicModelConfig{snapshotModelFixture("alpha")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	current := []models.PublicModelConfig{snapshotModelFixture("alpha")}
+	if _, err = planPublicPriceSnapshotRestore(prepared.Items, current); err != nil {
+		t.Fatal(err)
+	}
+	for _, mutate := range []func(*models.PublicModelConfig){func(v *models.PublicModelConfig) { v.IsDeleted = 1 }, func(v *models.PublicModelConfig) { v.Status = models.PublicModelConfigStatusInactive }, func(v *models.PublicModelConfig) { v.ModelKey = "reused" }, func(v *models.PublicModelConfig) { v.UpstreamModelID = "org/reused" }} {
+		copyRows := append([]models.PublicModelConfig(nil), current...)
+		mutate(&copyRows[0])
+		if _, err = planPublicPriceSnapshotRestore(prepared.Items, copyRows); status(err) != 409 {
+			t.Fatalf("unsafe lifecycle/identity accepted: %v", err)
+		}
+	}
+	if _, err = planPublicPriceSnapshotRestore(prepared.Items, nil); status(err) != 409 {
+		t.Fatalf("unknown identity accepted: %v", err)
+	}
+}
+
+func TestPublicPriceSnapshotRestorePlanMaterializesHistoricalDraft(t *testing.T) {
+	historical := snapshotModelFixture("alpha")
+	historical.DisplayName = "Historical"
+	prepared, err := preparePublicPriceSnapshot([]models.PublicModelConfig{historical})
+	if err != nil {
+		t.Fatal(err)
+	}
+	current := snapshotModelFixture("alpha")
+	current.DisplayName = "Current"
+	extra := snapshotModelFixture("extra-long")
+	plan, err := planPublicPriceSnapshotRestore(prepared.Items, []models.PublicModelConfig{current, extra})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Include) != 1 || plan.Include[0].DisplayName != "Historical" || len(plan.Deactivate) != 1 || plan.Deactivate[0].ModelKey != "extra-long" {
+		t.Fatalf("plan=%#v", plan)
+	}
+}
+
 func snapshotModelFixture(key string) models.PublicModelConfig {
 	in, out := "0.00000001", "2.50000000"
 	checked := int64(1900000000000)

@@ -77,6 +77,8 @@ func TestPublicPriceSnapshotDBAtomicPublicationIdempotencyAndRestore(t *testing.
 	if len(items) != 2 || items[0].InputPriceUSDPerMillionTokens != "2.00000000" || items[0].OutputPriceUSDPerMillionTokens != "2.00000000" {
 		t.Fatalf("snapshot items=%#v", items)
 	}
+	assertPublicModelEverPublished(t, f.db, publicModelIDByGUID(t, f.db, created.GUID), true)
+	assertPublicModelEverPublished(t, f.db, publicModelIDByGUID(t, f.db, created2.GUID), true)
 	name := "Changed after draft read"
 	if _, err = NewPublicModelAdminService(f.db).Update(ctx, f.actor.ID, mustGUID(t, created.GUID), UpdatePublicModelRequest{ExpectedRevision: 2, DisplayName: &name}); err != nil {
 		t.Fatal(err)
@@ -88,8 +90,20 @@ func TestPublicPriceSnapshotDBAtomicPublicationIdempotencyAndRestore(t *testing.
 	if _, err = s.Publish(ctx, PublicPriceSnapshotRequest{ActorID: f.actor.ID, ExpectedRevision: draftRevision, IdempotencyKey: "stale"}); status(err) != 409 {
 		t.Fatalf("stale draft=%v", err)
 	}
+	model3 := f.input("snapshot-extra-" + fmt.Sprint(persistence.NextGUID()))
+	f.observe(t, model3.UpstreamModelID)
+	created3, err := NewPublicModelAdminService(f.db).Create(ctx, f.actor.ID, model3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created3, err = NewPublicModelAdminService(f.db).Activate(ctx, f.actor.ID, mustGUID(t, created3.GUID), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newDraftRevision = publicPriceDraftRevision(t, f.db)
+	assertPublicModelEverPublished(t, f.db, publicModelIDByGUID(t, f.db, created3.GUID), false)
 	after, _ := loadPublicPriceSnapshotFixtureState(f.db)
-	for _, point := range []string{"snapshot", "item", "render_job", "audit", "pointer", "after_pointer"} {
+	for _, point := range []string{"snapshot", "ever_published", "item", "render_job", "audit", "pointer", "after_pointer"} {
 		beforeCounts := publicPriceSnapshotFixtureCounts(t, f.db, f.actor.ID)
 		broken := NewPublicPriceSnapshotService(f.db)
 		itemCalls := 0
@@ -118,7 +132,36 @@ func TestPublicPriceSnapshotDBAtomicPublicationIdempotencyAndRestore(t *testing.
 		if got := publicPriceSnapshotFixtureCounts(t, f.db, f.actor.ID); got != beforeCounts {
 			t.Fatalf("point %s partial rows before=%v after=%v", point, beforeCounts, got)
 		}
+		assertPublicModelEverPublished(t, f.db, publicModelIDByGUID(t, f.db, created3.GUID), false)
 	}
+	secondID := publicModelIDByGUID(t, f.db, created2.GUID)
+	if err = f.db.Model(&models.PublicModelConfig{}).Where("id = ?", secondID).Update("ever_published", 0).Error; err != nil {
+		t.Fatal(err)
+	}
+	assertPublicModelEverPublished(t, f.db, secondID, false)
+	beforeRestoreRevision := publicPriceDraftRevision(t, f.db)
+	brokenRestore := NewPublicPriceSnapshotService(f.db)
+	brokenRestore.fail = func(point string) error {
+		if point == "after_pointer" {
+			return fmt.Errorf("injected restore rollback")
+		}
+		return nil
+	}
+	if _, failureErr := brokenRestore.Restore(ctx, PublicPriceSnapshotRestoreRequest{ActorID: f.actor.ID, ExpectedRevision: beforeRestoreRevision, SnapshotGUID: release.GUID, IdempotencyKey: "restore-rollback"}); status(failureErr) != 503 {
+		t.Fatalf("restore rollback status=%d err=%v", status(failureErr), failureErr)
+	}
+	var unchangedModel, unchangedExtra models.PublicModelConfig
+	if err = f.db.First(&unchangedModel, publicModelIDByGUID(t, f.db, created.GUID)).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err = f.db.First(&unchangedExtra, publicModelIDByGUID(t, f.db, created3.GUID)).Error; err != nil {
+		t.Fatal(err)
+	}
+	if publicPriceDraftRevision(t, f.db) != beforeRestoreRevision || unchangedModel.DisplayName != name || unchangedExtra.Status != models.PublicModelConfigStatusActive {
+		t.Fatalf("failed restore partially materialized draft: model=%#v extra=%#v", unchangedModel, unchangedExtra)
+	}
+	assertPublicModelEverPublished(t, f.db, unchangedExtra.ID, false)
+	assertPublicModelEverPublished(t, f.db, secondID, false)
 	restored, err := s.Restore(ctx, PublicPriceSnapshotRestoreRequest{ActorID: f.actor.ID, ExpectedRevision: newDraftRevision, SnapshotGUID: release.GUID, IdempotencyKey: "restore-1"})
 	if err != nil || restored.Version <= release.Version || restored.GUID == release.GUID {
 		t.Fatalf("restore=%#v err=%v", restored, err)
@@ -147,11 +190,72 @@ func TestPublicPriceSnapshotDBAtomicPublicationIdempotencyAndRestore(t *testing.
 	if !reflect.DeepEqual(items, restoredItems) || restoredSnapshot.ContentHash != snapshot.ContentHash {
 		t.Fatal("restore content/hash mismatch")
 	}
+	if got := publicPriceDraftRevision(t, f.db); restoredSnapshot.SourceRevision != got {
+		t.Fatalf("restore source revision=%d draft revision=%d", restoredSnapshot.SourceRevision, got)
+	}
+	var restoredModel, restoredExtra models.PublicModelConfig
+	if err = f.db.First(&restoredModel, publicModelIDByGUID(t, f.db, created.GUID)).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err = f.db.First(&restoredExtra, publicModelIDByGUID(t, f.db, created3.GUID)).Error; err != nil {
+		t.Fatal(err)
+	}
+	if restoredModel.DisplayName != model.DisplayName {
+		t.Fatalf("restore did not materialize historical draft display_name=%q", restoredModel.DisplayName)
+	}
+	if restoredExtra.Status != models.PublicModelConfigStatusInactive || restoredExtra.IsDeleted != 0 {
+		t.Fatalf("restore did not remove extra model from draft: %#v", restoredExtra)
+	}
+	assertPublicModelEverPublished(t, f.db, publicModelIDByGUID(t, f.db, created.GUID), true)
+	assertPublicModelEverPublished(t, f.db, secondID, true)
+	assertPublicModelEverPublished(t, f.db, publicModelIDByGUID(t, f.db, created3.GUID), false)
+
+	admin := NewPublicModelAdminService(f.db)
+	deactivated, err := admin.Deactivate(ctx, f.actor.ID, mustGUID(t, created.GUID), DeactivationRequest{ExpectedRevision: restoredModel.Revision, Reason: "restore lifecycle test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.Restore(ctx, PublicPriceSnapshotRestoreRequest{ActorID: f.actor.ID, ExpectedRevision: publicPriceDraftRevision(t, f.db), SnapshotGUID: restored.GUID, IdempotencyKey: "restore-inactive"}); status(err) != 409 {
+		t.Fatalf("inactive historical identity restore=%v", err)
+	}
+	if _, err = admin.Activate(ctx, f.actor.ID, mustGUID(t, created.GUID), deactivated.Revision); err != nil {
+		t.Fatal(err)
+	}
+	var secondCurrent models.PublicModelConfig
+	if err = f.db.First(&secondCurrent, publicModelIDByGUID(t, f.db, created2.GUID)).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err = admin.Delete(ctx, f.actor.ID, mustGUID(t, created2.GUID), DeletePublicModelRequest{ExpectedRevision: secondCurrent.Revision, Reason: "restore lifecycle test"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.Restore(ctx, PublicPriceSnapshotRestoreRequest{ActorID: f.actor.ID, ExpectedRevision: publicPriceDraftRevision(t, f.db), SnapshotGUID: restored.GUID, IdempotencyKey: "restore-deleted"}); status(err) != 409 {
+		t.Fatalf("deleted historical identity restore=%v", err)
+	}
 	if err = f.db.Exec("UPDATE public_price_snapshots SET content_hash=? WHERE id=?", strings.Repeat("f", 64), snapshot.ID).Error; err != nil {
 		t.Fatal(err)
 	}
-	if _, err = s.Restore(ctx, PublicPriceSnapshotRestoreRequest{ActorID: f.actor.ID, ExpectedRevision: newDraftRevision, SnapshotGUID: release.GUID, IdempotencyKey: "restore-tampered"}); status(err) != 422 {
+	if _, err = s.Restore(ctx, PublicPriceSnapshotRestoreRequest{ActorID: f.actor.ID, ExpectedRevision: publicPriceDraftRevision(t, f.db), SnapshotGUID: release.GUID, IdempotencyKey: "restore-tampered"}); status(err) != 422 {
 		t.Fatalf("tampered historical hash=%v", err)
+	}
+}
+
+func publicModelIDByGUID(t *testing.T, db *gorm.DB, guid string) int64 {
+	t.Helper()
+	var model models.PublicModelConfig
+	if err := db.Select("id").Where("guid = ?", guid).First(&model).Error; err != nil {
+		t.Fatal(err)
+	}
+	return model.ID
+}
+
+func assertPublicModelEverPublished(t *testing.T, db *gorm.DB, id int64, want bool) {
+	t.Helper()
+	var model models.PublicModelConfig
+	if err := db.Select("id", "ever_published").First(&model, id).Error; err != nil {
+		t.Fatal(err)
+	}
+	if (model.EverPublished == 1) != want {
+		t.Fatalf("model %d ever_published=%v want=%v", id, model.EverPublished, want)
 	}
 }
 

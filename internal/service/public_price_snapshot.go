@@ -45,6 +45,33 @@ type preparedPublicPriceSnapshot struct {
 	Hash  string
 }
 
+type publicPriceSnapshotRestorePlan struct {
+	Include    []models.PublicPriceSnapshotItem
+	Deactivate []models.PublicModelConfig
+}
+
+func planPublicPriceSnapshotRestore(items []models.PublicPriceSnapshotItem, current []models.PublicModelConfig) (*publicPriceSnapshotRestorePlan, error) {
+	byID := make(map[int64]models.PublicModelConfig, len(current))
+	for _, m := range current {
+		byID[m.ID] = m
+	}
+	included := make(map[int64]bool, len(items))
+	plan := &publicPriceSnapshotRestorePlan{Include: append([]models.PublicPriceSnapshotItem(nil), items...)}
+	for _, item := range items {
+		m, ok := byID[item.ModelConfigID]
+		if !ok || m.IsDeleted != 0 || m.Status != models.PublicModelConfigStatusActive || m.ModelKey != item.ModelKey || m.UpstreamModelID != item.UpstreamModelID {
+			return nil, errConflict("historical price snapshot model is no longer active")
+		}
+		included[m.ID] = true
+	}
+	for _, m := range current {
+		if m.IsDeleted == 0 && m.Status == models.PublicModelConfigStatusActive && !included[m.ID] {
+			plan.Deactivate = append(plan.Deactivate, m)
+		}
+	}
+	return plan, nil
+}
+
 type PublicPriceSnapshotService struct {
 	db       *gorm.DB
 	now      func() int64
@@ -164,6 +191,7 @@ func (s *PublicPriceSnapshotService) transact(ctx context.Context, actorID, expe
 			return errUnavailable("publication state unavailable")
 		}
 		var prepared *preparedPublicPriceSnapshot
+		var restorePlan *publicPriceSnapshotRestorePlan
 		var restoredFrom *int64
 		if operation == "publish" {
 			var rows []models.PublicModelConfig
@@ -184,6 +212,13 @@ func (s *PublicPriceSnapshotService) transact(ctx context.Context, actorID, expe
 				return errUnavailable("price snapshot persistence unavailable")
 			}
 			prepared, err = prepareRestoredPublicPriceSnapshot(items, source.ContentHash)
+			if err == nil {
+				var current []models.PublicModelConfig
+				if loadErr := tx.Find(&current).Error; loadErr != nil {
+					return errUnavailable("public model persistence unavailable")
+				}
+				restorePlan, err = planPublicPriceSnapshotRestore(prepared.Items, current)
+			}
 			restoredFrom = &source.ID
 		}
 		if err != nil {
@@ -197,6 +232,30 @@ func (s *PublicPriceSnapshotService) transact(ctx context.Context, actorID, expe
 		}
 		if draft.Revision != expected {
 			return errConflict("public price draft revision conflict")
+		}
+		sourceRevision := draft.Revision
+		if operation == "restore" {
+			now := s.now()
+			if now <= 0 {
+				return errUnavailable("price snapshot persistence unavailable")
+			}
+			for _, item := range restorePlan.Include {
+				result := tx.Model(&models.PublicModelConfig{}).Where("id=? AND model_key=? AND upstream_model_id=? AND status=? AND is_deleted=0", item.ModelConfigID, item.ModelKey, item.UpstreamModelID, models.PublicModelConfigStatusActive).Updates(map[string]any{"display_name": item.DisplayName, "provider": item.Provider, "capabilities": item.Capabilities, "context_window": item.ContextWindow, "input_price_usd_per_million_tokens": item.InputPriceUSDPerMillionTokens, "output_price_usd_per_million_tokens": item.OutputPriceUSDPerMillionTokens, "last_upstream_check_at": item.UpstreamCheckedAt, "revision": gorm.Expr("revision + 1"), "updated_at": now, "updated_by": actor.ID})
+				if result.Error != nil || result.RowsAffected != 1 {
+					return errConflict("historical price snapshot model changed")
+				}
+			}
+			for _, m := range restorePlan.Deactivate {
+				reason := "snapshot_restore"
+				result := tx.Model(&models.PublicModelConfig{}).Where("id=? AND status=? AND is_deleted=0", m.ID, models.PublicModelConfigStatusActive).Updates(map[string]any{"status": models.PublicModelConfigStatusInactive, "inactive_reason": reason, "revision": gorm.Expr("revision + 1"), "updated_at": now, "updated_by": actor.ID})
+				if result.Error != nil || result.RowsAffected != 1 {
+					return errConflict("public price draft changed")
+				}
+			}
+			if err = advancePublicPriceDraftState(tx, draft, actor.ID, now); err != nil {
+				return err
+			}
+			sourceRevision = draft.Revision
 		}
 		if state.ContentReleaseID == nil {
 			return errUnprocessable("published content release required")
@@ -213,7 +272,7 @@ func (s *PublicPriceSnapshotService) transact(ctx context.Context, actorID, expe
 			}
 			version = current.Version + 1
 		}
-		snapshot := models.PublicPriceSnapshot{Guid: guid, CreatedAt: now, CreatedBy: &actor.ID, UpdatedAt: now, UpdatedBy: &actor.ID, Version: version, Reason: models.PublicPriceSnapshotReasonRootPublish, SourceRevision: expected, ContentHash: prepared.Hash, RestoredFromSnapshotID: restoredFrom, PublishedAt: now}
+		snapshot := models.PublicPriceSnapshot{Guid: guid, CreatedAt: now, CreatedBy: &actor.ID, UpdatedAt: now, UpdatedBy: &actor.ID, Version: version, Reason: models.PublicPriceSnapshotReasonRootPublish, SourceRevision: sourceRevision, ContentHash: prepared.Hash, RestoredFromSnapshotID: restoredFrom, PublishedAt: now}
 		if operation == "restore" {
 			snapshot.Reason = models.PublicPriceSnapshotReasonRestore
 		}
@@ -222,6 +281,17 @@ func (s *PublicPriceSnapshotService) transact(ctx context.Context, actorID, expe
 		}
 		if err = tx.Create(&snapshot).Error; err != nil {
 			return errUnavailable("price snapshot persistence unavailable")
+		}
+		includedIDs := make([]int64, len(prepared.Items))
+		for i := range prepared.Items {
+			includedIDs[i] = prepared.Items[i].ModelConfigID
+		}
+		marked := tx.Model(&models.PublicModelConfig{}).Where("id IN ? AND status=? AND is_deleted=0", includedIDs, models.PublicModelConfigStatusActive).Update("ever_published", 1)
+		if marked.Error != nil {
+			return errUnavailable("public model persistence unavailable")
+		}
+		if err = s.fail("ever_published"); err != nil {
+			return errUnavailable("public model persistence unavailable")
 		}
 		for i := range prepared.Items {
 			item := prepared.Items[i]
