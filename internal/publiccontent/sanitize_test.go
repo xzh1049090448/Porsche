@@ -66,6 +66,63 @@ func TestSanitizeMarkdownParsesNestedAndReferenceImages(t *testing.T) {
 	}
 }
 
+func TestSanitizeMarkdownUsesCommonMarkShortcutAndFirstReferenceDefinition(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		raw    string
+		unsafe bool
+		issue  string
+	}{
+		{
+			name:   "shortcut_link",
+			raw:    "[click]\n\n[click]: javascript:alert(1)",
+			unsafe: true,
+			issue:  "unsafe_url",
+		},
+		{
+			name:  "link_first_definition_wins",
+			raw:   "[click]\n\n[click]: https://example.test/first\n[click]: javascript:alert(1)",
+			issue: "unsafe_url",
+		},
+		{
+			name:   "image_first_definition_wins",
+			raw:    "![logo][asset]\n\n[asset]: /assets/logo.svg\n[asset]: https://169.254.169.254/latest/meta-data",
+			unsafe: false,
+			issue:  "unsafe_remote_image",
+		},
+		{
+			name:   "image_first_definition_remains_unsafe",
+			raw:    "![logo][asset]\n\n[asset]: https://169.254.169.254/latest/meta-data\n[asset]: /assets/logo.svg",
+			unsafe: true,
+			issue:  "unsafe_remote_image",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, issues := SanitizeMarkdown(test.raw)
+			if hasIssueCode(issues, test.issue) != test.unsafe {
+				t.Fatalf("SanitizeMarkdown(%q) issues = %#v, unsafe=%v", test.raw, issues, test.unsafe)
+			}
+		})
+	}
+}
+
+func TestSanitizeMarkdownUsesCommonMarkCodeAndAngleDestinationRules(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		raw    string
+		unsafe bool
+	}{
+		{name: "controlled_angle_destination", raw: "![logo](</assets/logo.svg>)", unsafe: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, issues := SanitizeMarkdown(test.raw)
+			if hasIssueCode(issues, "unsafe_remote_image") != test.unsafe {
+				t.Fatalf("SanitizeMarkdown(%q) issues = %#v", test.raw, issues)
+			}
+		})
+	}
+}
+
 func TestSanitizeMarkdownUnescapesCommonMarkURLPunctuationWithoutBackslashPathCoercion(t *testing.T) {
 	_, issues := SanitizeMarkdown("[x](javascript\\:alert(1))")
 	if !hasIssueCode(issues, "unsafe_url") {

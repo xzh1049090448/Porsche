@@ -120,6 +120,14 @@ func TestValidatePublicationChecksRenderedSemanticPrototypeClaimsAndIgnoresCode(
 	}
 }
 
+func TestValidatePublicationUsesCommonMarkVisibleLinkLabelText(t *testing.T) {
+	for _, body := range []string{"[4](/pricing)0+ published models", "`40+``"} {
+		if !hasIssueCode(ValidatePublication(publicationWithHome(body)), "unsubstantiated_prototype_claim") {
+			t.Fatalf("visible CommonMark claim was accepted: %q", body)
+		}
+	}
+}
+
 func TestValidatePublicationRequiresExactlyOneReviewedTermsAndPrivacyDocument(t *testing.T) {
 	for _, documents := range [][]Document{
 		{

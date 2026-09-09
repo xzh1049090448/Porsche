@@ -4,10 +4,12 @@ import (
 	"html"
 	"net/url"
 	"path"
-	"sort"
 	"strings"
 	"unicode"
 
+	"github.com/yuin/goldmark"
+	"github.com/yuin/goldmark/ast"
+	"github.com/yuin/goldmark/text"
 	xhtml "golang.org/x/net/html"
 	"golang.org/x/text/unicode/norm"
 )
@@ -35,46 +37,15 @@ var allowedHTMLTags = map[string]map[string]bool{
 	"ul":         {},
 }
 
-type markdownSpan struct{ start, end int }
-
-type markdownLink struct {
-	isImage     bool
-	destination string
-	reference   string
-}
-
-// SanitizeMarkdown parses the small Markdown surface that can carry a URL,
-// then checks raw HTML through a fixed allowlist. Parsing is in-memory only:
-// URLs are canonicalized but never requested.
+// SanitizeMarkdown parses CommonMark into an AST before inspecting the only
+// nodes that can carry destinations or raw HTML. It has no network client and
+// never dereferences a submitted URL.
 func SanitizeMarkdown(raw string) (string, []ValidationIssue) {
-	ignored := markdownCodeSpans(raw)
-	references := markdownReferenceDefinitions(raw, ignored)
-	links, autolinks := markdownLinks(raw, ignored)
-	ignored = append(ignored, autolinks...)
-
-	issues := make([]ValidationIssue, 0)
-	for _, link := range links {
-		destination := link.destination
-		if link.reference != "" {
-			destination = references[link.reference]
-		}
-		if destination == "" {
-			continue
-		}
-		if link.isImage {
-			if !isControlledLocalAsset(destination) {
-				if isDangerousURL(destination) {
-					issues = append(issues, ValidationIssue{Field: "content", Code: "unsafe_url"})
-				}
-				issues = append(issues, ValidationIssue{Field: "content", Code: "unsafe_remote_image"})
-			}
-			continue
-		}
-		if !isAllowedLink(destination) {
-			issues = append(issues, ValidationIssue{Field: "content", Code: "unsafe_url"})
-		}
+	source, document := parseCommonMark(raw)
+	issues := astValidationIssues(document, source)
+	if hasUnsafeExecutableText(commonMarkVisibleText(document, source)) {
+		issues = append(issues, ValidationIssue{Field: "content", Code: "unsafe_url"})
 	}
-	issues = append(issues, inspectHTML(maskMarkdownSpans(raw, ignored))...)
 	issues = uniqueIssues(issues)
 	if len(issues) != 0 {
 		return "", issues
@@ -82,257 +53,73 @@ func SanitizeMarkdown(raw string) (string, []ValidationIssue) {
 	return raw, nil
 }
 
-func markdownCodeSpans(raw string) []markdownSpan {
-	spans := fencedCodeSpans(raw)
-	for i := 0; i < len(raw); {
-		if inMarkdownSpan(i, spans) {
-			i = spanEnd(i, spans)
-			continue
-		}
-		if raw[i] == '\\' {
-			i += minInt(2, len(raw)-i)
-			continue
-		}
-		if raw[i] != '`' {
-			i++
-			continue
-		}
-		run := markerRun(raw, i, '`')
-		end := findInlineCodeEnd(raw, i+run, run)
-		if end < 0 {
-			i += run
-			continue
-		}
-		spans = append(spans, markdownSpan{start: i, end: end + run})
-		i = end + run
-	}
-	sort.Slice(spans, func(i, j int) bool { return spans[i].start < spans[j].start })
-	return spans
+func normalizedRenderedText(raw string) string {
+	source, document := parseCommonMark(raw)
+	return normalizeSemanticText(unescapeMarkdownPunctuation(commonMarkVisibleText(document, source)))
 }
 
-func fencedCodeSpans(raw string) []markdownSpan {
-	spans := make([]markdownSpan, 0)
-	for lineStart := 0; lineStart < len(raw); {
-		lineEnd := nextLineEnd(raw, lineStart)
-		markerAt, marker, width, ok := openingFenceAt(raw[lineStart:lineEnd])
-		if !ok {
-			lineStart = lineEnd
-			continue
+func commonMarkVisibleText(document ast.Node, source []byte) string {
+	var rendered strings.Builder
+	_ = ast.Walk(document, func(node ast.Node, entering bool) (ast.WalkStatus, error) {
+		if !entering {
+			return ast.WalkContinue, nil
 		}
-		_ = markerAt
-		end := len(raw)
-		for candidate := lineEnd; candidate < len(raw); {
-			candidateEnd := nextLineEnd(raw, candidate)
-			_, closingMarker, closingWidth, closing := closingFenceAt(raw[candidate:candidateEnd])
-			if closing && closingMarker == marker && closingWidth >= width {
-				end = candidateEnd
-				break
+		switch typed := node.(type) {
+		case *ast.FencedCodeBlock, *ast.CodeBlock, *ast.CodeSpan, *ast.RawHTML, *ast.HTMLBlock:
+			return ast.WalkSkipChildren, nil
+		case *ast.Text:
+			rendered.Write(typed.Value(source))
+		case *ast.String:
+			rendered.Write(typed.Value)
+		case *ast.AutoLink:
+			rendered.Write(typed.Label(source))
+			return ast.WalkSkipChildren, nil
+		}
+		return ast.WalkContinue, nil
+	})
+	return rendered.String()
+}
+
+func parseCommonMark(raw string) ([]byte, ast.Node) {
+	source := []byte(raw)
+	return source, goldmark.New().Parser().Parse(text.NewReader(source))
+}
+
+func astValidationIssues(document ast.Node, source []byte) []ValidationIssue {
+	issues := make([]ValidationIssue, 0)
+	_ = ast.Walk(document, func(node ast.Node, entering bool) (ast.WalkStatus, error) {
+		if !entering {
+			return ast.WalkContinue, nil
+		}
+		switch typed := node.(type) {
+		case *ast.FencedCodeBlock, *ast.CodeBlock, *ast.CodeSpan:
+			return ast.WalkSkipChildren, nil
+		case *ast.Link:
+			if !isAllowedLink(string(typed.Destination)) {
+				issues = append(issues, ValidationIssue{Field: "content", Code: "unsafe_url"})
 			}
-			candidate = candidateEnd
-		}
-		spans = append(spans, markdownSpan{start: lineStart, end: end})
-		lineStart = end
-	}
-	return spans
-}
-
-func openingFenceAt(line string) (int, byte, int, bool) {
-	i, marker, width, ok := fencePrefix(line)
-	if !ok {
-		return 0, 0, 0, false
-	}
-	if marker == '`' && strings.Contains(line[i+width:], "`") {
-		return 0, 0, 0, false
-	}
-	return i, marker, width, true
-}
-
-func closingFenceAt(line string) (int, byte, int, bool) {
-	i, marker, width, ok := fencePrefix(line)
-	if !ok || strings.Trim(line[i+width:], " \t\r\n") != "" {
-		return 0, 0, 0, false
-	}
-	return i, marker, width, true
-}
-
-func fencePrefix(line string) (int, byte, int, bool) {
-	i := 0
-	for i < len(line) && i < 3 && line[i] == ' ' {
-		i++
-	}
-	if i >= len(line) || (line[i] != '`' && line[i] != '~') {
-		return 0, 0, 0, false
-	}
-	width := markerRun(line, i, line[i])
-	return i, line[i], width, width >= 3
-}
-
-func markdownReferenceDefinitions(raw string, ignored []markdownSpan) map[string]string {
-	references := make(map[string]string)
-	for lineStart := 0; lineStart < len(raw); {
-		lineEnd := nextLineEnd(raw, lineStart)
-		if inMarkdownSpan(lineStart, ignored) {
-			lineStart = lineEnd
-			continue
-		}
-		line := raw[lineStart:lineEnd]
-		i := 0
-		for i < len(line) && i < 3 && line[i] == ' ' {
-			i++
-		}
-		if i < len(line) && line[i] == '[' {
-			if closing, ok := markdownLabelEnd(line, i); ok && closing < len(line) && line[closing] == ':' {
-				if destination := markdownDestination(line[closing+1:]); destination != "" {
-					references[normalizeReference(line[i+1:closing-1])] = destination
+		case *ast.Image:
+			destination := string(typed.Destination)
+			if !isControlledLocalAsset(destination) {
+				if isDangerousURL(destination) {
+					issues = append(issues, ValidationIssue{Field: "content", Code: "unsafe_url"})
 				}
+				issues = append(issues, ValidationIssue{Field: "content", Code: "unsafe_remote_image"})
 			}
-		}
-		lineStart = lineEnd
-	}
-	return references
-}
-
-func markdownLinks(raw string, ignored []markdownSpan) ([]markdownLink, []markdownSpan) {
-	links := make([]markdownLink, 0)
-	autolinks := make([]markdownSpan, 0)
-	for i := 0; i < len(raw); {
-		if inMarkdownSpan(i, ignored) {
-			i = spanEnd(i, ignored)
-			continue
-		}
-		if raw[i] == '\\' {
-			i += minInt(2, len(raw)-i)
-			continue
-		}
-		if raw[i] == '<' {
-			if end := strings.IndexByte(raw[i+1:], '>'); end >= 0 {
-				end += i + 1
-				candidate := raw[i+1 : end]
-				if isAutolinkCandidate(candidate) {
-					links = append(links, markdownLink{destination: candidate})
-					autolinks = append(autolinks, markdownSpan{start: i, end: end + 1})
-					i = end + 1
-					continue
-				}
+		case *ast.AutoLink:
+			if !isAllowedLink(string(typed.URL(source))) {
+				issues = append(issues, ValidationIssue{Field: "content", Code: "unsafe_url"})
 			}
+		case *ast.RawHTML:
+			issues = append(issues, inspectHTML(string(typed.Text(source)))...)
+			return ast.WalkSkipChildren, nil
+		case *ast.HTMLBlock:
+			issues = append(issues, inspectHTML(string(typed.Text(source)))...)
+			return ast.WalkSkipChildren, nil
 		}
-
-		isImage := raw[i] == '!' && i+1 < len(raw) && raw[i+1] == '['
-		labelStart := i
-		if isImage {
-			labelStart++
-		}
-		if labelStart >= len(raw) || raw[labelStart] != '[' {
-			i++
-			continue
-		}
-		labelEnd, ok := markdownLabelEnd(raw, labelStart)
-		if !ok {
-			i++
-			continue
-		}
-		label := raw[labelStart+1 : labelEnd-1]
-		if labelEnd < len(raw) && raw[labelEnd] == '(' {
-			if end, content, ok := markdownParenEnd(raw, labelEnd); ok {
-				links = append(links, markdownLink{isImage: isImage, destination: markdownDestination(content)})
-				i = end
-				continue
-			}
-		}
-		if labelEnd < len(raw) && raw[labelEnd] == '[' {
-			if referenceEnd, ok := markdownLabelEnd(raw, labelEnd); ok {
-				reference := raw[labelEnd+1 : referenceEnd-1]
-				if reference == "" {
-					reference = label
-				}
-				links = append(links, markdownLink{isImage: isImage, reference: normalizeReference(reference)})
-				i = referenceEnd
-				continue
-			}
-		}
-		if isImage {
-			links = append(links, markdownLink{isImage: true, reference: normalizeReference(label)})
-		}
-		i = labelEnd
-	}
-	return links, autolinks
-}
-
-func markdownLabelEnd(raw string, start int) (int, bool) {
-	depth := 0
-	for i := start; i < len(raw); i++ {
-		if raw[i] == '\\' {
-			i++
-			continue
-		}
-		switch raw[i] {
-		case '[':
-			depth++
-		case ']':
-			depth--
-			if depth == 0 {
-				return i + 1, true
-			}
-		}
-	}
-	return 0, false
-}
-
-func markdownParenEnd(raw string, start int) (int, string, bool) {
-	depth := 0
-	inAngle := false
-	for i := start; i < len(raw); i++ {
-		if raw[i] == '\\' {
-			i++
-			continue
-		}
-		if raw[i] == '<' {
-			inAngle = true
-		}
-		if raw[i] == '>' {
-			inAngle = false
-		}
-		if inAngle {
-			continue
-		}
-		switch raw[i] {
-		case '(':
-			depth++
-		case ')':
-			depth--
-			if depth == 0 {
-				return i + 1, raw[start+1 : i], true
-			}
-		}
-	}
-	return 0, "", false
-}
-
-func markdownDestination(content string) string {
-	content = strings.TrimSpace(content)
-	if strings.HasPrefix(content, "<") {
-		if end := strings.IndexByte(content, '>'); end >= 0 {
-			return unescapeMarkdownPunctuation(content[1:end])
-		}
-		return unescapeMarkdownPunctuation(content)
-	}
-	for i, runeValue := range content {
-		if unicode.IsSpace(runeValue) {
-			remaining := strings.TrimSpace(content[i:])
-			if strings.HasPrefix(remaining, "\"") || strings.HasPrefix(remaining, "'") || strings.HasPrefix(remaining, "(") {
-				return unescapeMarkdownPunctuation(content[:i])
-			}
-		}
-	}
-	return unescapeMarkdownPunctuation(content)
-}
-
-func isAutolinkCandidate(value string) bool {
-	if strings.IndexFunc(value, unicode.IsSpace) >= 0 {
-		return false
-	}
-	value = canonicalURL(value)
-	return strings.HasPrefix(value, "http:") || strings.HasPrefix(value, "https:") || strings.Contains(value, ":") || strings.HasPrefix(value, "//")
+		return ast.WalkContinue, nil
+	})
+	return uniqueIssues(issues)
 }
 
 func isAllowedLink(raw string) bool {
@@ -357,7 +144,7 @@ func isDangerousURL(raw string) bool {
 
 func isControlledLocalAsset(raw string) bool {
 	value := canonicalURL(raw)
-	if value == "" || hasSchemeLikePrefix(value) || strings.HasPrefix(value, "//") {
+	if value == "" || hasSchemeLikePrefix(value) || strings.HasPrefix(value, "//") || strings.Contains(value, "\\") {
 		return false
 	}
 	parsed, err := url.Parse(value)
@@ -381,8 +168,6 @@ func hasSchemeLikePrefix(value string) bool {
 
 func canonicalURL(raw string) string {
 	value := strings.TrimSpace(raw)
-	value = strings.TrimPrefix(value, "<")
-	value = strings.TrimSuffix(value, ">")
 	for {
 		decoded := norm.NFKC.String(html.UnescapeString(value))
 		if unescaped, err := url.PathUnescape(decoded); err == nil {
@@ -403,29 +188,35 @@ func canonicalURL(raw string) string {
 	return normalized.String()
 }
 
-func normalizedRenderedText(raw string) string {
-	value := maskMarkdownSpans(raw, markdownCodeSpans(raw))
+func normalizeSemanticText(raw string) string {
+	value := raw
 	for {
 		decoded := norm.NFKC.String(html.UnescapeString(value))
 		if decoded == value {
-			value = decoded
-			break
+			return decoded
 		}
 		value = decoded
 	}
-	value = unescapeMarkdownPunctuation(value)
-	value = strings.ReplaceAll(value, "*", "")
-	value = strings.ReplaceAll(value, "_", "")
-	tokenizer := xhtml.NewTokenizer(strings.NewReader(value))
-	var rendered strings.Builder
-	for {
-		switch tokenizer.Next() {
-		case xhtml.ErrorToken:
-			return rendered.String()
-		case xhtml.TextToken:
-			rendered.Write(tokenizer.Text())
+}
+
+func hasUnsafeExecutableText(value string) bool {
+	value = canonicalURL(value)
+	return strings.Contains(value, "javascript:") || strings.Contains(value, "vbscript:") || strings.Contains(value, "data:")
+}
+
+func unescapeMarkdownPunctuation(value string) string {
+	var unescaped strings.Builder
+	for i := 0; i < len(value); i++ {
+		if value[i] == '\\' && i+1 < len(value) && isMarkdownPunctuation(value[i+1]) {
+			i++
 		}
+		unescaped.WriteByte(value[i])
 	}
+	return unescaped.String()
+}
+
+func isMarkdownPunctuation(value byte) bool {
+	return strings.ContainsRune(`!"#$%&'()*+,-./:;<=>?@[\]^_`+"`"+`{|}~`, rune(value))
 }
 
 func inspectHTML(raw string) []ValidationIssue {
@@ -465,88 +256,6 @@ func inspectHTML(raw string) []ValidationIssue {
 			}
 		}
 	}
-}
-
-func unescapeMarkdownPunctuation(value string) string {
-	var unescaped strings.Builder
-	for i := 0; i < len(value); i++ {
-		if value[i] == '\\' && i+1 < len(value) && isMarkdownPunctuation(value[i+1]) {
-			i++
-		}
-		unescaped.WriteByte(value[i])
-	}
-	return unescaped.String()
-}
-
-func isMarkdownPunctuation(value byte) bool {
-	return strings.ContainsRune(`!"#$%&'()*+,-./:;<=>?@[\]^_`+"`"+`{|}~`, rune(value))
-}
-
-func maskMarkdownSpans(raw string, spans []markdownSpan) string {
-	if len(spans) == 0 {
-		return raw
-	}
-	masked := []byte(raw)
-	for _, span := range spans {
-		for i := span.start; i < span.end && i < len(masked); i++ {
-			masked[i] = ' '
-		}
-	}
-	return string(masked)
-}
-
-func inMarkdownSpan(index int, spans []markdownSpan) bool {
-	for _, span := range spans {
-		if index >= span.start && index < span.end {
-			return true
-		}
-	}
-	return false
-}
-
-func spanEnd(index int, spans []markdownSpan) int {
-	for _, span := range spans {
-		if index >= span.start && index < span.end {
-			return span.end
-		}
-	}
-	return index + 1
-}
-
-func nextLineEnd(raw string, start int) int {
-	if end := strings.IndexByte(raw[start:], '\n'); end >= 0 {
-		return start + end + 1
-	}
-	return len(raw)
-}
-
-func markerRun(raw string, start int, marker byte) int {
-	i := start
-	for i < len(raw) && raw[i] == marker {
-		i++
-	}
-	return i - start
-}
-
-func findInlineCodeEnd(raw string, start, width int) int {
-	for i := start; i < len(raw); {
-		if raw[i] == '`' && markerRun(raw, i, '`') == width {
-			return i
-		}
-		i++
-	}
-	return -1
-}
-
-func normalizeReference(value string) string {
-	return strings.ToLower(strings.Join(strings.Fields(value), " "))
-}
-
-func minInt(left, right int) int {
-	if left < right {
-		return left
-	}
-	return right
 }
 
 func uniqueIssues(issues []ValidationIssue) []ValidationIssue {
