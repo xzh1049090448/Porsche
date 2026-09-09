@@ -38,6 +38,15 @@ func TestDecodeAdminUserUpdateRetiresEntitlementFieldsBeforeLegacyMutation(t *te
 	}
 }
 
+func TestDecodeAdminUserUpdateRetiresA08FieldsBeforeLegacyMutation(t *testing.T) {
+	for _, field := range []string{"role", "auth_version", "expected_auth_version", "expected_permissions_version", "permissions_version", "catalog_version", "overrides", "action", "reason"} {
+		body := `{"` + field + `":null}`
+		if _, err := decodeAdminUserUpdate(strings.NewReader(body)); !errors.Is(err, errAdminUserUpdateStatusRetired) {
+			t.Fatalf("field=%s error=%v", field, err)
+		}
+	}
+}
+
 // TestAdminUserUpdateRejectsMalformedOrOutOfContractJSON exercises the real
 // protected PUT route. Every rejected payload must leave the target's account
 // state, session rows, and auth-audit history untouched.
@@ -52,6 +61,12 @@ func TestAdminUserUpdateRejectsMalformedOrOutOfContractJSON(t *testing.T) {
 		{name: "top-level-null", body: "null", wantStatus: http.StatusBadRequest},
 		{name: "array", body: "[]", wantStatus: http.StatusBadRequest},
 		{name: "unknown-role", body: `{"role":"root"}`, wantStatus: http.StatusBadRequest},
+		{name: "retired-auth-version", body: `{"auth_version":1}`, wantStatus: http.StatusBadRequest},
+		{name: "retired-permissions-version", body: `{"permissions_version":1}`, wantStatus: http.StatusBadRequest},
+		{name: "retired-expected-permissions-version", body: `{"expected_permissions_version":1}`, wantStatus: http.StatusBadRequest},
+		{name: "retired-catalog-version", body: `{"catalog_version":1}`, wantStatus: http.StatusBadRequest},
+		{name: "retired-overrides", body: `{"overrides":[]}`, wantStatus: http.StatusBadRequest},
+		{name: "retired-action", body: `{"action":"promote"}`, wantStatus: http.StatusBadRequest},
 		{name: "unknown-permissions", body: `{"permissions":["users.promote"]}`, wantStatus: http.StatusBadRequest},
 		{name: "unknown-money", body: `{"amount":1}`, wantStatus: http.StatusBadRequest},
 		{name: "retired-status-only", body: `{"status":"disabled"}`, wantStatus: http.StatusBadRequest},
