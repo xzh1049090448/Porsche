@@ -132,12 +132,24 @@ func validateCatalogJSONKeys(raw []byte) error {
 			if err := validateCatalogDataKeys(decoder); err != nil {
 				return err
 			}
-		} else if err := skipCatalogJSONValue(decoder); err != nil {
-			return err
+		} else {
+			var complete bool
+			if err := decoder.Decode(&complete); err != nil {
+				return fmt.Errorf("catalog complete must be boolean")
+			}
 		}
 	}
 	_, err = decoder.Token()
-	return err
+	if err != nil {
+		return err
+	}
+	if _, ok := seen["data"]; !ok {
+		return fmt.Errorf("catalog data missing")
+	}
+	if _, ok := seen["complete"]; !ok {
+		return fmt.Errorf("catalog completeness missing")
+	}
+	return nil
 }
 
 func validateCatalogDataKeys(decoder *json.Decoder) error {
@@ -168,12 +180,28 @@ func validateCatalogDataKeys(decoder *json.Decoder) error {
 				return fmt.Errorf("duplicate catalog model field")
 			}
 			seen[key] = struct{}{}
-			if err := skipCatalogJSONValue(decoder); err != nil {
-				return err
+			switch key {
+			case "id":
+				var id string
+				if err := decoder.Decode(&id); err != nil || id != strings.TrimSpace(id) || !validModelID(id) {
+					return fmt.Errorf("invalid catalog model id")
+				}
+			case "owned_by":
+				var provider string
+				if err := decoder.Decode(&provider); err != nil {
+					return fmt.Errorf("invalid catalog model owner")
+				}
+			default:
+				if err := skipCatalogJSONValue(decoder); err != nil {
+					return err
+				}
 			}
 		}
 		if _, err = decoder.Token(); err != nil {
 			return err
+		}
+		if _, ok := seen["id"]; !ok {
+			return fmt.Errorf("catalog model id missing")
 		}
 	}
 	_, err = decoder.Token()

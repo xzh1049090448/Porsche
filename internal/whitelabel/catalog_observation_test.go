@@ -18,7 +18,7 @@ func TestCatalogObservationReturnsExactSanitizedFreshCatalog(t *testing.T) {
 		if got := r.Header.Get("Authorization"); got != "Bearer secret-token" {
 			t.Fatalf("authorization=%q", got)
 		}
-		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"data":[{"id":" alpha/model ","owned_by":"Provider","input_token_price_per_m":0.12345678,"output_token_price_per_m":"9.00000001"}],"complete":true}`)), Header: make(http.Header)}, nil
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"data":[{"id":"alpha/model","owned_by":"Provider","input_token_price_per_m":0.12345678,"output_token_price_per_m":"9.00000001"}],"complete":true}`)), Header: make(http.Header)}, nil
 	})}
 	s, err := NewWhiteLabelService(config.WhiteLabelSettings{BaseURL: "https://upstream.example/v1", APIKey: "secret-token", AllowedModels: map[string]struct{}{"alpha/model": {}}}, client, func() time.Time { return now })
 	if err != nil {
@@ -50,11 +50,19 @@ func TestCatalogObservationOmittedCompletenessFailsClosed(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, err := s.ObserveCatalog(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !got.Successful || got.Complete || !got.Fresh {
+	if err == nil || got.Successful || got.Complete || got.Fresh {
 		t.Fatalf("observation=%#v", got)
+	}
+}
+
+func TestCatalogObservationExplicitIncompleteAndEmptyCatalogs(t *testing.T) {
+	incomplete, err := catalogObservationService(t, `{"data":[],"complete":false}`).ObserveCatalog(context.Background())
+	if err != nil || !incomplete.Successful || incomplete.Complete || !incomplete.Fresh || len(incomplete.Models) != 0 {
+		t.Fatalf("explicit incomplete observation=%#v err=%v", incomplete, err)
+	}
+	empty, err := catalogObservationService(t, `{"data":[],"complete":true}`).ObserveCatalog(context.Background())
+	if err != nil || !empty.Successful || !empty.Complete || !empty.Fresh || len(empty.Models) != 0 {
+		t.Fatalf("explicit complete empty observation=%#v err=%v", empty, err)
 	}
 }
 
@@ -148,6 +156,30 @@ func TestCatalogObservationRequiresExactCaseSensitiveUTF8SchemaKeys(t *testing.T
 	got, err := catalogObservationService(t, exact).ObserveCatalog(context.Background())
 	if err != nil || !got.Successful || !got.Complete || !got.Fresh || len(got.Models) != 1 {
 		t.Fatalf("canonical exact-limit observation=%#v err=%v", got, err)
+	}
+}
+
+func TestCatalogObservationRejectsMissingRequiredSchemaFields(t *testing.T) {
+	tests := []string{
+		`{"complete":true}`,
+		`{"data":[]}`,
+		`{"data":[{}],"complete":true}`,
+		`{"data":[{"input_token_price_per_m":"1"}],"complete":true}`,
+		`{"data":[{"id":null}],"complete":true}`,
+		`{"data":[{"id":" "}],"complete":true}`,
+		`{"data":[{"id":" alpha/model "}],"complete":true}`,
+		`{"data":[{"id":"Alpha Model"}],"complete":true}`,
+		`{"data":[{"id":"alpha/model","id":"beta/model"}],"complete":true}`,
+		`{"data":[{"id":"alpha/model","ID":"beta/model"}],"complete":true}`,
+		`{"data":[{"ID":"beta/model","id":"alpha/model"}],"complete":true}`,
+	}
+	for _, body := range tests {
+		t.Run(body, func(t *testing.T) {
+			got, err := catalogObservationService(t, body).ObserveCatalog(context.Background())
+			if err == nil || got.Successful || got.Complete || got.Fresh {
+				t.Fatalf("fail-closed observation=%#v err=%v", got, err)
+			}
+		})
 	}
 }
 
