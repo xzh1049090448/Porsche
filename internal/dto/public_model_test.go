@@ -1,6 +1,7 @@
 package dto
 
 import (
+	"bytes"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -31,4 +32,38 @@ func TestPublicModelMutationDTOsKeepIdentityImmutable(t *testing.T) {
 	if strings.Contains(string(b), "model_key") || strings.Contains(string(b), "upstream_model_id") {
 		t.Fatal(string(b))
 	}
+	if strings.Contains(string(b), "price_usd") {
+		t.Fatalf("omitted nullable prices serialized: %s", b)
+	}
 }
+
+func TestDecodeUpdatePublicModelDistinguishesOmittedValueAndNull(t *testing.T) {
+	for _, tc := range []struct {
+		body  string
+		set   bool
+		value *string
+	}{
+		{`{"expected_revision":1}`, false, nil},
+		{`{"expected_revision":1,"input_price_usd_per_million_tokens":null}`, true, nil},
+		{`{"expected_revision":1,"input_price_usd_per_million_tokens":"1.25000000"}`, true, stringRef("1.25000000")},
+	} {
+		got, err := DecodeUpdatePublicModelRequest(bytes.NewBufferString(tc.body))
+		if err != nil {
+			t.Fatalf("%s: %v", tc.body, err)
+		}
+		if got.InputPriceUSDPerMillionTokens.Set != tc.set || !sameString(got.InputPriceUSDPerMillionTokens.Value, tc.value) {
+			t.Fatalf("%s: %#v", tc.body, got.InputPriceUSDPerMillionTokens)
+		}
+	}
+}
+
+func TestDecodeUpdatePublicModelRejectsUnknownDuplicateTrailingAndMissingRevision(t *testing.T) {
+	for _, body := range []string{`{"expected_revision":1,"unknown":1}`, `{"expected_revision":1,"expected_revision":2}`, `{"expected_revision":1}{}`, `{}`} {
+		if _, err := DecodeUpdatePublicModelRequest(bytes.NewBufferString(body)); err == nil {
+			t.Fatalf("accepted %s", body)
+		}
+	}
+}
+
+func stringRef(v string) *string   { return &v }
+func sameString(a, b *string) bool { return a == nil && b == nil || a != nil && b != nil && *a == *b }

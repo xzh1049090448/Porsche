@@ -10,12 +10,13 @@ import (
 
 	"github.com/porsche/ai-gateway-go/internal/models"
 	"github.com/porsche/ai-gateway-go/internal/persistence"
+	"github.com/porsche/ai-gateway-go/internal/publiccontent"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
 
 var publicModelDecimal = regexp.MustCompile(`^(0|[1-9][0-9]{0,11})(\.[0-9]{1,8})?$`)
-var publicModelKey = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,127}$`)
+var publicModelSensitiveReason = regexp.MustCompile(`(?i)(api[ _-]?key|password|bearer|token|authorization|secret|credential|raw[ _-]?payload)`)
 
 type PublicModelAdmin struct {
 	GUID                           string
@@ -42,7 +43,11 @@ type UpdatePublicModelRequest struct {
 	DisplayName, Provider                                         *string
 	Capabilities                                                  *[]string
 	ContextWindow                                                 *int64
-	InputPriceUSDPerMillionTokens, OutputPriceUSDPerMillionTokens *string
+	InputPriceUSDPerMillionTokens, OutputPriceUSDPerMillionTokens OptionalNullableString
+}
+type OptionalNullableString struct {
+	Set   bool
+	Value *string
 }
 type DeactivationRequest struct {
 	ExpectedRevision int64
@@ -73,7 +78,7 @@ func NewPublicModelAdminService(db *gorm.DB) *PublicModelAdminService {
 }
 
 func validatePublicModelCreate(in CreatePublicModelRequest) error {
-	if strings.TrimSpace(in.UpstreamModelID) == "" || !publicModelKey.MatchString(in.ModelKey) || strings.TrimSpace(in.DisplayName) == "" || strings.TrimSpace(in.Provider) == "" || in.Capabilities == nil || in.ContextWindow <= 0 {
+	if !publiccontent.ValidUpstreamModelID(in.UpstreamModelID) || !publiccontent.ValidModelKey(in.ModelKey) || strings.TrimSpace(in.DisplayName) == "" || strings.TrimSpace(in.Provider) == "" || in.Capabilities == nil || in.ContextWindow <= 0 {
 		return errBadRequest("invalid public model request")
 	}
 	if !validPublicPrice(in.InputPriceUSDPerMillionTokens) || !validPublicPrice(in.OutputPriceUSDPerMillionTokens) {
@@ -83,7 +88,24 @@ func validatePublicModelCreate(in CreatePublicModelRequest) error {
 }
 func validPublicPrice(v *string) bool { return v == nil || publicModelDecimal.MatchString(*v) }
 func publicModelAuditDetail(key string, revision int64, reason string) models.JSONMap {
-	return models.JSONMap{"model_key": key, "revision": revision, "reason": strings.TrimSpace(reason)}
+	return models.JSONMap{"model_key": key, "revision": revision, "reason": sanitizePublicModelAuditReason(reason)}
+}
+func sanitizePublicModelAuditReason(reason string) string {
+	reason = strings.TrimSpace(reason)
+	if publicModelSensitiveReason.MatchString(reason) {
+		return "[redacted]"
+	}
+	reason = strings.Map(func(r rune) rune {
+		if r < ' ' || r == 127 {
+			return -1
+		}
+		return r
+	}, reason)
+	rr := []rune(reason)
+	if len(rr) > 128 {
+		rr = rr[:128]
+	}
+	return string(rr)
 }
 
 func (s *PublicModelAdminService) Create(ctx context.Context, actorID int64, in CreatePublicModelRequest) (*PublicModelAdmin, error) {
@@ -208,11 +230,11 @@ func (s *PublicModelAdminService) Update(ctx context.Context, actorID, guid int6
 		if in.ContextWindow != nil {
 			m.ContextWindow = *in.ContextWindow
 		}
-		if in.InputPriceUSDPerMillionTokens != nil {
-			m.InputPriceUSDPerMillionTokens = in.InputPriceUSDPerMillionTokens
+		if in.InputPriceUSDPerMillionTokens.Set {
+			m.InputPriceUSDPerMillionTokens = in.InputPriceUSDPerMillionTokens.Value
 		}
-		if in.OutputPriceUSDPerMillionTokens != nil {
-			m.OutputPriceUSDPerMillionTokens = in.OutputPriceUSDPerMillionTokens
+		if in.OutputPriceUSDPerMillionTokens.Set {
+			m.OutputPriceUSDPerMillionTokens = in.OutputPriceUSDPerMillionTokens.Value
 		}
 		if m.DisplayName == "" || m.Provider == "" || m.Capabilities == nil || m.ContextWindow <= 0 || !validPublicPrice(m.InputPriceUSDPerMillionTokens) || !validPublicPrice(m.OutputPriceUSDPerMillionTokens) {
 			return errBadRequest("invalid public model request")
