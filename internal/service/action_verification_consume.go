@@ -22,11 +22,30 @@ type VerificationConsume struct {
 	TicketValues []string
 }
 
-// Consume verifies and atomically tombstones one action ticket. Callers should
-// invoke it inside the mutation's transaction when atomic business effects are
-// required; this standalone boundary is intended for thin public admin flows.
+// Consume verifies and atomically tombstones one action ticket in a standalone
+// transaction. Business mutations should use ConsumeInTx instead.
 func (s *ActionVerificationService) Consume(ctx context.Context, in VerificationConsume) error {
+	if s == nil || s.db == nil || ctx == nil {
+		return ErrActionVerificationUnavailable
+	}
+	err := s.db.Session(&gorm.Session{NewDB: true, Logger: logger.Discard}).WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		return s.ConsumeInTx(ctx, tx, in)
+	}, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+	return normalizeVerificationConsumeError(err)
+}
+
+// ConsumeInTx verifies and tombstones a ticket in the caller's business
+// transaction, so rollback keeps the ticket reusable.
+func (s *ActionVerificationService) ConsumeInTx(ctx context.Context, tx *gorm.DB, in VerificationConsume) error {
+	return s.VerifyAndConsumeInTx(ctx, tx, in)
+}
+
+// VerifyAndConsumeInTx is the explicit transaction-aware verification seam.
+func (s *ActionVerificationService) VerifyAndConsumeInTx(ctx context.Context, tx *gorm.DB, in VerificationConsume) error {
 	if s == nil || ctx == nil || s.resolve == nil || s.crypto == nil || s.clock == nil {
+		return ErrActionVerificationUnavailable
+	}
+	if tx == nil {
 		return ErrActionVerificationUnavailable
 	}
 	descriptor, ok := s.resolve(in.Action)
@@ -64,34 +83,35 @@ func (s *ActionVerificationService) Consume(ctx context.Context, in Verification
 	if now <= 0 {
 		return ErrActionVerificationUnavailable
 	}
-	err = s.db.Session(&gorm.Session{NewDB: true, Logger: logger.Discard}).WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		locked, err := lockActionIdentity(tx, in.Actor, descriptor, in.TargetGUID, now)
-		if err != nil {
-			return err
-		}
-		var verification models.AdminActionVerification
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("ticket_hmac = ?", ticketHex).First(&verification).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return ErrActionVerificationForbidden
-			}
-			return ErrActionVerificationUnavailable
-		}
-		if !validVerificationConsumeBinding(verification, locked.actor.ID, locked.actor.AuthVersion, locked.session.ID, descriptor, in.TargetGUID, intentHex, ticketHex, now) {
+	locked, err := lockActionIdentity(tx, in.Actor, descriptor, in.TargetGUID, now)
+	if err != nil {
+		return err
+	}
+	var verification models.AdminActionVerification
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("ticket_hmac = ?", ticketHex).First(&verification).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return ErrActionVerificationForbidden
 		}
-		actorID := locked.actor.ID
-		result := tx.Model(&models.AdminActionVerification{}).
-			Where("id = ? AND consumed_at IS NULL AND is_deleted = 0 AND expires_at > ?", verification.ID, now).
-			Updates(map[string]any{"consumed_at": now, "is_deleted": 1, "updated_at": now, "updated_by": actorID})
-		if result.Error != nil {
-			return ErrActionVerificationUnavailable
-		}
-		if result.RowsAffected != 1 {
-			return ErrActionVerificationForbidden
-		}
-		return nil
-	}, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
-	if errors.Is(err, ErrActionVerificationForbidden) || errors.Is(err, ErrActionVerificationHidden) || errors.Is(err, ErrActionVerificationConflict) {
+		return ErrActionVerificationUnavailable
+	}
+	if !validVerificationConsumeBinding(verification, locked.actor.ID, locked.actor.AuthVersion, locked.session.ID, descriptor, in.TargetGUID, intentHex, ticketHex, now) {
+		return ErrActionVerificationForbidden
+	}
+	actorID := locked.actor.ID
+	result := tx.Model(&models.AdminActionVerification{}).
+		Where("id = ? AND consumed_at IS NULL AND is_deleted = 0 AND expires_at > ?", verification.ID, now).
+		Updates(map[string]any{"consumed_at": now, "is_deleted": 1, "updated_at": now, "updated_by": actorID})
+	if result.Error != nil {
+		return ErrActionVerificationUnavailable
+	}
+	if result.RowsAffected != 1 {
+		return ErrActionVerificationForbidden
+	}
+	return nil
+}
+
+func normalizeVerificationConsumeError(err error) error {
+	if errors.Is(err, ErrActionVerificationInactive) || errors.Is(err, ErrActionVerificationForbidden) || errors.Is(err, ErrActionVerificationHidden) || errors.Is(err, ErrActionVerificationConflict) {
 		return err
 	}
 	if err != nil {

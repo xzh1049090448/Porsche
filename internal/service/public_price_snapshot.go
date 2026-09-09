@@ -200,20 +200,24 @@ func publicPriceIdempotencyKeyDigest(key string) string {
 	return hex.EncodeToString(s[:])
 }
 
-func (s *PublicPriceSnapshotService) Publish(ctx context.Context, in PublicPriceSnapshotRequest) (*PublicPriceSnapshotRelease, error) {
-	return s.transact(ctx, in.ActorID, in.ExpectedRevision, in.IdempotencyKey, "publish", 0)
+func (s *PublicPriceSnapshotService) Publish(ctx context.Context, in PublicPriceSnapshotRequest, values ...PublicAdminTransactionOption) (*PublicPriceSnapshotRelease, error) {
+	return s.transact(ctx, in.ActorID, in.ExpectedRevision, in.IdempotencyKey, "publish", 0, values)
 }
-func (s *PublicPriceSnapshotService) Restore(ctx context.Context, in PublicPriceSnapshotRestoreRequest) (*PublicPriceSnapshotRelease, error) {
+func (s *PublicPriceSnapshotService) Restore(ctx context.Context, in PublicPriceSnapshotRestoreRequest, values ...PublicAdminTransactionOption) (*PublicPriceSnapshotRelease, error) {
 	guid, err := strconv.ParseInt(in.SnapshotGUID, 10, 64)
 	if err != nil || guid <= 0 {
 		return nil, errBadRequest("invalid price snapshot guid")
 	}
-	return s.transact(ctx, in.ActorID, in.ExpectedRevision, in.IdempotencyKey, "restore", guid)
+	return s.transact(ctx, in.ActorID, in.ExpectedRevision, in.IdempotencyKey, "restore", guid, values)
 }
 
-func (s *PublicPriceSnapshotService) transact(ctx context.Context, actorID, expected int64, key, operation string, restoreGUID int64) (*PublicPriceSnapshotRelease, error) {
+func (s *PublicPriceSnapshotService) transact(ctx context.Context, actorID, expected int64, key, operation string, restoreGUID int64, values []PublicAdminTransactionOption) (*PublicPriceSnapshotRelease, error) {
 	if actorID <= 0 || expected <= 0 || len(key) < 1 || len(key) > 256 || strings.TrimSpace(key) != key {
 		return nil, errBadRequest("invalid public price publication request")
+	}
+	options, optionErr := resolvePublicAdminTransactionOptions(values)
+	if optionErr != nil {
+		return nil, errUnavailable("public price action verification unavailable")
 	}
 	var out *PublicPriceSnapshotRelease
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -280,6 +284,9 @@ func (s *PublicPriceSnapshotService) transact(ctx context.Context, actorID, expe
 			return errUnavailable("published content release unavailable")
 		}
 		if err = validateContentReleaseForPriceItems(currentContent, prepared.Items); err != nil {
+			return err
+		}
+		if err = options.consumeTicket(ctx, tx); err != nil {
 			return err
 		}
 		sourceRevision := draft.Revision

@@ -446,19 +446,23 @@ func verifyPublicContentRelease(release models.PublicContentRelease) error {
 	return nil
 }
 
-func (s *PublicContentService) Publish(ctx context.Context, in PublicContentPublicationRequest) (*PublicContentRelease, error) {
-	return s.transact(ctx, in.ActorID, in.ExpectedRevision, in.PriceReleaseGUID, in.IdempotencyKey, "publish", 0)
+func (s *PublicContentService) Publish(ctx context.Context, in PublicContentPublicationRequest, values ...PublicAdminTransactionOption) (*PublicContentRelease, error) {
+	return s.transact(ctx, in.ActorID, in.ExpectedRevision, in.PriceReleaseGUID, in.IdempotencyKey, "publish", 0, values)
 }
-func (s *PublicContentService) Restore(ctx context.Context, in PublicContentRestoreRequest) (*PublicContentRelease, error) {
+func (s *PublicContentService) Restore(ctx context.Context, in PublicContentRestoreRequest, values ...PublicAdminTransactionOption) (*PublicContentRelease, error) {
 	g, e := strconv.ParseInt(in.ReleaseGUID, 10, 64)
 	if e != nil || g <= 0 {
 		return nil, errBadRequest("invalid content release guid")
 	}
-	return s.transact(ctx, in.ActorID, in.ExpectedRevision, "", in.IdempotencyKey, "restore", g)
+	return s.transact(ctx, in.ActorID, in.ExpectedRevision, "", in.IdempotencyKey, "restore", g, values)
 }
-func (s *PublicContentService) transact(ctx context.Context, actorID, expected int64, priceGUID, key, op string, restoreGUID int64) (*PublicContentRelease, error) {
+func (s *PublicContentService) transact(ctx context.Context, actorID, expected int64, priceGUID, key, op string, restoreGUID int64, values []PublicAdminTransactionOption) (*PublicContentRelease, error) {
 	if actorID <= 0 || expected < 1 || key == "" || len(key) > 256 || strings.TrimSpace(key) != key {
 		return nil, errBadRequest("invalid public content publication request")
+	}
+	options, optionErr := resolvePublicAdminTransactionOptions(values)
+	if optionErr != nil {
+		return nil, errUnavailable("public content action verification unavailable")
 	}
 	var out *PublicContentRelease
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -530,6 +534,9 @@ func (s *PublicContentService) transact(ctx context.Context, actorID, expected i
 		}
 		if draft.Revision != expected {
 			return errConflict("public content draft revision conflict")
+		}
+		if e = options.consumeTicket(ctx, tx); e != nil {
+			return e
 		}
 		if restoreDraft != nil {
 			now := s.now()

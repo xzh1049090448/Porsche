@@ -360,11 +360,15 @@ func (s *PublicModelAdminService) Deactivate(ctx context.Context, actorID, guid 
 		return nil
 	})
 }
-func (s *PublicModelAdminService) Delete(ctx context.Context, actorID, guid int64, in DeletePublicModelRequest) error {
+func (s *PublicModelAdminService) Delete(ctx context.Context, actorID, guid int64, in DeletePublicModelRequest, options ...PublicAdminTransactionOption) error {
 	if !validPublicModelText(in.Reason, 128) {
 		return errBadRequest("reason is required")
 	}
-	_, err := s.mutate(ctx, actorID, guid, in.ExpectedRevision, "public_models.delete", in.Reason, func(m *models.PublicModelConfig) error {
+	resolved, err := resolvePublicAdminTransactionOptions(options)
+	if err != nil {
+		return errUnavailable("public model action verification unavailable")
+	}
+	_, err = s.mutateWithOptions(ctx, actorID, guid, in.ExpectedRevision, "public_models.delete", in.Reason, resolved, func(m *models.PublicModelConfig) error {
 		m.IsDeleted = 1
 		m.Status = models.PublicModelConfigStatusInactive
 		r := strings.TrimSpace(in.Reason)
@@ -375,6 +379,10 @@ func (s *PublicModelAdminService) Delete(ctx context.Context, actorID, guid int6
 }
 
 func (s *PublicModelAdminService) mutate(ctx context.Context, actorID, guid, expected int64, action, reason string, change func(*models.PublicModelConfig) error) (*PublicModelAdmin, error) {
+	return s.mutateWithOptions(ctx, actorID, guid, expected, action, reason, publicAdminTransactionOptions{}, change)
+}
+
+func (s *PublicModelAdminService) mutateWithOptions(ctx context.Context, actorID, guid, expected int64, action, reason string, options publicAdminTransactionOptions, change func(*models.PublicModelConfig) error) (*PublicModelAdmin, error) {
 	if guid <= 0 || expected <= 0 {
 		return nil, errBadRequest("invalid revisioned mutation")
 	}
@@ -400,6 +408,9 @@ func (s *PublicModelAdminService) mutate(ctx context.Context, actorID, guid, exp
 			return errConflict("public model revision conflict")
 		}
 		if err = change(&m); err != nil {
+			return err
+		}
+		if err = options.consumeTicket(ctx, tx); err != nil {
 			return err
 		}
 		now := s.now()

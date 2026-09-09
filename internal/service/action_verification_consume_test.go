@@ -1,13 +1,59 @@
 package service
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
 
 	"github.com/porsche/ai-gateway-go/internal/actionsecurity"
 	"github.com/porsche/ai-gateway-go/internal/models"
+	"gorm.io/gorm"
 )
+
+func TestPublicAdminTransactionOptionExposesTransactionAwareTicketConsumer(t *testing.T) {
+	called := false
+	consume := VerifyAndConsumeInTx(func(ctx context.Context, tx *gorm.DB) error {
+		called = true
+		if ctx == nil || tx == nil {
+			t.Fatal("transaction context was not forwarded")
+		}
+		return nil
+	})
+	option, err := resolvePublicAdminTransactionOptions([]PublicAdminTransactionOption{WithActionTicketConsume(consume)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := option.consume(context.Background(), &gorm.DB{}); err != nil {
+		t.Fatal(err)
+	}
+	if !called {
+		t.Fatal("ticket consumer was not called")
+	}
+}
+
+func TestPublicAdminTransactionOptionRejectsDuplicateOrNilTicketConsumer(t *testing.T) {
+	consume := VerifyAndConsumeInTx(func(context.Context, *gorm.DB) error { return nil })
+	for _, options := range [][]PublicAdminTransactionOption{
+		{WithActionTicketConsume(nil)},
+		{WithActionTicketConsume(consume), WithActionTicketConsume(consume)},
+	} {
+		if _, err := resolvePublicAdminTransactionOptions(options); err == nil {
+			t.Fatal("accepted ambiguous ticket consumer options")
+		}
+	}
+}
+
+func TestStandaloneVerificationConsumePreservesStableContractErrors(t *testing.T) {
+	for _, expected := range []error{ErrActionVerificationInactive, ErrActionVerificationForbidden, ErrActionVerificationHidden, ErrActionVerificationConflict} {
+		if got := normalizeVerificationConsumeError(expected); !errors.Is(got, expected) {
+			t.Fatalf("got %v want %v", got, expected)
+		}
+	}
+	if got := normalizeVerificationConsumeError(errors.New("database failed")); !errors.Is(got, ErrActionVerificationUnavailable) {
+		t.Fatalf("database error mapped to %v", got)
+	}
+}
 
 func TestPublicVerificationBindingRequiresExactResourceTarget(t *testing.T) {
 	model := int64(11)
