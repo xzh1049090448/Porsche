@@ -234,8 +234,9 @@ func TestPlatformGenerationCancelBeforeClaimCreatesAndEnrichesTombstone(t *testi
 	store, client := openTestPlatformGenerationStore(t)
 	preparePlatformGenerationTestKey(t, client, store.key(910100, generationTestID))
 
-	before, err := store.CancelOrCreate(context.Background(), 910100, generationTestID, 1_000)
-	if err != nil || before.State != PlatformGenerationStateCancelled || before.Mode != 0 || len(before.Models) != 0 { t.Fatalf("%#v %v", before, err) }
+	decision, err := store.CancelOrCreate(context.Background(), 910100, generationTestID, 1_000)
+	before := decision.Snapshot
+	if err != nil || !decision.CreatedTombstone || decision.Transitioned || before.State != PlatformGenerationStateCancelled || before.Mode != 0 || len(before.Models) != 0 { t.Fatalf("%#v %v", decision, err) }
 	ttlBefore := client.PTTL(context.Background(), store.key(910100, generationTestID)).Val()
 
 	claim, err := store.Claim(context.Background(), PlatformGenerationClaimInput{
@@ -269,7 +270,13 @@ type PlatformGenerationIdentity struct {
 	GenerationID string
 }
 
-func (s *PlatformGenerationStore) CancelOrCreate(ctx context.Context, userID int64, generationID string, nowMillis int64) (PlatformGenerationSnapshot, error)
+type PlatformGenerationCancelDecision struct {
+	Snapshot PlatformGenerationSnapshot
+	CreatedTombstone bool
+	Transitioned bool
+}
+
+func (s *PlatformGenerationStore) CancelOrCreate(ctx context.Context, userID int64, generationID string, nowMillis int64) (PlatformGenerationCancelDecision, error)
 ```
 
 The Lua script must atomically:
@@ -294,7 +301,7 @@ end
 return {0, old}
 ```
 
-Map states through arguments rather than embedding reorderable Go enum numbers. Strictly decode the returned value. Existing non-running records return authority without an error; malformed records return `ErrPlatformGenerationInvalid` after strict decode.
+Map states through arguments rather than embedding reorderable Go enum numbers. Return a distinct Lua decision code for created tombstone, won `running -> cancelling`, and unchanged authority, then map it to `CreatedTombstone`/`Transitioned`. Strictly decode the returned value. Existing non-running records return authority with both flags false and no error; malformed records return `ErrPlatformGenerationInvalid` after strict decode. The explicit flags are required so Task 4 invokes the process-local cancel callback only for the single transition winner.
 
 - [ ] **Step 4: Extend Claim's Lua path to enrich only a pristine tombstone**
 
