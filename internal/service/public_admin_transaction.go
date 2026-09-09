@@ -20,7 +20,7 @@ type publicAdminTransactionOptions struct {
 type PublicAdminTransactionOption func(*publicAdminTransactionOptions) error
 
 // WithActionTicketConsume joins action-ticket consumption to the business
-// transaction. A successful idempotent replay does not invoke the callback.
+// transaction.
 func WithActionTicketConsume(consume VerifyAndConsumeInTx) PublicAdminTransactionOption {
 	return func(options *publicAdminTransactionOptions) error {
 		if consume == nil || options.consume != nil {

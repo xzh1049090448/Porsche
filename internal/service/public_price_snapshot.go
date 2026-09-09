@@ -225,6 +225,9 @@ func (s *PublicPriceSnapshotService) transact(ctx context.Context, actorID, expe
 		if err != nil {
 			return err
 		}
+		if err = options.consumeTicket(ctx, tx); err != nil {
+			return err
+		}
 		draft, err := lockPublicPriceDraftState(tx)
 		if err != nil {
 			return err
@@ -284,9 +287,6 @@ func (s *PublicPriceSnapshotService) transact(ctx context.Context, actorID, expe
 			return errUnavailable("published content release unavailable")
 		}
 		if err = validateContentReleaseForPriceItems(currentContent, prepared.Items); err != nil {
-			return err
-		}
-		if err = options.consumeTicket(ctx, tx); err != nil {
 			return err
 		}
 		sourceRevision := draft.Revision

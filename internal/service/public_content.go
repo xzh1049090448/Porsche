@@ -470,6 +470,9 @@ func (s *PublicContentService) transact(ctx context.Context, actorID, expected i
 		if e != nil {
 			return e
 		}
+		if e = options.consumeTicket(ctx, tx); e != nil {
+			return e
+		}
 		requestPayload := publicContentRequestPayload(op, expected, priceGUID, restoreGUID)
 		binding := publicContentIdempotencyBinding(actor.ID, op, key, requestPayload)
 		keyHash := publicContentKeyDigest(key)
@@ -534,9 +537,6 @@ func (s *PublicContentService) transact(ctx context.Context, actorID, expected i
 		}
 		if draft.Revision != expected {
 			return errConflict("public content draft revision conflict")
-		}
-		if e = options.consumeTicket(ctx, tx); e != nil {
-			return e
 		}
 		if restoreDraft != nil {
 			now := s.now()

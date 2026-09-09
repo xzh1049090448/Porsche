@@ -392,6 +392,9 @@ func (s *PublicModelAdminService) mutateWithOptions(ctx context.Context, actorID
 		if err != nil {
 			return err
 		}
+		if err = options.consumeTicket(ctx, tx); err != nil {
+			return err
+		}
 		draft, err := lockPublicPriceDraftState(tx)
 		if err != nil {
 			return err
@@ -408,9 +411,6 @@ func (s *PublicModelAdminService) mutateWithOptions(ctx context.Context, actorID
 			return errConflict("public model revision conflict")
 		}
 		if err = change(&m); err != nil {
-			return err
-		}
-		if err = options.consumeTicket(ctx, tx); err != nil {
 			return err
 		}
 		now := s.now()

@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 
@@ -10,6 +11,31 @@ import (
 	"github.com/porsche/ai-gateway-go/internal/models"
 	"gorm.io/gorm"
 )
+
+func TestPublicAdminMutationsConsumeTicketImmediatelyAfterRootLock(t *testing.T) {
+	for _, tc := range []struct {
+		file   string
+		start  string
+		before string
+	}{
+		{"public_model_admin.go", "func (s *PublicModelAdminService) mutateWithOptions", "lockPublicPriceDraftState(tx)"},
+		{"public_price_snapshot.go", "func (s *PublicPriceSnapshotService) transact", "lockPublicPriceDraftState(tx)"},
+		{"public_content.go", "func (s *PublicContentService) transact", "publicContentRequestPayload("},
+	} {
+		raw, err := os.ReadFile(tc.file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body := string(raw)
+		body = body[strings.Index(body, tc.start):]
+		root := strings.Index(body, "lockPublicModelRoot(tx, actorID)")
+		consume := strings.Index(body, "options.consumeTicket(ctx, tx)")
+		before := strings.Index(body, tc.before)
+		if root < 0 || consume < 0 || before < 0 || consume <= root || consume >= before {
+			t.Errorf("%s must consume after active Root lock and before %s", tc.file, tc.before)
+		}
+	}
+}
 
 func TestPublicAdminTransactionOptionExposesTransactionAwareTicketConsumer(t *testing.T) {
 	called := false
