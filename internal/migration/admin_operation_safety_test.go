@@ -25,11 +25,11 @@ func TestAdminOperationSafetyFixturePreservesDependentRollbackOrder(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := []string{rollback[0].Version, rollback[1].Version, rollback[2].Version, rollback[3].Version, rollback[4].Version, rollback[5].Version}; got[0] != "0011" || got[1] != "0010" || got[2] != "0009" || got[3] != "0008" || got[4] != "0006" || got[5] != "0005" {
-		t.Fatalf("rollback order = %v, want [0011 0010 0009 0008 0006 0005]", got)
+	if got := []string{rollback[0].Version, rollback[1].Version, rollback[2].Version, rollback[3].Version, rollback[4].Version, rollback[5].Version, rollback[6].Version}; got[0] != "0012" || got[1] != "0011" || got[2] != "0010" || got[3] != "0009" || got[4] != "0008" || got[5] != "0006" || got[6] != "0005" {
+		t.Fatalf("rollback order = %v, want [0012 0011 0010 0009 0008 0006 0005]", got)
 	}
-	if got := []string{restore[0].Version, restore[1].Version, restore[2].Version, restore[3].Version, restore[4].Version, restore[5].Version}; got[0] != "0005" || got[1] != "0006" || got[2] != "0008" || got[3] != "0009" || got[4] != "0010" || got[5] != "0011" {
-		t.Fatalf("restore order = %v, want [0005 0006 0008 0009 0010 0011]", got)
+	if got := []string{restore[0].Version, restore[1].Version, restore[2].Version, restore[3].Version, restore[4].Version, restore[5].Version, restore[6].Version}; got[0] != "0005" || got[1] != "0006" || got[2] != "0008" || got[3] != "0009" || got[4] != "0010" || got[5] != "0011" || got[6] != "0012" {
+		t.Fatalf("restore order = %v, want [0005 0006 0008 0009 0010 0011 0012]", got)
 	}
 }
 
@@ -49,7 +49,7 @@ func TestAdminOperationSafetyRealMySQLDownUpAndVerifier(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(migrations) != 11 || migrations[4].Version != "0005" || migrations[5].Version != "0006" || migrations[6].Version != "0007" || migrations[7].Version != "0008" || migrations[8].Version != "0009" || migrations[9].Version != "0010" {
+	if len(migrations) != 12 || migrations[4].Version != "0005" || migrations[5].Version != "0006" || migrations[6].Version != "0007" || migrations[7].Version != "0008" || migrations[8].Version != "0009" || migrations[9].Version != "0010" {
 		t.Fatalf("unexpected migration sequence: %#v", migrations)
 	}
 	rollback, restore, err := adminOperationSafetyFixtureDependencyOrder(migrations)
@@ -71,7 +71,7 @@ func TestAdminOperationSafetyRealMySQLDownUpAndVerifier(t *testing.T) {
 				return
 			}
 		}
-		for _, version := range []string{"0006", "0008", "0009", "0010", "0011"} {
+		for _, version := range []string{"0006", "0008", "0009", "0010", "0011", "0012"} {
 			if err := setFixtureMigrationActive(gdb, version, true); err != nil {
 				t.Errorf("restore %s migration ledger after failed down/up test: %v", version, err)
 			}
@@ -120,7 +120,7 @@ func TestAdminOperationSafetyRealMySQLDownUpAndVerifier(t *testing.T) {
 			t.Fatalf("reapply fixture-only %s up: %v", migration.Version, err)
 		}
 	}
-	for _, version := range []string{"0006", "0008", "0009", "0010", "0011"} {
+	for _, version := range []string{"0006", "0008", "0009", "0010", "0011", "0012"} {
 		if err := setFixtureMigrationActive(gdb, version, true); err != nil {
 			t.Fatalf("reactivate %s fixture migration ledger: %v", version, err)
 		}
@@ -176,10 +176,11 @@ func adminOperationSafetyFixtureDependencyOrder(migrations []Migration) ([]Migra
 	integrity, integrityOK := byVersion["0009"]
 	targets, targetsOK := byVersion["0010"]
 	resultVersion, resultVersionOK := byVersion["0011"]
-	if !operationSafetyOK || !outboxOK || !responsesOK || !integrityOK || !targetsOK || !resultVersionOK {
-		return nil, nil, fmt.Errorf("fixture requires migrations 0005, 0006, 0008, 0009, 0010, and 0011")
+	rolePermissionResults, rolePermissionResultsOK := byVersion["0012"]
+	if !operationSafetyOK || !outboxOK || !responsesOK || !integrityOK || !targetsOK || !resultVersionOK || !rolePermissionResultsOK {
+		return nil, nil, fmt.Errorf("fixture requires migrations 0005, 0006, 0008, 0009, 0010, 0011, and 0012")
 	}
-	return []Migration{resultVersion, targets, integrity, responses, outbox, operationSafety}, []Migration{operationSafety, outbox, responses, integrity, targets, resultVersion}, nil
+	return []Migration{rolePermissionResults, resultVersion, targets, integrity, responses, outbox, operationSafety}, []Migration{operationSafety, outbox, responses, integrity, targets, resultVersion, rolePermissionResults}, nil
 }
 
 func setFixtureMigrationActive(gdb *gorm.DB, version string, active bool) error {
@@ -214,7 +215,7 @@ func TestAdminOperationSafetyMigrationContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(migrations) != 11 || migrations[4].Version != "0005" || migrations[5].Version != "0006" || migrations[6].Version != "0007" || migrations[7].Version != "0008" || migrations[8].Version != "0009" || migrations[9].Version != "0010" {
+	if len(migrations) != 12 || migrations[4].Version != "0005" || migrations[5].Version != "0006" || migrations[6].Version != "0007" || migrations[7].Version != "0008" || migrations[8].Version != "0009" || migrations[9].Version != "0010" {
 		t.Fatalf("admin operation safety migration 0005 is missing: %#v", migrations)
 	}
 
@@ -429,6 +430,7 @@ func TestMigrationSequencePreservesPublishedChecksums(t *testing.T) {
 		{"0009", "4dc818d93180bb6777d2ec6d8318e728fe76add4c736a178f19b808ca2afedf7"},
 		{"0010", "b6ddd5b7088f1617b9831186e08da622f7d06cbe985707ef9f5524ffe6057780"},
 		{"0011", "d2f1f841f7176684cd6b953bc69f0f1143e64eca0d758ae7b9e3d1104c97de01"},
+		{"0012", "7ed008718e76bf8251a15f4d115ef9f959f5f0f2c7e1f8a9a9398201a7239bde"},
 	}
 	if len(want) != len(migrations) {
 		t.Fatalf("checksum list length = %d, migrations = %d", len(want), len(migrations))

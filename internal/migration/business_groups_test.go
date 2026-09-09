@@ -22,7 +22,7 @@ func TestBusinessGroupMigrationLatest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(migrations) != 11 || migrations[6].Version != "0007" || migrations[7].Version != "0008" || migrations[8].Version != "0009" || migrations[9].Version != "0010" {
+	if len(migrations) != 12 || migrations[6].Version != "0007" || migrations[7].Version != "0008" || migrations[8].Version != "0009" || migrations[9].Version != "0010" {
 		t.Fatalf("All() count/tail = %d/%q, want ten migrations with business groups at 0007", len(migrations), migrations[len(migrations)-1].Version)
 	}
 
@@ -38,6 +38,7 @@ func TestBusinessGroupMigrationLatest(t *testing.T) {
 		"4dc818d93180bb6777d2ec6d8318e728fe76add4c736a178f19b808ca2afedf7",
 		"b6ddd5b7088f1617b9831186e08da622f7d06cbe985707ef9f5524ffe6057780",
 		"d2f1f841f7176684cd6b953bc69f0f1143e64eca0d758ae7b9e3d1104c97de01",
+		"7ed008718e76bf8251a15f4d115ef9f959f5f0f2c7e1f8a9a9398201a7239bde",
 	}
 	if len(wantPublished) != len(migrations) {
 		t.Fatalf("checksum list length = %d, migrations = %d", len(wantPublished), len(migrations))
@@ -378,7 +379,7 @@ func TestBusinessGroupMigrationOnIsolatedMySQL(t *testing.T) {
 		insertMigrationUser(t, gdb, 7101, "biz-group-active", 0)
 		insertMigrationUser(t, gdb, 7102, "biz-group-tombstone", 1)
 
-		allocated := []int64{7201, 7202, 7203, 7204, 7205, 7206}
+		allocated := []int64{7201, 7202, 7203, 7204, 7205, 7206, 7207}
 		calls := 0
 		nextGUID := func() int64 {
 			value := allocated[calls]
@@ -388,8 +389,8 @@ func TestBusinessGroupMigrationOnIsolatedMySQL(t *testing.T) {
 		if err := Up(context.Background(), gdb, nextGUID, func() int64 { return 1_700_000_000_007 }); err != nil {
 			t.Fatalf("apply 0007: %v", err)
 		}
-		if calls != 6 {
-			t.Fatalf("GUID calls = %d, want default group plus 0007, 0008, 0009, 0010, and 0011 ledgers", calls)
+		if calls != 7 {
+			t.Fatalf("GUID calls = %d, want default group plus 0007, 0008, 0009, 0010, 0011, and 0012 ledgers", calls)
 		}
 		assertBusinessGroupBackfill(t, gdb, 2, 7201)
 		if err := VerifyBusinessGroupsSchema(context.Background(), gdb); err != nil {

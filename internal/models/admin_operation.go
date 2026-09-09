@@ -181,26 +181,28 @@ func (verification AdminActionVerification) StatusAt(now int64) AdminActionVerif
 }
 
 type AdminOperation struct {
-	ID                 int64 `gorm:"column:id;type:bigint;not null;primaryKey;autoIncrement" json:"-"`
-	AuditFields        `gorm:"embedded" json:"-"`
-	ActorUserID        int64                  `gorm:"column:actor_user_id;type:bigint;not null" json:"-"`
-	ActorAuthVersion   int                    `gorm:"column:actor_auth_version;type:int;not null" json:"-"`
-	SessionID          int64                  `gorm:"column:session_id;type:bigint;not null" json:"-"`
-	Action             int                    `gorm:"column:action;type:int;not null" json:"-"`
-	IdempotencyKeyHMAC string                 `gorm:"column:idempotency_key_hmac;type:char(64);not null" json:"-"`
-	RequestHMAC        string                 `gorm:"column:request_hmac;type:char(64);not null" json:"-"`
-	VerificationID     *int64                 `gorm:"column:verification_id;type:bigint" json:"-"`
-	State              AdminOperationState    `gorm:"column:state;type:int;not null" json:"-"`
-	PublicRef          string                 `gorm:"column:public_ref;type:char(46);not null" json:"-"`
-	LeaseOwnerHMAC     *string                `gorm:"column:lease_owner_hmac;type:char(64)" json:"-"`
-	LeaseExpiresAt     *int64                 `gorm:"column:lease_expires_at;type:bigint" json:"-"`
-	FinishedAt         *int64                 `gorm:"column:finished_at;type:bigint" json:"-"`
-	QueryExpiresAt     int64                  `gorm:"column:query_expires_at;type:bigint;not null" json:"-"`
-	ErrorCode          *AdminOperationFailure `gorm:"column:error_code;type:int" json:"-"`
-	ResultKind         *AdminResultKind       `gorm:"column:result_kind;type:int" json:"-"`
-	ResultGUID         *int64                 `gorm:"column:result_guid;type:bigint" json:"-"`
-	ResultHTTPStatus   *int                   `gorm:"column:result_http_status;type:int" json:"-"`
-	ResultAuthVersion  *int                   `gorm:"column:result_auth_version;type:int" json:"-"`
+	ID                       int64 `gorm:"column:id;type:bigint;not null;primaryKey;autoIncrement" json:"-"`
+	AuditFields              `gorm:"embedded" json:"-"`
+	ActorUserID              int64                  `gorm:"column:actor_user_id;type:bigint;not null" json:"-"`
+	ActorAuthVersion         int                    `gorm:"column:actor_auth_version;type:int;not null" json:"-"`
+	SessionID                int64                  `gorm:"column:session_id;type:bigint;not null" json:"-"`
+	Action                   int                    `gorm:"column:action;type:int;not null" json:"-"`
+	IdempotencyKeyHMAC       string                 `gorm:"column:idempotency_key_hmac;type:char(64);not null" json:"-"`
+	RequestHMAC              string                 `gorm:"column:request_hmac;type:char(64);not null" json:"-"`
+	VerificationID           *int64                 `gorm:"column:verification_id;type:bigint" json:"-"`
+	State                    AdminOperationState    `gorm:"column:state;type:int;not null" json:"-"`
+	PublicRef                string                 `gorm:"column:public_ref;type:char(46);not null" json:"-"`
+	LeaseOwnerHMAC           *string                `gorm:"column:lease_owner_hmac;type:char(64)" json:"-"`
+	LeaseExpiresAt           *int64                 `gorm:"column:lease_expires_at;type:bigint" json:"-"`
+	FinishedAt               *int64                 `gorm:"column:finished_at;type:bigint" json:"-"`
+	QueryExpiresAt           int64                  `gorm:"column:query_expires_at;type:bigint;not null" json:"-"`
+	ErrorCode                *AdminOperationFailure `gorm:"column:error_code;type:int" json:"-"`
+	ResultKind               *AdminResultKind       `gorm:"column:result_kind;type:int" json:"-"`
+	ResultGUID               *int64                 `gorm:"column:result_guid;type:bigint" json:"-"`
+	ResultAuthVersion        *int                   `gorm:"column:result_auth_version;type:int" json:"-"`
+	ResultPermissionsVersion *int64                 `gorm:"column:result_permissions_version;type:bigint" json:"-"`
+	ResultRole               *UserRole              `gorm:"column:result_role;type:int" json:"-"`
+	ResultHTTPStatus         *int                   `gorm:"column:result_http_status;type:int" json:"-"`
 }
 
 func (AdminOperation) TableName() string { return "admin_operations" }

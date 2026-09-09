@@ -776,6 +776,9 @@ func (c *actionOperationConn) ExecContext(_ context.Context, query string, args 
 			copy.ErrorCode = nil
 			copy.ResultKind = nil
 			copy.ResultGUID = nil
+			copy.ResultAuthVersion = nil
+			copy.ResultPermissionsVersion = nil
+			copy.ResultRole = nil
 			copy.ResultHTTPStatus = nil
 		} else if !strings.Contains(query, "verification_id IS NULL") {
 			copy.State = models.OperationPendingRecovery
@@ -1001,10 +1004,10 @@ func operationRows(columns []string, values [][]driver.Value) *actionOperationRo
 	return &actionOperationRows{columns: columns, values: values}
 }
 func operationColumns() []string {
-	return []string{"id", "guid", "created_at", "created_by", "updated_at", "updated_by", "is_deleted", "actor_user_id", "actor_auth_version", "session_id", "action", "idempotency_key_hmac", "request_hmac", "verification_id", "state", "public_ref", "lease_owner_hmac", "lease_expires_at", "finished_at", "query_expires_at", "error_code", "result_kind", "result_guid", "result_auth_version", "result_http_status"}
+	return []string{"id", "guid", "created_at", "created_by", "updated_at", "updated_by", "is_deleted", "actor_user_id", "actor_auth_version", "session_id", "action", "idempotency_key_hmac", "request_hmac", "verification_id", "state", "public_ref", "lease_owner_hmac", "lease_expires_at", "finished_at", "query_expires_at", "error_code", "result_kind", "result_guid", "result_auth_version", "result_permissions_version", "result_role", "result_http_status"}
 }
 func operationValues(o models.AdminOperation) []driver.Value {
-	return []driver.Value{o.ID, o.Guid, o.CreatedAt, ptrDriver(o.CreatedBy), o.UpdatedAt, ptrDriver(o.UpdatedBy), int64(o.IsDeleted), o.ActorUserID, int64(o.ActorAuthVersion), o.SessionID, int64(o.Action), o.IdempotencyKeyHMAC, o.RequestHMAC, ptrDriver(o.VerificationID), int64(o.State), o.PublicRef, ptrDriver(o.LeaseOwnerHMAC), ptrDriver(o.LeaseExpiresAt), ptrDriver(o.FinishedAt), o.QueryExpiresAt, ptrDriver(o.ErrorCode), ptrDriver(o.ResultKind), ptrDriver(o.ResultGUID), ptrDriver(o.ResultAuthVersion), ptrDriver(o.ResultHTTPStatus)}
+	return []driver.Value{o.ID, o.Guid, o.CreatedAt, ptrDriver(o.CreatedBy), o.UpdatedAt, ptrDriver(o.UpdatedBy), int64(o.IsDeleted), o.ActorUserID, int64(o.ActorAuthVersion), o.SessionID, int64(o.Action), o.IdempotencyKeyHMAC, o.RequestHMAC, ptrDriver(o.VerificationID), int64(o.State), o.PublicRef, ptrDriver(o.LeaseOwnerHMAC), ptrDriver(o.LeaseExpiresAt), ptrDriver(o.FinishedAt), o.QueryExpiresAt, ptrDriver(o.ErrorCode), ptrDriver(o.ResultKind), ptrDriver(o.ResultGUID), ptrDriver(o.ResultAuthVersion), ptrDriver(o.ResultPermissionsVersion), ptrDriver(o.ResultRole), ptrDriver(o.ResultHTTPStatus)}
 }
 func verificationColumns() []string {
 	return []string{"id", "guid", "created_at", "created_by", "updated_at", "updated_by", "is_deleted", "actor_user_id", "actor_auth_version", "session_id", "action", "target_kind", "target_guid", "intent_hmac", "ticket_hmac", "expires_at", "consumed_at"}
@@ -1031,6 +1034,10 @@ func ptrDriver(value any) driver.Value {
 			return int64(*v)
 		}
 	case *models.AdminResultKind:
+		if v != nil {
+			return int64(*v)
+		}
+	case *models.UserRole:
 		if v != nil {
 			return int64(*v)
 		}
@@ -1128,6 +1135,105 @@ func TestActionOperationDBScriptRejectsWrongNewOperationEventOrder(t *testing.T)
 	if err := validateNewOperationEventOrder(wrong); err == nil {
 		t.Fatal("event-order validator accepted verification before INSERT")
 	}
+}
+
+func TestActionOperationA08OutcomeQueryAndStableRoleReplay(t *testing.T) {
+	now := int64(1_800_000_000_000)
+	finished := now - 1
+	status := 200
+	kind := models.ResultUser
+	guid := testNoopTargetGUID
+	authVersion := 8
+	permissionsVersion := int64(3)
+	role := models.UserRoleAdmin
+	operation := &models.AdminOperation{
+		ID: 30, SessionID: 20, State: models.OperationSucceeded, FinishedAt: &finished, ResultKind: &kind, ResultGUID: &guid,
+		ResultAuthVersion: &authVersion, ResultPermissionsVersion: &permissionsVersion, ResultRole: &role, ResultHTTPStatus: &status,
+	}
+	service, script, actor, key, ticket := actionOperationFixture(t, now, operation)
+	descriptor := inactiveDescriptorForTest(t, actionsecurity.ActionUsersPromote)
+	intent := actionsecurity.PromoteIntent{TargetGUID: guid, ExpectedAuthVersion: 7, ExpectedPermissionsVersion: 2, CatalogVersion: 1, Reason: "stable role"}
+	encoded, err := descriptor.Encode(intent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := service.crypto.IntentDigest(encoded)
+	requestHex := fmt.Sprintf("%x", digest)
+	clear(encoded)
+	clear(digest[:])
+	operation.Action = int(descriptor.Action)
+	operation.RequestHMAC = requestHex
+	script.action = descriptor.Action
+	script.verification.Action = int(descriptor.Action)
+	script.verification.IntentHMAC = requestHex
+	consumed := now - 2
+	script.verification.ConsumedAt = &consumed
+	script.verification.IsDeleted = 1
+	service.resolve = func(action actionsecurity.Action) (actionsecurity.Descriptor, bool) {
+		return descriptor, action == descriptor.Action
+	}
+
+	assertView := func(label string, view *OperationView, err error) {
+		t.Helper()
+		if err != nil || view == nil || view.Status != "succeeded" || view.TargetGUID == nil || *view.TargetGUID != guid ||
+			view.ResultAuthVersion == nil || *view.ResultAuthVersion != 8 || view.ResultPermissionsVersion == nil || *view.ResultPermissionsVersion != 3 ||
+			view.ResultRole == nil || *view.ResultRole != models.UserRoleAdmin {
+			t.Fatalf("%s stable A08 view=%#v err=%v", label, view, err)
+		}
+	}
+	view, err := service.Query(context.Background(), descriptor.Action, actor, []string{key})
+	assertView("query", view, err)
+	identity, replay, err := service.Begin(context.Background(), OperationBegin{Action: descriptor.Action, Actor: actor, IdempotencyKeyValues: []string{key}, TicketValues: []string{ticket}, Intent: intent})
+	if identity == nil || identity.ReadyForExecution() {
+		t.Fatalf("terminal replay identity=%#v err=%v queries=%v", identity, err, script.queries)
+	}
+	assertView("begin replay", replay, err)
+
+	script.target.Role = models.UserRoleUser
+	script.target.AuthVersion = 99
+	view, err = service.Query(context.Background(), descriptor.Action, actor, []string{key})
+	assertView("query after user mutation", view, err)
+	for _, query := range script.queries {
+		if strings.Contains(query, "FROM `users`") && strings.Contains(query, "guid = ?") {
+			t.Fatalf("stable terminal replay read current target: %s", query)
+		}
+	}
+}
+
+func TestActionOperationA08OutcomeExpiryClearsRolePermissionResult(t *testing.T) {
+	now := int64(1_800_000_000_000)
+	finished, status, kind, guid := now-1, 200, models.ResultUser, testNoopTargetGUID
+	authVersion, permissionsVersion, role := 8, int64(3), models.UserRoleAdmin
+	operation := &models.AdminOperation{ID: 30, SessionID: 20, State: models.OperationSucceeded, FinishedAt: &finished, QueryExpiresAt: now,
+		ResultKind: &kind, ResultGUID: &guid, ResultAuthVersion: &authVersion, ResultPermissionsVersion: &permissionsVersion, ResultRole: &role, ResultHTTPStatus: &status}
+	service, script, actor, key, _ := actionOperationFixture(t, now, operation)
+	descriptor := inactiveDescriptorForTest(t, actionsecurity.ActionUsersPromote)
+	operation.Action, script.action, script.verification.Action = int(descriptor.Action), descriptor.Action, int(descriptor.Action)
+	consumed := now - 2
+	script.verification.ConsumedAt, script.verification.IsDeleted = &consumed, 1
+	service.resolve = func(action actionsecurity.Action) (actionsecurity.Descriptor, bool) {
+		return descriptor, action == descriptor.Action
+	}
+	if view, err := service.Query(context.Background(), descriptor.Action, actor, []string{key}); view != nil || !errors.Is(err, ErrActionOperationExpired) {
+		t.Fatalf("expiry view=%#v err=%v", view, err)
+	}
+	stored := script.operation
+	if stored.State != models.OperationExpired || stored.IsDeleted != 1 || stored.ResultGUID != nil || stored.ResultAuthVersion != nil ||
+		stored.ResultPermissionsVersion != nil || stored.ResultRole != nil || stored.ResultKind != nil || stored.ResultHTTPStatus != nil {
+		t.Fatalf("expiry retained stable result: %#v", stored)
+	}
+}
+
+func inactiveDescriptorForTest(t *testing.T, action actionsecurity.Action) actionsecurity.Descriptor {
+	t.Helper()
+	for _, descriptor := range actionsecurity.InactiveActionDescriptors() {
+		if descriptor.Action == action {
+			descriptor.Active = true
+			return descriptor
+		}
+	}
+	t.Fatalf("inactive descriptor %d missing", action)
+	return actionsecurity.Descriptor{}
 }
 
 func validateNewOperationEventOrder(events []string) error {

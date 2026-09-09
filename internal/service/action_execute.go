@@ -148,7 +148,7 @@ func (s *ActionOperationService) executeWithRunner(ctx context.Context, identity
 			return ErrActionOperationUnavailable
 		}
 		outcome, err := consumer.Execute(ctx, tx, operation)
-		if err != nil || validateTerminalOutcome(outcome) != nil {
+		if err != nil || validateTerminalOutcomeForAction(descriptor.Action, outcome) != nil {
 			return ErrActionOperationUnavailable
 		}
 
@@ -167,13 +167,18 @@ func (s *ActionOperationService) executeWithRunner(ctx context.Context, identity
 			resultKind = &kind
 			resultGUID = copyInt64(outcome.ResultGUID)
 		}
+		resultAuthVersion := copyInt(outcome.ResultAuthVersion)
+		resultPermissionsVersion := copyInt64(outcome.ResultPermissionsVersion)
+		resultRole := copyUserRole(outcome.ResultRole)
 		auditEvent := ActionAuditEvent{PublicRef: operation.PublicRef, ActorGUID: locked.actor.Guid, SessionGUID: locked.session.Guid,
 			Action: descriptor.Action, TargetKind: descriptor.TargetKind, TargetGUID: copyInt64(targetGUID), State: terminalState,
 			Failure: copyOperationFailure(failure), ResultKind: copyResultKind(resultKind), ResultGUID: copyInt64(resultGUID), OccurredAt: finalNow}
 		outboxEvent := ActionOutboxEvent{PublicRef: auditEvent.PublicRef, ActorGUID: auditEvent.ActorGUID, SessionGUID: auditEvent.SessionGUID,
 			Action: auditEvent.Action, TargetKind: auditEvent.TargetKind, TargetGUID: copyInt64(auditEvent.TargetGUID), State: auditEvent.State,
 			Failure: copyOperationFailure(auditEvent.Failure), ResultKind: copyResultKind(auditEvent.ResultKind), ResultGUID: copyInt64(auditEvent.ResultGUID), OccurredAt: finalNow}
-		if (terminalState == models.OperationSucceeded && descriptor.Action == actionsecurity.ActionUsersResetPassword && outcome.ResultAuthVersion == nil) || ((terminalState != models.OperationSucceeded || descriptor.Action != actionsecurity.ActionUsersResetPassword) && outcome.ResultAuthVersion != nil) {
+		if (terminalState == models.OperationSucceeded && descriptor.Action == actionsecurity.ActionUsersResetPassword && resultAuthVersion == nil) ||
+			(terminalState == models.OperationSucceeded && !isA08RolePermissionAction(descriptor.Action) && descriptor.Action != actionsecurity.ActionUsersResetPassword && resultAuthVersion != nil) ||
+			(terminalState != models.OperationSucceeded && (resultAuthVersion != nil || resultPermissionsVersion != nil || resultRole != nil)) {
 			return ErrActionOperationUnavailable
 		}
 		if err := audit.Write(ctx, tx, auditEvent); err != nil {
@@ -187,7 +192,8 @@ func (s *ActionOperationService) executeWithRunner(ctx context.Context, identity
 		}
 		updates := map[string]any{"state": terminalState, "finished_at": finalNow, "query_expires_at": finalNow + actionOperationQueryRetentionMS,
 			"lease_owner_hmac": nil, "lease_expires_at": nil, "error_code": failure, "result_kind": resultKind,
-			"result_guid": resultGUID, "result_auth_version": outcome.ResultAuthVersion, "result_http_status": outcome.HTTPStatus, "updated_at": finalNow, "updated_by": locked.actor.ID}
+			"result_guid": resultGUID, "result_auth_version": resultAuthVersion, "result_permissions_version": resultPermissionsVersion,
+			"result_role": resultRole, "result_http_status": outcome.HTTPStatus, "updated_at": finalNow, "updated_by": locked.actor.ID}
 		var terminal *gorm.DB
 		if descriptor.RequiresTicket {
 			terminal = tx.Model(&models.AdminOperation{}).
@@ -205,7 +211,9 @@ func (s *ActionOperationService) executeWithRunner(ctx context.Context, identity
 		operation.LeaseOwnerHMAC, operation.LeaseExpiresAt = nil, nil
 		operation.ErrorCode, operation.ResultKind, operation.ResultGUID = failure, resultKind, resultGUID
 		operation.ResultHTTPStatus = &outcome.HTTPStatus
-		operation.ResultAuthVersion = outcome.ResultAuthVersion
+		operation.ResultAuthVersion = resultAuthVersion
+		operation.ResultPermissionsVersion = resultPermissionsVersion
+		operation.ResultRole = resultRole
 		resultView = operationView(descriptor, operation, finalNow)
 		callbackComplete = true
 		return nil
@@ -299,6 +307,22 @@ func copyOperationFailure(value *models.AdminOperationFailure) *models.AdminOper
 }
 
 func copyResultKind(value *models.AdminResultKind) *models.AdminResultKind {
+	if value == nil {
+		return nil
+	}
+	copy := *value
+	return &copy
+}
+
+func copyInt(value *int) *int {
+	if value == nil {
+		return nil
+	}
+	copy := *value
+	return &copy
+}
+
+func copyUserRole(value *models.UserRole) *models.UserRole {
 	if value == nil {
 		return nil
 	}

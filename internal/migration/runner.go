@@ -78,6 +78,12 @@ var adminOperationResultAuthVersionUp []byte
 //go:embed sql/0011_admin_operation_result_auth_version.down.sql
 var adminOperationResultAuthVersionDown []byte
 
+//go:embed sql/0012_admin_operation_role_permission_results.up.sql
+var adminOperationRolePermissionResultsUp []byte
+
+//go:embed sql/0012_admin_operation_role_permission_results.down.sql
+var adminOperationRolePermissionResultsDown []byte
+
 // Migration is an immutable, embedded schema version.
 type Migration struct {
 	Version string
@@ -105,6 +111,7 @@ func All() ([]Migration, error) {
 		{Version: "0009", UpSQL: adminResponseIntegrityUp, DownSQL: adminResponseIntegrityDown},
 		{Version: "0010", UpSQL: adminOperationResponseTargetsUp, DownSQL: adminOperationResponseTargetsDown},
 		{Version: "0011", UpSQL: adminOperationResultAuthVersionUp, DownSQL: adminOperationResultAuthVersionDown},
+		{Version: "0012", UpSQL: adminOperationRolePermissionResultsUp, DownSQL: adminOperationRolePermissionResultsDown},
 	}
 	sort.Slice(migrations, func(i, j int) bool { return migrations[i].Version < migrations[j].Version })
 	return migrations, nil
@@ -186,8 +193,8 @@ func Up(ctx context.Context, db *gorm.DB, nextGUID func() int64, nowMillis func(
 						return err
 					}
 				}
-				if migration.Version == "0011" {
-					if err := VerifyAdminOperationSafetySchema(ctx, conn); err != nil {
+				if migration.Version == "0012" {
+					if err := VerifyAdminOperationRolePermissionResultsSchema(ctx, conn); err != nil {
 						return err
 					}
 				}
@@ -222,6 +229,11 @@ func Up(ctx context.Context, db *gorm.DB, nextGUID func() int64, nowMillis func(
 			}
 			if migration.Version == "0011" {
 				if err := VerifyAdminOperationSafetySchema(ctx, conn); err != nil {
+					return err
+				}
+			}
+			if migration.Version == "0012" {
+				if err := VerifyAdminOperationRolePermissionResultsSchema(ctx, conn); err != nil {
 					return err
 				}
 			}
@@ -288,7 +300,7 @@ func Verify(ctx context.Context, db *gorm.DB) error {
 	if err := VerifyAdminUsersReadCountIndex(ctx, db); err != nil {
 		return err
 	}
-	if err := VerifyAdminOperationSafetySchema(ctx, db); err != nil {
+	if err := VerifyAdminOperationRolePermissionResultsSchema(ctx, db); err != nil {
 		return err
 	}
 	if err := VerifyAdminActionOutboxSchema(ctx, db); err != nil {
