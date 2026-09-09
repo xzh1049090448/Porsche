@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/porsche/ai-gateway-go/internal/migration"
+	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
 
 const controlGenerationID = "550e8400-e29b-41d4-a716-446655440000"
@@ -126,6 +128,99 @@ func requirePlatformGenerationCombinedFixture(t *testing.T) {
 	t.Helper()
 	if strings.TrimSpace(os.Getenv("TEST_DATABASE_URL")) == "" || strings.TrimSpace(os.Getenv("TEST_REDIS_URL")) == "" {
 		t.Skip("BLOCKED_FIXTURE: requires TEST_DATABASE_URL and TEST_REDIS_URL")
+	}
+}
+
+func TestPlatformGenerationControlCancelDeadlineIncludesAdvisoryLockCleanup(t *testing.T) {
+	db := openPlatformGenerationAdvisoryLockMySQL(t).Session(&gorm.Session{Logger: logger.Discard})
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sqlDB.SetMaxOpenConns(1)
+	sqlDB.SetMaxIdleConns(1)
+	const releaseDelay = 80 * time.Millisecond
+	var releaseAttempts atomic.Int32
+	var releaseDeadlineNanos atomic.Int64
+	callbackName := "platform_generation_cancel_release_deadline"
+	if err := db.Callback().Row().Before("gorm:row").Register(callbackName, func(tx *gorm.DB) {
+		if !strings.Contains(tx.Statement.SQL.String(), "RELEASE_LOCK") {
+			return
+		}
+		releaseAttempts.Add(1)
+		if deadline, ok := tx.Statement.Context.Deadline(); ok {
+			releaseDeadlineNanos.Store(deadline.UnixNano())
+		}
+		timer := time.NewTimer(releaseDelay)
+		defer func() {
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+		}()
+		select {
+		case <-tx.Statement.Context.Done():
+		case <-timer.C:
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Callback().Row().Remove(callbackName) })
+
+	for _, test := range []struct {
+		name         string
+		callerBudget time.Duration
+		cancelBudget time.Duration
+	}{
+		{name: "caller earlier deadline", callerBudget: 20 * time.Millisecond, cancelBudget: 200 * time.Millisecond},
+		{name: "controller budget", callerBudget: 200 * time.Millisecond, cancelBudget: 20 * time.Millisecond},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			now := time.UnixMilli(1_800_000_000_000).UTC()
+			committing := controlSnapshot(PlatformGenerationStateCommitting, now.UnixMilli())
+			fake := newPlatformGenerationControlFake(committing)
+			lockName := platformGenerationAdvisoryLockName(testSnowflake.Next(), controlGenerationID)
+			var reconcileDeadline time.Time
+			fake.reconcile = func(ctx context.Context, _ int64, _ string, _ int64) (PlatformGenerationSnapshot, error) {
+				fake.reconcileCalls.Add(1)
+				reconcileDeadline, _ = ctx.Deadline()
+				err := withPlatformGenerationAdvisoryLock(ctx, db, lockName, func(*gorm.DB) error {
+					<-ctx.Done()
+					return ctx.Err()
+				})
+				return committing, err
+			}
+			control := mustControl(t, fake, NewPlatformGenerationCancellationRegistry(), now)
+			control.cancelBudget = test.cancelBudget
+			control.cancelPoll = time.Millisecond
+			callerCtx, cancel := context.WithTimeout(context.Background(), test.callerBudget)
+			defer cancel()
+
+			releaseBefore := releaseAttempts.Load()
+			started := time.Now()
+			view, pending, err := control.Cancel(callerCtx, 7, controlGenerationID)
+			elapsed := time.Since(started)
+			if !errors.Is(err, ErrPlatformGenerationControlUnavailable) || err.Error() != ErrPlatformGenerationControlUnavailable.Error() || pending ||
+				view.GenerationID != "" || view.Status != "" || view.Mode != nil || view.ConversationGUID != nil || view.Result != nil || len(view.Results) != 0 || view.TotalTokensUsed != nil || view.Code != "" || view.RequestID != "" {
+				t.Fatalf("Cancel() view=%#v pending=%v error=%v", view, pending, err)
+			}
+			if elapsed > 75*time.Millisecond {
+				t.Fatalf("Cancel() elapsed=%v exceeded original bounded deadline", elapsed)
+			}
+			if releaseAttempts.Load() != releaseBefore+1 {
+				t.Fatalf("release attempts=%d, want exactly one additional attempt", releaseAttempts.Load()-releaseBefore)
+			}
+			if got := time.Unix(0, releaseDeadlineNanos.Load()); !got.Equal(reconcileDeadline) {
+				t.Fatalf("release deadline=%v, want original reconcile deadline %v", got, reconcileDeadline)
+			}
+			stats := sqlDB.Stats()
+			if stats.InUse != 0 || stats.Idle != 0 {
+				t.Fatalf("reconcile pool in-use/idle=%d/%d, want discarded timed-out session", stats.InUse, stats.Idle)
+			}
+			assertPlatformGenerationLockFree(t, db, lockName)
+		})
 	}
 }
 
