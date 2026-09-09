@@ -26,15 +26,18 @@ type rolePermissionTransactionalExecution struct {
 }
 
 type rolePermissionTransactionalState struct {
-	mu        sync.Mutex
-	prelocked bool
-	started   bool
-	actorGUID int64
-	binding   rolePermissionOperationBinding
-	target    models.User
-	sessions  []models.Session
-	head      *models.PermissionPolicyHead
-	rules     []actionsecurity.PermissionOverrideIntent
+	mu            sync.Mutex
+	prelocked     bool
+	started       bool
+	auditStarted  bool
+	factsRecorded bool
+	actorGUID     int64
+	binding       rolePermissionOperationBinding
+	target        models.User
+	sessions      []models.Session
+	head          *models.PermissionPolicyHead
+	rules         []actionsecurity.PermissionOverrideIntent
+	facts         rolePermissionAuditFacts
 }
 
 type rolePermissionOperationBinding struct {
@@ -297,6 +300,9 @@ func (execution *rolePermissionTransactionalExecution) Execute(ctx context.Conte
 	if plan == nil {
 		return TerminalOutcome{}, ErrActionOperationUnavailable
 	}
+	if err := execution.recordAuditFacts(target.ID, targetSnapshot, policySnapshot, rules, plan); err != nil {
+		return TerminalOutcome{}, err
+	}
 
 	now := execution.base.clock.NowMillis()
 	if !validOperationNow(now) || operation.CreatedAt > now || operation.UpdatedAt > now {
@@ -359,9 +365,28 @@ func (execution *rolePermissionTransactionalExecution) Execute(ctx context.Conte
 			return TerminalOutcome{}, ErrActionOperationUnavailable
 		}
 	}
+	if err := execution.writeManagedUpdateAudit(db, operation.ActorUserID, target.ID, now); err != nil {
+		return TerminalOutcome{}, err
+	}
 
 	guid, authVersion, policyVersion, role := target.Guid, plan.NextAuthVersion, plan.NextPolicyVersion, plan.DesiredRole
 	return TerminalOutcome{ResultKind: models.ResultUser, ResultGUID: &guid, ResultAuthVersion: &authVersion, ResultPermissionsVersion: &policyVersion, ResultRole: &role, HTTPStatus: 200}, nil
+}
+
+func (execution *rolePermissionTransactionalExecution) writeManagedUpdateAudit(db *gorm.DB, actorID, targetID, now int64) error {
+	guid := execution.base.nextGUID()
+	if guid <= 0 {
+		return ErrActionOperationUnavailable
+	}
+	audit := models.AuthAuditEvent{
+		AuditFields: models.AuditFields{Guid: guid, CreatedAt: now, CreatedBy: &actorID, UpdatedAt: now, UpdatedBy: &actorID},
+		UserID:      &targetID, EventType: models.AuthAuditEventManagedUserUpdated,
+	}
+	created := db.Create(&audit)
+	if created.Error != nil || created.RowsAffected != 1 {
+		return ErrActionOperationUnavailable
+	}
+	return nil
 }
 
 func (execution *rolePermissionTransactionalExecution) revokeSession(db *gorm.DB, actorID, now int64, session models.Session) error {

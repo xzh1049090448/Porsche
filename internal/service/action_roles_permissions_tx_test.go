@@ -311,6 +311,24 @@ func TestRolePermissionTransactionPromoteNoHeadPersistsCanonicalTransition(t *te
 	assertRolePermissionTxHappyCalls(t, script)
 }
 
+func TestRolePermissionTransactionWritesOneManagedUpdateAfterSessionRevocations(t *testing.T) {
+	script := rolePermissionHappyScript(models.UserRoleUser, nil, nil)
+	outcome, _, err := runRolePermissionTx(t, script, actionsecurity.ActionUsersPromote, actionsecurity.PromoteIntent{
+		TargetGUID: 6001, ExpectedAuthVersion: 7, ExpectedPermissionsVersion: 0, CatalogVersion: 1, Reason: "audit transition",
+	}, 0, nil)
+	if err != nil || outcome.Failure != nil {
+		t.Fatalf("transition = %#v/%v", outcome, err)
+	}
+	audits := committedCalls(script, "auth_audit_events", "INSERT")
+	if len(audits) != len(script.sessions)+1 {
+		t.Fatalf("auth audit inserts = %d, want %d", len(audits), len(script.sessions)+1)
+	}
+	last := rolePermissionArgValues(audits[len(audits)-1].args)
+	if len(last) < 10 || fmt.Sprint(last[6:10]) != fmt.Sprintf("[%d <nil> %d <nil>]", script.target.ID, models.AuthAuditEventManagedUserUpdated) {
+		t.Fatalf("managed role/policy event args = %v", last)
+	}
+}
+
 func TestRolePermissionTransactionActorIDTargetGUIDNamespaceCollisionSucceeds(t *testing.T) {
 	script := rolePermissionHappyScript(models.UserRoleUser, nil, nil)
 	script.sessions = nil
@@ -510,7 +528,7 @@ func TestRolePermissionRedisFailuresPrecedeEveryBusinessWrite(t *testing.T) {
 
 func TestRolePermissionRollbackOnEverySQLStageAndLostUpdate(t *testing.T) {
 	intent := actionsecurity.PromoteIntent{TargetGUID: 6001, ExpectedAuthVersion: 7, ExpectedPermissionsVersion: 0, CatalogVersion: 1, Overrides: []actionsecurity.PermissionOverrideIntent{{Capability: "users.delete", Effect: 3}, {Capability: "users.sessions.read", Effect: 2}}, Reason: "promotion"}
-	for stage := 1; stage <= 13; stage++ {
+	for stage := 1; stage <= 14; stage++ {
 		t.Run(fmt.Sprintf("sql_error_%d", stage), func(t *testing.T) {
 			script := rolePermissionHappyScript(models.UserRoleUser, nil, nil)
 			outcome, _, err := runRolePermissionTx(t, script, actionsecurity.ActionUsersPromote, intent, 0, func(s *rolePermissionTxScript) { s.failAt = stage })
@@ -533,7 +551,7 @@ func TestRolePermissionRollbackOnEverySQLStageAndLostUpdate(t *testing.T) {
 	}
 
 	head, rules := rolePermissionPolicyRows(2, []struct{ capability, effect int }{{1, 3}})
-	for _, stage := range []int{11, 12} {
+	for _, stage := range []int{11, 12, 13} {
 		t.Run(fmt.Sprintf("demote_stage_%d", stage), func(t *testing.T) {
 			script := rolePermissionHappyScript(models.UserRoleAdmin, head, rules)
 			outcome, _, err := runRolePermissionTx(t, script, actionsecurity.ActionUsersDemote, actionsecurity.DemoteIntent{TargetGUID: 6001, ExpectedAuthVersion: 7, ExpectedPermissionsVersion: 2, CatalogVersion: 1, Reason: "demote"}, 0, func(s *rolePermissionTxScript) { s.failAt = stage })
@@ -789,10 +807,10 @@ func assertRolePermissionTxHappyCalls(t *testing.T, script *rolePermissionTxScri
 	t.Helper()
 	script.mu.Lock()
 	defer script.mu.Unlock()
-	if script.commitCount != 1 || script.rollbackCount != 0 || len(script.committed) != 8 {
+	if script.commitCount != 1 || script.rollbackCount != 0 || len(script.committed) != 9 {
 		t.Fatalf("commit/rollback/writes = %d/%d/%d; observed=%#v", script.commitCount, script.rollbackCount, len(script.committed), script.observed)
 	}
-	wantTables := []string{"users", "users", "user_sessions", "user_permission_heads", "user_permission_overrides", "user_sessions", "auth_audit_events", "user_sessions", "auth_audit_events", "users", "user_permission_overrides", "user_permission_overrides", "user_permission_heads"}
+	wantTables := []string{"users", "users", "user_sessions", "user_permission_heads", "user_permission_overrides", "user_sessions", "auth_audit_events", "user_sessions", "auth_audit_events", "users", "user_permission_overrides", "user_permission_overrides", "user_permission_heads", "auth_audit_events"}
 	if len(script.observed) != len(wantTables) {
 		t.Fatalf("calls = %d, want %d: %#v", len(script.observed), len(wantTables), script.observed)
 	}
@@ -843,12 +861,14 @@ func assertRolePermissionTxHappyCalls(t *testing.T, script *rolePermissionTxScri
 		"INSERT INTO `user_permission_overrides` (`guid`,`created_at`,`created_by`,`updated_at`,`updated_by`,`is_deleted`,`user_id`,`policy_version`,`capability`,`effect`) VALUES (?,?,?,?,?,?,?,?,?,?)",
 		"INSERT INTO `user_permission_overrides` (`guid`,`created_at`,`created_by`,`updated_at`,`updated_by`,`is_deleted`,`user_id`,`policy_version`,`capability`,`effect`) VALUES (?,?,?,?,?,?,?,?,?,?)",
 		"INSERT INTO `user_permission_heads` (`guid`,`created_at`,`created_by`,`updated_at`,`updated_by`,`is_deleted`,`user_id`,`policy_version`,`catalog_version`,`rule_count`) VALUES (?,?,?,?,?,?,?,?,?,?)",
+		"INSERT INTO `auth_audit_events` (`guid`,`created_at`,`created_by`,`updated_at`,`updated_by`,`is_deleted`,`user_id`,`session_guid`,`event_type`,`login_method`,`ip`,`user_agent`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
 	}
 	wantWriteArgs := []string{
 		"[8001 3 8001 41 71 61 2]", "[7001 8001 41 8001 41 0 61 7001 6 1]",
 		"[8001 4 8001 41 72 61 3]", "[7002 8001 41 8001 41 0 61 7002 6 1]",
 		"[8 10 8001 41 61 6001 7 1 1]", "[7003 8001 41 8001 41 0 61 1 12 3]",
 		"[7004 8001 41 8001 41 0 61 1 7 2]", "[7005 8001 41 8001 41 0 61 1 1 2]",
+		"[7006 8001 41 8001 41 0 61 <nil> 10 <nil>]",
 	}
 	for i := range writes {
 		if writes[i].sql != wantWriteSQL[i] {
