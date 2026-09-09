@@ -39,6 +39,10 @@ func New(state *app.State) *gin.Engine {
 	handler.RegisterAdminUserManagementActions(r, state)
 	handler.RegisterAdminLogs(r, state)
 	handler.RegisterAdminDashboard(r, state)
+	handler.RegisterPublicModelAdmin(r, state)
+	handler.RegisterPublicPricingAdmin(r, state)
+	handler.RegisterPublicContentAdmin(r, state)
+	handler.RegisterRootAlerts(r, state)
 
 	r.GET("/metrics", func(c *gin.Context) {
 		token := httpx.BearerToken(c)

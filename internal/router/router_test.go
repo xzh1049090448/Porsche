@@ -25,6 +25,33 @@ import (
 	"github.com/porsche/ai-gateway-go/internal/whitelabel"
 )
 
+func TestPublicContentPricingAdminRoutesMatchFrozenContract(t *testing.T) {
+	state := &app.State{Settings: &config.Settings{}}
+	got := map[string]bool{}
+	for _, route := range router.New(state).Routes() {
+		got[route.Method+" "+route.Path] = true
+	}
+	raw, err := os.ReadFile("../../docs/agents/contracts/public-content-pricing-v1.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var contract struct {
+		Routes []struct{ Method, Path, Role string } `json:"routes"`
+	}
+	if err := json.Unmarshal(raw, &contract); err != nil {
+		t.Fatal(err)
+	}
+	for _, route := range contract.Routes {
+		if route.Role != "root" {
+			continue
+		}
+		path := strings.ReplaceAll(route.Path, "{guid}", ":guid")
+		if !got[route.Method+" "+path] {
+			t.Errorf("missing route %s %s", route.Method, path)
+		}
+	}
+}
+
 func TestHealthOK(t *testing.T) {
 	settings := &config.Settings{
 		AppEnv:             "development",
