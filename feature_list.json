@@ -1,6 +1,6 @@
 {
   "project": "Porsche Go AI Gateway",
-  "last_updated": "2026-09-08",
+  "last_updated": "2026-09-09",
   "rules": {
     "single_active_feature": true,
     "passing_requires_evidence": true,
@@ -21,7 +21,7 @@
       "status": "passing",
       "acceptance_status": "limited_subscope",
       "a14_status": "BLOCKED_NOT_IMPLEMENTED",
-      "active_production_consumers": 4,
+      "active_production_consumers": 7,
       "joint_acceptance_blocker_count": 16,
       "joint_acceptance_blockers": [
         {
@@ -78,7 +78,12 @@
         },
         {
           "id": "A08",
-          "status": "BLOCKED_NOT_IMPLEMENTED"
+          "status": "BLOCKED_FIXTURE",
+          "code_candidate": {
+            "backend": "9fdc07b3bcf4cb06049e4af0f5adde28e36facab"
+          },
+          "contract_sha256": "dd202cb5019b10a891e10f03f77629b5f54e993110f148f417e05d089df35698",
+          "evidence": "backend:docs/superpowers/reports/validation/2026-09-09-a08-managed-user-roles-permissions/backend/manifest.json"
         },
         {
           "id": "A09",
@@ -148,7 +153,8 @@
         "A03 Task12：MySQL 8.4.11 / Redis 7.4 隔离夹具、0001–0010、focused/race/serial full/build/vet/diff、前端275/275及可见Chrome 13场景通过；唯一skip为显式opt-in 100k性能夹具",
         "A05 Task8：BE/FE nickname-edit代码、r5 backend service/DTO/handler/router/HTTP及r10真实浏览器/adversarial/privacy/cleanup均通过",
         "A06：真实MySQL/Redis状态迁移与旧Access/Refresh/Key失效、focused race、no-fixture full、前端364/364、真实挂载13/13、生产构建及375/390 Chrome布局均通过",
-        "A07：真实 MySQL/Redis 登录/令牌/三会话审计、Bearer 套餐额度、并发与故障回滚，focused race、no-fixture full、前端 395/395、生产构建、375/390 Chrome 及三项独立复审通过"
+        "A07：真实 MySQL/Redis 登录/令牌/三会话审计、Bearer 套餐额度、并发与故障回滚，focused race、no-fixture full、前端 395/395、生产构建、375/390 Chrome 及三项独立复审通过",
+        "A08 后端候选 9fdc07b：focused/focused-race/build/vet/diff 与 loopback-enabled full/full-race 通过；真实 MySQL 8/Redis 7、migration 0012、凭据生命周期、并发与回滚因 fixture 未配置为 BLOCKED_FIXTURE/NOT_RUN"
       ],
       "evidence": [
         "Task 1–11 交付严格 external-value、用途隔离密钥、8个 inactive typed descriptors、canonical intent、0005 schema/verifier、Redis Lua limits、Issue/Begin/Query/Execute/lease/recovery/transaction primitives；冻结生产路由仍404，active consumer为0。",
@@ -160,9 +166,10 @@
         "A03 users.create/users.create_admin：代码候选BE 3a50144e53268f6ef3ae704699ef9fa851e4a5ee / FE 9f660a9ca26f5738dd661652596a1e450ff34335；canonical证据 docs/superpowers/reports/validation/2026-09-06-a03-admin-user-create/canonical-3a50144-9f660a9-final/manifest.json，三项代码复审与三项证据复审均PASS，exact cleanup为CLEANUP_PASS。",
         "A05 managed-user nickname edit：代码BE 6bb5400 / FE 5a41f56；canonical evidence commits BE 76e0d2f / FE 34b23fc；emergency merge heads BE bf53c6a / FE a93893b；本地联合切片PASS_LIMITED_SCOPE。",
         "A06 managed-user status：代码BE 08617d4 / FE 07c7b9e；canonical evidence commits BE 1677bc5 / FE b620552；合同SHA-256 c3662b25500879d67c6811fa270d4a6a39a44db812c7c493d6f02e535940b415；双端独立复审PASS。",
-        "A07 managed-user credentials/entitlements：候选 BE a600a08 / FE 4164818；canonical evidence commits BE 5d5a1e9ee230bcc42fe9fde8d3f9f7badf34b658 / FE 39b79582110347ae11b95e58217b3afe3236b4f7；合同 SHA-256 9e1969b238911b6eee5b6aa85ed364e795a6854f0a026daac5d15e2ab78851be；本地联合切片 PASS_LIMITED_SCOPE。"
+        "A07 managed-user credentials/entitlements：候选 BE a600a08 / FE 4164818；canonical evidence commits BE 5d5a1e9ee230bcc42fe9fde8d3f9f7badf34b658 / FE 39b79582110347ae11b95e58217b3afe3236b4f7；合同 SHA-256 9e1969b238911b6eee5b6aa85ed364e795a6854f0a026daac5d15e2ab78851be；本地联合切片 PASS_LIMITED_SCOPE。",
+        "A08 managed-user roles/permissions：后端候选 9fdc07b；合同 SHA-256 dd202cb5019b10a891e10f03f77629b5f54e993110f148f417e05d089df35698；代码评审 findings 已闭环，但真实 fixture 与独立 SECURITY_REVIEW 均未完成，状态 BLOCKED_FIXTURE。"
       ],
-      "notes": "PASS_LIMITED_SUBSCOPE：B1-E 内部安全原语及 A03/A05/A06/A07 本地联合切片已验证；A07 为 PASS_LIMITED_SCOPE。代码注册的 active consumer 为 4 项（users.create、users.create_admin、users.delete、users.reset_password），不表示已部署生产。go-017 历史 joint_acceptance_blocker_count 保持 16；current_joint_acceptance_blocker_count 为 12，权威矩阵为 14 limited / 12 blocked；A12/A14 历史行未在本次重写。Gateway Key owner plan/quota 消费仍未实现。生产迁移、部署、生产验收和真实业务账号均 NOT_RUN。ACTION_SECURITY_HMAC_KEY v1 lacks key ID/multi-key verification; rotation is prohibited while replayable post-0010 active snapshots exist unless a separately approved multi-key verifier or atomic full re-HMAC migration is delivered.",
+      "notes": "PASS_LIMITED_SUBSCOPE：B1-E 内部安全原语及 A03/A05/A06/A07 本地联合切片已验证；A07 为 PASS_LIMITED_SCOPE。代码注册的 active consumer 为 7 项（users.create、users.create_admin、users.delete、users.reset_password、users.promote、users.demote、users.permissions.write），不表示已部署生产。A08 后端已实现但真实 fixture 与独立 SECURITY_REVIEW 未完成，保持 BLOCKED_FIXTURE。go-017 历史 joint_acceptance_blocker_count 保持 16；current_joint_acceptance_blocker_count 为 12，权威矩阵为 14 limited / 12 blocked；A12/A14 历史行未在本次重写。Gateway Key owner plan/quota 消费仍未实现。生产迁移、部署、生产验收和真实业务账号均 NOT_RUN。ACTION_SECURITY_HMAC_KEY v1 lacks key ID/multi-key verification; rotation is prohibited while replayable post-0010 active snapshots exist unless a separately approved multi-key verifier or atomic full re-HMAC migration is delivered.",
       "a03_joint_acceptance": {
         "status": "PASS_LIMITED_SCOPE",
         "code_under_test": {
@@ -299,6 +306,28 @@
         },
         "scope_boundary": "仅本地 A07 password reset、group change、plan change 切片。Gateway Key owner plan/quota 原子重载与消费仍为 BLOCKED_NOT_IMPLEMENTED；生产 migration、deploy、production acceptance 与真实 business accounts 均 NOT_RUN。",
         "evidence": "backend:docs/superpowers/reports/validation/2026-09-09-a07-managed-user-entitlements/manifest.json"
+      },
+      "a08_joint_acceptance": {
+        "status": "BLOCKED_FIXTURE",
+        "code_under_test": {
+          "backend": "9fdc07b3bcf4cb06049e4af0f5adde28e36facab"
+        },
+        "contract_sha256": "dd202cb5019b10a891e10f03f77629b5f54e993110f148f417e05d089df35698",
+        "tests": {
+          "backend_focused": "PASS_WITH_DECLARED_SKIPS",
+          "backend_focused_race": "PASS_WITH_DECLARED_SKIPS",
+          "backend_full_loopback_enabled": "PASS_WITH_452_DECLARED_SKIPS",
+          "backend_full_race_loopback_enabled": "PASS_WITH_452_DECLARED_SKIPS",
+          "backend_build_vet_diff": "PASS",
+          "backend_real_mysql_redis": "NOT_RUN",
+          "migration_0012_real_up_down": "NOT_RUN"
+        },
+        "reviews": {
+          "task_spec_and_quality": "PASS_AFTER_FINDING_CLOSURE",
+          "independent_security": "PENDING_NOT_RUN"
+        },
+        "scope_boundary": "仅 A08 后端代码候选与无 fixture 门禁；真实 MySQL 8/Redis 7、ACTION_SECURITY_HMAC_KEY、前端、26项联合验收、生产 migration/deploy/acceptance 及真实业务账号均 NOT_RUN。",
+        "evidence": "backend:docs/superpowers/reports/validation/2026-09-09-a08-managed-user-roles-permissions/backend/manifest.json"
       }
     },
     {

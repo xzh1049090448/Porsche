@@ -1,5 +1,13 @@
 # Porsche 开发进度
 
+## 2026-09-09：A08 managed-user roles and permissions 后端候选受 fixture 阻塞
+
+- A08 后端候选为 `9fdc07b3bcf4cb06049e4af0f5adde28e36facab`，合同 SHA-256 为 `dd202cb5019b10a891e10f03f77629b5f54e993110f148f417e05d089df35698`。promote、demote、权限替换、稳定 operation 结果、即时 Access/Refresh 失效及 Gateway Key fresh owner policy 已实现；Task 1–7 规格和质量 findings 均完成修复并获得最终 PASS。
+- focused 与 focused race、build、vet、diff-check 通过；完整 full/full-race 在受限沙箱因既有 `httptest` 无法绑定 `[::1]:0` 退出 1，在允许 loopback listener 的环境中复跑均退出 0，各记录 1,985 pass events、452 个明确 SKIP、0 fail events 和 17 个通过包。初始 `./init.sh` 同样因沙箱 bind 限制退出 1，未计为 PASS。
+- `TEST_DATABASE_URL`、`TEST_REDIS_URL` 与 `ACTION_SECURITY_HMAC_KEY` 均未配置。真实 MySQL 8/Redis 7、migration 0012 up/down/ledger、凭据生命周期、并发、事务回滚和 cleanup 均为 `BLOCKED_FIXTURE / NOT_RUN`；独立 `SECURITY_REVIEW` 为 `PENDING_NOT_RUN`，不能以质量复审中的安全检查替代。
+- A08 从 `BLOCKED_NOT_IMPLEMENTED` 更新为 `BLOCKED_FIXTURE`，没有提升为 `PASS_LIMITED_SCOPE`。26 项仍为 14 `PASS_LIMITED_SCOPE` 和 12 项阻塞：9 `BLOCKED_NOT_IMPLEMENTED`、1 `BLOCKED_FIXTURE`、1 `BLOCKED_PRODUCT`、1 `BLOCKED_ENV`；`web-012` 继续 `in_progress`。前端、外部后端 project_manager 书面确认、26项联合验收、生产 migration/deploy/acceptance 及真实业务账号均 `NOT_RUN`。
+- 完整命令、真实 exit、452 项 SKIP 清单、migration 0012 哈希及 review closure 见 `docs/superpowers/reports/validation/2026-09-09-a08-managed-user-roles-permissions/backend/manifest.json` 与同目录 `report.md`。
+
 ## 2026-09-09：A07 managed-user credentials and entitlements 本地联合切片限定通过
 
 - A07 从 `BLOCKED_NOT_IMPLEMENTED` 提升为 `PASS_LIMITED_SCOPE`。代码候选后端 `a600a0815b5eab5203333755a2466788fe67d61a`、前端 `41648181ab42fb46fe7d45663e746121956b50b8`；canonical evidence commits 后端 `5d5a1e9ee230bcc42fe9fde8d3f9f7badf34b658`、前端 `39b79582110347ae11b95e58217b3afe3236b4f7`；合同 SHA-256 `9e1969b238911b6eee5b6aa85ed364e795a6854f0a026daac5d15e2ab78851be`。
