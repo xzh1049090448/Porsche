@@ -87,8 +87,10 @@ func TestPublicContentPricingContract(t *testing.T) {
 		{"POST", "/admin/v2/public-content/releases/{guid}/restore", "root", "admin_publish_request_headers", "admin_response_headers", "GUIDRequest", "NoBody", "RevisionRequest", "Release", json.Number("201")},
 	}
 	publicContentPricingRequireExactRoutes(t, contract, expectedRoutes)
+	publicContentPricingAssertListQueries(t, contract)
 	publicContentPricingAssertRevisionedMutationBodies(t, contract)
 	publicContentPricingAssertPathGUIDAbsentFromBodies(t, contract)
+	publicContentPricingAssertMutationBodyRules(t, contract)
 
 	for _, route := range publicContentPricingRoutes(t, contract) {
 		path := route["path"].(string)
@@ -172,7 +174,10 @@ func TestPublicContentPricingContract(t *testing.T) {
 	publicContentPricingRequire(t, contract, notificationTypes, "notifications", "types")
 	publicContentPricingRequire(t, contract, notificationTypes, "schemas", "Notification", "properties", "type", "enum")
 	publicContentPricingRequire(t, contract, "in_app_only", "notifications", "delivery")
-	publicContentPricingRequire(t, contract, "one_exact_json_object_no_unknown_duplicate_or_trailing_fields", "body_rules", "mutation")
+	publicContentPricingRequire(t, contract, "object", "body_rules", "object_mutation", "applies_to_body_schema_type")
+	publicContentPricingRequire(t, contract, "one_exact_json_object_no_unknown_duplicate_or_trailing_fields", "body_rules", "object_mutation", "payload")
+	publicContentPricingRequire(t, contract, "NoBody", "body_rules", "no_body_mutation", "applies_to_body_schema")
+	publicContentPricingRequire(t, contract, "no_request_body_content_allowed", "body_rules", "no_body_mutation", "payload")
 	publicContentPricingRequire(t, contract, []any{"action_ticket"}, "body_rules", "forbidden_body_fields")
 	publicContentPricingRequire(t, contract, "400_invalid_public_content_pricing_request", "body_rules", "rejection")
 	publicContentPricingRequire(t, contract, []any{
@@ -183,9 +188,10 @@ func TestPublicContentPricingContract(t *testing.T) {
 		"POST /admin/v2/public-content/releases/{guid}/restore",
 	}, "mutation_requirements", "action_ticket_header_routes")
 	publicContentPricingAssertSchemas(t, contract)
+	publicContentPricingAssertAllSchemasReachable(t, contract)
 	publicContentPricingRequire(t, contract, "^[1-9][0-9]{0,18}$", "schemas", "GUIDRequest", "properties", "guid", "pattern")
 	publicContentPricingRequire(t, contract, json.Number("1"), "schemas", "RevisionRequest", "properties", "expected_revision", "minimum")
-	publicContentPricingRequire(t, contract, []any{"20", "50", "100"}, "schemas", "PaginationRequest", "properties", "page_size", "enum")
+	publicContentPricingRequire(t, contract, []any{json.Number("20"), json.Number("50"), json.Number("100")}, "schemas", "PaginationRequest", "properties", "page_size", "enum")
 	publicContentPricingRequire(t, contract, "date-time-rfc3339-utc", "schemas", "Release", "properties", "created_at", "format")
 	publicContentPricingRequire(t, contract, "0", "pricing", "minimum")
 	publicContentPricingRequire(t, contract, publicContentPricingDecimalMaximum, "pricing", "maximum")
@@ -205,6 +211,141 @@ func TestPublicContentPricingContract(t *testing.T) {
 
 	for _, forbidden := range []string{"credential_value", "api_key", "current_password", "internal_id", "database_id", "upstream_url"} {
 		publicContentPricingForbidText(t, raw, forbidden)
+	}
+}
+
+func publicContentPricingAssertListQueries(t *testing.T, contract map[string]any) {
+	t.Helper()
+	for _, routeID := range []string{
+		"GET /api/v1/public/models",
+		"GET /admin/v2/public-models",
+		"GET /admin/v2/public-pricing/releases",
+		"GET /admin/v2/notifications",
+		"GET /admin/v2/public-content/releases",
+	} {
+		parts := strings.SplitN(routeID, " ", 2)
+		route := publicContentPricingFindRoute(t, contract, parts[0], parts[1])
+		querySchema := route["query_schema"].(string)
+		publicContentPricingRequire(t, contract, "integer", "schemas", querySchema, "properties", "page", "type")
+		publicContentPricingRequire(t, contract, json.Number("1"), "schemas", querySchema, "properties", "page", "minimum")
+		publicContentPricingRequire(t, contract, "integer", "schemas", querySchema, "properties", "page_size", "type")
+		publicContentPricingRequire(t, contract, []any{json.Number("20"), json.Number("50"), json.Number("100")}, "schemas", querySchema, "properties", "page_size", "enum")
+	}
+}
+
+func publicContentPricingAssertMutationBodyRules(t *testing.T, contract map[string]any) {
+	t.Helper()
+	wantNoBodyRoutes := []any{
+		"POST /admin/v2/public-models/sync",
+		"POST /admin/v2/notifications/{guid}/read",
+		"POST /admin/v2/notifications/{guid}/acknowledge",
+	}
+	publicContentPricingRequire(t, contract, wantNoBodyRoutes, "body_rules", "no_body_mutation", "routes")
+
+	actualNoBodyRoutes := make([]any, 0, len(wantNoBodyRoutes))
+	for _, route := range publicContentPricingRoutes(t, contract) {
+		if route["method"] == "GET" {
+			continue
+		}
+		bodySchema := route["body_schema"].(string)
+		schemaType, ok := contract["schemas"].(map[string]any)[bodySchema].(map[string]any)["type"].(string)
+		if !ok {
+			t.Fatalf("mutation %s %s body schema %s has no type", route["method"], route["path"], bodySchema)
+		}
+		switch schemaType {
+		case "object":
+		case "null":
+			if bodySchema != "NoBody" {
+				t.Fatalf("mutation %s %s uses unexpected null body schema %s", route["method"], route["path"], bodySchema)
+			}
+			actualNoBodyRoutes = append(actualNoBodyRoutes, route["method"].(string)+" "+route["path"].(string))
+		default:
+			t.Fatalf("mutation %s %s body schema %s has unsupported type %s", route["method"], route["path"], bodySchema, schemaType)
+		}
+	}
+	if !reflect.DeepEqual(actualNoBodyRoutes, wantNoBodyRoutes) {
+		t.Fatalf("NoBody mutation routes=%v, want %v", actualNoBodyRoutes, wantNoBodyRoutes)
+	}
+}
+
+func publicContentPricingAssertAllSchemasReachable(t *testing.T, contract map[string]any) {
+	t.Helper()
+	schemas := contract["schemas"].(map[string]any)
+	pending := make([]string, 0)
+	for _, route := range publicContentPricingRoutes(t, contract) {
+		for _, field := range []string{"path_schema", "query_schema", "body_schema", "response_schema"} {
+			pending = append(pending, route[field].(string))
+		}
+	}
+	pending = append(pending, contract["errors"].(map[string]any)["envelope_schema"].(string))
+
+	reachable := make(map[string]bool, len(schemas))
+	for len(pending) > 0 {
+		last := len(pending) - 1
+		name := pending[last]
+		pending = pending[:last]
+		if reachable[name] {
+			continue
+		}
+		schema, ok := schemas[name]
+		if !ok {
+			t.Fatalf("reachable schema %q is undefined", name)
+		}
+		reachable[name] = true
+		publicContentPricingCollectSchemaReferences(t, schema, &pending)
+	}
+
+	unused := make([]string, 0)
+	for name := range schemas {
+		if !reachable[name] {
+			unused = append(unused, name)
+		}
+	}
+	for left := range unused {
+		for right := left + 1; right < len(unused); right++ {
+			if unused[right] < unused[left] {
+				unused[left], unused[right] = unused[right], unused[left]
+			}
+		}
+	}
+	if len(unused) != 0 {
+		t.Fatalf("contract has unreachable schemas: %v", unused)
+	}
+}
+
+func publicContentPricingCollectSchemaReferences(t *testing.T, value any, pending *[]string) {
+	t.Helper()
+	switch typed := value.(type) {
+	case map[string]any:
+		for key, child := range typed {
+			if key == "$ref" {
+				name, ok := child.(string)
+				if !ok {
+					t.Fatalf("schema reference must be a string: %v", child)
+				}
+				*pending = append(*pending, name)
+				continue
+			}
+			if key == "one_of" {
+				alternatives, ok := child.([]any)
+				if !ok {
+					t.Fatalf("schema one_of must be an array: %v", child)
+				}
+				for _, rawName := range alternatives {
+					name, ok := rawName.(string)
+					if !ok {
+						t.Fatalf("schema one_of reference must be a string: %v", rawName)
+					}
+					*pending = append(*pending, name)
+				}
+				continue
+			}
+			publicContentPricingCollectSchemaReferences(t, child, pending)
+		}
+	case []any:
+		for _, child := range typed {
+			publicContentPricingCollectSchemaReferences(t, child, pending)
+		}
 	}
 }
 
