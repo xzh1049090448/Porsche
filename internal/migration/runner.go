@@ -90,6 +90,12 @@ var publicPriceDraftStateUp []byte
 //go:embed sql/0013_public_price_draft_state.down.sql
 var publicPriceDraftStateDown []byte
 
+//go:embed sql/0014_upstream_monitor_lease.up.sql
+var upstreamMonitorLeaseUp []byte
+
+//go:embed sql/0014_upstream_monitor_lease.down.sql
+var upstreamMonitorLeaseDown []byte
+
 // Migration is an immutable, embedded schema version.
 type Migration struct {
 	Version string
@@ -119,6 +125,7 @@ func All() ([]Migration, error) {
 		{Version: "0011", UpSQL: platformGenerationReceiptsUp, DownSQL: platformGenerationReceiptsDown},
 		{Version: "0012", UpSQL: publicContentPricingUp, DownSQL: publicContentPricingDown},
 		{Version: "0013", UpSQL: publicPriceDraftStateUp, DownSQL: publicPriceDraftStateDown},
+		{Version: "0014", UpSQL: upstreamMonitorLeaseUp, DownSQL: upstreamMonitorLeaseDown},
 	}
 	sort.Slice(migrations, func(i, j int) bool { return migrations[i].Version < migrations[j].Version })
 	return migrations, nil
@@ -220,6 +227,11 @@ func Up(ctx context.Context, db *gorm.DB, nextGUID func() int64, nowMillis func(
 						return err
 					}
 				}
+				if migration.Version == "0014" {
+					if err := VerifyUpstreamMonitorLeaseSchema(ctx, conn); err != nil {
+						return err
+					}
+				}
 				continue
 			}
 			if migration.Version == "0007" {
@@ -249,6 +261,22 @@ func Up(ctx context.Context, db *gorm.DB, nextGUID func() int64, nowMillis func(
 				now := nowMillis()
 				if err := conn.Exec("INSERT INTO public_price_draft_state (guid,state_key,revision,created_at,updated_at,is_deleted) VALUES (?,'pricing',1,?,?,0) ON DUPLICATE KEY UPDATE state_key=VALUES(state_key)", nextGUID(), now, now).Error; err != nil {
 					return fmt.Errorf("apply migration 0013: %w", err)
+				}
+			} else if migration.Version == "0014" {
+				parts := strings.Split(string(migration.UpSQL), "-- porsche:seed-upstream-monitor-lease")
+				if len(parts) != 2 {
+					return fmt.Errorf("apply migration 0014: invalid seed marker")
+				}
+				statements := splitStatements(parts[0])
+				if len(statements) != 1 {
+					return fmt.Errorf("apply migration 0014: invalid statement count")
+				}
+				if err := conn.Exec(statements[0]).Error; err != nil {
+					return fmt.Errorf("apply migration 0014: %w", err)
+				}
+				now := nowMillis()
+				if err := conn.Exec("INSERT INTO upstream_monitor_leases (guid,lease_key,owner_token,lease_expires_at,revision,created_at,updated_at,is_deleted) VALUES (?,'catalog',NULL,0,1,?,?,0) ON DUPLICATE KEY UPDATE lease_key=VALUES(lease_key)", nextGUID(), now, now).Error; err != nil {
+					return fmt.Errorf("apply migration 0014: %w", err)
 				}
 			} else {
 				for _, statement := range splitStatements(string(migration.UpSQL)) {
@@ -297,6 +325,11 @@ func Up(ctx context.Context, db *gorm.DB, nextGUID func() int64, nowMillis func(
 			}
 			if migration.Version == "0013" {
 				if err := VerifyPublicPriceDraftStateSchema(ctx, conn); err != nil {
+					return err
+				}
+			}
+			if migration.Version == "0014" {
+				if err := VerifyUpstreamMonitorLeaseSchema(ctx, conn); err != nil {
 					return err
 				}
 			}
@@ -366,7 +399,10 @@ func Verify(ctx context.Context, db *gorm.DB) error {
 	if err := VerifyPublicContentPricingSchema(ctx, db); err != nil {
 		return err
 	}
-	return VerifyPublicPriceDraftStateSchema(ctx, db)
+	if err := VerifyPublicPriceDraftStateSchema(ctx, db); err != nil {
+		return err
+	}
+	return VerifyUpstreamMonitorLeaseSchema(ctx, db)
 }
 
 // VerifyApplied is the side-effect-free portion of Verify, kept separate so

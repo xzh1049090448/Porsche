@@ -274,6 +274,12 @@ git commit -m "feat: add root pricing alerts"
 - Create: `internal/service/upstream_price_monitor.go`
 - Create: `internal/service/upstream_price_monitor_test.go`
 - Create: `internal/service/upstream_price_monitor_db_test.go`
+- Create: `internal/migration/sql/0014_upstream_monitor_lease.up.sql`
+- Create: `internal/migration/sql/0014_upstream_monitor_lease.down.sql`
+- Create: `internal/migration/upstream_monitor_lease.go`
+- Create: `internal/migration/upstream_monitor_lease_test.go`
+- Modify: `internal/migration/runner.go`
+- Modify: `internal/models/public_content_pricing.go`
 - Modify: `internal/whitelabel/service.go`
 - Modify: `internal/whitelabel/types.go`
 - Modify: `internal/app/state.go`

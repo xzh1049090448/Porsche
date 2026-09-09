@@ -425,6 +425,17 @@ type UpstreamModelObservation struct {
 
 func (UpstreamModelObservation) TableName() string { return "upstream_model_observations" }
 
+type UpstreamMonitorLease struct {
+	ID             int64 `gorm:"column:id;type:bigint;not null;primaryKey;autoIncrement" json:"-"`
+	AuditFields    `gorm:"embedded" json:"-"`
+	LeaseKey       string  `gorm:"column:lease_key;type:varchar(64);not null" json:"-"`
+	OwnerToken     *string `gorm:"column:owner_token;type:char(64)" json:"-"`
+	LeaseExpiresAt int64   `gorm:"column:lease_expires_at;type:bigint;not null" json:"-"`
+	Revision       int64   `gorm:"column:revision;type:bigint;not null" json:"-"`
+}
+
+func (UpstreamMonitorLease) TableName() string { return "upstream_monitor_leases" }
+
 type RootAlert struct {
 	ID              int64 `gorm:"column:id;type:bigint;not null;primaryKey;autoIncrement" json:"-"`
 	AuditFields     `gorm:"embedded" json:"-"`

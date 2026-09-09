@@ -51,6 +51,8 @@ A previously published inactive or deleted `modelKey` returns `410 Gone`. A neve
 
 One scheduler tick runs every five minutes under a distributed lease so only one application instance evaluates a catalog generation. It requests the existing white-label catalog and accepts it for absence decisions only when the response is successful, complete, and fresh.
 
+Additive migration `0014` introduces the dedicated `upstream_monitor_leases` singleton. Its opaque random owner token, expiry, and revision support conditional acquisition, renewal, owner-only release, and crash recovery without placing monitor ownership in renderer jobs or publication state.
+
 For each observed model it records sanitized prices and last-seen time. It compares the currently published input and output prices independently with the corresponding upstream values. Either published value below upstream creates or refreshes a deduplicated alert; it never changes a Root price. Invalid or unavailable values create a not-comparable alert.
 
 Each valid full-catalog absence increments a counter. At three, the service inactivates the model with reason `upstream_removed`, audits the evidence, creates a Root alert, and atomically publishes a safety snapshot excluding all currently inactive/deleted models. An upstream error does not change model state. A reappearing model remains inactive and creates a review alert.

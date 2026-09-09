@@ -31,6 +31,8 @@ type State struct {
 	UserManagementActions         *service.UserManagementActions
 	UserDeleteActions             *service.UserDeleteActions
 	ActionVerifications           *service.ActionVerificationService
+	RootAlerts                    *service.RootAlertService
+	UpstreamPriceMonitor          *service.UpstreamPriceMonitor
 	HTTP                          *http.Client
 }
 
@@ -141,6 +143,12 @@ func newState(settings *config.Settings, db *gorm.DB, constructors stateConstruc
 		Billing:    s.Billing,
 		WhiteLabel: s.WhiteLabel,
 	})
+	if db != nil {
+		s.RootAlerts = service.NewRootAlertService(db)
+		if s.WhiteLabel != nil {
+			s.UpstreamPriceMonitor = service.NewUpstreamPriceMonitor(db, s.WhiteLabel, s.RootAlerts)
+		}
+	}
 
 	dependenciesTransferred = true
 	return s, nil

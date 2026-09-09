@@ -49,7 +49,7 @@ func TestAdminOperationSafetyRealMySQLDownUpAndVerifier(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(migrations) != 13 || migrations[4].Version != "0005" || migrations[5].Version != "0006" || migrations[6].Version != "0007" || migrations[7].Version != "0008" || migrations[8].Version != "0009" || migrations[9].Version != "0010" || migrations[10].Version != "0011" || migrations[11].Version != "0012" || migrations[12].Version != "0013" {
+	if len(migrations) != 14 || migrations[4].Version != "0005" || migrations[5].Version != "0006" || migrations[6].Version != "0007" || migrations[7].Version != "0008" || migrations[8].Version != "0009" || migrations[9].Version != "0010" || migrations[10].Version != "0011" || migrations[11].Version != "0012" || migrations[12].Version != "0013" {
 		t.Fatalf("unexpected migration sequence: %#v", migrations)
 	}
 	rollback, restore, err := adminOperationSafetyFixtureDependencyOrder(migrations)
@@ -213,7 +213,7 @@ func TestAdminOperationSafetyMigrationContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(migrations) != 13 || migrations[4].Version != "0005" || migrations[5].Version != "0006" || migrations[6].Version != "0007" || migrations[7].Version != "0008" || migrations[8].Version != "0009" || migrations[9].Version != "0010" || migrations[10].Version != "0011" || migrations[11].Version != "0012" || migrations[12].Version != "0013" {
+	if len(migrations) != 14 || migrations[4].Version != "0005" || migrations[5].Version != "0006" || migrations[6].Version != "0007" || migrations[7].Version != "0008" || migrations[8].Version != "0009" || migrations[9].Version != "0010" || migrations[10].Version != "0011" || migrations[11].Version != "0012" || migrations[12].Version != "0013" {
 		t.Fatalf("admin operation safety migration 0005 is missing: %#v", migrations)
 	}
 
@@ -430,6 +430,7 @@ func TestMigrationSequencePreservesPublishedChecksums(t *testing.T) {
 		{"0011", "be6ea3beb18a64cf2a2e03b2730df5abbcc457900e9da6292eefee0dd15a2792"},
 		{"0012", "7291cfeedc837702fb5f8de4125807fb1e475dceb8bf6687ec9509b74c366e11"},
 		{"0013", "62a91248a861e1a1208255bdfe7f0660e0ca8750c6bd52fb96f29722a82a989c"},
+		{"0014", "cc016d547a07e44d140b8c7c5e39b64859e12993b8f2d4aeae42ba235fd69671"},
 	}
 	if len(want) != len(migrations) {
 		t.Fatalf("checksum list length = %d, migrations = %d", len(want), len(migrations))

@@ -10,12 +10,78 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/porsche/ai-gateway-go/internal/config"
 )
+
+var exactCatalogPrice = regexp.MustCompile(`^(0|[1-9][0-9]{0,11})(\.[0-9]{1,8})?$`)
+
+// ObserveCatalog bypasses the serving cache and returns a newly fetched,
+// allowlist-filtered, sanitized projection for safety monitoring.
+func (s *WhiteLabelService) ObserveCatalog(ctx context.Context) (CatalogObservation, error) {
+	fetchedAt := s.now().UTC()
+	request, err := s.newRequest(ctx, s.baseURL+"/models")
+	if err != nil {
+		return CatalogObservation{FetchedAt: fetchedAt}, ErrUpstreamUnavailable("catalog observation failed")
+	}
+	response, err := s.client.Do(request)
+	if err != nil {
+		return CatalogObservation{FetchedAt: fetchedAt}, ErrUpstreamUnavailable("catalog observation failed")
+	}
+	defer response.Body.Close()
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		return CatalogObservation{FetchedAt: fetchedAt}, ErrUpstreamUnavailable("catalog observation failed")
+	}
+	var payload struct {
+		Data []struct {
+			ID      string          `json:"id"`
+			OwnedBy string          `json:"owned_by"`
+			Input   json.RawMessage `json:"input_token_price_per_m"`
+			Output  json.RawMessage `json:"output_token_price_per_m"`
+		} `json:"data"`
+		Complete *bool `json:"complete"`
+	}
+	if err := json.NewDecoder(io.LimitReader(response.Body, 2<<20)).Decode(&payload); err != nil {
+		return CatalogObservation{FetchedAt: fetchedAt}, ErrUpstreamUnavailable("catalog observation failed")
+	}
+	complete := payload.Complete == nil || *payload.Complete
+	seen := map[string]bool{}
+	models := make([]CatalogObservedModel, 0, len(payload.Data))
+	for _, raw := range payload.Data {
+		id := strings.TrimSpace(raw.ID)
+		if !validModelID(id) || !s.globallyAllows(id) || seen[id] {
+			continue
+		}
+		seen[id] = true
+		models = append(models, CatalogObservedModel{NormalizedID: id, Provider: safeText(raw.OwnedBy), InputPriceUSDPerMillionTokens: exactPrice(raw.Input), OutputPriceUSDPerMillionTokens: exactPrice(raw.Output)})
+	}
+	sort.Slice(models, func(i, j int) bool { return models[i].NormalizedID < models[j].NormalizedID })
+	return CatalogObservation{Models: models, FetchedAt: fetchedAt, Successful: true, Complete: complete, Fresh: true}, nil
+}
+
+func exactPrice(raw json.RawMessage) *string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil
+	}
+	value := string(raw)
+	if len(value) >= 2 && value[0] == '"' {
+		var text string
+		if json.Unmarshal(raw, &text) != nil {
+			return nil
+		}
+		value = text
+	}
+	if _, err := strconv.ParseFloat(value, 64); err != nil || !exactCatalogPrice.MatchString(value) {
+		return nil
+	}
+	copy := value
+	return &copy
+}
 
 // WhiteLabelService is the single, cached source for permitted upstream model
 // metadata. It owns an HTTP client configured by the application, never a

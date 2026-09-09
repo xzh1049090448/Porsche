@@ -5,9 +5,27 @@ import (
 	"math"
 	"sort"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 )
+
+// CatalogObservation is the monitor-safe projection of one newly fetched
+// catalog. It contains no request metadata, credentials, URLs, or raw payload.
+type CatalogObservation struct {
+	Models     []CatalogObservedModel
+	FetchedAt  time.Time
+	Successful bool
+	Complete   bool
+	Fresh      bool
+}
+
+type CatalogObservedModel struct {
+	NormalizedID                   string
+	Provider                       string
+	InputPriceUSDPerMillionTokens  *string
+	OutputPriceUSDPerMillionTokens *string
+}
 
 // ChatCompletion is the client-safe subset of a non-streaming OpenAI chat
 // completion. Model is always the logical model ID selected by this gateway,
