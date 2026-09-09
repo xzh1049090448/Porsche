@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -20,6 +21,7 @@ import (
 	"github.com/redis/go-redis/v9"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 	"gorm.io/gorm/logger"
 )
 
@@ -197,6 +199,28 @@ type actionExecuteRows struct {
 	index   int
 }
 type actionExecuteResult int64
+
+type fixtureA08LockedPreflightConsumer struct {
+	fixtureActionConsumer
+	failure             models.AdminOperationFailure
+	prelockCalls, calls int
+}
+
+func (consumer *fixtureA08LockedPreflightConsumer) prelockForAuthorization(_ context.Context, tx *gorm.DB, _ models.AdminOperation, verification models.AdminActionVerification) (*models.User, error) {
+	consumer.prelockCalls++
+	if verification.TargetGUID == nil {
+		return nil, ErrActionOperationUnavailable
+	}
+	var target models.User
+	err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Select("id", "guid", "role", "status", "is_deleted", "auth_version").Where("guid = ? AND is_deleted = 0", *verification.TargetGUID).First(&target).Error
+	return &target, err
+}
+
+func (consumer *fixtureA08LockedPreflightConsumer) preflightLocked(context.Context, *gorm.DB, models.AdminOperation) (*models.AdminOperationFailure, error) {
+	consumer.calls++
+	failure := consumer.failure
+	return &failure, nil
+}
 
 func (actionExecuteDriver) Open(name string) (driver.Conn, error) {
 	value, ok := actionExecuteScripts.Load(name)
@@ -975,6 +999,42 @@ func TestActionExecuteRolePermissionResultPersistsAtomicallyAndCopiesStableRole(
 	script.failAt = "terminal_success"
 	if got, err := service.Execute(context.Background(), identity, &fixtureActionConsumer{outcome: outcome}, &fixtureActionAuditWriter{}, &fixtureActionOutboxWriter{}); got != nil || !errors.Is(err, ErrActionOperationUnavailable) || !executeStateIsPristine(script.state) {
 		t.Fatalf("A08 terminal SQL failure did not rollback: view=%#v err=%v state=%#v", got, err, script.state)
+	}
+}
+
+func TestActionExecuteA08LockedPreflightConflictRollsBackEveryFact(t *testing.T) {
+	for _, failure := range []models.AdminOperationFailure{
+		models.FailureTargetVersionConflict,
+		models.FailurePolicyVersionConflict,
+		models.FailureTargetStateConflict,
+	} {
+		t.Run(failure.String(), func(t *testing.T) {
+			service, script, identity := actionExecuteFixtureForAction(t, actionsecurity.ActionUsersPromote)
+			beforeOperation, beforeVerification := script.state.operation, script.state.verification
+			consumer := &fixtureA08LockedPreflightConsumer{fixtureActionConsumer: fixtureActionConsumer{outcome: TerminalOutcome{ResultKind: models.ResultNone, HTTPStatus: 204}}, failure: failure}
+			audit, outbox := &fixtureActionAuditWriter{}, &fixtureActionOutboxWriter{}
+
+			view, err := service.Execute(context.Background(), identity, consumer, audit, outbox)
+			if view != nil || err == nil || err.Error() != failure.String() {
+				t.Fatalf("preflight conflict = %#v/%v, want precise %s", view, err, failure.String())
+			}
+			if consumer.prelockCalls != 1 || consumer.calls != 1 || consumer.fixtureActionConsumer.calls != 0 || audit.calls != 0 || outbox.calls != 0 {
+				t.Fatalf("calls prelock/preflight/consumer/audit/outbox = %d/%d/%d/%d/%d", consumer.prelockCalls, consumer.calls, consumer.fixtureActionConsumer.calls, audit.calls, outbox.calls)
+			}
+			if !reflect.DeepEqual(script.state.operation, beforeOperation) || !reflect.DeepEqual(script.state.verification, beforeVerification) ||
+				!executeStateIsPristine(script.state) || len(script.execs) != 0 || script.commitCount != 0 || script.rollbackCount != 1 {
+				t.Fatalf("preflight committed mutation: state=%#v execs=%v commits=%d rollbacks=%d", script.state, script.execs, script.commitCount, script.rollbackCount)
+			}
+		})
+	}
+}
+
+func TestActionExecuteLockedPreflightHookDoesNotChangeOlderActions(t *testing.T) {
+	service, script, identity := actionExecuteFixture(t)
+	consumer := &fixtureA08LockedPreflightConsumer{fixtureActionConsumer: fixtureActionConsumer{outcome: TerminalOutcome{ResultKind: models.ResultNone, HTTPStatus: 204}}, failure: models.FailureTargetStateConflict}
+	view, err := service.Execute(context.Background(), identity, consumer, &fixtureActionAuditWriter{}, &fixtureActionOutboxWriter{})
+	if err != nil || view == nil || view.Status != "succeeded" || consumer.prelockCalls != 1 || consumer.calls != 0 || consumer.fixtureActionConsumer.calls != 1 || script.state.operation.State != models.OperationSucceeded {
+		t.Fatalf("older action = %#v/%v prelock=%d preflight=%d consumer=%d state=%s", view, err, consumer.prelockCalls, consumer.calls, consumer.fixtureActionConsumer.calls, script.state.operation.State.String())
 	}
 }
 

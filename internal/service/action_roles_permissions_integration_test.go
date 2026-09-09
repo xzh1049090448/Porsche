@@ -4,6 +4,7 @@ import (
 	"context"
 	cryptorand "crypto/rand"
 	"errors"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -47,6 +48,83 @@ func TestA08RolePermissionRealOperationChainCommitsAtomicFacts(t *testing.T) {
 	}
 	if revoked != int64(len(targetSessions)) || sessionEvents != int64(len(targetSessions)) || managedEvents != 1 || managementAudits != 1 || outboxRows != 1 {
 		t.Fatalf("facts revoked/session/managed/audit/outbox = %d/%d/%d/%d/%d", revoked, sessionEvents, managedEvents, managementAudits, outboxRows)
+	}
+}
+
+func TestA08RolePermissionRealSameStatePreflightLeavesIssuedChainUnchanged(t *testing.T) {
+	f, identity, execution, outbox, targetSessions := prepareA08RealPromote(t, 1_920_005_000_000)
+	if err := f.db.Model(&models.User{}).Where("id = ?", f.targetRow.ID).Update("role", models.UserRoleAdmin).Error; err != nil {
+		t.Fatal(err)
+	}
+	var beforeOperation models.AdminOperation
+	if err := f.db.Where("id = ?", identity.ID).First(&beforeOperation).Error; err != nil || beforeOperation.VerificationID == nil {
+		t.Fatalf("load operation = %#v/%v", beforeOperation, err)
+	}
+	var beforeVerification models.AdminActionVerification
+	if err := f.db.Where("id = ?", *beforeOperation.VerificationID).First(&beforeVerification).Error; err != nil {
+		t.Fatal(err)
+	}
+	var beforeTarget models.User
+	var beforeSessions []models.Session
+	if err := f.db.Where("id = ?", f.targetRow.ID).First(&beforeTarget).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.Where("user_id = ?", f.targetRow.ID).Order("id ASC").Find(&beforeSessions).Error; err != nil {
+		t.Fatal(err)
+	}
+	countFacts := func() [6]int64 {
+		var counts [6]int64
+		queries := []*gorm.DB{
+			f.db.Model(&models.AuthAuditEvent{}).Where("user_id = ?", f.targetRow.ID).Count(&counts[0]),
+			f.db.Model(&models.AuditLog{}).Where("user_id = ? AND action = ?", f.targetRow.ID, "users.promote").Count(&counts[1]),
+			f.db.Model(&models.AdminActionOutbox{}).Where("public_ref = ?", identity.PublicRef).Count(&counts[2]),
+			f.db.Model(&models.AdminOperationResponse{}).Where("operation_id = ?", identity.ID).Count(&counts[3]),
+			f.db.Model(&models.PermissionPolicyHead{}).Where("user_id = ?", f.targetRow.ID).Count(&counts[4]),
+			f.db.Model(&models.PermissionOverride{}).Where("user_id = ?", f.targetRow.ID).Count(&counts[5]),
+		}
+		for _, query := range queries {
+			if query.Error != nil {
+				t.Fatal(query.Error)
+			}
+		}
+		return counts
+	}
+	beforeFacts := countFacts()
+
+	view, err := f.operation.Execute(context.Background(), identity, execution, execution, outbox)
+	if view != nil || !errors.Is(err, ErrRolePermissionTargetStateConflict) || err.Error() != models.FailureTargetStateConflict.String() {
+		t.Fatalf("same-state Execute = %#v/%v", view, err)
+	}
+	var afterOperation models.AdminOperation
+	var afterVerification models.AdminActionVerification
+	var afterTarget models.User
+	var afterSessions []models.Session
+	if err := f.db.Where("id = ?", identity.ID).First(&afterOperation).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.Where("id = ?", beforeVerification.ID).First(&afterVerification).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.Where("id = ?", f.targetRow.ID).First(&afterTarget).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.Where("user_id = ?", f.targetRow.ID).Order("id ASC").Find(&afterSessions).Error; err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(afterOperation, beforeOperation) || !reflect.DeepEqual(afterVerification, beforeVerification) ||
+		!reflect.DeepEqual(afterTarget, beforeTarget) || !reflect.DeepEqual(afterSessions, beforeSessions) || countFacts() != beforeFacts {
+		t.Fatalf("same-state mutated chain: operation=%t verification=%t target=%t sessions=%t facts=%v/%v",
+			reflect.DeepEqual(afterOperation, beforeOperation), reflect.DeepEqual(afterVerification, beforeVerification),
+			reflect.DeepEqual(afterTarget, beforeTarget), reflect.DeepEqual(afterSessions, beforeSessions), countFacts(), beforeFacts)
+	}
+	if len(targetSessions) != len(beforeSessions) {
+		t.Fatalf("target session fixture changed: target=%d all=%d", len(targetSessions), len(beforeSessions))
+	}
+	for _, session := range targetSessions {
+		revoked, redisErr := f.authRedis.IsSessionRevoked(context.Background(), session.SID)
+		if redisErr != nil || revoked {
+			t.Fatalf("session %s Redis revoked=%t err=%v", session.SID, revoked, redisErr)
+		}
 	}
 }
 

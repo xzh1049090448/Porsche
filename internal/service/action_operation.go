@@ -32,13 +32,18 @@ const (
 )
 
 var (
-	ErrActionOperationInactive     = &HTTPError{Status: 422, Message: "admin action unavailable"}
-	ErrActionOperationForbidden    = &HTTPError{Status: 403, Message: "admin action verification rejected"}
-	ErrActionOperationHidden       = &HTTPError{Status: 404, Message: "admin operation unavailable"}
-	ErrActionOperationConflict     = &HTTPError{Status: 409, Message: "idempotency_conflict"}
-	ErrActionOperationCrossSession = &HTTPError{Status: 409, Message: "idempotency_cross_session"}
-	ErrActionOperationExpired      = &HTTPError{Status: 410, Message: "admin operation expired"}
-	ErrActionOperationUnavailable  = &HTTPError{Status: 503, Message: "admin operation unavailable"}
+	ErrActionOperationInactive             = &HTTPError{Status: 422, Message: "admin action unavailable"}
+	ErrActionOperationForbidden            = &HTTPError{Status: 403, Message: "admin action verification rejected"}
+	ErrActionOperationHidden               = &HTTPError{Status: 404, Message: "admin operation unavailable"}
+	ErrActionOperationConflict             = &HTTPError{Status: 409, Message: "idempotency_conflict"}
+	ErrActionOperationCrossSession         = &HTTPError{Status: 409, Message: "idempotency_cross_session"}
+	ErrActionOperationExpired              = &HTTPError{Status: 410, Message: "admin operation expired"}
+	ErrActionOperationUnavailable          = &HTTPError{Status: 503, Message: "admin operation unavailable"}
+	ErrRolePermissionActionRejected        = &HTTPError{Status: 409, Message: "action_rejected"}
+	ErrRolePermissionTargetVersionConflict = &HTTPError{Status: 409, Message: "target_version_conflict"}
+	ErrRolePermissionPolicyVersionConflict = &HTTPError{Status: 409, Message: "policy_version_conflict"}
+	ErrRolePermissionTargetStateConflict   = &HTTPError{Status: 409, Message: "target_state_conflict"}
+	ErrRolePermissionConsumerValidation    = &HTTPError{Status: 409, Message: "consumer_validation_failed"}
 )
 
 type OperationBegin struct {
@@ -1006,7 +1011,8 @@ func mapOperationError(err error) error {
 	if err == nil {
 		return nil
 	}
-	for _, known := range []error{ErrActionOperationInactive, ErrActionOperationForbidden, ErrActionOperationHidden, ErrActionOperationConflict, ErrActionOperationCrossSession, ErrActionOperationExpired, ErrActionOperationUnavailable} {
+	for _, known := range []error{ErrActionOperationInactive, ErrActionOperationForbidden, ErrActionOperationHidden, ErrActionOperationConflict, ErrActionOperationCrossSession, ErrActionOperationExpired, ErrActionOperationUnavailable,
+		ErrRolePermissionActionRejected, ErrRolePermissionTargetVersionConflict, ErrRolePermissionPolicyVersionConflict, ErrRolePermissionTargetStateConflict, ErrRolePermissionConsumerValidation} {
 		if errors.Is(err, known) {
 			return known
 		}

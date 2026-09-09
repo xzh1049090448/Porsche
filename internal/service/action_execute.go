@@ -37,6 +37,13 @@ type actionExecutionAuthorizationPrelocker interface {
 	prelockForAuthorization(context.Context, *gorm.DB, models.AdminOperation, models.AdminActionVerification) (*models.User, error)
 }
 
+// actionExecutionLockedPreflighter is implemented only by A08 consumers. It
+// rejects locked business conflicts before a verification is consumed.
+type actionExecutionLockedPreflighter interface {
+	actionExecutionAuthorizationPrelocker
+	preflightLocked(context.Context, *gorm.DB, models.AdminOperation) (*models.AdminOperationFailure, error)
+}
+
 func (gormActionExecuteTransactionRunner) Run(ctx context.Context, db *gorm.DB, callback func(*gorm.DB) error) error {
 	return db.WithContext(ctx).Transaction(callback, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 }
@@ -135,6 +142,15 @@ func (s *ActionOperationService) executeWithRunner(ctx context.Context, identity
 		if finalNow < startedAt || !validOperationNow(finalNow) || locked.session.ExpiresAt <= finalNow ||
 			*operation.LeaseExpiresAt <= finalNow || (descriptor.RequiresTicket && verificationRelationAt(*verification, finalNow) != operationVerificationActive) {
 			return ErrActionOperationForbidden
+		}
+		if preflighter, ok := consumer.(actionExecutionLockedPreflighter); ok && isA08RolePermissionAction(descriptor.Action) {
+			failure, preflightErr := preflighter.preflightLocked(ctx, tx, operation)
+			if preflightErr != nil {
+				return preflightErr
+			}
+			if failure != nil {
+				return rolePermissionPreflightError(*failure)
+			}
 		}
 		if descriptor.RequiresTicket {
 			consume := tx.Model(&models.AdminActionVerification{}).

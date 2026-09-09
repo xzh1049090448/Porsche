@@ -149,6 +149,55 @@ func (execution *rolePermissionTransactionalExecution) prelockForAuthorization(c
 	return &copyTarget, nil
 }
 
+func (execution *rolePermissionTransactionalExecution) preflightLocked(ctx context.Context, tx *gorm.DB, operation models.AdminOperation) (*models.AdminOperationFailure, error) {
+	if execution == nil || execution.base == nil || execution.state == nil || ctx == nil || !validDeleteWriterTransaction(ctx, tx) {
+		return nil, ErrActionOperationUnavailable
+	}
+	execution.state.mu.Lock()
+	if !execution.state.prelocked || execution.state.started || !execution.state.binding.matches(operation) {
+		execution.state.mu.Unlock()
+		return nil, ErrActionOperationUnavailable
+	}
+	actorGUID := execution.state.actorGUID
+	target := execution.state.target
+	head := execution.state.head
+	rules := append([]actionsecurity.PermissionOverrideIntent(nil), execution.state.rules...)
+	execution.state.mu.Unlock()
+	if target.ID == operation.ActorUserID {
+		return rolePermissionFailure(models.FailureActionRejected), nil
+	}
+	targetSnapshot := RolePermissionTargetSnapshot{ActorGUID: actorGUID, TargetGUID: target.Guid, Role: target.Role, Status: target.Status, AuthVersion: target.AuthVersion, Deleted: target.IsDeleted != 0}
+	var policySnapshot *RolePermissionPolicySnapshot
+	if head != nil {
+		policySnapshot = &RolePermissionPolicySnapshot{PolicyVersion: head.PolicyVersion, CatalogVersion: head.CatalogVersion}
+	}
+	plan, failure := execution.base.PlanTransition(targetSnapshot, policySnapshot, rules)
+	if failure != nil {
+		return failure, nil
+	}
+	if plan == nil {
+		return nil, ErrActionOperationUnavailable
+	}
+	return nil, nil
+}
+
+func rolePermissionPreflightError(failure models.AdminOperationFailure) error {
+	switch failure {
+	case models.FailureActionRejected:
+		return ErrRolePermissionActionRejected
+	case models.FailureTargetVersionConflict:
+		return ErrRolePermissionTargetVersionConflict
+	case models.FailurePolicyVersionConflict:
+		return ErrRolePermissionPolicyVersionConflict
+	case models.FailureTargetStateConflict:
+		return ErrRolePermissionTargetStateConflict
+	case models.FailureConsumerValidation:
+		return ErrRolePermissionConsumerValidation
+	default:
+		return ErrActionOperationUnavailable
+	}
+}
+
 func captureRolePermissionOperationBinding(operation models.AdminOperation) rolePermissionOperationBinding {
 	binding := rolePermissionOperationBinding{
 		id: operation.ID, guid: operation.Guid, createdAt: operation.CreatedAt, updatedAt: operation.UpdatedAt,

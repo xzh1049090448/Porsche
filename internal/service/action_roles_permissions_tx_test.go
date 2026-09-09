@@ -362,6 +362,52 @@ func TestRolePermissionTransactionExecuteWithoutPrelockFailsWithoutSideEffects(t
 	}
 }
 
+func TestRolePermissionTransactionLockedPreflightRejectsNoopAndStaleWithoutWrites(t *testing.T) {
+	head2, active := rolePermissionPolicyRows(2, []struct{ capability, effect int }{{7, 2}})
+	cases := []struct {
+		name   string
+		action actionsecurity.Action
+		intent any
+		role   models.UserRole
+		head   *models.PermissionPolicyHead
+		rules  []models.PermissionOverride
+		want   models.AdminOperationFailure
+	}{
+		{"promote same role", actionsecurity.ActionUsersPromote, actionsecurity.PromoteIntent{TargetGUID: 6001, ExpectedAuthVersion: 7, ExpectedPermissionsVersion: 2, CatalogVersion: 1, Reason: "same role"}, models.UserRoleAdmin, head2, active, models.FailureTargetStateConflict},
+		{"demote same role", actionsecurity.ActionUsersDemote, actionsecurity.DemoteIntent{TargetGUID: 6001, ExpectedAuthVersion: 7, ExpectedPermissionsVersion: 2, CatalogVersion: 1, Reason: "same role"}, models.UserRoleUser, head2, active, models.FailureTargetStateConflict},
+		{"permissions same canonical", actionsecurity.ActionUsersPermissionsWrite, actionsecurity.PermissionsWriteIntent{TargetGUID: 6001, ExpectedAuthVersion: 7, ExpectedPermissionsVersion: 2, CatalogVersion: 1, Overrides: []actionsecurity.PermissionOverrideIntent{{Capability: "users.sessions.read", Effect: 2}}, Reason: "same policy"}, models.UserRoleAdmin, head2, active, models.FailureTargetStateConflict},
+		{"stale auth", actionsecurity.ActionUsersPromote, actionsecurity.PromoteIntent{TargetGUID: 6001, ExpectedAuthVersion: 6, ExpectedPermissionsVersion: 2, CatalogVersion: 1, Reason: "stale auth"}, models.UserRoleUser, head2, active, models.FailureTargetVersionConflict},
+		{"stale policy", actionsecurity.ActionUsersPromote, actionsecurity.PromoteIntent{TargetGUID: 6001, ExpectedAuthVersion: 7, ExpectedPermissionsVersion: 1, CatalogVersion: 1, Reason: "stale policy"}, models.UserRoleUser, head2, active, models.FailurePolicyVersionConflict},
+		{"stale catalog", actionsecurity.ActionUsersPromote, actionsecurity.PromoteIntent{TargetGUID: 6001, ExpectedAuthVersion: 7, ExpectedPermissionsVersion: 2, CatalogVersion: 2, Reason: "stale catalog"}, models.UserRoleUser, head2, active, models.FailurePolicyVersionConflict},
+		{"wrong role", actionsecurity.ActionUsersPermissionsWrite, actionsecurity.PermissionsWriteIntent{TargetGUID: 6001, ExpectedAuthVersion: 7, ExpectedPermissionsVersion: 2, CatalogVersion: 1, Reason: "wrong role"}, models.UserRoleUser, head2, active, models.FailureTargetStateConflict},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			script := rolePermissionHappyScript(tc.role, tc.head, tc.rules)
+			db, _ := newRolePermissionTxDB(t, script)
+			revoker := &rolePermissionTxRevoker{}
+			base := rolePermissionTestExecution(t, tc.action, tc.intent)
+			execution, err := newRolePermissionTransactionalExecution(base, revoker)
+			if err != nil {
+				t.Fatal(err)
+			}
+			operation, verification := rolePermissionTxBinding(tc.action, base.requestHMAC, base.targetGUID())
+			tx := db.Begin()
+			if _, err := execution.prelockForAuthorization(context.Background(), tx, operation, verification); err != nil {
+				t.Fatal(err)
+			}
+			failure, err := execution.preflightLocked(context.Background(), tx, operation)
+			if err != nil || failure == nil || *failure != tc.want {
+				t.Fatalf("preflight = %v/%v, want %s", failure, err, tc.want.String())
+			}
+			_ = tx.Rollback().Error
+			if len(revoker.calls) != 0 || len(observedCalls(script, "exec", "")) != 0 || len(script.committed) != 0 {
+				t.Fatalf("preflight side effects: redis=%v exec=%d committed=%d", revoker.calls, len(observedCalls(script, "exec", "")), len(script.committed))
+			}
+		})
+	}
+}
+
 func TestRolePermissionTransactionExecuteRejectsDifferentOperationBinding(t *testing.T) {
 	mutations := []struct {
 		name   string
