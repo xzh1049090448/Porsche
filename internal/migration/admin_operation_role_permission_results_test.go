@@ -88,7 +88,7 @@ func TestAdminOperationRolePermissionResults0012RealMySQLDownPreservesCompatible
 		t.Fatal(err)
 	}
 	insert := func(guid int64, action int, auth any, permissions any, role any) error {
-		return gdb.Exec(`INSERT INTO admin_operations (guid,actor_user_id,actor_auth_version,session_id,action,idempotency_key_hmac,request_hmac,state,public_ref,finished_at,query_expires_at,result_kind,result_guid,result_auth_version,result_permissions_version,result_role,result_http_status,created_at,updated_at,is_deleted) VALUES (?,?,1,?,?,?, ?,2,?,2,3,2,9120099,?,?,?,?,200,1,2,0)`,
+		return gdb.Exec(`INSERT INTO admin_operations (guid,actor_user_id,actor_auth_version,session_id,action,idempotency_key_hmac,request_hmac,state,public_ref,finished_at,query_expires_at,result_kind,result_guid,result_auth_version,result_permissions_version,result_role,result_http_status,created_at,updated_at,is_deleted) VALUES (?,?,1,?,?,?, ?,2,?,2,3,2,9120099,?,?,?,200,1,2,0)`,
 			guid, actorID, sessionID, action, fmt.Sprintf("%064d", guid), fmt.Sprintf("%064d", guid+1), "op_"+fmt.Sprintf("%043d", guid), auth, permissions, role).Error
 	}
 	if err := insert(9_120_010, 2, 8, nil, nil); err != nil {
