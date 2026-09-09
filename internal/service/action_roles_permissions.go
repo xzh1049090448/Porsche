@@ -26,6 +26,7 @@ type RolePermissionExecution struct {
 	nextGUID    func() int64
 	clock       persistence.Clock
 	requestHMAC string
+	invariant   *rolePermissionValidatedInvariant
 	state       *rolePermissionExecutionState
 }
 
@@ -38,6 +39,14 @@ type rolePermissionIntent struct {
 type rolePermissionExecutionState struct {
 	mu      sync.Mutex
 	started bool
+}
+
+// rolePermissionValidatedInvariant exists only after the constructor has
+// matched an exact canonical descriptor to its typed intent.
+type rolePermissionValidatedInvariant struct {
+	action      actionsecurity.Action
+	targetGUID  int64
+	requestHMAC string
 }
 
 // RolePermissionTargetSnapshot is the public state read under the target lock.
@@ -93,9 +102,12 @@ func NewRolePermissionExecution(
 	if !ok {
 		return nil, ErrActionOperationUnavailable
 	}
+	targetGUID := owned.targetGUID()
 	return &RolePermissionExecution{
 		descriptor: descriptor, intent: owned, nextGUID: nextGUID, clock: clock,
-		requestHMAC: requestHMAC, state: &rolePermissionExecutionState{},
+		requestHMAC: requestHMAC,
+		invariant:   &rolePermissionValidatedInvariant{action: descriptor.Action, targetGUID: targetGUID, requestHMAC: requestHMAC},
+		state:       &rolePermissionExecutionState{},
 	}, nil
 }
 
@@ -215,6 +227,37 @@ func (execution *RolePermissionExecution) targetGUID() int64 {
 	}
 }
 
+func (intent rolePermissionIntent) targetGUID() int64 {
+	switch {
+	case intent.Promote != nil:
+		return intent.Promote.TargetGUID
+	case intent.Demote != nil:
+		return intent.Demote.TargetGUID
+	case intent.PermissionsWrite != nil:
+		return intent.PermissionsWrite.TargetGUID
+	default:
+		return 0
+	}
+}
+
+func (execution *RolePermissionExecution) validLocalInvariant() bool {
+	if execution == nil || execution.invariant == nil || execution.state == nil ||
+		execution.invariant.targetGUID <= 0 || execution.invariant.requestHMAC == "" ||
+		execution.invariant.requestHMAC != execution.requestHMAC || execution.invariant.targetGUID != execution.intent.targetGUID() {
+		return false
+	}
+	switch execution.invariant.action {
+	case actionsecurity.ActionUsersPromote:
+		return execution.intent.Promote != nil && execution.intent.Demote == nil && execution.intent.PermissionsWrite == nil
+	case actionsecurity.ActionUsersDemote:
+		return execution.intent.Promote == nil && execution.intent.Demote != nil && execution.intent.PermissionsWrite == nil
+	case actionsecurity.ActionUsersPermissionsWrite:
+		return execution.intent.Promote == nil && execution.intent.Demote == nil && execution.intent.PermissionsWrite != nil
+	default:
+		return false
+	}
+}
+
 // PlanTransition computes the complete next role and policy state. It neither
 // starts the execution nor retains or mutates caller-owned snapshots.
 func (execution *RolePermissionExecution) PlanTransition(
@@ -222,7 +265,7 @@ func (execution *RolePermissionExecution) PlanTransition(
 	policy *RolePermissionPolicySnapshot,
 	activeRules []actionsecurity.PermissionOverrideIntent,
 ) (*RolePermissionTransitionPlan, *models.AdminOperationFailure) {
-	if execution == nil || !validInactiveRolePermissionDescriptor(execution.descriptor) {
+	if !execution.validLocalInvariant() {
 		return nil, rolePermissionFailure(models.FailureConsumerValidation)
 	}
 	if target.ActorGUID <= 0 || target.ActorGUID == target.TargetGUID {
@@ -251,7 +294,7 @@ func (execution *RolePermissionExecution) PlanTransition(
 		return nil, rolePermissionFailure(models.FailureConsumerValidation)
 	}
 	if policy == nil {
-		if execution.descriptor.Action != actionsecurity.ActionUsersPromote || expectedPolicy != 0 || len(canonicalActive) != 0 {
+		if execution.invariant.action != actionsecurity.ActionUsersPromote || expectedPolicy != 0 || len(canonicalActive) != 0 {
 			return nil, rolePermissionFailure(models.FailurePolicyVersionConflict)
 		}
 	} else if policy.PolicyVersion <= 0 || policy.PolicyVersion != expectedPolicy || policy.CatalogVersion != models.PermissionCatalogVersion {
@@ -260,7 +303,7 @@ func (execution *RolePermissionExecution) PlanTransition(
 	if expectedPolicy == math.MaxInt64 {
 		return nil, rolePermissionFailure(models.FailureConsumerValidation)
 	}
-	if execution.descriptor.Action == actionsecurity.ActionUsersPermissionsWrite && reflect.DeepEqual(canonicalActive, desiredRules) {
+	if execution.invariant.action == actionsecurity.ActionUsersPermissionsWrite && reflect.DeepEqual(canonicalActive, desiredRules) {
 		return nil, rolePermissionFailure(models.FailureTargetStateConflict)
 	}
 
@@ -272,7 +315,7 @@ func (execution *RolePermissionExecution) PlanTransition(
 }
 
 func (execution *RolePermissionExecution) transitionIntent() (int, int64, int, models.UserRole, []actionsecurity.PermissionOverrideIntent, models.UserRole) {
-	switch execution.descriptor.Action {
+	switch execution.invariant.action {
 	case actionsecurity.ActionUsersPromote:
 		intent := execution.intent.Promote
 		if intent == nil {

@@ -1,10 +1,12 @@
 package service
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
+	"os"
 	"reflect"
 	"strings"
 	"sync"
@@ -205,6 +207,74 @@ func TestRolePermissionExecutionRedactsAndStartsOnlyOnceAcrossCopies(t *testing.
 	group.Wait()
 	if successes.Load() != 1 || !execution.Started() || !copied.Started() {
 		t.Fatalf("single-use state = successes %d, started %t/%t", successes.Load(), execution.Started(), copied.Started())
+	}
+}
+
+func TestRolePermissionPlanUsesOnlyConstructorValidatedLocalInvariant(t *testing.T) {
+	execution := rolePermissionTestExecution(t, actionsecurity.ActionUsersPromote, actionsecurity.PromoteIntent{TargetGUID: 91, ExpectedAuthVersion: 7, ExpectedPermissionsVersion: 0, CatalogVersion: 1, Reason: "reason"})
+	execution.descriptor = actionsecurity.Descriptor{}
+	plan, failure := execution.PlanTransition(RolePermissionTargetSnapshot{ActorGUID: 50, TargetGUID: 91, Role: models.UserRoleUser, Status: models.UserStatusActive, AuthVersion: 7}, nil, nil)
+	if failure != nil || plan == nil || plan.DesiredRole != models.UserRoleAdmin {
+		t.Fatalf("validated local invariant was not sufficient: plan=%#v failure=%#v", plan, failure)
+	}
+
+	for name, forged := range map[string]*RolePermissionExecution{
+		"zero": {},
+		"descriptor and intent without constructor invariant": {
+			descriptor:  rolePermissionTestDescriptor(t, actionsecurity.ActionUsersPromote),
+			intent:      rolePermissionIntent{Promote: &actionsecurity.PromoteIntent{TargetGUID: 91, ExpectedAuthVersion: 7, ExpectedPermissionsVersion: 0, CatalogVersion: 1, Reason: "reason"}},
+			requestHMAC: strings.Repeat("a", 64), state: &rolePermissionExecutionState{},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			plan, failure := forged.PlanTransition(RolePermissionTargetSnapshot{ActorGUID: 50, TargetGUID: 91, Role: models.UserRoleUser, Status: models.UserStatusActive, AuthVersion: 7}, nil, nil)
+			if plan != nil || failure == nil || *failure != models.FailureConsumerValidation {
+				t.Fatalf("forged execution accepted: plan=%#v failure=%#v", plan, failure)
+			}
+		})
+	}
+}
+
+func TestRolePermissionPlanSourceDoesNotResolveOrProjectGlobalRegistry(t *testing.T) {
+	source, err := os.ReadFile("action_roles_permissions.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := bytes.Index(source, []byte("func (execution *RolePermissionExecution) PlanTransition("))
+	if start < 0 {
+		t.Fatal("PlanTransition source not found")
+	}
+	body := source[start:]
+	if end := bytes.Index(body[len("func "):], []byte("\nfunc ")); end >= 0 {
+		body = body[:len("func ")+end]
+	}
+	for _, forbidden := range [][]byte{
+		[]byte("validInactiveRolePermissionDescriptor"),
+		[]byte("InactiveActionDescriptors"),
+		[]byte("ActiveActionRegistry"),
+		[]byte("FutureActionDescriptors"),
+		[]byte("ResolveActiveAction"),
+		[]byte("projectActionDescriptors"),
+	} {
+		if bytes.Contains(body, forbidden) {
+			t.Fatalf("PlanTransition accesses registry path %q", forbidden)
+		}
+	}
+	if count := bytes.Count(source, []byte("actionsecurity.InactiveActionDescriptors()")); count != 1 {
+		t.Fatalf("inactive registry access count = %d, want constructor validation only", count)
+	}
+	if count := bytes.Count(source, []byte("validInactiveRolePermissionDescriptor(")); count != 2 {
+		t.Fatalf("descriptor validator reference count = %d, want constructor call plus definition", count)
+	}
+	for _, forbidden := range [][]byte{
+		[]byte("actionsecurity.ActiveActionRegistry("),
+		[]byte("actionsecurity.FutureActionDescriptors("),
+		[]byte("actionsecurity.ResolveActiveAction("),
+		[]byte("projectActionDescriptors("),
+	} {
+		if bytes.Contains(source, forbidden) {
+			t.Fatalf("role permission production file accesses forbidden registry path %q", forbidden)
+		}
 	}
 }
 
