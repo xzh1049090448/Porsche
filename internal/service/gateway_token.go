@@ -13,9 +13,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/porsche/ai-gateway-go/internal/authz"
 	"github.com/porsche/ai-gateway-go/internal/models"
 	"github.com/porsche/ai-gateway-go/internal/persistence"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 	"gorm.io/gorm/logger"
 )
 
@@ -168,10 +170,45 @@ type GatewayTokenPrincipal struct {
 	token              models.GatewayAPIToken
 	keyAllowedModels   models.JSONSlice
 	ownerAllowedModels models.JSONSlice
+	ownerRole          models.UserRole
+	ownerAuthVersion   int
+	ownerPolicyVersion int64
+	ownerCapabilities  map[string]struct{}
 }
 
 func (p *GatewayTokenPrincipal) AllowsModel(model string) bool {
 	return p != nil && p.valid && model != "" && modelAllowed(p.keyAllowedModels, model) && modelAllowed(p.ownerAllowedModels, model)
+}
+
+// AllowsCapability reports a decision computed from the owner snapshot loaded
+// for this request. Callers must authenticate again for every later request.
+func (p *GatewayTokenPrincipal) AllowsCapability(capability string) bool {
+	if p == nil || !p.valid {
+		return false
+	}
+	_, ok := p.ownerCapabilities[capability]
+	return ok
+}
+
+func (p *GatewayTokenPrincipal) OwnerRole() models.UserRole {
+	if p == nil || !p.valid {
+		return 0
+	}
+	return p.ownerRole
+}
+
+func (p *GatewayTokenPrincipal) OwnerAuthVersion() int {
+	if p == nil || !p.valid {
+		return 0
+	}
+	return p.ownerAuthVersion
+}
+
+func (p *GatewayTokenPrincipal) OwnerPolicyVersion() int64 {
+	if p == nil || !p.valid {
+		return 0
+	}
+	return p.ownerPolicyVersion
 }
 
 func (p *GatewayTokenPrincipal) KeyAllowedModels() models.JSONSlice {
@@ -219,63 +256,99 @@ func (s *GatewayTokenService) AuthenticatePrincipal(secret, ip, model string, no
 	if !strings.HasPrefix(secret, "sk-gw-") {
 		return nil, GatewayTokenInvalid
 	}
-	var tokenRow struct {
-		models.GatewayAPIToken
-		RawAllowedModels sql.NullString `gorm:"column:raw_allowed_models"`
-	}
-	if err := db.Table("gateway_api_tokens").Select("gateway_api_tokens.*, allowed_models AS raw_allowed_models").Where("token_hash = ? AND is_deleted = 0", gatewayTokenHash(secret)).First(&tokenRow).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, GatewayTokenInvalid
+	var principal *GatewayTokenPrincipal
+	err := db.Transaction(func(tx *gorm.DB) error {
+		var tokenRow struct {
+			models.GatewayAPIToken
+			RawAllowedModels sql.NullString `gorm:"column:raw_allowed_models"`
+		}
+		if err := tx.Table("gateway_api_tokens").Select("gateway_api_tokens.*, allowed_models AS raw_allowed_models").Where("token_hash = ? AND is_deleted = 0", gatewayTokenHash(secret)).First(&tokenRow).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return GatewayTokenInvalid
+			}
+			return GatewayTokenUnavailable
+		}
+		token := tokenRow.GatewayAPIToken
+		switch token.Status {
+		case models.GatewayTokenActive:
+		case models.GatewayTokenDisabled:
+			return GatewayTokenDisabled
+		case models.GatewayTokenRevoked:
+			return GatewayTokenRevoked
+		default:
+			return GatewayTokenInvalid
+		}
+		if token.ExpiresAt != nil && *token.ExpiresAt <= now.UTC().UnixMilli() {
+			return GatewayTokenExpired
+		}
+		keyAllowed, err := parseGatewayAllowedModels(tokenRow.RawAllowedModels)
+		if err != nil {
+			return GatewayTokenUnavailable
+		}
+		var owner struct {
+			ID            int64
+			Guid          int64
+			Role          models.UserRole
+			Status        models.UserStatus
+			IsDeleted     int
+			AuthVersion   int
+			AllowedModels sql.NullString `gorm:"column:allowed_models"`
+		}
+		// This owner SHARE lock is the request's authorization linearization
+		// point. A08 writers take UPDATE on the same row before changing policy,
+		// so they either finish before this snapshot or wait until it is consumed.
+		if err := tx.Table("users").Clauses(clause.Locking{Strength: "SHARE"}).Select("id", "guid", "role", "status", "is_deleted", "auth_version", "allowed_models").Where("id = ? AND is_deleted = 0", token.UserID).First(&owner).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return GatewayTokenDisabled
+			}
+			return GatewayTokenUnavailable
+		}
+		if !owner.Status.IsActive() || owner.AuthVersion <= 0 {
+			return GatewayTokenDisabled
+		}
+		policyVersion, rules, err := readPermissionPolicyRows(tx, owner.ID)
+		if err != nil {
+			return GatewayTokenUnavailable
+		}
+		evaluator, err := authz.NewEvaluator(authz.Account{ID: owner.ID, GUID: owner.Guid, Role: owner.Role, Status: owner.Status, IsDeleted: owner.IsDeleted}, rules)
+		if err != nil {
+			return GatewayTokenUnavailable
+		}
+		ownerAllowed, err := parseGatewayAllowedModels(owner.AllowedModels)
+		if err != nil {
+			return GatewayTokenUnavailable
+		}
+		if !ipAllowed(token.IPAllowlist, ip) {
+			return GatewayTokenIPDenied
+		}
+		if model != "" && (!modelAllowed(keyAllowed, model) || !modelAllowed(ownerAllowed, model)) {
+			return GatewayTokenModelDenied
+		}
+		lastUsedAt := now.UTC().UnixMilli()
+		if err := tx.Model(&token).Where("id = ? AND is_deleted = 0", token.ID).Updates(map[string]interface{}{"last_used_at": lastUsedAt, "updated_at": lastUsedAt, "updated_by": token.UserID}).Error; err != nil {
+			return GatewayTokenUnavailable
+		}
+		capabilities := make(map[string]struct{})
+		for _, capability := range evaluator.CapabilityNames() {
+			capabilities[capability] = struct{}{}
+		}
+		token.AllowedModels = cloneJSONSlice(keyAllowed)
+		principal = &GatewayTokenPrincipal{valid: true, token: token, keyAllowedModels: cloneJSONSlice(keyAllowed), ownerAllowedModels: cloneJSONSlice(ownerAllowed),
+			ownerRole: owner.Role, ownerAuthVersion: owner.AuthVersion, ownerPolicyVersion: policyVersion, ownerCapabilities: capabilities}
+		return nil
+	})
+	if err != nil {
+		for _, expected := range []GatewayTokenError{GatewayTokenInvalid, GatewayTokenDisabled, GatewayTokenRevoked, GatewayTokenExpired, GatewayTokenIPDenied, GatewayTokenModelDenied, GatewayTokenUnavailable} {
+			if errors.Is(err, expected) {
+				return nil, expected
+			}
 		}
 		return nil, GatewayTokenUnavailable
 	}
-	token := tokenRow.GatewayAPIToken
-	switch token.Status {
-	case models.GatewayTokenActive:
-	case models.GatewayTokenDisabled:
-		return nil, GatewayTokenDisabled
-	case models.GatewayTokenRevoked:
-		return nil, GatewayTokenRevoked
-	default:
-		return nil, GatewayTokenInvalid
-	}
-	if token.ExpiresAt != nil && *token.ExpiresAt <= now.UTC().UnixMilli() {
-		return nil, GatewayTokenExpired
-	}
-	keyAllowed, err := parseGatewayAllowedModels(tokenRow.RawAllowedModels)
-	if err != nil {
+	if principal == nil {
 		return nil, GatewayTokenUnavailable
 	}
-	var owner struct {
-		ID            int64
-		Status        models.UserStatus
-		AllowedModels sql.NullString `gorm:"column:allowed_models"`
-	}
-	if err := db.Table("users").Select("id", "status", "allowed_models").Where("id = ? AND is_deleted = 0", token.UserID).First(&owner).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, GatewayTokenDisabled
-		}
-		return nil, GatewayTokenUnavailable
-	}
-	if !owner.Status.IsActive() {
-		return nil, GatewayTokenDisabled
-	}
-	ownerAllowed, err := parseGatewayAllowedModels(owner.AllowedModels)
-	if err != nil {
-		return nil, GatewayTokenUnavailable
-	}
-	if !ipAllowed(token.IPAllowlist, ip) {
-		return nil, GatewayTokenIPDenied
-	}
-	if model != "" && (!modelAllowed(keyAllowed, model) || !modelAllowed(ownerAllowed, model)) {
-		return nil, GatewayTokenModelDenied
-	}
-	lastUsedAt := now.UTC().UnixMilli()
-	if err := db.Model(&token).Where("id = ? AND is_deleted = 0", token.ID).Updates(map[string]interface{}{"last_used_at": lastUsedAt, "updated_at": lastUsedAt, "updated_by": token.UserID}).Error; err != nil {
-		return nil, GatewayTokenUnavailable
-	}
-	token.AllowedModels = cloneJSONSlice(keyAllowed)
-	return &GatewayTokenPrincipal{valid: true, token: token, keyAllowedModels: cloneJSONSlice(keyAllowed), ownerAllowedModels: cloneJSONSlice(ownerAllowed)}, nil
+	return principal, nil
 }
 
 func parseGatewayAllowedModels(raw sql.NullString) (models.JSONSlice, error) {

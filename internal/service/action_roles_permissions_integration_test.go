@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/porsche/ai-gateway-go/internal/actionsecurity"
+	"github.com/porsche/ai-gateway-go/internal/authz"
 	"github.com/porsche/ai-gateway-go/internal/models"
 	"github.com/porsche/ai-gateway-go/internal/persistence"
 	"github.com/porsche/ai-gateway-go/internal/security"
@@ -119,6 +120,10 @@ func TestA08RolePermissionRealDemoteAndRepromoteNeverRevivesHistory(t *testing.T
 	if outcome, err := executeA08RealTransition(f, actionsecurity.ActionUsersDemote, demote); err != nil || outcome.Failure != nil {
 		t.Fatalf("demote = %#v/%v", outcome, err)
 	}
+	demotedSnapshot, err := LoadPermissionSnapshot(context.Background(), f.db, f.targetRow.ID)
+	if err != nil || demotedSnapshot == nil || demotedSnapshot.PolicyVersion() != 2 || len(demotedSnapshot.Evaluator().CapabilityNames()) != 0 {
+		t.Fatalf("demoted effective policy = %#v/%v", demotedSnapshot, err)
+	}
 	repromote := actionsecurity.PromoteIntent{TargetGUID: f.targetRow.Guid, ExpectedAuthVersion: f.targetRow.AuthVersion + 2, ExpectedPermissionsVersion: 2,
 		CatalogVersion: 1, Reason: "baseline repromote"}
 	if outcome, err := executeA08RealTransition(f, actionsecurity.ActionUsersPromote, repromote); err != nil || outcome.Failure != nil {
@@ -137,6 +142,10 @@ func TestA08RolePermissionRealDemoteAndRepromoteNeverRevivesHistory(t *testing.T
 	}
 	if head.PolicyVersion != 3 || head.RuleCount != 0 || active != 0 || history != 1 {
 		t.Fatalf("history head/active/deleted = %#v/%d/%d", head, active, history)
+	}
+	repromotedSnapshot, err := LoadPermissionSnapshot(context.Background(), f.db, f.targetRow.ID)
+	if err != nil || repromotedSnapshot == nil || repromotedSnapshot.PolicyVersion() != 3 || repromotedSnapshot.Evaluator().Collection("users.read", false) != authz.Allowed {
+		t.Fatalf("repromoted baseline policy = %#v/%v", repromotedSnapshot, err)
 	}
 }
 
