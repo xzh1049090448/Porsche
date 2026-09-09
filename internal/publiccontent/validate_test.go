@@ -87,3 +87,16 @@ func TestValidateModelKeyRequiresStablePermanentSafeShape(t *testing.T) {
 		})
 	}
 }
+
+func TestValidatePublicationDecodesRenderedTextBeforeCheckingPrototypeClaims(t *testing.T) {
+	publication := Publication{
+		Documents: []Document{
+			{Kind: DocumentHome, Reviewed: true, Body: "40&#43; models, 100&#37; uptime, M&#73;T licensed"},
+			{Kind: DocumentTerms, Reviewed: true, Body: "Terms"},
+			{Kind: DocumentPrivacy, Reviewed: true, Body: "Privacy"},
+		},
+	}
+	if !hasIssueCode(ValidatePublication(publication), "unsubstantiated_prototype_claim") {
+		t.Fatalf("encoded prototype claim was accepted")
+	}
+}

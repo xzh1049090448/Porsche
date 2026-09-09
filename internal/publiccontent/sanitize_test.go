@@ -1,6 +1,7 @@
 package publiccontent
 
 import (
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -48,15 +49,79 @@ func TestSanitizeMarkdownRejectsExecutableMarkupAndUnsafeURLs(t *testing.T) {
 	}
 }
 
+func TestSanitizeMarkdownParsesNestedAndReferenceImages(t *testing.T) {
+	tests := []string{
+		"![x[y]](https://169.254.169.254/latest/meta-data)",
+		"![logo][metadata]\n\n[metadata]: https://169.254.169.254/latest/meta-data",
+		"![logo][]\n\n[logo]: https://169.254.169.254/latest/meta-data",
+	}
+	for _, raw := range tests {
+		t.Run(raw, func(t *testing.T) {
+			_, issues := SanitizeMarkdown(raw)
+			if !hasIssueCode(issues, "unsafe_remote_image") {
+				t.Fatalf("SanitizeMarkdown(%q) issues = %#v, missing unsafe_remote_image", raw, issues)
+			}
+		})
+	}
+}
+
+func TestSanitizeMarkdownRejectsNonHTTPSchemesAndDeepOrUnicodeSchemeBypasses(t *testing.T) {
+	for _, raw := range []string{
+		"[x](file:///etc/passwd)",
+		"[x](blob:https://example.test/id)",
+		"[x](ftp://example.test/a)",
+		"[x](//example.test/a)",
+		"[x](j%25252561vascript%2525253Aalert(1))",
+		"[x](ｊａｖａｓｃｒｉｐｔ：alert(1))",
+		"[x](jаvascript:alert(1))",
+	} {
+		t.Run(raw, func(t *testing.T) {
+			_, issues := SanitizeMarkdown(raw)
+			if !hasIssueCode(issues, "unsafe_url") {
+				t.Fatalf("SanitizeMarkdown(%q) issues = %#v, missing unsafe_url", raw, issues)
+			}
+		})
+	}
+	for _, raw := range []string{
+		"![x](file:///etc/passwd)",
+		"![x](blob:https://example.test/id)",
+		"![x](//169.254.169.254/latest/meta-data)",
+	} {
+		t.Run(raw, func(t *testing.T) {
+			_, issues := SanitizeMarkdown(raw)
+			if !hasIssueCode(issues, "unsafe_remote_image") {
+				t.Fatalf("SanitizeMarkdown(%q) issues = %#v, missing unsafe_remote_image", raw, issues)
+			}
+		})
+	}
+}
+
+func TestSanitizeMarkdownDoesNotTreatCodeOrEscapedSyntaxAsContent(t *testing.T) {
+	for _, raw := range []string{
+		"`![x](https://169.254.169.254/latest/meta-data)`",
+		"\\![x](https://169.254.169.254/latest/meta-data)",
+		"```markdown\n![x](https://169.254.169.254/latest/meta-data)\n```",
+		"<https://example.test/docs>",
+	} {
+		t.Run(raw, func(t *testing.T) {
+			got, issues := SanitizeMarkdown(raw)
+			if len(issues) != 0 || got != raw {
+				t.Fatalf("SanitizeMarkdown(%q) = (%q, %#v), want original content with no issues", raw, got, issues)
+			}
+		})
+	}
+}
+
 func FuzzSanitizeMarkdownNeverAcceptsUnsafeURL(f *testing.F) {
 	for _, seed := range []string{
 		"javascript:alert(1)", "JaVaScRiPt:alert(1)", "j%61vascript%3Aalert(1)",
-		"data:text/html,boom", "//example.test/x", "\\\\example.test\\x",
+		"j%25252561vascript%2525253Aalert(1)", "data:text/html,boom", "//example.test/x", "\\\\example.test\\x",
 	} {
 		f.Add(seed)
 	}
 	f.Fuzz(func(t *testing.T, rawURL string) {
-		_, issues := SanitizeMarkdown("[x](" + rawURL + ")")
+		wrappedURL := url.PathEscape(rawURL)
+		_, issues := SanitizeMarkdown("[x](<" + wrappedURL + ">)")
 		if isDangerousURL(rawURL) && len(issues) == 0 {
 			t.Fatalf("unsafe URL accepted: %q", rawURL)
 		}

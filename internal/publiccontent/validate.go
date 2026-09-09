@@ -109,7 +109,7 @@ func ValidatePublication(publication Publication) []ValidationIssue {
 	}
 	for _, document := range publication.Documents {
 		field := "documents." + string(document.Kind) + ".body"
-		if prototypeClaimPattern.MatchString(document.Body) {
+		if prototypeClaimPattern.MatchString(normalizedRenderedText(document.Body)) {
 			issues = append(issues, ValidationIssue{Field: field, Code: "unsubstantiated_prototype_claim"})
 		}
 		_, sanitizeIssues := SanitizeMarkdown(document.Body)
