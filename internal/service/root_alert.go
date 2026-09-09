@@ -10,17 +10,18 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	drivermysql "github.com/go-sql-driver/mysql"
 	"github.com/porsche/ai-gateway-go/internal/models"
 	"github.com/porsche/ai-gateway-go/internal/persistence"
+	"github.com/porsche/ai-gateway-go/internal/publiccontent"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
 
 const rootAlertPayloadLimit = 8192
-const rootAlertStringLimit = 512
 
 type RootAlertChannel string
 
@@ -81,99 +82,143 @@ func rootAlertFingerprint(t models.RootAlertType, modelKey, identity string) str
 	return hex.EncodeToString(h[:])
 }
 
-func sanitizeRootAlertPayload(in models.JSONMap) models.JSONMap {
-	v, _ := sanitizeRootAlertValue(in, 0).(models.JSONMap)
-	if v == nil {
-		v = models.JSONMap{}
+type rootAlertPayloadField int
+
+const (
+	rootAlertText rootAlertPayloadField = iota + 1
+	rootAlertCode
+	rootAlertDecimal
+	rootAlertPositiveInt
+	rootAlertTimestamp
+	rootAlertModelKey
+)
+
+var rootAlertPayloadSchemas = map[models.RootAlertType]map[string]rootAlertPayloadField{
+	models.RootAlertTypePublishedPriceBelowUpstream: {"model_key": rootAlertModelKey, "provider": rootAlertText, "price_component": rootAlertCode, "published_price_usd_per_million_tokens": rootAlertDecimal, "upstream_price_usd_per_million_tokens": rootAlertDecimal, "observed_at": rootAlertTimestamp},
+	models.RootAlertTypeUpstreamMissing:             {"model_key": rootAlertModelKey, "provider": rootAlertText, "consecutive_absences": rootAlertPositiveInt, "observed_at": rootAlertTimestamp},
+	models.RootAlertTypeAutomaticInactivation:       {"model_key": rootAlertModelKey, "provider": rootAlertText, "consecutive_absences": rootAlertPositiveInt, "reason_code": rootAlertCode, "observed_at": rootAlertTimestamp},
+	models.RootAlertTypeUpstreamReappearance:        {"model_key": rootAlertModelKey, "provider": rootAlertText, "observed_at": rootAlertTimestamp},
+	models.RootAlertTypeCatalogSyncFailure:          {"provider": rootAlertText, "error_code": rootAlertCode, "observed_at": rootAlertTimestamp},
+	models.RootAlertTypePriceNotComparable:          {"model_key": rootAlertModelKey, "provider": rootAlertText, "price_component": rootAlertCode, "reason_code": rootAlertCode, "observed_at": rootAlertTimestamp},
+	models.RootAlertTypeRendererFailure:             {"release_version": rootAlertPositiveInt, "render_job_guid": rootAlertCode, "error_code": rootAlertCode, "observed_at": rootAlertTimestamp},
+}
+
+func projectRootAlertPayload(typ models.RootAlertType, in models.JSONMap) (models.JSONMap, error) {
+	schema, ok := rootAlertPayloadSchemas[typ]
+	if !ok {
+		return nil, errBadRequest("invalid root alert payload")
 	}
 	out := models.JSONMap{}
-	keys := make([]string, 0, len(v))
-	for k := range v {
+	keys := make([]string, 0, len(schema))
+	for k := range schema {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
-	for _, k := range keys {
-		out[k] = v[k]
-		b, _ := json.Marshal(out)
-		if len(b) > rootAlertPayloadLimit {
-			delete(out, k)
-			break
+	for _, key := range keys {
+		raw, exists := in[key]
+		if !exists {
+			continue
 		}
+		value, valid := normalizeRootAlertField(schema[key], raw)
+		if !valid {
+			return nil, errBadRequest("invalid root alert payload")
+		}
+		out[key] = value
 	}
-	return out
+	b, _ := json.Marshal(out)
+	if len(b) > rootAlertPayloadLimit {
+		return nil, errBadRequest("invalid root alert payload")
+	}
+	return out, nil
 }
-func sanitizeRootAlertValue(value any, depth int) any {
-	if depth > 4 {
-		return nil
-	}
-	switch x := value.(type) {
-	case models.JSONMap:
-		out := models.JSONMap{}
-		keys := make([]string, 0, len(x))
-		for k := range x {
-			keys = append(keys, k)
+func normalizeRootAlertField(kind rootAlertPayloadField, raw any) (any, bool) {
+	switch kind {
+	case rootAlertText, rootAlertCode, rootAlertDecimal, rootAlertModelKey:
+		v, ok := raw.(string)
+		if !ok || !validRootAlertScalar(v) {
+			return nil, false
 		}
-		sort.Strings(keys)
-		if len(keys) > 64 {
-			keys = keys[:64]
-		}
-		for _, k := range keys {
-			v := x[k]
-			if safeRootAlertKey(k) {
-				if clean := sanitizeRootAlertValue(v, depth+1); clean != nil {
-					out[k] = clean
+		switch kind {
+		case rootAlertModelKey:
+			if !publiccontent.ValidModelKey(v) {
+				return nil, false
+			}
+		case rootAlertText:
+			if utf8.RuneCountInString(v) > 128 {
+				return nil, false
+			}
+		case rootAlertCode:
+			if len(v) < 1 || len(v) > 128 {
+				return nil, false
+			}
+			for _, r := range v {
+				if !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '_' || r == '-' || r == '/' || r == '.') {
+					return nil, false
 				}
 			}
-		}
-		return out
-	case map[string]any:
-		m := models.JSONMap{}
-		for k, v := range x {
-			m[k] = v
-		}
-		return sanitizeRootAlertValue(m, depth)
-	case []any:
-		if len(x) > 32 {
-			x = x[:32]
-		}
-		out := make([]any, 0, len(x))
-		for _, v := range x {
-			if clean := sanitizeRootAlertValue(v, depth+1); clean != nil {
-				out = append(out, clean)
+		case rootAlertDecimal:
+			if !publicModelDecimal.MatchString(v) {
+				return nil, false
 			}
 		}
-		return out
-	case string:
-		if !utf8.ValidString(x) {
-			return "invalid"
+		return v, true
+	case rootAlertPositiveInt, rootAlertTimestamp:
+		v, ok := rootAlertInt64(raw)
+		if !ok || v <= 0 {
+			return nil, false
 		}
-		r := []rune(x)
-		if len(r) > rootAlertStringLimit {
-			r = r[:rootAlertStringLimit]
+		if kind == rootAlertPositiveInt && v > 1_000_000_000 {
+			return nil, false
 		}
-		return string(r)
-	case bool, float64, int, int64, json.Number, nil:
-		return x
+		return v, true
+	}
+	return nil, false
+}
+func rootAlertInt64(raw any) (int64, bool) {
+	switch v := raw.(type) {
+	case int:
+		return int64(v), true
+	case int32:
+		return int64(v), true
+	case int64:
+		return v, true
+	case json.Number:
+		n, e := strconv.ParseInt(string(v), 10, 64)
+		return n, e == nil
 	default:
-		return nil
+		return 0, false
 	}
 }
-func safeRootAlertKey(k string) bool {
-	lower := strings.ToLower(k)
-	for _, bad := range []string{"authorization", "api_key", "apikey", "password", "token", "secret", "credential", "raw", "cookie"} {
+func validRootAlertScalar(v string) bool {
+	if v == "" || !utf8.ValidString(v) || strings.TrimSpace(v) != v {
+		return false
+	}
+	for _, r := range v {
+		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
+			return false
+		}
+	}
+	lower := strings.ToLower(v)
+	if lower == "secret" || lower == "password" || lower == "token" || strings.HasPrefix(lower, "sk-") {
+		return false
+	}
+	for _, bad := range []string{"bearer ", "api_key", "apikey", "password", "authorization", "credential", "secret=", "token="} {
 		if strings.Contains(lower, bad) {
 			return false
 		}
 	}
-	return utf8.ValidString(k) && len(k) <= 64
+	return true
 }
 
 func (s *RootAlertService) Occur(ctx context.Context, in RootAlertOccurrence) (*RootAlertView, error) {
-	if s == nil || s.db == nil || in.Type.String() == "unknown" || len(in.ModelKey) > 128 || strings.TrimSpace(in.Identity) == "" {
+	if s == nil || s.db == nil || in.Type.String() == "unknown" || (in.ModelKey != "" && !publiccontent.ValidModelKey(in.ModelKey)) || !validRootAlertIdentity(in.Identity) {
 		return nil, errBadRequest("invalid root alert occurrence")
 	}
 	fp := rootAlertFingerprint(in.Type, in.ModelKey, in.Identity)
-	payload := sanitizeRootAlertPayload(in.Payload)
+	payload, payloadErr := projectRootAlertPayload(in.Type, in.Payload)
+	if payloadErr != nil {
+		return nil, payloadErr
+	}
 	for attempt := 0; attempt < 3; attempt++ {
 		var row models.RootAlert
 		err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -247,7 +292,7 @@ func (s *RootAlertService) Get(ctx context.Context, rootID int64, guid string) (
 }
 
 func (s *RootAlertService) Resolve(ctx context.Context, typ models.RootAlertType, modelKey, identity string) error {
-	if typ.String() == "unknown" || strings.TrimSpace(identity) == "" {
+	if typ.String() == "unknown" || (modelKey != "" && !publiccontent.ValidModelKey(modelKey)) || !validRootAlertIdentity(identity) {
 		return errBadRequest("invalid root alert resolution")
 	}
 	fp := rootAlertFingerprint(typ, modelKey, identity)
@@ -263,9 +308,16 @@ func (s *RootAlertService) Resolve(ctx context.Context, typ models.RootAlertType
 		if e := tx.Model(&a).Updates(map[string]any{"state": models.RootAlertStateResolved, "resolved_at": now, "updated_at": now, "updated_by": nil}).Error; e != nil {
 			return e
 		}
+		if e := s.fail("resolve.audit"); e != nil {
+			return e
+		}
 		return writeRootAlertAudit(tx, s.nextGUID(), now, nil, "root_alert.resolved", a.Guid, models.JSONMap{"alert_type": typ.String(), "fingerprint": fp})
 	})
 	return mapRootAlertError(err)
+}
+
+func validRootAlertIdentity(value string) bool {
+	return len(value) <= 128 && validRootAlertScalar(value)
 }
 
 type rootAlertJoined struct {
@@ -386,8 +438,13 @@ func (s *RootAlertService) mutateReceipt(ctx context.Context, rootID int64, guid
 			}
 		}
 		action := "root_alert.read"
+		failurePoint := "receipt.read.audit"
 		if ack {
 			action = "root_alert.acknowledged"
+			failurePoint = "receipt.acknowledge.audit"
+		}
+		if e = s.fail(failurePoint); e != nil {
+			return e
 		}
 		if e = writeRootAlertAudit(tx, s.nextGUID(), now, &root.ID, action, a.Guid, models.JSONMap{"alert_guid": fmt.Sprint(a.Guid)}); e != nil {
 			return e
@@ -409,7 +466,26 @@ func writeRootAlertAudit(tx *gorm.DB, guid, now int64, actor *int64, action stri
 		return errUnavailable("root alert audit unavailable")
 	}
 	resource := "root-alerts/" + fmt.Sprint(alertGUID)
-	return tx.Create(&models.AuditLog{AuditFields: models.AuditFields{Guid: guid, CreatedAt: now, CreatedBy: actor, UpdatedAt: now, UpdatedBy: actor}, UserID: actor, Action: action, Resource: &resource, Detail: sanitizeRootAlertPayload(detail)}).Error
+	return tx.Create(&models.AuditLog{AuditFields: models.AuditFields{Guid: guid, CreatedAt: now, CreatedBy: actor, UpdatedAt: now, UpdatedBy: actor}, UserID: actor, Action: action, Resource: &resource, Detail: projectRootAlertAuditDetail(detail)}).Error
+}
+func projectRootAlertAuditDetail(in models.JSONMap) models.JSONMap {
+	out := models.JSONMap{}
+	if v, ok := in["alert_type"].(string); ok {
+		if _, valid := models.ParseRootAlertType(v); valid {
+			out["alert_type"] = v
+		}
+	}
+	if v, ok := in["fingerprint"].(string); ok && len(v) == 64 {
+		if _, e := hex.DecodeString(v); e == nil {
+			out["fingerprint"] = v
+		}
+	}
+	if v, ok := in["alert_guid"].(string); ok {
+		if _, e := parseStrictGUID(v); e == nil {
+			out["alert_guid"] = v
+		}
+	}
+	return out
 }
 func mapRootAlertError(e error) error {
 	if e == nil {

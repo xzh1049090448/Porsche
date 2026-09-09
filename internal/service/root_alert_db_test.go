@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"reflect"
 	"sync"
 	"testing"
 
@@ -135,5 +136,125 @@ func TestRootAlertDBFailureInjectionRollsBack(t *testing.T) {
 	var n int64
 	if err := f.db.Model(&models.RootAlert{}).Where("fingerprint=?", fp).Count(&n).Error; err != nil || n != 0 {
 		t.Fatalf("count=%d err=%v", n, err)
+	}
+}
+
+func TestRootAlertDBExactLifecycleTimestampsCountsAndAudits(t *testing.T) {
+	if os.Getenv("TEST_DATABASE_URL") == "" {
+		t.Skip("BLOCKED_FIXTURE: requires explicit disposable TEST_DATABASE_URL; .env is never read")
+	}
+	f := openPublicModelDBFixture(t)
+	ctx := context.Background()
+	s := NewRootAlertService(f.db)
+	current := int64(100)
+	s.now = func() int64 { return current }
+	in := RootAlertOccurrence{Type: models.RootAlertTypeUpstreamMissing, ModelKey: "exact-model", Identity: "exact", Payload: models.JSONMap{"model_key": "exact-model", "provider": "vendor", "consecutive_absences": int64(1), "observed_at": current}}
+	fp := rootAlertFingerprint(in.Type, in.ModelKey, in.Identity)
+	t.Cleanup(func() {
+		var a models.RootAlert
+		if f.db.Where("fingerprint=?", fp).First(&a).Error == nil {
+			_ = f.db.Exec("DELETE FROM root_alert_receipts WHERE alert_id=?", a.ID).Error
+			_ = f.db.Exec("DELETE FROM audit_logs WHERE resource=?", "root-alerts/"+fmt.Sprint(a.Guid)).Error
+			_ = f.db.Exec("DELETE FROM root_alerts WHERE id=?", a.ID).Error
+		}
+	})
+	if _, e := s.Occur(ctx, in); e != nil {
+		t.Fatal(e)
+	}
+	current = 200
+	in.Payload["observed_at"] = current
+	in.Payload["consecutive_absences"] = int64(2)
+	if _, e := s.Occur(ctx, in); e != nil {
+		t.Fatal(e)
+	}
+	var a models.RootAlert
+	if e := f.db.Where("fingerprint=?", fp).First(&a).Error; e != nil || a.FirstObservedAt != 100 || a.LastObservedAt != 200 || a.OccurrenceCount != 2 {
+		t.Fatalf("repeat=%#v %v", a, e)
+	}
+	current = 300
+	if e := s.Resolve(ctx, in.Type, in.ModelKey, in.Identity); e != nil {
+		t.Fatal(e)
+	}
+	current = 400
+	in.Payload["observed_at"] = current
+	in.Payload["consecutive_absences"] = int64(1)
+	if _, e := s.Occur(ctx, in); e != nil {
+		t.Fatal(e)
+	}
+	if e := f.db.Where("id=?", a.ID).First(&a).Error; e != nil || a.FirstObservedAt != 100 || a.LastObservedAt != 400 || a.OccurrenceCount != 3 || a.State != models.RootAlertStateActive || a.ResolvedAt != nil {
+		t.Fatalf("reopen=%#v %v", a, e)
+	}
+	var actions []string
+	if e := f.db.Model(&models.AuditLog{}).Where("resource=?", "root-alerts/"+fmt.Sprint(a.Guid)).Order("id").Pluck("action", &actions).Error; e != nil || !reflect.DeepEqual(actions, []string{"root_alert.occurred", "root_alert.occurred", "root_alert.resolved", "root_alert.occurred"}) {
+		t.Fatalf("audits=%v %v", actions, e)
+	}
+}
+
+func TestRootAlertDBMutationAuditFailuresRollback(t *testing.T) {
+	if os.Getenv("TEST_DATABASE_URL") == "" {
+		t.Skip("BLOCKED_FIXTURE: requires explicit disposable TEST_DATABASE_URL; .env is never read")
+	}
+	f := openPublicModelDBFixture(t)
+	ctx := context.Background()
+	clean := NewRootAlertService(f.db)
+	in := RootAlertOccurrence{Type: models.RootAlertTypeCatalogSyncFailure, Identity: "rollback", Payload: models.JSONMap{"provider": "vendor", "error_code": "timeout", "observed_at": int64(100)}}
+	view, e := clean.Occur(ctx, in)
+	if e != nil {
+		t.Fatal(e)
+	}
+	var a models.RootAlert
+	if e = f.db.Where("guid=?", mustGUID(t, view.GUID)).First(&a).Error; e != nil {
+		t.Fatal(e)
+	}
+	t.Cleanup(func() {
+		_ = f.db.Exec("DELETE FROM root_alert_receipts WHERE alert_id=?", a.ID).Error
+		_ = f.db.Exec("DELETE FROM audit_logs WHERE resource=?", "root-alerts/"+view.GUID).Error
+		_ = f.db.Exec("DELETE FROM root_alerts WHERE id=?", a.ID).Error
+	})
+	assertNoReceipt := func() {
+		t.Helper()
+		var n int64
+		if e := f.db.Model(&models.RootAlertReceipt{}).Where("alert_id=? AND root_user_id=?", a.ID, f.actor.ID).Count(&n).Error; e != nil || n != 0 {
+			t.Fatalf("receipt count=%d %v", n, e)
+		}
+	}
+	broken := NewRootAlertService(f.db)
+	broken.fail = func(point string) error {
+		if point == "resolve.audit" {
+			return errUnavailable("injected")
+		}
+		return nil
+	}
+	if e = broken.Resolve(ctx, in.Type, in.ModelKey, in.Identity); e == nil {
+		t.Fatal("expected resolve failure")
+	}
+	if e = f.db.Where("id=?", a.ID).First(&a).Error; e != nil || a.State != models.RootAlertStateActive || a.ResolvedAt != nil {
+		t.Fatalf("resolve rollback=%#v %v", a, e)
+	}
+	broken = NewRootAlertService(f.db)
+	broken.fail = func(point string) error {
+		if point == "receipt.read.audit" {
+			return errUnavailable("injected")
+		}
+		return nil
+	}
+	if _, e = broken.MarkRead(ctx, f.actor.ID, view.GUID); e == nil {
+		t.Fatal("expected read failure")
+	}
+	assertNoReceipt()
+	broken = NewRootAlertService(f.db)
+	broken.fail = func(point string) error {
+		if point == "receipt.acknowledge.audit" {
+			return errUnavailable("injected")
+		}
+		return nil
+	}
+	if _, e = broken.Acknowledge(ctx, f.actor.ID, view.GUID); e == nil {
+		t.Fatal("expected acknowledge failure")
+	}
+	assertNoReceipt()
+	var auditCount int64
+	if e = f.db.Model(&models.AuditLog{}).Where("resource=?", "root-alerts/"+view.GUID).Count(&auditCount).Error; e != nil || auditCount != 1 {
+		t.Fatalf("audit count=%d %v", auditCount, e)
 	}
 }
