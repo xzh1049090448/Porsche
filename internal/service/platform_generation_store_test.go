@@ -1410,6 +1410,17 @@ func TestPlatformGenerationCancelConvergesAtThirtySecondBoundary(t *testing.T) {
 	requirePlatformGenerationTTLNotIncreased(t, client, key, before)
 }
 
+func platformGenerationScanMalformedFixtureID(token int64) string {
+	return fmt.Sprintf("8a000000-0000-4000-8000-%012x", token)
+}
+
+func TestPlatformGenerationScanUppercaseFixtureIsDeterministicallyNoncanonical(t *testing.T) {
+	generationID := platformGenerationScanMalformedFixtureID(0x123456789012)
+	if !strings.ContainsAny(generationID, "abcdef") || strings.ToUpper(generationID) == generationID {
+		t.Fatalf("uppercase fixture must contain lowercase hex: canonical=%q uppercase=%q", generationID, strings.ToUpper(generationID))
+	}
+}
+
 func TestPlatformGenerationScanContinuesCursorAndStrictlyParsesKeys(t *testing.T) {
 	_, fixtureClient := openTestPlatformGenerationStore(t)
 	options := *fixtureClient.Options()
@@ -1429,7 +1440,7 @@ func TestPlatformGenerationScanContinuesCursorAndStrictlyParsesKeys(t *testing.T
 		valid[identity] = struct{}{}
 		keys = append(keys, store.key(identity.UserID, identity.GenerationID))
 	}
-	malformedGenerationID := fmt.Sprintf("88000000-0000-4000-8000-%012x", fixtureToken)
+	malformedGenerationID := platformGenerationScanMalformedFixtureID(fixtureToken)
 	malformed := []string{
 		platformGenerationPrefix + "0:" + malformedGenerationID,
 		platformGenerationPrefix + "+1:" + malformedGenerationID,
