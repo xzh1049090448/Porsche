@@ -75,7 +75,7 @@ The scoped diff against `origin/main` shows no change to `internal/service/platf
 
 ## Fixture cleanup
 
-The final cleanup targets only the two exact container IDs above after checking the unique task label, owned parent/child database names, Redis DB, and loopback bindings. Both containers use `--rm` and tmpfs, so stopping them removes the owned MySQL databases and Redis data without volumes. Final evidence requires an empty label query and no listeners on ports 64818 or 64819. No Docker prune, volume removal, unrelated-container action, credential file, or production resource operation is used.
+Final cleanup checked the unique task label, owned database list, Redis DB, and loopback bindings, then stopped the exact MySQL container `d2ac16c7a683a83111da661fe686c270a8c4bee750510120ef36f0b93c216cbb` and Redis container `06d6f000d4620e4c2a2a8ee7309898bafd4fe0def9c36ac61a50371111386583`. Before stopping, the owned-database query returned only parent `porsche_be04_task9_final_test`, proving zero owned child databases remained. Both `--rm` containers were removed after stop; their tmpfs parent database and Redis data were destroyed with them. The final `codex.task=be04-task9-final-20260909-a71d5e90` label query was empty, and `127.0.0.1:64818` and `127.0.0.1:64819` had no listener. No Docker prune, volume removal, unrelated-container action, credential file, or production resource operation was used.
 
 ## Explicitly not run and remaining BE05-BE06 work
 
