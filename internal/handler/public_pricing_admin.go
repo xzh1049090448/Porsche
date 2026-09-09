@@ -12,7 +12,7 @@ import (
 )
 
 func RegisterPublicPricingAdmin(r *gin.Engine, state *app.State) {
-	g := r.Group("/admin/v2/public-pricing", gatewayRequestID(), publicAdminNoStore, middleware.RequireRootWithError(state, publicAdminAuthError))
+	g := r.Group("/admin/v2/public-pricing", gatewayRequestID(), publicAdminNoStore, middleware.RequireRootWithError(state, publicAdminAuthError), publicAdminHeaderBoundary)
 	g.GET("/draft", func(c *gin.Context) {
 		if c.Request.URL.RawQuery != "" || !publicAdminRequestHasNoBody(c.Request) {
 			publicAdminError(c, &service.HTTPError{Status: 400, Message: "invalid request"})

@@ -21,6 +21,18 @@ const publicAdminBodyLimit int64 = 1 << 20
 
 func publicAdminNoStore(c *gin.Context) { c.Header("Cache-Control", "no-store"); c.Next() }
 
+func publicAdminHeaderBoundary(c *gin.Context) {
+	path := c.FullPath()
+	ticket := c.Request.Method == http.MethodDelete && path == "/admin/v2/public-models/:guid" ||
+		c.Request.Method == http.MethodPost && (path == "/admin/v2/public-pricing/publish" || path == "/admin/v2/public-pricing/releases/:guid/restore" || path == "/admin/v2/public-content/publish" || path == "/admin/v2/public-content/releases/:guid/restore")
+	idempotency := ticket && c.Request.Method == http.MethodPost
+	if c.Request.URL.RawPath != "" || (!ticket && hasHeader(c, "X-Action-Ticket")) || (!idempotency && hasHeader(c, "Idempotency-Key")) {
+		publicAdminError(c, &service.HTTPError{Status: http.StatusBadRequest, Message: "invalid request headers"})
+		return
+	}
+	c.Next()
+}
+
 func publicAdminError(c *gin.Context, err error) {
 	status, message := service.StatusFromError(err)
 	if status == http.StatusInternalServerError {
@@ -165,7 +177,7 @@ func publicAdminTicketOption(c *gin.Context, state *app.State, action actionsecu
 }
 
 func RegisterRootAlerts(r *gin.Engine, state *app.State) {
-	g := r.Group("/admin/v2/notifications", gatewayRequestID(), publicAdminNoStore, middleware.RequireRootWithError(state, publicAdminAuthError))
+	g := r.Group("/admin/v2/notifications", gatewayRequestID(), publicAdminNoStore, middleware.RequireRootWithError(state, publicAdminAuthError), publicAdminHeaderBoundary)
 	g.GET("/unread-count", func(c *gin.Context) {
 		if c.Request.URL.RawQuery != "" || c.Request.URL.RawPath != "" || !publicAdminRequestHasNoBody(c.Request) {
 			publicAdminError(c, &service.HTTPError{Status: 400, Message: "invalid request"})

@@ -11,7 +11,7 @@ import (
 )
 
 func RegisterPublicModelAdmin(r *gin.Engine, state *app.State) {
-	g := r.Group("/admin/v2/public-models", gatewayRequestID(), publicAdminNoStore, middleware.RequireRootWithError(state, publicAdminAuthError))
+	g := r.Group("/admin/v2/public-models", gatewayRequestID(), publicAdminNoStore, middleware.RequireRootWithError(state, publicAdminAuthError), publicAdminHeaderBoundary)
 	// Static paths must precede the GUID parameter.
 	g.GET("/missing", func(c *gin.Context) {
 		if c.Request.URL.RawQuery != "" || !publicAdminRequestHasNoBody(c.Request) {
