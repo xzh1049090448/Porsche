@@ -268,78 +268,105 @@ func looksLikeRootAlertCredential(v string) bool {
 }
 
 func (s *RootAlertService) Occur(ctx context.Context, in RootAlertOccurrence) (*RootAlertView, error) {
-	if s == nil || s.db == nil || in.Type.String() == "unknown" || (rootAlertRequiresModelConfig(in.Type) && (in.ModelConfigID == nil || *in.ModelConfigID <= 0)) || (!rootAlertRequiresModelConfig(in.Type) && in.ModelConfigID != nil) || (in.ModelKey != "" && !publiccontent.ValidModelKey(in.ModelKey)) || !validRootAlertIdentity(in.Identity) {
+	if s == nil || s.db == nil {
 		return nil, errBadRequest("invalid root alert occurrence")
 	}
 	var row models.RootAlert
 	err := runRootAlertTransaction(func() error {
 		row = models.RootAlert{}
 		return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-			effectiveModelKey := in.ModelKey
-			modelConfigGUID := ""
-			payloadInput := models.JSONMap{}
-			for k, v := range in.Payload {
-				payloadInput[k] = v
+			created, e := s.occurInTx(tx, in)
+			if created != nil {
+				row = *created
 			}
-			if in.ModelConfigID != nil {
-				var config models.PublicModelConfig
-				if e := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Select("id", "guid", "model_key", "status", "is_deleted").Where("id=? AND is_deleted=0", *in.ModelConfigID).First(&config).Error; e != nil {
-					return mapRootAlertConfigLoadError(e)
-				}
-				if !validRootAlertConfigStatus(in.Type, config.Status) {
-					return errBadRequest("invalid root alert model config")
-				}
-				if effectiveModelKey != "" && effectiveModelKey != config.ModelKey {
-					return errBadRequest("invalid root alert identity")
-				}
-				effectiveModelKey = config.ModelKey
-				modelConfigGUID = fmt.Sprint(config.Guid)
-			}
-			payload, payloadErr := projectRootAlertPayload(in.Type, effectiveModelKey, payloadInput)
-			if payloadErr != nil {
-				return payloadErr
-			}
-			if modelConfigGUID != "" {
-				payload["model_config_guid"] = modelConfigGUID
-			}
-			fp := rootAlertFingerprint(in.Type, effectiveModelKey, in.Identity)
-			e := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("fingerprint=? AND is_deleted=0", fp).First(&row).Error
-			now := s.now()
-			if errors.Is(e, gorm.ErrRecordNotFound) {
-				row = models.RootAlert{AuditFields: models.AuditFields{Guid: s.nextGUID(), CreatedAt: now, UpdatedAt: now}, ModelConfigID: in.ModelConfigID, AlertType: in.Type, State: models.RootAlertStateActive, Fingerprint: fp, Payload: payload, OccurrenceCount: 1, FirstObservedAt: now, LastObservedAt: now}
-				if effectiveModelKey != "" {
-					key := effectiveModelKey
-					row.ModelKey = &key
-				}
-				if e = tx.Create(&row).Error; e != nil {
-					return e
-				}
-			} else if e != nil {
-				return e
-			} else {
-				reopened := row.State == models.RootAlertStateResolved
-				updates := map[string]any{"state": models.RootAlertStateActive, "payload": payload, "occurrence_count": gorm.Expr("occurrence_count + 1"), "last_observed_at": now, "resolved_at": nil, "updated_at": now, "updated_by": nil}
-				if e = tx.Model(&models.RootAlert{}).Where("id=? AND is_deleted=0", row.ID).Updates(updates).Error; e != nil {
-					return e
-				}
-				row.State = models.RootAlertStateActive
-				row.UpdatedAt = now
-				if reopened {
-					if e = tx.Model(&models.RootAlertReceipt{}).Where("alert_id=? AND is_deleted=0", row.ID).Updates(map[string]any{"read_at": nil, "acknowledged_at": nil, "updated_at": now, "updated_by": nil}).Error; e != nil {
-						return e
-					}
-				}
-			}
-			if e = s.fail("audit"); e != nil {
-				return e
-			}
-			return writeRootAlertAudit(tx, s.nextGUID(), now, nil, "root_alert.occurred", row.Guid, models.JSONMap{"alert_type": in.Type.String(), "fingerprint": fp})
+			return e
 		})
 	})
 	if err != nil {
 		return nil, mapRootAlertError(err)
 	}
 	return &RootAlertView{GUID: fmt.Sprint(row.Guid), Type: row.AlertType.String(), State: models.RootAlertStateActive.String(), CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt}, nil
+}
+
+// OccurInTx persists a typed, deduplicated alert and its audit entry in the
+// caller's transaction. The caller owns commit, rollback, and retry policy.
+func (s *RootAlertService) OccurInTx(ctx context.Context, tx *gorm.DB, in RootAlertOccurrence) (*RootAlertView, error) {
+	if tx == nil {
+		return nil, errBadRequest("invalid root alert transaction")
+	}
+	row, err := s.occurInTx(tx.WithContext(ctx), in)
+	if err != nil {
+		return nil, mapRootAlertError(err)
+	}
+	return &RootAlertView{GUID: fmt.Sprint(row.Guid), Type: row.AlertType.String(), State: models.RootAlertStateActive.String(), CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt}, nil
+}
+
+func (s *RootAlertService) occurInTx(tx *gorm.DB, in RootAlertOccurrence) (*models.RootAlert, error) {
+	if s == nil || tx == nil || in.Type.String() == "unknown" || (rootAlertRequiresModelConfig(in.Type) && (in.ModelConfigID == nil || *in.ModelConfigID <= 0)) || (!rootAlertRequiresModelConfig(in.Type) && in.ModelConfigID != nil) || (in.ModelKey != "" && !publiccontent.ValidModelKey(in.ModelKey)) || !validRootAlertIdentity(in.Identity) {
+		return nil, errBadRequest("invalid root alert occurrence")
+	}
+	effectiveModelKey, modelConfigGUID := in.ModelKey, ""
+	payloadInput := models.JSONMap{}
+	for k, v := range in.Payload {
+		payloadInput[k] = v
+	}
+	if in.ModelConfigID != nil {
+		var config models.PublicModelConfig
+		if e := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Select("id", "guid", "model_key", "status", "is_deleted").Where("id=? AND is_deleted=0", *in.ModelConfigID).First(&config).Error; e != nil {
+			return nil, mapRootAlertConfigLoadError(e)
+		}
+		if !validRootAlertConfigStatus(in.Type, config.Status) {
+			return nil, errBadRequest("invalid root alert model config")
+		}
+		if effectiveModelKey != "" && effectiveModelKey != config.ModelKey {
+			return nil, errBadRequest("invalid root alert identity")
+		}
+		effectiveModelKey = config.ModelKey
+		modelConfigGUID = fmt.Sprint(config.Guid)
+	}
+	payload, e := projectRootAlertPayload(in.Type, effectiveModelKey, payloadInput)
+	if e != nil {
+		return nil, e
+	}
+	if modelConfigGUID != "" {
+		payload["model_config_guid"] = modelConfigGUID
+	}
+	fp := rootAlertFingerprint(in.Type, effectiveModelKey, in.Identity)
+	var row models.RootAlert
+	e = tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("fingerprint=? AND is_deleted=0", fp).First(&row).Error
+	now := s.now()
+	if errors.Is(e, gorm.ErrRecordNotFound) {
+		row = models.RootAlert{AuditFields: models.AuditFields{Guid: s.nextGUID(), CreatedAt: now, UpdatedAt: now}, ModelConfigID: in.ModelConfigID, AlertType: in.Type, State: models.RootAlertStateActive, Fingerprint: fp, Payload: payload, OccurrenceCount: 1, FirstObservedAt: now, LastObservedAt: now}
+		if effectiveModelKey != "" {
+			key := effectiveModelKey
+			row.ModelKey = &key
+		}
+		if e = tx.Create(&row).Error; e != nil {
+			return nil, e
+		}
+	} else if e != nil {
+		return nil, e
+	} else {
+		reopened := row.State == models.RootAlertStateResolved
+		updates := map[string]any{"state": models.RootAlertStateActive, "payload": payload, "occurrence_count": gorm.Expr("occurrence_count + 1"), "last_observed_at": now, "resolved_at": nil, "updated_at": now, "updated_by": nil}
+		if e = tx.Model(&models.RootAlert{}).Where("id=? AND is_deleted=0", row.ID).Updates(updates).Error; e != nil {
+			return nil, e
+		}
+		row.State = models.RootAlertStateActive
+		row.UpdatedAt = now
+		if reopened {
+			if e = tx.Model(&models.RootAlertReceipt{}).Where("alert_id=? AND is_deleted=0", row.ID).Updates(map[string]any{"read_at": nil, "acknowledged_at": nil, "updated_at": now, "updated_by": nil}).Error; e != nil {
+				return nil, e
+			}
+		}
+	}
+	if e = s.fail("audit"); e != nil {
+		return nil, e
+	}
+	if e = writeRootAlertAudit(tx, s.nextGUID(), now, nil, "root_alert.occurred", row.Guid, models.JSONMap{"alert_type": in.Type.String(), "fingerprint": fp}); e != nil {
+		return nil, e
+	}
+	return &row, nil
 }
 
 func mapRootAlertConfigLoadError(err error) error {

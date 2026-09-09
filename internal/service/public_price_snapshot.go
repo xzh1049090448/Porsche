@@ -40,6 +40,45 @@ type PublicPriceSnapshotRelease struct {
 	CreatedAt      int64  `json:"created_at"`
 }
 
+// PublicPriceProjectionItem is the safe dynamic projection of the current
+// immutable snapshot after applying present model lifecycle state.
+type PublicPriceProjectionItem struct {
+	ModelKey                       string
+	DisplayName                    string
+	Provider                       string
+	Capabilities                   []string
+	ContextWindow                  int64
+	InputPriceUSDPerMillionTokens  string
+	OutputPriceUSDPerMillionTokens string
+}
+
+// CurrentActiveProjection prevents a stale static snapshot pointer from
+// exposing a model that the monitor has already inactivated.
+func (s *PublicPriceSnapshotService) CurrentActiveProjection(ctx context.Context) ([]PublicPriceProjectionItem, error) {
+	if s == nil || s.db == nil {
+		return nil, errUnavailable("public price projection unavailable")
+	}
+	out := []PublicPriceProjectionItem{}
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var state models.PublicPublicationState
+		if e := tx.Where("state_key=? AND is_deleted=0", publicPublicationStateKey).First(&state).Error; e != nil {
+			return errUnavailable("publication state unavailable")
+		}
+		if state.PriceSnapshotID == nil {
+			return nil
+		}
+		var rows []models.PublicPriceSnapshotItem
+		if e := tx.Model(&models.PublicPriceSnapshotItem{}).Joins("JOIN public_model_configs m ON m.id=public_price_snapshot_items.model_config_id AND m.status=? AND m.is_deleted=0", models.PublicModelConfigStatusActive).Where("public_price_snapshot_items.snapshot_id=? AND public_price_snapshot_items.is_deleted=0", *state.PriceSnapshotID).Order("public_price_snapshot_items.model_key").Find(&rows).Error; e != nil {
+			return errUnavailable("public price projection unavailable")
+		}
+		for _, r := range rows {
+			out = append(out, PublicPriceProjectionItem{ModelKey: r.ModelKey, DisplayName: r.DisplayName, Provider: r.Provider, Capabilities: append([]string(nil), r.Capabilities...), ContextWindow: r.ContextWindow, InputPriceUSDPerMillionTokens: r.InputPriceUSDPerMillionTokens, OutputPriceUSDPerMillionTokens: r.OutputPriceUSDPerMillionTokens})
+		}
+		return nil
+	})
+	return out, err
+}
+
 type preparedPublicPriceSnapshot struct {
 	Items []models.PublicPriceSnapshotItem
 	Hash  string

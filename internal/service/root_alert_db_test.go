@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"reflect"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/porsche/ai-gateway-go/internal/models"
 	"github.com/porsche/ai-gateway-go/internal/persistence"
+	"gorm.io/gorm"
 )
 
 func TestRootAlertDBLifecycleReceiptsAndConcurrentOccurrence(t *testing.T) {
@@ -113,6 +115,28 @@ func TestRootAlertDBLifecycleReceiptsAndConcurrentOccurrence(t *testing.T) {
 	page, err = s.List(ctx, f.actor.ID, RootAlertListQuery{State: "active", Page: 1, PageSize: 20})
 	if err != nil || page.Total != 1 || page.Items[0].Read || page.Items[0].Acknowledged {
 		t.Fatalf("reopen=%#v %v", page, err)
+	}
+}
+
+func TestRootAlertOccurInTxRollsBackWithCaller(t *testing.T) {
+	if os.Getenv("TEST_DATABASE_URL") == "" {
+		t.Skip("BLOCKED_FIXTURE: requires explicit disposable TEST_DATABASE_URL; .env is never read")
+	}
+	f := openPublicModelDBFixture(t)
+	s := NewRootAlertService(f.db)
+	in := RootAlertOccurrence{Type: models.RootAlertTypeCatalogSyncFailure, Identity: "monitor-transaction", Payload: models.JSONMap{"error_code": "catalog_fetch_failed", "observed_at": int64(100)}}
+	err := f.db.Transaction(func(tx *gorm.DB) error {
+		if _, e := s.OccurInTx(context.Background(), tx, in); e != nil {
+			return e
+		}
+		return errors.New("rollback")
+	})
+	if err == nil {
+		t.Fatal("transaction did not roll back")
+	}
+	var count int64
+	if e := f.db.Model(&models.RootAlert{}).Where("fingerprint=?", rootAlertFingerprint(in.Type, "", in.Identity)).Count(&count).Error; e != nil || count != 0 {
+		t.Fatalf("count=%d err=%v", count, e)
 	}
 }
 

@@ -39,6 +39,24 @@ func TestCatalogObservationReturnsExactSanitizedFreshCatalog(t *testing.T) {
 	}
 }
 
+func TestCatalogObservationOmittedCompletenessFailsClosed(t *testing.T) {
+	now := time.Unix(1_900_000_000, 0).UTC()
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"data":[]}`)), Header: make(http.Header)}, nil
+	})}
+	s, err := NewWhiteLabelService(config.WhiteLabelSettings{BaseURL: "https://upstream.example/v1", APIKey: "secret", AllowedModels: map[string]struct{}{"alpha/model": {}}}, client, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.ObserveCatalog(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Successful || got.Complete || !got.Fresh {
+		t.Fatalf("observation=%#v", got)
+	}
+}
+
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }

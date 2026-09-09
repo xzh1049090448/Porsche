@@ -335,7 +335,7 @@ func Up(ctx context.Context, db *gorm.DB, nextGUID func() int64, nowMillis func(
 			}
 			now := nowMillis()
 			if err := conn.Exec(
-				"INSERT INTO schema_migrations (guid, version, checksum, created_at, updated_at, is_deleted) VALUES (?, ?, ?, ?, ?, 0)",
+				"INSERT INTO schema_migrations (guid, version, checksum, created_at, updated_at, is_deleted) VALUES (?, ?, ?, ?, ?, 0) ON DUPLICATE KEY UPDATE checksum=VALUES(checksum),updated_at=VALUES(updated_at),updated_by=NULL,is_deleted=0",
 				nextGUID(), migration.Version, checksum, now, now,
 			).Error; err != nil {
 				return fmt.Errorf("record migration %s: %w", migration.Version, err)

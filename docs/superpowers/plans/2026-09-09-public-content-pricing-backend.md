@@ -300,7 +300,7 @@ Return normalized ID, input/output price, fetched-at, completeness, and freshnes
 
 - [ ] **Step 4: Implement one monitor tick and lease**
 
-Use a short database lease row with owner token/expiry. A tick owns its transaction boundaries, records observations, updates counters, creates alerts, and invokes safety publication only after the third valid absence.
+Use a short database lease row with owner token/expiry, periodic renewal, and owner fencing before each mutation commit. A tick records observations, prunes sanitized observations older than 30 days in a bounded transactional batch, updates counters, and persists typed alerts through Task 7's transaction-aware seam. At the third valid absence it commits inactive state plus a durable safety-publication intent before the separately retryable safety snapshot attempt.
 
 - [ ] **Step 5: Add cancellable scheduler lifecycle**
 

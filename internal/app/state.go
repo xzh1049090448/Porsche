@@ -32,6 +32,7 @@ type State struct {
 	UserDeleteActions             *service.UserDeleteActions
 	ActionVerifications           *service.ActionVerificationService
 	RootAlerts                    *service.RootAlertService
+	PublicPriceSnapshots          *service.PublicPriceSnapshotService
 	UpstreamPriceMonitor          *service.UpstreamPriceMonitor
 	HTTP                          *http.Client
 }
@@ -145,6 +146,7 @@ func newState(settings *config.Settings, db *gorm.DB, constructors stateConstruc
 	})
 	if db != nil {
 		s.RootAlerts = service.NewRootAlertService(db)
+		s.PublicPriceSnapshots = service.NewPublicPriceSnapshotService(db)
 		if s.WhiteLabel != nil {
 			s.UpstreamPriceMonitor = service.NewUpstreamPriceMonitor(db, s.WhiteLabel, s.RootAlerts)
 		}

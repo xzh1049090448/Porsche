@@ -49,13 +49,13 @@ A previously published inactive or deleted `modelKey` returns `410 Gone`. A neve
 
 ## Upstream monitoring
 
-One scheduler tick runs every five minutes under a distributed lease so only one application instance evaluates a catalog generation. It requests the existing white-label catalog and accepts it for absence decisions only when the response is successful, complete, and fresh.
+One scheduler tick runs every five minutes under a distributed lease so only one application instance evaluates a catalog generation. It requests the existing white-label catalog and accepts it for absence decisions only when the response is successful, fresh, and carries an explicit trusted `complete=true` signal; an omitted or unknown completeness signal fails closed.
 
-Additive migration `0014` introduces the dedicated `upstream_monitor_leases` singleton. Its opaque random owner token, expiry, and revision support conditional acquisition, renewal, owner-only release, and crash recovery without placing monitor ownership in renderer jobs or publication state.
+Additive migration `0014` introduces the dedicated `upstream_monitor_leases` singleton. Its opaque random owner token, expiry, and revision support conditional acquisition, periodic renewal, owner fencing before mutation commits, owner-only release, and crash recovery without placing monitor ownership in renderer jobs or publication state.
 
 For each observed model it records sanitized prices and last-seen time. It compares the currently published input and output prices independently with the corresponding upstream values. Either published value below upstream creates or refreshes a deduplicated alert; it never changes a Root price. Invalid or unavailable values create a not-comparable alert.
 
-Each valid full-catalog absence increments a counter. At three, the service inactivates the model with reason `upstream_removed`, audits the evidence, creates a Root alert, and atomically publishes a safety snapshot excluding all currently inactive/deleted models. An upstream error does not change model state. A reappearing model remains inactive and creates a review alert.
+Each valid full-catalog absence increments a counter. At three, the service atomically inactivates the model with reason `upstream_removed`, advances the model draft revision, audits the evidence, persists the Root alert and a deduplicated safety-publication intent, then attempts an idempotent safety snapshot excluding all currently inactive/deleted models. If publication fails, dynamic reads already exclude the inactive model, the prior static output remains, and later valid ticks retry the pending safety publication. An upstream error does not change model state. Reappearance creates one review alert only when an `upstream_removed` model transitions from a positive absence count back to present; it clears the count without activation.
 
 ## Administration APIs
 

@@ -49,7 +49,7 @@ func (s *WhiteLabelService) ObserveCatalog(ctx context.Context) (CatalogObservat
 	if err := json.NewDecoder(io.LimitReader(response.Body, 2<<20)).Decode(&payload); err != nil {
 		return CatalogObservation{FetchedAt: fetchedAt}, ErrUpstreamUnavailable("catalog observation failed")
 	}
-	complete := payload.Complete == nil || *payload.Complete
+	complete := payload.Complete != nil && *payload.Complete
 	seen := map[string]bool{}
 	models := make([]CatalogObservedModel, 0, len(payload.Data))
 	for _, raw := range payload.Data {

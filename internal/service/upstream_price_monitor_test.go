@@ -25,6 +25,13 @@ func TestUpstreamPriceMonitorReportsEachNonComparableComponent(t *testing.T) {
 	}
 }
 
+func TestUpstreamPriceMonitorEqualOrAboveProducesNoPriceAlert(t *testing.T) {
+	currentIn, currentOut, upIn, upOut := "3.00000000", "4.00000000", "3.00000000", "2.00000000"
+	if got := planPriceComparisons("alpha", &currentIn, &currentOut, &whitelabel.CatalogObservedModel{InputPriceUSDPerMillionTokens: &upIn, OutputPriceUSDPerMillionTokens: &upOut}, 100); len(got) != 0 {
+		t.Fatalf("comparisons=%#v", got)
+	}
+}
+
 func TestUpstreamPriceMonitorSchedulerTicksEveryFiveMinutesAndStops(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -44,5 +51,23 @@ func TestUpstreamPriceMonitorSchedulerTicksEveryFiveMinutesAndStops(t *testing.T
 	m.Run(ctx)
 	if len(ticks) != 2 {
 		t.Fatalf("ticks=%d", len(ticks))
+	}
+}
+
+func TestUpstreamPriceMonitorRunCancelsActiveTickWithoutLeak(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	started, done := make(chan struct{}), make(chan struct{})
+	m := &UpstreamPriceMonitor{interval: 5 * time.Minute, ticker: func(time.Duration) (<-chan time.Time, func()) {
+		ch := make(chan time.Time, 1)
+		ch <- time.Now()
+		return ch, func() {}
+	}, tick: func(tickCtx context.Context) error { close(started); <-tickCtx.Done(); return tickCtx.Err() }}
+	go func() { m.Run(ctx); close(done) }()
+	<-started
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("scheduler leaked active tick")
 	}
 }
