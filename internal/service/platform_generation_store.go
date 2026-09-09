@@ -87,8 +87,6 @@ type PlatformGenerationClaimResult struct {
 	LeaseToken string                     `json:"-"`
 }
 
-var platformGenerationLeaseEntropy = rand.Read
-
 // PlatformGenerationStore is a fail-closed Redis lifecycle registry. Ownership
 // is enforced by keys containing only the authenticated internal users.id and
 // the client generation UUID.
@@ -198,9 +196,15 @@ func (s *PlatformGenerationStore) Claim(ctx context.Context, input PlatformGener
 }
 
 func newPlatformGenerationLease() (string, string, error) {
+	return newPlatformGenerationLeaseFrom(rand.Reader)
+}
+
+func newPlatformGenerationLeaseFrom(reader io.Reader) (string, string, error) {
+	if reader == nil {
+		return "", "", ErrPlatformGenerationUnavailable
+	}
 	raw := make([]byte, platformGenerationLeaseBytes)
-	n, err := platformGenerationLeaseEntropy(raw)
-	if err != nil || n != len(raw) {
+	if _, err := io.ReadFull(reader, raw); err != nil {
 		return "", "", ErrPlatformGenerationUnavailable
 	}
 	token := base64.RawURLEncoding.EncodeToString(raw)
@@ -525,7 +529,7 @@ func decodePlatformGeneration(raw string) (PlatformGenerationSnapshot, error) {
 	if err := decoder.Decode(&snapshot); err != nil {
 		return PlatformGenerationSnapshot{}, ErrPlatformGenerationInvalid
 	}
-	if err := decoder.Decode(new(any)); !errors.Is(err, io.EOF) || !validPlatformGenerationSnapshot(snapshot) {
+	if err := decoder.Decode(new(any)); !errors.Is(err, io.EOF) || !validPlatformGenerationWire(raw, snapshot) || !validPlatformGenerationSnapshot(snapshot) {
 		return PlatformGenerationSnapshot{}, ErrPlatformGenerationInvalid
 	}
 	return snapshot, nil
@@ -539,7 +543,7 @@ func validatePlatformGenerationIdentity(userID int64, generationID string) error
 }
 
 func validatePlatformGenerationInput(input PlatformGenerationClaimInput) error {
-	if validatePlatformGenerationIdentity(input.UserID, input.GenerationID) != nil || !platformSSEV2SafeInteger(input.NowMillis) || len(input.Models) == 0 || len(input.Models) > platformSSEV2MaxModels {
+	if validatePlatformGenerationIdentity(input.UserID, input.GenerationID) != nil || !platformSSEV2SafeInteger(input.NowMillis) || input.NowMillis > platformSSEV2MaxSafeInteger-platformGenerationLeaseDuration.Milliseconds() || len(input.Models) == 0 || len(input.Models) > platformSSEV2MaxModels {
 		return ErrPlatformGenerationInvalid
 	}
 	if (input.Mode == PlatformGenerationModeSingle && len(input.Models) != 1) || (input.Mode == PlatformGenerationModeCompare && len(input.Models) < 2) {
@@ -559,6 +563,79 @@ func validatePlatformGenerationInput(input PlatformGenerationClaimInput) error {
 		seen[model] = struct{}{}
 	}
 	return nil
+}
+
+func validPlatformGenerationWire(raw string, snapshot PlatformGenerationSnapshot) bool {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &fields); err != nil || !platformGenerationWireRequired(fields, "generation_id", "models", "state", "model_states", "created_at_ms", "updated_at_ms") {
+		return false
+	}
+	if snapshot.State == PlatformGenerationStateCancelled && snapshot.Mode == 0 {
+		return !platformGenerationWirePresent(fields, "mode") && !platformGenerationWirePresent(fields, "error_code") && !platformGenerationWirePresent(fields, "lease_owner_sha256") && !platformGenerationWirePresent(fields, "lease_until_ms")
+	}
+	if !platformGenerationWireRequired(fields, "mode") {
+		return false
+	}
+	if snapshot.State == PlatformGenerationStateFailed {
+		if !platformGenerationWireRequired(fields, "error_code") || snapshot.ErrorCode == "" {
+			return false
+		}
+	} else if platformGenerationWirePresent(fields, "error_code") {
+		return false
+	}
+	if snapshot.State == PlatformGenerationStateRunning {
+		digestPresent := platformGenerationWirePresent(fields, "lease_owner_sha256")
+		deadlinePresent := platformGenerationWirePresent(fields, "lease_until_ms")
+		if digestPresent != deadlinePresent {
+			return false
+		}
+		if digestPresent && (!platformGenerationWireRequired(fields, "lease_owner_sha256", "lease_until_ms") || snapshot.LeaseOwnerSHA256 == "" || snapshot.LeaseUntilMillis <= 0) {
+			return false
+		}
+	} else if platformGenerationWirePresent(fields, "lease_owner_sha256") || platformGenerationWirePresent(fields, "lease_until_ms") {
+		return false
+	}
+	var modelFields map[string]map[string]json.RawMessage
+	if err := json.Unmarshal(fields["model_states"], &modelFields); err != nil || len(modelFields) != len(snapshot.ModelStates) {
+		return false
+	}
+	for model, state := range snapshot.ModelStates {
+		fields, found := modelFields[model]
+		if !found || !platformGenerationWireRequired(fields, "seq", "state") {
+			return false
+		}
+		if state.State == PlatformGenerationStateFailed {
+			if !platformGenerationWireRequired(fields, "error_code") || state.ErrorCode == "" {
+				return false
+			}
+		} else if platformGenerationWirePresent(fields, "error_code") {
+			return false
+		}
+		requiresGUID := state.State == PlatformGenerationStateCompleted && snapshot.State == PlatformGenerationStateCompleted
+		if requiresGUID {
+			if !platformGenerationWireRequired(fields, "assistant_message_guid") || state.AssistantMessageGUID == "" {
+				return false
+			}
+		} else if platformGenerationWirePresent(fields, "assistant_message_guid") {
+			return false
+		}
+	}
+	return true
+}
+
+func platformGenerationWireRequired(fields map[string]json.RawMessage, names ...string) bool {
+	for _, name := range names {
+		raw, found := fields[name]
+		if !found || strings.TrimSpace(string(raw)) == "null" {
+			return false
+		}
+	}
+	return true
+}
+
+func platformGenerationWirePresent(fields map[string]json.RawMessage, name string) bool {
+	_, found := fields[name]
+	return found
 }
 
 func validPlatformGenerationSnapshot(snapshot PlatformGenerationSnapshot) bool {

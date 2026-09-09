@@ -59,6 +59,26 @@ func TestPlatformGenerationStoreRejectsModelOverPersistenceLimitBeforeRedis(t *t
 	}
 }
 
+func TestPlatformGenerationStoreRejectsLeaseDeadlinePastSafeIntegerBeforeDependencies(t *testing.T) {
+	maxNow := platformSSEV2MaxSafeInteger - platformGenerationLeaseDuration.Milliseconds()
+	valid := PlatformGenerationClaimInput{UserID: 1, GenerationID: generationTestID, Mode: PlatformGenerationModeSingle, Models: []string{"a"}, NowMillis: maxNow}
+	if err := validatePlatformGenerationInput(valid); err != nil {
+		t.Fatalf("max lease-safe input error=%v", err)
+	}
+	invalid := valid
+	invalid.NowMillis++
+	if err := validatePlatformGenerationInput(invalid); !errors.Is(err, ErrPlatformGenerationInvalid) {
+		t.Fatalf("first unsafe lease input error=%v, want invalid", err)
+	}
+	store, err := NewPlatformGenerationStore(redis.NewClient(&redis.Options{Addr: "127.0.0.1:1"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Claim(context.Background(), invalid); !errors.Is(err, ErrPlatformGenerationInvalid) {
+		t.Fatalf("Claim unsafe lease input error=%v, want invalid before dependency", err)
+	}
+}
+
 func TestPlatformGenerationStoreRejectsInvalidUTF8ModelBeforeRedis(t *testing.T) {
 	store, err := NewPlatformGenerationStore(redis.NewClient(&redis.Options{Addr: "127.0.0.1:1"}))
 	if err != nil {
@@ -631,6 +651,85 @@ func TestPlatformGenerationRecordRejectsPristineTombstoneWithMissingOrNullCollec
 	}
 }
 
+func TestPlatformGenerationRecordRejectsMissingOrNullRequiredWireFields(t *testing.T) {
+	claimed := `{"generation_id":"` + generationTestID + `","mode":1,"models":["a"],"state":1,"model_states":{"a":{"seq":0,"state":1}},"created_at_ms":1000,"updated_at_ms":1000}`
+	tests := []struct {
+		name string
+		raw  string
+	}{
+		{"generation id missing", strings.Replace(claimed, `"generation_id":"`+generationTestID+`",`, "", 1)},
+		{"generation id null", strings.Replace(claimed, `"generation_id":"`+generationTestID+`"`, `"generation_id":null`, 1)},
+		{"models missing", strings.Replace(claimed, `"models":["a"],`, "", 1)},
+		{"models null", strings.Replace(claimed, `"models":["a"]`, `"models":null`, 1)},
+		{"state missing", strings.Replace(claimed, `"state":1,`, "", 1)},
+		{"state null", strings.Replace(claimed, `"state":1`, `"state":null`, 1)},
+		{"model states missing", strings.Replace(claimed, `"model_states":{"a":{"seq":0,"state":1}},`, "", 1)},
+		{"model states null", strings.Replace(claimed, `"model_states":{"a":{"seq":0,"state":1}}`, `"model_states":null`, 1)},
+		{"created at missing", strings.Replace(claimed, `"created_at_ms":1000,`, "", 1)},
+		{"created at null", strings.Replace(claimed, `"created_at_ms":1000`, `"created_at_ms":null`, 1)},
+		{"updated at missing", strings.Replace(claimed, `,"updated_at_ms":1000`, "", 1)},
+		{"updated at null", strings.Replace(claimed, `"updated_at_ms":1000`, `"updated_at_ms":null`, 1)},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := decodePlatformGeneration(test.raw); !errors.Is(err, ErrPlatformGenerationInvalid) {
+				t.Fatalf("decode error=%v, want invalid", err)
+			}
+		})
+	}
+}
+
+func TestPlatformGenerationRecordRejectsExplicitOptionalWireFields(t *testing.T) {
+	claimed := `{"generation_id":"` + generationTestID + `","mode":1,"models":["a"],"state":1,"model_states":{"a":{"seq":0,"state":1}},"created_at_ms":1000,"updated_at_ms":1000}`
+	tombstone := `{"generation_id":"` + generationTestID + `","models":[],"state":3,"model_states":{},"created_at_ms":1000,"updated_at_ms":1000}`
+	tests := []struct {
+		name string
+		raw  string
+	}{
+		{"legacy lease fields both null", strings.TrimSuffix(claimed, "}") + `,"lease_owner_sha256":null,"lease_until_ms":null}`},
+		{"legacy lease fields empty and zero", strings.TrimSuffix(claimed, "}") + `,"lease_owner_sha256":"","lease_until_ms":0}`},
+		{"tombstone mode null", strings.TrimSuffix(tombstone, "}") + `,"mode":null}`},
+		{"tombstone mode zero", strings.TrimSuffix(tombstone, "}") + `,"mode":0}`},
+		{"tombstone error null", strings.TrimSuffix(tombstone, "}") + `,"error_code":null}`},
+		{"tombstone error empty", strings.TrimSuffix(tombstone, "}") + `,"error_code":""}`},
+		{"tombstone lease digest null", strings.TrimSuffix(tombstone, "}") + `,"lease_owner_sha256":null}`},
+		{"tombstone lease digest empty", strings.TrimSuffix(tombstone, "}") + `,"lease_owner_sha256":""}`},
+		{"tombstone lease deadline null", strings.TrimSuffix(tombstone, "}") + `,"lease_until_ms":null}`},
+		{"tombstone lease deadline zero", strings.TrimSuffix(tombstone, "}") + `,"lease_until_ms":0}`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := decodePlatformGeneration(test.raw); !errors.Is(err, ErrPlatformGenerationInvalid) {
+				t.Fatalf("decode error=%v, want invalid", err)
+			}
+		})
+	}
+}
+
+func TestPlatformGenerationRecordRejectsMissingNullAndForbiddenNestedWireFields(t *testing.T) {
+	claimed := `{"generation_id":"` + generationTestID + `","mode":1,"models":["a"],"state":1,"model_states":{"a":{"seq":0,"state":1}},"created_at_ms":1000,"updated_at_ms":1000}`
+	tests := []struct {
+		name string
+		raw  string
+	}{
+		{"nested seq missing", strings.Replace(claimed, `"seq":0,`, "", 1)},
+		{"nested seq null", strings.Replace(claimed, `"seq":0`, `"seq":null`, 1)},
+		{"nested state missing", strings.Replace(claimed, `,"state":1}`, "}", 1)},
+		{"nested state null", strings.Replace(claimed, `"state":1}`, `"state":null}`, 1)},
+		{"nested error null", strings.Replace(claimed, `"state":1}`, `"state":1,"error_code":null}`, 1)},
+		{"nested error empty", strings.Replace(claimed, `"state":1}`, `"state":1,"error_code":""}`, 1)},
+		{"nested guid null", strings.Replace(claimed, `"state":1}`, `"state":1,"assistant_message_guid":null}`, 1)},
+		{"nested guid empty", strings.Replace(claimed, `"state":1}`, `"state":1,"assistant_message_guid":""}`, 1)},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := decodePlatformGeneration(test.raw); !errors.Is(err, ErrPlatformGenerationInvalid) {
+				t.Fatalf("decode error=%v, want invalid", err)
+			}
+		})
+	}
+}
+
 func TestPlatformGenerationRecordRejectsInvalidLeaseAndTombstoneShapes(t *testing.T) {
 	claimed := PlatformGenerationSnapshot{
 		GenerationID: generationTestID, Mode: PlatformGenerationModeSingle, Models: []string{"a"}, State: PlatformGenerationStateRunning,
@@ -742,12 +841,21 @@ func TestNewPlatformGenerationLeaseUsesRawURLTokenAndSHA256Digest(t *testing.T) 
 }
 
 func TestNewPlatformGenerationLeaseSanitizesEntropyFailure(t *testing.T) {
-	original := platformGenerationLeaseEntropy
-	platformGenerationLeaseEntropy = func([]byte) (int, error) { return 0, errors.New("entropy unavailable") }
-	t.Cleanup(func() { platformGenerationLeaseEntropy = original })
-	if _, _, err := newPlatformGenerationLease(); !errors.Is(err, ErrPlatformGenerationUnavailable) {
+	if _, _, err := newPlatformGenerationLeaseFrom(platformGenerationFailingReader{}); !errors.Is(err, ErrPlatformGenerationUnavailable) {
 		t.Fatalf("new lease error=%v, want unavailable", err)
 	}
+}
+
+func TestNewPlatformGenerationLeaseRejectsShortEntropyRead(t *testing.T) {
+	if _, _, err := newPlatformGenerationLeaseFrom(strings.NewReader("short")); !errors.Is(err, ErrPlatformGenerationUnavailable) {
+		t.Fatalf("new lease error=%v, want unavailable", err)
+	}
+}
+
+type platformGenerationFailingReader struct{}
+
+func (platformGenerationFailingReader) Read([]byte) (int, error) {
+	return 0, errors.New("entropy unavailable")
 }
 
 func TestPlatformGenerationStoreRejectsRecordWhoseGenerationIDDoesNotMatchKey(t *testing.T) {
