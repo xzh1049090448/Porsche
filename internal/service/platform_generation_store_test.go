@@ -67,8 +67,8 @@ func TestPlatformGenerationStoreRejectsLeaseDeadlinePastSafeIntegerBeforeDepende
 	}
 	invalid := valid
 	invalid.NowMillis++
-	if err := validatePlatformGenerationInput(invalid); !errors.Is(err, ErrPlatformGenerationInvalid) {
-		t.Fatalf("first unsafe lease input error=%v, want invalid", err)
+	if err := validatePlatformGenerationInput(invalid); err != nil {
+		t.Fatalf("stored-record input validation changed: %v", err)
 	}
 	store, err := NewPlatformGenerationStore(redis.NewClient(&redis.Options{Addr: "127.0.0.1:1"}))
 	if err != nil {
@@ -811,6 +811,30 @@ func TestPlatformGenerationRecordAcceptsLegacyRecordsWithoutLease(t *testing.T) 
 		}
 		if _, err := decodePlatformGeneration(string(raw)); err != nil {
 			t.Fatalf("legacy record rejected: %v", err)
+		}
+	}
+}
+
+func TestPlatformGenerationRecordAcceptsLegacySafeTimestampsPastLeaseWindow(t *testing.T) {
+	nearMaximum := platformSSEV2MaxSafeInteger - platformGenerationLeaseDuration.Milliseconds() + 1
+	snapshots := []PlatformGenerationSnapshot{
+		{GenerationID: generationTestID, Mode: PlatformGenerationModeSingle, Models: []string{"a"}, State: PlatformGenerationStateRunning, ModelStates: map[string]PlatformGenerationModel{"a": {State: PlatformGenerationStateRunning}}, CreatedAtMillis: nearMaximum, UpdatedAtMillis: nearMaximum},
+		{GenerationID: generationTestID, Mode: PlatformGenerationModeSingle, Models: []string{"a"}, State: PlatformGenerationStateCompleted, ModelStates: map[string]PlatformGenerationModel{"a": {State: PlatformGenerationStateCompleted, AssistantMessageGUID: "900000000000000009"}}, CreatedAtMillis: nearMaximum, UpdatedAtMillis: platformSSEV2MaxSafeInteger},
+	}
+	for _, snapshot := range snapshots {
+		encoded, err := encodePlatformGeneration(snapshot)
+		if err != nil {
+			t.Fatalf("encode legacy snapshot %#v: %v", snapshot, err)
+		}
+		if _, err := decodePlatformGeneration(encoded); err != nil {
+			t.Fatalf("decode encoded legacy snapshot: %v", err)
+		}
+		raw, err := json.Marshal(snapshot)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := decodePlatformGeneration(string(raw)); err != nil {
+			t.Fatalf("decode raw legacy snapshot: %v", err)
 		}
 	}
 }

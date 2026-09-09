@@ -146,6 +146,9 @@ func (s *PlatformGenerationStore) Claim(ctx context.Context, input PlatformGener
 	if err := validatePlatformGenerationInput(input); err != nil {
 		return PlatformGenerationClaimResult{}, err
 	}
+	if input.NowMillis > platformSSEV2MaxSafeInteger-platformGenerationLeaseDuration.Milliseconds() {
+		return PlatformGenerationClaimResult{}, ErrPlatformGenerationInvalid
+	}
 	if s == nil || s.client == nil {
 		return PlatformGenerationClaimResult{}, ErrPlatformGenerationUnavailable
 	}
@@ -543,7 +546,7 @@ func validatePlatformGenerationIdentity(userID int64, generationID string) error
 }
 
 func validatePlatformGenerationInput(input PlatformGenerationClaimInput) error {
-	if validatePlatformGenerationIdentity(input.UserID, input.GenerationID) != nil || !platformSSEV2SafeInteger(input.NowMillis) || input.NowMillis > platformSSEV2MaxSafeInteger-platformGenerationLeaseDuration.Milliseconds() || len(input.Models) == 0 || len(input.Models) > platformSSEV2MaxModels {
+	if validatePlatformGenerationIdentity(input.UserID, input.GenerationID) != nil || !platformSSEV2SafeInteger(input.NowMillis) || len(input.Models) == 0 || len(input.Models) > platformSSEV2MaxModels {
 		return ErrPlatformGenerationInvalid
 	}
 	if (input.Mode == PlatformGenerationModeSingle && len(input.Models) != 1) || (input.Mode == PlatformGenerationModeCompare && len(input.Models) < 2) {
