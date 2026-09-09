@@ -1423,59 +1423,102 @@ func TestPlatformGenerationScanContinuesCursorAndStrictlyParsesKeys(t *testing.T
 	ctx := context.Background()
 	valid := make(map[PlatformGenerationIdentity]struct{})
 	keys := make([]string, 0, 80)
+	fixtureToken := testSnowflake.Next() & 0xffffffffff00
 	for index := 1; index <= 64; index++ {
-		identity := PlatformGenerationIdentity{UserID: 940000 + int64(index), GenerationID: fmt.Sprintf("87000000-0000-4000-8000-%012x", index)}
+		identity := PlatformGenerationIdentity{UserID: 940000 + int64(index), GenerationID: fmt.Sprintf("87000000-0000-4000-8000-%012x", fixtureToken+int64(index))}
 		valid[identity] = struct{}{}
 		keys = append(keys, store.key(identity.UserID, identity.GenerationID))
 	}
+	malformedGenerationID := fmt.Sprintf("88000000-0000-4000-8000-%012x", fixtureToken)
 	malformed := []string{
-		platformGenerationPrefix + "0:" + generationTestID,
-		platformGenerationPrefix + "+1:" + generationTestID,
-		platformGenerationPrefix + "-1:" + generationTestID,
-		platformGenerationPrefix + "01:" + generationTestID,
-		platformGenerationPrefix + "9223372036854775808:" + generationTestID,
-		platformGenerationPrefix + "1:" + generationTestID + ":extra",
-		platformGenerationPrefix + "1:" + strings.ToUpper(generationTestID),
+		platformGenerationPrefix + "0:" + malformedGenerationID,
+		platformGenerationPrefix + "+1:" + malformedGenerationID,
+		platformGenerationPrefix + "-1:" + malformedGenerationID,
+		platformGenerationPrefix + "01:" + malformedGenerationID,
+		platformGenerationPrefix + "9223372036854775808:" + malformedGenerationID,
+		platformGenerationPrefix + "1:" + malformedGenerationID + ":extra",
+		platformGenerationPrefix + "1:" + strings.ToUpper(malformedGenerationID),
 		platformGenerationPrefix + "1:not-a-uuid",
 	}
 	keys = append(keys, malformed...)
-	unrelated := "porsche:platform:generation:v20:1:" + generationTestID
+	unrelated := "porsche:platform:generation:v20:1:" + malformedGenerationID
 	keys = append(keys, unrelated)
-	if err := client.MSet(ctx, func() []any {
-		values := make([]any, 0, len(keys)*2)
-		for _, key := range keys {
-			values = append(values, key, "sentinel")
+	sharedIdentity := PlatformGenerationIdentity{UserID: 950001, GenerationID: fmt.Sprintf("89000000-0000-4000-8000-%012x", fixtureToken+65)}
+	sharedValidKey := store.key(sharedIdentity.UserID, sharedIdentity.GenerationID)
+	keys = append(keys, sharedValidKey)
+	ownedKeys := make([]string, 0, len(keys))
+	t.Cleanup(func() {
+		if len(ownedKeys) == 0 {
+			return
 		}
-		return values
-	}()...).Err(); err != nil {
-		t.Fatal(err)
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := client.Del(cleanupCtx, ownedKeys...).Err(); err != nil {
+			t.Errorf("scan key cleanup: %v", err)
+			return
+		}
+		if exists, err := client.Exists(cleanupCtx, ownedKeys...).Result(); err != nil {
+			t.Errorf("verify scan key cleanup: %v", err)
+		} else if exists != 0 {
+			t.Errorf("scan owned keys remain=%d", exists)
+		}
+	})
+	for _, key := range keys {
+		created, err := client.SetNX(ctx, key, "sentinel", 0).Result()
+		if err != nil || !created {
+			t.Fatalf("create unique scan key %q: created=%t error=%v", key, created, err)
+		}
+		ownedKeys = append(ownedKeys, key)
 	}
-	untouchedTTLs := make(map[string]time.Duration, len(malformed)+1)
-	for _, key := range append(malformed, unrelated) {
+	protectedKeys := append(append([]string(nil), malformed...), unrelated, sharedValidKey)
+	untouchedTTLs := make(map[string]time.Duration, len(protectedKeys))
+	for _, key := range protectedKeys {
 		ttl, err := client.PTTL(ctx, key).Result()
 		if err != nil {
 			t.Fatal(err)
 		}
 		untouchedTTLs[key] = ttl
 	}
-	t.Cleanup(func() {
-		if err := client.Del(context.Background(), keys...).Err(); err != nil {
-			t.Errorf("scan key cleanup: %v", err)
-		}
-	})
+	forbidden := map[PlatformGenerationIdentity]string{
+		{UserID: 0, GenerationID: malformedGenerationID}:                   "zero user",
+		{UserID: 1, GenerationID: malformedGenerationID}:                   "noncanonical user",
+		{UserID: -1, GenerationID: malformedGenerationID}:                  "negative user",
+		{UserID: 1, GenerationID: malformedGenerationID + ":extra"}:        "extra segment",
+		{UserID: 1, GenerationID: strings.ToUpper(malformedGenerationID)}:  "uppercase UUID",
+		{UserID: 1, GenerationID: "not-a-uuid"}:                            "invalid UUID",
+		{UserID: 9223372036854775807, GenerationID: malformedGenerationID}: "overflow user",
+	}
 
 	found := make(map[PlatformGenerationIdentity]struct{})
+	sharedFound := 0
+	seenCursors := make(map[uint64]struct{})
 	cursor := uint64(0)
 	calls := 0
 	for {
+		if _, duplicate := seenCursors[cursor]; duplicate {
+			t.Fatalf("SCAN cursor repeated before termination: %d", cursor)
+		}
+		seenCursors[cursor] = struct{}{}
 		identities, next, err := store.ScanGenerationKeys(ctx, cursor, 1)
 		if err != nil {
 			t.Fatal(err)
 		}
 		calls++
 		for _, identity := range identities {
-			if _, ok := valid[identity]; !ok {
-				t.Fatalf("scan returned identity outside expected set: %#v", identity)
+			if reason, omitted := forbidden[identity]; omitted {
+				t.Fatalf("scan returned malformed fixture identity (%s): %#v", reason, identity)
+			}
+			if _, owned := valid[identity]; !owned {
+				if identity == sharedIdentity {
+					sharedFound++
+					if sharedFound > 1 {
+						t.Fatalf("scan returned shared valid identity more than once: %#v", identity)
+					}
+				}
+				continue
+			}
+			if _, duplicate := found[identity]; duplicate {
+				t.Fatalf("scan returned owned identity more than once: %#v", identity)
 			}
 			found[identity] = struct{}{}
 		}
@@ -1487,15 +1530,15 @@ func TestPlatformGenerationScanContinuesCursorAndStrictlyParsesKeys(t *testing.T
 			t.Fatal("SCAN cursor did not terminate")
 		}
 	}
-	if calls < 2 || len(found) != len(valid) {
-		t.Fatalf("scan calls=%d identities=%d want=%d", calls, len(found), len(valid))
+	if calls < 2 || len(found) != len(valid) || sharedFound != 1 {
+		t.Fatalf("scan calls=%d identities=%d want=%d shared=%d", calls, len(found), len(valid), sharedFound)
 	}
-	for _, key := range append(malformed, unrelated) {
+	for _, key := range protectedKeys {
 		if raw, err := client.Get(ctx, key).Result(); err != nil || raw != "sentinel" {
-			t.Fatalf("malformed key was touched: key=%q raw=%q error=%v", key, raw, err)
+			t.Fatalf("protected scan fixture key was touched: key=%q raw=%q error=%v", key, raw, err)
 		}
 		if ttl, err := client.PTTL(ctx, key).Result(); err != nil || ttl != untouchedTTLs[key] {
-			t.Fatalf("malformed key TTL changed: key=%q before=%v after=%v error=%v", key, untouchedTTLs[key], ttl, err)
+			t.Fatalf("protected scan fixture TTL changed: key=%q before=%v after=%v error=%v", key, untouchedTTLs[key], ttl, err)
 		}
 	}
 }

@@ -68,7 +68,31 @@ func registerPlatformGenerationHandlerKeyCleanup(t *testing.T, client *redis.Cli
 	return key
 }
 
-func assertPlatformGenerationHandlerRedisBaseline(t *testing.T, client *redis.Client, baseline int64, generationID string, keys []string) {
+func preparePlatformGenerationHandlerSentinel(t *testing.T, client *redis.Client) (string, string) {
+	t.Helper()
+	key := fmt.Sprintf("porsche:test:platform-generation-handler:%d", platformTestSnowflake.Next())
+	value := fmt.Sprintf("owned-sentinel-%d", platformTestSnowflake.Next())
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := client.Del(ctx, key).Err(); err != nil {
+			t.Errorf("delete owned handler sentinel %q: %v", key, err)
+			return
+		}
+		if exists, err := client.Exists(ctx, key).Result(); err != nil {
+			t.Errorf("verify owned handler sentinel %q cleanup: %v", key, err)
+		} else if exists != 0 {
+			t.Errorf("owned handler sentinel %q remains after cleanup", key)
+		}
+	})
+	created, err := client.SetNX(context.Background(), key, value, time.Minute).Result()
+	if err != nil || !created {
+		t.Fatalf("create owned handler sentinel %q: created=%t error=%v", key, created, err)
+	}
+	return key, value
+}
+
+func assertPlatformGenerationHandlerRedisIsolation(t *testing.T, client *redis.Client, generationID string, keys []string, sentinelKey, sentinelValue string) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
@@ -98,12 +122,8 @@ func assertPlatformGenerationHandlerRedisBaseline(t *testing.T, client *redis.Cl
 	if len(matched) != 0 {
 		t.Fatalf("owned generation pattern %q remains=%v", pattern, matched)
 	}
-	after, err := client.DBSize(ctx).Result()
-	if err != nil {
-		t.Fatalf("read Redis cleanup baseline: %v", err)
-	}
-	if after != baseline {
-		t.Fatalf("Redis DBSIZE after cleanup=%d, want baseline=%d", after, baseline)
+	if got, err := client.Get(ctx, sentinelKey).Result(); err != nil || got != sentinelValue {
+		t.Fatalf("owned handler sentinel changed: got=%q want=%q error=%v", got, sentinelValue, err)
 	}
 }
 
@@ -313,10 +333,7 @@ func TestPlatformGenerationHandlerIntegrationReceiptAndOwnerIsolation(t *testing
 		t.Skip("BLOCKED_FIXTURE: requires TEST_DATABASE_URL and TEST_REDIS_URL")
 	}
 	client := platformGenerationHandlerRedisClient(t)
-	baseline, err := client.DBSize(context.Background()).Result()
-	if err != nil {
-		t.Fatal(err)
-	}
+	sentinelKey, sentinelValue := preparePlatformGenerationHandlerSentinel(t, client)
 	var generationID string
 	var ownedKeys []string
 	if !t.Run("http", func(t *testing.T) {
@@ -391,7 +408,7 @@ func TestPlatformGenerationHandlerIntegrationReceiptAndOwnerIsolation(t *testing
 	}) {
 		return
 	}
-	assertPlatformGenerationHandlerRedisBaseline(t, client, baseline, generationID, ownedKeys)
+	assertPlatformGenerationHandlerRedisIsolation(t, client, generationID, ownedKeys, sentinelKey, sentinelValue)
 }
 
 func TestPlatformGenerationHandlerIntegrationPartialCompareReceipt(t *testing.T) {
@@ -399,10 +416,7 @@ func TestPlatformGenerationHandlerIntegrationPartialCompareReceipt(t *testing.T)
 		t.Skip("BLOCKED_FIXTURE: requires TEST_DATABASE_URL and TEST_REDIS_URL")
 	}
 	client := platformGenerationHandlerRedisClient(t)
-	baseline, err := client.DBSize(context.Background()).Result()
-	if err != nil {
-		t.Fatal(err)
-	}
+	sentinelKey, sentinelValue := preparePlatformGenerationHandlerSentinel(t, client)
 	var generationID string
 	var ownedKeys []string
 	if !t.Run("http", func(t *testing.T) {
@@ -479,5 +493,5 @@ func TestPlatformGenerationHandlerIntegrationPartialCompareReceipt(t *testing.T)
 	}) {
 		return
 	}
-	assertPlatformGenerationHandlerRedisBaseline(t, client, baseline, generationID, ownedKeys)
+	assertPlatformGenerationHandlerRedisIsolation(t, client, generationID, ownedKeys, sentinelKey, sentinelValue)
 }
