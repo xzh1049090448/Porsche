@@ -1,11 +1,11 @@
 {
   "slice": "A08 managed-user roles and permissions backend",
-  "status": "BLOCKED_FIXTURE",
+  "status": "PASS_LIMITED_SCOPE",
   "code_under_test": {
-    "backend": "9fdc07b3bcf4cb06049e4af0f5adde28e36facab",
+    "backend": "f2f976005c2331c0409c1b27da79e3a43d25bcb0",
     "range_base_exclusive": "c6b1fb6d58bd5bc1281d6c44f2e262b20bef407f",
     "range_first_commit": "42683377247cdb095a81ae664504ad02ed46abb8",
-    "range": "c6b1fb6d58bd5bc1281d6c44f2e262b20bef407f..9fdc07b3bcf4cb06049e4af0f5adde28e36facab"
+    "range": "c6b1fb6d58bd5bc1281d6c44f2e262b20bef407f..f2f976005c2331c0409c1b27da79e3a43d25bcb0"
   },
   "contract": {
     "path": "docs/agents/contracts/admin-user-roles-permissions-v1.json",
@@ -14,20 +14,22 @@
   "migration_0012": {
     "expected_ledger": "0001-0012",
     "up_sha256": "7ed008718e76bf8251a15f4d115ef9f959f5f0f2c7e1f8a9a9398201a7239bde",
-    "down_sha256": "1f222263c40006002ffcc3fb1bcb1cf9ab5661cb9b317af008621fbbf689b8de",
+    "down_sha256": "825d8f85c99ff9bc0ff0db68b3b036f87f307aceace9ea5d17d43655f5f60fb8",
     "static_contract": "PASS",
-    "real_mysql_up_down_schema_and_ledger": "NOT_RUN",
-    "status": "BLOCKED_FIXTURE"
+    "real_mysql_up_down_schema_and_ledger": "PASS",
+    "status": "PASS"
   },
   "environment": {
     "go": "go1.22.12 darwin/arm64",
-    "gocache": "/private/tmp/porsche-a08-task8-gocache",
-    "TEST_DATABASE_URL": "UNSET_OR_EMPTY",
-    "TEST_REDIS_URL": "UNSET_OR_EMPTY",
-    "ACTION_SECURITY_HMAC_KEY": "UNSET_OR_EMPTY",
-    "mysql_image_id": "NOT_RUN",
-    "redis_image_id": "NOT_RUN",
-    "production": "NOT_USED"
+    "gocache": "/private/tmp/porsche-a08-go-cache",
+    "TEST_DATABASE_URL": "SET_TO_DISPOSABLE_LOCAL_FIXTURE_REDACTED",
+    "TEST_REDIS_URL": "SET_TO_DISPOSABLE_LOCAL_FIXTURE_REDACTED",
+    "ACTION_SECURITY_HMAC_KEY": "SET_TO_DISPOSABLE_TEST_KEY_REDACTED",
+    "mysql_image_id": "sha256:7dcddc01f13bab2f15cde676d44d01f61fc9f99fe7785e86196dfc07d358ae2b",
+    "redis_image_id": "sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf",
+    "production": "NOT_USED",
+    "mysql_version": "8.0.46",
+    "redis_version": "7.4.11"
   },
   "verification": {
     "init": {
@@ -91,6 +93,14 @@
     "diff_check_before_archive": {
       "command": "git diff --check",
       "exit": 0,
+      "result": "PASS"
+    },
+    "real_fixture_focused": {
+      "command": "TEST_DATABASE_URL=<redacted disposable MySQL> TEST_REDIS_URL=<redacted disposable Redis DB15> ACTION_SECURITY_HMAC_KEY=<redacted test key> GOCACHE=/private/tmp/porsche-a08-go-cache go test -p 1 ./internal/migration ./internal/service ./internal/handler -run '^(TestAuthCoreMigrationOnIsolatedMySQL|TestAdminOperationRolePermissionResults0012RealMySQLDownPreservesCompatibleResults|TestA08RolePermissionReal|TestA08Runtime)' -count=1 -v",
+      "exit": 0,
+      "tests": 11,
+      "pass": 11,
+      "fail": 0,
       "result": "PASS"
     }
   },
@@ -563,14 +573,16 @@
     ]
   },
   "real_fixture_acceptance": {
-    "status": "BLOCKED_FIXTURE",
-    "mysql_8": "NOT_RUN",
-    "redis_7": "NOT_RUN",
-    "migration_ledger_0001_0012": "NOT_RUN",
-    "credential_lifecycle": "NOT_RUN",
-    "transaction_rollback": "NOT_RUN",
-    "concurrency": "NOT_RUN",
-    "fixture_cleanup": "NOT_RUN"
+    "status": "PASS",
+    "mysql_8": "PASS 8.0.46",
+    "redis_7": "PASS 7.4.11",
+    "migration_ledger_0001_0012": "PASS",
+    "credential_lifecycle": "PASS",
+    "transaction_rollback": "PASS",
+    "concurrency": "PASS",
+    "runtime_policy_reload": "PASS",
+    "browser_promote_permission_demote": "PASS via paired frontend evidence",
+    "fixture_cleanup": "PASS; named containers absent and ports 8000/4176 closed"
   },
   "reviews": {
     "task_1_contract_6a590c7": "SPEC_REVIEW_PASS / QUALITY_REVIEW_PASS after exact envelope, catalog, query, RootOnly and TTL fixes",
@@ -582,19 +594,19 @@
     "task_5c_89e54f8": "initial SPEC_REVIEW_FAIL for HMAC binding, fixed by 0628866; initial QUALITY_REVIEW_FAIL for ignored Count errors, fixed by 89e54f8; final SPEC_REVIEW_PASS / QUALITY_REVIEW_PASS",
     "task_6_ee83987": "initial SPEC_REVIEW_FAIL for production Issue, same-state 403 and 413 boundaries, fixed by f50c770; QUALITY_REVIEW_FAIL for cross-scope validation, fixed by ee83987; final SPEC_REVIEW_PASS / QUALITY_REVIEW_PASS",
     "task_7_9fdc07b": "initial SPEC_REVIEW_FAIL for REPEATABLE READ stale policy snapshot, fixed with explicit READ COMMITTED by 9fdc07b; final SPEC_REVIEW_PASS / QUALITY_REVIEW_PASS",
-    "independent_security_review": "PENDING_NOT_RUN"
+    "independent_security_review": "SECURITY_REVIEW_PASS after zero-write conflict preflight fix d9896e9",
+    "task_8_real_fixture": "SPEC_REVIEW_PASS / QUALITY_REVIEW_PASS after real MySQL placeholder and 0012 down-up compatibility fixes a4f9448 and f2f9760"
   },
   "tracker": {
-    "a08": "BLOCKED_FIXTURE",
+    "a08": "PASS_LIMITED_SCOPE",
     "web_012": "in_progress",
-    "matrix": "14 PASS_LIMITED_SCOPE / 9 BLOCKED_NOT_IMPLEMENTED / 1 BLOCKED_FIXTURE / 1 BLOCKED_PRODUCT / 1 BLOCKED_ENV",
-    "blocked_total": 12
+    "matrix": "15 PASS_LIMITED_SCOPE / 9 BLOCKED_NOT_IMPLEMENTED / 1 BLOCKED_PRODUCT / 1 BLOCKED_ENV",
+    "blocked_total": 11
   },
   "limitations": [
-    "A08 is not PASS_LIMITED_SCOPE because the isolated MySQL 8, Redis 7 and ACTION_SECURITY_HMAC_KEY fixture was not configured.",
-    "The 452 skip events are recorded as skips, not passes; they include fixture-gated and opt-in repository tests.",
-    "No independent SECURITY_REVIEW verdict was obtained; security observations inside quality reviews are not relabeled as an independent security review.",
-    "Frontend implementation, 26-item joint acceptance, external backend project_manager confirmation, production migration, deployment, production acceptance and real business accounts are NOT_RUN.",
-    "No container, database, Redis key or production resource was created, changed or cleaned up in this archive task."
+    "The historical full-suite skip inventory is retained as evidence from the pre-fixture run; all A08-specific real fixture tests were rerun and passed.",
+    "Visible browser commit-unknown and disabled-target branches remain covered by automated contract/component tests rather than a live fault-injected browser run.",
+    "External backend project_manager written confirmation, production migration, deployment, production acceptance and real business accounts remain NOT_RUN.",
+    "PASS_LIMITED_SCOPE applies only to the disposable local MySQL 8, Redis 7 and visible Chromium acceptance environment."
   ]
 }
