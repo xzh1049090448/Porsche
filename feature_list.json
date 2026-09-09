@@ -167,7 +167,8 @@
         "A05 managed-user nickname edit：代码BE 6bb5400 / FE 5a41f56；canonical evidence commits BE 76e0d2f / FE 34b23fc；emergency merge heads BE bf53c6a / FE a93893b；本地联合切片PASS_LIMITED_SCOPE。",
         "A06 managed-user status：代码BE 08617d4 / FE 07c7b9e；canonical evidence commits BE 1677bc5 / FE b620552；合同SHA-256 c3662b25500879d67c6811fa270d4a6a39a44db812c7c493d6f02e535940b415；双端独立复审PASS。",
         "A07 managed-user credentials/entitlements：候选 BE a600a08 / FE 4164818；canonical evidence commits BE 5d5a1e9ee230bcc42fe9fde8d3f9f7badf34b658 / FE 39b79582110347ae11b95e58217b3afe3236b4f7；合同 SHA-256 9e1969b238911b6eee5b6aa85ed364e795a6854f0a026daac5d15e2ab78851be；本地联合切片 PASS_LIMITED_SCOPE。",
-        "A08 managed-user roles/permissions：后端候选 9fdc07b；合同 SHA-256 dd202cb5019b10a891e10f03f77629b5f54e993110f148f417e05d089df35698；代码评审 findings 已闭环，但真实 fixture 与独立 SECURITY_REVIEW 均未完成，状态 BLOCKED_FIXTURE。"
+        "A08 managed-user roles/permissions：后端候选 9fdc07b；合同 SHA-256 dd202cb5019b10a891e10f03f77629b5f54e993110f148f417e05d089df35698；代码评审 findings 已闭环，但真实 fixture 与独立 SECURITY_REVIEW 均未完成，状态 BLOCKED_FIXTURE。",
+        "2026-09-09：A08 本地联合切片 PASS_LIMITED_SCOPE。BE f2f9760 / FE 25b0731；真实 MySQL 8.0.46、Redis 7.4.11、0012 down/up、事务/并发/运行时、可见 Chromium 提升/权限修改/降级、375/390 与 exact cleanup 通过；生产和外部 PM 未运行。"
       ],
       "notes": "PASS_LIMITED_SUBSCOPE：B1-E 内部安全原语及 A03/A05/A06/A07 本地联合切片已验证；A07 为 PASS_LIMITED_SCOPE。代码注册的 active consumer 为 7 项（users.create、users.create_admin、users.delete、users.reset_password、users.promote、users.demote、users.permissions.write），不表示已部署生产。A08 后端已实现但真实 fixture 与独立 SECURITY_REVIEW 未完成，保持 BLOCKED_FIXTURE。go-017 历史 joint_acceptance_blocker_count 保持 16；current_joint_acceptance_blocker_count 为 12，权威矩阵为 14 limited / 12 blocked；A12/A14 历史行未在本次重写。Gateway Key owner plan/quota 消费仍未实现。生产迁移、部署、生产验收和真实业务账号均 NOT_RUN。ACTION_SECURITY_HMAC_KEY v1 lacks key ID/multi-key verification; rotation is prohibited while replayable post-0010 active snapshots exist unless a separately approved multi-key verifier or atomic full re-HMAC migration is delivered.",
       "a03_joint_acceptance": {
@@ -272,7 +273,7 @@
         },
         "scope_boundary": "仅本地A06禁用/启用切片；生产migration、deploy、production acceptance及真实business accounts均NOT_RUN；拒绝管理动作审计仍为后续PRD残留。"
       },
-      "current_joint_acceptance_blocker_count": 12,
+      "current_joint_acceptance_blocker_count": 11,
       "a07_joint_acceptance": {
         "status": "PASS_LIMITED_SCOPE",
         "code_under_test": {
@@ -308,26 +309,27 @@
         "evidence": "backend:docs/superpowers/reports/validation/2026-09-09-a07-managed-user-entitlements/manifest.json"
       },
       "a08_joint_acceptance": {
-        "status": "BLOCKED_FIXTURE",
+        "status": "PASS_LIMITED_SCOPE",
         "code_under_test": {
-          "backend": "9fdc07b3bcf4cb06049e4af0f5adde28e36facab"
+          "backend": "f2f976005c2331c0409c1b27da79e3a43d25bcb0",
+          "frontend": "25b073164dc3fccecbf3b74309f12dd7589c024b"
+        },
+        "canonical_evidence_commits": {
+          "backend": "3f41ef2dc1f38fc363cbdcf1e2205b26f7a9da09",
+        "frontend": "1b47efeb6473e7f8e94452b3f833808f0942d413"
         },
         "contract_sha256": "dd202cb5019b10a891e10f03f77629b5f54e993110f148f417e05d089df35698",
         "tests": {
-          "backend_focused": "PASS_WITH_DECLARED_SKIPS",
-          "backend_focused_race": "PASS_WITH_DECLARED_SKIPS",
-          "backend_full_loopback_enabled": "PASS_WITH_452_DECLARED_SKIPS",
-          "backend_full_race_loopback_enabled": "PASS_WITH_452_DECLARED_SKIPS",
-          "backend_build_vet_diff": "PASS",
-          "backend_real_mysql_redis": "NOT_RUN",
-          "migration_0012_real_up_down": "NOT_RUN"
+          "backend_real_mysql_redis_migration_runtime": "11/11 PASS",
+          "frontend_focused": "41/41 PASS",
+          "frontend_full": "446/446 PASS",
+          "frontend_production_build": "PASS_WITH_WARNINGS",
+          "visible_chromium_promote_permission_demote": "PASS",
+          "chrome_375_390": "PASS",
+          "fixture_cleanup": "PASS"
         },
-        "reviews": {
-          "task_spec_and_quality": "PASS_AFTER_FINDING_CLOSURE",
-          "independent_security": "PENDING_NOT_RUN"
-        },
-        "scope_boundary": "仅 A08 后端代码候选与无 fixture 门禁；真实 MySQL 8/Redis 7、ACTION_SECURITY_HMAC_KEY、前端、26项联合验收、生产 migration/deploy/acceptance 及真实业务账号均 NOT_RUN。",
-        "evidence": "backend:docs/superpowers/reports/validation/2026-09-09-a08-managed-user-roles-permissions/backend/manifest.json"
+        "scope_boundary": "仅本地 A08 角色与权限切片；可见 commit-unknown、disabled target 与 override-at-promotion 为自动化覆盖。外部 PM、生产 migration/deploy/acceptance 与真实 business accounts 均 NOT_RUN。",
+        "evidence": "docs/superpowers/reports/validation/2026-09-09-a08-managed-user-roles-permissions/backend/manifest.json"
       }
     },
     {

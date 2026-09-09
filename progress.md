@@ -1,12 +1,12 @@
 # Porsche 开发进度
 
-## 2026-09-09：A08 managed-user roles and permissions 后端候选受 fixture 阻塞
+## 2026-09-09：A08 managed-user roles and permissions 本地联合切片限定通过
 
-- A08 后端候选为 `9fdc07b3bcf4cb06049e4af0f5adde28e36facab`，合同 SHA-256 为 `dd202cb5019b10a891e10f03f77629b5f54e993110f148f417e05d089df35698`。promote、demote、权限替换、稳定 operation 结果、即时 Access/Refresh 失效及 Gateway Key fresh owner policy 已实现；Task 1–7 规格和质量 findings 均完成修复并获得最终 PASS。
-- focused 与 focused race、build、vet、diff-check 通过；完整 full/full-race 在受限沙箱因既有 `httptest` 无法绑定 `[::1]:0` 退出 1，在允许 loopback listener 的环境中复跑均退出 0，各记录 1,985 pass events、452 个明确 SKIP、0 fail events 和 17 个通过包。初始 `./init.sh` 同样因沙箱 bind 限制退出 1，未计为 PASS。
-- `TEST_DATABASE_URL`、`TEST_REDIS_URL` 与 `ACTION_SECURITY_HMAC_KEY` 均未配置。真实 MySQL 8/Redis 7、migration 0012 up/down/ledger、凭据生命周期、并发、事务回滚和 cleanup 均为 `BLOCKED_FIXTURE / NOT_RUN`；独立 `SECURITY_REVIEW` 为 `PENDING_NOT_RUN`，不能以质量复审中的安全检查替代。
-- A08 从 `BLOCKED_NOT_IMPLEMENTED` 更新为 `BLOCKED_FIXTURE`，没有提升为 `PASS_LIMITED_SCOPE`。26 项仍为 14 `PASS_LIMITED_SCOPE` 和 12 项阻塞：9 `BLOCKED_NOT_IMPLEMENTED`、1 `BLOCKED_FIXTURE`、1 `BLOCKED_PRODUCT`、1 `BLOCKED_ENV`；`web-012` 继续 `in_progress`。前端、外部后端 project_manager 书面确认、26项联合验收、生产 migration/deploy/acceptance 及真实业务账号均 `NOT_RUN`。
-- 完整命令、真实 exit、452 项 SKIP 清单、migration 0012 哈希及 review closure 见 `docs/superpowers/reports/validation/2026-09-09-a08-managed-user-roles-permissions/backend/manifest.json` 与同目录 `report.md`。
+- A08 从 `BLOCKED_FIXTURE` 提升为 `PASS_LIMITED_SCOPE`。后端代码候选 `f2f976005c2331c0409c1b27da79e3a43d25bcb0`，前端代码候选 `25b073164dc3fccecbf3b74309f12dd7589c024b`，合同 SHA-256 为 `dd202cb5019b10a891e10f03f77629b5f54e993110f148f417e05d089df35698`。
+- 真实 MySQL 8.0.46 / Redis 7.4.11、ledger 0001–0012、migration 0012 down/up、事务原子性、零写冲突、回滚、并发、权限历史、READ COMMITTED、旧 Access/Refresh、Gateway Key 即时策略与 HTTP 重载 11/11 通过。独立安全复审在 `d9896e9` 修复后 PASS。
+- 可见 Chromium 完成提升、权限替换、降级，最终目标为 User、`auth_version=7`、permission version 3、0 活动覆盖；375/390 布局、焦点和 Esc 通过。前端 focused 41/41、full 446/446、生产构建通过。
+- 两个精确命名的临时容器已删除，8000/4176 无监听。26 项现为 15 `PASS_LIMITED_SCOPE` 和 11 项阻塞：9 `BLOCKED_NOT_IMPLEMENTED`、1 `BLOCKED_PRODUCT`、1 `BLOCKED_ENV`；`web-012` 继续 `in_progress`。生产 migration/deploy/acceptance、真实业务账号和外部后端 project_manager 书面确认仍未运行。
+- 完整命令、真实退出码、镜像、数据库终态和 cleanup 见 `docs/superpowers/reports/validation/2026-09-09-a08-managed-user-roles-permissions/backend/manifest.json` 与同目录 `report.md`。
 
 ## 2026-09-09：A07 managed-user credentials and entitlements 本地联合切片限定通过
 
