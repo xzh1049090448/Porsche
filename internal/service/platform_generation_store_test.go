@@ -601,10 +601,33 @@ func TestPlatformGenerationRecordAcceptsLeaseAwareAndPristineTombstoneShapes(t *
 		if err != nil {
 			t.Fatalf("encode %#v: %v", snapshot, err)
 		}
+		if snapshot.State == PlatformGenerationStateCancelled && (!strings.Contains(raw, `"models":[]`) || !strings.Contains(raw, `"model_states":{}`)) {
+			t.Fatalf("canonical tombstone shape=%s", raw)
+		}
 		decoded, err := decodePlatformGeneration(raw)
 		if err != nil || !reflect.DeepEqual(decoded, snapshot) {
 			t.Fatalf("decode=%#v want=%#v error=%v", decoded, snapshot, err)
 		}
+	}
+}
+
+func TestPlatformGenerationRecordRejectsPristineTombstoneWithMissingOrNullCollections(t *testing.T) {
+	canonical := `{"generation_id":"` + generationTestID + `","models":[],"state":3,"model_states":{},"created_at_ms":1000,"updated_at_ms":1000}`
+	tests := []struct {
+		name string
+		raw  string
+	}{
+		{"models omitted", strings.Replace(canonical, `"models":[],`, "", 1)},
+		{"models null", strings.Replace(canonical, `"models":[]`, `"models":null`, 1)},
+		{"model states omitted", strings.Replace(canonical, `,"model_states":{}`, "", 1)},
+		{"model states null", strings.Replace(canonical, `"model_states":{}`, `"model_states":null`, 1)},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := decodePlatformGeneration(test.raw); !errors.Is(err, ErrPlatformGenerationInvalid) {
+				t.Fatalf("decode error=%v, want invalid", err)
+			}
+		})
 	}
 }
 
@@ -618,10 +641,10 @@ func TestPlatformGenerationRecordRejectsInvalidLeaseAndTombstoneShapes(t *testin
 		GenerationID: generationTestID, State: PlatformGenerationStateCancelled, Models: []string{}, ModelStates: map[string]PlatformGenerationModel{},
 		CreatedAtMillis: 1000, UpdatedAtMillis: 1000,
 	}
-	committing := PlatformGenerationSnapshot{
-		GenerationID: generationTestID, Mode: PlatformGenerationModeSingle, Models: []string{"a"}, State: PlatformGenerationStateCommitting,
-		ModelStates:     map[string]PlatformGenerationModel{"a": {State: PlatformGenerationStateCompleted}},
-		CreatedAtMillis: 1000, UpdatedAtMillis: 1000,
+	failed := PlatformGenerationSnapshot{
+		GenerationID: generationTestID, Mode: PlatformGenerationModeSingle, Models: []string{"a"}, State: PlatformGenerationStateFailed,
+		ModelStates:     map[string]PlatformGenerationModel{"a": {State: PlatformGenerationStateFailed, ErrorCode: "internal_error"}},
+		CreatedAtMillis: 1000, UpdatedAtMillis: 1000, ErrorCode: "internal_error",
 	}
 	tests := []struct {
 		name     string
@@ -654,9 +677,9 @@ func TestPlatformGenerationRecordRejectsInvalidLeaseAndTombstoneShapes(t *testin
 			s.LeaseUntilMillis = 31000
 			return s
 		}()},
-		{"empty identity non-cancelled", func() PlatformGenerationSnapshot { s := claimed; s.GenerationID = ""; return s }()},
-		{"non-running claimed record retaining lease", func() PlatformGenerationSnapshot {
-			s := committing
+		{"non-cancelled empty identity", func() PlatformGenerationSnapshot { s := tombstone; s.State = PlatformGenerationStateRunning; return s }()},
+		{"terminal failed record retaining lease", func() PlatformGenerationSnapshot {
+			s := failed
 			s.LeaseOwnerSHA256 = strings.Repeat("a", 64)
 			s.LeaseUntilMillis = 31000
 			return s
@@ -694,11 +717,11 @@ func TestPlatformGenerationRecordAcceptsLegacyRecordsWithoutLease(t *testing.T) 
 }
 
 func TestPlatformGenerationClaimResultDoesNotMarshalLeaseToken(t *testing.T) {
-	raw, err := json.Marshal(PlatformGenerationClaimResult{LeaseToken: "secret"})
+	raw, err := json.Marshal(PlatformGenerationClaimResult{Snapshot: PlatformGenerationSnapshot{GenerationID: generationTestID}, Duplicate: true, LeaseToken: "secret"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(raw), "secret") {
+	if strings.Contains(string(raw), "secret") || strings.Contains(string(raw), `"Snapshot"`) || strings.Contains(string(raw), `"Duplicate"`) || !strings.Contains(string(raw), `"snapshot"`) || !strings.Contains(string(raw), `"duplicate":true`) {
 		t.Fatalf("claim result leaked lease token: %s", raw)
 	}
 }

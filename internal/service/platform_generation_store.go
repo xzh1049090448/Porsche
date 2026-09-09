@@ -82,9 +82,9 @@ type PlatformGenerationClaimInput struct {
 }
 
 type PlatformGenerationClaimResult struct {
-	Snapshot   PlatformGenerationSnapshot
-	Duplicate  bool
-	LeaseToken string `json:"-"`
+	Snapshot   PlatformGenerationSnapshot `json:"snapshot"`
+	Duplicate  bool                       `json:"duplicate"`
+	LeaseToken string                     `json:"-"`
 }
 
 var platformGenerationLeaseEntropy = rand.Read
@@ -562,8 +562,8 @@ func validatePlatformGenerationInput(input PlatformGenerationClaimInput) error {
 }
 
 func validPlatformGenerationSnapshot(snapshot PlatformGenerationSnapshot) bool {
-	if snapshot.State == PlatformGenerationStateCancelled && snapshot.Mode == 0 && len(snapshot.Models) == 0 && len(snapshot.ModelStates) == 0 && snapshot.ErrorCode == "" && snapshot.LeaseOwnerSHA256 == "" && snapshot.LeaseUntilMillis == 0 {
-		return platformSSEV2CanonicalUUID(snapshot.GenerationID) && snapshot.CreatedAtMillis > 0 && platformSSEV2SafeInteger(snapshot.CreatedAtMillis) && snapshot.UpdatedAtMillis == snapshot.CreatedAtMillis
+	if snapshot.State == PlatformGenerationStateCancelled && snapshot.Mode == 0 {
+		return validPlatformGenerationTombstone(snapshot)
 	}
 	if validatePlatformGenerationInput(PlatformGenerationClaimInput{UserID: 1, GenerationID: snapshot.GenerationID, Mode: snapshot.Mode, Models: snapshot.Models, NowMillis: snapshot.CreatedAtMillis}) != nil || !platformSSEV2SafeInteger(snapshot.UpdatedAtMillis) || snapshot.UpdatedAtMillis < snapshot.CreatedAtMillis || len(snapshot.ModelStates) != len(snapshot.Models) {
 		return false
@@ -627,6 +627,10 @@ func validPlatformGenerationSnapshot(snapshot PlatformGenerationSnapshot) bool {
 		return terminalModels == len(snapshot.Models)
 	}
 	return true
+}
+
+func validPlatformGenerationTombstone(snapshot PlatformGenerationSnapshot) bool {
+	return snapshot.Models != nil && snapshot.ModelStates != nil && len(snapshot.Models) == 0 && len(snapshot.ModelStates) == 0 && snapshot.ErrorCode == "" && snapshot.LeaseOwnerSHA256 == "" && snapshot.LeaseUntilMillis == 0 && platformSSEV2CanonicalUUID(snapshot.GenerationID) && snapshot.CreatedAtMillis > 0 && platformSSEV2SafeInteger(snapshot.CreatedAtMillis) && snapshot.UpdatedAtMillis == snapshot.CreatedAtMillis
 }
 
 func validPlatformGenerationLease(snapshot PlatformGenerationSnapshot) bool {
