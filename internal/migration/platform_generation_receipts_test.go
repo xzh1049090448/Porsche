@@ -617,8 +617,8 @@ func assertPlatformGenerationReceiptMigrationContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(migrations) != 12 {
-		t.Fatalf("All() returned %d migrations, want 12", len(migrations))
+	if len(migrations) != 13 {
+		t.Fatalf("All() returned %d migrations, want 13", len(migrations))
 	}
 	migration := migrations[10]
 	if migration.Version != "0011" {

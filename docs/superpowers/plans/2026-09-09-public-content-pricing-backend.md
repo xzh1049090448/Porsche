@@ -65,7 +65,7 @@ git commit -m "docs: freeze public pricing contract"
 
 - [ ] **Step 1: Write RED tests for schema and model tags**
 
-Require tables `public_model_configs`, `public_price_snapshots`, `public_price_snapshot_items`, `public_publication_state`, `public_content_drafts`, `public_content_releases`, `upstream_model_observations`, `root_alerts`, `root_alert_receipts`, and `public_render_jobs`. Require decimal columns `DECIMAL(20,8)`, immutable identity uniqueness, revision/status indexes, foreign keys, audit columns, and down order.
+Require tables `public_model_configs`, `public_price_draft_state`, `public_price_snapshots`, `public_price_snapshot_items`, `public_publication_state`, `public_content_drafts`, `public_content_releases`, `upstream_model_observations`, `root_alerts`, `root_alert_receipts`, and `public_render_jobs`. The additive `0013` migration seeds the independent `pricing` draft revision singleton. Require decimal columns `DECIMAL(20,8)`, immutable identity uniqueness, revision/status indexes, foreign keys, audit columns, and down order.
 
 - [ ] **Step 2: Run migration tests and verify RED**
 

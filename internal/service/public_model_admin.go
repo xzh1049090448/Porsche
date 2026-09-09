@@ -208,6 +208,10 @@ func (s *PublicModelAdminService) Create(ctx context.Context, actorID int64, in 
 		if err != nil {
 			return err
 		}
+		draft, err := lockPublicPriceDraftState(tx)
+		if err != nil {
+			return err
+		}
 		var reserved int64
 		if err = tx.Model(&models.PublicModelConfig{}).Where("model_key = ? OR upstream_model_id = ?", in.ModelKey, in.UpstreamModelID).Count(&reserved).Error; err != nil {
 			return err
@@ -236,6 +240,9 @@ func (s *PublicModelAdminService) Create(ctx context.Context, actorID int64, in 
 			return mapPublicModelWriteError(err)
 		}
 		if err = writePublicModelAudit(tx, s.nextGUID(), now, actor.ID, "public_models.create", m.ModelKey, m.Guid, publicModelAuditDetail(m.ModelKey, m.Revision, "")); err != nil {
+			return err
+		}
+		if err = advancePublicPriceDraftState(tx, draft, actor.ID, now); err != nil {
 			return err
 		}
 		out = projectPublicModel(m)
@@ -377,6 +384,10 @@ func (s *PublicModelAdminService) mutate(ctx context.Context, actorID, guid, exp
 		if err != nil {
 			return err
 		}
+		draft, err := lockPublicPriceDraftState(tx)
+		if err != nil {
+			return err
+		}
 		var m models.PublicModelConfig
 		err = tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("guid = ? AND is_deleted = 0", guid).First(&m).Error
 		if err == gorm.ErrRecordNotFound {
@@ -401,6 +412,9 @@ func (s *PublicModelAdminService) mutate(ctx context.Context, actorID, guid, exp
 		if err = writePublicModelAudit(tx, s.nextGUID(), now, actor.ID, action, m.ModelKey, m.Guid, publicModelAuditDetail(m.ModelKey, m.Revision, reason)); err != nil {
 			return err
 		}
+		if err = advancePublicPriceDraftState(tx, draft, actor.ID, now); err != nil {
+			return err
+		}
 		out = projectPublicModel(m)
 		return nil
 	})
@@ -408,6 +422,23 @@ func (s *PublicModelAdminService) mutate(ctx context.Context, actorID, guid, exp
 		return nil, err
 	}
 	return &out, nil
+}
+
+func lockPublicPriceDraftState(tx *gorm.DB) (*models.PublicPriceDraftState, error) {
+	var state models.PublicPriceDraftState
+	err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("state_key = ? AND is_deleted = 0", "pricing").First(&state).Error
+	if err != nil {
+		return nil, errUnavailable("public price draft state unavailable")
+	}
+	return &state, nil
+}
+func advancePublicPriceDraftState(tx *gorm.DB, state *models.PublicPriceDraftState, actor, now int64) error {
+	result := tx.Model(&models.PublicPriceDraftState{}).Where("id = ? AND revision = ?", state.ID, state.Revision).Updates(map[string]any{"revision": state.Revision + 1, "updated_at": now, "updated_by": actor})
+	if result.Error != nil || result.RowsAffected != 1 {
+		return errConflict("public price draft revision conflict")
+	}
+	state.Revision++
+	return nil
 }
 
 func lockPublicModelRoot(tx *gorm.DB, id int64) (*models.User, error) {

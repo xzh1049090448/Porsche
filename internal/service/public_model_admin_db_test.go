@@ -46,7 +46,7 @@ func openPublicModelDBFixture(t *testing.T) *publicModelDBFixture {
 	if err = db.Raw("SELECT DATABASE()").Scan(&actual).Error; err != nil || actual != name {
 		t.Fatal("test database identity mismatch")
 	}
-	for _, table := range []string{"public_model_configs", "upstream_model_observations", "audit_logs", "users"} {
+	for _, table := range []string{"public_model_configs", "upstream_model_observations", "audit_logs", "users", "public_price_draft_state"} {
 		if !db.Migrator().HasTable(table) {
 			t.Fatalf("BLOCKED_FIXTURE: migration missing %s", table)
 		}
@@ -109,6 +109,7 @@ func TestPublicModelDBLifecycleReservationOmissionAuditAndRollback(t *testing.T)
 	in := f.input(suffix)
 	f.observe(t, in.UpstreamModelID)
 	s := NewPublicModelAdminService(f.db)
+	initialDraftRevision := publicPriceDraftRevision(t, f.db)
 	m, err := s.Create(ctx, f.actor.ID, in)
 	if err != nil || m.Revision != 1 {
 		t.Fatalf("create %#v %v", m, err)
@@ -164,6 +165,9 @@ func TestPublicModelDBLifecycleReservationOmissionAuditAndRollback(t *testing.T)
 	if audits != 5 {
 		t.Fatalf("audits=%d", audits)
 	}
+	if got := publicPriceDraftRevision(t, f.db); got != initialDraftRevision+5 {
+		t.Fatalf("draft revision=%d want=%d", got, initialDraftRevision+5)
+	}
 	rollback := f.input(suffix + "x")
 	f.observe(t, rollback.UpstreamModelID)
 	broken := NewPublicModelAdminService(f.db)
@@ -182,6 +186,62 @@ func TestPublicModelDBLifecycleReservationOmissionAuditAndRollback(t *testing.T)
 	f.db.Model(&models.PublicModelConfig{}).Where("model_key = ?", rollback.ModelKey).Count(&count)
 	if count != 0 {
 		t.Fatal("audit failure committed")
+	}
+	if got := publicPriceDraftRevision(t, f.db); got != initialDraftRevision+5 {
+		t.Fatalf("audit rollback advanced draft=%d", got)
+	}
+}
+
+func publicPriceDraftRevision(t *testing.T, db *gorm.DB) int64 {
+	t.Helper()
+	var state models.PublicPriceDraftState
+	if err := db.Where("state_key='pricing' AND is_deleted=0").First(&state).Error; err != nil {
+		t.Fatal(err)
+	}
+	return state.Revision
+}
+
+func TestPublicModelConcurrentTwoRootsAdvanceDraftRevisionTwice(t *testing.T) {
+	f := openPublicModelDBFixture(t)
+	start := publicPriceDraftRevision(t, f.db)
+	var second models.User
+	if err := f.db.First(&second, f.actor.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	second.ID = 0
+	second.Guid = persistence.NextGUID()
+	name := fmt.Sprintf("pm%d", persistence.NextGUID()%1e9)
+	second.Username = &name
+	if err := f.db.Create(&second).Error; err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := f.db.Where("user_id=?", second.ID).Delete(&models.AuditLog{}).Error; err != nil {
+			t.Error(err)
+		}
+		if err := f.db.Where("created_by=?", second.ID).Delete(&models.PublicModelConfig{}).Error; err != nil {
+			t.Error(err)
+		}
+		if err := f.db.Delete(&models.User{}, second.ID).Error; err != nil {
+			t.Error(err)
+		}
+	})
+	a, b := f.input(fmt.Sprint(persistence.NextGUID())), f.input(fmt.Sprint(persistence.NextGUID()))
+	f.observe(t, a.UpstreamModelID)
+	f.observe(t, b.UpstreamModelID)
+	errs := make(chan error, 2)
+	go func() {
+		_, e := NewPublicModelAdminService(f.db).Create(context.Background(), f.actor.ID, a)
+		errs <- e
+	}()
+	go func() { _, e := NewPublicModelAdminService(f.db).Create(context.Background(), second.ID, b); errs <- e }()
+	for i := 0; i < 2; i++ {
+		if e := <-errs; e != nil {
+			t.Fatal(e)
+		}
+	}
+	if got := publicPriceDraftRevision(t, f.db); got != start+2 {
+		t.Fatalf("draft revision=%d want=%d", got, start+2)
 	}
 }
 

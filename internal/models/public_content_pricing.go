@@ -369,6 +369,17 @@ type PublicPublicationState struct {
 
 func (PublicPublicationState) TableName() string { return "public_publication_state" }
 
+// PublicPriceDraftState is the singleton optimistic revision for the aggregate
+// publishable model draft. It is independent from committed publication state.
+type PublicPriceDraftState struct {
+	ID          int64 `gorm:"column:id;type:bigint;not null;primaryKey;autoIncrement" json:"-"`
+	AuditFields `gorm:"embedded" json:"-"`
+	StateKey    string `gorm:"column:state_key;type:varchar(64);not null;<-:create" json:"-"`
+	Revision    int64  `gorm:"column:revision;type:bigint;not null" json:"revision"`
+}
+
+func (PublicPriceDraftState) TableName() string { return "public_price_draft_state" }
+
 type PublicContentDraft struct {
 	ID           int64 `gorm:"column:id;type:bigint;not null;primaryKey;autoIncrement" json:"-"`
 	AuditFields  `gorm:"embedded" json:"-"`

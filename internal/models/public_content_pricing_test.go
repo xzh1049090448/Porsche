@@ -17,6 +17,7 @@ func TestPublicContentPricingModelsUseExplicitTablesAndStableEnums(t *testing.T)
 		{PublicPriceSnapshot{}, "public_price_snapshots"},
 		{PublicPriceSnapshotItem{}, "public_price_snapshot_items"},
 		{PublicPublicationState{}, "public_publication_state"},
+		{PublicPriceDraftState{}, "public_price_draft_state"},
 		{PublicContentDraft{}, "public_content_drafts"},
 		{PublicContentRelease{}, "public_content_releases"},
 		{UpstreamModelObservation{}, "upstream_model_observations"},
@@ -80,6 +81,7 @@ func TestPublishedPublicContentPricingModelsAreCreateOnly(t *testing.T) {
 		fields []string
 	}{
 		{PublicModelConfig{}, []string{"ModelKey", "UpstreamModelID"}},
+		{PublicPriceDraftState{}, []string{"StateKey"}},
 		{PublicPriceSnapshot{}, []string{
 			"Guid", "CreatedAt", "CreatedBy", "UpdatedAt", "UpdatedBy", "Version", "Reason", "SourceRevision", "ContentHash", "RestoredFromSnapshotID", "PublishedAt",
 		}},

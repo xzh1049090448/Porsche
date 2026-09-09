@@ -84,6 +84,12 @@ var publicContentPricingUp []byte
 //go:embed sql/0012_public_content_pricing.down.sql
 var publicContentPricingDown []byte
 
+//go:embed sql/0013_public_price_draft_state.up.sql
+var publicPriceDraftStateUp []byte
+
+//go:embed sql/0013_public_price_draft_state.down.sql
+var publicPriceDraftStateDown []byte
+
 // Migration is an immutable, embedded schema version.
 type Migration struct {
 	Version string
@@ -112,6 +118,7 @@ func All() ([]Migration, error) {
 		{Version: "0010", UpSQL: adminOperationResponseTargetsUp, DownSQL: adminOperationResponseTargetsDown},
 		{Version: "0011", UpSQL: platformGenerationReceiptsUp, DownSQL: platformGenerationReceiptsDown},
 		{Version: "0012", UpSQL: publicContentPricingUp, DownSQL: publicContentPricingDown},
+		{Version: "0013", UpSQL: publicPriceDraftStateUp, DownSQL: publicPriceDraftStateDown},
 	}
 	sort.Slice(migrations, func(i, j int) bool { return migrations[i].Version < migrations[j].Version })
 	return migrations, nil
@@ -208,6 +215,11 @@ func Up(ctx context.Context, db *gorm.DB, nextGUID func() int64, nowMillis func(
 						return err
 					}
 				}
+				if migration.Version == "0013" {
+					if err := VerifyPublicPriceDraftStateSchema(ctx, conn); err != nil {
+						return err
+					}
+				}
 				continue
 			}
 			if migration.Version == "0007" {
@@ -221,6 +233,22 @@ func Up(ctx context.Context, db *gorm.DB, nextGUID func() int64, nowMillis func(
 			} else if migration.Version == "0010" {
 				if err := applyAdminOperationResponseTargetsMigration(conn, migration.UpSQL); err != nil {
 					return fmt.Errorf("apply migration %s: %w", migration.Version, err)
+				}
+			} else if migration.Version == "0013" {
+				parts := strings.Split(string(migration.UpSQL), "-- porsche:seed-public-price-draft-state")
+				if len(parts) != 2 {
+					return fmt.Errorf("apply migration 0013: invalid seed marker")
+				}
+				statements := splitStatements(parts[0])
+				if len(statements) != 1 {
+					return fmt.Errorf("apply migration 0013: invalid statement count")
+				}
+				if err := conn.Exec(statements[0]).Error; err != nil {
+					return fmt.Errorf("apply migration 0013: %w", err)
+				}
+				now := nowMillis()
+				if err := conn.Exec("INSERT INTO public_price_draft_state (guid,state_key,revision,created_at,updated_at,is_deleted) VALUES (?,'pricing',1,?,?,0) ON DUPLICATE KEY UPDATE state_key=VALUES(state_key)", nextGUID(), now, now).Error; err != nil {
+					return fmt.Errorf("apply migration 0013: %w", err)
 				}
 			} else {
 				for _, statement := range splitStatements(string(migration.UpSQL)) {
@@ -264,6 +292,11 @@ func Up(ctx context.Context, db *gorm.DB, nextGUID func() int64, nowMillis func(
 			}
 			if migration.Version == "0012" {
 				if err := VerifyPublicContentPricingSchema(ctx, conn); err != nil {
+					return err
+				}
+			}
+			if migration.Version == "0013" {
+				if err := VerifyPublicPriceDraftStateSchema(ctx, conn); err != nil {
 					return err
 				}
 			}
@@ -330,7 +363,10 @@ func Verify(ctx context.Context, db *gorm.DB) error {
 	if err := VerifyPlatformGenerationReceiptSchema(ctx, db); err != nil {
 		return err
 	}
-	return VerifyPublicContentPricingSchema(ctx, db)
+	if err := VerifyPublicContentPricingSchema(ctx, db); err != nil {
+		return err
+	}
+	return VerifyPublicPriceDraftStateSchema(ctx, db)
 }
 
 // VerifyApplied is the side-effect-free portion of Verify, kept separate so

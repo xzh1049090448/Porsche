@@ -13,7 +13,7 @@ func TestAdminActionOutboxMigrationContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(migrations) != 12 || migrations[5].Version != "0006" || migrations[6].Version != "0007" || migrations[7].Version != "0008" || migrations[8].Version != "0009" || migrations[9].Version != "0010" || migrations[10].Version != "0011" || migrations[11].Version != "0012" {
+	if len(migrations) != 13 || migrations[5].Version != "0006" || migrations[6].Version != "0007" || migrations[7].Version != "0008" || migrations[8].Version != "0009" || migrations[9].Version != "0010" || migrations[10].Version != "0011" || migrations[11].Version != "0012" || migrations[12].Version != "0013" {
 		t.Fatalf("admin action outbox migration 0006 is missing: %#v", migrations)
 	}
 
