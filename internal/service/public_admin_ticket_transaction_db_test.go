@@ -122,6 +122,7 @@ func TestPublicPriceTicketAndBusinessCommitRollbackReplayRealDB(t *testing.T) {
 	request := PublicPriceSnapshotRequest{ActorID: f.actor.ID, ExpectedRevision: revision, IdempotencyKey: "ticket-price-publish"}
 	intent := actionsecurity.PublicPricingPublishIntent{ExpectedRevision: revision}
 	ticket, option := f.ticket(t, actionsecurity.ActionPublicPricingPublish, nil, intent)
+	publishBefore := publicPriceSnapshotFixtureCounts(t, f.db, f.actor.ID)
 	for _, failurePoint := range []string{"replay_lookup", "audit"} {
 		broken := NewPublicPriceSnapshotService(f.db)
 		broken.fail = func(point string) error {
@@ -134,12 +135,16 @@ func TestPublicPriceTicketAndBusinessCommitRollbackReplayRealDB(t *testing.T) {
 			t.Fatalf("injected %s publish error=%v", failurePoint, err)
 		}
 		f.assertTicket(t, actionsecurity.ActionPublicPricingPublish, false)
+		if got := publicPriceSnapshotFixtureCounts(t, f.db, f.actor.ID); got != publishBefore {
+			t.Fatalf("injected %s changed business rows before=%v after=%v", failurePoint, publishBefore, got)
+		}
 	}
 	release, err := NewPublicPriceSnapshotService(f.db).Publish(ctx, request, option)
 	if err != nil {
 		t.Fatalf("retry same ticket: %v", err)
 	}
 	f.assertTicket(t, actionsecurity.ActionPublicPricingPublish, true)
+	publishedCounts := publicPriceSnapshotFixtureCounts(t, f.db, f.actor.ID)
 	if _, err = NewPublicPriceSnapshotService(f.db).Publish(ctx, request, option); !errors.Is(err, ErrActionVerificationForbidden) {
 		t.Fatalf("consumed ticket replay=%v ticket=%q", err, ticket)
 	}
@@ -147,6 +152,9 @@ func TestPublicPriceTicketAndBusinessCommitRollbackReplayRealDB(t *testing.T) {
 	replay, err := NewPublicPriceSnapshotService(f.db).Publish(ctx, request, fresh)
 	if err != nil || replay.GUID != release.GUID {
 		t.Fatalf("fresh ticket replay=%#v err=%v", replay, err)
+	}
+	if got := publicPriceSnapshotFixtureCounts(t, f.db, f.actor.ID); got != publishedCounts {
+		t.Fatalf("fresh-ticket replay duplicated business rows before=%v after=%v", publishedCounts, got)
 	}
 	f.assertTicket(t, actionsecurity.ActionPublicPricingPublish, true)
 
@@ -161,10 +169,14 @@ func TestPublicPriceTicketAndBusinessCommitRollbackReplayRealDB(t *testing.T) {
 		}
 		return nil
 	}
+	restoreBefore := publicPriceSnapshotFixtureCounts(t, f.db, f.actor.ID)
 	if _, err = brokenRestore.Restore(ctx, restoreRequest, restoreOption); status(err) != 503 {
 		t.Fatalf("injected restore error=%v", err)
 	}
 	f.assertTicket(t, actionsecurity.ActionPublicPricingRestore, false)
+	if got := publicPriceSnapshotFixtureCounts(t, f.db, f.actor.ID); got != restoreBefore {
+		t.Fatalf("failed restore changed business rows before=%v after=%v", restoreBefore, got)
+	}
 	if _, err = NewPublicPriceSnapshotService(f.db).Restore(ctx, restoreRequest, restoreOption); err != nil {
 		t.Fatalf("restore retry same ticket: %v", err)
 	}
@@ -281,6 +293,7 @@ func TestPublicContentTicketAndBusinessCommitRollbackReplayRealDB(t *testing.T) 
 	priceGUID := mustGUID(t, seed.priceGUID)
 	intent := actionsecurity.PublicContentPublishIntent{PriceReleaseGUID: priceGUID, ExpectedRevision: draft.Revision}
 	_, option := f.ticket(t, actionsecurity.ActionPublicContentPublish, &priceGUID, intent)
+	publishBefore := contentDBCounts(t, f.db)
 	for _, failurePoint := range []string{"replay_lookup", "pointer"} {
 		broken := NewPublicContentService(f.db)
 		broken.fail = func(point string) error {
@@ -293,12 +306,16 @@ func TestPublicContentTicketAndBusinessCommitRollbackReplayRealDB(t *testing.T) 
 			t.Fatalf("injected %s publish error=%v", failurePoint, err)
 		}
 		f.assertTicket(t, actionsecurity.ActionPublicContentPublish, false)
+		if got := contentDBCounts(t, f.db); got != publishBefore {
+			t.Fatalf("injected %s changed business rows before=%v after=%v", failurePoint, publishBefore, got)
+		}
 	}
 	release, err := svc.Publish(ctx, request, option)
 	if err != nil {
 		t.Fatalf("retry same ticket: %v", err)
 	}
 	f.assertTicket(t, actionsecurity.ActionPublicContentPublish, true)
+	publishedCounts := contentDBCounts(t, f.db)
 	if _, err = svc.Publish(ctx, request, option); !errors.Is(err, ErrActionVerificationForbidden) {
 		t.Fatalf("consumed ticket replay=%v", err)
 	}
@@ -306,6 +323,9 @@ func TestPublicContentTicketAndBusinessCommitRollbackReplayRealDB(t *testing.T) 
 	replay, err := svc.Publish(ctx, request, fresh)
 	if err != nil || replay.GUID != release.GUID {
 		t.Fatalf("fresh ticket replay=%#v err=%v", replay, err)
+	}
+	if got := contentDBCounts(t, f.db); got != publishedCounts {
+		t.Fatalf("fresh-ticket replay duplicated business rows before=%v after=%v", publishedCounts, got)
 	}
 	f.assertTicket(t, actionsecurity.ActionPublicContentPublish, true)
 
@@ -321,10 +341,14 @@ func TestPublicContentTicketAndBusinessCommitRollbackReplayRealDB(t *testing.T) 
 		}
 		return nil
 	}
+	restoreBefore := contentDBCounts(t, f.db)
 	if _, err = brokenRestore.Restore(ctx, restoreRequest, restoreOption); status(err) != 503 {
 		t.Fatalf("injected restore error=%v", err)
 	}
 	f.assertTicket(t, actionsecurity.ActionPublicContentRestore, false)
+	if got := contentDBCounts(t, f.db); got != restoreBefore {
+		t.Fatalf("failed restore changed business rows before=%v after=%v", restoreBefore, got)
+	}
 	if _, err = svc.Restore(ctx, restoreRequest, restoreOption); err != nil {
 		t.Fatalf("restore retry same ticket: %v", err)
 	}
