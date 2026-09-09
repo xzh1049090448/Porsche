@@ -1,7 +1,10 @@
 package service
 
 import (
+	"bytes"
+	"encoding/base64"
 	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -9,6 +12,72 @@ import (
 )
 
 const cancellationRegistryGenerationID = "c0a8012e-ef48-4a5d-9ca7-9a78d055e7f6"
+
+func TestPlatformGenerationCancellationRegistryRegistrationTokenUsesSequentialRawURLEncoding(t *testing.T) {
+	raw := make([]byte, 64)
+	for index := range raw {
+		raw[index] = byte(index)
+	}
+	reader := bytes.NewReader(raw)
+
+	first, err := newPlatformGenerationCancellationRegistrationTokenFrom(reader)
+	if err != nil {
+		t.Fatalf("first token error = %v", err)
+	}
+	second, err := newPlatformGenerationCancellationRegistrationTokenFrom(reader)
+	if err != nil {
+		t.Fatalf("second token error = %v", err)
+	}
+	if want := base64.RawURLEncoding.EncodeToString(raw[:32]); first != want {
+		t.Fatalf("first token = %q, want %q", first, want)
+	}
+	if want := base64.RawURLEncoding.EncodeToString(raw[32:]); second != want {
+		t.Fatalf("second token = %q, want %q", second, want)
+	}
+	if len(first) != 43 || len(second) != 43 {
+		t.Fatalf("token lengths = %d, %d, want 43, 43", len(first), len(second))
+	}
+	const rawURLAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+	for _, token := range []string{first, second} {
+		for _, character := range token {
+			if !strings.ContainsRune(rawURLAlphabet, character) {
+				t.Fatalf("token %q contains non-RawURL character %q", token, character)
+			}
+		}
+	}
+	if first == second {
+		t.Fatal("sequential tokens are equal")
+	}
+}
+
+func TestPlatformGenerationCancellationRegistryNilAndZeroValueReceivers(t *testing.T) {
+	var nilRegistry *PlatformGenerationCancellationRegistry
+	if token, err := nilRegistry.Register(1, cancellationRegistryGenerationID, func() {}); token != "" || err != ErrPlatformGenerationUnavailable {
+		t.Fatalf("nil Register() = (%q, %v), want empty token and ErrPlatformGenerationUnavailable", token, err)
+	}
+	if nilRegistry.Cancel(1, cancellationRegistryGenerationID) {
+		t.Fatal("nil Cancel() = true, want false")
+	}
+	if nilRegistry.Unregister(1, cancellationRegistryGenerationID, "") {
+		t.Fatal("nil Unregister() = true, want false")
+	}
+
+	var zeroValue PlatformGenerationCancellationRegistry
+	var calls atomic.Int64
+	token, err := zeroValue.Register(1, cancellationRegistryGenerationID, func() { calls.Add(1) })
+	if err != nil || token == "" {
+		t.Fatalf("zero-value Register() = (%q, %v), want nonempty token and nil error", token, err)
+	}
+	if !zeroValue.Cancel(1, cancellationRegistryGenerationID) {
+		t.Fatal("zero-value Cancel() = false, want true")
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("zero-value callback calls = %d, want 1", got)
+	}
+	if !zeroValue.Unregister(1, cancellationRegistryGenerationID, token) {
+		t.Fatal("zero-value Unregister() = false, want true")
+	}
+}
 
 func TestPlatformGenerationCancellationRegistryRejectsInvalidRegistrationWithoutMutation(t *testing.T) {
 	registry := newPlatformGenerationCancellationRegistryFrom(errorReader{})

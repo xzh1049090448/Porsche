@@ -3,9 +3,12 @@ package service
 import (
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"io"
 	"sync"
 )
+
+const platformGenerationCancellationRegistrationTokenBytes = 32
 
 type platformGenerationCancellationKey struct {
 	UserID       int64
@@ -38,6 +41,21 @@ func newPlatformGenerationCancellationRegistryFrom(reader io.Reader) *PlatformGe
 	}
 }
 
+func newPlatformGenerationCancellationRegistrationToken() (string, error) {
+	return newPlatformGenerationCancellationRegistrationTokenFrom(rand.Reader)
+}
+
+func newPlatformGenerationCancellationRegistrationTokenFrom(reader io.Reader) (string, error) {
+	if reader == nil {
+		return "", ErrPlatformGenerationUnavailable
+	}
+	raw := make([]byte, platformGenerationCancellationRegistrationTokenBytes)
+	if _, err := io.ReadFull(reader, raw); err != nil {
+		return "", ErrPlatformGenerationUnavailable
+	}
+	return base64.RawURLEncoding.EncodeToString(raw), nil
+}
+
 func (r *PlatformGenerationCancellationRegistry) Register(userID int64, generationID string, cancel context.CancelFunc) (string, error) {
 	if validatePlatformGenerationIdentity(userID, generationID) != nil || cancel == nil {
 		return "", ErrPlatformGenerationInvalid
@@ -47,14 +65,23 @@ func (r *PlatformGenerationCancellationRegistry) Register(userID int64, generati
 	}
 
 	key := platformGenerationCancellationKey{UserID: userID, GenerationID: generationID}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if _, exists := r.entries[key]; exists {
-		return "", ErrPlatformGenerationConflict
+	var token string
+	var err error
+	if r.reader == nil {
+		token, err = newPlatformGenerationCancellationRegistrationToken()
+	} else {
+		token, err = newPlatformGenerationCancellationRegistrationTokenFrom(r.reader)
 	}
-	token, _, err := newPlatformGenerationLeaseFrom(r.reader)
 	if err != nil {
 		return "", err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.entries == nil {
+		r.entries = make(map[platformGenerationCancellationKey]platformGenerationCancellationEntry)
+	}
+	if _, exists := r.entries[key]; exists {
+		return "", ErrPlatformGenerationConflict
 	}
 	r.entries[key] = platformGenerationCancellationEntry{token: token, cancel: cancel}
 	return token, nil
