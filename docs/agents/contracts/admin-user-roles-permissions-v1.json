@@ -9,7 +9,7 @@
     "verification": "compare raw bytes before joint acceptance"
   },
   "common": {
-    "authentication": "existing Bearer authentication; every stage rechecks the fresh actor, originating logical session, Root-only capability, target visibility, target state, role, auth version, policy version, and catalog version when applicable",
+    "authentication": "existing Access Bearer authentication only; reject Refresh tokens as endpoint authentication; before every Issue, Execute, and Query authorization check require a fresh actor auth_version, current logical session and Redis revocation state, exact effective Root capability, target visibility, target state, target role, target auth version, policy version, and catalog version when applicable",
     "path_guid": "canonical positive decimal signed int64 string without sign, whitespace, or leading zero",
     "body_limit_bytes": 4096,
     "strict_json": "one exact JSON object; reject unknown, duplicate, case-folded duplicate, invalid UTF-8, trailing fields, and oversized bodies before service invocation",

@@ -39,6 +39,7 @@ func TestA08ContractHasExactScopesAndStableResult(t *testing.T) {
 	}, "paired_frontend_contract")
 
 	assertContractKeys(t, a08ContractObject(t, document, "common"), "authentication", "path_guid", "body_limit_bytes", "strict_json", "reason", "versions", "overrides", "response_headers", "mutation_replay", "eligibility")
+	assertContractValue(t, document, "existing Access Bearer authentication only; reject Refresh tokens as endpoint authentication; before every Issue, Execute, and Query authorization check require a fresh actor auth_version, current logical session and Redis revocation state, exact effective Root capability, target visibility, target state, target role, target auth version, policy version, and catalog version when applicable", "common", "authentication")
 	assertContractValue(t, document, "canonical positive decimal signed int64 string without sign, whitespace, or leading zero", "common", "path_guid")
 	assertContractValue(t, document, json.Number("4096"), "common", "body_limit_bytes")
 	assertContractValue(t, document, "one exact JSON object; reject unknown, duplicate, case-folded duplicate, invalid UTF-8, trailing fields, and oversized bodies before service invocation", "common", "strict_json")
@@ -52,6 +53,12 @@ func TestA08ContractHasExactScopesAndStableResult(t *testing.T) {
 	assertContractValue(t, document, "never automatically replay Issue, POST execute, or PATCH execute; a 409 allows at most one owned refresh and requires a new user gesture", "common", "mutation_replay")
 	assertContractKeys(t, a08ContractObject(t, document, "common", "eligibility"), "actor", "promote_target", "demote_target", "permissions_target", "invisible_target", "visible_but_forbidden", "stale_or_same_state")
 	assertContractValue(t, document, "active Root with a current nonrevoked logical session and the exact effective capability; Admin overrides cannot obtain these capabilities", "common", "eligibility", "actor")
+	assertContractValue(t, document, "visible, nondeleted User in active or disabled state; never self or Root", "common", "eligibility", "promote_target")
+	assertContractValue(t, document, "visible, nondeleted Admin in active or disabled state; never self or Root", "common", "eligibility", "demote_target")
+	assertContractValue(t, document, "visible, nondeleted Admin in active or disabled state; never self or Root", "common", "eligibility", "permissions_target")
+	assertContractValue(t, document, "404", "common", "eligibility", "invisible_target")
+	assertContractValue(t, document, "403", "common", "eligibility", "visible_but_forbidden")
+	assertContractValue(t, document, "409 with no security-version, session, policy, audit, outbox, or operation-result mutation", "common", "eligibility", "stale_or_same_state")
 
 	actions := a08ContractObject(t, document, "actions")
 	assertContractKeys(t, actions, "users.promote", "users.demote", "users.permissions.write")
@@ -210,6 +217,9 @@ func TestA08ContractRejectsBoundaryMutations(t *testing.T) {
 		{"add unknown root key", `  "contract": "admin-user-roles-permissions-v1",`, "  \"contract\": \"admin-user-roles-permissions-v1\",\n  \"unknown\": true,"},
 		{"relax strict JSON", "reject unknown, duplicate", "allow unknown and duplicate"},
 		{"relax Root-only actor", "active Root with a current nonrevoked logical session", "active authenticated user with a current nonrevoked logical session"},
+		{"downgrade authentication to Bearer-only", "existing Access Bearer authentication only; reject Refresh tokens as endpoint authentication; before every Issue, Execute, and Query authorization check require a fresh actor auth_version, current logical session and Redis revocation state, exact effective Root capability, target visibility, target state, target role, target auth version, policy version, and catalog version when applicable", "existing Bearer authentication"},
+		{"allow promote self", "visible, nondeleted User in active or disabled state; never self or Root", "visible, nondeleted User in active or disabled state; self allowed; never Root"},
+		{"allow promote Root", "visible, nondeleted User in active or disabled state; never self or Root", "visible, nondeleted User or Root in active or disabled state; never self"},
 		{"relax ticket TTL", `        "ticket_ttl_seconds": 300`, `        "ticket_ttl_seconds": 3600`},
 		{"relax password ownership", "required independent owned UTF-8 bytes, cleared on every exit", "required password string"},
 		{"remove path target binding", `          "path_supplies_target_guid": true`, `          "path_supplies_target_guid": false`},
@@ -253,7 +263,14 @@ func validateA08ContractGuard(contents []byte) error {
 		{"canonical positive decimal signed int64 string without sign, whitespace, or leading zero", []string{"common", "path_guid"}},
 		{"one exact JSON object; reject unknown, duplicate, case-folded duplicate, invalid UTF-8, trailing fields, and oversized bodies before service invocation", []string{"common", "strict_json"}},
 		{"integer 1..2147483647 matching the current capability catalog", []string{"common", "versions", "catalog_version"}},
+		{"existing Access Bearer authentication only; reject Refresh tokens as endpoint authentication; before every Issue, Execute, and Query authorization check require a fresh actor auth_version, current logical session and Redis revocation state, exact effective Root capability, target visibility, target state, target role, target auth version, policy version, and catalog version when applicable", []string{"common", "authentication"}},
 		{"active Root with a current nonrevoked logical session and the exact effective capability; Admin overrides cannot obtain these capabilities", []string{"common", "eligibility", "actor"}},
+		{"visible, nondeleted User in active or disabled state; never self or Root", []string{"common", "eligibility", "promote_target"}},
+		{"visible, nondeleted Admin in active or disabled state; never self or Root", []string{"common", "eligibility", "demote_target"}},
+		{"visible, nondeleted Admin in active or disabled state; never self or Root", []string{"common", "eligibility", "permissions_target"}},
+		{"404", []string{"common", "eligibility", "invisible_target"}},
+		{"403", []string{"common", "eligibility", "visible_but_forbidden"}},
+		{"409 with no security-version, session, policy, audit, outbox, or operation-result mutation", []string{"common", "eligibility", "stale_or_same_state"}},
 		{false, []string{"actions", "users.promote", "issue", "body", "additionalProperties"}},
 		{"required independent owned UTF-8 bytes, cleared on every exit", []string{"actions", "users.promote", "issue", "body", "current_password"}},
 		{json.Number("300"), []string{"actions", "users.promote", "issue", "ticket_ttl_seconds"}},
