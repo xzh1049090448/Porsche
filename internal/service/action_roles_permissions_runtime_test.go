@@ -2,14 +2,74 @@ package service
 
 import (
 	"context"
+	"database/sql"
+	"database/sql/driver"
+	"errors"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/porsche/ai-gateway-go/internal/actionsecurity"
 	"github.com/porsche/ai-gateway-go/internal/models"
 	"github.com/porsche/ai-gateway-go/internal/security"
+	"gorm.io/driver/mysql"
+	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
+
+const a08GatewayIsolationDriverName = "porsche_a08_gateway_isolation"
+
+var (
+	a08GatewayIsolationDriverOnce sync.Once
+	a08GatewayIsolationScripts    sync.Map
+)
+
+type a08GatewayIsolationDriver struct{}
+type a08GatewayIsolationConn struct{ options chan driver.TxOptions }
+
+func (a08GatewayIsolationDriver) Open(name string) (driver.Conn, error) {
+	value, ok := a08GatewayIsolationScripts.Load(name)
+	if !ok {
+		return nil, errors.New("unknown A08 Gateway isolation script")
+	}
+	return &a08GatewayIsolationConn{options: value.(chan driver.TxOptions)}, nil
+}
+func (*a08GatewayIsolationConn) Prepare(string) (driver.Stmt, error) {
+	return nil, errors.New("prepare disabled")
+}
+func (*a08GatewayIsolationConn) Close() error { return nil }
+func (*a08GatewayIsolationConn) Begin() (driver.Tx, error) {
+	return nil, errors.New("legacy begin must not be used")
+}
+func (c *a08GatewayIsolationConn) BeginTx(_ context.Context, options driver.TxOptions) (driver.Tx, error) {
+	c.options <- options
+	return nil, errors.New("stop after observing isolation")
+}
+
+func TestA08RuntimeGatewayAuthenticationBeginsReadCommitted(t *testing.T) {
+	a08GatewayIsolationDriverOnce.Do(func() { sql.Register(a08GatewayIsolationDriverName, a08GatewayIsolationDriver{}) })
+	dsn := fmt.Sprintf("gateway-isolation-%d", testSnowflake.Next())
+	options := make(chan driver.TxOptions, 1)
+	a08GatewayIsolationScripts.Store(dsn, options)
+	t.Cleanup(func() { a08GatewayIsolationScripts.Delete(dsn) })
+	root, err := sql.Open(a08GatewayIsolationDriverName, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = root.Close() })
+	db, err := gorm.Open(mysql.New(mysql.Config{Conn: root, SkipInitializeWithVersion: true}), &gorm.Config{DisableAutomaticPing: true, Logger: logger.Default.LogMode(logger.Silent)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if principal, err := NewGatewayTokenService(db).AuthenticatePrincipal("sk-gw-isolation-probe", "", "", time.Now()); principal != nil || !IsGatewayTokenError(err, GatewayTokenUnavailable) {
+		t.Fatalf("probe principal/error = %#v/%v", principal, err)
+	}
+	observed := <-options
+	if observed.Isolation != driver.IsolationLevel(sql.LevelReadCommitted) {
+		t.Fatalf("Gateway authentication isolation=%v, want READ COMMITTED", observed.Isolation)
+	}
+}
 
 type a08RuntimeCredentials struct {
 	access  string

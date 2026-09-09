@@ -336,7 +336,7 @@ func (s *GatewayTokenService) AuthenticatePrincipal(secret, ip, model string, no
 		principal = &GatewayTokenPrincipal{valid: true, token: token, keyAllowedModels: cloneJSONSlice(keyAllowed), ownerAllowedModels: cloneJSONSlice(ownerAllowed),
 			ownerRole: owner.Role, ownerAuthVersion: owner.AuthVersion, ownerPolicyVersion: policyVersion, ownerCapabilities: capabilities}
 		return nil
-	})
+	}, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		for _, expected := range []GatewayTokenError{GatewayTokenInvalid, GatewayTokenDisabled, GatewayTokenRevoked, GatewayTokenExpired, GatewayTokenIPDenied, GatewayTokenModelDenied, GatewayTokenUnavailable} {
 			if errors.Is(err, expected) {
