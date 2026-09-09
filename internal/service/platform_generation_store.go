@@ -2,6 +2,10 @@ package service
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,6 +22,8 @@ const (
 	platformGenerationTTL               = 24 * time.Hour
 	platformGenerationMaxRecordBytes    = 32 << 10
 	platformGenerationConvergenceWindow = 30 * time.Second
+	platformGenerationLeaseDuration     = 30 * time.Second
+	platformGenerationLeaseBytes        = 32
 )
 
 type PlatformGenerationMode int
@@ -55,14 +61,16 @@ type PlatformGenerationModel struct {
 // PlatformGenerationSnapshot intentionally stores lifecycle metadata only.
 // It never contains prompt/reply text, credentials, quota counters, costs, or URLs.
 type PlatformGenerationSnapshot struct {
-	GenerationID    string                             `json:"generation_id"`
-	Mode            PlatformGenerationMode             `json:"mode"`
-	Models          []string                           `json:"models"`
-	State           PlatformGenerationState            `json:"state"`
-	ModelStates     map[string]PlatformGenerationModel `json:"model_states"`
-	CreatedAtMillis int64                              `json:"created_at_ms"`
-	UpdatedAtMillis int64                              `json:"updated_at_ms"`
-	ErrorCode       string                             `json:"error_code,omitempty"`
+	GenerationID     string                             `json:"generation_id"`
+	Mode             PlatformGenerationMode             `json:"mode,omitempty"`
+	Models           []string                           `json:"models"`
+	State            PlatformGenerationState            `json:"state"`
+	ModelStates      map[string]PlatformGenerationModel `json:"model_states"`
+	CreatedAtMillis  int64                              `json:"created_at_ms"`
+	UpdatedAtMillis  int64                              `json:"updated_at_ms"`
+	ErrorCode        string                             `json:"error_code,omitempty"`
+	LeaseOwnerSHA256 string                             `json:"lease_owner_sha256,omitempty"`
+	LeaseUntilMillis int64                              `json:"lease_until_ms,omitempty"`
 }
 
 type PlatformGenerationClaimInput struct {
@@ -72,6 +80,14 @@ type PlatformGenerationClaimInput struct {
 	Models       []string
 	NowMillis    int64
 }
+
+type PlatformGenerationClaimResult struct {
+	Snapshot   PlatformGenerationSnapshot
+	Duplicate  bool
+	LeaseToken string `json:"-"`
+}
+
+var platformGenerationLeaseEntropy = rand.Read
 
 // PlatformGenerationStore is a fail-closed Redis lifecycle registry. Ownership
 // is enforced by keys containing only the authenticated internal users.id and
@@ -126,14 +142,18 @@ func (s *PlatformGenerationStore) key(userID int64, generationID string) string 
 	return fmt.Sprintf("%s%d:%s", platformGenerationPrefix, userID, generationID)
 }
 
-// Claim creates one immutable-identity registry record. duplicate=true returns
+// Claim creates one immutable-identity registry record. Duplicate results return
 // the authoritative existing snapshot without changing it or refreshing TTL.
-func (s *PlatformGenerationStore) Claim(ctx context.Context, input PlatformGenerationClaimInput) (PlatformGenerationSnapshot, bool, error) {
+func (s *PlatformGenerationStore) Claim(ctx context.Context, input PlatformGenerationClaimInput) (PlatformGenerationClaimResult, error) {
 	if err := validatePlatformGenerationInput(input); err != nil {
-		return PlatformGenerationSnapshot{}, false, err
+		return PlatformGenerationClaimResult{}, err
 	}
 	if s == nil || s.client == nil {
-		return PlatformGenerationSnapshot{}, false, ErrPlatformGenerationUnavailable
+		return PlatformGenerationClaimResult{}, ErrPlatformGenerationUnavailable
+	}
+	leaseToken, leaseDigest, err := newPlatformGenerationLease()
+	if err != nil {
+		return PlatformGenerationClaimResult{}, err
 	}
 	models := append([]string(nil), input.Models...)
 	modelStates := make(map[string]PlatformGenerationModel, len(models))
@@ -141,38 +161,51 @@ func (s *PlatformGenerationStore) Claim(ctx context.Context, input PlatformGener
 		modelStates[model] = PlatformGenerationModel{State: PlatformGenerationStateRunning}
 	}
 	snapshot := PlatformGenerationSnapshot{
-		GenerationID:    input.GenerationID,
-		Mode:            input.Mode,
-		Models:          models,
-		State:           PlatformGenerationStateRunning,
-		ModelStates:     modelStates,
-		CreatedAtMillis: input.NowMillis,
-		UpdatedAtMillis: input.NowMillis,
+		GenerationID:     input.GenerationID,
+		Mode:             input.Mode,
+		Models:           models,
+		State:            PlatformGenerationStateRunning,
+		ModelStates:      modelStates,
+		CreatedAtMillis:  input.NowMillis,
+		UpdatedAtMillis:  input.NowMillis,
+		LeaseOwnerSHA256: leaseDigest,
+		LeaseUntilMillis: input.NowMillis + platformGenerationLeaseDuration.Milliseconds(),
 	}
 	encoded, err := encodePlatformGeneration(snapshot)
 	if err != nil {
-		return PlatformGenerationSnapshot{}, false, err
+		return PlatformGenerationClaimResult{}, err
 	}
 	result, err := s.client.Eval(ctx, platformGenerationClaimScript, []string{s.key(input.UserID, input.GenerationID)}, encoded, platformGenerationTTL.Milliseconds()).Result()
 	if err != nil {
-		return PlatformGenerationSnapshot{}, false, fmt.Errorf("claim Redis generation: %w", err)
+		return PlatformGenerationClaimResult{}, fmt.Errorf("claim Redis generation: %w", err)
 	}
 	created, stored, err := platformGenerationEvalResult(result)
 	if err != nil {
-		return PlatformGenerationSnapshot{}, false, err
+		return PlatformGenerationClaimResult{}, err
 	}
 	decoded, err := decodePlatformGeneration(stored)
 	if err != nil {
-		return PlatformGenerationSnapshot{}, false, err
+		return PlatformGenerationClaimResult{}, err
 	}
 	duplicate := !created
 	if decoded.GenerationID != input.GenerationID {
-		return decoded, duplicate, ErrPlatformGenerationInvalid
+		return PlatformGenerationClaimResult{Snapshot: decoded, Duplicate: duplicate}, ErrPlatformGenerationInvalid
 	}
 	if duplicate {
-		return decoded, true, ErrPlatformGenerationConflict
+		return PlatformGenerationClaimResult{Snapshot: decoded, Duplicate: true}, ErrPlatformGenerationConflict
 	}
-	return decoded, false, nil
+	return PlatformGenerationClaimResult{Snapshot: decoded, LeaseToken: leaseToken}, nil
+}
+
+func newPlatformGenerationLease() (string, string, error) {
+	raw := make([]byte, platformGenerationLeaseBytes)
+	n, err := platformGenerationLeaseEntropy(raw)
+	if err != nil || n != len(raw) {
+		return "", "", ErrPlatformGenerationUnavailable
+	}
+	token := base64.RawURLEncoding.EncodeToString(raw)
+	digest := sha256.Sum256([]byte(token))
+	return token, hex.EncodeToString(digest[:]), nil
 }
 
 func (s *PlatformGenerationStore) Get(ctx context.Context, userID int64, generationID string) (PlatformGenerationSnapshot, error) {
@@ -435,6 +468,10 @@ func (s *PlatformGenerationStore) mutate(ctx context.Context, userID int64, gene
 		return current, err
 	}
 	next.UpdatedAtMillis = nowMillis
+	if next.State != PlatformGenerationStateRunning {
+		next.LeaseOwnerSHA256 = ""
+		next.LeaseUntilMillis = 0
+	}
 	nextRaw, err := encodePlatformGeneration(next)
 	if err != nil {
 		return current, err
@@ -525,7 +562,13 @@ func validatePlatformGenerationInput(input PlatformGenerationClaimInput) error {
 }
 
 func validPlatformGenerationSnapshot(snapshot PlatformGenerationSnapshot) bool {
+	if snapshot.State == PlatformGenerationStateCancelled && snapshot.Mode == 0 && len(snapshot.Models) == 0 && len(snapshot.ModelStates) == 0 && snapshot.ErrorCode == "" && snapshot.LeaseOwnerSHA256 == "" && snapshot.LeaseUntilMillis == 0 {
+		return platformSSEV2CanonicalUUID(snapshot.GenerationID) && snapshot.CreatedAtMillis > 0 && platformSSEV2SafeInteger(snapshot.CreatedAtMillis) && snapshot.UpdatedAtMillis == snapshot.CreatedAtMillis
+	}
 	if validatePlatformGenerationInput(PlatformGenerationClaimInput{UserID: 1, GenerationID: snapshot.GenerationID, Mode: snapshot.Mode, Models: snapshot.Models, NowMillis: snapshot.CreatedAtMillis}) != nil || !platformSSEV2SafeInteger(snapshot.UpdatedAtMillis) || snapshot.UpdatedAtMillis < snapshot.CreatedAtMillis || len(snapshot.ModelStates) != len(snapshot.Models) {
+		return false
+	}
+	if !validPlatformGenerationLease(snapshot) {
 		return false
 	}
 	if snapshot.State < PlatformGenerationStateRunning || snapshot.State > PlatformGenerationStateFailed {
@@ -582,6 +625,27 @@ func validPlatformGenerationSnapshot(snapshot PlatformGenerationSnapshot) bool {
 	}
 	if snapshot.State == PlatformGenerationStateCancelled || snapshot.State == PlatformGenerationStateFailed {
 		return terminalModels == len(snapshot.Models)
+	}
+	return true
+}
+
+func validPlatformGenerationLease(snapshot PlatformGenerationSnapshot) bool {
+	hasDigest := snapshot.LeaseOwnerSHA256 != ""
+	hasDeadline := snapshot.LeaseUntilMillis != 0
+	if hasDigest != hasDeadline {
+		return false
+	}
+	if !hasDigest {
+		return true
+	}
+	if snapshot.State != PlatformGenerationStateRunning || !platformSSEV2SafeInteger(snapshot.LeaseUntilMillis) || snapshot.LeaseUntilMillis <= snapshot.UpdatedAtMillis || len(snapshot.LeaseOwnerSHA256) != sha256.Size*2 {
+		return false
+	}
+	for index := 0; index < len(snapshot.LeaseOwnerSHA256); index++ {
+		char := snapshot.LeaseOwnerSHA256[index]
+		if !(char >= '0' && char <= '9') && !(char >= 'a' && char <= 'f') {
+			return false
+		}
 	}
 	return true
 }

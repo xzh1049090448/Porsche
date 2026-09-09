@@ -2,6 +2,9 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -36,7 +39,7 @@ func TestPlatformGenerationStoreRejectsInvalidInputBeforeRedis(t *testing.T) {
 		{UserID: 1, GenerationID: generationTestID, Mode: PlatformGenerationModeCompare, Models: []string{"a", "b", "c", "d"}},
 		{UserID: 1, GenerationID: generationTestID, Mode: PlatformGenerationModeCompare, Models: []string{"a", longModel}},
 	} {
-		if _, _, err := store.Claim(context.Background(), input); !errors.Is(err, ErrPlatformGenerationInvalid) {
+		if _, err := store.Claim(context.Background(), input); !errors.Is(err, ErrPlatformGenerationInvalid) {
 			t.Fatalf("Claim(%#v) error=%v, want invalid", input, err)
 		}
 	}
@@ -47,7 +50,7 @@ func TestPlatformGenerationStoreRejectsModelOverPersistenceLimitBeforeRedis(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, _, err = store.Claim(context.Background(), PlatformGenerationClaimInput{
+	_, err = store.Claim(context.Background(), PlatformGenerationClaimInput{
 		UserID: 1, GenerationID: generationTestID, Mode: PlatformGenerationModeSingle,
 		Models: []string{strings.Repeat("m", 129)}, NowMillis: 1,
 	})
@@ -61,7 +64,7 @@ func TestPlatformGenerationStoreRejectsInvalidUTF8ModelBeforeRedis(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, _, err = store.Claim(context.Background(), PlatformGenerationClaimInput{
+	_, err = store.Claim(context.Background(), PlatformGenerationClaimInput{
 		UserID: 1, GenerationID: generationTestID, Mode: PlatformGenerationModeSingle,
 		Models: []string{string([]byte{0xff})}, NowMillis: 1,
 	})
@@ -103,11 +106,13 @@ func openTestPlatformGenerationStore(t *testing.T) (*PlatformGenerationStore, *r
 	return store, client
 }
 
-func claimTestGeneration(t *testing.T, store *PlatformGenerationStore, input PlatformGenerationClaimInput) {
+func claimTestGeneration(t *testing.T, store *PlatformGenerationStore, input PlatformGenerationClaimInput) PlatformGenerationClaimResult {
 	t.Helper()
-	if snapshot, duplicate, err := store.Claim(context.Background(), input); err != nil || duplicate || snapshot.GenerationID != input.GenerationID {
-		t.Fatalf("claim=%#v duplicate=%v error=%v", snapshot, duplicate, err)
+	result, err := store.Claim(context.Background(), input)
+	if err != nil || result.Duplicate || result.Snapshot.GenerationID != input.GenerationID || result.LeaseToken == "" {
+		t.Fatalf("claim=%#v error=%v", result, err)
 	}
+	return result
 }
 
 func preparePlatformGenerationTestKey(t *testing.T, client redis.Cmdable, key string) {
@@ -153,12 +158,12 @@ func TestPlatformGenerationStoreClaimIsAtomicAndKeepsOriginalTTL(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			snapshot, duplicate, err := store.Claim(context.Background(), input)
-			if (duplicate && !errors.Is(err, ErrPlatformGenerationConflict)) || (!duplicate && err != nil) || snapshot.CreatedAtMillis != input.NowMillis {
-				t.Errorf("claim snapshot=%#v error=%v", snapshot, err)
+			result, err := store.Claim(context.Background(), input)
+			if (result.Duplicate && !errors.Is(err, ErrPlatformGenerationConflict)) || (!result.Duplicate && err != nil) || result.Snapshot.CreatedAtMillis != input.NowMillis || (!result.Duplicate && result.LeaseToken == "") || (result.Duplicate && result.LeaseToken != "") {
+				t.Errorf("claim result=%#v error=%v", result, err)
 				return
 			}
-			results <- duplicate
+			results <- result.Duplicate
 		}()
 	}
 	wg.Wait()
@@ -177,8 +182,8 @@ func TestPlatformGenerationStoreClaimIsAtomicAndKeepsOriginalTTL(t *testing.T) {
 		t.Fatalf("initial TTL=%v error=%v", before, err)
 	}
 	input.NowMillis = 999999
-	if snapshot, duplicate, err := store.Claim(context.Background(), input); !errors.Is(err, ErrPlatformGenerationConflict) || !duplicate || snapshot.CreatedAtMillis != 1000 {
-		t.Fatalf("duplicate snapshot=%#v duplicate=%v error=%v", snapshot, duplicate, err)
+	if result, err := store.Claim(context.Background(), input); !errors.Is(err, ErrPlatformGenerationConflict) || !result.Duplicate || result.Snapshot.CreatedAtMillis != 1000 || result.LeaseToken != "" {
+		t.Fatalf("duplicate result=%#v error=%v", result, err)
 	}
 	after, err := client.PTTL(context.Background(), store.key(input.UserID, input.GenerationID)).Result()
 	if err != nil || after > before {
@@ -581,6 +586,147 @@ func TestDecodePlatformGenerationRejectsMalformedRedisRecords(t *testing.T) {
 	}
 }
 
+func TestPlatformGenerationRecordAcceptsLeaseAwareAndPristineTombstoneShapes(t *testing.T) {
+	claimed := PlatformGenerationSnapshot{
+		GenerationID: generationTestID, Mode: PlatformGenerationModeSingle, Models: []string{"a"}, State: PlatformGenerationStateRunning,
+		ModelStates:     map[string]PlatformGenerationModel{"a": {State: PlatformGenerationStateRunning}},
+		CreatedAtMillis: 1000, UpdatedAtMillis: 1000, LeaseOwnerSHA256: strings.Repeat("a", 64), LeaseUntilMillis: 31000,
+	}
+	tombstone := PlatformGenerationSnapshot{
+		GenerationID: generationTestID, State: PlatformGenerationStateCancelled, Models: []string{}, ModelStates: map[string]PlatformGenerationModel{},
+		CreatedAtMillis: 1000, UpdatedAtMillis: 1000,
+	}
+	for _, snapshot := range []PlatformGenerationSnapshot{claimed, tombstone} {
+		raw, err := encodePlatformGeneration(snapshot)
+		if err != nil {
+			t.Fatalf("encode %#v: %v", snapshot, err)
+		}
+		decoded, err := decodePlatformGeneration(raw)
+		if err != nil || !reflect.DeepEqual(decoded, snapshot) {
+			t.Fatalf("decode=%#v want=%#v error=%v", decoded, snapshot, err)
+		}
+	}
+}
+
+func TestPlatformGenerationRecordRejectsInvalidLeaseAndTombstoneShapes(t *testing.T) {
+	claimed := PlatformGenerationSnapshot{
+		GenerationID: generationTestID, Mode: PlatformGenerationModeSingle, Models: []string{"a"}, State: PlatformGenerationStateRunning,
+		ModelStates:     map[string]PlatformGenerationModel{"a": {State: PlatformGenerationStateRunning}},
+		CreatedAtMillis: 1000, UpdatedAtMillis: 1000, LeaseOwnerSHA256: strings.Repeat("a", 64), LeaseUntilMillis: 31000,
+	}
+	tombstone := PlatformGenerationSnapshot{
+		GenerationID: generationTestID, State: PlatformGenerationStateCancelled, Models: []string{}, ModelStates: map[string]PlatformGenerationModel{},
+		CreatedAtMillis: 1000, UpdatedAtMillis: 1000,
+	}
+	committing := PlatformGenerationSnapshot{
+		GenerationID: generationTestID, Mode: PlatformGenerationModeSingle, Models: []string{"a"}, State: PlatformGenerationStateCommitting,
+		ModelStates:     map[string]PlatformGenerationModel{"a": {State: PlatformGenerationStateCompleted}},
+		CreatedAtMillis: 1000, UpdatedAtMillis: 1000,
+	}
+	tests := []struct {
+		name     string
+		snapshot PlatformGenerationSnapshot
+	}{
+		{"lease digest without deadline", func() PlatformGenerationSnapshot { s := claimed; s.LeaseUntilMillis = 0; return s }()},
+		{"lease deadline without digest", func() PlatformGenerationSnapshot { s := claimed; s.LeaseOwnerSHA256 = ""; return s }()},
+		{"uppercase lease digest", func() PlatformGenerationSnapshot {
+			s := claimed
+			s.LeaseOwnerSHA256 = strings.Repeat("A", 64)
+			return s
+		}()},
+		{"nonhex lease digest", func() PlatformGenerationSnapshot {
+			s := claimed
+			s.LeaseOwnerSHA256 = strings.Repeat("g", 64)
+			return s
+		}()},
+		{"lease deadline not after updated", func() PlatformGenerationSnapshot { s := claimed; s.LeaseUntilMillis = 1000; return s }()},
+		{"tombstone with mode", func() PlatformGenerationSnapshot { s := tombstone; s.Mode = PlatformGenerationModeSingle; return s }()},
+		{"tombstone with models", func() PlatformGenerationSnapshot {
+			s := tombstone
+			s.Models = []string{"a"}
+			s.ModelStates = map[string]PlatformGenerationModel{"a": {State: PlatformGenerationStateCancelled}}
+			return s
+		}()},
+		{"tombstone with error", func() PlatformGenerationSnapshot { s := tombstone; s.ErrorCode = "cancelled"; return s }()},
+		{"tombstone with lease", func() PlatformGenerationSnapshot {
+			s := tombstone
+			s.LeaseOwnerSHA256 = strings.Repeat("a", 64)
+			s.LeaseUntilMillis = 31000
+			return s
+		}()},
+		{"empty identity non-cancelled", func() PlatformGenerationSnapshot { s := claimed; s.GenerationID = ""; return s }()},
+		{"non-running claimed record retaining lease", func() PlatformGenerationSnapshot {
+			s := committing
+			s.LeaseOwnerSHA256 = strings.Repeat("a", 64)
+			s.LeaseUntilMillis = 31000
+			return s
+		}()},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := encodePlatformGeneration(test.snapshot); !errors.Is(err, ErrPlatformGenerationInvalid) {
+				t.Fatalf("encode error=%v, want invalid", err)
+			}
+			raw, err := json.Marshal(test.snapshot)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := decodePlatformGeneration(string(raw)); !errors.Is(err, ErrPlatformGenerationInvalid) {
+				t.Fatalf("decode error=%v, want invalid", err)
+			}
+		})
+	}
+}
+
+func TestPlatformGenerationRecordAcceptsLegacyRecordsWithoutLease(t *testing.T) {
+	for _, snapshot := range []PlatformGenerationSnapshot{
+		{GenerationID: generationTestID, Mode: PlatformGenerationModeSingle, Models: []string{"a"}, State: PlatformGenerationStateRunning, ModelStates: map[string]PlatformGenerationModel{"a": {State: PlatformGenerationStateRunning}}, CreatedAtMillis: 1000, UpdatedAtMillis: 1000},
+		{GenerationID: generationTestID, Mode: PlatformGenerationModeSingle, Models: []string{"a"}, State: PlatformGenerationStateCompleted, ModelStates: map[string]PlatformGenerationModel{"a": {State: PlatformGenerationStateCompleted, AssistantMessageGUID: "900000000000000001"}}, CreatedAtMillis: 1000, UpdatedAtMillis: 1001},
+	} {
+		raw, err := json.Marshal(snapshot)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := decodePlatformGeneration(string(raw)); err != nil {
+			t.Fatalf("legacy record rejected: %v", err)
+		}
+	}
+}
+
+func TestPlatformGenerationClaimResultDoesNotMarshalLeaseToken(t *testing.T) {
+	raw, err := json.Marshal(PlatformGenerationClaimResult{LeaseToken: "secret"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "secret") {
+		t.Fatalf("claim result leaked lease token: %s", raw)
+	}
+}
+
+func TestNewPlatformGenerationLeaseUsesRawURLTokenAndSHA256Digest(t *testing.T) {
+	token, digest, err := newPlatformGenerationLease()
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(token)
+	if err != nil || len(raw) != platformGenerationLeaseBytes {
+		t.Fatalf("lease token=%q raw=%x error=%v", token, raw, err)
+	}
+	sum := sha256.Sum256([]byte(token))
+	if digest != hex.EncodeToString(sum[:]) {
+		t.Fatalf("lease digest=%q, want SHA-256 of raw token", digest)
+	}
+}
+
+func TestNewPlatformGenerationLeaseSanitizesEntropyFailure(t *testing.T) {
+	original := platformGenerationLeaseEntropy
+	platformGenerationLeaseEntropy = func([]byte) (int, error) { return 0, errors.New("entropy unavailable") }
+	t.Cleanup(func() { platformGenerationLeaseEntropy = original })
+	if _, _, err := newPlatformGenerationLease(); !errors.Is(err, ErrPlatformGenerationUnavailable) {
+		t.Fatalf("new lease error=%v, want unavailable", err)
+	}
+}
+
 func TestPlatformGenerationStoreRejectsRecordWhoseGenerationIDDoesNotMatchKey(t *testing.T) {
 	store, client := openTestPlatformGenerationStore(t)
 	userID := int64(910008)
@@ -599,7 +745,7 @@ func TestPlatformGenerationStoreRejectsRecordWhoseGenerationIDDoesNotMatchKey(t 
 		t.Fatalf("Get mismatched record error=%v, want invalid", err)
 	}
 	input := PlatformGenerationClaimInput{UserID: userID, GenerationID: keyGenerationID, Mode: PlatformGenerationModeSingle, Models: []string{"a"}, NowMillis: 2}
-	if _, duplicate, err := store.Claim(context.Background(), input); !duplicate || !errors.Is(err, ErrPlatformGenerationInvalid) {
-		t.Fatalf("duplicate mismatched record duplicate=%v error=%v", duplicate, err)
+	if result, err := store.Claim(context.Background(), input); !result.Duplicate || !errors.Is(err, ErrPlatformGenerationInvalid) || result.LeaseToken != "" {
+		t.Fatalf("duplicate mismatched record result=%#v error=%v", result, err)
 	}
 }
