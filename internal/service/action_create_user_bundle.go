@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	cryptorand "crypto/rand"
 	"io"
 	"reflect"
@@ -11,19 +12,24 @@ import (
 )
 
 // UserManagementActions is the complete internal service boundary for the
-// active users.create, users.create_admin, users.delete, and
-// users.reset_password action set.
+// active users.create, users.create_admin, users.delete, users.reset_password,
+// users.promote, users.demote, and users.permissions.write action set.
 // Callers must not expose any member unless construction of the whole bundle
 // succeeds.
 type UserManagementActions struct {
-	Verifications      *ActionVerificationService
-	Operations         *ActionOperationService
-	DeleteOutbox       *AdminActionOutboxWriter
-	CreateOutbox       *CreateAccountOutboxWriter
-	ResetOutbox        *ResetPasswordOutboxWriter
-	NewDeleteExecution func(actionsecurity.DeleteUserIntent) (*DeleteUserExecution, error)
-	NewCreateExecution func(actionsecurity.Action, actionsecurity.CreateAccountIntent, []byte, CreateAccountRequestMetadata) (*CreateAccountExecution, error)
-	NewResetExecution  func(actionsecurity.ResetPasswordIntent, []byte, ResetPasswordRequestMetadata) (*ResetPasswordExecution, error)
+	Verifications                *ActionVerificationService
+	Operations                   *ActionOperationService
+	DeleteOutbox                 *AdminActionOutboxWriter
+	CreateOutbox                 *CreateAccountOutboxWriter
+	ResetOutbox                  *ResetPasswordOutboxWriter
+	RolePermissionOutbox         *RolePermissionOutboxWriter
+	NewDeleteExecution           func(actionsecurity.DeleteUserIntent) (*DeleteUserExecution, error)
+	NewCreateExecution           func(actionsecurity.Action, actionsecurity.CreateAccountIntent, []byte, CreateAccountRequestMetadata) (*CreateAccountExecution, error)
+	NewResetExecution            func(actionsecurity.ResetPasswordIntent, []byte, ResetPasswordRequestMetadata) (*ResetPasswordExecution, error)
+	NewPromoteExecution          func(actionsecurity.PromoteIntent) (*RolePermissionExecution, error)
+	NewDemoteExecution           func(actionsecurity.DemoteIntent) (*RolePermissionExecution, error)
+	NewPermissionsWriteExecution func(actionsecurity.PermissionsWriteIntent) (*RolePermissionExecution, error)
+	rolePermissionRevoker        rolePermissionSessionRevoker
 }
 
 // NewUserManagementActions constructs the production user-management services
@@ -83,16 +89,22 @@ func newUserManagementActions(
 	if err != nil {
 		return nil, ErrActionVerificationUnavailable
 	}
+	rolePermissionOutbox, err := NewRolePermissionOutboxWriter(nextGUID, clock)
+	if err != nil {
+		return nil, ErrActionVerificationUnavailable
+	}
 	descriptorByAction := make(map[actionsecurity.Action]actionsecurity.Descriptor, len(owned))
 	for _, descriptor := range owned {
 		descriptorByAction[descriptor.Action] = descriptor
 	}
 	bundle := &UserManagementActions{
-		Verifications: verifications,
-		Operations:    operations,
-		DeleteOutbox:  deleteOutbox,
-		CreateOutbox:  createOutbox,
-		ResetOutbox:   resetOutbox,
+		Verifications:         verifications,
+		Operations:            operations,
+		DeleteOutbox:          deleteOutbox,
+		CreateOutbox:          createOutbox,
+		ResetOutbox:           resetOutbox,
+		RolePermissionOutbox:  rolePermissionOutbox,
+		rolePermissionRevoker: authRedis,
 		NewDeleteExecution: func(intent actionsecurity.DeleteUserIntent) (*DeleteUserExecution, error) {
 			return newDeleteUserExecution(descriptorByAction[actionsecurity.ActionUsersDelete], intent, nextGUID, clock, crypto)
 		},
@@ -107,6 +119,15 @@ func newUserManagementActions(
 		NewResetExecution: func(intent actionsecurity.ResetPasswordIntent, passwordHash []byte, metadata ResetPasswordRequestMetadata) (*ResetPasswordExecution, error) {
 			return newResetPasswordExecution(descriptorByAction[actionsecurity.ActionUsersResetPassword], intent, passwordHash, authRedis, clock, nextGUID, crypto, metadata)
 		},
+		NewPromoteExecution: func(intent actionsecurity.PromoteIntent) (*RolePermissionExecution, error) {
+			return NewRolePermissionExecution(descriptorByAction[actionsecurity.ActionUsersPromote], intent, nextGUID, clock, crypto)
+		},
+		NewDemoteExecution: func(intent actionsecurity.DemoteIntent) (*RolePermissionExecution, error) {
+			return NewRolePermissionExecution(descriptorByAction[actionsecurity.ActionUsersDemote], intent, nextGUID, clock, crypto)
+		},
+		NewPermissionsWriteExecution: func(intent actionsecurity.PermissionsWriteIntent) (*RolePermissionExecution, error) {
+			return NewRolePermissionExecution(descriptorByAction[actionsecurity.ActionUsersPermissionsWrite], intent, nextGUID, clock, crypto)
+		},
 	}
 	if !completeUserManagementActions(bundle) {
 		return nil, ErrActionVerificationUnavailable
@@ -117,7 +138,19 @@ func newUserManagementActions(
 func completeUserManagementActions(bundle *UserManagementActions) bool {
 	return bundle != nil && bundle.Verifications != nil && bundle.Operations != nil &&
 		bundle.DeleteOutbox != nil && bundle.CreateOutbox != nil && bundle.ResetOutbox != nil &&
-		bundle.NewDeleteExecution != nil && bundle.NewCreateExecution != nil && bundle.NewResetExecution != nil
+		bundle.RolePermissionOutbox != nil && bundle.NewDeleteExecution != nil && bundle.NewCreateExecution != nil && bundle.NewResetExecution != nil &&
+		bundle.NewPromoteExecution != nil && bundle.NewDemoteExecution != nil && bundle.NewPermissionsWriteExecution != nil
+}
+
+func (bundle *UserManagementActions) ExecuteRolePermission(ctx context.Context, identity *OperationIdentity, base *RolePermissionExecution) (*OperationView, error) {
+	if !completeUserManagementActions(bundle) || bundle.rolePermissionRevoker == nil || identity == nil || base == nil {
+		return nil, ErrActionOperationUnavailable
+	}
+	execution, err := newRolePermissionTransactionalExecution(base, bundle.rolePermissionRevoker)
+	if err != nil {
+		return nil, ErrActionOperationUnavailable
+	}
+	return bundle.Operations.Execute(ctx, identity, execution, execution, bundle.RolePermissionOutbox)
 }
 
 // DeleteActions returns the existing users.delete boundary backed by the same
@@ -136,7 +169,7 @@ func (bundle *UserManagementActions) DeleteActions() *UserDeleteActions {
 
 func exactActiveUserManagementDescriptors(descriptors []actionsecurity.Descriptor) bool {
 	expected := actionsecurity.FutureActionDescriptors()
-	if len(descriptors) != 4 || len(expected) != len(descriptors) {
+	if len(descriptors) != 7 || len(expected) != len(descriptors) {
 		return false
 	}
 	for index := range expected {

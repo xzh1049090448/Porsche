@@ -530,7 +530,7 @@ func TestAdminUserCreateVerificationDispatchesDeleteAndRejectsEveryOtherAction(t
 	if deleted.Code != http.StatusCreated || backend.issueCalls != 1 || backend.issueAction != actionsecurity.ActionUsersDelete {
 		t.Fatalf("delete dispatch status/calls/action=%d/%d/%d", deleted.Code, backend.issueCalls, backend.issueAction)
 	}
-	for _, action := range []string{"users.create", "users.promote"} {
+	for _, action := range []string{"users.create"} {
 		before := backend.issueCalls
 		body := `{"action":"` + action + `","intent":{},"current_password":"Current!Pass9"}`
 		rec := performActionRequest(engine, http.MethodPost, "/admin/v2/action-verifications", body, nil)
@@ -729,7 +729,7 @@ func TestAdminUserCreateQueryDispatchesOnlyExactCreateScopes(t *testing.T) {
 	}
 	for _, path := range []string{
 		"/admin/v2/operations?scope=users.create&scope=users.create", "/admin/v2/operations?scope=users.create%5fadmin",
-		"/admin/v2/operations?scope=users.create_admin&x=1", "/admin/v2/operations?scope=users.promote",
+		"/admin/v2/operations?scope=users.create_admin&x=1", "/admin/v2/operations?scope=users%2Epromote",
 	} {
 		backend := adminUserCreateBackend("user")
 		engine := newScriptedUserManagementEngine(t, backend, models.UserRoleRoot)

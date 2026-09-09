@@ -100,6 +100,22 @@ func (backend userManagementActionBundleBackend) ExecuteResetPassword(ctx contex
 	return backend.bundle.Operations.Execute(ctx, identity, execution, execution, backend.bundle.ResetOutbox)
 }
 
+func (backend userManagementActionBundleBackend) NewPromoteExecution(intent actionsecurity.PromoteIntent) (*service.RolePermissionExecution, error) {
+	return backend.bundle.NewPromoteExecution(intent)
+}
+
+func (backend userManagementActionBundleBackend) NewDemoteExecution(intent actionsecurity.DemoteIntent) (*service.RolePermissionExecution, error) {
+	return backend.bundle.NewDemoteExecution(intent)
+}
+
+func (backend userManagementActionBundleBackend) NewPermissionsWriteExecution(intent actionsecurity.PermissionsWriteIntent) (*service.RolePermissionExecution, error) {
+	return backend.bundle.NewPermissionsWriteExecution(intent)
+}
+
+func (backend userManagementActionBundleBackend) ExecuteRolePermission(ctx context.Context, identity *service.OperationIdentity, execution *service.RolePermissionExecution) (*service.OperationView, error) {
+	return backend.bundle.ExecuteRolePermission(ctx, identity, execution)
+}
+
 func (backend userManagementActionBundleBackend) ResetPasswordOutcome(ctx context.Context, actor service.ActionActor, ref string) (*service.ResetPasswordResult, error) {
 	return backend.bundle.Operations.ResetPasswordResponse(ctx, actor, ref)
 }
@@ -164,7 +180,7 @@ func (backend userManagementDeleteBackend) Query(ctx context.Context, action act
 }
 
 // RegisterAdminUserManagementActions publishes one route owner only when the
-// create, create-admin, and delete action bundle is complete.
+// complete user-management action bundle is available.
 func RegisterAdminUserManagementActions(r *gin.Engine, state *app.State) {
 	if r == nil || state == nil || state.Settings == nil || !completeUserManagementActionBundle(state.UserManagementActions) {
 		return
@@ -175,13 +191,15 @@ func RegisterAdminUserManagementActions(r *gin.Engine, state *app.State) {
 
 func completeUserManagementActionBundle(bundle *service.UserManagementActions) bool {
 	return bundle != nil && bundle.Verifications != nil && bundle.Operations != nil && bundle.DeleteOutbox != nil && bundle.CreateOutbox != nil && bundle.ResetOutbox != nil &&
-		bundle.NewDeleteExecution != nil && bundle.NewCreateExecution != nil && bundle.NewResetExecution != nil
+		bundle.RolePermissionOutbox != nil && bundle.NewDeleteExecution != nil && bundle.NewCreateExecution != nil && bundle.NewResetExecution != nil &&
+		bundle.NewPromoteExecution != nil && bundle.NewDemoteExecution != nil && bundle.NewPermissionsWriteExecution != nil
 }
 
 func registerAdminUserManagementActionRoutes(group *gin.RouterGroup, backend userManagementActionBackend, settings *config.Settings) {
 	group.POST("/action-verifications", func(c *gin.Context) { issueUserManagementVerification(c, backend, settings) })
 	group.POST("/users", func(c *gin.Context) { executeAdminUserCreate(c, backend, settings) })
 	group.POST("/users/:guid/actions", func(c *gin.Context) { executeUserManagementAction(c, backend, settings) })
+	group.PATCH("/users/:guid/permissions", func(c *gin.Context) { executePermissionsWrite(c, backend) })
 	group.GET("/operations", func(c *gin.Context) { queryUserManagementOperation(c, backend) })
 }
 
@@ -209,6 +227,8 @@ func issueUserManagementVerification(c *gin.Context, backend userManagementActio
 		issueAdminUserCreateVerification(c, backend, settings, raw)
 	case "users.reset_password":
 		issueAdminUserPasswordResetVerification(c, backend, settings, raw)
+	case "users.promote", "users.demote", "users.permissions.write":
+		issueRolePermissionVerification(c, backend, settings, action, raw)
 	default:
 		adminUserActionFixedError(c, http.StatusUnprocessableEntity, "action_inactive", "")
 	}
@@ -331,6 +351,8 @@ func executeUserManagementAction(c *gin.Context, backend userManagementActionBac
 			return
 		}
 		executeAdminUserPasswordReset(c, reset, settings)
+	case "promote", "demote":
+		executeRoleChange(c, backend, action)
 	default:
 		adminUserActionFixedError(c, http.StatusUnprocessableEntity, "action_inactive", "")
 	}
@@ -636,6 +658,12 @@ func queryUserManagementOperation(c *gin.Context, backend userManagementActionBa
 		action = actionsecurity.ActionUsersCreateAdmin
 	case userResetPasswordScopeQuery:
 		action = actionsecurity.ActionUsersResetPassword
+	case userPromoteScopeQuery:
+		action = actionsecurity.ActionUsersPromote
+	case userDemoteScopeQuery:
+		action = actionsecurity.ActionUsersDemote
+	case userPermissionsWriteScopeQuery:
+		action = actionsecurity.ActionUsersPermissionsWrite
 	default:
 		adminUserActionError(c, errInvalidAdminUserAction, "")
 		return
@@ -658,7 +686,12 @@ func queryUserManagementOperation(c *gin.Context, backend userManagementActionBa
 		adminUserActionError(c, err, "")
 		return
 	}
-	if !validManagedOperationQueryView(view, createActionOrDeleteScope(action)) {
+	if isRolePermissionAction(action) {
+		if !validRolePermissionView(view, true) {
+			adminUserActionError(c, service.ErrActionOperationUnavailable, "")
+			return
+		}
+	} else if !validManagedOperationQueryView(view, createActionOrDeleteScope(action)) {
 		adminUserActionError(c, service.ErrActionOperationUnavailable, "")
 		return
 	}
@@ -675,6 +708,10 @@ func queryUserManagementOperation(c *gin.Context, backend userManagementActionBa
 		c.JSON(http.StatusOK, dto.AdminUserPasswordResetQueryResponse{OperationRef: view.PublicRef, Scope: view.Scope, Status: view.Status, FinishedAt: view.FinishedAt, FailureCode: view.FailureCode, TargetGUID: target, ResultingAuthVersion: view.ResultAuthVersion})
 		return
 	}
+	if isRolePermissionAction(action) {
+		writeRolePermissionQuery(c, view)
+		return
+	}
 	c.JSON(http.StatusOK, dto.UserDeleteQueryResponse{OperationRef: view.PublicRef, Scope: view.Scope, Status: view.Status, FinishedAt: view.FinishedAt, FailureCode: view.FailureCode})
 }
 
@@ -684,6 +721,15 @@ func createActionOrDeleteScope(action actionsecurity.Action) string {
 	}
 	if action == actionsecurity.ActionUsersResetPassword {
 		return "users.reset_password"
+	}
+	if action == actionsecurity.ActionUsersPromote {
+		return "users.promote"
+	}
+	if action == actionsecurity.ActionUsersDemote {
+		return "users.demote"
+	}
+	if action == actionsecurity.ActionUsersPermissionsWrite {
+		return "users.permissions.write"
 	}
 	return createActionScope(action)
 }

@@ -171,7 +171,7 @@ func executeA08RealTransition(f *realActionFixture, action actionsecurity.Action
 }
 
 func rolePermissionTestDescriptorNoTest(action actionsecurity.Action) actionsecurity.Descriptor {
-	for _, descriptor := range actionsecurity.InactiveActionDescriptors() {
+	for _, descriptor := range actionsecurity.ActiveActionRegistry() {
 		if descriptor.Action == action {
 			return descriptor
 		}
@@ -182,9 +182,7 @@ func rolePermissionTestDescriptorNoTest(action actionsecurity.Action) actionsecu
 func prepareA08RealPromote(t *testing.T, now int64) (*realActionFixture, *OperationIdentity, *rolePermissionTransactionalExecution, *RolePermissionOutboxWriter, []models.Session) {
 	t.Helper()
 	f := openRealActionFixture(t, now)
-	inactive := rolePermissionTestDescriptor(t, actionsecurity.ActionUsersPromote)
-	active := inactive
-	active.Active = true
+	active := rolePermissionTestDescriptor(t, actionsecurity.ActionUsersPromote)
 	resolver := func(action actionsecurity.Action) (actionsecurity.Descriptor, bool) {
 		if action == active.Action {
 			return active, true
@@ -226,7 +224,7 @@ func prepareA08RealPromote(t *testing.T, now int64) (*realActionFixture, *Operat
 	if err != nil || identity == nil || view == nil || view.Status != "processing" {
 		t.Fatalf("Begin = %#v/%#v/%v", identity, view, err)
 	}
-	base, err := NewRolePermissionExecution(inactive, intent, persistence.NextGUID, f.clock, f.crypto)
+	base, err := NewRolePermissionExecution(active, intent, persistence.NextGUID, f.clock, f.crypto)
 	if err != nil {
 		t.Fatal(err)
 	}

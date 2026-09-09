@@ -58,11 +58,12 @@ func TestNewStateActionSecurityConstructorLifecycle(t *testing.T) {
 func TestNewStateAssignsCompleteCreateAccountActionsAndDeleteCompatibilityView(t *testing.T) {
 	root := bytes.Repeat([]byte{0x43}, 32)
 	want := &service.UserManagementActions{
-		Verifications: &service.ActionVerificationService{},
-		Operations:    &service.ActionOperationService{},
-		DeleteOutbox:  &service.AdminActionOutboxWriter{},
-		CreateOutbox:  &service.CreateAccountOutboxWriter{},
-		ResetOutbox:   &service.ResetPasswordOutboxWriter{},
+		Verifications:        &service.ActionVerificationService{},
+		Operations:           &service.ActionOperationService{},
+		DeleteOutbox:         &service.AdminActionOutboxWriter{},
+		CreateOutbox:         &service.CreateAccountOutboxWriter{},
+		ResetOutbox:          &service.ResetPasswordOutboxWriter{},
+		RolePermissionOutbox: &service.RolePermissionOutboxWriter{},
 		NewDeleteExecution: func(actionsecurity.DeleteUserIntent) (*service.DeleteUserExecution, error) {
 			return nil, service.ErrActionOperationUnavailable
 		},
@@ -70,6 +71,15 @@ func TestNewStateAssignsCompleteCreateAccountActionsAndDeleteCompatibilityView(t
 			return nil, service.ErrActionOperationUnavailable
 		},
 		NewResetExecution: func(actionsecurity.ResetPasswordIntent, []byte, service.ResetPasswordRequestMetadata) (*service.ResetPasswordExecution, error) {
+			return nil, service.ErrActionOperationUnavailable
+		},
+		NewPromoteExecution: func(actionsecurity.PromoteIntent) (*service.RolePermissionExecution, error) {
+			return nil, service.ErrActionOperationUnavailable
+		},
+		NewDemoteExecution: func(actionsecurity.DemoteIntent) (*service.RolePermissionExecution, error) {
+			return nil, service.ErrActionOperationUnavailable
+		},
+		NewPermissionsWriteExecution: func(actionsecurity.PermissionsWriteIntent) (*service.RolePermissionExecution, error) {
 			return nil, service.ErrActionOperationUnavailable
 		},
 	}
@@ -112,7 +122,7 @@ func TestNewStateCreateAccountActionsFailureExposesNoCreateRouteDependency(t *te
 	complete := func() *service.UserManagementActions {
 		return &service.UserManagementActions{
 			Verifications: &service.ActionVerificationService{}, Operations: &service.ActionOperationService{},
-			DeleteOutbox: &service.AdminActionOutboxWriter{}, CreateOutbox: &service.CreateAccountOutboxWriter{}, ResetOutbox: &service.ResetPasswordOutboxWriter{},
+			DeleteOutbox: &service.AdminActionOutboxWriter{}, CreateOutbox: &service.CreateAccountOutboxWriter{}, ResetOutbox: &service.ResetPasswordOutboxWriter{}, RolePermissionOutbox: &service.RolePermissionOutboxWriter{},
 			NewDeleteExecution: func(actionsecurity.DeleteUserIntent) (*service.DeleteUserExecution, error) { return nil, nil },
 			NewCreateExecution: func(actionsecurity.Action, actionsecurity.CreateAccountIntent, []byte, service.CreateAccountRequestMetadata) (*service.CreateAccountExecution, error) {
 				return nil, nil
@@ -120,6 +130,9 @@ func TestNewStateCreateAccountActionsFailureExposesNoCreateRouteDependency(t *te
 			NewResetExecution: func(actionsecurity.ResetPasswordIntent, []byte, service.ResetPasswordRequestMetadata) (*service.ResetPasswordExecution, error) {
 				return nil, nil
 			},
+			NewPromoteExecution:          func(actionsecurity.PromoteIntent) (*service.RolePermissionExecution, error) { return nil, nil },
+			NewDemoteExecution:           func(actionsecurity.DemoteIntent) (*service.RolePermissionExecution, error) { return nil, nil },
+			NewPermissionsWriteExecution: func(actionsecurity.PermissionsWriteIntent) (*service.RolePermissionExecution, error) { return nil, nil },
 		}
 	}
 	tests := []struct {
@@ -133,9 +146,13 @@ func TestNewStateCreateAccountActionsFailureExposesNoCreateRouteDependency(t *te
 		{name: "delete writer", mutate: func(bundle *service.UserManagementActions) { bundle.DeleteOutbox = nil }},
 		{name: "create writer", mutate: func(bundle *service.UserManagementActions) { bundle.CreateOutbox = nil }},
 		{name: "reset writer", mutate: func(bundle *service.UserManagementActions) { bundle.ResetOutbox = nil }},
+		{name: "role permission writer", mutate: func(bundle *service.UserManagementActions) { bundle.RolePermissionOutbox = nil }},
 		{name: "delete factory", mutate: func(bundle *service.UserManagementActions) { bundle.NewDeleteExecution = nil }},
 		{name: "create factory", mutate: func(bundle *service.UserManagementActions) { bundle.NewCreateExecution = nil }},
 		{name: "reset factory", mutate: func(bundle *service.UserManagementActions) { bundle.NewResetExecution = nil }},
+		{name: "promote factory", mutate: func(bundle *service.UserManagementActions) { bundle.NewPromoteExecution = nil }},
+		{name: "demote factory", mutate: func(bundle *service.UserManagementActions) { bundle.NewDemoteExecution = nil }},
+		{name: "permissions write factory", mutate: func(bundle *service.UserManagementActions) { bundle.NewPermissionsWriteExecution = nil }},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

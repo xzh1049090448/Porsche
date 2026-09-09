@@ -889,8 +889,6 @@ func operationIntentTargetGUID(descriptor actionsecurity.Descriptor, intent any)
 	switch value := intent.(type) {
 	case actionsecurity.ResetPasswordIntent:
 		guid = value.TargetGUID
-	case actionsecurity.RoleIntent:
-		guid = value.TargetGUID
 	case actionsecurity.PromoteIntent:
 		guid = value.TargetGUID
 	case actionsecurity.DemoteIntent:

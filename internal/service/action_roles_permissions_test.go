@@ -131,7 +131,7 @@ func TestRolePermissionExecutionRejectsDescriptorIntentAndDependencyMismatch(t *
 		func(d *actionsecurity.Descriptor) { d.Capability = "users.demote" },
 		func(d *actionsecurity.Descriptor) { d.RootOnly = false },
 		func(d *actionsecurity.Descriptor) { d.RequiresTicket = false },
-		func(d *actionsecurity.Descriptor) { d.Active = true },
+		func(d *actionsecurity.Descriptor) { d.Active = false },
 		func(d *actionsecurity.Descriptor) { d.TargetKind = actionsecurity.TargetNone },
 		func(d *actionsecurity.Descriptor) {
 			d.Encode = func(any) ([]byte, error) { return []byte("forged"), nil }
@@ -249,7 +249,7 @@ func TestRolePermissionPlanSourceDoesNotResolveOrProjectGlobalRegistry(t *testin
 		body = body[:len("func ")+end]
 	}
 	for _, forbidden := range [][]byte{
-		[]byte("validInactiveRolePermissionDescriptor"),
+		[]byte("validRolePermissionDescriptor"),
 		[]byte("InactiveActionDescriptors"),
 		[]byte("ActiveActionRegistry"),
 		[]byte("FutureActionDescriptors"),
@@ -263,7 +263,7 @@ func TestRolePermissionPlanSourceDoesNotResolveOrProjectGlobalRegistry(t *testin
 	if count := bytes.Count(source, []byte("actionsecurity.InactiveActionDescriptors()")); count != 1 {
 		t.Fatalf("inactive registry access count = %d, want constructor validation only", count)
 	}
-	if count := bytes.Count(source, []byte("validInactiveRolePermissionDescriptor(")); count != 2 {
+	if count := bytes.Count(source, []byte("validRolePermissionDescriptor(")); count != 2 {
 		t.Fatalf("descriptor validator reference count = %d, want constructor call plus definition", count)
 	}
 	for _, forbidden := range [][]byte{
@@ -413,7 +413,7 @@ func assertRolePermissionGuardAvailableAfterPlan(t *testing.T, execution *RolePe
 
 func rolePermissionTestDescriptor(t *testing.T, action actionsecurity.Action) actionsecurity.Descriptor {
 	t.Helper()
-	for _, descriptor := range actionsecurity.InactiveActionDescriptors() {
+	for _, descriptor := range actionsecurity.ActiveActionRegistry() {
 		if descriptor.Action == action {
 			return descriptor
 		}

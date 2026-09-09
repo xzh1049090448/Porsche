@@ -76,8 +76,8 @@ type RolePermissionTransitionPlan struct {
 	DesiredRules          []actionsecurity.PermissionOverrideIntent
 }
 
-// NewRolePermissionExecution accepts only the exact inactive canonical A08
-// descriptor and its corresponding typed intent.
+// NewRolePermissionExecution accepts only an exact canonical A08 descriptor
+// and its corresponding typed intent.
 func NewRolePermissionExecution(
 	descriptor actionsecurity.Descriptor,
 	intent any,
@@ -85,7 +85,7 @@ func NewRolePermissionExecution(
 	clock persistence.Clock,
 	crypto *actionsecurity.Crypto,
 ) (*RolePermissionExecution, error) {
-	if !validInactiveRolePermissionDescriptor(descriptor) || nextGUID == nil || operationInterfaceNil(clock) || crypto == nil {
+	if !validRolePermissionDescriptor(descriptor) || nextGUID == nil || operationInterfaceNil(clock) || crypto == nil {
 		return nil, ErrActionOperationUnavailable
 	}
 	encoded, err := descriptor.Encode(intent)
@@ -111,19 +111,18 @@ func NewRolePermissionExecution(
 	}, nil
 }
 
-func validInactiveRolePermissionDescriptor(descriptor actionsecurity.Descriptor) bool {
-	if !isA08RolePermissionAction(descriptor.Action) || descriptor.Active || descriptor.Encode == nil {
+func validRolePermissionDescriptor(descriptor actionsecurity.Descriptor) bool {
+	if !isA08RolePermissionAction(descriptor.Action) || descriptor.Encode == nil {
 		return false
 	}
 	for _, expected := range actionsecurity.InactiveActionDescriptors() {
 		if expected.Action != descriptor.Action {
 			continue
 		}
-		return descriptor.Name == expected.Name && descriptor.Capability == expected.Capability &&
+		return descriptor.Name == expected.Name && descriptor.Capability == expected.Capability && descriptor.Active &&
 			descriptor.RootOnly == expected.RootOnly && descriptor.RootOnly &&
 			descriptor.RequiresTicket == expected.RequiresTicket && descriptor.RequiresTicket &&
-			descriptor.Active == expected.Active && descriptor.TargetKind == expected.TargetKind &&
-			descriptor.TargetKind == actionsecurity.TargetUser && expected.Encode != nil &&
+			descriptor.TargetKind == expected.TargetKind && descriptor.TargetKind == actionsecurity.TargetUser && expected.Encode != nil &&
 			reflect.ValueOf(descriptor.Encode).Pointer() == reflect.ValueOf(expected.Encode).Pointer()
 	}
 	return false
