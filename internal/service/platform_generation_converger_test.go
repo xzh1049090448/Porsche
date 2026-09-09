@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"reflect"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -497,7 +498,36 @@ func TestPlatformGenerationConvergerMultiInstanceRestartIntegration(t *testing.T
 	if err := f.store.client.Set(context.Background(), f.store.key(f.user.ID, input.GenerationID), committingRaw, platformGenerationTTL).Err(); err != nil {
 		t.Fatal(err)
 	}
+	durableBefore, err := LoadPlatformGenerationReceipt(context.Background(), f.db, f.user.ID, input.GenerationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sqlMutationAttempts atomic.Int32
+	recordMutation := func(*gorm.DB) { sqlMutationAttempts.Add(1) }
+	callbackSuffix := stringInt64(testSnowflake.Next())
+	createCallback := "task8:multi-instance:create:" + callbackSuffix
+	updateCallback := "task8:multi-instance:update:" + callbackSuffix
+	deleteCallback := "task8:multi-instance:delete:" + callbackSuffix
+	if err := f.db.Callback().Create().Before("gorm:create").Register(createCallback, recordMutation); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.Callback().Update().Before("gorm:update").Register(updateCallback, recordMutation); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.Callback().Delete().Before("gorm:delete").Register(deleteCallback, recordMutation); err != nil {
+		t.Fatal(err)
+	}
 
+	type observedAuthority struct {
+		worker int
+		raw    string
+		state  PlatformGenerationState
+		err    error
+	}
+	identity := PlatformGenerationIdentity{UserID: f.user.ID, GenerationID: input.GenerationID}
+	observed := make(chan observedAuthority, 2)
+	release := make(chan struct{})
+	var attempts atomic.Int32
 	workers := make([]*PlatformGenerationConverger, 2)
 	for index := range workers {
 		control, controlErr := NewPlatformGenerationControl(f.db, f.store, NewPlatformGenerationCancellationRegistry())
@@ -508,19 +538,66 @@ func TestPlatformGenerationConvergerMultiInstanceRestartIntegration(t *testing.T
 		if workerErr != nil {
 			t.Fatal(workerErr)
 		}
+		worker.scan = func(context.Context, uint64, int64) ([]PlatformGenerationIdentity, uint64, error) {
+			return []PlatformGenerationIdentity{identity}, 0, nil
+		}
+		workerIndex := index
+		worker.converge = func(ctx context.Context, gotIdentity PlatformGenerationIdentity, nowMillis int64) error {
+			attempts.Add(1)
+			snapshot, getErr := control.deps.get(ctx, gotIdentity.UserID, gotIdentity.GenerationID)
+			raw := ""
+			if getErr == nil {
+				raw, getErr = encodePlatformGeneration(snapshot)
+			}
+			select {
+			case observed <- observedAuthority{worker: workerIndex, raw: raw, state: snapshot.State, err: getErr}:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+			if getErr != nil {
+				return getErr
+			}
+			select {
+			case <-release:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+			_, convergeErr := control.converge(ctx, gotIdentity.UserID, gotIdentity.GenerationID, nowMillis, snapshot)
+			return convergeErr
+		}
 		worker.nowMillis = func() int64 { return committing.UpdatedAtMillis + 1 }
+		worker.budget = 2 * time.Second
 		workers[index] = worker
 	}
 
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
 	var wg sync.WaitGroup
 	errs := make(chan error, len(workers))
 	for _, worker := range workers {
 		wg.Add(1)
 		go func(worker *PlatformGenerationConverger) {
 			defer wg.Done()
-			errs <- worker.RunPass(context.Background())
+			errs <- worker.RunPass(ctx)
 		}(worker)
 	}
+	seenWorkers := make(map[int]bool, len(workers))
+	for len(seenWorkers) < len(workers) {
+		select {
+		case sighting := <-observed:
+			if sighting.err != nil || sighting.state != PlatformGenerationStateCommitting || sighting.raw != committingRaw || seenWorkers[sighting.worker] {
+				close(release)
+				wg.Wait()
+				t.Fatalf("worker observation=%#v want distinct committing authority", sighting)
+			}
+			seenWorkers[sighting.worker] = true
+		case <-ctx.Done():
+			close(release)
+			wg.Wait()
+			t.Fatalf("workers did not both observe committing authority: seen=%v error=%v", seenWorkers, ctx.Err())
+		}
+	}
+	close(release)
 	wg.Wait()
 	close(errs)
 	for runErr := range errs {
@@ -531,6 +608,16 @@ func TestPlatformGenerationConvergerMultiInstanceRestartIntegration(t *testing.T
 	completed, err := f.store.Get(context.Background(), f.user.ID, input.GenerationID)
 	if err != nil || completed.State != PlatformGenerationStateCompleted || completed.ModelStates["model-a"].AssistantMessageGUID == "" {
 		t.Fatalf("authority=%#v error=%v", completed, err)
+	}
+	if attempts.Load() != 2 || completed.ModelStates["model-a"].AssistantMessageGUID != durableBefore.Results[0].AssistantMessageGUID {
+		t.Fatalf("attempts/authority=%d/%#v durable=%#v", attempts.Load(), completed, durableBefore)
+	}
+	durableAfter, err := LoadPlatformGenerationReceipt(context.Background(), f.db, f.user.ID, input.GenerationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sqlMutationAttempts.Load() != 0 || !reflect.DeepEqual(durableAfter, durableBefore) {
+		t.Fatalf("reconcile SQL mutation attempts=%d durable before/after=%#v/%#v", sqlMutationAttempts.Load(), durableBefore, durableAfter)
 	}
 	assertPlatformGenerationFinalizationEffects(t, f, 1, 2, 1, 1, 1, 3, 17)
 }

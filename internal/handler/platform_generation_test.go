@@ -18,9 +18,94 @@ import (
 	"github.com/porsche/ai-gateway-go/internal/migration"
 	"github.com/porsche/ai-gateway-go/internal/models"
 	"github.com/porsche/ai-gateway-go/internal/service"
+	"github.com/redis/go-redis/v9"
 )
 
 const platformGenerationHandlerTestID = "550e8400-e29b-41d4-a716-446655440000"
+
+const platformGenerationHandlerRedisPrefix = "porsche:platform:generation:v2:"
+
+func platformGenerationHandlerRedisClient(t *testing.T) *redis.Client {
+	t.Helper()
+	options, err := redis.ParseURL(strings.TrimSpace(os.Getenv("TEST_REDIS_URL")))
+	if err != nil {
+		t.Fatalf("parse TEST_REDIS_URL: %v", err)
+	}
+	client := redis.NewClient(options)
+	if err := client.Ping(context.Background()).Err(); err != nil {
+		_ = client.Close()
+		t.Fatalf("ping TEST_REDIS_URL: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := client.Close(); err != nil {
+			t.Errorf("close generation cleanup client: %v", err)
+		}
+	})
+	return client
+}
+
+func platformGenerationHandlerOwnedKey(userID int64, generationID string) string {
+	return fmt.Sprintf("%s%d:%s", platformGenerationHandlerRedisPrefix, userID, generationID)
+}
+
+func registerPlatformGenerationHandlerKeyCleanup(t *testing.T, client *redis.Client, userID int64, generationID string) string {
+	t.Helper()
+	key := platformGenerationHandlerOwnedKey(userID, generationID)
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := client.Del(ctx, key).Err(); err != nil {
+			t.Errorf("delete owned generation key %q: %v", key, err)
+			return
+		}
+		exists, err := client.Exists(ctx, key).Result()
+		if err != nil {
+			t.Errorf("verify owned generation key %q cleanup: %v", key, err)
+		} else if exists != 0 {
+			t.Errorf("owned generation key %q remains after cleanup", key)
+		}
+	})
+	return key
+}
+
+func assertPlatformGenerationHandlerRedisBaseline(t *testing.T, client *redis.Client, baseline int64, generationID string, keys []string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if len(keys) > 0 {
+		exists, err := client.Exists(ctx, keys...).Result()
+		if err != nil {
+			t.Fatalf("verify exact generation cleanup: %v", err)
+		}
+		if exists != 0 {
+			t.Fatalf("owned generation keys remain=%d keys=%v", exists, keys)
+		}
+	}
+	var cursor uint64
+	var matched []string
+	pattern := platformGenerationHandlerRedisPrefix + "*:" + generationID
+	for {
+		batch, next, err := client.Scan(ctx, cursor, pattern, 32).Result()
+		if err != nil {
+			t.Fatalf("scan owned generation pattern %q: %v", pattern, err)
+		}
+		matched = append(matched, batch...)
+		cursor = next
+		if cursor == 0 {
+			break
+		}
+	}
+	if len(matched) != 0 {
+		t.Fatalf("owned generation pattern %q remains=%v", pattern, matched)
+	}
+	after, err := client.DBSize(ctx).Result()
+	if err != nil {
+		t.Fatalf("read Redis cleanup baseline: %v", err)
+	}
+	if after != baseline {
+		t.Fatalf("Redis DBSIZE after cleanup=%d, want baseline=%d", after, baseline)
+	}
+}
 
 type platformGenerationHandlerFake struct {
 	get         func(context.Context, int64, string) (service.PlatformGenerationView, error)
@@ -227,145 +312,172 @@ func TestPlatformGenerationHandlerIntegrationReceiptAndOwnerIsolation(t *testing
 	if strings.TrimSpace(os.Getenv("TEST_DATABASE_URL")) == "" || strings.TrimSpace(os.Getenv("TEST_REDIS_URL")) == "" {
 		t.Skip("BLOCKED_FIXTURE: requires TEST_DATABASE_URL and TEST_REDIS_URL")
 	}
-	state := ownedRealUserCreateHTTPState(t)
-	t.Cleanup(func() {
-		if err := state.Close(); err != nil {
-			t.Errorf("close generation integration state: %v", err)
-		}
-	})
-	if err := migration.Verify(context.Background(), state.DB); err != nil {
-		t.Fatalf("verify owned handler migration ledger: %v", err)
-	}
-	user := platformTestUser(t, state, "generation-owner", nil)
-	user.DailyCallLimit = 100
-	user.DailyCallsUsed = 2
-	user.TotalTokensUsed = 41
-	resetAt := time.Now().UTC().UnixMilli()
-	user.DailyCallsResetAt = &resetAt
-	if err := state.DB.Create(&user).Error; err != nil {
-		t.Fatal(err)
-	}
-	generationID := fmt.Sprintf("550e8400-e29b-41d4-a716-%012x", platformTestSnowflake.Next()&0xffffffffffff)
-	nowMillis := time.Now().UTC().UnixMilli()
-	claim, err := state.PlatformGenerations.Claim(context.Background(), service.PlatformGenerationClaimInput{
-		UserID: user.ID, GenerationID: generationID, Mode: service.PlatformGenerationModeSingle, Models: []string{"model-a"}, NowMillis: nowMillis,
-	})
-	if err != nil || claim.Duplicate || claim.LeaseToken == "" {
-		t.Fatalf("claim=%#v error=%v", claim, err)
-	}
-	if _, err := state.PlatformGenerations.MarkModelDone(context.Background(), user.ID, generationID, "model-a", 0, nowMillis+1); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := state.PlatformGenerations.BeginCommit(context.Background(), user.ID, generationID, nowMillis+2); err != nil {
-		t.Fatal(err)
-	}
-	receipt, err := state.PlatformGenerationPersistence.Finalize(context.Background(), state.DB, service.PlatformGenerationPersistenceInput{
-		UserID: user.ID, GenerationID: generationID, Mode: service.PlatformGenerationModeSingle,
-		Models: []string{"model-a"}, UserMessage: "private prompt bytes", NowMillis: nowMillis + 3,
-		Results: []service.PlatformGenerationPersistenceResult{{Model: "model-a", State: service.PlatformGenerationStateCompleted, Content: "real receipt answer", Tokens: 7, Seq: 0}},
-	})
+	client := platformGenerationHandlerRedisClient(t)
+	baseline, err := client.DBSize(context.Background()).Result()
 	if err != nil {
 		t.Fatal(err)
 	}
-	const currentTotal = int64(909)
-	if err := state.DB.Model(&models.User{}).Where("id = ?", user.ID).Update("total_tokens_used", currentTotal).Error; err != nil {
-		t.Fatal(err)
-	}
+	var generationID string
+	var ownedKeys []string
+	if !t.Run("http", func(t *testing.T) {
+		state := ownedRealUserCreateHTTPState(t)
+		t.Cleanup(func() {
+			if err := state.Close(); err != nil {
+				t.Errorf("close generation integration state: %v", err)
+			}
+		})
+		if err := migration.Verify(context.Background(), state.DB); err != nil {
+			t.Fatalf("verify owned handler migration ledger: %v", err)
+		}
+		user := platformTestUser(t, state, "generation-owner", nil)
+		user.DailyCallLimit = 100
+		user.DailyCallsUsed = 2
+		user.TotalTokensUsed = 41
+		resetAt := time.Now().UTC().UnixMilli()
+		user.DailyCallsResetAt = &resetAt
+		if err := state.DB.Create(&user).Error; err != nil {
+			t.Fatal(err)
+		}
+		generationID = fmt.Sprintf("550e8400-e29b-41d4-a716-%012x", platformTestSnowflake.Next()&0xffffffffffff)
+		ownedKeys = append(ownedKeys, registerPlatformGenerationHandlerKeyCleanup(t, client, user.ID, generationID))
+		nowMillis := time.Now().UTC().UnixMilli()
+		claim, err := state.PlatformGenerations.Claim(context.Background(), service.PlatformGenerationClaimInput{
+			UserID: user.ID, GenerationID: generationID, Mode: service.PlatformGenerationModeSingle, Models: []string{"model-a"}, NowMillis: nowMillis,
+		})
+		if err != nil || claim.Duplicate || claim.LeaseToken == "" {
+			t.Fatalf("claim=%#v error=%v", claim, err)
+		}
+		if _, err := state.PlatformGenerations.MarkModelDone(context.Background(), user.ID, generationID, "model-a", 0, nowMillis+1); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := state.PlatformGenerations.BeginCommit(context.Background(), user.ID, generationID, nowMillis+2); err != nil {
+			t.Fatal(err)
+		}
+		receipt, err := state.PlatformGenerationPersistence.Finalize(context.Background(), state.DB, service.PlatformGenerationPersistenceInput{
+			UserID: user.ID, GenerationID: generationID, Mode: service.PlatformGenerationModeSingle,
+			Models: []string{"model-a"}, UserMessage: "private prompt bytes", NowMillis: nowMillis + 3,
+			Results: []service.PlatformGenerationPersistenceResult{{Model: "model-a", State: service.PlatformGenerationStateCompleted, Content: "real receipt answer", Tokens: 7, Seq: 0}},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		const currentTotal = int64(909)
+		if err := state.DB.Model(&models.User{}).Where("id = ?", user.ID).Update("total_tokens_used", currentTotal).Error; err != nil {
+			t.Fatal(err)
+		}
 
-	ownerPath := "/api/v1/platform/chat/generations/" + generationID
-	owner := platformGenerationRequestForUser(t, state.PlatformGenerationControl, user.ID, http.MethodGet, ownerPath)
-	if owner.Code != http.StatusOK || !strings.Contains(owner.Body.String(), `"status":"completed"`) ||
-		!strings.Contains(owner.Body.String(), `"content":"real receipt answer"`) ||
-		!strings.Contains(owner.Body.String(), `"assistant_message_guid":"`+receipt.Results[0].AssistantMessageGUID+`"`) ||
-		!strings.Contains(owner.Body.String(), `"total_tokens_used":909`) || strings.Contains(owner.Body.String(), "private prompt bytes") {
-		t.Fatalf("real owner HTTP status/body=%d/%s", owner.Code, owner.Body.String())
-	}
+		ownerPath := "/api/v1/platform/chat/generations/" + generationID
+		owner := platformGenerationRequestForUser(t, state.PlatformGenerationControl, user.ID, http.MethodGet, ownerPath)
+		if owner.Code != http.StatusOK || !strings.Contains(owner.Body.String(), `"status":"completed"`) ||
+			!strings.Contains(owner.Body.String(), `"content":"real receipt answer"`) ||
+			!strings.Contains(owner.Body.String(), `"assistant_message_guid":"`+receipt.Results[0].AssistantMessageGUID+`"`) ||
+			!strings.Contains(owner.Body.String(), `"total_tokens_used":909`) || strings.Contains(owner.Body.String(), "private prompt bytes") {
+			t.Fatalf("real owner HTTP status/body=%d/%s", owner.Code, owner.Body.String())
+		}
 
-	foreignUserID := user.ID + 1_000_000
-	foreignGet := platformGenerationRequestForUser(t, state.PlatformGenerationControl, foreignUserID, http.MethodGet, ownerPath)
-	assertPlatformGenerationError(t, foreignGet, http.StatusNotFound, "generation_not_found", "Generation not found.", "invalid_request_error")
-	foreignCancel := platformGenerationRequestForUser(t, state.PlatformGenerationControl, foreignUserID, http.MethodPost, ownerPath+"/cancel")
-	wantForeign := `{"generation_id":"` + generationID + `","status":"cancelled","mode":null,"conversation_guid":null}`
-	if foreignCancel.Code != http.StatusOK || strings.TrimSpace(foreignCancel.Body.String()) != wantForeign {
-		t.Fatalf("foreign cancel status/body=%d/%s", foreignCancel.Code, foreignCancel.Body.String())
+		foreignUserID := user.ID + 1_000_000
+		foreignGet := platformGenerationRequestForUser(t, state.PlatformGenerationControl, foreignUserID, http.MethodGet, ownerPath)
+		assertPlatformGenerationError(t, foreignGet, http.StatusNotFound, "generation_not_found", "Generation not found.", "invalid_request_error")
+		ownedKeys = append(ownedKeys, registerPlatformGenerationHandlerKeyCleanup(t, client, foreignUserID, generationID))
+		foreignCancel := platformGenerationRequestForUser(t, state.PlatformGenerationControl, foreignUserID, http.MethodPost, ownerPath+"/cancel")
+		wantForeign := `{"generation_id":"` + generationID + `","status":"cancelled","mode":null,"conversation_guid":null}`
+		if foreignCancel.Code != http.StatusOK || strings.TrimSpace(foreignCancel.Body.String()) != wantForeign {
+			t.Fatalf("foreign cancel status/body=%d/%s", foreignCancel.Code, foreignCancel.Body.String())
+		}
+		ownerAfter := platformGenerationRequestForUser(t, state.PlatformGenerationControl, user.ID, http.MethodGet, ownerPath)
+		if ownerAfter.Code != http.StatusOK || !strings.Contains(ownerAfter.Body.String(), `"content":"real receipt answer"`) {
+			t.Fatalf("owner changed by foreign cancel status/body=%d/%s", ownerAfter.Code, ownerAfter.Body.String())
+		}
+	}) {
+		return
 	}
-	ownerAfter := platformGenerationRequestForUser(t, state.PlatformGenerationControl, user.ID, http.MethodGet, ownerPath)
-	if ownerAfter.Code != http.StatusOK || !strings.Contains(ownerAfter.Body.String(), `"content":"real receipt answer"`) {
-		t.Fatalf("owner changed by foreign cancel status/body=%d/%s", ownerAfter.Code, ownerAfter.Body.String())
-	}
+	assertPlatformGenerationHandlerRedisBaseline(t, client, baseline, generationID, ownedKeys)
 }
 
 func TestPlatformGenerationHandlerIntegrationPartialCompareReceipt(t *testing.T) {
 	if strings.TrimSpace(os.Getenv("TEST_DATABASE_URL")) == "" || strings.TrimSpace(os.Getenv("TEST_REDIS_URL")) == "" {
 		t.Skip("BLOCKED_FIXTURE: requires TEST_DATABASE_URL and TEST_REDIS_URL")
 	}
-	state := ownedRealUserCreateHTTPState(t)
-	t.Cleanup(func() {
-		if err := state.Close(); err != nil {
-			t.Errorf("close compare integration state: %v", err)
-		}
-	})
-	if err := migration.Verify(context.Background(), state.DB); err != nil {
-		t.Fatalf("verify owned compare migration ledger: %v", err)
-	}
-	user := platformTestUser(t, state, "generation-compare-owner", nil)
-	user.DailyCallLimit = 100
-	user.DailyCallsUsed = 1
-	user.TotalTokensUsed = 23
-	resetAt := time.Now().UTC().UnixMilli()
-	user.DailyCallsResetAt = &resetAt
-	if err := state.DB.Create(&user).Error; err != nil {
-		t.Fatal(err)
-	}
-	generationID := fmt.Sprintf("650e8400-e29b-41d4-a716-%012x", platformTestSnowflake.Next()&0xffffffffffff)
-	nowMillis := time.Now().UTC().UnixMilli()
-	modelsInOrder := []string{"Model-A", "model-b"}
-	claim, err := state.PlatformGenerations.Claim(context.Background(), service.PlatformGenerationClaimInput{
-		UserID: user.ID, GenerationID: generationID, Mode: service.PlatformGenerationModeCompare, Models: modelsInOrder, NowMillis: nowMillis,
-	})
-	if err != nil || claim.Duplicate || claim.LeaseToken == "" {
-		t.Fatalf("compare claim=%#v error=%v", claim, err)
-	}
-	if _, err := state.PlatformGenerations.MarkModelDone(context.Background(), user.ID, generationID, modelsInOrder[0], 0, nowMillis+1); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := state.PlatformGenerations.MarkModelFailed(context.Background(), user.ID, generationID, modelsInOrder[1], "timeout", nowMillis+2); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := state.PlatformGenerations.BeginCommit(context.Background(), user.ID, generationID, nowMillis+3); err != nil {
-		t.Fatal(err)
-	}
-	receipt, err := state.PlatformGenerationPersistence.Finalize(context.Background(), state.DB, service.PlatformGenerationPersistenceInput{
-		UserID: user.ID, GenerationID: generationID, Mode: service.PlatformGenerationModeCompare,
-		Models: modelsInOrder, UserMessage: "private compare prompt", NowMillis: nowMillis + 4,
-		Results: []service.PlatformGenerationPersistenceResult{
-			{Model: modelsInOrder[0], State: service.PlatformGenerationStateCompleted, Content: "compare receipt answer", Tokens: 7, Seq: 0},
-			{Model: modelsInOrder[1], State: service.PlatformGenerationStateFailed, ErrorCode: "timeout", Seq: 0},
-		},
-	})
+	client := platformGenerationHandlerRedisClient(t)
+	baseline, err := client.DBSize(context.Background()).Result()
 	if err != nil {
 		t.Fatal(err)
 	}
-	const currentTotal = int64(919)
-	if receipt.TotalTokens == currentTotal {
-		t.Fatal("fixture current total must differ from generation-local tokens")
-	}
-	if err := state.DB.Model(&models.User{}).Where("id = ?", user.ID).Update("total_tokens_used", currentTotal).Error; err != nil {
-		t.Fatal(err)
-	}
+	var generationID string
+	var ownedKeys []string
+	if !t.Run("http", func(t *testing.T) {
+		state := ownedRealUserCreateHTTPState(t)
+		t.Cleanup(func() {
+			if err := state.Close(); err != nil {
+				t.Errorf("close compare integration state: %v", err)
+			}
+		})
+		if err := migration.Verify(context.Background(), state.DB); err != nil {
+			t.Fatalf("verify owned compare migration ledger: %v", err)
+		}
+		user := platformTestUser(t, state, "generation-compare-owner", nil)
+		user.DailyCallLimit = 100
+		user.DailyCallsUsed = 1
+		user.TotalTokensUsed = 23
+		resetAt := time.Now().UTC().UnixMilli()
+		user.DailyCallsResetAt = &resetAt
+		if err := state.DB.Create(&user).Error; err != nil {
+			t.Fatal(err)
+		}
+		generationID = fmt.Sprintf("650e8400-e29b-41d4-a716-%012x", platformTestSnowflake.Next()&0xffffffffffff)
+		ownedKeys = append(ownedKeys, registerPlatformGenerationHandlerKeyCleanup(t, client, user.ID, generationID))
+		nowMillis := time.Now().UTC().UnixMilli()
+		modelsInOrder := []string{"Model-A", "model-b"}
+		claim, err := state.PlatformGenerations.Claim(context.Background(), service.PlatformGenerationClaimInput{
+			UserID: user.ID, GenerationID: generationID, Mode: service.PlatformGenerationModeCompare, Models: modelsInOrder, NowMillis: nowMillis,
+		})
+		if err != nil || claim.Duplicate || claim.LeaseToken == "" {
+			t.Fatalf("compare claim=%#v error=%v", claim, err)
+		}
+		if _, err := state.PlatformGenerations.MarkModelDone(context.Background(), user.ID, generationID, modelsInOrder[0], 0, nowMillis+1); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := state.PlatformGenerations.MarkModelFailed(context.Background(), user.ID, generationID, modelsInOrder[1], "timeout", nowMillis+2); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := state.PlatformGenerations.BeginCommit(context.Background(), user.ID, generationID, nowMillis+3); err != nil {
+			t.Fatal(err)
+		}
+		receipt, err := state.PlatformGenerationPersistence.Finalize(context.Background(), state.DB, service.PlatformGenerationPersistenceInput{
+			UserID: user.ID, GenerationID: generationID, Mode: service.PlatformGenerationModeCompare,
+			Models: modelsInOrder, UserMessage: "private compare prompt", NowMillis: nowMillis + 4,
+			Results: []service.PlatformGenerationPersistenceResult{
+				{Model: modelsInOrder[0], State: service.PlatformGenerationStateCompleted, Content: "compare receipt answer", Tokens: 7, Seq: 0},
+				{Model: modelsInOrder[1], State: service.PlatformGenerationStateFailed, ErrorCode: "timeout", Seq: 0},
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		const currentTotal = int64(919)
+		if receipt.TotalTokens == currentTotal {
+			t.Fatal("fixture current total must differ from generation-local tokens")
+		}
+		if err := state.DB.Model(&models.User{}).Where("id = ?", user.ID).Update("total_tokens_used", currentTotal).Error; err != nil {
+			t.Fatal(err)
+		}
 
-	path := "/api/v1/platform/chat/generations/" + generationID
-	rec := platformGenerationRequestForUser(t, state.PlatformGenerationControl, user.ID, http.MethodGet, path)
-	want := fmt.Sprintf(
-		`{"generation_id":"%s","status":"completed","mode":"compare","conversation_guid":"%d","results":[{"model":"Model-A","status":"completed","assistant_message_guid":"%s","content":"compare receipt answer","tokens":7},{"model":"model-b","status":"failed","code":"timeout"}],"total_tokens_used":919}`,
-		generationID, receipt.ConversationGUID, receipt.Results[0].AssistantMessageGUID,
-	)
-	if rec.Code != http.StatusOK || strings.TrimSpace(rec.Body.String()) != want {
-		t.Fatalf("compare HTTP status/body=%d/%q want 200/%q", rec.Code, rec.Body.String(), want)
+		path := "/api/v1/platform/chat/generations/" + generationID
+		rec := platformGenerationRequestForUser(t, state.PlatformGenerationControl, user.ID, http.MethodGet, path)
+		want := fmt.Sprintf(
+			`{"generation_id":"%s","status":"completed","mode":"compare","conversation_guid":"%d","results":[{"model":"Model-A","status":"completed","assistant_message_guid":"%s","content":"compare receipt answer","tokens":7},{"model":"model-b","status":"failed","code":"timeout"}],"total_tokens_used":919}`,
+			generationID, receipt.ConversationGUID, receipt.Results[0].AssistantMessageGUID,
+		)
+		if rec.Code != http.StatusOK || strings.TrimSpace(rec.Body.String()) != want {
+			t.Fatalf("compare HTTP status/body=%d/%q want 200/%q", rec.Code, rec.Body.String(), want)
+		}
+		if rec.Header().Get("Cache-Control") != "no-store" || rec.Header().Get("Retry-After") != "" ||
+			strings.Contains(rec.Body.String(), "private compare prompt") || strings.Contains(rec.Body.String(), `"model":"model-b","status":"failed","assistant_message_guid"`) ||
+			strings.Contains(rec.Body.String(), `"model":"model-b","status":"failed","content"`) || strings.Contains(rec.Body.String(), `"model":"model-b","status":"failed","tokens"`) {
+			t.Fatalf("compare HTTP metadata/content boundary violated: headers=%v body=%s", rec.Header(), rec.Body.String())
+		}
+	}) {
+		return
 	}
-	if rec.Header().Get("Cache-Control") != "no-store" || rec.Header().Get("Retry-After") != "" ||
-		strings.Contains(rec.Body.String(), "private compare prompt") || strings.Contains(rec.Body.String(), `"model":"model-b","status":"failed","assistant_message_guid"`) ||
-		strings.Contains(rec.Body.String(), `"model":"model-b","status":"failed","content"`) || strings.Contains(rec.Body.String(), `"model":"model-b","status":"failed","tokens"`) {
-		t.Fatalf("compare HTTP metadata/content boundary violated: headers=%v body=%s", rec.Header(), rec.Body.String())
-	}
+	assertPlatformGenerationHandlerRedisBaseline(t, client, baseline, generationID, ownedKeys)
 }
