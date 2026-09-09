@@ -2,7 +2,7 @@
 
 Date: 2026-09-10
 
-Status: design approved; written specification pending review
+Status: approved for implementation planning
 
 Scope owner: Porsche backend
 
@@ -257,7 +257,7 @@ Implementation follows test-driven development. Missing real fixture configurati
 
 ### 14.3 Real Redis and MySQL tests
 
-Using explicitly isolated Redis 7 and MySQL 8.4 with migration ledger `0001` through `0011`:
+Using explicitly isolated Redis 7 and MySQL 8.4 with the current migration ledger `0001` through `0013` (including BE03 receipt migration `0011`):
 
 - new-conversation success emits/reserves one GUID and commits exactly that GUID with receipt provenance `requested_existing_conversation = 0`;
 - existing-conversation success retains exact ownership/provenance and updates through BE03 only;
