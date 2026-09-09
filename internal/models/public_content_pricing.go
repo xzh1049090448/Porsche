@@ -43,6 +43,32 @@ const (
 	PublicPriceSnapshotReasonRestore        PublicPriceSnapshotReason = 3
 )
 
+func (reason PublicPriceSnapshotReason) String() string {
+	switch reason {
+	case PublicPriceSnapshotReasonRootPublish:
+		return "root_publish"
+	case PublicPriceSnapshotReasonUpstreamSafety:
+		return "upstream_safety"
+	case PublicPriceSnapshotReasonRestore:
+		return "restore"
+	default:
+		return "unknown"
+	}
+}
+
+func ParsePublicPriceSnapshotReason(value string) (PublicPriceSnapshotReason, bool) {
+	switch value {
+	case "root_publish":
+		return PublicPriceSnapshotReasonRootPublish, true
+	case "upstream_safety":
+		return PublicPriceSnapshotReasonUpstreamSafety, true
+	case "restore":
+		return PublicPriceSnapshotReasonRestore, true
+	default:
+		return 0, false
+	}
+}
+
 type PublicContentDocumentKind int
 
 const (
@@ -53,6 +79,40 @@ const (
 	PublicContentDocumentPrivacy PublicContentDocumentKind = 5
 )
 
+func (kind PublicContentDocumentKind) String() string {
+	switch kind {
+	case PublicContentDocumentSite:
+		return "site"
+	case PublicContentDocumentHome:
+		return "home"
+	case PublicContentDocumentAbout:
+		return "about"
+	case PublicContentDocumentTerms:
+		return "terms"
+	case PublicContentDocumentPrivacy:
+		return "privacy"
+	default:
+		return "unknown"
+	}
+}
+
+func ParsePublicContentDocumentKind(value string) (PublicContentDocumentKind, bool) {
+	switch value {
+	case "site":
+		return PublicContentDocumentSite, true
+	case "home":
+		return PublicContentDocumentHome, true
+	case "about":
+		return PublicContentDocumentAbout, true
+	case "terms":
+		return PublicContentDocumentTerms, true
+	case "privacy":
+		return PublicContentDocumentPrivacy, true
+	default:
+		return 0, false
+	}
+}
+
 type PublicContentReviewState int
 
 const (
@@ -60,12 +120,56 @@ const (
 	PublicContentReviewApproved PublicContentReviewState = 2
 )
 
+func (state PublicContentReviewState) String() string {
+	switch state {
+	case PublicContentReviewPending:
+		return "pending"
+	case PublicContentReviewApproved:
+		return "approved"
+	default:
+		return "unknown"
+	}
+}
+
+func ParsePublicContentReviewState(value string) (PublicContentReviewState, bool) {
+	switch value {
+	case "pending":
+		return PublicContentReviewPending, true
+	case "approved":
+		return PublicContentReviewApproved, true
+	default:
+		return 0, false
+	}
+}
+
 type PublicPriceVisibility int
 
 const (
 	PublicPriceVisibilityVisible           PublicPriceVisibility = 1
 	PublicPriceVisibilityAuthenticatedOnly PublicPriceVisibility = 2
 )
+
+func (visibility PublicPriceVisibility) String() string {
+	switch visibility {
+	case PublicPriceVisibilityVisible:
+		return "visible"
+	case PublicPriceVisibilityAuthenticatedOnly:
+		return "authenticated_only"
+	default:
+		return "unknown"
+	}
+}
+
+func ParsePublicPriceVisibility(value string) (PublicPriceVisibility, bool) {
+	switch value {
+	case "visible":
+		return PublicPriceVisibilityVisible, true
+	case "authenticated_only":
+		return PublicPriceVisibilityAuthenticatedOnly, true
+	default:
+		return 0, false
+	}
+}
 
 type RootAlertType int
 
@@ -79,12 +183,76 @@ const (
 	RootAlertTypeRendererFailure             RootAlertType = 7
 )
 
+func (alertType RootAlertType) String() string {
+	switch alertType {
+	case RootAlertTypePublishedPriceBelowUpstream:
+		return "published_price_below_upstream"
+	case RootAlertTypeUpstreamMissing:
+		return "upstream_missing"
+	case RootAlertTypeAutomaticInactivation:
+		return "automatic_inactivation"
+	case RootAlertTypeUpstreamReappearance:
+		return "upstream_reappearance"
+	case RootAlertTypeCatalogSyncFailure:
+		return "catalog_sync_failure"
+	case RootAlertTypePriceNotComparable:
+		return "price_not_comparable"
+	case RootAlertTypeRendererFailure:
+		return "renderer_failure"
+	default:
+		return "unknown"
+	}
+}
+
+func ParseRootAlertType(value string) (RootAlertType, bool) {
+	switch value {
+	case "published_price_below_upstream":
+		return RootAlertTypePublishedPriceBelowUpstream, true
+	case "upstream_missing":
+		return RootAlertTypeUpstreamMissing, true
+	case "automatic_inactivation":
+		return RootAlertTypeAutomaticInactivation, true
+	case "upstream_reappearance":
+		return RootAlertTypeUpstreamReappearance, true
+	case "catalog_sync_failure":
+		return RootAlertTypeCatalogSyncFailure, true
+	case "price_not_comparable":
+		return RootAlertTypePriceNotComparable, true
+	case "renderer_failure":
+		return RootAlertTypeRendererFailure, true
+	default:
+		return 0, false
+	}
+}
+
 type RootAlertState int
 
 const (
 	RootAlertStateActive   RootAlertState = 1
 	RootAlertStateResolved RootAlertState = 2
 )
+
+func (state RootAlertState) String() string {
+	switch state {
+	case RootAlertStateActive:
+		return "active"
+	case RootAlertStateResolved:
+		return "resolved"
+	default:
+		return "unknown"
+	}
+}
+
+func ParseRootAlertState(value string) (RootAlertState, bool) {
+	switch value {
+	case "active":
+		return RootAlertStateActive, true
+	case "resolved":
+		return RootAlertStateResolved, true
+	default:
+		return 0, false
+	}
+}
 
 type PublicRenderJobState int
 
@@ -95,6 +263,36 @@ const (
 	PublicRenderJobFailed    PublicRenderJobState = 4
 )
 
+func (state PublicRenderJobState) String() string {
+	switch state {
+	case PublicRenderJobQueued:
+		return "queued"
+	case PublicRenderJobLeased:
+		return "leased"
+	case PublicRenderJobSucceeded:
+		return "succeeded"
+	case PublicRenderJobFailed:
+		return "failed"
+	default:
+		return "unknown"
+	}
+}
+
+func ParsePublicRenderJobState(value string) (PublicRenderJobState, bool) {
+	switch value {
+	case "queued":
+		return PublicRenderJobQueued, true
+	case "leased":
+		return PublicRenderJobLeased, true
+	case "succeeded":
+		return PublicRenderJobSucceeded, true
+	case "failed":
+		return PublicRenderJobFailed, true
+	default:
+		return 0, false
+	}
+}
+
 // PublicModelConfig preserves permanently reserved public and upstream identities.
 type PublicModelConfig struct {
 	ID                             int64 `gorm:"column:id;type:bigint;not null;primaryKey;autoIncrement" json:"-"`
@@ -103,7 +301,7 @@ type PublicModelConfig struct {
 	UpstreamModelID                string                  `gorm:"column:upstream_model_id;type:varchar(255);not null;<-:create" json:"upstream_model_id"`
 	DisplayName                    string                  `gorm:"column:display_name;type:varchar(128);not null" json:"display_name"`
 	Provider                       string                  `gorm:"column:provider;type:varchar(128);not null" json:"provider"`
-	Capabilities                   JSONMap                 `gorm:"column:capabilities;type:json;not null" json:"capabilities"`
+	Capabilities                   JSONSlice               `gorm:"column:capabilities;type:json;not null" json:"capabilities"`
 	ContextWindow                  int64                   `gorm:"column:context_window;type:bigint;not null" json:"context_window"`
 	InputPriceUSDPerMillionTokens  *string                 `gorm:"column:input_price_usd_per_million_tokens;type:decimal(20,8)" json:"-"`
 	OutputPriceUSDPerMillionTokens *string                 `gorm:"column:output_price_usd_per_million_tokens;type:decimal(20,8)" json:"-"`
@@ -134,17 +332,17 @@ func (PublicPriceSnapshot) TableName() string { return "public_price_snapshots" 
 type PublicPriceSnapshotItem struct {
 	ID                             int64 `gorm:"column:id;type:bigint;not null;primaryKey;autoIncrement" json:"-"`
 	AuditFields                    `gorm:"embedded" json:"-"`
-	SnapshotID                     int64   `gorm:"column:snapshot_id;type:bigint;not null" json:"-"`
-	ModelConfigID                  int64   `gorm:"column:model_config_id;type:bigint;not null" json:"-"`
-	ModelKey                       string  `gorm:"column:model_key;type:varchar(128);not null" json:"model_key"`
-	UpstreamModelID                string  `gorm:"column:upstream_model_id;type:varchar(255);not null" json:"-"`
-	DisplayName                    string  `gorm:"column:display_name;type:varchar(128);not null" json:"display_name"`
-	Provider                       string  `gorm:"column:provider;type:varchar(128);not null" json:"provider"`
-	Capabilities                   JSONMap `gorm:"column:capabilities;type:json;not null" json:"capabilities"`
-	ContextWindow                  int64   `gorm:"column:context_window;type:bigint;not null" json:"context_window"`
-	InputPriceUSDPerMillionTokens  string  `gorm:"column:input_price_usd_per_million_tokens;type:decimal(20,8);not null" json:"-"`
-	OutputPriceUSDPerMillionTokens string  `gorm:"column:output_price_usd_per_million_tokens;type:decimal(20,8);not null" json:"-"`
-	UpstreamCheckedAt              *int64  `gorm:"column:upstream_checked_at;type:bigint" json:"-"`
+	SnapshotID                     int64     `gorm:"column:snapshot_id;type:bigint;not null" json:"-"`
+	ModelConfigID                  int64     `gorm:"column:model_config_id;type:bigint;not null" json:"-"`
+	ModelKey                       string    `gorm:"column:model_key;type:varchar(128);not null" json:"model_key"`
+	UpstreamModelID                string    `gorm:"column:upstream_model_id;type:varchar(255);not null" json:"-"`
+	DisplayName                    string    `gorm:"column:display_name;type:varchar(128);not null" json:"display_name"`
+	Provider                       string    `gorm:"column:provider;type:varchar(128);not null" json:"provider"`
+	Capabilities                   JSONSlice `gorm:"column:capabilities;type:json;not null" json:"capabilities"`
+	ContextWindow                  int64     `gorm:"column:context_window;type:bigint;not null" json:"context_window"`
+	InputPriceUSDPerMillionTokens  string    `gorm:"column:input_price_usd_per_million_tokens;type:decimal(20,8);not null" json:"-"`
+	OutputPriceUSDPerMillionTokens string    `gorm:"column:output_price_usd_per_million_tokens;type:decimal(20,8);not null" json:"-"`
+	UpstreamCheckedAt              *int64    `gorm:"column:upstream_checked_at;type:bigint" json:"-"`
 }
 
 func (PublicPriceSnapshotItem) TableName() string { return "public_price_snapshot_items" }
