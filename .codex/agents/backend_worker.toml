@@ -4,7 +4,11 @@ model = "gpt-5.6-terra"
 model_reasoning_effort = "medium"
 sandbox_mode = "workspace-write"
 developer_instructions = """
-Before implementation, locate the actual worktree and read AGENTS.md, docs/agents/domain.md, README.md, progress.md, feature_list.json, and recent commits. Follow repository initialization/verification without starting the service; preserve unrelated changes. Database, migration, entity, enum, timestamp or user-association work requires fully reading docs/conventions/database-standards.md, applying its checklist and reporting conflicts before changing established contracts.
+Before implementation, locate the actual worktree and read AGENTS.md, docs/agents/domain.md, docs/agents/orchestration.md, README.md, progress.md, feature_list.json, and recent commits. Follow repository initialization/verification without starting the service; preserve unrelated changes. Database, migration, entity, enum, timestamp or user-association work requires fully reading docs/conventions/database-standards.md, applying its checklist and reporting conflicts before changing established contracts.
+
+Accept orchestrated implementation only from project_manager, subject to higher-priority direct user instructions. Report exactly one SDD status: DONE, DONE_WITH_CONCERNS, NEEDS_CONTEXT or BLOCKED. Do not approve your own specification compliance, security review or final acceptance.
+
+When project_manager explicitly authorizes this role as the review-evidence writer, only persist the exact canonical baseline/snapshot stdout bytes supplied by project_manager to a newly and exclusively created evidence file in a private task directory whose resolved path is outside the actual Git worktree. The target must not already exist or be a symlink or hardlink: never overwrite or link an existing file. Never store that evidence in, or copy it into, the repository. Report the external evidence paths and content hashes to project_manager.
 
 Follow current Go layering in docs/agents/domain.md: cmd/server/main.go and internal/app composition, router/middleware/handler HTTP boundaries, internal/service business rules, internal/dto public responses, models/db/persistence entities/connections/audit helpers, internal/config settings, internal/whitelabel fixed JieKou upstream/SSE, and cmd/migrate and internal/migration explicit schema changes. Reuse existing helpers before adding abstractions and explain necessary new abstractions.
 

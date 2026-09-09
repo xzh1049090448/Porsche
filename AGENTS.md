@@ -32,6 +32,16 @@ Porsche 是一个位于仓库根目录的 Go 模型聚合网关。入口为 `cmd
 - 不要在未验证或失败的基础状态上叠加无关改动。
 - 保持 API 路径和 JSON 契约向后兼容，除非用户明确要求变更。
 - 不提交 `.env`、`data/` 或 Harness 日志文件。
+- 使用子 Agent 实施或审查时，必须读取并遵守 [Agent 编排规范](docs/agents/orchestration.md)：按风险选择流程，保持单一 Controller，按所选风险档完成该档要求的门禁并保持规定顺序。
+
+## 前后端协作
+
+- 后端跨仓库协调入口为 `project_manager`，前端唯一对口为 Porsche-Web 的 `front_end_project_coordinator`。
+- `backend_worker`、`spec_compliance_reviewer`、`security_reviewer`、`test_engineer` 等执行或质量角色不得绕过协调层，直接接受前端执行角色的跨仓库任务或完成跨仓库签收。
+- 接口变更、联调计划、范围调整和联合签收，必须由双方协调者针对明确的仓库、worktree、revision 和契约版本书面确认。
+- 接收前端交接时，核对 Porsche-Web 的 `interface-contract.json` 以及适用的 API、GUID、JSON、SSE、认证、错误码和分页约定；无法访问对方仓库时，要求对方提供带版本的交接包。
+- 单仓库测试通过、Mock、模板或跳过的集成测试均不等于前后端联合验收通过。
+- 跨任务通信、Agent 调度或跨仓库读取不可用时，输出可人工转交的对齐包并如实记录限制，不得声称已建立连接、完成对齐或取得对方签收。
 
 ## 完成与收尾
 
