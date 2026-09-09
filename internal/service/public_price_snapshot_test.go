@@ -1,6 +1,8 @@
 package service
 
 import (
+	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/porsche/ai-gateway-go/internal/models"
@@ -64,6 +66,36 @@ func TestPublicPriceSnapshotIdempotencyBindingUsesActorOperationAndPayload(t *te
 		a == publicPriceIdempotencyBinding(7, "publish", "other", "payload") ||
 		a == publicPriceIdempotencyBinding(7, "publish", "request-key", "other") {
 		t.Fatal("idempotency binding omitted a required dimension")
+	}
+}
+
+func TestPublicPriceSnapshotRestoreRevalidatesAndRehashesHistoricalItems(t *testing.T) {
+	prepared, err := preparePublicPriceSnapshot([]models.PublicModelConfig{snapshotModelFixture("alpha")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = prepareRestoredPublicPriceSnapshot(prepared.Items, strings.Repeat("f", 64)); status(err) != 422 {
+		t.Fatalf("tampered hash=%v", err)
+	}
+	if _, err = prepareRestoredPublicPriceSnapshot(nil, prepared.Hash); status(err) != 422 {
+		t.Fatalf("empty=%v", err)
+	}
+	invalid := append([]models.PublicPriceSnapshotItem(nil), prepared.Items...)
+	invalid[0].InputPriceUSDPerMillionTokens = "bad"
+	if _, err = prepareRestoredPublicPriceSnapshot(invalid, prepared.Hash); status(err) != 422 {
+		t.Fatalf("invalid=%v", err)
+	}
+	duplicate := append(append([]models.PublicPriceSnapshotItem(nil), prepared.Items...), prepared.Items[0])
+	duplicateHash, _ := hashPublicPriceSnapshotItems(duplicate)
+	if _, err = prepareRestoredPublicPriceSnapshot(duplicate, duplicateHash); status(err) != 422 {
+		t.Fatalf("duplicate historical identity=%v", err)
+	}
+	restored, err := prepareRestoredPublicPriceSnapshot(prepared.Items, prepared.Hash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restored.Hash != prepared.Hash || !reflect.DeepEqual(restored.Items, prepared.Items) {
+		t.Fatalf("restored=%#v want=%#v", restored, prepared)
 	}
 }
 

@@ -63,10 +63,11 @@ func openPublicModelDBFixture(t *testing.T) *publicModelDBFixture {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		db.Exec("DELETE FROM audit_logs WHERE user_id = ?", actor.ID)
-		db.Exec("DELETE FROM public_model_configs WHERE created_by = ?", actor.ID)
-		db.Exec("DELETE FROM upstream_model_observations WHERE created_by = ?", actor.ID)
-		db.Exec("DELETE FROM users WHERE id = ?", actor.ID)
+		for _, cleanup := range []*gorm.DB{db.Exec("DELETE FROM audit_logs WHERE user_id = ?", actor.ID), db.Exec("DELETE FROM public_model_configs WHERE created_by = ?", actor.ID), db.Exec("DELETE FROM upstream_model_observations WHERE created_by = ?", actor.ID), db.Exec("DELETE FROM users WHERE id = ?", actor.ID)} {
+			if cleanup.Error != nil {
+				t.Error(cleanup.Error)
+			}
+		}
 	})
 	return &publicModelDBFixture{db: db, actor: actor}
 }

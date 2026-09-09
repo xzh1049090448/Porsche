@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/porsche/ai-gateway-go/internal/models"
@@ -17,13 +19,23 @@ func TestPublicPriceSnapshotDBAtomicPublicationIdempotencyAndRestore(t *testing.
 		t.Skip("BLOCKED_FIXTURE: requires explicit disposable TEST_DATABASE_URL; .env is never read")
 	}
 	f := openPublicModelDBFixture(t)
+	tx := f.db.Begin()
+	if tx.Error != nil {
+		t.Fatal(tx.Error)
+	}
+	f.db = tx
+	t.Cleanup(func() {
+		if err := tx.Rollback().Error; err != nil && err != gorm.ErrInvalidTransaction {
+			t.Error(err)
+		}
+	})
 	s := NewPublicPriceSnapshotService(f.db)
 	ctx := context.Background()
 	// A migrated disposable fixture owns setup of publication state/content release.
-	if err := requirePublicPriceSnapshotFixture(f.db); err != nil {
+	if err := requirePublicPriceSnapshotFixture(f.db, f.actor.ID); err != nil {
 		t.Fatal(err)
 	}
-	model := f.input("snapshot")
+	model := f.input("snapshot-" + fmt.Sprint(persistence.NextGUID()))
 	f.observe(t, model.UpstreamModelID)
 	created, err := NewPublicModelAdminService(f.db).Create(ctx, f.actor.ID, model)
 	if err != nil {
@@ -32,15 +44,25 @@ func TestPublicPriceSnapshotDBAtomicPublicationIdempotencyAndRestore(t *testing.
 	if _, err = NewPublicModelAdminService(f.db).Activate(ctx, f.actor.ID, mustGUID(t, created.GUID), 1); err != nil {
 		t.Fatal(err)
 	}
-	state, err := loadPublicPriceSnapshotFixtureState(f.db)
+	model2 := f.input("snapshot-" + fmt.Sprint(persistence.NextGUID()))
+	f.observe(t, model2.UpstreamModelID)
+	created2, err := NewPublicModelAdminService(f.db).Create(ctx, f.actor.ID, model2)
 	if err != nil {
 		t.Fatal(err)
 	}
-	release, err := s.Publish(ctx, PublicPriceSnapshotRequest{ActorID: f.actor.ID, ExpectedRevision: state.Revision, IdempotencyKey: "publish-1"})
+	if _, err = NewPublicModelAdminService(f.db).Activate(ctx, f.actor.ID, mustGUID(t, created2.GUID), 1); err != nil {
+		t.Fatal(err)
+	}
+	_, err = loadPublicPriceSnapshotFixtureState(f.db)
 	if err != nil {
 		t.Fatal(err)
 	}
-	replay, err := s.Publish(ctx, PublicPriceSnapshotRequest{ActorID: f.actor.ID, ExpectedRevision: state.Revision, IdempotencyKey: "publish-1"})
+	draftRevision := publicPriceDraftRevision(t, f.db)
+	release, err := s.Publish(ctx, PublicPriceSnapshotRequest{ActorID: f.actor.ID, ExpectedRevision: draftRevision, IdempotencyKey: "publish-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	replay, err := s.Publish(ctx, PublicPriceSnapshotRequest{ActorID: f.actor.ID, ExpectedRevision: draftRevision, IdempotencyKey: "publish-1"})
 	if err != nil || replay.GUID != release.GUID {
 		t.Fatalf("replay=%#v err=%v", replay, err)
 	}
@@ -49,23 +71,41 @@ func TestPublicPriceSnapshotDBAtomicPublicationIdempotencyAndRestore(t *testing.
 		t.Fatal(err)
 	}
 	var items []models.PublicPriceSnapshotItem
-	if err = f.db.Where("snapshot_id = ?", snapshot.ID).Find(&items).Error; err != nil {
+	if err = f.db.Where("snapshot_id = ?", snapshot.ID).Order("model_key").Find(&items).Error; err != nil {
 		t.Fatal(err)
 	}
-	if len(items) != 1 || items[0].InputPriceUSDPerMillionTokens != "2.00000000" || items[0].OutputPriceUSDPerMillionTokens != "2.00000000" {
+	if len(items) != 2 || items[0].InputPriceUSDPerMillionTokens != "2.00000000" || items[0].OutputPriceUSDPerMillionTokens != "2.00000000" {
 		t.Fatalf("snapshot items=%#v", items)
+	}
+	name := "Changed after draft read"
+	if _, err = NewPublicModelAdminService(f.db).Update(ctx, f.actor.ID, mustGUID(t, created.GUID), UpdatePublicModelRequest{ExpectedRevision: 2, DisplayName: &name}); err != nil {
+		t.Fatal(err)
+	}
+	newDraftRevision := publicPriceDraftRevision(t, f.db)
+	if _, err = s.Publish(ctx, PublicPriceSnapshotRequest{ActorID: f.actor.ID, ExpectedRevision: newDraftRevision, IdempotencyKey: "publish-1"}); status(err) != 409 {
+		t.Fatalf("idempotency conflict=%v", err)
+	}
+	if _, err = s.Publish(ctx, PublicPriceSnapshotRequest{ActorID: f.actor.ID, ExpectedRevision: draftRevision, IdempotencyKey: "stale"}); status(err) != 409 {
+		t.Fatalf("stale draft=%v", err)
 	}
 	after, _ := loadPublicPriceSnapshotFixtureState(f.db)
 	for _, point := range []string{"snapshot", "item", "render_job", "audit", "pointer", "after_pointer"} {
 		beforeCounts := publicPriceSnapshotFixtureCounts(t, f.db, f.actor.ID)
 		broken := NewPublicPriceSnapshotService(f.db)
+		itemCalls := 0
 		broken.fail = func(got string) error {
-			if got == point {
+			if got == "item" {
+				itemCalls++
+				if point == "item" && itemCalls == 2 {
+					return fmt.Errorf("injected %s", point)
+				}
+			}
+			if got == point && point != "item" {
 				return fmt.Errorf("injected %s", point)
 			}
 			return nil
 		}
-		if _, failureErr := broken.Publish(ctx, PublicPriceSnapshotRequest{ActorID: f.actor.ID, ExpectedRevision: after.Revision, IdempotencyKey: "failure-" + point}); status(failureErr) != 503 {
+		if _, failureErr := broken.Publish(ctx, PublicPriceSnapshotRequest{ActorID: f.actor.ID, ExpectedRevision: newDraftRevision, IdempotencyKey: "failure-" + point}); status(failureErr) != 503 {
 			t.Fatalf("point %s status=%d err=%v", point, status(failureErr), failureErr)
 		}
 		unchanged, loadErr := loadPublicPriceSnapshotFixtureState(f.db)
@@ -79,9 +119,39 @@ func TestPublicPriceSnapshotDBAtomicPublicationIdempotencyAndRestore(t *testing.
 			t.Fatalf("point %s partial rows before=%v after=%v", point, beforeCounts, got)
 		}
 	}
-	restored, err := s.Restore(ctx, PublicPriceSnapshotRestoreRequest{ActorID: f.actor.ID, ExpectedRevision: after.Revision, SnapshotGUID: release.GUID, IdempotencyKey: "restore-1"})
+	restored, err := s.Restore(ctx, PublicPriceSnapshotRestoreRequest{ActorID: f.actor.ID, ExpectedRevision: newDraftRevision, SnapshotGUID: release.GUID, IdempotencyKey: "restore-1"})
 	if err != nil || restored.Version <= release.Version || restored.GUID == release.GUID {
 		t.Fatalf("restore=%#v err=%v", restored, err)
+	}
+	var restoredSnapshot models.PublicPriceSnapshot
+	if err = f.db.Where("guid=?", restored.GUID).First(&restoredSnapshot).Error; err != nil {
+		t.Fatal(err)
+	}
+	var restoredItems []models.PublicPriceSnapshotItem
+	if err = f.db.Where("snapshot_id=?", restoredSnapshot.ID).Order("model_key").Find(&restoredItems).Error; err != nil {
+		t.Fatal(err)
+	}
+	strip := func(values []models.PublicPriceSnapshotItem) {
+		for i := range values {
+			values[i].ID = 0
+			values[i].Guid = 0
+			values[i].SnapshotID = 0
+			values[i].CreatedAt = 0
+			values[i].CreatedBy = nil
+			values[i].UpdatedAt = 0
+			values[i].UpdatedBy = nil
+		}
+	}
+	strip(items)
+	strip(restoredItems)
+	if !reflect.DeepEqual(items, restoredItems) || restoredSnapshot.ContentHash != snapshot.ContentHash {
+		t.Fatal("restore content/hash mismatch")
+	}
+	if err = f.db.Exec("UPDATE public_price_snapshots SET content_hash=? WHERE id=?", strings.Repeat("f", 64), snapshot.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.Restore(ctx, PublicPriceSnapshotRestoreRequest{ActorID: f.actor.ID, ExpectedRevision: newDraftRevision, SnapshotGUID: release.GUID, IdempotencyKey: "restore-tampered"}); status(err) != 422 {
+		t.Fatalf("tampered historical hash=%v", err)
 	}
 }
 
@@ -105,8 +175,8 @@ func publicPriceSnapshotFixtureCounts(t *testing.T, db *gorm.DB, actor int64) pu
 	return c
 }
 
-func requirePublicPriceSnapshotFixture(db *gorm.DB) error {
-	for _, table := range []string{"public_price_snapshots", "public_price_snapshot_items", "public_publication_state", "public_content_releases", "public_render_jobs"} {
+func requirePublicPriceSnapshotFixture(db *gorm.DB, actor int64) error {
+	for _, table := range []string{"public_price_snapshots", "public_price_snapshot_items", "public_publication_state", "public_content_releases", "public_render_jobs", "public_price_draft_state"} {
 		if !db.Migrator().HasTable(table) {
 			return fmt.Errorf("BLOCKED_FIXTURE: migration missing %s", table)
 		}
@@ -114,14 +184,22 @@ func requirePublicPriceSnapshotFixture(db *gorm.DB) error {
 	var state models.PublicPublicationState
 	err := db.Where("state_key = ? AND is_deleted = 0", publicPublicationStateKey).First(&state).Error
 	if err == gorm.ErrRecordNotFound {
-		return fmt.Errorf("BLOCKED_FIXTURE: singleton publication state required")
+		now := persistence.NowMillis()
+		state = models.PublicPublicationState{AuditFields: models.AuditFields{Guid: persistence.NextGUID(), CreatedAt: now, CreatedBy: &actor, UpdatedAt: now, UpdatedBy: &actor}, StateKey: publicPublicationStateKey, PriceVisibility: models.PublicPriceVisibilityVisible, Revision: 1}
+		if err = db.Create(&state).Error; err != nil {
+			return err
+		}
 	}
 	if err != nil {
 		return err
 	}
 	if state.ContentReleaseID == nil {
 		now := persistence.NowMillis()
-		release := models.PublicContentRelease{Guid: persistence.NextGUID(), CreatedAt: now, UpdatedAt: now, DocumentKind: models.PublicContentDocumentSite, Version: 1, SourceRevision: 1, Payload: models.JSONMap{"fixture": true}, ContentHash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", PublishedAt: now}
+		var maxVersion int64
+		if err = db.Model(&models.PublicContentRelease{}).Where("document_kind=?", models.PublicContentDocumentSite).Select("COALESCE(MAX(version),0)").Scan(&maxVersion).Error; err != nil {
+			return err
+		}
+		release := models.PublicContentRelease{Guid: persistence.NextGUID(), CreatedAt: now, CreatedBy: &actor, UpdatedAt: now, UpdatedBy: &actor, DocumentKind: models.PublicContentDocumentSite, Version: maxVersion + 1, SourceRevision: 1, Payload: models.JSONMap{"fixture": true}, ContentHash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", PublishedAt: now}
 		if err = db.Create(&release).Error; err != nil {
 			return err
 		}

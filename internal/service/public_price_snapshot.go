@@ -58,17 +58,19 @@ func NewPublicPriceSnapshotService(db *gorm.DB) *PublicPriceSnapshotService {
 
 func preparePublicPriceSnapshot(rows []models.PublicModelConfig) (*preparedPublicPriceSnapshot, error) {
 	items := make([]models.PublicPriceSnapshotItem, 0, len(rows))
+	modelIDs, modelKeys, upstreamIDs := map[int64]bool{}, map[string]bool{}, map[string]bool{}
 	for _, m := range rows {
 		if m.IsDeleted != 0 || m.Status != models.PublicModelConfigStatusActive {
 			continue
 		}
-		if !publiccontent.ValidModelKey(m.ModelKey) || !publiccontent.ValidUpstreamModelID(m.UpstreamModelID) ||
+		if m.ID <= 0 || modelIDs[m.ID] || modelKeys[m.ModelKey] || upstreamIDs[m.UpstreamModelID] || !publiccontent.ValidModelKey(m.ModelKey) || !publiccontent.ValidUpstreamModelID(m.UpstreamModelID) ||
 			!validPublicModelText(m.DisplayName, 128) || !validPublicModelText(m.Provider, 128) ||
 			!validPublicModelCapabilities([]string(m.Capabilities)) || m.ContextWindow <= 0 ||
 			!validPublicPrice(m.InputPriceUSDPerMillionTokens) || !validPublicPrice(m.OutputPriceUSDPerMillionTokens) ||
 			m.InputPriceUSDPerMillionTokens == nil || m.OutputPriceUSDPerMillionTokens == nil {
 			return nil, errUnprocessable("public price snapshot validation failed")
 		}
+		modelIDs[m.ID], modelKeys[m.ModelKey], upstreamIDs[m.UpstreamModelID] = true, true, true
 		items = append(items, models.PublicPriceSnapshotItem{ModelConfigID: m.ID, ModelKey: m.ModelKey, UpstreamModelID: m.UpstreamModelID, DisplayName: m.DisplayName, Provider: m.Provider, Capabilities: append(models.JSONSlice(nil), m.Capabilities...), ContextWindow: m.ContextWindow, InputPriceUSDPerMillionTokens: *m.InputPriceUSDPerMillionTokens, OutputPriceUSDPerMillionTokens: *m.OutputPriceUSDPerMillionTokens, UpstreamCheckedAt: m.LastUpstreamCheckAt})
 	}
 	if len(items) == 0 {
@@ -80,6 +82,22 @@ func preparePublicPriceSnapshot(rows []models.PublicModelConfig) (*preparedPubli
 		return nil, errUnavailable("public price snapshot hashing unavailable")
 	}
 	return &preparedPublicPriceSnapshot{Items: items, Hash: hash}, nil
+}
+
+func prepareRestoredPublicPriceSnapshot(items []models.PublicPriceSnapshotItem, storedHash string) (*preparedPublicPriceSnapshot, error) {
+	rows := make([]models.PublicModelConfig, len(items))
+	for i, item := range items {
+		input, output := item.InputPriceUSDPerMillionTokens, item.OutputPriceUSDPerMillionTokens
+		rows[i] = models.PublicModelConfig{ID: item.ModelConfigID, ModelKey: item.ModelKey, UpstreamModelID: item.UpstreamModelID, DisplayName: item.DisplayName, Provider: item.Provider, Capabilities: append(models.JSONSlice(nil), item.Capabilities...), ContextWindow: item.ContextWindow, InputPriceUSDPerMillionTokens: &input, OutputPriceUSDPerMillionTokens: &output, Status: models.PublicModelConfigStatusActive, LastUpstreamCheckAt: item.UpstreamCheckedAt}
+	}
+	prepared, err := preparePublicPriceSnapshot(rows)
+	if err != nil {
+		return nil, err
+	}
+	if len(storedHash) != 64 || prepared.Hash != storedHash {
+		return nil, errUnprocessable("historical price snapshot integrity validation failed")
+	}
+	return prepared, nil
 }
 
 func hashPublicPriceSnapshotItems(items []models.PublicPriceSnapshotItem) (string, error) {
@@ -137,6 +155,10 @@ func (s *PublicPriceSnapshotService) transact(ctx context.Context, actorID, expe
 		if err != nil {
 			return err
 		}
+		draft, err := lockPublicPriceDraftState(tx)
+		if err != nil {
+			return err
+		}
 		var state models.PublicPublicationState
 		if err = tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("state_key = ? AND is_deleted = 0", publicPublicationStateKey).First(&state).Error; err != nil {
 			return errUnavailable("publication state unavailable")
@@ -161,7 +183,7 @@ func (s *PublicPriceSnapshotService) transact(ctx context.Context, actorID, expe
 			if err = tx.Where("snapshot_id = ? AND is_deleted = 0", source.ID).Order("model_key ASC").Find(&items).Error; err != nil {
 				return errUnavailable("price snapshot persistence unavailable")
 			}
-			prepared = &preparedPublicPriceSnapshot{Items: items, Hash: source.ContentHash}
+			prepared, err = prepareRestoredPublicPriceSnapshot(items, source.ContentHash)
 			restoredFrom = &source.ID
 		}
 		if err != nil {
@@ -173,8 +195,8 @@ func (s *PublicPriceSnapshotService) transact(ctx context.Context, actorID, expe
 			out = replay
 			return conflictErr
 		}
-		if state.Revision != expected {
-			return errConflict("publication state revision conflict")
+		if draft.Revision != expected {
+			return errConflict("public price draft revision conflict")
 		}
 		if state.ContentReleaseID == nil {
 			return errUnprocessable("published content release required")

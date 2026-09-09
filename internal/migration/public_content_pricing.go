@@ -123,6 +123,7 @@ func publicContentPricingTable(name string, columns []businessGroupColumnContrac
 
 func publicContentPricingCheckContracts() map[string][]businessGroupCheckContract {
 	return map[string][]businessGroupCheckContract{
+		"public_price_draft_state": {{name: "chk_public_price_draft_state_values", clause: "revision > 0 AND is_deleted IN (0, 1)", enforced: "YES"}},
 		"public_model_configs": {
 			{name: "chk_public_model_configs_status", clause: "status IN (1, 2, 3)", enforced: "YES"},
 			{name: "chk_public_model_configs_values", clause: "context_window > 0 AND consecutive_absences >= 0 AND revision > 0 AND ever_published IN (0, 1) AND is_deleted IN (0, 1)", enforced: "YES"},
