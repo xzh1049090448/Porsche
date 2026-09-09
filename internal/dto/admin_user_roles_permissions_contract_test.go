@@ -152,9 +152,17 @@ func TestA08ContractHasExactScopesAndStableResult(t *testing.T) {
 	}, "errors", "status_code_allowlist")
 	assertContractValue(t, document, []any{"action_rejected", "target_version_conflict", "policy_version_conflict", "target_state_conflict", "consumer_validation_failed"}, "errors", "operation_failure_codes")
 	assertContractValue(t, document, map[string]any{
-		"exact_body_keys":                []any{"error"},
-		"base_error":                     map[string]any{"exact_keys": []any{"code", "message", "type", "request_id"}, "additionalProperties": false, "message": "请求无法完成", "type": "admin_action_error"},
-		"operation_commit_unknown_error": map[string]any{"exact_keys": []any{"code", "message", "type", "request_id", "operation_ref"}, "additionalProperties": false, "operation_ref": "required only when code is operation_commit_unknown"},
+		"exact_body_keys": []any{"error"},
+		"base_error":      map[string]any{"exact_keys": []any{"code", "message", "type", "request_id"}, "additionalProperties": false, "message": "请求无法完成", "type": "admin_action_error"},
+		"operation_commit_unknown_error": map[string]any{
+			"exact_keys":           []any{"code", "message", "type", "request_id", "operation_ref"},
+			"required":             []any{"code", "message", "type", "request_id", "operation_ref"},
+			"additionalProperties": false,
+			"code":                 "operation_commit_unknown",
+			"message":              "请求无法完成",
+			"type":                 "admin_action_error",
+			"operation_ref":        "required valid opaque op_ value",
+		},
 	}, "errors", "envelope")
 	assertContractValue(t, document, map[string]any{
 		"matched":       "Cache-Control no-store and nonempty X-Request-ID; admin_action_error request_id equals X-Request-ID",

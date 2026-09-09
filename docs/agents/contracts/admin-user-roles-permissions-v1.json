@@ -264,8 +264,12 @@
       },
       "operation_commit_unknown_error": {
         "exact_keys": ["code", "message", "type", "request_id", "operation_ref"],
+        "required": ["code", "message", "type", "request_id", "operation_ref"],
         "additionalProperties": false,
-        "operation_ref": "required only when code is operation_commit_unknown"
+        "code": "operation_commit_unknown",
+        "message": "请求无法完成",
+        "type": "admin_action_error",
+        "operation_ref": "required valid opaque op_ value"
       }
     },
     "status_code_allowlist": {
