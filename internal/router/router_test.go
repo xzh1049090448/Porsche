@@ -3,7 +3,9 @@ package router_test
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -13,9 +15,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/porsche/ai-gateway-go/internal/app"
 	"github.com/porsche/ai-gateway-go/internal/config"
 	"github.com/porsche/ai-gateway-go/internal/db"
+	"github.com/porsche/ai-gateway-go/internal/handler"
 	"github.com/porsche/ai-gateway-go/internal/migration"
 	"github.com/porsche/ai-gateway-go/internal/models"
 	"github.com/porsche/ai-gateway-go/internal/persistence"
@@ -26,9 +30,11 @@ import (
 )
 
 func TestPublicContentPricingAdminRoutesMatchFrozenContract(t *testing.T) {
-	state := &app.State{Settings: &config.Settings{}}
+	gin.SetMode(gin.TestMode)
+	state := &app.State{Settings: &config.Settings{AllowedHosts: "example.com"}}
+	engine := router.New(state)
 	got := map[string]int{}
-	for _, route := range router.New(state).Routes() {
+	for _, route := range engine.Routes() {
 		if strings.HasPrefix(route.Path, "/admin/v2/public-models") || strings.HasPrefix(route.Path, "/admin/v2/public-pricing") || strings.HasPrefix(route.Path, "/admin/v2/public-content") || strings.HasPrefix(route.Path, "/admin/v2/notifications") {
 			got[route.Method+" "+route.Path]++
 		}
@@ -38,21 +44,48 @@ func TestPublicContentPricingAdminRoutesMatchFrozenContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	var contract struct {
-		Routes []struct{ Method, Path, Role string } `json:"routes"`
+		Routes []map[string]any `json:"routes"`
 	}
 	if err := json.Unmarshal(raw, &contract); err != nil {
 		t.Fatal(err)
 	}
 	want := map[string]bool{}
+	rootMetadata := make([]map[string]any, 0, 28)
 	for _, route := range contract.Routes {
-		if route.Role != "root" {
+		if route["role"] != "root" {
 			continue
 		}
-		path := strings.ReplaceAll(route.Path, "{guid}", ":guid")
-		key := route.Method + " " + path
+		rootMetadata = append(rootMetadata, route)
+		method, methodOK := route["method"].(string)
+		contractPath, pathOK := route["path"].(string)
+		if !methodOK || !pathOK {
+			t.Fatal("invalid route metadata types")
+		}
+		for _, field := range []string{"request_headers", "response_headers", "path_schema", "query_schema", "body_schema", "response_schema", "status"} {
+			if _, ok := route[field]; !ok {
+				t.Fatalf("%s %s missing %s", method, contractPath, field)
+			}
+		}
+		path := strings.ReplaceAll(contractPath, "{guid}", ":guid")
+		key := method + " " + path
 		want[key] = true
 		if got[key] != 1 {
-			t.Errorf("missing route %s %s", route.Method, path)
+			t.Errorf("missing route %s %s", method, path)
+		}
+		requestPath := strings.ReplaceAll(contractPath, "{guid}", "1")
+		recorder := httptest.NewRecorder()
+		engine.ServeHTTP(recorder, httptest.NewRequest(method, requestPath, nil))
+		if recorder.Code != http.StatusUnauthorized || recorder.Header().Get("Cache-Control") != "no-store" || recorder.Header().Get("X-Request-ID") == "" {
+			t.Fatalf("%s %s auth boundary status=%d headers=%#v", method, requestPath, recorder.Code, recorder.Header())
+		}
+		var envelope struct {
+			Error struct {
+				Code      string `json:"code"`
+				RequestID string `json:"request_id"`
+			} `json:"error"`
+		}
+		if json.Unmarshal(recorder.Body.Bytes(), &envelope) != nil || envelope.Error.Code != "authentication_required" || envelope.Error.RequestID != recorder.Header().Get("X-Request-ID") {
+			t.Fatalf("%s %s envelope=%s", method, requestPath, recorder.Body.String())
 		}
 	}
 	if len(want) != 28 || len(got) != len(want) {
@@ -61,6 +94,29 @@ func TestPublicContentPricingAdminRoutesMatchFrozenContract(t *testing.T) {
 	for route, count := range got {
 		if !want[route] || count != 1 {
 			t.Errorf("extra or duplicate route %s count=%d", route, count)
+		}
+	}
+	metadataJSON, err := json.Marshal(rootMetadata)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if digest := fmt.Sprintf("%x", sha256.Sum256(metadataJSON)); digest != "ecf66cbdabc47f85a74d72021b1429ab0a6a846816aee773a4d2bf1a6001b0c6" {
+		t.Fatalf("root route metadata drift: %s", digest)
+	}
+}
+
+func TestPublicModelStaticPathsAreNeverCapturedAsGUID(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	engine := gin.New()
+	matched := ""
+	engine.Use(func(c *gin.Context) { matched = c.FullPath(); c.AbortWithStatus(299) })
+	handler.RegisterPublicModelAdmin(engine, &app.State{Settings: &config.Settings{}})
+	for _, tc := range []struct{ method, path, want string }{{http.MethodGet, "/admin/v2/public-models/missing", "/admin/v2/public-models/missing"}, {http.MethodPost, "/admin/v2/public-models/sync", "/admin/v2/public-models/sync"}} {
+		matched = ""
+		rec := httptest.NewRecorder()
+		engine.ServeHTTP(rec, httptest.NewRequest(tc.method, tc.path, nil))
+		if matched != tc.want {
+			t.Fatalf("%s matched %q", tc.path, matched)
 		}
 	}
 }
