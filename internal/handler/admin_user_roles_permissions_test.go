@@ -187,3 +187,71 @@ func TestA08PatchAndQueryRejectNonCanonicalRequestsBeforeBackend(t *testing.T) {
 		}
 	}
 }
+
+func TestA08MutationRejectsCrossScopeExecutionAndReplayViews(t *testing.T) {
+	finished, target, authVersion, permissionsVersion := int64(1_790_000_000_000), int64(123), 8, int64(4)
+	tests := []struct {
+		name          string
+		method        string
+		path          string
+		body          string
+		returnedScope string
+		returnedRole  models.UserRole
+		ready         bool
+	}{
+		{"promote execution", http.MethodPost, "/admin/v2/users/123/actions", `{"action":"promote","expected_auth_version":7,"expected_permissions_version":3,"catalog_version":1,"overrides":[],"reason":"reason"}`, "users.permissions.write", models.UserRoleAdmin, true},
+		{"promote replay", http.MethodPost, "/admin/v2/users/123/actions", `{"action":"promote","expected_auth_version":7,"expected_permissions_version":3,"catalog_version":1,"overrides":[],"reason":"reason"}`, "users.demote", models.UserRoleUser, false},
+		{"demote execution", http.MethodPost, "/admin/v2/users/123/actions", `{"action":"demote","expected_auth_version":7,"expected_permissions_version":3,"catalog_version":1,"reason":"reason"}`, "users.promote", models.UserRoleAdmin, true},
+		{"demote replay", http.MethodPost, "/admin/v2/users/123/actions", `{"action":"demote","expected_auth_version":7,"expected_permissions_version":3,"catalog_version":1,"reason":"reason"}`, "users.permissions.write", models.UserRoleAdmin, false},
+		{"permissions execution", http.MethodPatch, "/admin/v2/users/123/permissions", `{"expected_auth_version":7,"expected_permissions_version":3,"catalog_version":1,"overrides":[],"reason":"reason"}`, "users.demote", models.UserRoleUser, true},
+		{"permissions replay", http.MethodPatch, "/admin/v2/users/123/permissions", `{"expected_auth_version":7,"expected_permissions_version":3,"catalog_version":1,"overrides":[],"reason":"reason"}`, "users.promote", models.UserRoleAdmin, false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			role := test.returnedRole
+			returned := &service.OperationView{PublicRef: testOperationRef, Scope: test.returnedScope, Status: "succeeded", FinishedAt: &finished, TargetGUID: &target, ResultAuthVersion: &authVersion, ResultPermissionsVersion: &permissionsVersion, ResultRole: &role}
+			expectedScope := "users.permissions.write"
+			if test.method == http.MethodPost {
+				if strings.Contains(test.body, `"promote"`) {
+					expectedScope = "users.promote"
+				} else {
+					expectedScope = "users.demote"
+				}
+			}
+			base := &scriptedUserManagementBackend{identity: &service.OperationIdentity{PublicRef: testOperationRef}, ready: test.ready, beginView: returned, executeView: returned}
+			if test.ready {
+				base.beginView = &service.OperationView{PublicRef: testOperationRef, Scope: expectedScope, Status: "processing", RetryAfterSeconds: 30}
+			}
+			backend := &scriptedRolePermissionBackend{scriptedUserManagementBackend: base}
+			recorder := performActionRequest(newScriptedUserManagementEngine(t, backend, models.UserRoleRoot), test.method, test.path, test.body, http.Header{"Idempotency-Key": {testActionKey}, "X-Action-Ticket": {testActionTicket}, "X-Request-ID": {"cross-scope"}})
+			if recorder.Code != http.StatusServiceUnavailable || strings.Contains(recorder.Body.String(), test.returnedScope) {
+				t.Fatalf("cross-scope mutation was exposed status=%d body=%s", recorder.Code, recorder.Body.String())
+			}
+			response := decodeActionTestResponse[actionTestErrorEnvelope](t, recorder)
+			if response.Error.Code != "action_dependency_unavailable" || response.Error.RequestID != "cross-scope" {
+				t.Fatalf("unexpected fail-closed envelope: %#v", response)
+			}
+		})
+	}
+}
+
+func TestA08LiteralQueriesRejectEveryCrossScopeView(t *testing.T) {
+	for _, test := range []struct {
+		requestedScope  string
+		requestedAction actionsecurity.Action
+		returnedScope   string
+	}{
+		{"users.promote", actionsecurity.ActionUsersPromote, "users.demote"},
+		{"users.demote", actionsecurity.ActionUsersDemote, "users.permissions.write"},
+		{"users.permissions.write", actionsecurity.ActionUsersPermissionsWrite, "users.promote"},
+	} {
+		t.Run(test.requestedScope, func(t *testing.T) {
+			base := &scriptedUserManagementBackend{queryView: &service.OperationView{PublicRef: testOperationRef, Scope: test.returnedScope, Status: "processing", RetryAfterSeconds: 7}}
+			backend := &scriptedRolePermissionBackend{scriptedUserManagementBackend: base}
+			recorder := performActionRequest(newScriptedUserManagementEngine(t, backend, models.UserRoleRoot), http.MethodGet, "/admin/v2/operations?scope="+test.requestedScope, "", http.Header{"Idempotency-Key": {testActionKey}, "X-Request-ID": {"cross-query"}})
+			if recorder.Code != http.StatusServiceUnavailable || base.queryCalls != 1 || base.queryAction != test.requestedAction || strings.Contains(recorder.Body.String(), test.returnedScope) {
+				t.Fatalf("cross-scope query was exposed status=%d calls=%d action=%d body=%s", recorder.Code, base.queryCalls, base.queryAction, recorder.Body.String())
+			}
+		})
+	}
+}

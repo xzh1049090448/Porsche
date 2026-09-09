@@ -698,7 +698,7 @@ func queryUserManagementOperation(c *gin.Context, backend userManagementActionBa
 		return
 	}
 	if isRolePermissionAction(action) {
-		if !validRolePermissionView(view, true) {
+		if !validRolePermissionView(view, action) {
 			adminUserActionError(c, service.ErrActionOperationUnavailable, "")
 			return
 		}
@@ -720,7 +720,7 @@ func queryUserManagementOperation(c *gin.Context, backend userManagementActionBa
 		return
 	}
 	if isRolePermissionAction(action) {
-		writeRolePermissionQuery(c, view)
+		writeRolePermissionQuery(c, view, action)
 		return
 	}
 	c.JSON(http.StatusOK, dto.UserDeleteQueryResponse{OperationRef: view.PublicRef, Scope: view.Scope, Status: view.Status, FinishedAt: view.FinishedAt, FailureCode: view.FailureCode})

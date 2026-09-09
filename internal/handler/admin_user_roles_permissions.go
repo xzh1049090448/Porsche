@@ -175,12 +175,12 @@ func executeRolePermissionIntent(c *gin.Context, backend userManagementActionBac
 		adminUserActionError(c, err, "")
 		return
 	}
-	if identity == nil || view == nil || identity.PublicRef != view.PublicRef || view.Scope != rolePermissionScope(action) || !validUserDeleteOperationRef(view.PublicRef) {
+	if identity == nil || view == nil || identity.PublicRef != view.PublicRef || !validRolePermissionView(view, action) {
 		adminUserActionError(c, service.ErrActionOperationUnavailable, "")
 		return
 	}
 	if !roleBackend.ExecutionReady(identity) {
-		writeRolePermissionMutationView(c, view)
+		writeRolePermissionMutationView(c, view, action)
 		return
 	}
 	var execution *service.RolePermissionExecution
@@ -208,11 +208,11 @@ func executeRolePermissionIntent(c *gin.Context, backend userManagementActionBac
 		adminUserActionError(c, err, "")
 		return
 	}
-	writeRolePermissionMutationView(c, view)
+	writeRolePermissionMutationView(c, view, action)
 }
 
-func writeRolePermissionMutationView(c *gin.Context, view *service.OperationView) {
-	if !validRolePermissionView(view, false) {
+func writeRolePermissionMutationView(c *gin.Context, view *service.OperationView, expectedAction actionsecurity.Action) {
+	if !validRolePermissionView(view, expectedAction) {
 		adminUserActionError(c, service.ErrActionOperationUnavailable, "")
 		return
 	}
@@ -227,8 +227,8 @@ func writeRolePermissionMutationView(c *gin.Context, view *service.OperationView
 	}
 }
 
-func writeRolePermissionQuery(c *gin.Context, view *service.OperationView) {
-	if !validRolePermissionView(view, true) {
+func writeRolePermissionQuery(c *gin.Context, view *service.OperationView, expectedAction actionsecurity.Action) {
+	if !validRolePermissionView(view, expectedAction) {
 		adminUserActionError(c, service.ErrActionOperationUnavailable, "")
 		return
 	}
@@ -245,18 +245,17 @@ func writeRolePermissionQuery(c *gin.Context, view *service.OperationView) {
 	c.JSON(http.StatusOK, dto.RolePermissionQueryResponse{OperationRef: view.PublicRef, Scope: view.Scope, Status: view.Status, FinishedAt: view.FinishedAt, FailureCode: view.FailureCode, TargetGUID: target, ResultingAuthVersion: view.ResultAuthVersion, ResultingPermissionsVersion: view.ResultPermissionsVersion, ResultingRole: role})
 }
 
-func validRolePermissionView(view *service.OperationView, query bool) bool {
+func validRolePermissionView(view *service.OperationView, expectedAction actionsecurity.Action) bool {
 	if view == nil || !validUserDeleteOperationRef(view.PublicRef) {
 		return false
 	}
 	action, ok := rolePermissionActionForScope(view.Scope)
-	if !ok {
+	if !ok || action != expectedAction || rolePermissionScope(expectedAction) != view.Scope {
 		return false
 	}
-	_ = action
 	switch view.Status {
 	case "succeeded":
-		return view.FinishedAt != nil && view.FailureCode == nil && view.RetryAfterSeconds == 0 && view.TargetGUID != nil && *view.TargetGUID > 0 && view.ResultAuthVersion != nil && *view.ResultAuthVersion > 0 && view.ResultPermissionsVersion != nil && *view.ResultPermissionsVersion > 0 && view.ResultRole != nil && ((*view.ResultRole == models.UserRoleAdmin && view.Scope != "users.demote") || (*view.ResultRole == models.UserRoleUser && view.Scope == "users.demote"))
+		return view.FinishedAt != nil && view.FailureCode == nil && view.RetryAfterSeconds == 0 && view.TargetGUID != nil && *view.TargetGUID > 0 && view.ResultAuthVersion != nil && *view.ResultAuthVersion > 0 && view.ResultPermissionsVersion != nil && *view.ResultPermissionsVersion > 0 && view.ResultRole != nil && ((*view.ResultRole == models.UserRoleAdmin && expectedAction != actionsecurity.ActionUsersDemote) || (*view.ResultRole == models.UserRoleUser && expectedAction == actionsecurity.ActionUsersDemote))
 	case "failed":
 		return view.FinishedAt != nil && view.FailureCode != nil && safeUserDeleteFailure(view.FailureCode) != "" && view.RetryAfterSeconds == 0 && view.TargetGUID == nil && view.ResultAuthVersion == nil && view.ResultPermissionsVersion == nil && view.ResultRole == nil
 	case "processing":
