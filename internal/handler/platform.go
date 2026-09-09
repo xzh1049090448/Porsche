@@ -22,7 +22,12 @@ func RegisterPlatform(r *gin.Engine, state *app.State) {
 }
 
 func registerPlatformWithAuthentication(r *gin.Engine, state *app.State, authenticate gin.HandlerFunc) {
-	g := r.Group("/api/v1/platform", gatewayRequestID(), platformDiagnostics(), authenticate, platformDiagnosticAuthenticated())
+	base := r.Group("/api/v1/platform", gatewayRequestID(), platformDiagnostics())
+	generations := base.Group("/chat/generations", platformGenerationNoStore(), authenticate, platformDiagnosticAuthenticated())
+	generations.GET("/:generation_id", platformGenerationGet(state))
+	generations.POST("/:generation_id/cancel", platformGenerationCancel(state))
+
+	g := base.Group("", authenticate, platformDiagnosticAuthenticated())
 
 	g.GET("/models", func(c *gin.Context) {
 		if state.WhiteLabel == nil {
@@ -44,9 +49,6 @@ func registerPlatformWithAuthentication(r *gin.Engine, state *app.State, authent
 	g.GET("/models/:id", func(c *gin.Context) {
 		platformModelDetail(c, state, c.Param("id"))
 	})
-
-	g.GET("/chat/generations/:generation_id", platformGenerationGet(state))
-	g.POST("/chat/generations/:generation_id/cancel", platformGenerationCancel(state))
 
 	g.POST("/chat/completions", func(c *gin.Context) {
 		trace := diagnostics.From(c.Request.Context())

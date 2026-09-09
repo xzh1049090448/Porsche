@@ -110,6 +110,17 @@ func TestNewStateRegistersAuthenticatedGenerationRoutes(t *testing.T) {
 		if recorder.Code != http.StatusUnauthorized {
 			t.Fatalf("generation route %s %s status=%d body=%s, want authenticated 401", authenticated.Method, authenticated.Path, recorder.Code, recorder.Body.String())
 		}
+		if recorder.Header().Get("Cache-Control") != "no-store" {
+			t.Fatalf("generation auth failure %s %s cache-control=%q, want no-store", authenticated.Method, authenticated.Path, recorder.Header().Get("Cache-Control"))
+		}
+	}
+
+	modelsRequest := httptest.NewRequest(http.MethodGet, "/api/v1/platform/models", nil)
+	modelsRequest.Host = "example.com"
+	modelsRecorder := httptest.NewRecorder()
+	engine.ServeHTTP(modelsRecorder, modelsRequest)
+	if modelsRecorder.Code != http.StatusUnauthorized || modelsRecorder.Header().Get("Cache-Control") != "" {
+		t.Fatalf("non-generation platform auth response changed: status=%d cache-control=%q", modelsRecorder.Code, modelsRecorder.Header().Get("Cache-Control"))
 	}
 }
 
