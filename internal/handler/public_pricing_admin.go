@@ -58,10 +58,11 @@ func RegisterPublicPricingAdmin(r *gin.Engine, state *app.State) {
 			return
 		}
 		key := c.GetHeader("Idempotency-Key")
-		if !consumePublicAdminTicket(c, state, actionsecurity.ActionPublicPricingPublish, nil, actionsecurity.PublicPricingPublishIntent{ExpectedRevision: in.ExpectedRevision}, true) {
+		ticket, ok := publicAdminTicketOption(c, state, actionsecurity.ActionPublicPricingPublish, nil, actionsecurity.PublicPricingPublishIntent{ExpectedRevision: in.ExpectedRevision}, true)
+		if !ok {
 			return
 		}
-		out, err := state.PublicPriceSnapshots.Publish(c.Request.Context(), service.PublicPriceSnapshotRequest{ActorID: publicAdminActorID(c), ExpectedRevision: in.ExpectedRevision, IdempotencyKey: key})
+		out, err := state.PublicPriceSnapshots.Publish(c.Request.Context(), service.PublicPriceSnapshotRequest{ActorID: publicAdminActorID(c), ExpectedRevision: in.ExpectedRevision, IdempotencyKey: key}, ticket)
 		if err != nil {
 			publicAdminError(c, err)
 			return
@@ -111,10 +112,11 @@ func RegisterPublicPricingAdmin(r *gin.Engine, state *app.State) {
 			return
 		}
 		key := c.GetHeader("Idempotency-Key")
-		if !consumePublicAdminTicket(c, state, actionsecurity.ActionPublicPricingRestore, &guid, actionsecurity.PublicPricingRestoreIntent{ReleaseGUID: guid, ExpectedRevision: in.ExpectedRevision}, true) {
+		ticket, ticketOK := publicAdminTicketOption(c, state, actionsecurity.ActionPublicPricingRestore, &guid, actionsecurity.PublicPricingRestoreIntent{ReleaseGUID: guid, ExpectedRevision: in.ExpectedRevision}, true)
+		if !ticketOK {
 			return
 		}
-		out, err := state.PublicPriceSnapshots.Restore(c.Request.Context(), service.PublicPriceSnapshotRestoreRequest{ActorID: publicAdminActorID(c), ExpectedRevision: in.ExpectedRevision, SnapshotGUID: strconv.FormatInt(guid, 10), IdempotencyKey: key})
+		out, err := state.PublicPriceSnapshots.Restore(c.Request.Context(), service.PublicPriceSnapshotRestoreRequest{ActorID: publicAdminActorID(c), ExpectedRevision: in.ExpectedRevision, SnapshotGUID: strconv.FormatInt(guid, 10), IdempotencyKey: key}, ticket)
 		if err != nil {
 			publicAdminError(c, err)
 			return

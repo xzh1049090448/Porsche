@@ -91,10 +91,11 @@ func RegisterPublicContentAdmin(r *gin.Engine, state *app.State) {
 		}
 		in.ActorID = publicAdminActorID(c)
 		in.IdempotencyKey = c.GetHeader("Idempotency-Key")
-		if !consumePublicAdminTicket(c, state, actionsecurity.ActionPublicContentPublish, &priceGUID, actionsecurity.PublicContentPublishIntent{PriceReleaseGUID: priceGUID, ExpectedRevision: in.ExpectedRevision}, true) {
+		ticket, ticketOK := publicAdminTicketOption(c, state, actionsecurity.ActionPublicContentPublish, &priceGUID, actionsecurity.PublicContentPublishIntent{PriceReleaseGUID: priceGUID, ExpectedRevision: in.ExpectedRevision}, true)
+		if !ticketOK {
 			return
 		}
-		out, err := state.PublicContent.Publish(c.Request.Context(), in)
+		out, err := state.PublicContent.Publish(c.Request.Context(), in, ticket)
 		if err != nil {
 			publicAdminError(c, err)
 			return
@@ -144,10 +145,11 @@ func RegisterPublicContentAdmin(r *gin.Engine, state *app.State) {
 			return
 		}
 		key := c.GetHeader("Idempotency-Key")
-		if !consumePublicAdminTicket(c, state, actionsecurity.ActionPublicContentRestore, &guid, actionsecurity.PublicContentRestoreIntent{ReleaseGUID: guid, ExpectedRevision: in.ExpectedRevision}, true) {
+		ticket, ticketOK := publicAdminTicketOption(c, state, actionsecurity.ActionPublicContentRestore, &guid, actionsecurity.PublicContentRestoreIntent{ReleaseGUID: guid, ExpectedRevision: in.ExpectedRevision}, true)
+		if !ticketOK {
 			return
 		}
-		out, err := state.PublicContent.Restore(c.Request.Context(), service.PublicContentRestoreRequest{ActorID: publicAdminActorID(c), ExpectedRevision: in.ExpectedRevision, ReleaseGUID: strconv.FormatInt(guid, 10), IdempotencyKey: key})
+		out, err := state.PublicContent.Restore(c.Request.Context(), service.PublicContentRestoreRequest{ActorID: publicAdminActorID(c), ExpectedRevision: in.ExpectedRevision, ReleaseGUID: strconv.FormatInt(guid, 10), IdempotencyKey: key}, ticket)
 		if err != nil {
 			publicAdminError(c, err)
 			return

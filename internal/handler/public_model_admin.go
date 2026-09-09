@@ -133,10 +133,11 @@ func RegisterPublicModelAdmin(r *gin.Engine, state *app.State) {
 			publicAdminError(c, &service.HTTPError{Status: 400, Message: "invalid request"})
 			return
 		}
-		if !consumePublicAdminTicket(c, state, actionsecurity.ActionPublicModelDelete, &guid, actionsecurity.PublicModelDeleteIntent{ModelGUID: guid, ExpectedRevision: in.ExpectedRevision, Reason: in.Reason}, false) {
+		ticket, ok := publicAdminTicketOption(c, state, actionsecurity.ActionPublicModelDelete, &guid, actionsecurity.PublicModelDeleteIntent{ModelGUID: guid, ExpectedRevision: in.ExpectedRevision, Reason: in.Reason}, false)
+		if !ok {
 			return
 		}
-		if err := state.PublicModels.Delete(c.Request.Context(), publicAdminActorID(c), guid, in); err != nil {
+		if err := state.PublicModels.Delete(c.Request.Context(), publicAdminActorID(c), guid, in, ticket); err != nil {
 			publicAdminError(c, err)
 			return
 		}

@@ -2,6 +2,7 @@ package handler
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"github.com/porsche/ai-gateway-go/internal/app"
 	"github.com/porsche/ai-gateway-go/internal/middleware"
 	"github.com/porsche/ai-gateway-go/internal/service"
+	"gorm.io/gorm"
 )
 
 const publicAdminBodyLimit int64 = 1 << 20
@@ -135,32 +137,31 @@ func publicAdminActorID(c *gin.Context) int64 {
 	return u.ID
 }
 
-func consumePublicAdminTicket(c *gin.Context, state *app.State, action actionsecurity.Action, target *int64, intent any, requireIdempotency bool) bool {
+func publicAdminTicketOption(c *gin.Context, state *app.State, action actionsecurity.Action, target *int64, intent any, requireIdempotency bool) (service.PublicAdminTransactionOption, bool) {
 	if state.ActionVerifications == nil {
 		publicAdminError(c, service.ErrActionVerificationUnavailable)
-		return false
+		return nil, false
 	}
 	tickets, canonical := exactHeaderValues(c, "X-Action-Ticket")
 	if !canonical {
 		publicAdminError(c, &service.HTTPError{Status: 400, Message: "invalid action ticket"})
-		return false
+		return nil, false
 	}
 	if requireIdempotency {
 		keys, keyCanonical := exactHeaderValues(c, "Idempotency-Key")
 		if !keyCanonical {
 			publicAdminError(c, &service.HTTPError{Status: 400, Message: "invalid idempotency key"})
-			return false
+			return nil, false
 		}
 		if _, err := actionsecurity.ParseIdempotencyKey(keys); err != nil {
 			publicAdminError(c, &service.HTTPError{Status: 400, Message: "invalid idempotency key"})
-			return false
+			return nil, false
 		}
 	}
-	if err := state.ActionVerifications.Consume(c.Request.Context(), service.VerificationConsume{Actor: adminUserActionActor(c), Action: action, TargetGUID: target, Intent: intent, TicketValues: tickets}); err != nil {
-		publicAdminError(c, err)
-		return false
-	}
-	return true
+	consume := service.VerificationConsume{Actor: adminUserActionActor(c), Action: action, TargetGUID: target, Intent: intent, TicketValues: append([]string(nil), tickets...)}
+	return service.WithActionTicketConsume(func(ctx context.Context, tx *gorm.DB) error {
+		return state.ActionVerifications.ConsumeInTx(ctx, tx, consume)
+	}), true
 }
 
 func RegisterRootAlerts(r *gin.Engine, state *app.State) {
