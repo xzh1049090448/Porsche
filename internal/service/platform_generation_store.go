@@ -542,6 +542,9 @@ func decodePlatformGeneration(raw string) (PlatformGenerationSnapshot, error) {
 	if raw == "" || len(raw) > platformGenerationMaxRecordBytes {
 		return PlatformGenerationSnapshot{}, ErrPlatformGenerationInvalid
 	}
+	if err := validatePlatformGenerationJSONMembers(raw); err != nil {
+		return PlatformGenerationSnapshot{}, ErrPlatformGenerationInvalid
+	}
 	decoder := json.NewDecoder(strings.NewReader(raw))
 	decoder.DisallowUnknownFields()
 	var snapshot PlatformGenerationSnapshot
@@ -552,6 +555,67 @@ func decodePlatformGeneration(raw string) (PlatformGenerationSnapshot, error) {
 		return PlatformGenerationSnapshot{}, ErrPlatformGenerationInvalid
 	}
 	return snapshot, nil
+}
+
+func validatePlatformGenerationJSONMembers(raw string) error {
+	decoder := json.NewDecoder(strings.NewReader(raw))
+	decoder.UseNumber()
+	if err := walkPlatformGenerationJSONValue(decoder); err != nil {
+		return ErrPlatformGenerationInvalid
+	}
+	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
+		return ErrPlatformGenerationInvalid
+	}
+	return nil
+}
+
+func walkPlatformGenerationJSONValue(decoder *json.Decoder) error {
+	token, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	delimiter, composite := token.(json.Delim)
+	if !composite {
+		return nil
+	}
+	switch delimiter {
+	case '{':
+		members := make(map[string]struct{})
+		for decoder.More() {
+			keyToken, err := decoder.Token()
+			if err != nil {
+				return err
+			}
+			key, ok := keyToken.(string)
+			if !ok {
+				return ErrPlatformGenerationInvalid
+			}
+			if _, duplicate := members[key]; duplicate {
+				return ErrPlatformGenerationInvalid
+			}
+			members[key] = struct{}{}
+			if err := walkPlatformGenerationJSONValue(decoder); err != nil {
+				return err
+			}
+		}
+		closing, err := decoder.Token()
+		if err != nil || closing != json.Delim('}') {
+			return ErrPlatformGenerationInvalid
+		}
+	case '[':
+		for decoder.More() {
+			if err := walkPlatformGenerationJSONValue(decoder); err != nil {
+				return err
+			}
+		}
+		closing, err := decoder.Token()
+		if err != nil || closing != json.Delim(']') {
+			return ErrPlatformGenerationInvalid
+		}
+	default:
+		return ErrPlatformGenerationInvalid
+	}
+	return nil
 }
 
 func validatePlatformGenerationIdentity(userID int64, generationID string) error {

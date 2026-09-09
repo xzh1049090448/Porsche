@@ -1234,22 +1234,24 @@ func TestPlatformGenerationLeaseRenewVersusExpireHasOneAuthority(t *testing.T) {
 		key := store.key(input.UserID, generationID)
 		preparePlatformGenerationTestKey(t, client, key)
 		claim := claimTestGeneration(t, store, input)
+		beforeTTL := requirePositivePlatformGenerationTTL(t, client, key)
 
 		start := make(chan struct{})
 		type outcome struct {
-			snapshot PlatformGenerationSnapshot
-			err      error
+			operation string
+			snapshot  PlatformGenerationSnapshot
+			err       error
 		}
 		outcomes := make(chan outcome, 2)
 		go func() {
 			<-start
 			snapshot, err := store.RenewLease(ctx, input.UserID, generationID, claim.LeaseToken, 31000)
-			outcomes <- outcome{snapshot, err}
+			outcomes <- outcome{"renew", snapshot, err}
 		}()
 		go func() {
 			<-start
 			snapshot, err := store.FailExpiredRunning(ctx, input.UserID, generationID, 31000)
-			outcomes <- outcome{snapshot, err}
+			outcomes <- outcome{"expire", snapshot, err}
 		}()
 		close(start)
 		first, second := <-outcomes, <-outcomes
@@ -1268,6 +1270,12 @@ func TestPlatformGenerationLeaseRenewVersusExpireHasOneAuthority(t *testing.T) {
 		if err != nil || (authoritative.State == PlatformGenerationStateRunning && authoritative.LeaseUntilMillis != 61000) || (authoritative.State != PlatformGenerationStateRunning && authoritative.State != PlatformGenerationStateFailed) {
 			t.Fatalf("iteration %d authority=%#v error=%v", iteration, authoritative, err)
 		}
+		for _, result := range []outcome{first, second} {
+			if !reflect.DeepEqual(result.snapshot, authoritative) {
+				t.Fatalf("iteration %d %s snapshot=%#v authority=%#v error=%v", iteration, result.operation, result.snapshot, authoritative, result.err)
+			}
+		}
+		requirePlatformGenerationTTLNotIncreased(t, client, key, beforeTTL)
 	}
 }
 
@@ -1277,18 +1285,24 @@ func TestPlatformGenerationCancelVersusBeginCommitHasOneWinner(t *testing.T) {
 	for iteration := 0; iteration < 24; iteration++ {
 		generationID := fmt.Sprintf("84000000-0000-4000-8000-%012x", iteration+1)
 		input := PlatformGenerationClaimInput{UserID: 930060 + int64(iteration), GenerationID: generationID, Mode: PlatformGenerationModeSingle, Models: []string{"a"}, NowMillis: 1000}
-		preparePlatformGenerationTestKey(t, client, store.key(input.UserID, generationID))
+		key := store.key(input.UserID, generationID)
+		preparePlatformGenerationTestKey(t, client, key)
 		claimTestGeneration(t, store, input)
 		if _, err := store.MarkModelDone(ctx, input.UserID, generationID, "a", 0, 1001); err != nil {
 			t.Fatal(err)
 		}
+		beforeTTL := requirePositivePlatformGenerationTTL(t, client, key)
 
 		start := make(chan struct{})
 		cancelResults := make(chan struct {
 			decision PlatformGenerationCancelDecision
 			err      error
 		}, 1)
-		commitResults := make(chan error, 1)
+		type commitOutcome struct {
+			snapshot PlatformGenerationSnapshot
+			err      error
+		}
+		commitResults := make(chan commitOutcome, 1)
 		go func() {
 			<-start
 			decision, err := store.CancelOrCreate(ctx, input.UserID, generationID, 1002)
@@ -1299,22 +1313,33 @@ func TestPlatformGenerationCancelVersusBeginCommitHasOneWinner(t *testing.T) {
 		}()
 		go func() {
 			<-start
-			_, err := store.BeginCommit(ctx, input.UserID, generationID, 1002)
-			commitResults <- err
+			snapshot, err := store.BeginCommit(ctx, input.UserID, generationID, 1002)
+			commitResults <- commitOutcome{snapshot, err}
 		}()
 		close(start)
 		cancel := <-cancelResults
-		commitErr := <-commitResults
+		commit := <-commitResults
 		winners := 0
 		if cancel.err == nil && cancel.decision.Transitioned {
 			winners++
 		}
-		if commitErr == nil {
+		if commit.err == nil {
 			winners++
 		}
-		if winners != 1 || (cancel.err != nil && !errors.Is(cancel.err, ErrPlatformGenerationConflict)) || (commitErr != nil && !errors.Is(commitErr, ErrPlatformGenerationConflict)) {
-			t.Fatalf("iteration %d cancel=%#v commitErr=%v winners=%d", iteration, cancel, commitErr, winners)
+		if winners != 1 || (cancel.err != nil && !errors.Is(cancel.err, ErrPlatformGenerationConflict)) || (commit.err != nil && !errors.Is(commit.err, ErrPlatformGenerationConflict)) {
+			t.Fatalf("iteration %d cancel=%#v commit=%#v winners=%d", iteration, cancel, commit, winners)
 		}
+		final, err := store.Get(ctx, input.UserID, generationID)
+		if err != nil || !reflect.DeepEqual(cancel.decision.Snapshot, final) || !reflect.DeepEqual(commit.snapshot, final) {
+			t.Fatalf("iteration %d cancel=%#v commit=%#v final=%#v error=%v", iteration, cancel, commit, final, err)
+		}
+		if final.State == PlatformGenerationStateCancelling && (!cancel.decision.Transitioned || cancel.decision.CreatedTombstone) {
+			t.Fatalf("iteration %d cancelling flags=%#v", iteration, cancel.decision)
+		}
+		if final.State == PlatformGenerationStateCommitting && (cancel.decision.Transitioned || cancel.decision.CreatedTombstone) {
+			t.Fatalf("iteration %d committing flags=%#v", iteration, cancel.decision)
+		}
+		requirePlatformGenerationTTLNotIncreased(t, client, key, beforeTTL)
 	}
 }
 
@@ -1386,7 +1411,15 @@ func TestPlatformGenerationCancelConvergesAtThirtySecondBoundary(t *testing.T) {
 }
 
 func TestPlatformGenerationScanContinuesCursorAndStrictlyParsesKeys(t *testing.T) {
-	store, client := openTestPlatformGenerationStore(t)
+	_, fixtureClient := openTestPlatformGenerationStore(t)
+	options := *fixtureClient.Options()
+	options.DB = 15
+	client := redis.NewClient(&options)
+	store, err := NewPlatformGenerationStore(client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
 	ctx := context.Background()
 	valid := make(map[PlatformGenerationIdentity]struct{})
 	keys := make([]string, 0, 80)
@@ -1417,13 +1450,21 @@ func TestPlatformGenerationScanContinuesCursorAndStrictlyParsesKeys(t *testing.T
 	}()...).Err(); err != nil {
 		t.Fatal(err)
 	}
+	untouchedTTLs := make(map[string]time.Duration, len(malformed)+1)
+	for _, key := range append(malformed, unrelated) {
+		ttl, err := client.PTTL(ctx, key).Result()
+		if err != nil {
+			t.Fatal(err)
+		}
+		untouchedTTLs[key] = ttl
+	}
 	t.Cleanup(func() {
 		if err := client.Del(context.Background(), keys...).Err(); err != nil {
 			t.Errorf("scan key cleanup: %v", err)
 		}
 	})
 
-	found := make(map[PlatformGenerationIdentity]int)
+	found := make(map[PlatformGenerationIdentity]struct{})
 	cursor := uint64(0)
 	calls := 0
 	for {
@@ -1434,9 +1475,9 @@ func TestPlatformGenerationScanContinuesCursorAndStrictlyParsesKeys(t *testing.T
 		calls++
 		for _, identity := range identities {
 			if _, ok := valid[identity]; !ok {
-				continue
+				t.Fatalf("scan returned identity outside expected set: %#v", identity)
 			}
-			found[identity]++
+			found[identity] = struct{}{}
 		}
 		cursor = next
 		if cursor == 0 {
@@ -1449,14 +1490,12 @@ func TestPlatformGenerationScanContinuesCursorAndStrictlyParsesKeys(t *testing.T
 	if calls < 2 || len(found) != len(valid) {
 		t.Fatalf("scan calls=%d identities=%d want=%d", calls, len(found), len(valid))
 	}
-	for identity, occurrences := range found {
-		if occurrences != 1 {
-			t.Fatalf("identity=%#v occurrences=%d", identity, occurrences)
-		}
-	}
 	for _, key := range append(malformed, unrelated) {
 		if raw, err := client.Get(ctx, key).Result(); err != nil || raw != "sentinel" {
 			t.Fatalf("malformed key was touched: key=%q raw=%q error=%v", key, raw, err)
+		}
+		if ttl, err := client.PTTL(ctx, key).Result(); err != nil || ttl != untouchedTTLs[key] {
+			t.Fatalf("malformed key TTL changed: key=%q before=%v after=%v error=%v", key, untouchedTTLs[key], ttl, err)
 		}
 	}
 }
@@ -1656,5 +1695,344 @@ func TestPlatformGenerationLeaseRenewalAndCancelRejectClockRegression(t *testing
 	decision, err = store.CancelOrCreate(ctx, input.UserID, input.GenerationID, 2001)
 	if err != nil || decision.CreatedTombstone || decision.Transitioned || decision.Snapshot.State != PlatformGenerationStateCancelling || decision.Snapshot.UpdatedAtMillis != 2000 {
 		t.Fatalf("idempotent cancel decision=%#v error=%v", decision, err)
+	}
+}
+
+func TestDecodePlatformGenerationRejectsDuplicateObjectMembersRecursively(t *testing.T) {
+	digest := strings.Repeat("a", 64)
+	running := `{"generation_id":"` + generationTestID + `","mode":1,"models":["a"],"state":1,"model_states":{"a":{"seq":0,"state":1}},"created_at_ms":1000,"updated_at_ms":1000,"lease_owner_sha256":"` + digest + `","lease_until_ms":31000}`
+	failedNested := `{"generation_id":"` + generationTestID + `","mode":2,"models":["a","b"],"state":1,"model_states":{"a":{"seq":0,"state":6,"error_code":"timeout","error_code":"timeout"},"b":{"seq":0,"state":1}},"created_at_ms":1000,"updated_at_ms":1000,"lease_owner_sha256":"` + digest + `","lease_until_ms":31000}`
+	completedNested := `{"generation_id":"` + generationTestID + `","mode":1,"models":["a"],"state":5,"model_states":{"a":{"seq":0,"state":5,"assistant_message_guid":"900000000000000001","assistant_message_guid":"900000000000000001"}},"created_at_ms":1000,"updated_at_ms":1001}`
+	tests := map[string]string{
+		"top state":          strings.Replace(running, `"state":1`, `"state":1,"state":1`, 1),
+		"top mode":           strings.Replace(running, `"mode":1`, `"mode":1,"mode":1`, 1),
+		"top lease owner":    strings.Replace(running, `"lease_owner_sha256":"`+digest+`"`, `"lease_owner_sha256":"`+digest+`","lease_owner_sha256":"`+digest+`"`, 1),
+		"top lease deadline": strings.Replace(running, `"lease_until_ms":31000`, `"lease_until_ms":31000,"lease_until_ms":31000`, 1),
+		"nested seq":         strings.Replace(running, `"seq":0`, `"seq":0,"seq":0`, 1),
+		"nested state":       strings.Replace(running, `"seq":0,"state":1`, `"seq":0,"state":1,"state":1`, 1),
+		"nested error":       failedNested,
+		"nested guid":        completedNested,
+		"model state key":    strings.Replace(running, `"model_states":{"a":`, `"model_states":{"a":{"seq":0,"state":1},"a":`, 1),
+	}
+	for name, raw := range tests {
+		t.Run(name, func(t *testing.T) {
+			if _, err := decodePlatformGeneration(raw); !errors.Is(err, ErrPlatformGenerationInvalid) {
+				t.Fatalf("duplicate member accepted: raw=%s error=%v", raw, err)
+			}
+		})
+	}
+}
+
+func TestPlatformGenerationStoreMutatorsLeaveDuplicateMemberRecordsUntouched(t *testing.T) {
+	store, client := openTestPlatformGenerationStore(t)
+	ctx := context.Background()
+	token := base64.RawURLEncoding.EncodeToString(make([]byte, platformGenerationLeaseBytes))
+	digest := platformGenerationLeaseDigest(token)
+	type duplicateCase struct {
+		name string
+		raw  func(string) string
+	}
+	running := func(generationID string) string {
+		return `{"generation_id":"` + generationID + `","mode":1,"models":["a"],"state":1,"model_states":{"a":{"seq":0,"state":1}},"created_at_ms":1000,"updated_at_ms":1000,"lease_owner_sha256":"` + digest + `","lease_until_ms":31000}`
+	}
+	cases := []duplicateCase{
+		{"top state", func(id string) string { return strings.Replace(running(id), `"state":1`, `"state":1,"state":1`, 1) }},
+		{"top mode", func(id string) string { return strings.Replace(running(id), `"mode":1`, `"mode":1,"mode":1`, 1) }},
+		{"top lease owner", func(id string) string {
+			return strings.Replace(running(id), `"lease_owner_sha256":"`+digest+`"`, `"lease_owner_sha256":"`+digest+`","lease_owner_sha256":"`+digest+`"`, 1)
+		}},
+		{"top lease deadline", func(id string) string {
+			return strings.Replace(running(id), `"lease_until_ms":31000`, `"lease_until_ms":31000,"lease_until_ms":31000`, 1)
+		}},
+		{"nested seq", func(id string) string { return strings.Replace(running(id), `"seq":0`, `"seq":0,"seq":0`, 1) }},
+		{"nested state", func(id string) string {
+			return strings.Replace(running(id), `"seq":0,"state":1`, `"seq":0,"state":1,"state":1`, 1)
+		}},
+		{"nested error", func(id string) string {
+			return `{"generation_id":"` + id + `","mode":2,"models":["a","b"],"state":1,"model_states":{"a":{"seq":0,"state":6,"error_code":"timeout","error_code":"timeout"},"b":{"seq":0,"state":1}},"created_at_ms":1000,"updated_at_ms":1000,"lease_owner_sha256":"` + digest + `","lease_until_ms":31000}`
+		}},
+		{"nested guid", func(id string) string {
+			return `{"generation_id":"` + id + `","mode":1,"models":["a"],"state":5,"model_states":{"a":{"seq":0,"state":5,"assistant_message_guid":"900000000000000001","assistant_message_guid":"900000000000000001"}},"created_at_ms":1000,"updated_at_ms":1001}`
+		}},
+	}
+	for index, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			generationID := fmt.Sprintf("89000000-0000-4000-8000-%012x", index+1)
+			userID := int64(960000 + index)
+			key := store.key(userID, generationID)
+			preparePlatformGenerationTestKey(t, client, key)
+			raw := test.raw(generationID)
+			if err := client.Set(ctx, key, raw, time.Hour).Err(); err != nil {
+				t.Fatal(err)
+			}
+			for _, mutation := range []struct {
+				name string
+				call func() error
+			}{
+				{"cancel", func() error { _, err := store.CancelOrCreate(ctx, userID, generationID, 2000); return err }},
+				{"claim", func() error {
+					_, err := store.Claim(ctx, PlatformGenerationClaimInput{UserID: userID, GenerationID: generationID, Mode: PlatformGenerationModeSingle, Models: []string{"a"}, NowMillis: 2000})
+					return err
+				}},
+				{"renew", func() error { _, err := store.RenewLease(ctx, userID, generationID, token, 2000); return err }},
+				{"expire", func() error { _, err := store.FailExpiredRunning(ctx, userID, generationID, 31000); return err }},
+				{"converge", func() error { _, err := store.ConvergeStaleCancelling(ctx, userID, generationID, 31000); return err }},
+			} {
+				beforeTTL := requirePositivePlatformGenerationTTL(t, client, key)
+				if err := mutation.call(); !errors.Is(err, ErrPlatformGenerationInvalid) {
+					t.Fatalf("%s error=%v, want invalid", mutation.name, err)
+				}
+				if stored, err := client.Get(ctx, key).Result(); err != nil || stored != raw {
+					t.Fatalf("%s mutated duplicate record: raw=%s error=%v", mutation.name, stored, err)
+				}
+				requirePlatformGenerationTTLNotIncreased(t, client, key, beforeTTL)
+			}
+		})
+	}
+}
+
+func TestPlatformGenerationClaimVersusCancelMissingConvergesToOneLegalAuthority(t *testing.T) {
+	store, client := openTestPlatformGenerationStore(t)
+	ctx := context.Background()
+	for iteration := 0; iteration < 24; iteration++ {
+		generationID := fmt.Sprintf("8a000000-0000-4000-8000-%012x", iteration+1)
+		userID := int64(970000 + iteration)
+		key := store.key(userID, generationID)
+		preparePlatformGenerationTestKey(t, client, key)
+		input := PlatformGenerationClaimInput{UserID: userID, GenerationID: generationID, Mode: PlatformGenerationModeSingle, Models: []string{"a"}, NowMillis: 1000}
+		start := make(chan struct{})
+		type claimOutcome struct {
+			result PlatformGenerationClaimResult
+			err    error
+		}
+		type cancelOutcome struct {
+			decision PlatformGenerationCancelDecision
+			err      error
+		}
+		claims := make(chan claimOutcome, 1)
+		cancels := make(chan cancelOutcome, 1)
+		go func() {
+			<-start
+			result, err := store.Claim(ctx, input)
+			claims <- claimOutcome{result, err}
+		}()
+		go func() {
+			<-start
+			decision, err := store.CancelOrCreate(ctx, userID, generationID, 1000)
+			cancels <- cancelOutcome{decision, err}
+		}()
+		close(start)
+		claim := <-claims
+		cancel := <-cancels
+		converged, convergeErr := store.CancelOrCreate(ctx, userID, generationID, 1000)
+		if convergeErr != nil {
+			t.Fatalf("iteration %d convergence error=%v", iteration, convergeErr)
+		}
+		final, err := store.Get(ctx, userID, generationID)
+		if err != nil || !reflect.DeepEqual(converged.Snapshot, final) {
+			t.Fatalf("iteration %d final=%#v convergence=%#v error=%v", iteration, final, converged, err)
+		}
+		switch {
+		case claim.err == nil:
+			if claim.result.Duplicate || claim.result.LeaseToken == "" || claim.result.Snapshot.State != PlatformGenerationStateRunning || final.State != PlatformGenerationStateCancelling {
+				t.Fatalf("iteration %d running claim=%#v final=%#v", iteration, claim, final)
+			}
+			if errors.Is(cancel.err, ErrPlatformGenerationConflict) && (!reflect.DeepEqual(cancel.decision.Snapshot, claim.result.Snapshot) || cancel.decision.CreatedTombstone || cancel.decision.Transitioned) {
+				t.Fatalf("iteration %d cancel conflict=%#v running authority=%#v", iteration, cancel, claim.result.Snapshot)
+			}
+		case errors.Is(claim.err, ErrPlatformGenerationConflict):
+			if !claim.result.Duplicate || claim.result.LeaseToken != "" || claim.result.Snapshot.State != PlatformGenerationStateCancelled || !reflect.DeepEqual(claim.result.Snapshot, final) {
+				t.Fatalf("iteration %d cancelled claim=%#v final=%#v", iteration, claim, final)
+			}
+			if !cancel.decision.CreatedTombstone {
+				t.Fatalf("iteration %d cancelled authority without tombstone creator: cancel=%#v", iteration, cancel)
+			}
+		default:
+			t.Fatalf("iteration %d unexpected claim=%#v", iteration, claim)
+		}
+		if cancel.err != nil && !errors.Is(cancel.err, ErrPlatformGenerationConflict) {
+			t.Fatalf("iteration %d cancel=%#v", iteration, cancel)
+		}
+		if cancel.decision.CreatedTombstone {
+			if cancel.err != nil || cancel.decision.Transitioned || cancel.decision.Snapshot.Mode != 0 || final.State != PlatformGenerationStateCancelled {
+				t.Fatalf("iteration %d created cancel=%#v final=%#v", iteration, cancel, final)
+			}
+		} else if cancel.decision.Transitioned {
+			if cancel.err != nil || !reflect.DeepEqual(cancel.decision.Snapshot, final) {
+				t.Fatalf("iteration %d transitioned cancel=%#v final=%#v", iteration, cancel, final)
+			}
+		}
+	}
+}
+
+func TestPlatformGenerationCancelVersusRenewConvergesWithoutLeaseRegression(t *testing.T) {
+	store, client := openTestPlatformGenerationStore(t)
+	ctx := context.Background()
+	for iteration := 0; iteration < 24; iteration++ {
+		generationID := fmt.Sprintf("8b000000-0000-4000-8000-%012x", iteration+1)
+		userID := int64(971000 + iteration)
+		key := store.key(userID, generationID)
+		preparePlatformGenerationTestKey(t, client, key)
+		input := PlatformGenerationClaimInput{UserID: userID, GenerationID: generationID, Mode: PlatformGenerationModeSingle, Models: []string{"a"}, NowMillis: 1000}
+		claim := claimTestGeneration(t, store, input)
+		beforeTTL := requirePositivePlatformGenerationTTL(t, client, key)
+		start := make(chan struct{})
+		type snapshotOutcome struct {
+			snapshot PlatformGenerationSnapshot
+			err      error
+		}
+		type cancelOutcome struct {
+			decision PlatformGenerationCancelDecision
+			err      error
+		}
+		renews := make(chan snapshotOutcome, 1)
+		cancels := make(chan cancelOutcome, 1)
+		go func() {
+			<-start
+			snapshot, err := store.RenewLease(ctx, userID, generationID, claim.LeaseToken, 2000)
+			renews <- snapshotOutcome{snapshot, err}
+		}()
+		go func() {
+			<-start
+			decision, err := store.CancelOrCreate(ctx, userID, generationID, 2000)
+			cancels <- cancelOutcome{decision, err}
+		}()
+		close(start)
+		renew := <-renews
+		cancel := <-cancels
+		if renew.err == nil {
+			if renew.snapshot.State != PlatformGenerationStateRunning || renew.snapshot.LeaseUntilMillis != 32000 {
+				t.Fatalf("iteration %d renew=%#v", iteration, renew)
+			}
+			if errors.Is(cancel.err, ErrPlatformGenerationConflict) && !reflect.DeepEqual(cancel.decision.Snapshot, renew.snapshot) {
+				t.Fatalf("iteration %d cancel CAS authority=%#v renew=%#v", iteration, cancel, renew)
+			}
+		} else if !errors.Is(renew.err, ErrPlatformGenerationConflict) {
+			t.Fatalf("iteration %d unexpected renew=%#v", iteration, renew)
+		}
+		if errors.Is(cancel.err, ErrPlatformGenerationConflict) && (cancel.decision.CreatedTombstone || cancel.decision.Transitioned) {
+			t.Fatalf("iteration %d cancel conflict flags=%#v", iteration, cancel)
+		}
+		if cancel.err == nil && (!cancel.decision.Transitioned || cancel.decision.CreatedTombstone) {
+			t.Fatalf("iteration %d cancel success flags=%#v", iteration, cancel)
+		}
+		converged, err := store.CancelOrCreate(ctx, userID, generationID, 2000)
+		if err != nil {
+			t.Fatalf("iteration %d convergence error=%v", iteration, err)
+		}
+		final, err := store.Get(ctx, userID, generationID)
+		if err != nil || final.State != PlatformGenerationStateCancelling || final.LeaseOwnerSHA256 != "" || final.LeaseUntilMillis != 0 || final.UpdatedAtMillis != 2000 || !reflect.DeepEqual(converged.Snapshot, final) {
+			t.Fatalf("iteration %d final=%#v convergence=%#v error=%v", iteration, final, converged, err)
+		}
+		if errors.Is(renew.err, ErrPlatformGenerationConflict) && !reflect.DeepEqual(renew.snapshot, final) {
+			t.Fatalf("iteration %d renew loser=%#v final=%#v", iteration, renew, final)
+		}
+		if cancel.err == nil && cancel.decision.Transitioned && !reflect.DeepEqual(cancel.decision.Snapshot, final) {
+			t.Fatalf("iteration %d cancel winner=%#v final=%#v", iteration, cancel, final)
+		}
+		requirePlatformGenerationTTLNotIncreased(t, client, key, beforeTTL)
+	}
+}
+
+func TestPlatformGenerationExpiredMultiCallerHasOneWinnerAndOneAuthority(t *testing.T) {
+	store, client := openTestPlatformGenerationStore(t)
+	ctx := context.Background()
+	for iteration := 0; iteration < 12; iteration++ {
+		generationID := fmt.Sprintf("8c000000-0000-4000-8000-%012x", iteration+1)
+		userID := int64(972000 + iteration)
+		key := store.key(userID, generationID)
+		preparePlatformGenerationTestKey(t, client, key)
+		claimTestGeneration(t, store, PlatformGenerationClaimInput{UserID: userID, GenerationID: generationID, Mode: PlatformGenerationModeSingle, Models: []string{"a"}, NowMillis: 1000})
+		beforeTTL := requirePositivePlatformGenerationTTL(t, client, key)
+		start := make(chan struct{})
+		type outcome struct {
+			snapshot PlatformGenerationSnapshot
+			err      error
+		}
+		results := make(chan outcome, 8)
+		for range 8 {
+			go func() {
+				<-start
+				snapshot, err := store.FailExpiredRunning(ctx, userID, generationID, 31000)
+				results <- outcome{snapshot, err}
+			}()
+		}
+		close(start)
+		all := make([]outcome, 0, 8)
+		for range 8 {
+			all = append(all, <-results)
+		}
+		final, err := store.Get(ctx, userID, generationID)
+		if err != nil || final.State != PlatformGenerationStateFailed {
+			t.Fatalf("iteration %d final=%#v error=%v", iteration, final, err)
+		}
+		winners := 0
+		for _, result := range all {
+			if result.err == nil {
+				winners++
+			} else if !errors.Is(result.err, ErrPlatformGenerationConflict) {
+				t.Fatalf("iteration %d result=%#v", iteration, result)
+			}
+			if !reflect.DeepEqual(result.snapshot, final) {
+				t.Fatalf("iteration %d result=%#v final=%#v", iteration, result, final)
+			}
+		}
+		if winners != 1 {
+			t.Fatalf("iteration %d winners=%d", iteration, winners)
+		}
+		requirePlatformGenerationTTLNotIncreased(t, client, key, beforeTTL)
+	}
+}
+
+func TestPlatformGenerationCancelConvergenceMultiCallerHasOneWinnerAndOneAuthority(t *testing.T) {
+	store, client := openTestPlatformGenerationStore(t)
+	ctx := context.Background()
+	for iteration := 0; iteration < 12; iteration++ {
+		generationID := fmt.Sprintf("8d000000-0000-4000-8000-%012x", iteration+1)
+		userID := int64(973000 + iteration)
+		key := store.key(userID, generationID)
+		preparePlatformGenerationTestKey(t, client, key)
+		claimTestGeneration(t, store, PlatformGenerationClaimInput{UserID: userID, GenerationID: generationID, Mode: PlatformGenerationModeSingle, Models: []string{"a"}, NowMillis: 1000})
+		if _, err := store.CancelOrCreate(ctx, userID, generationID, 1001); err != nil {
+			t.Fatal(err)
+		}
+		beforeTTL := requirePositivePlatformGenerationTTL(t, client, key)
+		start := make(chan struct{})
+		type outcome struct {
+			snapshot PlatformGenerationSnapshot
+			err      error
+		}
+		results := make(chan outcome, 8)
+		for range 8 {
+			go func() {
+				<-start
+				snapshot, err := store.ConvergeStaleCancelling(ctx, userID, generationID, 31001)
+				results <- outcome{snapshot, err}
+			}()
+		}
+		close(start)
+		all := make([]outcome, 0, 8)
+		for range 8 {
+			all = append(all, <-results)
+		}
+		final, err := store.Get(ctx, userID, generationID)
+		if err != nil || final.State != PlatformGenerationStateCancelled {
+			t.Fatalf("iteration %d final=%#v error=%v", iteration, final, err)
+		}
+		winners := 0
+		for _, result := range all {
+			if result.err == nil {
+				winners++
+			} else if !errors.Is(result.err, ErrPlatformGenerationConflict) {
+				t.Fatalf("iteration %d result=%#v", iteration, result)
+			}
+			if !reflect.DeepEqual(result.snapshot, final) {
+				t.Fatalf("iteration %d result=%#v final=%#v", iteration, result, final)
+			}
+		}
+		if winners != 1 {
+			t.Fatalf("iteration %d winners=%d", iteration, winners)
+		}
+		requirePlatformGenerationTTLNotIncreased(t, client, key, beforeTTL)
 	}
 }
