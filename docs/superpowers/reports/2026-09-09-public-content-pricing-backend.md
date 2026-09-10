@@ -16,7 +16,7 @@ The migrated ledger contained exact active versions `0001` through `0015` with t
 
 ## Verification
 
-- Focused service coverage passed for model CRUD/revision/identity races, immutable price snapshots, content releases and binding, Root alerts, monitor lease/safety retry, public catalog integrity, and ticket/business atomicity. Render lease/fence/replay tests passed on the migrated fixture. The fresh four-case migration and verbose handler/security/catalog/renderer commands recorded zero skips; the final passing service command was not emitted in JSON form, so this report does not assign it a machine-counted skip total.
+- Focused service coverage passed for model CRUD/revision/identity races, immutable price snapshots, content releases and binding, Root alerts, monitor lease/safety retry, public catalog integrity, and ticket/business atomicity. Render lease/fence/replay tests passed on the migrated fixture. The final retained JSON streams machine-count 4 migration roots, 85 service roots, 43 handler/security/catalog/renderer roots, and 114 race roots with zero test failures and zero skips. The selected names include 20 database/fixture service roots, one real-fixture handler root, and 21 database/fixture race roots. Package results were 1/1/4/2 pass and zero fail respectively.
 - Handler, router, action-security, white-label catalog observation, app selection, and renderer CLI suites passed. Adversarial cases included duplicate/unknown/trailing JSON, malformed and oversized catalogs, wrong actor/action/resource/intent tickets, immutable snapshot tampering, lease loss, concurrent revision winners, and failed transaction rollback.
 - `TEST_DATABASE_URL=… TEST_REDIS_URL=… go test -race ./internal/service ./internal/handler -run '(Public|RootAlert|UpstreamPrice)' -count=1` passed for both packages.
 - `GOCACHE=/private/tmp/porsche-go-build-cache go test ./... -count=1` passed for every package when run with loopback listener permission. A sandbox-only attempt failed solely because `httptest` could not bind `[::1]`.
@@ -25,7 +25,7 @@ The migrated ledger contained exact active versions `0001` through `0015` with t
 
 The first rerun used a driver DSN where the fixture guard requires a URL, so all four migration cases failed before database access. A second attempt correctly exposed that the new 0012 global assertion was too narrow: `Verify` reports the earlier ledger-level unmigrated error, while the dedicated verifier reports `ErrPublicContentPricingSchema`. The assertion was corrected to require the exact dedicated error and any non-nil global failure. A broad service attempt before migrating the parent fixture failed with missing-table diagnostics. After applying the exact 0001–0015 ledger, the focused service package passed. A diagnostic JSON rerun attempted after the disposable resources had already been removed failed and is not pass evidence. These setup failures are retained in the manifest and excluded from the pass claims.
 
-Sanitized evidence: `docs/superpowers/reports/validation/2026-09-10-public-content-pricing-task12-r2/manifest.json`.
+Historical repair evidence: `docs/superpowers/reports/validation/2026-09-10-public-content-pricing-task12-r2/manifest.json`. Final machine-counted evidence: `docs/superpowers/reports/validation/2026-09-10-public-content-pricing-task12-r3/manifest.json`.
 
 ## Integration defects corrected
 

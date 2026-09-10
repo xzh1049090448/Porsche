@@ -2,6 +2,7 @@
 
 ## 2026-09-10：公共内容与定价后端 Task 12 本地集成
 
+- 最终 machine-counted fixture 复跑从 `cbe92b98c03bfdbcf9674e35f60e8b0a88d5d442` 新建第三组唯一 label 的 MySQL 8.0 / Redis 7。保留并校验 `go test -json` 压缩事件流：migration 4 roots、service 85 roots（20个 DB/fixture roots）、handler/security/catalog/renderer 43 roots（1个 real-fixture root）、race 114 roots（21个 DB/fixture roots），四组均 test fail=0、skip=0，package fail=0。`internal/app` 的 no-match 仅单独记录，不计入 fixture pass。raw JSON gzip、机器汇总、迁移账本、SHA-256 与资源 cleanup/preservation 见 r3 manifest。
 - SPEC_FAIL 修复复跑：0012 独立 down 后现在明确要求 dedicated verifier 返回精确 schema error、global verifier 失败，并在 reapply 后要求 dedicated/global verifier 与 active checksum ledger 全部通过；0013–0015 的相同断言逐项复核。新建唯一标签的 disposable MySQL 8.0 / Redis 7 后，四迁移 case 0 skip、focused service/handler/action-security/catalog/renderer 与 focused race 均通过；全量 Go、build、vet、gofmt、diff、JSON 通过。初始 URL 格式、过窄 global-error 断言、未先迁移 parent fixture 以及 cleanup 后诊断复跑的失败均如实保存在 sanitized manifest，不计作通过证据。
 - 在独立工作树从 `3d01a6664d0c3c18176e1f227382c9c874c2a6d4` 开始，使用唯一名称和标签的 disposable MySQL 8.0 / Redis 7；显式测试 URL 仅传给测试命令，未读取 `.env` 或生产凭据。迁移账本为 `0001`–`0015`，0012–0015 均完成独立 down/reapply、精确 schema verifier 与 global verifier。
 - 真实 fixture 暴露并修复了 0015 MySQL CHECK 规范化、0012 对已知 0015 additive schema 的严格兼容、aggregate pricing publish ticket target、同一时钟续租 RowsAffected=0、不可变快照测试写法、fixture 初始化/清理及旧测试迁移总数假设。
