@@ -1,0 +1,329 @@
+package service
+
+import (
+	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"regexp"
+	"strings"
+	"time"
+
+	"github.com/porsche/ai-gateway-go/internal/models"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
+)
+
+const (
+	publicRenderMaxAttempts = 3
+	publicRenderHealthyLag  = int64(60_000)
+	publicRenderFailedLag   = int64(300_000)
+)
+
+var (
+	ErrPublicRenderInvalid     = errors.New("invalid public render job request")
+	ErrPublicRenderLeaseLost   = errors.New("public render job lease lost")
+	ErrPublicRenderUnavailable = errors.New("public render job unavailable")
+	publicRenderFailureCode    = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
+)
+
+type PublicRenderJobService struct {
+	db  *gorm.DB
+	key []byte
+}
+
+type PublicRenderLeaseInput struct {
+	OwnerToken  string
+	NowMillis   int64
+	LeaseMillis int64
+}
+
+type PublicRenderTransitionInput struct {
+	JobGUID     int64
+	OwnerToken  string
+	Fence       int
+	NowMillis   int64
+	LeaseMillis int64
+	Failure     string
+}
+
+type PublicRenderLease struct {
+	JobGUID        int64  `json:"job_guid"`
+	OwnerToken     string `json:"-"`
+	Fence          int    `json:"fence"`
+	Generation     int64  `json:"generation"`
+	PriceVersion   int64  `json:"price_version"`
+	ContentVersion int64  `json:"content_version"`
+	PriceHash      string `json:"price_hash"`
+	ContentHash    string `json:"content_hash"`
+	LeaseExpiresAt int64  `json:"lease_expires_at"`
+}
+
+type PublicRenderHealthInput struct {
+	CurrentGeneration  int64
+	RenderedGeneration int64
+	PublishedAt        int64
+	RenderedAt         int64
+	PendingGeneration  int64
+	CurrentJobTerminal bool
+	FailureCode        string
+}
+
+type PublicRenderHealthStatus struct {
+	Status             string `json:"status"`
+	LagMillis          int64  `json:"lag_millis"`
+	CurrentGeneration  int64  `json:"current_generation,omitempty"`
+	RenderedGeneration int64  `json:"rendered_generation,omitempty"`
+	PendingGeneration  int64  `json:"pending_generation,omitempty"`
+	FailureCode        string `json:"failure_code,omitempty"`
+}
+
+func NewPublicRenderJobService(db *gorm.DB, purposeKey []byte) *PublicRenderJobService {
+	return &PublicRenderJobService{db: db, key: append([]byte(nil), purposeKey...)}
+}
+
+func (s *PublicRenderJobService) valid() bool   { return s != nil && s.db != nil && len(s.key) >= 16 }
+func (s *PublicRenderJobService) validDB() bool { return s != nil && s.db != nil }
+
+func (s *PublicRenderJobService) ownerHMAC(token string) string {
+	mac := hmac.New(sha256.New, s.key)
+	_, _ = mac.Write([]byte(token))
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+func validPublicRenderLeaseInput(owner string, now, lease int64) bool {
+	owner = strings.TrimSpace(owner)
+	return len(owner) >= 16 && len(owner) <= 256 && now > 0 && lease >= 5_000 && lease <= 300_000
+}
+
+func (s *PublicRenderJobService) Lease(ctx context.Context, in PublicRenderLeaseInput) (*PublicRenderLease, error) {
+	if !s.valid() || !validPublicRenderLeaseInput(in.OwnerToken, in.NowMillis, in.LeaseMillis) {
+		return nil, ErrPublicRenderInvalid
+	}
+	var out *PublicRenderLease
+	err := s.db.Session(&gorm.Session{NewDB: true}).WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		for scan := 0; scan < 8; scan++ {
+			var job models.PublicRenderJob
+			err := tx.Clauses(clause.Locking{Strength: "UPDATE", Options: "SKIP LOCKED"}).
+				Where("is_deleted=0 AND attempt_count < ? AND ((state=? AND (lease_expires_at IS NULL OR lease_expires_at <= ?)) OR (state=? AND lease_expires_at <= ?))", publicRenderMaxAttempts, models.PublicRenderJobQueued, in.NowMillis, models.PublicRenderJobLeased, in.NowMillis).
+				Order("id ASC").First(&job).Error
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil
+			}
+			if err != nil {
+				return ErrPublicRenderUnavailable
+			}
+
+			current, price, content, err := loadPublicRenderGeneration(tx, job.PriceSnapshotID, job.ContentReleaseID)
+			if err != nil {
+				return err
+			}
+			if !current {
+				if err := tx.Model(&models.PublicRenderJob{}).Where("id=? AND state IN ?", job.ID, []models.PublicRenderJobState{models.PublicRenderJobQueued, models.PublicRenderJobLeased}).Updates(map[string]any{"state": models.PublicRenderJobFailed, "last_failure": "obsolete_generation", "lease_owner_hmac": nil, "lease_expires_at": nil, "updated_at": in.NowMillis}).Error; err != nil {
+					return ErrPublicRenderUnavailable
+				}
+				continue
+			}
+			attempt := job.AttemptCount + 1
+			expires := in.NowMillis + in.LeaseMillis
+			hash := s.ownerHMAC(strings.TrimSpace(in.OwnerToken))
+			res := tx.Model(&models.PublicRenderJob{}).Where("id=? AND attempt_count=?", job.ID, job.AttemptCount).Updates(map[string]any{"state": models.PublicRenderJobLeased, "lease_owner_hmac": hash, "lease_expires_at": expires, "attempt_count": attempt, "last_failure": nil, "updated_at": in.NowMillis})
+			if res.Error != nil {
+				return ErrPublicRenderUnavailable
+			}
+			if res.RowsAffected != 1 {
+				continue
+			}
+			out = &PublicRenderLease{JobGUID: job.Guid, OwnerToken: strings.TrimSpace(in.OwnerToken), Fence: attempt, Generation: job.Guid, PriceVersion: price.version, ContentVersion: content.version, PriceHash: price.hash, ContentHash: content.hash, LeaseExpiresAt: expires}
+			return nil
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+type renderGenerationPart struct {
+	generation, version int64
+	hash                string
+}
+
+func loadPublicRenderGeneration(tx *gorm.DB, priceID, contentID int64) (bool, renderGenerationPart, renderGenerationPart, error) {
+	var state models.PublicPublicationState
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("state_key=? AND is_deleted=0", publicPublicationStateKey).First(&state).Error; err != nil {
+		return false, renderGenerationPart{}, renderGenerationPart{}, ErrPublicRenderUnavailable
+	}
+	if state.PriceSnapshotID == nil || state.ContentReleaseID == nil || *state.PriceSnapshotID != priceID || *state.ContentReleaseID != contentID {
+		return false, renderGenerationPart{}, renderGenerationPart{}, nil
+	}
+	var price models.PublicPriceSnapshot
+	var content models.PublicContentRelease
+	if err := tx.Where("id=? AND is_deleted=0", priceID).First(&price).Error; err != nil {
+		return false, renderGenerationPart{}, renderGenerationPart{}, ErrPublicRenderUnavailable
+	}
+	if err := tx.Where("id=? AND is_deleted=0", contentID).First(&content).Error; err != nil {
+		return false, renderGenerationPart{}, renderGenerationPart{}, ErrPublicRenderUnavailable
+	}
+	if len(price.ContentHash) != 64 || len(content.ContentHash) != 64 {
+		return false, renderGenerationPart{}, renderGenerationPart{}, ErrPublicRenderUnavailable
+	}
+	return true, renderGenerationPart{state.Revision, price.Version, price.ContentHash}, renderGenerationPart{state.Revision, content.Version, content.ContentHash}, nil
+}
+
+func (s *PublicRenderJobService) Renew(ctx context.Context, in PublicRenderTransitionInput) error {
+	if !s.valid() || in.JobGUID <= 0 || in.Fence <= 0 || !validPublicRenderLeaseInput(in.OwnerToken, in.NowMillis, in.LeaseMillis) {
+		return ErrPublicRenderInvalid
+	}
+	return s.transitionCurrent(ctx, in, map[string]any{"lease_expires_at": in.NowMillis + in.LeaseMillis, "updated_at": in.NowMillis})
+}
+
+func (s *PublicRenderJobService) Complete(ctx context.Context, in PublicRenderTransitionInput) error {
+	if !s.valid() || in.JobGUID <= 0 || in.Fence <= 0 || len(strings.TrimSpace(in.OwnerToken)) < 16 || in.NowMillis <= 0 {
+		return ErrPublicRenderInvalid
+	}
+	return s.db.Session(&gorm.Session{NewDB: true}).WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var job models.PublicRenderJob
+		if err := tx.Where("guid=? AND is_deleted=0", in.JobGUID).First(&job).Error; err != nil {
+			return ErrPublicRenderLeaseLost
+		}
+		current, _, _, err := loadPublicRenderGeneration(tx, job.PriceSnapshotID, job.ContentReleaseID)
+		if err != nil {
+			return err
+		}
+		if !current {
+			return ErrPublicRenderLeaseLost
+		}
+		res := tx.Model(&models.PublicRenderJob{}).Where("id=? AND state=? AND attempt_count=? AND lease_owner_hmac=? AND lease_expires_at>?", job.ID, models.PublicRenderJobLeased, in.Fence, s.ownerHMAC(strings.TrimSpace(in.OwnerToken)), in.NowMillis).Updates(map[string]any{"state": models.PublicRenderJobSucceeded, "completed_at": in.NowMillis, "lease_owner_hmac": nil, "lease_expires_at": nil, "last_failure": nil, "updated_at": in.NowMillis})
+		return renderTransitionResult(res)
+	})
+}
+
+func (s *PublicRenderJobService) Fail(ctx context.Context, in PublicRenderTransitionInput) error {
+	if !s.valid() || in.JobGUID <= 0 || in.Fence <= 0 || len(strings.TrimSpace(in.OwnerToken)) < 16 || in.NowMillis <= 0 {
+		return ErrPublicRenderInvalid
+	}
+	code := sanitizePublicRenderFailure(in.Failure)
+	state := models.PublicRenderJobQueued
+	next := in.NowMillis + publicRenderRetryDelay(in.Fence).Milliseconds()
+	if in.Fence >= publicRenderMaxAttempts {
+		state = models.PublicRenderJobFailed
+		next = 0
+	}
+	updates := map[string]any{"state": state, "last_failure": code, "lease_owner_hmac": nil, "updated_at": in.NowMillis}
+	if next == 0 {
+		updates["lease_expires_at"] = nil
+	} else {
+		updates["lease_expires_at"] = next
+	}
+	return s.transitionCurrent(ctx, in, updates)
+}
+
+func (s *PublicRenderJobService) transitionCurrent(ctx context.Context, in PublicRenderTransitionInput, updates map[string]any) error {
+	return s.db.Session(&gorm.Session{NewDB: true}).WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var job models.PublicRenderJob
+		if err := tx.Where("guid=? AND is_deleted=0", in.JobGUID).First(&job).Error; err != nil {
+			return ErrPublicRenderLeaseLost
+		}
+		current, _, _, err := loadPublicRenderGeneration(tx, job.PriceSnapshotID, job.ContentReleaseID)
+		if err != nil {
+			return err
+		}
+		if !current {
+			return ErrPublicRenderLeaseLost
+		}
+		res := tx.Model(&models.PublicRenderJob{}).Where("id=? AND state=? AND attempt_count=? AND lease_owner_hmac=? AND lease_expires_at>?", job.ID, models.PublicRenderJobLeased, in.Fence, s.ownerHMAC(strings.TrimSpace(in.OwnerToken)), in.NowMillis).Updates(updates)
+		return renderTransitionResult(res)
+	})
+}
+
+func renderTransitionResult(res *gorm.DB) error {
+	if res.Error != nil {
+		return ErrPublicRenderUnavailable
+	}
+	if res.RowsAffected != 1 {
+		return ErrPublicRenderLeaseLost
+	}
+	return nil
+}
+
+func sanitizePublicRenderFailure(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if publicRenderFailureCode.MatchString(raw) {
+		return raw
+	}
+	return "render_failed"
+}
+
+func publicRenderRetryDelay(attempt int) time.Duration {
+	if attempt <= 0 || attempt >= publicRenderMaxAttempts {
+		return 0
+	}
+	return time.Duration(5*(1<<(attempt-1))) * time.Second
+}
+
+func PublicRenderHealth(now int64, in PublicRenderHealthInput) PublicRenderHealthStatus {
+	lag := int64(0)
+	if in.CurrentGeneration > in.RenderedGeneration && in.PublishedAt > 0 && now > in.PublishedAt {
+		lag = now - in.PublishedAt
+	}
+	status := "healthy"
+	if in.CurrentGeneration > in.RenderedGeneration {
+		status = "degraded"
+		if in.CurrentJobTerminal || lag > publicRenderFailedLag {
+			status = "failed"
+		}
+	}
+	if lag <= publicRenderHealthyLag && in.CurrentGeneration == in.RenderedGeneration {
+		status = "healthy"
+	}
+	return PublicRenderHealthStatus{Status: status, LagMillis: lag, CurrentGeneration: in.CurrentGeneration, RenderedGeneration: in.RenderedGeneration, PendingGeneration: in.PendingGeneration, FailureCode: sanitizeHealthFailure(in.FailureCode)}
+}
+
+func sanitizeHealthFailure(code string) string {
+	if publicRenderFailureCode.MatchString(code) {
+		return code
+	}
+	return ""
+}
+
+func (s *PublicRenderJobService) Health(ctx context.Context, now int64) (PublicRenderHealthStatus, error) {
+	if !s.validDB() || now <= 0 {
+		return PublicRenderHealthStatus{}, ErrPublicRenderInvalid
+	}
+	var state models.PublicPublicationState
+	if err := s.db.WithContext(ctx).Where("state_key=? AND is_deleted=0", publicPublicationStateKey).First(&state).Error; err != nil {
+		return PublicRenderHealthStatus{}, ErrPublicRenderUnavailable
+	}
+	in := PublicRenderHealthInput{}
+	if state.ContentReleaseID != nil {
+		var c models.PublicContentRelease
+		if err := s.db.WithContext(ctx).Where("id=? AND is_deleted=0", *state.ContentReleaseID).First(&c).Error; err == nil {
+			in.PublishedAt = c.PublishedAt
+		}
+	}
+	if state.PriceSnapshotID != nil && state.ContentReleaseID != nil {
+		var current models.PublicRenderJob
+		err := s.db.WithContext(ctx).Where("price_snapshot_id=? AND content_release_id=? AND is_deleted=0", *state.PriceSnapshotID, *state.ContentReleaseID).First(&current).Error
+		if err == nil {
+			in.CurrentGeneration = current.Guid
+			if current.State != models.PublicRenderJobSucceeded {
+				in.PendingGeneration = current.Guid
+			}
+			in.CurrentJobTerminal = current.State == models.PublicRenderJobFailed
+			if current.LastFailure != nil {
+				in.FailureCode = *current.LastFailure
+			}
+		} else {
+			return PublicRenderHealthStatus{}, ErrPublicRenderUnavailable
+		}
+	}
+	var succeeded models.PublicRenderJob
+	if err := s.db.WithContext(ctx).Where("state=? AND is_deleted=0", models.PublicRenderJobSucceeded).Order("completed_at DESC").First(&succeeded).Error; err == nil && succeeded.CompletedAt != nil {
+		in.RenderedGeneration = succeeded.Guid
+		in.RenderedAt = *succeeded.CompletedAt
+	}
+	return PublicRenderHealth(now, in), nil
+}

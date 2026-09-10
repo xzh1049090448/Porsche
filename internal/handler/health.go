@@ -21,11 +21,21 @@ var modelHealthChecks sync.Map
 
 func RegisterHealth(r *gin.Engine, state *app.State) {
 	r.GET("/health", func(c *gin.Context) {
+		payload := gin.H{"status": "ok"}
+		if state.DB != nil {
+			renderer, err := service.NewPublicRenderJobService(state.DB, nil).Health(c.Request.Context(), time.Now().UTC().UnixMilli())
+			if err == nil {
+				payload["renderer"] = renderer
+			} else {
+				payload["renderer"] = gin.H{"status": "unavailable"}
+			}
+		}
 		if state.Settings.AppEnv == "production" {
-			c.JSON(http.StatusOK, gin.H{"status": "ok"})
+			c.JSON(http.StatusOK, payload)
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{"status": "ok", "upstream": "whitelabel"})
+		payload["upstream"] = "whitelabel"
+		c.JSON(http.StatusOK, payload)
 	})
 }
 
