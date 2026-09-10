@@ -17,7 +17,12 @@ func TestPublicPricingOptionalPricesMigrationIsLatestAndReversible(t *testing.T)
 			t.Fatalf("missing %s", token)
 		}
 	}
+	down := strings.ToLower(string(ms[16].DownSQL))
+	if strings.Contains(down, "update ") || strings.Contains(down, "coalesce") || strings.Count(down, "alter table") != 1 {
+		t.Fatalf("0017 down must fail atomically on NULL without coercion: %s", down)
+	}
 }
+
 func TestPublicPricingOptionalPricesVerifierFailsClosedWithoutDatabase(t *testing.T) {
 	if !errors.Is(VerifyPublicPricingOptionalPricesSchema(context.Background(), nil), ErrPublicPricingOptionalPricesMigration) {
 		t.Fatal("nil verifier accepted")

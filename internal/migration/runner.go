@@ -456,7 +456,13 @@ func Verify(ctx context.Context, db *gorm.DB) error {
 	if err := VerifyUpstreamMonitorLeaseSchema(ctx, db); err != nil {
 		return err
 	}
-	return VerifyPublicRenderJobTerminalSchema(ctx, db)
+	if err := VerifyPublicRenderJobTerminalSchema(ctx, db); err != nil {
+		return err
+	}
+	if err := VerifyPublicPricingCatalogMetadataSchema(ctx, db); err != nil {
+		return err
+	}
+	return VerifyPublicPricingOptionalPricesSchema(ctx, db)
 }
 
 // VerifyApplied is the side-effect-free portion of Verify, kept separate so
