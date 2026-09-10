@@ -2,6 +2,7 @@ package migration
 
 import (
 	"context"
+	"errors"
 	"github.com/porsche/ai-gateway-go/internal/persistence"
 	"os"
 	"strings"
@@ -26,6 +27,16 @@ func TestPublicRenderJobTerminalMigrationContract(t *testing.T) {
 	if strings.Contains(up, "owner_token") || !strings.Contains(down, "drop column last_terminal_owner_hmac") {
 		t.Fatalf("unsafe migration up/down")
 	}
+	source, err := os.ReadFile("public_render_job_terminal.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(source)
+	for _, fragment := range []string{"check_constraints", "check_clause", "column_default is null", "normalizePublicRenderTerminalCheck"} {
+		if !strings.Contains(strings.ToLower(text), strings.ToLower(fragment)) {
+			t.Errorf("verifier source missing %q", fragment)
+		}
+	}
 }
 
 func TestPublicRenderJobTerminalMigrationRealMySQLDownAndReapply(t *testing.T) {
@@ -49,6 +60,12 @@ func TestPublicRenderJobTerminalMigrationRealMySQLDownAndReapply(t *testing.T) {
 	if err := setFixtureMigrationActive(db, m.Version, false); err != nil {
 		t.Fatal(err)
 	}
+	if err := VerifyPublicRenderJobTerminalSchema(context.Background(), db); !errors.Is(err, ErrPublicRenderJobTerminalMigration) {
+		t.Fatalf("down terminal verify=%v", err)
+	}
+	if err := Verify(context.Background(), db); err == nil {
+		t.Fatal("global verify accepted inactive/down 0015")
+	}
 	if err := executePublicContentPricingSQL(db, m.UpSQL); err != nil {
 		t.Fatal(err)
 	}
@@ -57,5 +74,26 @@ func TestPublicRenderJobTerminalMigrationRealMySQLDownAndReapply(t *testing.T) {
 	}
 	if err := VerifyPublicRenderJobTerminalSchema(context.Background(), db); err != nil {
 		t.Fatal(err)
+	}
+	if err := Verify(context.Background(), db); err != nil {
+		t.Fatalf("global verify after reapply: %v", err)
+	}
+	assertPublicContentPricingLedger(t, db, m, true)
+	if err := db.Exec("ALTER TABLE public_render_jobs DROP CHECK chk_public_render_jobs_terminal, ADD CONSTRAINT chk_public_render_jobs_terminal CHECK (1)").Error; err != nil {
+		t.Fatal(err)
+	}
+	restoreCheck := func() {
+		_ = db.Exec("ALTER TABLE public_render_jobs DROP CHECK chk_public_render_jobs_terminal, ADD CONSTRAINT chk_public_render_jobs_terminal CHECK ((last_terminal_owner_hmac IS NULL AND last_terminal_fence IS NULL AND last_terminal_operation IS NULL AND last_terminal_state IS NULL) OR (last_terminal_owner_hmac IS NOT NULL AND last_terminal_fence > 0 AND last_terminal_operation IN (1,2) AND last_terminal_state IN (1,3,4)))").Error
+	}
+	t.Cleanup(restoreCheck)
+	if err := VerifyPublicRenderJobTerminalSchema(context.Background(), db); !errors.Is(err, ErrPublicRenderJobTerminalMigration) {
+		t.Fatalf("weakened check verify=%v", err)
+	}
+	if err := Verify(context.Background(), db); err == nil {
+		t.Fatal("global verify accepted weakened check")
+	}
+	restoreCheck()
+	if err := Verify(context.Background(), db); err != nil {
+		t.Fatalf("global verify after semantic restore: %v", err)
 	}
 }

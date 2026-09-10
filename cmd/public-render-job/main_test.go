@@ -104,6 +104,30 @@ func TestPublicRenderJSONShapeRejectsNestedDuplicatesAndDepth(t *testing.T) {
 	}
 }
 
+func TestPublicRenderEveryCommandRejectsTrailingScalars(t *testing.T) {
+	valid := map[string]string{"lease": `{"owner_token":"1234567890123456","now_millis":1,"lease_millis":5000}`, "renew": `{"owner_token":"1234567890123456","job_guid":1,"fence":1,"now_millis":1,"lease_millis":5000}`, "complete": `{"owner_token":"1234567890123456","job_guid":1,"fence":1,"now_millis":1}`, "fail": `{"owner_token":"1234567890123456","job_guid":1,"fence":1,"now_millis":1,"failure":"render_failed"}`, "health": `{"now_millis":1}`, "lookup": `{"now_millis":1}`}
+	for command, body := range valid {
+		for _, suffix := range []string{" true", " 0", ` "tail"`, " null"} {
+			t.Run(command+suffix, func(t *testing.T) {
+				var out, stderr bytes.Buffer
+				code := run(context.Background(), []string{command}, strings.NewReader(body+suffix), &out, &stderr, &fakeRenderJobs{})
+				if code != 2 || out.Len() != 0 {
+					t.Fatalf("code=%d out=%q err=%q", code, out.String(), stderr.String())
+				}
+			})
+		}
+	}
+}
+
+func TestPublicRenderDecodeExactAllowsTrailingWhitespace(t *testing.T) {
+	var input struct {
+		NowMillis int64 `json:"now_millis"`
+	}
+	if !decodeExact([]byte("{\"now_millis\":1}\n\t "), &input) || input.NowMillis != 1 {
+		t.Fatal("valid trailing whitespace rejected")
+	}
+}
+
 func TestPublicRenderCLIMapsLeaseLossToConflictExit(t *testing.T) {
 	jobs := &errorRenderJobs{err: service.ErrPublicRenderLeaseLost}
 	var out, stderr bytes.Buffer

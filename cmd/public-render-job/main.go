@@ -215,7 +215,11 @@ func validLeaseFields(owner string, now, lease int64) bool {
 func decodeExact(raw []byte, target any) bool {
 	d := json.NewDecoder(strings.NewReader(string(raw)))
 	d.DisallowUnknownFields()
-	return d.Decode(target) == nil
+	if d.Decode(target) != nil {
+		return false
+	}
+	var trailing any
+	return d.Decode(&trailing) == io.EOF
 }
 func invalidJSONShape(raw []byte) bool {
 	d := json.NewDecoder(strings.NewReader(string(raw)))
