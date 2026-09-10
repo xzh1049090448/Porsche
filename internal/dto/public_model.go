@@ -32,6 +32,9 @@ func DecodeUpdatePublicModelRequest(r io.Reader) (UpdatePublicModelRequest, erro
 	if len(raw) > PublicModelRequestBodyLimit {
 		return UpdatePublicModelRequest{}, ErrPublicModelRequestTooLarge
 	}
+	if err := ValidateNoDuplicateJSON(raw, 64); err != nil {
+		return UpdatePublicModelRequest{}, err
+	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	tok, err := dec.Token()
 	if err != nil {

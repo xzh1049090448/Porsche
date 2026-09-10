@@ -12,6 +12,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/porsche/ai-gateway-go/internal/actionsecurity"
 	"github.com/porsche/ai-gateway-go/internal/app"
+	"github.com/porsche/ai-gateway-go/internal/dto"
 	"github.com/porsche/ai-gateway-go/internal/middleware"
 	"github.com/porsche/ai-gateway-go/internal/service"
 	"gorm.io/gorm"
@@ -85,6 +86,9 @@ func publicAdminStrictJSON(c *gin.Context, out any) bool {
 	}
 	raw, err := io.ReadAll(io.LimitReader(c.Request.Body, publicAdminBodyLimit+1))
 	if err != nil || int64(len(raw)) > publicAdminBodyLimit {
+		return false
+	}
+	if dto.ValidateNoDuplicateJSON(raw, 64) != nil {
 		return false
 	}
 	scan := json.NewDecoder(bytes.NewReader(raw))

@@ -62,6 +62,9 @@ func decodePublicContentObject(r io.Reader, out any, required []string) error {
 	if len(raw) > PublicContentRequestBodyLimit {
 		return ErrPublicContentRequestTooLarge
 	}
+	if err := ValidateNoDuplicateJSON(raw, 64); err != nil {
+		return err
+	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	tok, err := dec.Token()
 	if err != nil {

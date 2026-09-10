@@ -182,6 +182,8 @@ func issueUserManagementVerification(c *gin.Context, backend userManagementActio
 		issueUserDeleteVerification(c, userManagementDeleteBackend{backend: backend}, settings)
 	case "users.create_admin":
 		issueAdminUserCreateVerification(c, backend, settings, raw)
+	case "public_models.delete", "public_pricing.publish", "public_pricing.restore", "public_content.publish", "public_content.restore":
+		issuePublicAdminVerification(c, backend, settings, raw)
 	default:
 		adminUserActionFixedError(c, http.StatusUnprocessableEntity, "action_inactive", "")
 	}
@@ -200,6 +202,9 @@ func readUserManagementVerificationBody(body io.Reader) ([]byte, error) {
 }
 
 func userManagementVerificationAction(raw []byte) (string, error) {
+	if dto.ValidateNoDuplicateJSON(raw, 64) != nil {
+		return "", errInvalidAdminUserAction
+	}
 	var envelope struct {
 		Action json.RawMessage `json:"action"`
 	}
