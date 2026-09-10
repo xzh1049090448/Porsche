@@ -141,7 +141,7 @@
         "第三次独立 QA 对 HEAD 2408ee3ace6f1a2ff07645653aed354a0ca245fa 给出 QA_PASS；Task14 exact cleanup 已由 b18d22ef8d6683bdf6ef55a7369180b72cb75479 记录为 CLEANUP_PASS 和零残留",
         "Task15 clean-tree full/race/build/vet/diff/invariant gates通过；SPEC_PASS、IMPLEMENTATION_PASS、SECURITY_PASS由42d3487d018a174bbcb85aa1b71947d35e968a93归档",
         "A03 Task12：MySQL 8.4.11 / Redis 7.4 隔离夹具、0001–0010、focused/race/serial full/build/vet/diff、前端275/275及可见Chrome 13场景通过；唯一skip为显式opt-in 100k性能夹具",
-        "Public content/pricing Backend Task 12：隔离 MySQL 8.0 / Redis 7，迁移 0001–0015 与 0012–0015 独立 down/reapply、focused integration/race、full/build/vet/diff 通过。"
+        "Public content/pricing Backend Task 12：隔离 MySQL 8.0 / Redis 7，迁移 0001–0016，0012–0015 与 0016 独立 down/reapply、focused integration/race、full/build/vet/diff 通过。"
       ],
       "evidence": [
         "Task 1–11 交付严格 external-value、用途隔离密钥、8个 inactive typed descriptors、canonical intent、0005 schema/verifier、Redis Lua limits、Issue/Begin/Query/Execute/lease/recovery/transaction primitives；冻结生产路由仍404，active consumer为0。",

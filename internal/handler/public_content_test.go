@@ -177,7 +177,7 @@ func TestPublicReadAuthenticatedPricingUsesPrivatePartition(t *testing.T) {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
-	want := []string{"capabilities", "context_window", "display_name", "input_price_usd_per_million_tokens", "model_key", "output_price_usd_per_million_tokens", "price_visibility", "provider", "release_version"}
+	want := []string{"capabilities", "context_window", "display_name", "endpoint_types", "input_price_usd_per_million_tokens", "model_key", "output_price_usd_per_million_tokens", "price_visibility", "pricing_type", "provider", "release_version", "updated_at"}
 	if strings.Join(keys, ",") != strings.Join(want, ",") {
 		t.Fatalf("model keys=%v", keys)
 	}
@@ -205,7 +205,7 @@ func TestPublicReadAnonymousModelSchemasAreExactAndPricesOmitted(t *testing.T) {
 			keys = append(keys, k)
 		}
 		sort.Strings(keys)
-		want := []string{"capabilities", "context_window", "display_name", "model_key", "price_visibility", "provider", "release_version"}
+		want := []string{"capabilities", "context_window", "display_name", "endpoint_types", "model_key", "price_visibility", "pricing_type", "provider", "release_version", "updated_at"}
 		if strings.Join(keys, ",") != strings.Join(want, ",") {
 			t.Fatalf("%s keys=%v", path, keys)
 		}
@@ -269,6 +269,35 @@ func TestPublicReadRejectsPaginationOverflowWithStableEnvelope(t *testing.T) {
 	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/public/models?page="+boundary+"&page_size=100", nil))
 	if rec.Code != 200 {
 		t.Fatalf("boundary status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestPublicReadAcceptsFrozenPricingFiltersAndSort(t *testing.T) {
+	r := gin.New()
+	registerPublicContentWithReader(r, publicReadStub{projection: testPublicProjection()}, func(*gin.Context) bool { return true })
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/public/models?endpoint_type=responses&public_display_group=featured&pricing_type=token&sort=input_price&order=asc&page=1&page_size=20", nil)
+	req.Header.Set("Authorization", "Bearer valid")
+	r.ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	for _, path := range []string{"/api/v1/public/models?sort=unknown", "/api/v1/public/models?order=sideways", "/api/v1/public/models?endpoint_type="} {
+		rec = httptest.NewRecorder()
+		r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		if rec.Code != 400 {
+			t.Fatalf("%s status=%d", path, rec.Code)
+		}
+	}
+}
+
+func TestPublicReadDoesNotLeakProtectedPriceOrderingToAnonymousClients(t *testing.T) {
+	r := gin.New()
+	registerPublicContentWithReader(r, publicReadStub{projection: testPublicProjection()}, func(*gin.Context) bool { return false })
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/public/models?sort=input_price&order=asc", nil))
+	if rec.Code != http.StatusUnauthorized || rec.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("status=%d headers=%#v body=%s", rec.Code, rec.Header(), rec.Body.String())
 	}
 }
 

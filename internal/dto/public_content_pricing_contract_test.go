@@ -88,6 +88,18 @@ func TestPublicContentPricingContract(t *testing.T) {
 	}
 	publicContentPricingRequireExactRoutes(t, contract, expectedRoutes)
 	publicContentPricingAssertListQueries(t, contract)
+	for _, field := range []string{"endpoint_type", "public_display_group", "pricing_type", "sort", "order"} {
+		if _, ok := contract["schemas"].(map[string]any)["PublicModelsListRequest"].(map[string]any)["properties"].(map[string]any)[field]; !ok {
+			t.Fatalf("public list query missing %s", field)
+		}
+	}
+	for _, schema := range []string{"PublicModelVisible", "PublicModelRedacted"} {
+		for _, field := range []string{"pricing_type", "public_display_group", "endpoint_types", "updated_at"} {
+			if _, ok := contract["schemas"].(map[string]any)[schema].(map[string]any)["properties"].(map[string]any)[field]; !ok {
+				t.Fatalf("%s missing %s", schema, field)
+			}
+		}
+	}
 	publicContentPricingAssertRevisionedMutationBodies(t, contract)
 	publicContentPricingAssertPathGUIDAbsentFromBodies(t, contract)
 	publicContentPricingAssertMutationBodyRules(t, contract)
@@ -459,8 +471,8 @@ func publicContentPricingAssertSchemas(t *testing.T, contract map[string]any) {
 			}
 		}
 	}
-	publicContentPricingRequire(t, contract, []any{"model_key", "display_name", "provider", "capabilities", "context_window", "input_price_usd_per_million_tokens", "output_price_usd_per_million_tokens", "price_visibility", "release_version"}, "schemas", "PublicModelVisible", "required")
-	publicContentPricingRequire(t, contract, []any{"model_key", "display_name", "provider", "capabilities", "context_window", "price_visibility", "release_version"}, "schemas", "PublicModelRedacted", "required")
+	publicContentPricingRequire(t, contract, []any{"model_key", "display_name", "provider", "capabilities", "context_window", "input_price_usd_per_million_tokens", "output_price_usd_per_million_tokens", "price_visibility", "release_version", "pricing_type", "endpoint_types", "updated_at"}, "schemas", "PublicModelVisible", "required")
+	publicContentPricingRequire(t, contract, []any{"model_key", "display_name", "provider", "capabilities", "context_window", "price_visibility", "release_version", "pricing_type", "endpoint_types", "updated_at"}, "schemas", "PublicModelRedacted", "required")
 	for _, field := range []string{"input_price_usd_per_million_tokens", "output_price_usd_per_million_tokens"} {
 		if _, exists := publicContentPricingSchemaProperties(t, contract, "PublicModelRedacted")[field]; exists {
 			t.Fatalf("redacted model schema must omit %s", field)

@@ -15,7 +15,7 @@ func TestAdminReleaseProjectionsUseRFC3339AndSafeFields(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(b) != `{"release":{"guid":"91","version":3,"reason":"root_publish","source_revision":7,"created_at":"2023-11-14T22:13:20Z"},"items":[{"model_key":"alpha","display_name":"Alpha","provider":"p","capabilities":["chat"],"context_window":10,"input_price_usd_per_million_tokens":"1.23000000","output_price_usd_per_million_tokens":"4.56000000","price_visibility":"visible","release_version":3}]}` {
+	if string(b) != `{"release":{"guid":"91","version":3,"reason":"root_publish","source_revision":7,"created_at":"2023-11-14T22:13:20Z"},"items":[{"model_key":"alpha","display_name":"Alpha","provider":"p","capabilities":["chat"],"context_window":10,"input_price_usd_per_million_tokens":"1.23000000","output_price_usd_per_million_tokens":"4.56000000","price_visibility":"visible","release_version":3,"pricing_type":"token","endpoint_types":[],"updated_at":"2023-11-14T22:13:20Z"}]}` {
 		t.Fatalf("unsafe or non-contract projection: %s", b)
 	}
 }

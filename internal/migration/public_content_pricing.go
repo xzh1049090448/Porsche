@@ -202,6 +202,9 @@ func matchesPublicContentPricingSchema(contracts []publicContentPricingTableCont
 }
 
 func matchesPublicContentPricingTableContract(want publicContentPricingTableContract, got businessGroupTableMetadata, currentSchema string) bool {
+	if want.table.name == "public_model_configs" || want.table.name == "public_price_snapshot_items" {
+		got = withoutPublicPricingCatalogMetadataAdditions(want.table.name, got)
+	}
 	if want.table.name == "public_render_jobs" {
 		var ok bool
 		got, ok = withoutPublicRenderTerminalAdditions(got)
@@ -276,6 +279,27 @@ func matchesPublicContentPricingTableContract(want publicContentPricingTableCont
 		}
 	}
 	return true
+}
+
+func withoutPublicPricingCatalogMetadataAdditions(table string, got businessGroupTableMetadata) businessGroupTableMetadata {
+	names := map[string]bool{}
+	if table == "public_model_configs" {
+		for _, name := range []string{"public_display_group", "endpoint_types", "public_restrictions", "price_source", "price_reviewer", "price_effective_at"} {
+			names[name] = true
+		}
+	} else {
+		for _, name := range []string{"pricing_type", "public_display_group", "endpoint_types", "public_restrictions", "price_source", "price_reviewer", "effective_at"} {
+			names[name] = true
+		}
+	}
+	columns := make([]businessGroupColumnMetadata, 0, len(got.columns))
+	for _, column := range got.columns {
+		if !names[column.name] {
+			columns = append(columns, column)
+		}
+	}
+	got.columns = columns
+	return got
 }
 
 func withoutPublicRenderTerminalAdditions(got businessGroupTableMetadata) (businessGroupTableMetadata, bool) {

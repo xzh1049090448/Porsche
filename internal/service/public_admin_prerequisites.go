@@ -92,6 +92,14 @@ type PublicModelVisible struct {
 	OutputPriceUSDPerMillionTokens string   `json:"output_price_usd_per_million_tokens"`
 	PriceVisibility                string   `json:"price_visibility"`
 	ReleaseVersion                 int64    `json:"release_version"`
+	PricingType                    string   `json:"pricing_type"`
+	PublicDisplayGroup             string   `json:"public_display_group,omitempty"`
+	EndpointTypes                  []string `json:"endpoint_types"`
+	PublicRestrictions             []string `json:"public_restrictions,omitempty"`
+	PriceSource                    string   `json:"price_source,omitempty"`
+	PriceReviewer                  string   `json:"price_reviewer,omitempty"`
+	EffectiveAt                    string   `json:"effective_at,omitempty"`
+	UpdatedAt                      string   `json:"updated_at"`
 }
 type PublicPriceReleaseView struct {
 	Release PublicRelease        `json:"release"`
@@ -289,7 +297,8 @@ func (s *PublicPriceSnapshotService) GetRelease(ctx context.Context, guid int64)
 func projectPublicPriceReleaseDetail(snap models.PublicPriceSnapshot, rows []models.PublicPriceSnapshotItem) *PublicPriceReleaseView {
 	v := &PublicPriceReleaseView{Release: projectRelease(snap.Guid, snap.Version, snap.Reason.String(), snap.SourceRevision, snap.PublishedAt), Items: make([]PublicModelVisible, len(rows))}
 	for i, r := range rows {
-		v.Items[i] = PublicModelVisible{r.ModelKey, r.DisplayName, r.Provider, append([]string(nil), r.Capabilities...), r.ContextWindow, r.InputPriceUSDPerMillionTokens, r.OutputPriceUSDPerMillionTokens, "visible", snap.Version}
+		item := projectPublicCatalogItem(r, snap)
+		v.Items[i] = PublicModelVisible{ModelKey: r.ModelKey, DisplayName: r.DisplayName, Provider: r.Provider, Capabilities: append([]string(nil), r.Capabilities...), ContextWindow: r.ContextWindow, InputPriceUSDPerMillionTokens: r.InputPriceUSDPerMillionTokens, OutputPriceUSDPerMillionTokens: r.OutputPriceUSDPerMillionTokens, PriceVisibility: "visible", ReleaseVersion: snap.Version, PricingType: item.PricingType, PublicDisplayGroup: item.PublicDisplayGroup, EndpointTypes: item.EndpointTypes, PublicRestrictions: item.PublicRestrictions, PriceSource: item.PriceSource, PriceReviewer: item.PriceReviewer, EffectiveAt: item.EffectiveAt, UpdatedAt: item.UpdatedAt}
 	}
 	return v
 }

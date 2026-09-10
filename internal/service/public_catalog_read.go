@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"math/big"
 	"sort"
 	"strings"
 
@@ -20,6 +21,14 @@ type PublicCatalogItem struct {
 	ContextWindow                  int64    `json:"context_window"`
 	InputPriceUSDPerMillionTokens  string   `json:"-"`
 	OutputPriceUSDPerMillionTokens string   `json:"-"`
+	PricingType                    string   `json:"pricing_type"`
+	PublicDisplayGroup             string   `json:"public_display_group,omitempty"`
+	EndpointTypes                  []string `json:"endpoint_types"`
+	PublicRestrictions             []string `json:"public_restrictions,omitempty"`
+	PriceSource                    string   `json:"price_source,omitempty"`
+	PriceReviewer                  string   `json:"price_reviewer,omitempty"`
+	EffectiveAt                    string   `json:"effective_at,omitempty"`
+	UpdatedAt                      string   `json:"updated_at"`
 }
 
 type PublicModelRead struct {
@@ -32,11 +41,19 @@ type PublicModelRead struct {
 	OutputPriceUSDPerMillionTokens *string  `json:"output_price_usd_per_million_tokens,omitempty"`
 	PriceVisibility                string   `json:"price_visibility"`
 	ReleaseVersion                 int64    `json:"release_version"`
+	PricingType                    string   `json:"pricing_type"`
+	PublicDisplayGroup             string   `json:"public_display_group,omitempty"`
+	EndpointTypes                  []string `json:"endpoint_types"`
+	PublicRestrictions             []string `json:"public_restrictions,omitempty"`
+	PriceSource                    string   `json:"price_source,omitempty"`
+	PriceReviewer                  string   `json:"price_reviewer,omitempty"`
+	EffectiveAt                    string   `json:"effective_at,omitempty"`
+	UpdatedAt                      string   `json:"updated_at"`
 }
 
 type PublicCatalogListRequest struct {
-	Search, Provider, Capability string
-	Page, PageSize               int
+	Search, Provider, Capability, EndpointType, PublicDisplayGroup, PricingType, Sort, Order string
+	Page, PageSize                                                                           int
 }
 type PublicModelListRead struct {
 	Items          []PublicModelRead `json:"items"`
@@ -115,7 +132,7 @@ func (s *PublicCatalogReadService) Projection(ctx context.Context) (*PublicCatal
 			if !exists || config.IsDeleted != 0 || config.Status != models.PublicModelConfigStatusActive || config.ModelKey != row.ModelKey {
 				return errUnavailable("committed publication generation pending")
 			}
-			items = append(items, PublicCatalogItem{row.ModelKey, row.DisplayName, row.Provider, append([]string(nil), row.Capabilities...), row.ContextWindow, row.InputPriceUSDPerMillionTokens, row.OutputPriceUSDPerMillionTokens})
+			items = append(items, projectPublicCatalogItem(row, price))
 		}
 		if e = validateContentReleaseForPriceItems(content, rows); e != nil {
 			return errUnavailable("committed publication generation pending")
@@ -129,7 +146,7 @@ func (s *PublicCatalogReadService) Projection(ctx context.Context) (*PublicCatal
 
 func (p *PublicCatalogProjection) model(item PublicCatalogItem, authenticated bool) PublicModelRead {
 	visibility := p.PriceVisibility.String()
-	out := PublicModelRead{item.ModelKey, item.DisplayName, item.Provider, append([]string(nil), item.Capabilities...), item.ContextWindow, nil, nil, visibility, p.PriceReleaseVersion}
+	out := PublicModelRead{ModelKey: item.ModelKey, DisplayName: item.DisplayName, Provider: item.Provider, Capabilities: clonePublicStrings(item.Capabilities), ContextWindow: item.ContextWindow, PriceVisibility: visibility, ReleaseVersion: p.PriceReleaseVersion, PricingType: item.PricingType, PublicDisplayGroup: item.PublicDisplayGroup, EndpointTypes: clonePublicStrings(item.EndpointTypes), PublicRestrictions: clonePublicStrings(item.PublicRestrictions), PriceSource: item.PriceSource, PriceReviewer: item.PriceReviewer, EffectiveAt: item.EffectiveAt, UpdatedAt: item.UpdatedAt}
 	if p.PriceVisibility == models.PublicPriceVisibilityVisible || authenticated {
 		out.PriceVisibility = "visible"
 		if item.InputPriceUSDPerMillionTokens != "" {
@@ -165,9 +182,18 @@ func (p *PublicCatalogProjection) List(req PublicCatalogListRequest, authenticat
 				continue
 			}
 		}
+		if req.EndpointType != "" && !containsExact(item.EndpointTypes, req.EndpointType) {
+			continue
+		}
+		if req.PublicDisplayGroup != "" && item.PublicDisplayGroup != req.PublicDisplayGroup {
+			continue
+		}
+		if req.PricingType != "" && item.PricingType != req.PricingType {
+			continue
+		}
 		filtered = append(filtered, item)
 	}
-	sort.Slice(filtered, func(i, j int) bool { return filtered[i].ModelKey < filtered[j].ModelKey })
+	sort.SliceStable(filtered, func(i, j int) bool { return publicCatalogLess(filtered[i], filtered[j], req.Sort, req.Order) })
 	page, size := req.Page, req.PageSize
 	if page < 1 {
 		page = 1
@@ -191,6 +217,73 @@ func (p *PublicCatalogProjection) List(req PublicCatalogListRequest, authenticat
 		items = append(items, p.model(item, authenticated))
 	}
 	return PublicModelListRead{items, page, size, len(filtered), p.PriceReleaseVersion}
+}
+
+func containsExact(values []string, wanted string) bool {
+	for _, value := range values {
+		if value == wanted {
+			return true
+		}
+	}
+	return false
+}
+
+func clonePublicStrings(values []string) []string {
+	if len(values) == 0 {
+		return []string{}
+	}
+	return append([]string(nil), values...)
+}
+
+func publicCatalogLess(a, b PublicCatalogItem, field, order string) bool {
+	cmp := strings.Compare(a.ModelKey, b.ModelKey)
+	switch field {
+	case "name":
+		cmp = strings.Compare(strings.ToLower(a.DisplayName), strings.ToLower(b.DisplayName))
+	case "input_price":
+		cmp = compareCatalogDecimal(a.InputPriceUSDPerMillionTokens, b.InputPriceUSDPerMillionTokens)
+	case "output_price":
+		cmp = compareCatalogDecimal(a.OutputPriceUSDPerMillionTokens, b.OutputPriceUSDPerMillionTokens)
+	}
+	if cmp == 0 {
+		cmp = strings.Compare(a.ModelKey, b.ModelKey)
+	}
+	if order == "desc" {
+		return cmp > 0
+	}
+	return cmp < 0
+}
+
+func compareCatalogDecimal(a, b string) int {
+	if a == "" {
+		if b == "" {
+			return 0
+		}
+		return 1
+	}
+	if b == "" {
+		return -1
+	}
+	var ar, br big.Rat
+	if _, ok := ar.SetString(a); !ok {
+		return strings.Compare(a, b)
+	}
+	if _, ok := br.SetString(b); !ok {
+		return strings.Compare(a, b)
+	}
+	return ar.Cmp(&br)
+}
+
+func projectPublicCatalogItem(row models.PublicPriceSnapshotItem, snapshot models.PublicPriceSnapshot) PublicCatalogItem {
+	effective := ""
+	if row.EffectiveAt != nil {
+		effective = releaseTime(*row.EffectiveAt)
+	}
+	pricingType := row.PricingType
+	if pricingType == "" {
+		pricingType = "token"
+	}
+	return PublicCatalogItem{ModelKey: row.ModelKey, DisplayName: row.DisplayName, Provider: row.Provider, Capabilities: clonePublicStrings(row.Capabilities), ContextWindow: row.ContextWindow, InputPriceUSDPerMillionTokens: row.InputPriceUSDPerMillionTokens, OutputPriceUSDPerMillionTokens: row.OutputPriceUSDPerMillionTokens, PricingType: pricingType, PublicDisplayGroup: row.PublicDisplayGroup, EndpointTypes: clonePublicStrings(row.EndpointTypes), PublicRestrictions: clonePublicStrings(row.PublicRestrictions), PriceSource: row.PriceSource, PriceReviewer: row.PriceReviewer, EffectiveAt: effective, UpdatedAt: releaseTime(snapshot.PublishedAt)}
 }
 func (p *PublicCatalogProjection) Detail(key string, authenticated bool) (*PublicModelDetailRead, int) {
 	for _, item := range p.Items {

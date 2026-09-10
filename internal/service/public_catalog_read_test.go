@@ -101,8 +101,8 @@ func TestProjectPublicCatalogFiltersAndRedactsWithoutInternalFields(t *testing.T
 			t.Fatalf("leaked %s: %s", forbidden, raw)
 		}
 	}
-	assertPublicModelKeys(t, list.Items[0], []string{"capabilities", "context_window", "display_name", "model_key", "price_visibility", "provider", "release_version"})
-	assertPublicModelKeys(t, auth.Items[0], []string{"capabilities", "context_window", "display_name", "input_price_usd_per_million_tokens", "model_key", "output_price_usd_per_million_tokens", "price_visibility", "provider", "release_version"})
+	assertPublicModelKeys(t, list.Items[0], []string{"capabilities", "context_window", "display_name", "endpoint_types", "model_key", "price_visibility", "pricing_type", "provider", "release_version", "updated_at"})
+	assertPublicModelKeys(t, auth.Items[0], []string{"capabilities", "context_window", "display_name", "endpoint_types", "input_price_usd_per_million_tokens", "model_key", "output_price_usd_per_million_tokens", "price_visibility", "pricing_type", "provider", "release_version", "updated_at"})
 }
 
 func assertPublicModelKeys(t *testing.T, item PublicModelRead, want []string) {
@@ -137,6 +137,40 @@ func TestProjectPublicCatalogSearchProviderCapabilityAndPagination(t *testing.T)
 	p.GoneKeys = map[string]struct{}{"retired": {}}
 	if _, status := p.Detail("retired", false); status != 410 {
 		t.Fatalf("retired status=%d", status)
+	}
+}
+
+func TestProjectPublicCatalogFiltersEndpointAndGroupAndSortsGloballyBeforePagination(t *testing.T) {
+	p := &PublicCatalogProjection{PriceReleaseVersion: 3, PriceVisibility: models.PublicPriceVisibilityVisible, Items: []PublicCatalogItem{
+		{ModelKey: "zeta", DisplayName: "Zeta", Provider: "acme", PublicDisplayGroup: "featured", PricingType: "token", EndpointTypes: []string{"chat_completions"}, InputPriceUSDPerMillionTokens: "9.00000000", OutputPriceUSDPerMillionTokens: "10.00000000"},
+		{ModelKey: "alpha", DisplayName: "Alpha", Provider: "acme", PublicDisplayGroup: "featured", PricingType: "token", EndpointTypes: []string{"chat_completions", "responses"}, InputPriceUSDPerMillionTokens: "1.25000000", OutputPriceUSDPerMillionTokens: "2.50000000"},
+		{ModelKey: "beta", DisplayName: "Beta", Provider: "acme", PublicDisplayGroup: "other", PricingType: "token", EndpointTypes: []string{"embeddings"}, InputPriceUSDPerMillionTokens: "0.50000000", OutputPriceUSDPerMillionTokens: "3.00000000"},
+	}}
+	got := p.List(PublicCatalogListRequest{EndpointType: "responses", PublicDisplayGroup: "featured", PricingType: "token", Sort: "input_price", Order: "asc", Page: 1, PageSize: 20}, false)
+	if got.Total != 1 || len(got.Items) != 1 || got.Items[0].ModelKey != "alpha" {
+		t.Fatalf("filtered = %#v", got)
+	}
+	all := p.List(PublicCatalogListRequest{Sort: "input_price", Order: "asc", Page: 1, PageSize: 20}, false)
+	if gotKeys := []string{all.Items[0].ModelKey, all.Items[1].ModelKey, all.Items[2].ModelKey}; fmt.Sprint(gotKeys) != "[beta alpha zeta]" {
+		t.Fatalf("global numeric order=%v", gotKeys)
+	}
+}
+
+func TestProjectPublicCatalogDetailIncludesApprovedSnapshotMetadata(t *testing.T) {
+	p := &PublicCatalogProjection{PriceReleaseVersion: 4, PriceVisibility: models.PublicPriceVisibilityVisible, Items: []PublicCatalogItem{{
+		ModelKey: "alpha", DisplayName: "Alpha", PricingType: "token", PublicDisplayGroup: "featured",
+		EndpointTypes: []string{"responses"}, PublicRestrictions: []string{"region_limited"},
+		PriceSource: "published catalog", PriceReviewer: "pricing team", EffectiveAt: "2026-09-10T00:00:00Z", UpdatedAt: "2026-09-10T01:00:00Z",
+	}}}
+	out, status := p.Detail("alpha", false)
+	if status != 200 || out.Model.PricingType != "token" || out.Model.PublicDisplayGroup != "featured" || fmt.Sprint(out.Model.EndpointTypes) != "[responses]" || out.Model.PriceSource != "published catalog" || out.Model.PriceReviewer != "pricing team" {
+		t.Fatalf("detail=%#v status=%d", out, status)
+	}
+	raw, _ := json.Marshal(out)
+	for _, forbidden := range []string{"upstream_model_id", "channel_address", "model_config_id"} {
+		if containsJSONField(raw, forbidden) {
+			t.Fatalf("leaked %s: %s", forbidden, raw)
+		}
 	}
 }
 

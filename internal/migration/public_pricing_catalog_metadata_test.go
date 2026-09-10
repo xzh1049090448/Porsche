@@ -1,0 +1,30 @@
+package migration
+
+import (
+	"context"
+	"errors"
+	"strings"
+	"testing"
+)
+
+func TestPublicPricingCatalogMetadataVerifierFailsClosedWithoutDatabase(t *testing.T) {
+	if !errors.Is(VerifyPublicPricingCatalogMetadataSchema(context.Background(), nil), ErrPublicPricingCatalogMetadataMigration) {
+		t.Fatal("nil verifier did not fail closed")
+	}
+}
+
+func TestPublicPricingCatalogMetadataMigrationIsLatestAndReversible(t *testing.T) {
+	ms, err := All()
+	if err != nil || len(ms) != 16 || ms[15].Version != "0016" {
+		t.Fatalf("migrations=%v err=%v", len(ms), err)
+	}
+	up, down := strings.ToLower(string(ms[15].UpSQL)), strings.ToLower(string(ms[15].DownSQL))
+	for _, token := range []string{"public_display_group", "endpoint_types", "public_restrictions", "price_source", "price_reviewer", "price_effective_at", "pricing_type", "effective_at"} {
+		if !strings.Contains(up, token) || !strings.Contains(down, token) {
+			t.Fatalf("0016 missing reversible %s", token)
+		}
+	}
+	if strings.Contains(up, "upstream_url") || strings.Contains(up, "api_key") {
+		t.Fatal("0016 contains secret-bearing column")
+	}
+}

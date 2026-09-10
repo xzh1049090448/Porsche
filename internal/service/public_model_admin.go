@@ -41,6 +41,12 @@ type PublicModelAdmin struct {
 	Status                         string   `json:"status"`
 	Revision                       int64    `json:"revision"`
 	LastUpstreamCheckAt            *int64   `json:"last_upstream_check_at"`
+	PublicDisplayGroup             string   `json:"public_display_group"`
+	EndpointTypes                  []string `json:"endpoint_types"`
+	PublicRestrictions             []string `json:"public_restrictions"`
+	PriceSource                    string   `json:"price_source"`
+	PriceReviewer                  string   `json:"price_reviewer"`
+	PriceEffectiveAt               *int64   `json:"price_effective_at"`
 }
 type CreatePublicModelRequest struct {
 	UpstreamModelID                string   `json:"upstream_model_id"`
@@ -51,6 +57,12 @@ type CreatePublicModelRequest struct {
 	ContextWindow                  int64    `json:"context_window"`
 	InputPriceUSDPerMillionTokens  *string  `json:"input_price_usd_per_million_tokens"`
 	OutputPriceUSDPerMillionTokens *string  `json:"output_price_usd_per_million_tokens"`
+	PublicDisplayGroup             string   `json:"public_display_group"`
+	EndpointTypes                  []string `json:"endpoint_types"`
+	PublicRestrictions             []string `json:"public_restrictions"`
+	PriceSource                    string   `json:"price_source"`
+	PriceReviewer                  string   `json:"price_reviewer"`
+	PriceEffectiveAt               *int64   `json:"price_effective_at"`
 }
 type UpdatePublicModelRequest struct {
 	ExpectedRevision               int64                  `json:"expected_revision"`
@@ -60,6 +72,31 @@ type UpdatePublicModelRequest struct {
 	ContextWindow                  *int64                 `json:"context_window,omitempty"`
 	InputPriceUSDPerMillionTokens  OptionalNullableString `json:"input_price_usd_per_million_tokens,omitempty"`
 	OutputPriceUSDPerMillionTokens OptionalNullableString `json:"output_price_usd_per_million_tokens,omitempty"`
+	PublicDisplayGroup             *string                `json:"public_display_group,omitempty"`
+	EndpointTypes                  *[]string              `json:"endpoint_types,omitempty"`
+	PublicRestrictions             *[]string              `json:"public_restrictions,omitempty"`
+	PriceSource                    *string                `json:"price_source,omitempty"`
+	PriceReviewer                  *string                `json:"price_reviewer,omitempty"`
+	PriceEffectiveAt               OptionalNullableInt64  `json:"price_effective_at,omitempty"`
+}
+
+type OptionalNullableInt64 struct {
+	Set   bool
+	Value *int64
+}
+
+func (o *OptionalNullableInt64) UnmarshalJSON(raw []byte) error {
+	o.Set = true
+	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		o.Value = nil
+		return nil
+	}
+	var v int64
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return err
+	}
+	o.Value = &v
+	return nil
 }
 
 func (r UpdatePublicModelRequest) MarshalJSON() ([]byte, error) {
@@ -81,6 +118,24 @@ func (r UpdatePublicModelRequest) MarshalJSON() ([]byte, error) {
 	}
 	if r.OutputPriceUSDPerMillionTokens.Set {
 		m["output_price_usd_per_million_tokens"] = r.OutputPriceUSDPerMillionTokens.Value
+	}
+	if r.PublicDisplayGroup != nil {
+		m["public_display_group"] = *r.PublicDisplayGroup
+	}
+	if r.EndpointTypes != nil {
+		m["endpoint_types"] = *r.EndpointTypes
+	}
+	if r.PublicRestrictions != nil {
+		m["public_restrictions"] = *r.PublicRestrictions
+	}
+	if r.PriceSource != nil {
+		m["price_source"] = *r.PriceSource
+	}
+	if r.PriceReviewer != nil {
+		m["price_reviewer"] = *r.PriceReviewer
+	}
+	if r.PriceEffectiveAt.Set {
+		m["price_effective_at"] = r.PriceEffectiveAt.Value
 	}
 	return json.Marshal(m)
 }
@@ -147,11 +202,19 @@ func validatePublicModelCreate(in CreatePublicModelRequest) error {
 	if !publiccontent.ValidUpstreamModelID(in.UpstreamModelID) || !publiccontent.ValidModelKey(in.ModelKey) || !validPublicModelText(in.DisplayName, 128) || !validPublicModelText(in.Provider, 128) || !validPublicModelCapabilities(in.Capabilities) || in.ContextWindow <= 0 {
 		return errBadRequest("invalid public model request")
 	}
+	if !validOptionalPublicCode(in.PublicDisplayGroup, 128) || !validOptionalPublicCodes(in.EndpointTypes) || !validOptionalPublicCodes(in.PublicRestrictions) || !validOptionalPublicText(in.PriceSource, 255) || !validOptionalPublicText(in.PriceReviewer, 128) || (in.PriceEffectiveAt != nil && *in.PriceEffectiveAt <= 0) {
+		return errBadRequest("invalid public model metadata")
+	}
 	if !validPublicPrice(in.InputPriceUSDPerMillionTokens) || !validPublicPrice(in.OutputPriceUSDPerMillionTokens) {
 		return errBadRequest("invalid public model price")
 	}
 	return nil
 }
+func validOptionalPublicText(v string, max int) bool { return v == "" || validPublicModelText(v, max) }
+func validOptionalPublicCode(v string, max int) bool {
+	return v == "" || (len(v) <= max && publicModelCapability.MatchString(v))
+}
+func validOptionalPublicCodes(v []string) bool { return v == nil || validPublicModelCapabilities(v) }
 func validPublicModelText(v string, max int) bool {
 	return v == strings.TrimSpace(v) && v != "" && utf8.ValidString(v) && utf8.RuneCountInString(v) <= max && strings.IndexFunc(v, func(r rune) bool { return r < ' ' || r == 127 }) < 0
 }
@@ -237,7 +300,7 @@ func (s *PublicModelAdminService) Create(ctx context.Context, actorID int64, in 
 		if now <= 0 || guid <= 0 {
 			return errUnavailable("public model persistence unavailable")
 		}
-		m := models.PublicModelConfig{AuditFields: models.AuditFields{Guid: guid, CreatedAt: now, CreatedBy: &actor.ID, UpdatedAt: now, UpdatedBy: &actor.ID}, ModelKey: in.ModelKey, UpstreamModelID: in.UpstreamModelID, DisplayName: strings.TrimSpace(in.DisplayName), Provider: strings.TrimSpace(in.Provider), Capabilities: models.JSONSlice(in.Capabilities), ContextWindow: in.ContextWindow, InputPriceUSDPerMillionTokens: in.InputPriceUSDPerMillionTokens, OutputPriceUSDPerMillionTokens: in.OutputPriceUSDPerMillionTokens, Status: models.PublicModelConfigStatusDraft, LastUpstreamObservedAt: &obs.ObservedAt, LastUpstreamCheckAt: &obs.ObservedAt, Revision: 1}
+		m := models.PublicModelConfig{AuditFields: models.AuditFields{Guid: guid, CreatedAt: now, CreatedBy: &actor.ID, UpdatedAt: now, UpdatedBy: &actor.ID}, ModelKey: in.ModelKey, UpstreamModelID: in.UpstreamModelID, DisplayName: strings.TrimSpace(in.DisplayName), Provider: strings.TrimSpace(in.Provider), Capabilities: models.JSONSlice(in.Capabilities), ContextWindow: in.ContextWindow, InputPriceUSDPerMillionTokens: in.InputPriceUSDPerMillionTokens, OutputPriceUSDPerMillionTokens: in.OutputPriceUSDPerMillionTokens, Status: models.PublicModelConfigStatusDraft, LastUpstreamObservedAt: &obs.ObservedAt, LastUpstreamCheckAt: &obs.ObservedAt, Revision: 1, PublicDisplayGroup: in.PublicDisplayGroup, EndpointTypes: models.JSONSlice(in.EndpointTypes), PublicRestrictions: models.JSONSlice(in.PublicRestrictions), PriceSource: in.PriceSource, PriceReviewer: in.PriceReviewer, PriceEffectiveAt: in.PriceEffectiveAt}
 		if err = tx.Create(&m).Error; err != nil {
 			return mapPublicModelWriteError(err)
 		}
@@ -338,7 +401,25 @@ func (s *PublicModelAdminService) Update(ctx context.Context, actorID, guid int6
 		if in.OutputPriceUSDPerMillionTokens.Set {
 			m.OutputPriceUSDPerMillionTokens = in.OutputPriceUSDPerMillionTokens.Value
 		}
-		if !validPublicModelText(m.DisplayName, 128) || !validPublicModelText(m.Provider, 128) || !validPublicModelCapabilities([]string(m.Capabilities)) || m.ContextWindow <= 0 || !validPublicPrice(m.InputPriceUSDPerMillionTokens) || !validPublicPrice(m.OutputPriceUSDPerMillionTokens) {
+		if in.PublicDisplayGroup != nil {
+			m.PublicDisplayGroup = *in.PublicDisplayGroup
+		}
+		if in.EndpointTypes != nil {
+			m.EndpointTypes = models.JSONSlice(*in.EndpointTypes)
+		}
+		if in.PublicRestrictions != nil {
+			m.PublicRestrictions = models.JSONSlice(*in.PublicRestrictions)
+		}
+		if in.PriceSource != nil {
+			m.PriceSource = *in.PriceSource
+		}
+		if in.PriceReviewer != nil {
+			m.PriceReviewer = *in.PriceReviewer
+		}
+		if in.PriceEffectiveAt.Set {
+			m.PriceEffectiveAt = in.PriceEffectiveAt.Value
+		}
+		if !validPublicModelText(m.DisplayName, 128) || !validPublicModelText(m.Provider, 128) || !validPublicModelCapabilities([]string(m.Capabilities)) || m.ContextWindow <= 0 || !validPublicPrice(m.InputPriceUSDPerMillionTokens) || !validPublicPrice(m.OutputPriceUSDPerMillionTokens) || !validOptionalPublicCode(m.PublicDisplayGroup, 128) || !validOptionalPublicCodes([]string(m.EndpointTypes)) || !validOptionalPublicCodes([]string(m.PublicRestrictions)) || !validOptionalPublicText(m.PriceSource, 255) || !validOptionalPublicText(m.PriceReviewer, 128) || (m.PriceEffectiveAt != nil && *m.PriceEffectiveAt <= 0) {
 			return errBadRequest("invalid public model request")
 		}
 		return nil
@@ -483,5 +564,5 @@ func writePublicModelAudit(tx *gorm.DB, guid, now, actor int64, action, key stri
 	return tx.Create(&models.AuditLog{AuditFields: models.AuditFields{Guid: guid, CreatedAt: now, CreatedBy: &actor, UpdatedAt: now, UpdatedBy: &actor}, UserID: &actor, Action: action, Resource: &resource, Detail: detail}).Error
 }
 func projectPublicModel(m models.PublicModelConfig) PublicModelAdmin {
-	return PublicModelAdmin{GUID: fmt.Sprint(m.Guid), ModelKey: m.ModelKey, UpstreamModelID: m.UpstreamModelID, DisplayName: m.DisplayName, Provider: m.Provider, Capabilities: append([]string(nil), m.Capabilities...), ContextWindow: m.ContextWindow, InputPriceUSDPerMillionTokens: m.InputPriceUSDPerMillionTokens, OutputPriceUSDPerMillionTokens: m.OutputPriceUSDPerMillionTokens, Status: m.Status.String(), Revision: m.Revision, LastUpstreamCheckAt: m.LastUpstreamCheckAt}
+	return PublicModelAdmin{GUID: fmt.Sprint(m.Guid), ModelKey: m.ModelKey, UpstreamModelID: m.UpstreamModelID, DisplayName: m.DisplayName, Provider: m.Provider, Capabilities: append([]string(nil), m.Capabilities...), ContextWindow: m.ContextWindow, InputPriceUSDPerMillionTokens: m.InputPriceUSDPerMillionTokens, OutputPriceUSDPerMillionTokens: m.OutputPriceUSDPerMillionTokens, Status: m.Status.String(), Revision: m.Revision, LastUpstreamCheckAt: m.LastUpstreamCheckAt, PublicDisplayGroup: m.PublicDisplayGroup, EndpointTypes: append([]string(nil), m.EndpointTypes...), PublicRestrictions: append([]string(nil), m.PublicRestrictions...), PriceSource: m.PriceSource, PriceReviewer: m.PriceReviewer, PriceEffectiveAt: m.PriceEffectiveAt}
 }

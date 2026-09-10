@@ -312,6 +312,12 @@ type PublicModelConfig struct {
 	ConsecutiveAbsences            int                     `gorm:"column:consecutive_absences;type:int;not null" json:"-"`
 	Revision                       int64                   `gorm:"column:revision;type:bigint;not null" json:"-"`
 	EverPublished                  int                     `gorm:"column:ever_published;type:int;not null" json:"-"`
+	PublicDisplayGroup             string                  `gorm:"column:public_display_group;type:varchar(128);not null" json:"public_display_group"`
+	EndpointTypes                  JSONSlice               `gorm:"column:endpoint_types;type:json;not null" json:"endpoint_types"`
+	PublicRestrictions             JSONSlice               `gorm:"column:public_restrictions;type:json;not null" json:"public_restrictions"`
+	PriceSource                    string                  `gorm:"column:price_source;type:varchar(255);not null" json:"price_source"`
+	PriceReviewer                  string                  `gorm:"column:price_reviewer;type:varchar(128);not null" json:"price_reviewer"`
+	PriceEffectiveAt               *int64                  `gorm:"column:price_effective_at;type:bigint" json:"price_effective_at"`
 }
 
 func (PublicModelConfig) TableName() string { return "public_model_configs" }
@@ -353,6 +359,13 @@ type PublicPriceSnapshotItem struct {
 	InputPriceUSDPerMillionTokens  string    `gorm:"column:input_price_usd_per_million_tokens;type:decimal(20,8);not null;<-:create" json:"-"`
 	OutputPriceUSDPerMillionTokens string    `gorm:"column:output_price_usd_per_million_tokens;type:decimal(20,8);not null;<-:create" json:"-"`
 	UpstreamCheckedAt              *int64    `gorm:"column:upstream_checked_at;type:bigint;<-:create" json:"-"`
+	PricingType                    string    `gorm:"column:pricing_type;type:varchar(32);not null;<-:create" json:"pricing_type"`
+	PublicDisplayGroup             string    `gorm:"column:public_display_group;type:varchar(128);not null;<-:create" json:"public_display_group"`
+	EndpointTypes                  JSONSlice `gorm:"column:endpoint_types;type:json;not null;<-:create" json:"endpoint_types"`
+	PublicRestrictions             JSONSlice `gorm:"column:public_restrictions;type:json;not null;<-:create" json:"public_restrictions"`
+	PriceSource                    string    `gorm:"column:price_source;type:varchar(255);not null;<-:create" json:"price_source"`
+	PriceReviewer                  string    `gorm:"column:price_reviewer;type:varchar(128);not null;<-:create" json:"price_reviewer"`
+	EffectiveAt                    *int64    `gorm:"column:effective_at;type:bigint;<-:create" json:"effective_at"`
 }
 
 func (PublicPriceSnapshotItem) TableName() string { return "public_price_snapshot_items" }

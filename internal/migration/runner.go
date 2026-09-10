@@ -102,6 +102,12 @@ var publicRenderJobTerminalUp []byte
 //go:embed sql/0015_public_render_job_terminal.down.sql
 var publicRenderJobTerminalDown []byte
 
+//go:embed sql/0016_public_pricing_catalog_metadata.up.sql
+var publicPricingCatalogMetadataUp []byte
+
+//go:embed sql/0016_public_pricing_catalog_metadata.down.sql
+var publicPricingCatalogMetadataDown []byte
+
 // Migration is an immutable, embedded schema version.
 type Migration struct {
 	Version string
@@ -133,6 +139,7 @@ func All() ([]Migration, error) {
 		{Version: "0013", UpSQL: publicPriceDraftStateUp, DownSQL: publicPriceDraftStateDown},
 		{Version: "0014", UpSQL: upstreamMonitorLeaseUp, DownSQL: upstreamMonitorLeaseDown},
 		{Version: "0015", UpSQL: publicRenderJobTerminalUp, DownSQL: publicRenderJobTerminalDown},
+		{Version: "0016", UpSQL: publicPricingCatalogMetadataUp, DownSQL: publicPricingCatalogMetadataDown},
 	}
 	sort.Slice(migrations, func(i, j int) bool { return migrations[i].Version < migrations[j].Version })
 	return migrations, nil
@@ -244,6 +251,11 @@ func Up(ctx context.Context, db *gorm.DB, nextGUID func() int64, nowMillis func(
 						return err
 					}
 				}
+				if migration.Version == "0016" {
+					if err := VerifyPublicPricingCatalogMetadataSchema(ctx, conn); err != nil {
+						return err
+					}
+				}
 				continue
 			}
 			if migration.Version == "0007" {
@@ -347,6 +359,11 @@ func Up(ctx context.Context, db *gorm.DB, nextGUID func() int64, nowMillis func(
 			}
 			if migration.Version == "0015" {
 				if err := VerifyPublicRenderJobTerminalSchema(ctx, conn); err != nil {
+					return err
+				}
+			}
+			if migration.Version == "0016" {
+				if err := VerifyPublicPricingCatalogMetadataSchema(ctx, conn); err != nil {
 					return err
 				}
 			}

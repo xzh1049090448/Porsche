@@ -1,5 +1,11 @@
 # Porsche 开发进度
 
+## 2026-09-10：公共报价目录契约补全
+
+- 冻结公共报价合同新增 `endpoint_type`、公开展示组、定价类型筛选，以及默认/名称/输入价/输出价的服务端全局排序；分页在过滤和排序后执行。登录可见报价拒绝匿名价格排序，避免通过顺序推断隐藏报价。
+- 公共列表/详情 DTO 新增固定 `token` 定价类型、公开展示组、真实端点类型、公开限制、报价来源、审核人、生效时间和更新时间；价格仍为精确 decimal string，内部模型 ID、上游地址和凭据继续不公开。
+- 0016 将新增展示字段同时保存到可编辑模型配置和不可变价格快照，具备独立 schema verifier。隔离 MySQL 8 已完成 fresh up、0016 down（新增列归零）、reapply 和真实 service focused；全量 Go、build、vet、diff 通过。未执行 push、生产迁移、部署或生产验收。
+
 ## 2026-09-10：公共内容与定价后端 Task 12 本地集成
 
 - 最终 machine-counted fixture 复跑从 `cbe92b98c03bfdbcf9674e35f60e8b0a88d5d442` 新建第三组唯一 label 的 MySQL 8.0 / Redis 7。保留并校验 `go test -json` 压缩事件流：migration 4 roots、service 85 roots（20个 DB/fixture roots）、handler/security/catalog/renderer 43 roots（1个 real-fixture root）、race 114 roots（21个 DB/fixture roots），四组均 test fail=0、skip=0，package fail=0。`internal/app` 的 no-match 仅单独记录，不计入 fixture pass。raw JSON gzip、机器汇总、迁移账本、SHA-256 与资源 cleanup/preservation 见 r3 manifest。

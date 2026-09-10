@@ -14,6 +14,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/porsche/ai-gateway-go/internal/app"
 	"github.com/porsche/ai-gateway-go/internal/middleware"
+	"github.com/porsche/ai-gateway-go/internal/models"
 	"github.com/porsche/ai-gateway-go/internal/publiccontent"
 	"github.com/porsche/ai-gateway-go/internal/service"
 )
@@ -104,7 +105,7 @@ func registerPublicContentWithReader(r *gin.Engine, reader publicProjectionReade
 	g.GET("/pages/terms", plain(func(p *service.PublicCatalogProjection) string { return p.Content.Terms }))
 	g.GET("/pages/privacy", plain(func(p *service.PublicCatalogProjection) string { return p.Content.Privacy }))
 	g.GET("/models", func(c *gin.Context) {
-		q, ok := publicReadQuery(c.Request.URL.RawQuery, map[string]bool{"search": true, "provider": true, "capability": true, "page": true, "page_size": true})
+		q, ok := publicReadQuery(c.Request.URL.RawQuery, map[string]bool{"search": true, "provider": true, "capability": true, "endpoint_type": true, "public_display_group": true, "pricing_type": true, "sort": true, "order": true, "page": true, "page_size": true})
 		if !ok {
 			publicReadError(c, &service.HTTPError{Status: 400, Message: "invalid request"})
 			return
@@ -118,8 +119,12 @@ func registerPublicContentWithReader(r *gin.Engine, reader publicProjectionReade
 		if p == nil {
 			return
 		}
+		if !auth && p.PriceVisibility == models.PublicPriceVisibilityAuthenticatedOnly && (req.Sort == "input_price" || req.Sort == "output_price") {
+			publicReadError(c, &service.HTTPError{Status: http.StatusUnauthorized, Message: "authentication required"})
+			return
+		}
 		c.Header("X-Public-Release-Version", strconv.FormatInt(p.PriceReleaseVersion, 10))
-		identity := fmt.Sprintf("%s|search=%q|provider=%q|capability=%q|page=%d|page_size=%d", c.FullPath(), req.Search, req.Provider, req.Capability, req.Page, req.PageSize)
+		identity := fmt.Sprintf("%s|%#v", c.FullPath(), req)
 		publicWriteJSON(c, p, identity, p.List(req, auth))
 	})
 	g.GET("/models/:modelKey", func(c *gin.Context) {
@@ -163,9 +168,28 @@ func publicReadQuery(raw string, allowed map[string]bool) (map[string]string, bo
 	return out, true
 }
 func parsePublicCatalogQuery(q map[string]string) (service.PublicCatalogListRequest, bool) {
-	out := service.PublicCatalogListRequest{Search: q["search"], Provider: q["provider"], Capability: q["capability"], Page: 1, PageSize: 20}
-	if len(out.Search) > 128 || len(out.Provider) > 128 || len(out.Capability) > 128 || strings.TrimSpace(out.Search) != out.Search || strings.TrimSpace(out.Provider) != out.Provider || strings.TrimSpace(out.Capability) != out.Capability {
+	out := service.PublicCatalogListRequest{Search: q["search"], Provider: q["provider"], Capability: q["capability"], EndpointType: q["endpoint_type"], PublicDisplayGroup: q["public_display_group"], PricingType: q["pricing_type"], Sort: q["sort"], Order: q["order"], Page: 1, PageSize: 20}
+	for _, value := range []string{out.Search, out.Provider, out.Capability, out.EndpointType, out.PublicDisplayGroup, out.PricingType} {
+		if len(value) > 128 || strings.TrimSpace(value) != value {
+			return out, false
+		}
+	}
+	if out.PricingType != "" && out.PricingType != "token" {
 		return out, false
+	}
+	if out.Sort != "" && out.Sort != "default" && out.Sort != "name" && out.Sort != "input_price" && out.Sort != "output_price" {
+		return out, false
+	}
+	if out.Order == "" {
+		out.Order = "asc"
+	} else if out.Order != "asc" && out.Order != "desc" {
+		return out, false
+	}
+	if out.Sort == "" && q["order"] != "" {
+		return out, false
+	}
+	if out.Sort == "" {
+		out.Sort = "default"
 	}
 	if q["page"] != "" {
 		v, e := strconv.Atoi(q["page"])

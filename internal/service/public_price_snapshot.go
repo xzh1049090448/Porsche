@@ -137,7 +137,7 @@ func preparePublicPriceSnapshot(rows []models.PublicModelConfig) (*preparedPubli
 			return nil, errUnprocessable("public price snapshot validation failed")
 		}
 		modelIDs[m.ID], modelKeys[m.ModelKey], upstreamIDs[m.UpstreamModelID] = true, true, true
-		items = append(items, models.PublicPriceSnapshotItem{ModelConfigID: m.ID, ModelKey: m.ModelKey, UpstreamModelID: m.UpstreamModelID, DisplayName: m.DisplayName, Provider: m.Provider, Capabilities: append(models.JSONSlice(nil), m.Capabilities...), ContextWindow: m.ContextWindow, InputPriceUSDPerMillionTokens: *m.InputPriceUSDPerMillionTokens, OutputPriceUSDPerMillionTokens: *m.OutputPriceUSDPerMillionTokens, UpstreamCheckedAt: m.LastUpstreamCheckAt})
+		items = append(items, models.PublicPriceSnapshotItem{ModelConfigID: m.ID, ModelKey: m.ModelKey, UpstreamModelID: m.UpstreamModelID, DisplayName: m.DisplayName, Provider: m.Provider, Capabilities: append(models.JSONSlice(nil), m.Capabilities...), ContextWindow: m.ContextWindow, InputPriceUSDPerMillionTokens: *m.InputPriceUSDPerMillionTokens, OutputPriceUSDPerMillionTokens: *m.OutputPriceUSDPerMillionTokens, UpstreamCheckedAt: m.LastUpstreamCheckAt, PricingType: "token", PublicDisplayGroup: m.PublicDisplayGroup, EndpointTypes: append(models.JSONSlice(nil), m.EndpointTypes...), PublicRestrictions: append(models.JSONSlice(nil), m.PublicRestrictions...), PriceSource: m.PriceSource, PriceReviewer: m.PriceReviewer, EffectiveAt: m.PriceEffectiveAt})
 	}
 	if len(items) == 0 {
 		return nil, errUnprocessable("public price snapshot requires an active priced model")
@@ -154,7 +154,7 @@ func prepareRestoredPublicPriceSnapshot(items []models.PublicPriceSnapshotItem, 
 	rows := make([]models.PublicModelConfig, len(items))
 	for i, item := range items {
 		input, output := item.InputPriceUSDPerMillionTokens, item.OutputPriceUSDPerMillionTokens
-		rows[i] = models.PublicModelConfig{ID: item.ModelConfigID, ModelKey: item.ModelKey, UpstreamModelID: item.UpstreamModelID, DisplayName: item.DisplayName, Provider: item.Provider, Capabilities: append(models.JSONSlice(nil), item.Capabilities...), ContextWindow: item.ContextWindow, InputPriceUSDPerMillionTokens: &input, OutputPriceUSDPerMillionTokens: &output, Status: models.PublicModelConfigStatusActive, LastUpstreamCheckAt: item.UpstreamCheckedAt}
+		rows[i] = models.PublicModelConfig{ID: item.ModelConfigID, ModelKey: item.ModelKey, UpstreamModelID: item.UpstreamModelID, DisplayName: item.DisplayName, Provider: item.Provider, Capabilities: append(models.JSONSlice(nil), item.Capabilities...), ContextWindow: item.ContextWindow, InputPriceUSDPerMillionTokens: &input, OutputPriceUSDPerMillionTokens: &output, Status: models.PublicModelConfigStatusActive, LastUpstreamCheckAt: item.UpstreamCheckedAt, PublicDisplayGroup: item.PublicDisplayGroup, EndpointTypes: append(models.JSONSlice(nil), item.EndpointTypes...), PublicRestrictions: append(models.JSONSlice(nil), item.PublicRestrictions...), PriceSource: item.PriceSource, PriceReviewer: item.PriceReviewer, PriceEffectiveAt: item.EffectiveAt}
 	}
 	prepared, err := preparePublicPriceSnapshot(rows)
 	if err != nil {
@@ -168,19 +168,26 @@ func prepareRestoredPublicPriceSnapshot(items []models.PublicPriceSnapshotItem, 
 
 func hashPublicPriceSnapshotItems(items []models.PublicPriceSnapshotItem) (string, error) {
 	type canonical struct {
-		ModelKey        string   `json:"model_key"`
-		UpstreamModelID string   `json:"upstream_model_id"`
-		DisplayName     string   `json:"display_name"`
-		Provider        string   `json:"provider"`
-		Capabilities    []string `json:"capabilities"`
-		ContextWindow   int64    `json:"context_window"`
-		Input           string   `json:"input_price_usd_per_million_tokens"`
-		Output          string   `json:"output_price_usd_per_million_tokens"`
-		CheckedAt       *int64   `json:"upstream_checked_at"`
+		ModelKey           string   `json:"model_key"`
+		UpstreamModelID    string   `json:"upstream_model_id"`
+		DisplayName        string   `json:"display_name"`
+		Provider           string   `json:"provider"`
+		Capabilities       []string `json:"capabilities"`
+		ContextWindow      int64    `json:"context_window"`
+		Input              string   `json:"input_price_usd_per_million_tokens"`
+		Output             string   `json:"output_price_usd_per_million_tokens"`
+		CheckedAt          *int64   `json:"upstream_checked_at"`
+		PricingType        string   `json:"pricing_type"`
+		PublicDisplayGroup string   `json:"public_display_group,omitempty"`
+		EndpointTypes      []string `json:"endpoint_types"`
+		PublicRestrictions []string `json:"public_restrictions,omitempty"`
+		PriceSource        string   `json:"price_source,omitempty"`
+		PriceReviewer      string   `json:"price_reviewer,omitempty"`
+		EffectiveAt        *int64   `json:"effective_at,omitempty"`
 	}
 	values := make([]canonical, len(items))
 	for i, v := range items {
-		values[i] = canonical{v.ModelKey, v.UpstreamModelID, v.DisplayName, v.Provider, append([]string(nil), v.Capabilities...), v.ContextWindow, v.InputPriceUSDPerMillionTokens, v.OutputPriceUSDPerMillionTokens, v.UpstreamCheckedAt}
+		values[i] = canonical{v.ModelKey, v.UpstreamModelID, v.DisplayName, v.Provider, append([]string(nil), v.Capabilities...), v.ContextWindow, v.InputPriceUSDPerMillionTokens, v.OutputPriceUSDPerMillionTokens, v.UpstreamCheckedAt, v.PricingType, v.PublicDisplayGroup, append([]string(nil), v.EndpointTypes...), append([]string(nil), v.PublicRestrictions...), v.PriceSource, v.PriceReviewer, v.EffectiveAt}
 	}
 	sort.Slice(values, func(i, j int) bool { return values[i].ModelKey < values[j].ModelKey })
 	b, err := json.Marshal(values)

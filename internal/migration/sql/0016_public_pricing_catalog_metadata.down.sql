@@ -1,0 +1,2 @@
+ALTER TABLE public_price_snapshot_items DROP COLUMN effective_at, DROP COLUMN price_reviewer, DROP COLUMN price_source, DROP COLUMN public_restrictions, DROP COLUMN endpoint_types, DROP COLUMN public_display_group, DROP COLUMN pricing_type;
+ALTER TABLE public_model_configs DROP COLUMN price_effective_at, DROP COLUMN price_reviewer, DROP COLUMN price_source, DROP COLUMN public_restrictions, DROP COLUMN endpoint_types, DROP COLUMN public_display_group;
