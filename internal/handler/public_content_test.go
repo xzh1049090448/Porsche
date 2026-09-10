@@ -22,12 +22,24 @@ func TestPublicIfNoneMatchUsesRFCWeakComparison(t *testing.T) {
 		match bool
 	}{
 		{`"abc"`, true}, {`W/"abc"`, true}, {` "other" , W/"abc" `, true}, {`*`, true},
-		{`"other"`, false}, {``, false}, {`W/abc`, false}, {`"abc",`, false}, {`"abc`, false},
-		{"\x00\n\r", false}, {`*, "other"`, false},
+		{`"non,current", W/"abc"`, true}, {`"one,two", "three,four", W/"abc"`, true},
+		{`W/abc, "abc"`, true}, {`, , "abc",`, true}, {`"abc"suffix, W/"abc"`, true},
+		{`"other"`, false}, {``, false}, {`W/abc`, false}, {`"abc`, false},
+		{"\x00\n\r", false}, {`*, "other"`, false}, {`*, "abc"`, true},
+		{`"unterminated, W/"abc"`, false}, {`w/"abc"`, false}, {`"a\\b"`, false},
 	} {
 		if got := publicIfNoneMatch(tc.raw, `"abc"`); got != tc.match {
 			t.Errorf("%q match=%v want=%v", tc.raw, got, tc.match)
 		}
+	}
+	if !publicIfNoneMatch(`"a,b"`, `"a,b"`) {
+		t.Error("comma-bearing opaque tag did not match")
+	}
+	if !publicIfNoneMatch(`"a\b"`, `"a\b"`) {
+		t.Error("backslash must be an ordinary etagc byte")
+	}
+	if publicIfNoneMatch("\"a\"b\"", `"a"`) {
+		t.Error("embedded DQUOTE accepted")
 	}
 }
 
@@ -110,7 +122,7 @@ func TestPublicReadUnsupportedMethodsRemainReal404(t *testing.T) {
 }
 
 func TestPublicReadConditionalVariantsPreserveHeadersAndEmptyBody(t *testing.T) {
-	for _, value := range []string{`"abc"`, `W/"abc"`, ` "no", W/"abc" `, `*`} {
+	for _, value := range []string{`"abc"`, `W/"abc"`, ` "no", W/"abc" `, `"non,current", W/"abc"`, `W/abc, "abc"`, `, "abc",`, `*`} {
 		r := gin.New()
 		registerPublicContentWithReader(r, publicReadStub{projection: testPublicProjection()}, func(*gin.Context) bool { return false })
 		req := httptest.NewRequest(http.MethodGet, "/api/v1/public/models", nil)
@@ -219,7 +231,7 @@ func TestPublicReadNotFoundGoneUnavailableAndChunkedBodyAreNoStore(t *testing.T)
 }
 
 func TestPublicReadMalformedIfNoneMatchDoesNotSuppressBody(t *testing.T) {
-	for _, value := range []string{`W/abc`, `"abc",`, `*, "abc"`, `"abc`} {
+	for _, value := range []string{`W/abc`, `*, "other"`, `"abc`} {
 		r := gin.New()
 		registerPublicContentWithReader(r, publicReadStub{projection: testPublicProjection()}, func(*gin.Context) bool { return false })
 		req := httptest.NewRequest(http.MethodGet, "/api/v1/public/site", nil)

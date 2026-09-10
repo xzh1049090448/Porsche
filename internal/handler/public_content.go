@@ -207,25 +207,39 @@ func publicIfNoneMatch(raw, current string) bool {
 	if strings.TrimSpace(raw) == "*" {
 		return true
 	}
-	parts := strings.Split(raw, ",")
-	if len(parts) == 0 {
-		return false
-	}
 	matched := false
-	for _, part := range parts {
+	for _, part := range publicEntityTagMembers(raw) {
 		part = strings.TrimSpace(part)
 		if part == "" || part == "*" {
-			return false
+			continue
 		}
 		opaque, valid := publicEntityTag(part)
 		if !valid {
-			return false
+			continue
 		}
 		if opaque == currentOpaque {
 			matched = true
 		}
 	}
 	return matched
+}
+
+func publicEntityTagMembers(raw string) []string {
+	members := make([]string, 0, 1+strings.Count(raw, ","))
+	start, quoted := 0, false
+	for i := 0; i < len(raw); i++ {
+		switch raw[i] {
+		case '"':
+			quoted = !quoted
+		case ',':
+			if !quoted {
+				members = append(members, raw[start:i])
+				start = i + 1
+			}
+		}
+	}
+	members = append(members, raw[start:])
+	return members
 }
 
 func publicEntityTag(raw string) (string, bool) {
