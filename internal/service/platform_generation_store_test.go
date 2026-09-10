@@ -1033,7 +1033,7 @@ func TestPlatformGenerationCancelRunningTransitionsOnlyOnceAndKeepsTTL(t *testin
 		if decision.Transitioned {
 			winners++
 		}
-		if decision.CreatedTombstone || decision.Snapshot.State != PlatformGenerationStateCancelling || decision.Snapshot.LeaseOwnerSHA256 != "" || decision.Snapshot.LeaseUntilMillis != 0 {
+		if decision.CreatedTombstone || decision.Snapshot.State != PlatformGenerationStateCancelling || decision.Snapshot.LeaseOwnerSHA256 != platformGenerationLeaseDigest(claim.LeaseToken) || decision.Snapshot.LeaseUntilMillis != 0 {
 			t.Fatalf("unexpected cancel decision=%#v", decision)
 		}
 	}
@@ -1060,6 +1060,86 @@ func TestPlatformGenerationLeaseRenewalValidatesRawTokenBeforeRedis(t *testing.T
 	validToken := base64.RawURLEncoding.EncodeToString(make([]byte, platformGenerationLeaseBytes))
 	if _, err := store.RenewLease(context.Background(), 1, generationTestID, validToken, platformSSEV2MaxSafeInteger-platformGenerationLeaseDuration.Milliseconds()+1); !errors.Is(err, ErrPlatformGenerationInvalid) {
 		t.Fatalf("RenewLease unsafe deadline error=%v, want invalid", err)
+	}
+}
+
+func TestPlatformGenerationOwnedMutationsValidateLeaseTokenBeforeRedis(t *testing.T) {
+	store, err := NewPlatformGenerationStore(redis.NewClient(&redis.Options{Addr: "127.0.0.1:1"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	invalidTokens := []string{"", "x", strings.Repeat("a", 44), "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"}
+	for _, token := range invalidTokens {
+		t.Run(fmt.Sprintf("token_%x", token), func(t *testing.T) {
+			operations := []struct {
+				name string
+				run  func() error
+			}{
+				{"record delta", func() error {
+					_, err := store.RecordDeltaOwned(context.Background(), 1, generationTestID, token, "a", 1, 1)
+					return err
+				}},
+				{"mark model done", func() error {
+					_, err := store.MarkModelDoneOwned(context.Background(), 1, generationTestID, token, "a", 0, 1)
+					return err
+				}},
+				{"begin commit", func() error {
+					_, err := store.BeginCommitOwned(context.Background(), 1, generationTestID, token, 1)
+					return err
+				}},
+				{"fail running", func() error {
+					_, err := store.FailRunningOwned(context.Background(), 1, generationTestID, token, "internal_error", 1)
+					return err
+				}},
+				{"acknowledge cancelled", func() error {
+					_, err := store.AcknowledgeCancelledOwned(context.Background(), 1, generationTestID, token, 1)
+					return err
+				}},
+			}
+			for _, operation := range operations {
+				if err := operation.run(); !errors.Is(err, ErrPlatformGenerationInvalid) {
+					t.Fatalf("%s error=%v, want invalid before Redis", operation.name, err)
+				}
+			}
+		})
+	}
+}
+
+func TestPlatformGenerationOwnedMutationsValidateArgumentsBeforeRedis(t *testing.T) {
+	store, err := NewPlatformGenerationStore(redis.NewClient(&redis.Options{Addr: "127.0.0.1:1"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	token := base64.RawURLEncoding.EncodeToString(make([]byte, platformGenerationLeaseBytes))
+	tests := []struct {
+		name string
+		run  func() error
+	}{
+		{"record invalid model", func() error {
+			_, err := store.RecordDeltaOwned(context.Background(), 1, generationTestID, token, " bad model", 1, 1)
+			return err
+		}},
+		{"record zero sequence", func() error {
+			_, err := store.RecordDeltaOwned(context.Background(), 1, generationTestID, token, "a", 0, 1)
+			return err
+		}},
+		{"mark done invalid sequence", func() error {
+			_, err := store.MarkModelDoneOwned(context.Background(), 1, generationTestID, token, "a", -1, 1)
+			return err
+		}},
+		{"fail invalid code", func() error {
+			_, err := store.FailRunningOwned(context.Background(), 1, generationTestID, token, "provider-secret", 1)
+			return err
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if err := test.run(); !errors.Is(err, ErrPlatformGenerationInvalid) {
+				t.Fatalf("error=%v, want invalid before Redis", err)
+			}
+		})
 	}
 }
 
@@ -1975,7 +2055,7 @@ func TestPlatformGenerationCancelVersusRenewConvergesWithoutLeaseRegression(t *t
 			t.Fatalf("iteration %d convergence error=%v", iteration, err)
 		}
 		final, err := store.Get(ctx, userID, generationID)
-		if err != nil || final.State != PlatformGenerationStateCancelling || final.LeaseOwnerSHA256 != "" || final.LeaseUntilMillis != 0 || final.UpdatedAtMillis != 2000 || !reflect.DeepEqual(converged.Snapshot, final) {
+		if err != nil || final.State != PlatformGenerationStateCancelling || final.LeaseOwnerSHA256 != platformGenerationLeaseDigest(claim.LeaseToken) || final.LeaseUntilMillis != 0 || final.UpdatedAtMillis != 2000 || !reflect.DeepEqual(converged.Snapshot, final) {
 			t.Fatalf("iteration %d final=%#v convergence=%#v error=%v", iteration, final, converged, err)
 		}
 		if errors.Is(renew.err, ErrPlatformGenerationConflict) && !reflect.DeepEqual(renew.snapshot, final) {

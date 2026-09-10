@@ -56,7 +56,6 @@ func (s *PlatformGenerationStore) CancelOrCreate(ctx context.Context, userID int
 				next := clonePlatformGeneration(current)
 				next.State = PlatformGenerationStateCancelling
 				next.UpdatedAtMillis = nowMillis
-				next.LeaseOwnerSHA256 = ""
 				next.LeaseUntilMillis = 0
 				transitionedRaw, err = encodePlatformGeneration(next)
 				if err != nil {
@@ -221,6 +220,8 @@ func (s *PlatformGenerationStore) ConvergeStaleCancelling(ctx context.Context, u
 	}
 	next.State = PlatformGenerationStateCancelled
 	next.UpdatedAtMillis = nowMillis
+	next.LeaseOwnerSHA256 = ""
+	next.LeaseUntilMillis = 0
 	return s.writePlatformGenerationControlCAS(ctx, userID, generationID, raw, next)
 }
 
