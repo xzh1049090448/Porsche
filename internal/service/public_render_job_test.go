@@ -97,6 +97,16 @@ func TestPublicRenderJobFixtureLeaseFencingAndCurrentGeneration(t *testing.T) {
 	if err := service.Complete(ctx, PublicRenderTransitionInput{JobGUID: lease.JobGUID, OwnerToken: "wrong-owner-long-random-token", Fence: lease.Fence}); err != ErrPublicRenderLeaseLost {
 		t.Fatalf("wrong owner complete = %v", err)
 	}
+	var leased models.PublicRenderJob
+	if err := db.Where("guid=?", lease.JobGUID).First(&leased).Error; err != nil {
+		t.Fatal(err)
+	}
+	if leased.LeaseOwnerHMAC == nil || leased.LeaseExpiresAt == nil {
+		t.Fatalf("wrong-owner transition changed lease: %#v", leased)
+	}
+	if leased.State != models.PublicRenderJobLeased || leased.AttemptCount != lease.Fence || *leased.LeaseOwnerHMAC != service.ownerHMAC(lease.OwnerToken) || *leased.LeaseExpiresAt <= now {
+		t.Fatalf("stored lease does not match issued lease: %#v issued=%#v", leased, lease)
+	}
 	if err := service.Renew(ctx, PublicRenderTransitionInput{JobGUID: lease.JobGUID, OwnerToken: lease.OwnerToken, Fence: lease.Fence, LeaseMillis: 30_000}); err != nil {
 		t.Fatalf("renew: %v", err)
 	}

@@ -323,8 +323,15 @@ func (s *PublicRenderJobService) transitionCurrent(ctx context.Context, in Publi
 		if !current {
 			return ErrPublicRenderLeaseLost
 		}
-		res := tx.Model(&models.PublicRenderJob{}).Where("id=? AND state=? AND attempt_count=? AND lease_owner_hmac=? AND lease_expires_at>?", job.ID, models.PublicRenderJobLeased, in.Fence, s.ownerHMAC(strings.TrimSpace(in.OwnerToken)), now).Updates(updates)
-		return renderTransitionResult(res)
+		owner := s.ownerHMAC(strings.TrimSpace(in.OwnerToken))
+		if job.State != models.PublicRenderJobLeased || job.AttemptCount != in.Fence || job.LeaseOwnerHMAC == nil ||
+			!hmac.Equal([]byte(*job.LeaseOwnerHMAC), []byte(owner)) || job.LeaseExpiresAt == nil || *job.LeaseExpiresAt <= now {
+			return ErrPublicRenderLeaseLost
+		}
+		if res := tx.Model(&models.PublicRenderJob{}).Where("id=?", job.ID).Updates(updates); res.Error != nil {
+			return ErrPublicRenderUnavailable
+		}
+		return nil
 	})
 }
 

@@ -40,8 +40,11 @@ func TestPublicCatalogReadDBCommittedIntegrityAndDynamicInactivation(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = tx.Model(&price).Update("content_hash", priceHash).Error; err != nil {
+	if err = tx.Exec("UPDATE public_price_snapshots SET content_hash=? WHERE id=?", priceHash, price.ID).Error; err != nil {
 		t.Fatal(err)
+	}
+	if err = tx.First(&price, price.ID).Error; err != nil || price.ContentHash != priceHash {
+		t.Fatalf("stored price hash=%q want=%q err=%v", price.ContentHash, priceHash, err)
 	}
 	content := NewPublicContentService(tx)
 	draft, err := content.GetDraft(context.Background(), f.actor.ID)
@@ -61,13 +64,13 @@ func TestPublicCatalogReadDBCommittedIntegrityAndDynamicInactivation(t *testing.
 	if err != nil || len(projection.Items) != 1 || projection.Items[0].ModelKey != seed.modelKey {
 		t.Fatalf("projection=%#v err=%v", projection, err)
 	}
-	if err = tx.Model(&models.PublicPriceSnapshotItem{}).Where("snapshot_id=?", price.ID).Update("display_name", "tampered").Error; err != nil {
+	if err = tx.Exec("UPDATE public_price_snapshot_items SET display_name=? WHERE snapshot_id=?", "tampered", price.ID).Error; err != nil {
 		t.Fatal(err)
 	}
 	if got, readErr := reader.Projection(context.Background()); status(readErr) != 503 || got != nil {
 		t.Fatalf("tampered projection=%#v err=%v", got, readErr)
 	}
-	if err = tx.Model(&models.PublicPriceSnapshotItem{}).Where("snapshot_id=?", price.ID).Update("display_name", priceItems[0].DisplayName).Error; err != nil {
+	if err = tx.Exec("UPDATE public_price_snapshot_items SET display_name=? WHERE snapshot_id=?", priceItems[0].DisplayName, price.ID).Error; err != nil {
 		t.Fatal(err)
 	}
 	if err = tx.Model(&models.PublicModelConfig{}).Where("model_key=?", seed.modelKey).Update("status", models.PublicModelConfigStatusInactive).Error; err != nil {

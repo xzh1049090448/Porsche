@@ -202,6 +202,13 @@ func matchesPublicContentPricingSchema(contracts []publicContentPricingTableCont
 }
 
 func matchesPublicContentPricingTableContract(want publicContentPricingTableContract, got businessGroupTableMetadata, currentSchema string) bool {
+	if want.table.name == "public_render_jobs" {
+		var ok bool
+		got, ok = withoutPublicRenderTerminalAdditions(got)
+		if !ok {
+			return false
+		}
+	}
 	if got.engine != "InnoDB" || got.characterSet != "utf8mb4" || got.collation != "utf8mb4_unicode_ci" || len(got.columns) != len(want.table.columns) {
 		return false
 	}
@@ -269,6 +276,49 @@ func matchesPublicContentPricingTableContract(want publicContentPricingTableCont
 		}
 	}
 	return true
+}
+
+func withoutPublicRenderTerminalAdditions(got businessGroupTableMetadata) (businessGroupTableMetadata, bool) {
+	expected := map[string]businessGroupColumnMetadata{
+		"last_terminal_owner_hmac": {name: "last_terminal_owner_hmac", columnType: "char(64)", nullable: "YES", characterSet: "ascii", collation: "ascii_bin"},
+		"last_terminal_fence":      {name: "last_terminal_fence", columnType: "int", nullable: "YES"},
+		"last_terminal_operation":  {name: "last_terminal_operation", columnType: "int", nullable: "YES"},
+		"last_terminal_state":      {name: "last_terminal_state", columnType: "int", nullable: "YES"},
+	}
+	columns := make([]businessGroupColumnMetadata, 0, len(got.columns))
+	seen := 0
+	for _, column := range got.columns {
+		want, additive := expected[column.name]
+		if !additive {
+			columns = append(columns, column)
+			continue
+		}
+		if !matchesBusinessGroupColumn(want, column, false) {
+			return got, false
+		}
+		seen++
+	}
+	if seen != 0 && seen != len(expected) {
+		return got, false
+	}
+	checks := got.checks[:0]
+	terminalChecks := 0
+	for _, check := range got.checks {
+		if check.name != "chk_public_render_jobs_terminal" {
+			checks = append(checks, check)
+			continue
+		}
+		if seen != len(expected) || check.enforced != "YES" || !publicRenderTerminalCheckMatches(check.clause) {
+			return got, false
+		}
+		terminalChecks++
+	}
+	if (seen == 0 && terminalChecks != 0) || (seen == len(expected) && terminalChecks != 1) {
+		return got, false
+	}
+	got.columns = columns
+	got.checks = checks
+	return got, true
 }
 
 func requiredPublicContentPricingIndex(indexes []businessGroupIndexContract, name string) (businessGroupIndexContract, bool) {

@@ -13,6 +13,8 @@ var ErrPublicRenderJobTerminalMigration = errors.New("public render job terminal
 
 const publicRenderTerminalCheck = "((last_terminal_owner_hmac is null and last_terminal_fence is null and last_terminal_operation is null and last_terminal_state is null) or (last_terminal_owner_hmac is not null and last_terminal_fence > 0 and last_terminal_operation in (1,2) and last_terminal_state in (1,3,4)))"
 
+const publicRenderTerminalMySQLCheck = "(((last_terminal_owner_hmac is null) and (last_terminal_fence is null) and (last_terminal_operation is null) and (last_terminal_state is null)) or ((last_terminal_owner_hmac is not null) and (last_terminal_fence > 0) and (last_terminal_operation in (1,2)) and (last_terminal_state in (1,3,4))))"
+
 func VerifyPublicRenderJobTerminalSchema(ctx context.Context, db *gorm.DB) error {
 	if db == nil {
 		return ErrPublicRenderJobTerminalMigration
@@ -24,10 +26,16 @@ func VerifyPublicRenderJobTerminalSchema(ctx context.Context, db *gorm.DB) error
 	}
 	var clauses []string
 	err = db.WithContext(ctx).Raw(`SELECT cc.check_clause FROM information_schema.check_constraints cc JOIN information_schema.table_constraints tc ON tc.constraint_schema=cc.constraint_schema AND tc.constraint_name=cc.constraint_name AND tc.table_name='public_render_jobs' WHERE cc.constraint_schema=DATABASE() AND cc.constraint_name='chk_public_render_jobs_terminal' AND tc.constraint_type='CHECK'`).Scan(&clauses).Error
-	if err != nil || len(clauses) != 1 || normalizePublicRenderTerminalCheck(clauses[0]) != normalizePublicRenderTerminalCheck(publicRenderTerminalCheck) {
+	if err != nil || len(clauses) != 1 || !publicRenderTerminalCheckMatches(clauses[0]) {
 		return ErrPublicRenderJobTerminalMigration
 	}
 	return nil
+}
+
+func publicRenderTerminalCheckMatches(value string) bool {
+	normalized := normalizePublicRenderTerminalCheck(value)
+	return normalized == normalizePublicRenderTerminalCheck(publicRenderTerminalCheck) ||
+		normalized == normalizePublicRenderTerminalCheck(publicRenderTerminalMySQLCheck)
 }
 
 func normalizePublicRenderTerminalCheck(value string) string {

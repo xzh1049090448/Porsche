@@ -276,6 +276,9 @@ func TestPublicPriceSnapshotDBRejectsContentBindingDriftAndRebindsCompatibleGene
 		return m
 	}
 	a, b := createActive("content-a-"), createActive("content-b-")
+	if _, e := NewPublicPriceSnapshotService(f.db).Publish(ctx, PublicPriceSnapshotRequest{ActorID: f.actor.ID, ExpectedRevision: publicPriceDraftRevision(t, f.db), IdempotencyKey: "initial-binding"}); e != nil {
+		t.Fatal(e)
+	}
 	var state models.PublicPublicationState
 	if e := f.db.Where("state_key=?", publicPublicationStateKey).First(&state).Error; e != nil {
 		t.Fatal(e)
@@ -291,7 +294,7 @@ func TestPublicPriceSnapshotDBRejectsContentBindingDriftAndRebindsCompatibleGene
 	payload := models.JSONMap{"home": "[model](/pricing/" + a.ModelKey + ")", "about": "About", "terms": "Terms", "privacy": "Privacy", "legal_reviewed": true, "model_keys": []string{a.ModelKey}, "price_snapshot_guid": fmt.Sprint(boundPrice.Guid), "price_snapshot_version": boundPrice.Version}
 	encoded, _ := json.Marshal(payload)
 	sum := sha256.Sum256(encoded)
-	if e := f.db.Model(&content).Updates(map[string]any{"payload": payload, "content_hash": hex.EncodeToString(sum[:])}).Error; e != nil {
+	if e := f.db.Exec("UPDATE public_content_releases SET payload=?, content_hash=? WHERE id=?", payload, hex.EncodeToString(sum[:]), content.ID).Error; e != nil {
 		t.Fatal(e)
 	}
 	deactivated, e := admin.Deactivate(ctx, f.actor.ID, mustGUID(t, a.GUID), DeactivationRequest{ExpectedRevision: a.Revision, Reason: "binding test"})

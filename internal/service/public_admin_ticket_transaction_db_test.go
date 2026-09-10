@@ -33,6 +33,7 @@ func openPublicTicketDBFixture(t *testing.T) *publicTicketDBFixture {
 	// Each test owns a migrated child schema derived from the explicitly named
 	// disposable parent, so broad fixture cleanup cannot affect another suite.
 	base := openTask8MonitorDBFixture(t)
+	t.Cleanup(func() { cleanPublicContentDBFixture(t, base.db) })
 	redisOptions, err := redis.ParseURL(strings.TrimSpace(os.Getenv("TEST_REDIS_URL")))
 	if err != nil {
 		t.Fatalf("parse TEST_REDIS_URL: %v", err)
@@ -118,6 +119,14 @@ func TestPublicPriceTicketAndBusinessCommitRollbackReplayRealDB(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
+	input := fInputForTicket(t, f)
+	model, err := NewPublicModelAdminService(f.db).Create(ctx, f.actor.ID, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = NewPublicModelAdminService(f.db).Activate(ctx, f.actor.ID, mustGUID(t, model.GUID), model.Revision); err != nil {
+		t.Fatal(err)
+	}
 	revision := publicPriceDraftRevision(t, f.db)
 	request := PublicPriceSnapshotRequest{ActorID: f.actor.ID, ExpectedRevision: revision, IdempotencyKey: "ticket-price-publish"}
 	intent := actionsecurity.PublicPricingPublishIntent{ExpectedRevision: revision}

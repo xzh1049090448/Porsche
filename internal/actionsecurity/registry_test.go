@@ -26,7 +26,11 @@ func TestExactPublicAdministrationActionsAreActiveAndTicketed(t *testing.T) {
 	}
 	for action, name := range want {
 		descriptor, ok := ResolveActiveAction(action)
-		if !ok || !descriptor.Active || !descriptor.RequiresTicket || !descriptor.RootOnly || descriptor.Name != name || descriptor.TargetKind != TargetPublicContent {
+		wantTarget := TargetPublicContent
+		if action == ActionPublicPricingPublish {
+			wantTarget = TargetNone
+		}
+		if !ok || !descriptor.Active || !descriptor.RequiresTicket || !descriptor.RootOnly || descriptor.Name != name || descriptor.TargetKind != wantTarget {
 			t.Fatalf("action %d descriptor = %#v, found=%v", action, descriptor, ok)
 		}
 	}
@@ -44,7 +48,7 @@ func TestInactiveActionDescriptorsExactContract(t *testing.T) {
 		{ActionPublicContentRollback, "public_content.rollback", "public_content.rollback", false, true, false, TargetPublicContent, nil},
 		{ActionUsersCreate, "users.create", "users.create", false, false, false, TargetNone, nil},
 		{ActionPublicModelDelete, "public_models.delete", "public_content.edit", true, true, false, TargetPublicContent, nil},
-		{ActionPublicPricingPublish, "public_pricing.publish", "public_content.publish", true, true, false, TargetPublicContent, nil},
+		{ActionPublicPricingPublish, "public_pricing.publish", "public_content.publish", true, true, false, TargetNone, nil},
 		{ActionPublicPricingRestore, "public_pricing.restore", "public_content.rollback", true, true, false, TargetPublicContent, nil},
 		{ActionPublicContentRestore, "public_content.restore", "public_content.rollback", true, true, false, TargetPublicContent, nil},
 	}
@@ -85,7 +89,7 @@ func TestRegistryReturnsCopiesAndActivatesExactUserManagementBundle(t *testing.T
 		{ActionUsersCreateAdmin, "users.create_admin", "users.create", true, true, true, TargetNone, nil},
 		{ActionUsersDelete, "users.delete", "users.delete", false, true, true, TargetUser, nil},
 		{ActionPublicModelDelete, "public_models.delete", "public_content.edit", true, true, true, TargetPublicContent, nil},
-		{ActionPublicPricingPublish, "public_pricing.publish", "public_content.publish", true, true, true, TargetPublicContent, nil},
+		{ActionPublicPricingPublish, "public_pricing.publish", "public_content.publish", true, true, true, TargetNone, nil},
 		{ActionPublicPricingRestore, "public_pricing.restore", "public_content.rollback", true, true, true, TargetPublicContent, nil},
 		{ActionPublicContentPublish, "public_content.publish", "public_content.publish", true, true, true, TargetPublicContent, nil},
 		{ActionPublicContentRestore, "public_content.restore", "public_content.rollback", true, true, true, TargetPublicContent, nil},

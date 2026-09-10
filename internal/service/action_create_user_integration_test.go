@@ -463,7 +463,7 @@ func prepareCreateSnapshotThrough0010(t *testing.T, now int64, deleteBeforeMigra
 		}
 	}
 	migrations, err := migration.All()
-	if err != nil || len(migrations) != 11 || migrations[9].Version != "0010" || migrations[10].Version != "0011" {
+	if err != nil || len(migrations) != 15 || migrations[9].Version != "0010" || migrations[10].Version != "0011" || migrations[14].Version != "0015" {
 		t.Fatalf("0010 migration = %d/%v", len(migrations), err)
 	}
 	for index, statement := range strings.Split(string(migrations[9].DownSQL), ";") {

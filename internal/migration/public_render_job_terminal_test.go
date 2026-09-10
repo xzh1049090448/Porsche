@@ -39,6 +39,13 @@ func TestPublicRenderJobTerminalMigrationContract(t *testing.T) {
 	}
 }
 
+func TestPublicRenderTerminalCheckMatchesMySQLAtomicParentheses(t *testing.T) {
+	mysqlClause := "(((`last_terminal_owner_hmac` is null) and (`last_terminal_fence` is null) and (`last_terminal_operation` is null) and (`last_terminal_state` is null)) or ((`last_terminal_owner_hmac` is not null) and (`last_terminal_fence` > 0) and (`last_terminal_operation` in (1,2)) and (`last_terminal_state` in (1,3,4))))"
+	if !publicRenderTerminalCheckMatches(mysqlClause) {
+		t.Fatal("MySQL canonical clause was rejected")
+	}
+}
+
 func TestPublicRenderJobTerminalMigrationRealMySQLDownAndReapply(t *testing.T) {
 	if strings.TrimSpace(os.Getenv("TEST_DATABASE_URL")) == "" {
 		t.Skip("BLOCKED_FIXTURE: requires explicit isolated TEST_DATABASE_URL MySQL fixture; .env is never read")
@@ -79,7 +86,7 @@ func TestPublicRenderJobTerminalMigrationRealMySQLDownAndReapply(t *testing.T) {
 		t.Fatalf("global verify after reapply: %v", err)
 	}
 	assertPublicContentPricingLedger(t, db, m, true)
-	if err := db.Exec("ALTER TABLE public_render_jobs DROP CHECK chk_public_render_jobs_terminal, ADD CONSTRAINT chk_public_render_jobs_terminal CHECK (1)").Error; err != nil {
+	if err := db.Exec("ALTER TABLE public_render_jobs DROP CHECK chk_public_render_jobs_terminal, ADD CONSTRAINT chk_public_render_jobs_terminal CHECK (last_terminal_fence IS NULL)").Error; err != nil {
 		t.Fatal(err)
 	}
 	restoreCheck := func() {

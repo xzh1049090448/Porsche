@@ -15,7 +15,7 @@ var canonicalActionDescriptors = [...]Descriptor{
 	{ActionPublicContentRollback, "public_content.rollback", "public_content.rollback", false, true, false, TargetPublicContent, encodeRollbackAny},
 	{ActionUsersCreate, "users.create", "users.create", false, false, false, TargetNone, encodeCreateAny},
 	{ActionPublicModelDelete, "public_models.delete", "public_content.edit", true, true, false, TargetPublicContent, encodePublicModelDeleteAny},
-	{ActionPublicPricingPublish, "public_pricing.publish", "public_content.publish", true, true, false, TargetPublicContent, encodePublicPricingPublishAny},
+	{ActionPublicPricingPublish, "public_pricing.publish", "public_content.publish", true, true, false, TargetNone, encodePublicPricingPublishAny},
 	{ActionPublicPricingRestore, "public_pricing.restore", "public_content.rollback", true, true, false, TargetPublicContent, encodePublicPricingRestoreAny},
 	{ActionPublicContentRestore, "public_content.restore", "public_content.rollback", true, true, false, TargetPublicContent, encodePublicContentRestoreAny},
 }

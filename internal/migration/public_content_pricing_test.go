@@ -113,6 +113,17 @@ func TestPublicContentPricingMigrationRealMySQL(t *testing.T) {
 	if err := Verify(context.Background(), db); err != nil {
 		t.Fatalf("global verify immediately after apply: %v", err)
 	}
+	all, err := All()
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminalMigration := all[len(all)-1]
+	if err := executePublicContentPricingSQL(db, terminalMigration.DownSQL); err != nil {
+		t.Fatal(err)
+	}
+	if err := setFixtureMigrationActive(db, terminalMigration.Version, false); err != nil {
+		t.Fatal(err)
+	}
 	if err := executePublicContentPricingSQL(db, migration.DownSQL); err != nil {
 		t.Fatal(err)
 	}
