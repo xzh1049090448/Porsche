@@ -147,8 +147,13 @@ func (s *PlatformGenerationStore) RenewLease(ctx context.Context, userID int64, 
 		return current, ErrPlatformGenerationConflict
 	}
 	next := clonePlatformGeneration(current)
-	next.LeaseUntilMillis = nowMillis + platformGenerationLeaseDuration.Milliseconds()
+	renewPlatformGenerationLeaseSnapshot(&next, nowMillis)
 	return s.writePlatformGenerationControlCAS(ctx, userID, generationID, raw, next)
+}
+
+func renewPlatformGenerationLeaseSnapshot(snapshot *PlatformGenerationSnapshot, nowMillis int64) {
+	snapshot.UpdatedAtMillis = nowMillis
+	snapshot.LeaseUntilMillis = nowMillis + platformGenerationLeaseDuration.Milliseconds()
 }
 
 func platformGenerationLatestRunningActivity(snapshot PlatformGenerationSnapshot) int64 {

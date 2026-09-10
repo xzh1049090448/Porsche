@@ -1185,6 +1185,30 @@ func TestPlatformGenerationRunningLeaseAuthorizationRejectsDeadline(t *testing.T
 	}
 }
 
+func TestPlatformGenerationRenewalMutationUpdatesActivityAndDeadline(t *testing.T) {
+	nowMillis := int64(2_000)
+	snapshot := PlatformGenerationSnapshot{
+		GenerationID: generationTestID,
+		Mode:         PlatformGenerationModeSingle,
+		Models:       []string{"a"},
+		State:        PlatformGenerationStateRunning,
+		ModelStates: map[string]PlatformGenerationModel{
+			"a": {State: PlatformGenerationStateRunning},
+		},
+		CreatedAtMillis:  1_000,
+		UpdatedAtMillis:  1_000,
+		LeaseOwnerSHA256: strings.Repeat("a", sha256.Size*2),
+		LeaseUntilMillis: 31_000,
+	}
+	renewPlatformGenerationLeaseSnapshot(&snapshot, nowMillis)
+	if snapshot.UpdatedAtMillis != nowMillis || snapshot.LeaseUntilMillis != nowMillis+platformGenerationLeaseDuration.Milliseconds() {
+		t.Fatalf("renewed snapshot=%#v", snapshot)
+	}
+	if !validPlatformGenerationSnapshot(snapshot) {
+		t.Fatalf("renewed snapshot is not strict-valid: %#v", snapshot)
+	}
+}
+
 func TestPlatformGenerationLeaseRenewalUsesDigestAndPreservesUpdatedAtAndTTL(t *testing.T) {
 	store, client := openTestPlatformGenerationStore(t)
 	input := PlatformGenerationClaimInput{UserID: 930010, GenerationID: "81000000-0000-4000-8000-000000000010", Mode: PlatformGenerationModeSingle, Models: []string{"a"}, NowMillis: 1000}
@@ -1194,8 +1218,12 @@ func TestPlatformGenerationLeaseRenewalUsesDigestAndPreservesUpdatedAtAndTTL(t *
 	before := requirePositivePlatformGenerationTTL(t, client, key)
 
 	renewed, err := store.RenewLease(context.Background(), input.UserID, input.GenerationID, claim.LeaseToken, 2000)
-	if err != nil || renewed.LeaseUntilMillis != 32000 || renewed.CreatedAtMillis != 1000 || renewed.UpdatedAtMillis != 1000 {
+	if err != nil || renewed.LeaseUntilMillis != 32000 || renewed.CreatedAtMillis != 1000 || renewed.UpdatedAtMillis != 2000 || !validPlatformGenerationSnapshot(renewed) {
 		t.Fatalf("renewed=%#v error=%v", renewed, err)
+	}
+	stored, err := store.Get(context.Background(), input.UserID, input.GenerationID)
+	if err != nil || !reflect.DeepEqual(stored, renewed) {
+		t.Fatalf("stored renewal=%#v renewed=%#v error=%v", stored, renewed, err)
 	}
 	if renewed.LeaseOwnerSHA256 != platformGenerationLeaseDigest(claim.LeaseToken) || strings.Contains(fmt.Sprint(renewed), claim.LeaseToken) {
 		t.Fatalf("lease token was not represented only by digest: %#v", renewed)
@@ -1844,7 +1872,7 @@ func TestPlatformGenerationLeaseRenewalAndCancelRejectClockRegression(t *testing
 	preparePlatformGenerationTestKey(t, client, key)
 	claim := claimTestGeneration(t, store, input)
 	renewed, err := store.RenewLease(ctx, input.UserID, input.GenerationID, claim.LeaseToken, 2000)
-	if err != nil || renewed.LeaseUntilMillis != 32000 || renewed.UpdatedAtMillis != 1000 {
+	if err != nil || renewed.LeaseUntilMillis != 32000 || renewed.UpdatedAtMillis != 2000 {
 		t.Fatalf("initial renewal=%#v error=%v", renewed, err)
 	}
 	rawAfterRenewal, err := client.Get(ctx, key).Result()
@@ -2084,7 +2112,7 @@ func TestPlatformGenerationCancelVersusRenewConvergesWithoutLeaseRegression(t *t
 		renew := <-renews
 		cancel := <-cancels
 		if renew.err == nil {
-			if renew.snapshot.State != PlatformGenerationStateRunning || renew.snapshot.LeaseUntilMillis != 32000 {
+			if renew.snapshot.State != PlatformGenerationStateRunning || renew.snapshot.LeaseUntilMillis != 32000 || renew.snapshot.UpdatedAtMillis != 2000 {
 				t.Fatalf("iteration %d renew=%#v", iteration, renew)
 			}
 			if errors.Is(cancel.err, ErrPlatformGenerationConflict) && !reflect.DeepEqual(cancel.decision.Snapshot, renew.snapshot) {
