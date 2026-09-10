@@ -42,7 +42,7 @@ func TestBusinessGroupMigrationLatest(t *testing.T) {
 		"62a91248a861e1a1208255bdfe7f0660e0ca8750c6bd52fb96f29722a82a989c",
 		"cc016d547a07e44d140b8c7c5e39b64859e12993b8f2d4aeae42ba235fd69671",
 		"998e273023e4a6992f6bf78b8ac6f7a0ee7e7d85bb3bcfa468659e7e4db7f9be",
-		"54b3b61dc0192ac69b4b0c7abb2f18f71b79920bbfc86935259fae1c172f7c42",
+		"4bcb4ef5e107b2b6ceacdcf334b0f997a2eddbd03174816ad6aad6547924f57c",
 		"04e8c22b9c3ead34a4572f81ca0060a9305acf635cc0ead5c10136239b031ff2",
 	}
 	if len(wantPublished) != len(migrations) {
