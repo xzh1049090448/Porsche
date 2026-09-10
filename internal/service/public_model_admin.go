@@ -135,10 +135,11 @@ type PublicModelAdminService struct {
 	db       *gorm.DB
 	now      func() int64
 	nextGUID func() int64
+	fail     func(string) error
 }
 
 func NewPublicModelAdminService(db *gorm.DB) *PublicModelAdminService {
-	return &PublicModelAdminService{db: db, now: persistence.NowMillis, nextGUID: persistence.NextGUID}
+	return &PublicModelAdminService{db: db, now: persistence.NowMillis, nextGUID: persistence.NextGUID, fail: func(string) error { return nil }}
 }
 
 func validatePublicModelCreate(in CreatePublicModelRequest) error {
@@ -394,6 +395,9 @@ func (s *PublicModelAdminService) mutateWithOptions(ctx context.Context, actorID
 		}
 		if err = options.consumeTicket(ctx, tx); err != nil {
 			return err
+		}
+		if err = s.fail("after_ticket"); err != nil {
+			return errUnavailable("public model persistence unavailable")
 		}
 		draft, err := lockPublicPriceDraftState(tx)
 		if err != nil {

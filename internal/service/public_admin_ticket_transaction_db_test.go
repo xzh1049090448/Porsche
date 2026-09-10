@@ -160,25 +160,42 @@ func TestPublicPriceTicketAndBusinessCommitRollbackReplayRealDB(t *testing.T) {
 
 	restoreRevision := publicPriceDraftRevision(t, f.db)
 	restoreIntent := actionsecurity.PublicPricingRestoreIntent{ReleaseGUID: mustGUID(t, release.GUID), ExpectedRevision: restoreRevision}
-	_, restoreOption := f.ticket(t, actionsecurity.ActionPublicPricingRestore, ptrInt64(mustGUID(t, release.GUID)), restoreIntent)
+	restoreTicket, restoreOption := f.ticket(t, actionsecurity.ActionPublicPricingRestore, ptrInt64(mustGUID(t, release.GUID)), restoreIntent)
 	restoreRequest := PublicPriceSnapshotRestoreRequest{ActorID: f.actor.ID, ExpectedRevision: restoreRevision, SnapshotGUID: release.GUID, IdempotencyKey: "ticket-price-restore"}
-	brokenRestore := NewPublicPriceSnapshotService(f.db)
-	brokenRestore.fail = func(point string) error {
-		if point == "after_pointer" {
-			return errors.New("injected pointer failure")
-		}
-		return nil
-	}
 	restoreBefore := publicPriceSnapshotFixtureCounts(t, f.db, f.actor.ID)
-	if _, err = brokenRestore.Restore(ctx, restoreRequest, restoreOption); status(err) != 503 {
-		t.Fatalf("injected restore error=%v", err)
+	for _, failurePoint := range []string{"replay_lookup", "after_pointer"} {
+		brokenRestore := NewPublicPriceSnapshotService(f.db)
+		brokenRestore.fail = func(point string) error {
+			if point == failurePoint {
+				return errors.New("injected restore failure")
+			}
+			return nil
+		}
+		if _, err = brokenRestore.Restore(ctx, restoreRequest, restoreOption); status(err) != 503 {
+			t.Fatalf("injected %s restore error=%v", failurePoint, err)
+		}
+		f.assertTicket(t, actionsecurity.ActionPublicPricingRestore, false)
+		if got := publicPriceSnapshotFixtureCounts(t, f.db, f.actor.ID); got != restoreBefore {
+			t.Fatalf("failed %s restore changed business rows before=%v after=%v", failurePoint, restoreBefore, got)
+		}
 	}
-	f.assertTicket(t, actionsecurity.ActionPublicPricingRestore, false)
-	if got := publicPriceSnapshotFixtureCounts(t, f.db, f.actor.ID); got != restoreBefore {
-		t.Fatalf("failed restore changed business rows before=%v after=%v", restoreBefore, got)
-	}
-	if _, err = NewPublicPriceSnapshotService(f.db).Restore(ctx, restoreRequest, restoreOption); err != nil {
+	restored, err := NewPublicPriceSnapshotService(f.db).Restore(ctx, restoreRequest, restoreOption)
+	if err != nil {
 		t.Fatalf("restore retry same ticket: %v", err)
+	}
+	f.assertTicket(t, actionsecurity.ActionPublicPricingRestore, true)
+	restoredCounts := publicPriceSnapshotFixtureCounts(t, f.db, f.actor.ID)
+	restoredDraftRevision := publicPriceDraftRevision(t, f.db)
+	if _, err = NewPublicPriceSnapshotService(f.db).Restore(ctx, restoreRequest, restoreOption); !errors.Is(err, ErrActionVerificationForbidden) {
+		t.Fatalf("consumed restore ticket replay=%v ticket=%q", err, restoreTicket)
+	}
+	_, freshRestore := f.ticket(t, actionsecurity.ActionPublicPricingRestore, ptrInt64(mustGUID(t, release.GUID)), restoreIntent)
+	restoredReplay, err := NewPublicPriceSnapshotService(f.db).Restore(ctx, restoreRequest, freshRestore)
+	if err != nil || restoredReplay.GUID != restored.GUID {
+		t.Fatalf("fresh restore ticket replay=%#v err=%v", restoredReplay, err)
+	}
+	if got := publicPriceSnapshotFixtureCounts(t, f.db, f.actor.ID); got != restoredCounts || publicPriceDraftRevision(t, f.db) != restoredDraftRevision {
+		t.Fatalf("restore replay duplicated or mutated state counts=%v want=%v draft=%d want=%d", got, restoredCounts, publicPriceDraftRevision(t, f.db), restoredDraftRevision)
 	}
 	f.assertTicket(t, actionsecurity.ActionPublicPricingRestore, true)
 }
@@ -224,6 +241,40 @@ func TestPublicModelDeleteTicketAndBusinessCommitRealDB(t *testing.T) {
 	var unchanged models.PublicModelConfig
 	if err = f.db.Where("guid=?", guid).First(&unchanged).Error; err != nil || unchanged.IsDeleted != 0 || unchanged.Revision != model.Revision {
 		t.Fatalf("fabricated ticket changed model=%#v err=%v", unchanged, err)
+	}
+	var draftBefore models.PublicPriceDraftState
+	if err = f.db.Where("state_key=?", "pricing").First(&draftBefore).Error; err != nil {
+		t.Fatal(err)
+	}
+	var auditsBefore int64
+	if err = f.db.Model(&models.AuditLog{}).Where("user_id=? AND action=?", f.actor.ID, "public_models.delete").Count(&auditsBefore).Error; err != nil {
+		t.Fatal(err)
+	}
+	brokenDelete := NewPublicModelAdminService(f.db)
+	brokenDelete.fail = func(point string) error {
+		if point == "after_ticket" {
+			return errors.New("injected model failure")
+		}
+		return nil
+	}
+	if err = brokenDelete.Delete(ctx, f.actor.ID, guid, request, option); status(err) != 503 {
+		t.Fatalf("injected model delete=%v", err)
+	}
+	f.assertTicket(t, actionsecurity.ActionPublicModelDelete, false)
+	var rollbackModel models.PublicModelConfig
+	var rollbackDraft models.PublicPriceDraftState
+	var rollbackAudits int64
+	if err = f.db.Where("guid=?", guid).First(&rollbackModel).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err = f.db.Where("state_key=?", "pricing").First(&rollbackDraft).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err = f.db.Model(&models.AuditLog{}).Where("user_id=? AND action=?", f.actor.ID, "public_models.delete").Count(&rollbackAudits).Error; err != nil {
+		t.Fatal(err)
+	}
+	if rollbackModel.IsDeleted != 0 || rollbackModel.Revision != model.Revision || rollbackDraft.Revision != draftBefore.Revision || rollbackAudits != auditsBefore {
+		t.Fatalf("failed model delete persisted model=%#v draft=%#v audits=%d", rollbackModel, rollbackDraft, rollbackAudits)
 	}
 	if err = NewPublicModelAdminService(f.db).Delete(ctx, f.actor.ID, guid, request, option); err != nil {
 		t.Fatalf("valid ticket delete=%v", err)
@@ -332,25 +383,57 @@ func TestPublicContentTicketAndBusinessCommitRollbackReplayRealDB(t *testing.T) 
 	restoreRevision := draft.Revision
 	restoreGUID := mustGUID(t, release.GUID)
 	restoreIntent := actionsecurity.PublicContentRestoreIntent{ReleaseGUID: restoreGUID, ExpectedRevision: restoreRevision}
-	_, restoreOption := f.ticket(t, actionsecurity.ActionPublicContentRestore, &restoreGUID, restoreIntent)
+	restoreTicket, restoreOption := f.ticket(t, actionsecurity.ActionPublicContentRestore, &restoreGUID, restoreIntent)
 	restoreRequest := PublicContentRestoreRequest{ActorID: f.actor.ID, ExpectedRevision: restoreRevision, ReleaseGUID: release.GUID, IdempotencyKey: "ticket-content-restore"}
-	brokenRestore := NewPublicContentService(f.db)
-	brokenRestore.fail = func(point string) error {
-		if point == "after_pointer" {
-			return errors.New("injected after pointer failure")
-		}
-		return nil
-	}
 	restoreBefore := contentDBCounts(t, f.db)
-	if _, err = brokenRestore.Restore(ctx, restoreRequest, restoreOption); status(err) != 503 {
-		t.Fatalf("injected restore error=%v", err)
+	draftBeforeRestore, err := svc.GetDraft(ctx, f.actor.ID)
+	if err != nil {
+		t.Fatal(err)
 	}
-	f.assertTicket(t, actionsecurity.ActionPublicContentRestore, false)
-	if got := contentDBCounts(t, f.db); got != restoreBefore {
-		t.Fatalf("failed restore changed business rows before=%v after=%v", restoreBefore, got)
+	for _, failurePoint := range []string{"replay_lookup", "after_pointer"} {
+		brokenRestore := NewPublicContentService(f.db)
+		brokenRestore.fail = func(point string) error {
+			if point == failurePoint {
+				return errors.New("injected restore failure")
+			}
+			return nil
+		}
+		if _, err = brokenRestore.Restore(ctx, restoreRequest, restoreOption); status(err) != 503 {
+			t.Fatalf("injected %s restore error=%v", failurePoint, err)
+		}
+		f.assertTicket(t, actionsecurity.ActionPublicContentRestore, false)
+		afterFailure, draftErr := svc.GetDraft(ctx, f.actor.ID)
+		if draftErr != nil {
+			t.Fatal(draftErr)
+		}
+		if got := contentDBCounts(t, f.db); got != restoreBefore || afterFailure.Revision != draftBeforeRestore.Revision || afterFailure.Home != draftBeforeRestore.Home {
+			t.Fatalf("failed %s restore changed counts=%v want=%v draft=%#v", failurePoint, got, restoreBefore, afterFailure)
+		}
 	}
-	if _, err = svc.Restore(ctx, restoreRequest, restoreOption); err != nil {
+	restored, err := svc.Restore(ctx, restoreRequest, restoreOption)
+	if err != nil {
 		t.Fatalf("restore retry same ticket: %v", err)
+	}
+	f.assertTicket(t, actionsecurity.ActionPublicContentRestore, true)
+	restoredCounts := contentDBCounts(t, f.db)
+	restoredDraft, err := svc.GetDraft(ctx, f.actor.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = svc.Restore(ctx, restoreRequest, restoreOption); !errors.Is(err, ErrActionVerificationForbidden) {
+		t.Fatalf("consumed content restore ticket replay=%v ticket=%q", err, restoreTicket)
+	}
+	_, freshRestore := f.ticket(t, actionsecurity.ActionPublicContentRestore, &restoreGUID, restoreIntent)
+	restoredReplay, err := svc.Restore(ctx, restoreRequest, freshRestore)
+	if err != nil || restoredReplay.GUID != restored.GUID {
+		t.Fatalf("fresh content restore replay=%#v err=%v", restoredReplay, err)
+	}
+	afterReplayDraft, err := svc.GetDraft(ctx, f.actor.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := contentDBCounts(t, f.db); got != restoredCounts || afterReplayDraft.Revision != restoredDraft.Revision || afterReplayDraft.Home != restoredDraft.Home {
+		t.Fatalf("content restore replay duplicated or rematerialized counts=%v want=%v draft=%#v want=%#v", got, restoredCounts, afterReplayDraft, restoredDraft)
 	}
 	f.assertTicket(t, actionsecurity.ActionPublicContentRestore, true)
 }
