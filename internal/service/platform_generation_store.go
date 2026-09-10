@@ -795,15 +795,15 @@ func validPlatformGenerationWire(raw string, snapshot PlatformGenerationSnapshot
 	if snapshot.State == PlatformGenerationStateRunning {
 		digestPresent := platformGenerationWirePresent(fields, "lease_owner_sha256")
 		deadlinePresent := platformGenerationWirePresent(fields, "lease_until_ms")
-		if digestPresent != deadlinePresent {
+		if !digestPresent || !deadlinePresent {
 			return false
 		}
-		if digestPresent && (!platformGenerationWireRequired(fields, "lease_owner_sha256", "lease_until_ms") || snapshot.LeaseOwnerSHA256 == "" || snapshot.LeaseUntilMillis <= 0) {
+		if !platformGenerationWireRequired(fields, "lease_owner_sha256", "lease_until_ms") || snapshot.LeaseOwnerSHA256 == "" || snapshot.LeaseUntilMillis <= 0 {
 			return false
 		}
 	} else if snapshot.State == PlatformGenerationStateCancelling {
 		digestPresent := platformGenerationWirePresent(fields, "lease_owner_sha256")
-		if platformGenerationWirePresent(fields, "lease_until_ms") || (digestPresent && (!platformGenerationWireRequired(fields, "lease_owner_sha256") || snapshot.LeaseOwnerSHA256 == "")) {
+		if !digestPresent || platformGenerationWirePresent(fields, "lease_until_ms") || !platformGenerationWireRequired(fields, "lease_owner_sha256") || snapshot.LeaseOwnerSHA256 == "" {
 			return false
 		}
 	} else if platformGenerationWirePresent(fields, "lease_owner_sha256") || platformGenerationWirePresent(fields, "lease_until_ms") {
@@ -927,12 +927,9 @@ func validPlatformGenerationTombstone(snapshot PlatformGenerationSnapshot) bool 
 func validPlatformGenerationLease(snapshot PlatformGenerationSnapshot) bool {
 	switch snapshot.State {
 	case PlatformGenerationStateRunning:
-		if snapshot.LeaseOwnerSHA256 == "" && snapshot.LeaseUntilMillis == 0 {
-			return true
-		}
-		return validPlatformGenerationLeaseDigest(snapshot.LeaseOwnerSHA256) && platformSSEV2SafeInteger(snapshot.LeaseUntilMillis) && snapshot.LeaseUntilMillis > snapshot.UpdatedAtMillis
+		return validPlatformGenerationLeaseDigest(snapshot.LeaseOwnerSHA256) && platformSSEV2SafeInteger(snapshot.LeaseUntilMillis) && snapshot.LeaseUntilMillis > 0
 	case PlatformGenerationStateCancelling:
-		return (snapshot.LeaseOwnerSHA256 == "" || validPlatformGenerationLeaseDigest(snapshot.LeaseOwnerSHA256)) && snapshot.LeaseUntilMillis == 0
+		return validPlatformGenerationLeaseDigest(snapshot.LeaseOwnerSHA256) && snapshot.LeaseUntilMillis == 0
 	default:
 		return snapshot.LeaseOwnerSHA256 == "" && snapshot.LeaseUntilMillis == 0
 	}

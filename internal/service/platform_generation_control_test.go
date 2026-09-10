@@ -107,6 +107,13 @@ func controlSnapshot(state PlatformGenerationState, nowMillis int64) PlatformGen
 	if state == PlatformGenerationStateCompleted {
 		snapshot.ModelStates["model-a"] = PlatformGenerationModel{State: PlatformGenerationStateCompleted, AssistantMessageGUID: "9001"}
 	}
+	if state == PlatformGenerationStateRunning {
+		snapshot.LeaseOwnerSHA256 = strings.Repeat("a", 64)
+		snapshot.LeaseUntilMillis = nowMillis
+	}
+	if state == PlatformGenerationStateCancelling {
+		snapshot.LeaseOwnerSHA256 = strings.Repeat("a", 64)
+	}
 	return snapshot
 }
 
@@ -512,22 +519,18 @@ func TestPlatformGenerationControlConvergesBoundariesAndCASOnce(t *testing.T) {
 			t.Fatalf("view/error/calls = %#v/%v/%d", view, err, fake.failCalls.Load())
 		}
 	})
-	t.Run("legacy and expired running fail", func(t *testing.T) {
-		for _, leased := range []bool{false, true} {
-			snapshot := controlSnapshot(PlatformGenerationStateRunning, now.Add(-time.Second).UnixMilli())
-			if leased {
-				snapshot.LeaseOwnerSHA256, snapshot.LeaseUntilMillis = strings.Repeat("a", 64), now.UnixMilli()
-			}
-			failed := controlSnapshot(PlatformGenerationStateFailed, now.UnixMilli())
-			fake := newPlatformGenerationControlFake(snapshot)
-			fake.failExpiredRunning = func(context.Context, int64, string, int64) (PlatformGenerationSnapshot, error) {
-				fake.failCalls.Add(1)
-				return failed, nil
-			}
-			view, err := mustControl(t, fake, NewPlatformGenerationCancellationRegistry(), now).Get(context.Background(), 7, controlGenerationID)
-			if err != nil || view.Status != "failed" || fake.failCalls.Load() != 1 {
-				t.Fatalf("view/error/calls = %#v/%v/%d", view, err, fake.failCalls.Load())
-			}
+	t.Run("expired running fails", func(t *testing.T) {
+		snapshot := controlSnapshot(PlatformGenerationStateRunning, now.Add(-time.Second).UnixMilli())
+		snapshot.LeaseUntilMillis = now.UnixMilli()
+		failed := controlSnapshot(PlatformGenerationStateFailed, now.UnixMilli())
+		fake := newPlatformGenerationControlFake(snapshot)
+		fake.failExpiredRunning = func(context.Context, int64, string, int64) (PlatformGenerationSnapshot, error) {
+			fake.failCalls.Add(1)
+			return failed, nil
+		}
+		view, err := mustControl(t, fake, NewPlatformGenerationCancellationRegistry(), now).Get(context.Background(), 7, controlGenerationID)
+		if err != nil || view.Status != "failed" || fake.failCalls.Load() != 1 {
+			t.Fatalf("view/error/calls = %#v/%v/%d", view, err, fake.failCalls.Load())
 		}
 	})
 	t.Run("cancelling boundary", func(t *testing.T) {

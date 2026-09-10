@@ -25,11 +25,39 @@ func TestPlatformGenerationOwnedMutationsRequireCapabilityAndKeepTTL(t *testing.
 	afterRecordTTL := requirePlatformGenerationTTLNotIncreased(t, client, key, beforeTTL)
 
 	wrongToken := base64.RawURLEncoding.EncodeToString([]byte("01234567890123456789012345678901"))
-	authoritative, err := store.RecordDeltaOwned(ctx, input.UserID, input.GenerationID, wrongToken, "a", 2, 1002)
-	if !errors.Is(err, ErrPlatformGenerationConflict) || !reflect.DeepEqual(authoritative, recorded) {
-		t.Fatalf("wrong-token authority=%#v error=%v", authoritative, err)
+	rawBeforeWrongToken, err := client.Get(ctx, key).Result()
+	if err != nil {
+		t.Fatal(err)
 	}
-	afterWrongTTL := requirePlatformGenerationTTLNotIncreased(t, client, key, afterRecordTTL)
+	wrongOperations := []struct {
+		name string
+		run  func() (PlatformGenerationSnapshot, error)
+	}{
+		{"record delta", func() (PlatformGenerationSnapshot, error) {
+			return store.RecordDeltaOwned(ctx, input.UserID, input.GenerationID, wrongToken, "a", 2, 1002)
+		}},
+		{"mark model done", func() (PlatformGenerationSnapshot, error) {
+			return store.MarkModelDoneOwned(ctx, input.UserID, input.GenerationID, wrongToken, "a", 1, 1002)
+		}},
+		{"begin commit", func() (PlatformGenerationSnapshot, error) {
+			return store.BeginCommitOwned(ctx, input.UserID, input.GenerationID, wrongToken, 1002)
+		}},
+		{"fail running", func() (PlatformGenerationSnapshot, error) {
+			return store.FailRunningOwned(ctx, input.UserID, input.GenerationID, wrongToken, "internal_error", 1002)
+		}},
+	}
+	afterWrongTTL := afterRecordTTL
+	for _, operation := range wrongOperations {
+		authoritative, operationErr := operation.run()
+		if !errors.Is(operationErr, ErrPlatformGenerationConflict) || !reflect.DeepEqual(authoritative, recorded) {
+			t.Fatalf("%s wrong-token authority=%#v error=%v", operation.name, authoritative, operationErr)
+		}
+		rawAfterWrongToken, readErr := client.Get(ctx, key).Result()
+		if readErr != nil || rawAfterWrongToken != rawBeforeWrongToken {
+			t.Fatalf("%s wrong-token mutation raw=%q before=%q error=%v", operation.name, rawAfterWrongToken, rawBeforeWrongToken, readErr)
+		}
+		afterWrongTTL = requirePlatformGenerationTTLNotIncreased(t, client, key, afterWrongTTL)
+	}
 
 	done, err := store.MarkModelDoneOwned(ctx, input.UserID, input.GenerationID, claim.LeaseToken, "a", 1, 1003)
 	if err != nil || done.ModelStates["a"].State != PlatformGenerationStateCompleted {
