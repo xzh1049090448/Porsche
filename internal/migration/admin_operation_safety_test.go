@@ -145,8 +145,15 @@ func TestAdminOperationSafetyRealMySQLDownUpAndVerifier(t *testing.T) {
 	if err := gdb.Raw(`SELECT COUNT(*) FROM information_schema.table_constraints tc JOIN information_schema.check_constraints cc ON cc.constraint_schema = tc.constraint_schema AND cc.constraint_name = tc.constraint_name WHERE tc.table_schema = DATABASE() AND tc.table_name IN ('admin_action_verifications','admin_operations') AND tc.constraint_type = 'CHECK' AND tc.enforced = 'YES' AND cc.check_clause <> ''`).Scan(&enforcedChecks).Error; err != nil {
 		t.Fatalf("read MySQL 8 CHECK metadata: %v", err)
 	}
-	if enforcedChecks != 12 {
-		t.Fatalf("enforced CHECK count = %d, want 12", enforcedChecks)
+	if enforcedChecks != 13 {
+		t.Fatalf("enforced CHECK count = %d, want 13", enforcedChecks)
+	}
+	var rolePermissionResultCheck int64
+	if err := gdb.Raw(`SELECT COUNT(*) FROM information_schema.table_constraints WHERE table_schema = DATABASE() AND table_name = 'admin_operations' AND constraint_type = 'CHECK' AND constraint_name = 'chk_admin_operations_result_role_permission' AND enforced = 'YES'`).Scan(&rolePermissionResultCheck).Error; err != nil {
+		t.Fatalf("read 0013 role/permission result CHECK metadata: %v", err)
+	}
+	if rolePermissionResultCheck != 1 {
+		t.Fatalf("0013 role/permission result CHECK count = %d, want 1", rolePermissionResultCheck)
 	}
 }
 
