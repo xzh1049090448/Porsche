@@ -38,6 +38,7 @@ type State struct {
 	PlatformGenerations             *service.PlatformGenerationStore
 	PlatformGenerationPersistence   *service.PlatformGenerationPersistence
 	PlatformGenerationControl       service.PlatformGenerationController
+	PlatformSingleGeneration        service.PlatformSingleGenerationRunnerAPI
 	PlatformGenerationCancellations *service.PlatformGenerationCancellationRegistry
 	PlatformGenerationConverger     *service.PlatformGenerationConverger
 	Sessions                        *service.SessionService

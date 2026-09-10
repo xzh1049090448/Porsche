@@ -222,6 +222,19 @@ func TestNewStateRegistersAuthenticatedGenerationRoutes(t *testing.T) {
 	}
 }
 
+func TestPlatformSingleV2RouteRemainsBehindAuthentication(t *testing.T) {
+	settings := &config.Settings{AppEnv: "test", AllowedHosts: "example.com"}
+	engine := router.New(&app.State{Settings: settings})
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/platform/chat/completions", strings.NewReader(`{"model":"model-a","messages":[{"role":"user","content":"hello"}],"max_tokens":8,"stream":true,"stream_version":"platform-chat-sse.v2","generation_id":"550e8400-e29b-41d4-a716-446655440000"}`))
+	request.Host = "example.com"
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	engine.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("single v2 route status=%d body=%s, want authenticated 401", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestHostAllowlistAcceptsDomainAndRejectsDirectIPAddress(t *testing.T) {
 	state := newGatewayTestState(t)
 	state.Settings.AllowedHosts = "aiportcloud.com"

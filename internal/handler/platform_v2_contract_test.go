@@ -56,6 +56,7 @@ func TestDecodePlatformRequestRejectsIncompleteOrInvalidV2Contract(t *testing.T)
 		"missing generation": strings.Replace(valid, `,"generation_id":"`+platformV2GenerationID+`"`, "", 1),
 		"version only":       strings.Replace(valid, `,"generation_id":"`+platformV2GenerationID+`"`, "", 1),
 		"ID only":            strings.Replace(valid, `,"stream_version":"platform-chat-sse.v2"`, "", 1),
+		"usage false":        strings.Replace(valid, `}`, `,"stream_options":{"include_usage":false}}`, 1),
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := decodePlatformV2Body(t, payload); err == nil {
