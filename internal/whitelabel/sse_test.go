@@ -101,6 +101,87 @@ func TestConsumeChatCompletionSSEContextClassifiesCallbackFailureAsWrite(t *test
 	}
 }
 
+func TestConsumeChatCompletionSSEContextRejectsPreCanceledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	ctx, trace := diagnostics.New(ctx)
+	calls := 0
+	err := (&WhiteLabelService{}).ConsumeChatCompletionSSEContext(ctx, strings.NewReader("data: "+typedChunk+"\n\ndata: [DONE]\n\n"), "model-a", func(ChatCompletionChunk) error {
+		calls++
+		return nil
+	})
+	if err == nil || err.Detail != "stream read failed" || calls != 0 {
+		t.Fatalf("ConsumeChatCompletionSSEContext() calls=%d error=%#v", calls, err)
+	}
+	record := diagnosticRecord(t, trace)
+	if record.Stages[diagnostics.Stream].Reason != diagnostics.Canceled {
+		t.Fatalf("stream reason = %s", record.Stages[diagnostics.Stream].Reason)
+	}
+}
+
+type cancelOnReadReader struct {
+	reader io.Reader
+	cancel context.CancelFunc
+}
+
+func (r cancelOnReadReader) Read(buffer []byte) (int, error) {
+	n, err := r.reader.Read(buffer)
+	if n > 0 {
+		r.cancel()
+	}
+	return n, err
+}
+
+func TestConsumeChatCompletionSSEContextChecksCancellationAfterRead(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	reader := cancelOnReadReader{
+		reader: strings.NewReader("data: " + typedChunk + "\n\ndata: [DONE]\n\n"),
+		cancel: cancel,
+	}
+	calls := 0
+	err := (&WhiteLabelService{}).ConsumeChatCompletionSSEContext(ctx, reader, "model-a", func(ChatCompletionChunk) error {
+		calls++
+		return nil
+	})
+	if err == nil || err.Detail != "stream read failed" || calls != 0 {
+		t.Fatalf("ConsumeChatCompletionSSEContext() calls=%d error=%#v", calls, err)
+	}
+}
+
+func TestConsumeChatCompletionSSEContextStopsCallbacksAfterCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	input := "data: " + typedChunk + "\n\ndata: " + typedUsageChunk + "\n\ndata: [DONE]\n\n"
+	calls := 0
+	err := (&WhiteLabelService{}).ConsumeChatCompletionSSEContext(ctx, strings.NewReader(input), "model-a", func(ChatCompletionChunk) error {
+		calls++
+		cancel()
+		return nil
+	})
+	if err == nil || err.Detail != "stream read failed" || calls != 1 {
+		t.Fatalf("ConsumeChatCompletionSSEContext() calls=%d error=%#v", calls, err)
+	}
+}
+
+func TestConsumeChatCompletionSSEContextRejectsInvalidUTF8(t *testing.T) {
+	payload := append([]byte(`data: {"id":"safe","object":"chat.completion.chunk","created":1,"choices":[{"index":0,"delta":{"content":"`), 0xff)
+	payload = append(payload, []byte("\"},\"finish_reason\":null}]}\n\ndata: [DONE]\n\n")...)
+	ctx, trace := diagnostics.New(context.Background())
+	calls := 0
+	err := (&WhiteLabelService{}).ConsumeChatCompletionSSEContext(ctx, bytes.NewReader(payload), "model-a", func(ChatCompletionChunk) error {
+		calls++
+		return nil
+	})
+	if err == nil || err.Detail != "malformed chat completion chunk" || calls != 0 {
+		t.Fatalf("ConsumeChatCompletionSSEContext() calls=%d error=%#v", calls, err)
+	}
+	record := diagnosticRecord(t, trace)
+	if record.Stages[diagnostics.Stream].Reason != diagnostics.Malformed || record.MalformedChunkDetail == nil || record.MalformedChunkDetail.Reason != diagnostics.ChunkJSONSyntax || record.MalformedChunkDetail.Field != diagnostics.ChunkRoot {
+		t.Fatalf("record = %#v", record)
+	}
+}
+
 func TestProjectChatCompletionSSERequiresTerminalDoneFrame(t *testing.T) {
 	var emitted bytes.Buffer
 	err := (&WhiteLabelService{}).ProjectChatCompletionSSE(

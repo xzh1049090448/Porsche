@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/porsche/ai-gateway-go/internal/diagnostics"
 )
@@ -52,13 +53,25 @@ func (s *WhiteLabelService) consumeChatCompletionSSEContext(
 		end(reason)
 		return ErrUpstreamUnavailable(detail)
 	}
+	contextFailure := func() *Error {
+		if err := ctx.Err(); err != nil {
+			return fail(diagnostics.NetworkReason(err), "stream read failed")
+		}
+		return nil
+	}
 	if !validModelID(logicalModelID) {
 		return fail(diagnostics.Invalid, "invalid logical model")
 	}
 	buffered := bufio.NewReader(reader)
 	var dataLines []string
 	for {
+		if failure := contextFailure(); failure != nil {
+			return failure
+		}
 		line, err := buffered.ReadString('\n')
+		if failure := contextFailure(); failure != nil {
+			return failure
+		}
 		if err != nil && err != io.EOF {
 			reason := diagnostics.NetworkReason(err)
 			if reason == diagnostics.Network {
@@ -77,6 +90,9 @@ func (s *WhiteLabelService) consumeChatCompletionSSEContext(
 					payload := strings.Join(dataLines, "\n")
 					dataLines = nil
 					if payload == "[DONE]" {
+						if failure := contextFailure(); failure != nil {
+							return failure
+						}
 						if emitDone != nil {
 							if emitErr := emitDone(); emitErr != nil {
 								reason := diagnostics.Write
@@ -89,13 +105,24 @@ func (s *WhiteLabelService) consumeChatCompletionSSEContext(
 						end(diagnostics.OK)
 						return nil
 					} else {
-						projected, failure := projectChatCompletionChunkDetail([]byte(payload), logicalModelID)
+						payloadBytes := []byte(payload)
+						if !utf8.Valid(payloadBytes) {
+							failure := chunkFailure(diagnostics.ChunkJSONSyntax, diagnostics.ChunkRoot)
+							if trace := diagnostics.From(ctx); trace != nil {
+								trace.MalformedChunk(failure.Reason, failure.Field, nil)
+							}
+							return fail(diagnostics.Malformed, "malformed chat completion chunk")
+						}
+						projected, failure := projectChatCompletionChunkDetail(payloadBytes, logicalModelID)
 						if failure != nil {
 							if trace := diagnostics.From(ctx); trace != nil {
-								enrichObjectFailure([]byte(payload), failure)
+								enrichObjectFailure(payloadBytes, failure)
 								trace.MalformedChunk(failure.Reason, failure.Field, failure.Object)
 							}
 							return fail(diagnostics.Malformed, "malformed chat completion chunk")
+						}
+						if cancellation := contextFailure(); cancellation != nil {
+							return cancellation
 						}
 						if emitErr := emitChunk(projected); emitErr != nil {
 							reason := diagnostics.Write
