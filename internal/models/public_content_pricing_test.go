@@ -2,11 +2,22 @@ package models
 
 import (
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 
 	"gorm.io/gorm/schema"
 )
+
+func TestPublicRenderJobTerminalReceiptFieldsAreInternalAndTyped(t *testing.T) {
+	typ := reflect.TypeOf(PublicRenderJob{})
+	for _, name := range []string{"LastTerminalOwnerHMAC", "LastTerminalFence", "LastTerminalOperation", "LastTerminalState"} {
+		f, ok := typ.FieldByName(name)
+		if !ok || f.Tag.Get("json") != "-" || !strings.Contains(f.Tag.Get("gorm"), "column:last_terminal_") {
+			t.Fatalf("field %s=%#v/%v", name, f, ok)
+		}
+	}
+}
 
 func TestPublicContentPricingModelsUseExplicitTablesAndStableEnums(t *testing.T) {
 	models := []struct {

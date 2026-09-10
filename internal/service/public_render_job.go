@@ -78,6 +78,35 @@ type PublicRenderHealthStatus struct {
 	PendingGeneration  int64  `json:"pending_generation,omitempty"`
 	FailureCode        string `json:"failure_code,omitempty"`
 }
+type PublicRenderGeneration struct {
+	Generation     int64  `json:"generation"`
+	PriceVersion   int64  `json:"price_version"`
+	ContentVersion int64  `json:"content_version"`
+	PriceHash      string `json:"price_hash"`
+	ContentHash    string `json:"content_hash"`
+}
+
+func (s *PublicRenderJobService) Lookup(ctx context.Context, now int64) (*PublicRenderGeneration, error) {
+	if !s.validDB() || now <= 0 {
+		return nil, ErrPublicRenderInvalid
+	}
+	var state models.PublicPublicationState
+	if err := s.db.WithContext(ctx).Where("state_key=? AND is_deleted=0", publicPublicationStateKey).First(&state).Error; err != nil {
+		return nil, ErrPublicRenderUnavailable
+	}
+	if state.PriceSnapshotID == nil || state.ContentReleaseID == nil {
+		return nil, nil
+	}
+	var job models.PublicRenderJob
+	if err := s.db.WithContext(ctx).Where("price_snapshot_id=? AND content_release_id=? AND is_deleted=0", *state.PriceSnapshotID, *state.ContentReleaseID).First(&job).Error; err != nil {
+		return nil, ErrPublicRenderUnavailable
+	}
+	ok, p, c, err := loadPublicRenderGeneration(s.db.WithContext(ctx), job.PriceSnapshotID, job.ContentReleaseID)
+	if err != nil || !ok {
+		return nil, ErrPublicRenderUnavailable
+	}
+	return &PublicRenderGeneration{job.Guid, p.version, c.version, p.hash, c.hash}, nil
+}
 
 func NewPublicRenderJobService(db *gorm.DB, purposeKey []byte) *PublicRenderJobService {
 	return &PublicRenderJobService{db: db, key: append([]byte(nil), purposeKey...)}
@@ -93,8 +122,19 @@ func (s *PublicRenderJobService) ownerHMAC(token string) string {
 }
 
 func validPublicRenderLeaseInput(owner string, now, lease int64) bool {
-	owner = strings.TrimSpace(owner)
-	return len(owner) >= 16 && len(owner) <= 256 && now > 0 && lease >= 5_000 && lease <= 300_000
+	return ValidPublicRenderOwnerToken(owner) && now > 0 && lease >= 5_000 && lease <= 300_000
+}
+
+func ValidPublicRenderOwnerToken(owner string) bool {
+	if owner != strings.TrimSpace(owner) || len(owner) < 16 || len(owner) > 256 {
+		return false
+	}
+	for _, r := range owner {
+		if r < 0x21 || r > 0x7e {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *PublicRenderJobService) Lease(ctx context.Context, in PublicRenderLeaseInput) (*PublicRenderLease, error) {
@@ -128,7 +168,7 @@ func (s *PublicRenderJobService) Lease(ctx context.Context, in PublicRenderLease
 			attempt := job.AttemptCount + 1
 			expires := in.NowMillis + in.LeaseMillis
 			hash := s.ownerHMAC(strings.TrimSpace(in.OwnerToken))
-			res := tx.Model(&models.PublicRenderJob{}).Where("id=? AND attempt_count=?", job.ID, job.AttemptCount).Updates(map[string]any{"state": models.PublicRenderJobLeased, "lease_owner_hmac": hash, "lease_expires_at": expires, "attempt_count": attempt, "last_failure": nil, "updated_at": in.NowMillis})
+			res := tx.Model(&models.PublicRenderJob{}).Where("id=? AND attempt_count=?", job.ID, job.AttemptCount).Updates(map[string]any{"state": models.PublicRenderJobLeased, "lease_owner_hmac": hash, "lease_expires_at": expires, "attempt_count": attempt, "last_failure": nil, "last_terminal_owner_hmac": nil, "last_terminal_fence": nil, "last_terminal_operation": nil, "last_terminal_state": nil, "updated_at": in.NowMillis})
 			if res.Error != nil {
 				return ErrPublicRenderUnavailable
 			}
@@ -181,13 +221,16 @@ func (s *PublicRenderJobService) Renew(ctx context.Context, in PublicRenderTrans
 }
 
 func (s *PublicRenderJobService) Complete(ctx context.Context, in PublicRenderTransitionInput) error {
-	if !s.valid() || in.JobGUID <= 0 || in.Fence <= 0 || len(strings.TrimSpace(in.OwnerToken)) < 16 || in.NowMillis <= 0 {
+	if !s.valid() || in.JobGUID <= 0 || in.Fence <= 0 || !ValidPublicRenderOwnerToken(in.OwnerToken) || in.NowMillis <= 0 {
 		return ErrPublicRenderInvalid
 	}
 	return s.db.Session(&gorm.Session{NewDB: true}).WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var job models.PublicRenderJob
-		if err := tx.Where("guid=? AND is_deleted=0", in.JobGUID).First(&job).Error; err != nil {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("guid=? AND is_deleted=0", in.JobGUID).First(&job).Error; err != nil {
 			return ErrPublicRenderLeaseLost
+		}
+		if terminalReplay(job, s.ownerHMAC(in.OwnerToken), in.Fence, 1) {
+			return nil
 		}
 		current, _, _, err := loadPublicRenderGeneration(tx, job.PriceSnapshotID, job.ContentReleaseID)
 		if err != nil {
@@ -196,13 +239,15 @@ func (s *PublicRenderJobService) Complete(ctx context.Context, in PublicRenderTr
 		if !current {
 			return ErrPublicRenderLeaseLost
 		}
-		res := tx.Model(&models.PublicRenderJob{}).Where("id=? AND state=? AND attempt_count=? AND lease_owner_hmac=? AND lease_expires_at>?", job.ID, models.PublicRenderJobLeased, in.Fence, s.ownerHMAC(strings.TrimSpace(in.OwnerToken)), in.NowMillis).Updates(map[string]any{"state": models.PublicRenderJobSucceeded, "completed_at": in.NowMillis, "lease_owner_hmac": nil, "lease_expires_at": nil, "last_failure": nil, "updated_at": in.NowMillis})
+		terminalState := models.PublicRenderJobSucceeded
+		op := 1
+		res := tx.Model(&models.PublicRenderJob{}).Where("id=? AND state=? AND attempt_count=? AND lease_owner_hmac=? AND lease_expires_at>?", job.ID, models.PublicRenderJobLeased, in.Fence, s.ownerHMAC(in.OwnerToken), in.NowMillis).Updates(map[string]any{"state": terminalState, "completed_at": in.NowMillis, "lease_owner_hmac": nil, "lease_expires_at": nil, "last_failure": nil, "last_terminal_owner_hmac": s.ownerHMAC(in.OwnerToken), "last_terminal_fence": in.Fence, "last_terminal_operation": op, "last_terminal_state": terminalState, "updated_at": in.NowMillis})
 		return renderTransitionResult(res)
 	})
 }
 
 func (s *PublicRenderJobService) Fail(ctx context.Context, in PublicRenderTransitionInput) error {
-	if !s.valid() || in.JobGUID <= 0 || in.Fence <= 0 || len(strings.TrimSpace(in.OwnerToken)) < 16 || in.NowMillis <= 0 {
+	if !s.valid() || in.JobGUID <= 0 || in.Fence <= 0 || !ValidPublicRenderOwnerToken(in.OwnerToken) || in.NowMillis <= 0 {
 		return ErrPublicRenderInvalid
 	}
 	code := sanitizePublicRenderFailure(in.Failure)
@@ -213,6 +258,11 @@ func (s *PublicRenderJobService) Fail(ctx context.Context, in PublicRenderTransi
 		next = 0
 	}
 	updates := map[string]any{"state": state, "last_failure": code, "lease_owner_hmac": nil, "updated_at": in.NowMillis}
+	op := 2
+	updates["last_terminal_owner_hmac"] = s.ownerHMAC(in.OwnerToken)
+	updates["last_terminal_fence"] = in.Fence
+	updates["last_terminal_operation"] = op
+	updates["last_terminal_state"] = state
 	if next == 0 {
 		updates["lease_expires_at"] = nil
 	} else {
@@ -224,7 +274,14 @@ func (s *PublicRenderJobService) Fail(ctx context.Context, in PublicRenderTransi
 func (s *PublicRenderJobService) transitionCurrent(ctx context.Context, in PublicRenderTransitionInput, updates map[string]any) error {
 	return s.db.Session(&gorm.Session{NewDB: true}).WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var job models.PublicRenderJob
-		if err := tx.Where("guid=? AND is_deleted=0", in.JobGUID).First(&job).Error; err != nil {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("guid=? AND is_deleted=0", in.JobGUID).First(&job).Error; err != nil {
+			return ErrPublicRenderLeaseLost
+		}
+		if terminalReplay(job, s.ownerHMAC(in.OwnerToken), in.Fence, 2) {
+			failure, _ := updates["last_failure"].(string)
+			if job.LastFailure != nil && *job.LastFailure == failure {
+				return nil
+			}
 			return ErrPublicRenderLeaseLost
 		}
 		current, _, _, err := loadPublicRenderGeneration(tx, job.PriceSnapshotID, job.ContentReleaseID)
@@ -237,6 +294,10 @@ func (s *PublicRenderJobService) transitionCurrent(ctx context.Context, in Publi
 		res := tx.Model(&models.PublicRenderJob{}).Where("id=? AND state=? AND attempt_count=? AND lease_owner_hmac=? AND lease_expires_at>?", job.ID, models.PublicRenderJobLeased, in.Fence, s.ownerHMAC(strings.TrimSpace(in.OwnerToken)), in.NowMillis).Updates(updates)
 		return renderTransitionResult(res)
 	})
+}
+
+func terminalReplay(job models.PublicRenderJob, owner string, fence, operation int) bool {
+	return job.LastTerminalOwnerHMAC != nil && hmac.Equal([]byte(*job.LastTerminalOwnerHMAC), []byte(owner)) && job.LastTerminalFence != nil && *job.LastTerminalFence == fence && job.LastTerminalOperation != nil && *job.LastTerminalOperation == operation && job.LastTerminalState != nil && *job.LastTerminalState == job.State
 }
 
 func renderTransitionResult(res *gorm.DB) error {

@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"unicode/utf8"
 
 	"github.com/porsche/ai-gateway-go/internal/config"
 	"github.com/porsche/ai-gateway-go/internal/db"
@@ -28,6 +29,7 @@ type renderJobs interface {
 	Complete(context.Context, service.PublicRenderTransitionInput) error
 	Fail(context.Context, service.PublicRenderTransitionInput) error
 	Health(context.Context, int64) (service.PublicRenderHealthStatus, error)
+	Lookup(context.Context, int64) (*service.PublicRenderGeneration, error)
 }
 
 type commandInput struct {
@@ -80,20 +82,8 @@ func run(ctx context.Context, args []string, in io.Reader, out, stderr io.Writer
 		writeCLIError(stderr, "invalid_command")
 		return 2
 	}
-	var input commandInput
 	raw, readErr := io.ReadAll(io.LimitReader(in, publicRenderCLIInputLimit+1))
-	if readErr != nil || len(raw) > publicRenderCLIInputLimit {
-		writeCLIError(stderr, "invalid_input")
-		return 2
-	}
-	decoder := json.NewDecoder(strings.NewReader(string(raw)))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&input); err != nil {
-		writeCLIError(stderr, "invalid_input")
-		return 2
-	}
-	var extra any
-	if err := decoder.Decode(&extra); err != io.EOF {
+	if readErr != nil || len(raw) > publicRenderCLIInputLimit || !utf8.Valid(raw) || invalidJSONShape(raw) {
 		writeCLIError(stderr, "invalid_input")
 		return 2
 	}
@@ -101,22 +91,91 @@ func run(ctx context.Context, args []string, in io.Reader, out, stderr io.Writer
 	var err error
 	switch args[0] {
 	case "lease":
+		var input struct {
+			OwnerToken  string `json:"owner_token"`
+			NowMillis   int64  `json:"now_millis"`
+			LeaseMillis int64  `json:"lease_millis"`
+		}
+		if !decodeExact(raw, &input) {
+			return invalidInput(stderr)
+		}
+		if !validLeaseFields(input.OwnerToken, input.NowMillis, input.LeaseMillis) {
+			return invalidInput(stderr)
+		}
 		var lease *service.PublicRenderLease
 		lease, err = jobs.Lease(ctx, service.PublicRenderLeaseInput{OwnerToken: input.OwnerToken, NowMillis: input.NowMillis, LeaseMillis: input.LeaseMillis})
 		result = map[string]any{"job": lease}
 	case "renew":
-		err = jobs.Renew(ctx, transition(input))
+		var input struct {
+			OwnerToken  string `json:"owner_token"`
+			JobGUID     int64  `json:"job_guid"`
+			Fence       int    `json:"fence"`
+			NowMillis   int64  `json:"now_millis"`
+			LeaseMillis int64  `json:"lease_millis"`
+		}
+		if !decodeExact(raw, &input) {
+			return invalidInput(stderr)
+		}
+		if !validLeaseFields(input.OwnerToken, input.NowMillis, input.LeaseMillis) || input.JobGUID <= 0 || input.Fence <= 0 {
+			return invalidInput(stderr)
+		}
+		err = jobs.Renew(ctx, service.PublicRenderTransitionInput{OwnerToken: input.OwnerToken, JobGUID: input.JobGUID, Fence: input.Fence, NowMillis: input.NowMillis, LeaseMillis: input.LeaseMillis})
 		result = map[string]any{"status": "renewed"}
 	case "complete":
-		err = jobs.Complete(ctx, transition(input))
+		var input struct {
+			OwnerToken string `json:"owner_token"`
+			JobGUID    int64  `json:"job_guid"`
+			Fence      int    `json:"fence"`
+			NowMillis  int64  `json:"now_millis"`
+		}
+		if !decodeExact(raw, &input) {
+			return invalidInput(stderr)
+		}
+		if !service.ValidPublicRenderOwnerToken(input.OwnerToken) || input.JobGUID <= 0 || input.Fence <= 0 || input.NowMillis <= 0 {
+			return invalidInput(stderr)
+		}
+		err = jobs.Complete(ctx, service.PublicRenderTransitionInput{OwnerToken: input.OwnerToken, JobGUID: input.JobGUID, Fence: input.Fence, NowMillis: input.NowMillis})
 		result = map[string]any{"status": "completed"}
 	case "fail":
-		err = jobs.Fail(ctx, transition(input))
+		var input struct {
+			OwnerToken string `json:"owner_token"`
+			JobGUID    int64  `json:"job_guid"`
+			Fence      int    `json:"fence"`
+			NowMillis  int64  `json:"now_millis"`
+			Failure    string `json:"failure"`
+		}
+		if !decodeExact(raw, &input) {
+			return invalidInput(stderr)
+		}
+		if !service.ValidPublicRenderOwnerToken(input.OwnerToken) || input.JobGUID <= 0 || input.Fence <= 0 || input.NowMillis <= 0 || input.Failure == "" {
+			return invalidInput(stderr)
+		}
+		err = jobs.Fail(ctx, service.PublicRenderTransitionInput{OwnerToken: input.OwnerToken, JobGUID: input.JobGUID, Fence: input.Fence, NowMillis: input.NowMillis, Failure: input.Failure})
 		result = map[string]any{"status": "recorded"}
 	case "health":
+		var input struct {
+			NowMillis int64 `json:"now_millis"`
+		}
+		if !decodeExact(raw, &input) {
+			return invalidInput(stderr)
+		}
+		if input.NowMillis <= 0 {
+			return invalidInput(stderr)
+		}
 		var health service.PublicRenderHealthStatus
 		health, err = jobs.Health(ctx, input.NowMillis)
 		result = health
+	case "lookup":
+		var input struct {
+			NowMillis int64 `json:"now_millis"`
+		}
+		if !decodeExact(raw, &input) {
+			return invalidInput(stderr)
+		}
+		if input.NowMillis <= 0 {
+			return invalidInput(stderr)
+		}
+		result, err = jobs.Lookup(ctx, input.NowMillis)
 	}
 	if err != nil {
 		if errors.Is(err, service.ErrPublicRenderInvalid) {
@@ -143,9 +202,78 @@ func transition(in commandInput) service.PublicRenderTransitionInput {
 }
 func validCommand(command string) bool {
 	switch command {
-	case "lease", "renew", "complete", "fail", "health":
+	case "lease", "renew", "complete", "fail", "health", "lookup":
 		return true
 	}
 	return false
 }
 func writeCLIError(w io.Writer, code string) { _, _ = fmt.Fprintf(w, "{\"error\":%q}\n", code) }
+func invalidInput(w io.Writer) int           { writeCLIError(w, "invalid_input"); return 2 }
+func validLeaseFields(owner string, now, lease int64) bool {
+	return service.ValidPublicRenderOwnerToken(owner) && now > 0 && lease >= 5_000 && lease <= 300_000
+}
+func decodeExact(raw []byte, target any) bool {
+	d := json.NewDecoder(strings.NewReader(string(raw)))
+	d.DisallowUnknownFields()
+	return d.Decode(target) == nil
+}
+func invalidJSONShape(raw []byte) bool {
+	d := json.NewDecoder(strings.NewReader(string(raw)))
+	depth := 0
+	roots := 0
+	stack := []map[string]struct{}{}
+	expectKey := []bool{}
+	for {
+		tok, err := d.Token()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return true
+		}
+		switch v := tok.(type) {
+		case json.Delim:
+			switch v {
+			case '{':
+				depth++
+				if depth > 8 {
+					return true
+				}
+				stack = append(stack, map[string]struct{}{})
+				expectKey = append(expectKey, true)
+			case '[':
+				depth++
+				if depth > 8 {
+					return true
+				}
+				stack = append(stack, nil)
+				expectKey = append(expectKey, false)
+			case '}', ']':
+				depth--
+				stack = stack[:len(stack)-1]
+				expectKey = expectKey[:len(expectKey)-1]
+			}
+		case string:
+			if len(stack) > 0 && stack[len(stack)-1] != nil && expectKey[len(expectKey)-1] {
+				if _, ok := stack[len(stack)-1][v]; ok {
+					return true
+				}
+				stack[len(stack)-1][v] = struct{}{}
+				expectKey[len(expectKey)-1] = false
+			} else if len(expectKey) > 0 && stack[len(stack)-1] != nil {
+				expectKey[len(expectKey)-1] = true
+			}
+		default:
+			if len(expectKey) > 0 && stack[len(stack)-1] != nil {
+				expectKey[len(expectKey)-1] = true
+			}
+		}
+		if delim, ok := tok.(json.Delim); ok && (delim == '{' || delim == '[') && depth == 1 {
+			roots++
+		}
+		if delim, ok := tok.(json.Delim); ok && (delim == '}' || delim == ']') && len(expectKey) > 0 && stack[len(stack)-1] != nil {
+			expectKey[len(expectKey)-1] = true
+		}
+	}
+	return depth != 0 || roots != 1
+}

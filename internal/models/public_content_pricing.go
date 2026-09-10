@@ -465,16 +465,20 @@ type RootAlertReceipt struct {
 func (RootAlertReceipt) TableName() string { return "root_alert_receipts" }
 
 type PublicRenderJob struct {
-	ID               int64 `gorm:"column:id;type:bigint;not null;primaryKey;autoIncrement" json:"-"`
-	AuditFields      `gorm:"embedded" json:"-"`
-	PriceSnapshotID  int64                `gorm:"column:price_snapshot_id;type:bigint;not null" json:"-"`
-	ContentReleaseID int64                `gorm:"column:content_release_id;type:bigint;not null" json:"-"`
-	State            PublicRenderJobState `gorm:"column:state;type:int;not null" json:"-"`
-	LeaseOwnerHMAC   *string              `gorm:"column:lease_owner_hmac;type:char(64)" json:"-"`
-	LeaseExpiresAt   *int64               `gorm:"column:lease_expires_at;type:bigint" json:"-"`
-	AttemptCount     int                  `gorm:"column:attempt_count;type:int;not null" json:"-"`
-	LastFailure      *string              `gorm:"column:last_failure;type:varchar(1024)" json:"-"`
-	CompletedAt      *int64               `gorm:"column:completed_at;type:bigint" json:"-"`
+	ID                    int64 `gorm:"column:id;type:bigint;not null;primaryKey;autoIncrement" json:"-"`
+	AuditFields           `gorm:"embedded" json:"-"`
+	PriceSnapshotID       int64                 `gorm:"column:price_snapshot_id;type:bigint;not null" json:"-"`
+	ContentReleaseID      int64                 `gorm:"column:content_release_id;type:bigint;not null" json:"-"`
+	State                 PublicRenderJobState  `gorm:"column:state;type:int;not null" json:"-"`
+	LeaseOwnerHMAC        *string               `gorm:"column:lease_owner_hmac;type:char(64)" json:"-"`
+	LeaseExpiresAt        *int64                `gorm:"column:lease_expires_at;type:bigint" json:"-"`
+	AttemptCount          int                   `gorm:"column:attempt_count;type:int;not null" json:"-"`
+	LastFailure           *string               `gorm:"column:last_failure;type:varchar(1024)" json:"-"`
+	CompletedAt           *int64                `gorm:"column:completed_at;type:bigint" json:"-"`
+	LastTerminalOwnerHMAC *string               `gorm:"column:last_terminal_owner_hmac;type:char(64)" json:"-"`
+	LastTerminalFence     *int                  `gorm:"column:last_terminal_fence;type:int" json:"-"`
+	LastTerminalOperation *int                  `gorm:"column:last_terminal_operation;type:int" json:"-"`
+	LastTerminalState     *PublicRenderJobState `gorm:"column:last_terminal_state;type:int" json:"-"`
 }
 
 func (PublicRenderJob) TableName() string { return "public_render_jobs" }

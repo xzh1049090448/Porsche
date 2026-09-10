@@ -96,6 +96,12 @@ var upstreamMonitorLeaseUp []byte
 //go:embed sql/0014_upstream_monitor_lease.down.sql
 var upstreamMonitorLeaseDown []byte
 
+//go:embed sql/0015_public_render_job_terminal.up.sql
+var publicRenderJobTerminalUp []byte
+
+//go:embed sql/0015_public_render_job_terminal.down.sql
+var publicRenderJobTerminalDown []byte
+
 // Migration is an immutable, embedded schema version.
 type Migration struct {
 	Version string
@@ -126,6 +132,7 @@ func All() ([]Migration, error) {
 		{Version: "0012", UpSQL: publicContentPricingUp, DownSQL: publicContentPricingDown},
 		{Version: "0013", UpSQL: publicPriceDraftStateUp, DownSQL: publicPriceDraftStateDown},
 		{Version: "0014", UpSQL: upstreamMonitorLeaseUp, DownSQL: upstreamMonitorLeaseDown},
+		{Version: "0015", UpSQL: publicRenderJobTerminalUp, DownSQL: publicRenderJobTerminalDown},
 	}
 	sort.Slice(migrations, func(i, j int) bool { return migrations[i].Version < migrations[j].Version })
 	return migrations, nil
@@ -232,6 +239,11 @@ func Up(ctx context.Context, db *gorm.DB, nextGUID func() int64, nowMillis func(
 						return err
 					}
 				}
+				if migration.Version == "0015" {
+					if err := VerifyPublicRenderJobTerminalSchema(ctx, conn); err != nil {
+						return err
+					}
+				}
 				continue
 			}
 			if migration.Version == "0007" {
@@ -333,6 +345,11 @@ func Up(ctx context.Context, db *gorm.DB, nextGUID func() int64, nowMillis func(
 					return err
 				}
 			}
+			if migration.Version == "0015" {
+				if err := VerifyPublicRenderJobTerminalSchema(ctx, conn); err != nil {
+					return err
+				}
+			}
 			now := nowMillis()
 			if err := conn.Exec(
 				"INSERT INTO schema_migrations (guid, version, checksum, created_at, updated_at, is_deleted) VALUES (?, ?, ?, ?, ?, 0) ON DUPLICATE KEY UPDATE checksum=VALUES(checksum),updated_at=VALUES(updated_at),updated_by=NULL,is_deleted=0",
@@ -402,7 +419,10 @@ func Verify(ctx context.Context, db *gorm.DB) error {
 	if err := VerifyPublicPriceDraftStateSchema(ctx, db); err != nil {
 		return err
 	}
-	return VerifyUpstreamMonitorLeaseSchema(ctx, db)
+	if err := VerifyUpstreamMonitorLeaseSchema(ctx, db); err != nil {
+		return err
+	}
+	return VerifyPublicRenderJobTerminalSchema(ctx, db)
 }
 
 // VerifyApplied is the side-effect-free portion of Verify, kept separate so

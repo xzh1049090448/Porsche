@@ -33,16 +33,24 @@ func (f *fakeRenderJobs) Health(context.Context, int64) (service.PublicRenderHea
 	f.command = "health"
 	return service.PublicRenderHealthStatus{Status: "healthy"}, nil
 }
+func (f *fakeRenderJobs) Lookup(context.Context, int64) (*service.PublicRenderGeneration, error) {
+	f.command = "lookup"
+	return &service.PublicRenderGeneration{Generation: 1}, nil
+}
 
 func TestPublicRenderCLICommandsAreStrictAndJSONOnly(t *testing.T) {
-	for _, command := range []string{"lease", "renew", "complete", "fail", "health"} {
+	valid := map[string]string{
+		"lease":    `{"owner_token":"owner-one-long-random-token","now_millis":1900000000000,"lease_millis":30000}`,
+		"renew":    `{"owner_token":"owner-one-long-random-token","job_guid":123,"fence":1,"now_millis":1900000000000,"lease_millis":30000}`,
+		"complete": `{"owner_token":"owner-one-long-random-token","job_guid":123,"fence":1,"now_millis":1900000000000}`,
+		"fail":     `{"owner_token":"owner-one-long-random-token","job_guid":123,"fence":1,"now_millis":1900000000000,"failure":"render_failed"}`,
+		"health":   `{"now_millis":1900000000000}`,
+		"lookup":   `{"now_millis":1900000000000}`,
+	}
+	for command, body := range valid {
 		t.Run(command, func(t *testing.T) {
 			jobs := &fakeRenderJobs{}
 			var out, stderr bytes.Buffer
-			body := `{"owner_token":"owner-one-long-random-token","job_guid":123,"fence":1,"now_millis":1900000000000,"lease_millis":30000,"failure":"render_failed"}`
-			if command == "health" {
-				body = `{"now_millis":1900000000000}`
-			}
 			code := run(context.Background(), []string{command}, strings.NewReader(body), &out, &stderr, jobs)
 			if code != 0 || jobs.command != command || stderr.Len() != 0 {
 				t.Fatalf("run = %d command=%q stderr=%q", code, jobs.command, stderr.String())
@@ -64,6 +72,10 @@ func TestPublicRenderCLIRejectsUnknownCommandsFieldsAndOversizedInput(t *testing
 		{"unknown command", []string{"watch"}, `{}`},
 		{"extra arg", []string{"health", "again"}, `{}`},
 		{"unknown field", []string{"health"}, `{"now_millis":1,"path":"/private"}`},
+		{"cross command health", []string{"health"}, `{"now_millis":1,"owner_token":"1234567890123456"}`},
+		{"cross command complete", []string{"complete"}, `{"owner_token":"1234567890123456","job_guid":1,"fence":1,"now_millis":1,"failure":"x"}`},
+		{"duplicate field", []string{"health"}, `{"now_millis":1,"now_millis":2}`},
+		{"invalid utf8", []string{"health"}, string([]byte{'{', '"', 'n', 'o', 'w', '_', 'm', 'i', 'l', 'l', 'i', 's', '"', ':', '1', ',', '"', 'x', '"', ':', '"', 0xff, '"', '}'})},
 		{"trailing document", []string{"health"}, `{"now_millis":1}{}`},
 		{"oversized", []string{"health"}, strings.Repeat("x", publicRenderCLIInputLimit+1)},
 	} {
@@ -77,6 +89,18 @@ func TestPublicRenderCLIRejectsUnknownCommandsFieldsAndOversizedInput(t *testing
 				t.Fatalf("stderr leaked input: %q", stderr.String())
 			}
 		})
+	}
+}
+
+func TestPublicRenderJSONShapeRejectsNestedDuplicatesAndDepth(t *testing.T) {
+	if !invalidJSONShape([]byte(`{"outer":{"x":1,"x":2}}`)) {
+		t.Fatal("nested duplicate accepted")
+	}
+	if !invalidJSONShape([]byte(`[[[[[[[[[1]]]]]]]]]`)) {
+		t.Fatal("depth nine accepted")
+	}
+	if invalidJSONShape([]byte(`{"outer":{"x":1},"next":2}`)) {
+		t.Fatal("valid nested object rejected")
 	}
 }
 
@@ -105,4 +129,7 @@ func (e *errorRenderJobs) Fail(context.Context, service.PublicRenderTransitionIn
 }
 func (e *errorRenderJobs) Health(context.Context, int64) (service.PublicRenderHealthStatus, error) {
 	return service.PublicRenderHealthStatus{}, e.err
+}
+func (e *errorRenderJobs) Lookup(context.Context, int64) (*service.PublicRenderGeneration, error) {
+	return nil, e.err
 }

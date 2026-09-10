@@ -394,6 +394,11 @@ git commit -m "feat: expose public content catalog"
 
 ### Task 11: Add render-job API and deployment health
 
+Task 11 terminal transitions use additive migration `0015` to retain only the
+owner-token HMAC, fence, operation, and resulting state. This permits exact
+complete/fail retries to converge without retaining the plaintext owner token;
+different owners, fences, or terminal operations remain fenced out.
+
 **Files:**
 - Create: `cmd/public-render-job/main.go`
 - Create: `cmd/public-render-job/main_test.go`

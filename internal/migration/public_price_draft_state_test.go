@@ -14,7 +14,7 @@ func TestPublicPriceDraftStateMigrationContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(ms) != 14 || ms[12].Version != "0013" {
+	if len(ms) != 15 || ms[12].Version != "0013" {
 		t.Fatalf("migration tail=%d/%v", len(ms), ms)
 	}
 	up := strings.ToLower(string(ms[12].UpSQL))
@@ -87,7 +87,7 @@ func publicPriceDraftStateMigration(t *testing.T) Migration {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(ms) != 14 || ms[12].Version != "0013" {
+	if len(ms) != 15 || ms[12].Version != "0013" {
 		t.Fatalf("All()=%#v, want 0013 last", ms)
 	}
 	return ms[12]
