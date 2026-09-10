@@ -1003,10 +1003,10 @@ func TestPlatformGenerationControlIntegrationReceiptViews(t *testing.T) {
 	t.Run("completed single hydrates real receipt and current account total", func(t *testing.T) {
 		f := openPlatformGenerationFinalizationFixture(t)
 		if err := migration.Verify(context.Background(), f.db); err != nil {
-			t.Fatalf("verify 0001-0011 migrated fixture: %v", err)
+			t.Fatalf("verify 0001-0013 migrated fixture: %v", err)
 		}
 		ledger, err := migration.Status(context.Background(), f.db)
-		if err != nil || len(ledger) != 11 || ledger[0].Version != "0001" || ledger[len(ledger)-1].Version != "0011" {
+		if err != nil || len(ledger) != 13 || ledger[0].Version != "0001" || ledger[10].Version != "0011" || ledger[len(ledger)-1].Version != "0013" {
 			t.Fatalf("migration ledger=%#v error=%v", ledger, err)
 		}
 		input := f.committingSingle(t)
