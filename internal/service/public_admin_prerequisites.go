@@ -88,8 +88,8 @@ type PublicModelVisible struct {
 	Provider                       string   `json:"provider"`
 	Capabilities                   []string `json:"capabilities"`
 	ContextWindow                  int64    `json:"context_window"`
-	InputPriceUSDPerMillionTokens  string   `json:"input_price_usd_per_million_tokens"`
-	OutputPriceUSDPerMillionTokens string   `json:"output_price_usd_per_million_tokens"`
+	InputPriceUSDPerMillionTokens  *string  `json:"input_price_usd_per_million_tokens,omitempty"`
+	OutputPriceUSDPerMillionTokens *string  `json:"output_price_usd_per_million_tokens,omitempty"`
 	PriceVisibility                string   `json:"price_visibility"`
 	ReleaseVersion                 int64    `json:"release_version"`
 	PricingType                    string   `json:"pricing_type"`
@@ -208,15 +208,22 @@ func validatePublicPriceDraft(d PublicPriceDraft) []PublicValidationIssue {
 		if m.Status != "active" {
 			continue
 		}
-		if m.InputPriceUSDPerMillionTokens == nil {
-			issues = append(issues, PublicValidationIssue{fmt.Sprintf("models[%d].input_price_usd_per_million_tokens", i), "required"})
-		} else if !validPublicPrice(m.InputPriceUSDPerMillionTokens) {
+		if !validPublicPrice(m.InputPriceUSDPerMillionTokens) {
 			issues = append(issues, PublicValidationIssue{fmt.Sprintf("models[%d].input_price_usd_per_million_tokens", i), "invalid_decimal"})
 		}
-		if m.OutputPriceUSDPerMillionTokens == nil {
-			issues = append(issues, PublicValidationIssue{fmt.Sprintf("models[%d].output_price_usd_per_million_tokens", i), "required"})
-		} else if !validPublicPrice(m.OutputPriceUSDPerMillionTokens) {
+		if !validPublicPrice(m.OutputPriceUSDPerMillionTokens) {
 			issues = append(issues, PublicValidationIssue{fmt.Sprintf("models[%d].output_price_usd_per_million_tokens", i), "invalid_decimal"})
+		}
+		if m.InputPriceUSDPerMillionTokens != nil || m.OutputPriceUSDPerMillionTokens != nil {
+			if !validPublicModelText(m.PriceSource, 255) {
+				issues = append(issues, PublicValidationIssue{fmt.Sprintf("models[%d].price_source", i), "required"})
+			}
+			if !validPublicModelText(m.PriceReviewer, 128) {
+				issues = append(issues, PublicValidationIssue{fmt.Sprintf("models[%d].price_reviewer", i), "required"})
+			}
+			if m.PriceEffectiveAt == nil || *m.PriceEffectiveAt <= 0 {
+				issues = append(issues, PublicValidationIssue{fmt.Sprintf("models[%d].price_effective_at", i), "required"})
+			}
 		}
 	}
 	if len(d.Models) == 0 {

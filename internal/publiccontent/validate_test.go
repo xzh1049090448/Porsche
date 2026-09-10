@@ -57,7 +57,6 @@ func TestValidatePublicationReturnsStableIssuesForInvalidInput(t *testing.T) {
 		{Field: "models[0].model_key", Code: "invalid_model_key"},
 		{Field: "models[0].price.currency", Code: "invalid_currency"},
 		{Field: "models[0].price.unit", Code: "invalid_price_unit"},
-		{Field: "models[0].price.input", Code: "missing_price"},
 		{Field: "models[0].price.output", Code: "invalid_price"},
 		{Field: "models[1].model_key", Code: "invalid_model_key"},
 		{Field: "models[1].model_key", Code: "duplicate_model_key"},

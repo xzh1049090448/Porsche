@@ -68,7 +68,7 @@ func TestPublicReadSuccessfulHTTPBoundaryAllRoutes(t *testing.T) {
 	cases := []struct {
 		path string
 		keys []string
-	}{{"/api/v1/public/site", []string{"content_release_version", "price_release_version", "price_visibility"}}, {"/api/v1/public/home", []string{"document", "release_version"}}, {"/api/v1/public/pages/about", []string{"document", "release_version"}}, {"/api/v1/public/pages/terms", []string{"document", "release_version"}}, {"/api/v1/public/pages/privacy", []string{"document", "release_version"}}, {"/api/v1/public/models", []string{"items", "page", "page_size", "release_version", "total"}}, {"/api/v1/public/models/alpha-chat", []string{"model"}}}
+	}{{"/api/v1/public/site", []string{"content_release_version", "price_release_version", "price_visibility"}}, {"/api/v1/public/home", []string{"document", "release_version"}}, {"/api/v1/public/pages/about", []string{"document", "release_version"}}, {"/api/v1/public/pages/terms", []string{"document", "release_version"}}, {"/api/v1/public/pages/privacy", []string{"document", "release_version"}}, {"/api/v1/public/models", []string{"facets", "items", "page", "page_size", "release_version", "total"}}, {"/api/v1/public/models/alpha-chat", []string{"model"}}}
 	for _, tc := range cases {
 		rec := httptest.NewRecorder()
 		r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, tc.path, nil))

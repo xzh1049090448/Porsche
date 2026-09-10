@@ -48,8 +48,8 @@ type PublicPriceProjectionItem struct {
 	Provider                       string
 	Capabilities                   []string
 	ContextWindow                  int64
-	InputPriceUSDPerMillionTokens  string
-	OutputPriceUSDPerMillionTokens string
+	InputPriceUSDPerMillionTokens  *string
+	OutputPriceUSDPerMillionTokens *string
 }
 
 // CurrentActiveProjection prevents a stale static snapshot pointer from
@@ -132,12 +132,11 @@ func preparePublicPriceSnapshot(rows []models.PublicModelConfig) (*preparedPubli
 		if m.ID <= 0 || modelIDs[m.ID] || modelKeys[m.ModelKey] || upstreamIDs[m.UpstreamModelID] || !publiccontent.ValidModelKey(m.ModelKey) || !publiccontent.ValidUpstreamModelID(m.UpstreamModelID) ||
 			!validPublicModelText(m.DisplayName, 128) || !validPublicModelText(m.Provider, 128) ||
 			!validPublicModelCapabilities([]string(m.Capabilities)) || m.ContextWindow <= 0 ||
-			!validPublicPrice(m.InputPriceUSDPerMillionTokens) || !validPublicPrice(m.OutputPriceUSDPerMillionTokens) ||
-			m.InputPriceUSDPerMillionTokens == nil || m.OutputPriceUSDPerMillionTokens == nil {
+			!validPublicPrice(m.InputPriceUSDPerMillionTokens) || !validPublicPrice(m.OutputPriceUSDPerMillionTokens) || !validPublishedPriceProvenance(m) {
 			return nil, errUnprocessable("public price snapshot validation failed")
 		}
 		modelIDs[m.ID], modelKeys[m.ModelKey], upstreamIDs[m.UpstreamModelID] = true, true, true
-		items = append(items, models.PublicPriceSnapshotItem{ModelConfigID: m.ID, ModelKey: m.ModelKey, UpstreamModelID: m.UpstreamModelID, DisplayName: m.DisplayName, Provider: m.Provider, Capabilities: append(models.JSONSlice(nil), m.Capabilities...), ContextWindow: m.ContextWindow, InputPriceUSDPerMillionTokens: *m.InputPriceUSDPerMillionTokens, OutputPriceUSDPerMillionTokens: *m.OutputPriceUSDPerMillionTokens, UpstreamCheckedAt: m.LastUpstreamCheckAt, PricingType: "token", PublicDisplayGroup: m.PublicDisplayGroup, EndpointTypes: append(models.JSONSlice(nil), m.EndpointTypes...), PublicRestrictions: append(models.JSONSlice(nil), m.PublicRestrictions...), PriceSource: m.PriceSource, PriceReviewer: m.PriceReviewer, EffectiveAt: m.PriceEffectiveAt})
+		items = append(items, models.PublicPriceSnapshotItem{ModelConfigID: m.ID, ModelKey: m.ModelKey, UpstreamModelID: m.UpstreamModelID, DisplayName: m.DisplayName, Provider: m.Provider, Capabilities: append(models.JSONSlice(nil), m.Capabilities...), ContextWindow: m.ContextWindow, InputPriceUSDPerMillionTokens: m.InputPriceUSDPerMillionTokens, OutputPriceUSDPerMillionTokens: m.OutputPriceUSDPerMillionTokens, UpstreamCheckedAt: m.LastUpstreamCheckAt, PricingType: "token", PublicDisplayGroup: m.PublicDisplayGroup, EndpointTypes: append(models.JSONSlice(nil), m.EndpointTypes...), PublicRestrictions: append(models.JSONSlice(nil), m.PublicRestrictions...), PriceSource: m.PriceSource, PriceReviewer: m.PriceReviewer, EffectiveAt: m.PriceEffectiveAt})
 	}
 	if len(items) == 0 {
 		return nil, errUnprocessable("public price snapshot requires an active priced model")
@@ -150,11 +149,17 @@ func preparePublicPriceSnapshot(rows []models.PublicModelConfig) (*preparedPubli
 	return &preparedPublicPriceSnapshot{Items: items, Hash: hash}, nil
 }
 
+func validPublishedPriceProvenance(m models.PublicModelConfig) bool {
+	if m.InputPriceUSDPerMillionTokens == nil && m.OutputPriceUSDPerMillionTokens == nil {
+		return true
+	}
+	return validPublicModelText(m.PriceSource, 255) && validPublicModelText(m.PriceReviewer, 128) && m.PriceEffectiveAt != nil && *m.PriceEffectiveAt > 0
+}
+
 func prepareRestoredPublicPriceSnapshot(items []models.PublicPriceSnapshotItem, storedHash string) (*preparedPublicPriceSnapshot, error) {
 	rows := make([]models.PublicModelConfig, len(items))
 	for i, item := range items {
-		input, output := item.InputPriceUSDPerMillionTokens, item.OutputPriceUSDPerMillionTokens
-		rows[i] = models.PublicModelConfig{ID: item.ModelConfigID, ModelKey: item.ModelKey, UpstreamModelID: item.UpstreamModelID, DisplayName: item.DisplayName, Provider: item.Provider, Capabilities: append(models.JSONSlice(nil), item.Capabilities...), ContextWindow: item.ContextWindow, InputPriceUSDPerMillionTokens: &input, OutputPriceUSDPerMillionTokens: &output, Status: models.PublicModelConfigStatusActive, LastUpstreamCheckAt: item.UpstreamCheckedAt, PublicDisplayGroup: item.PublicDisplayGroup, EndpointTypes: append(models.JSONSlice(nil), item.EndpointTypes...), PublicRestrictions: append(models.JSONSlice(nil), item.PublicRestrictions...), PriceSource: item.PriceSource, PriceReviewer: item.PriceReviewer, PriceEffectiveAt: item.EffectiveAt}
+		rows[i] = models.PublicModelConfig{ID: item.ModelConfigID, ModelKey: item.ModelKey, UpstreamModelID: item.UpstreamModelID, DisplayName: item.DisplayName, Provider: item.Provider, Capabilities: append(models.JSONSlice(nil), item.Capabilities...), ContextWindow: item.ContextWindow, InputPriceUSDPerMillionTokens: item.InputPriceUSDPerMillionTokens, OutputPriceUSDPerMillionTokens: item.OutputPriceUSDPerMillionTokens, Status: models.PublicModelConfigStatusActive, LastUpstreamCheckAt: item.UpstreamCheckedAt, PublicDisplayGroup: item.PublicDisplayGroup, EndpointTypes: append(models.JSONSlice(nil), item.EndpointTypes...), PublicRestrictions: append(models.JSONSlice(nil), item.PublicRestrictions...), PriceSource: item.PriceSource, PriceReviewer: item.PriceReviewer, PriceEffectiveAt: item.EffectiveAt}
 	}
 	prepared, err := preparePublicPriceSnapshot(rows)
 	if err != nil {
@@ -174,8 +179,8 @@ func hashPublicPriceSnapshotItems(items []models.PublicPriceSnapshotItem) (strin
 		Provider           string   `json:"provider"`
 		Capabilities       []string `json:"capabilities"`
 		ContextWindow      int64    `json:"context_window"`
-		Input              string   `json:"input_price_usd_per_million_tokens"`
-		Output             string   `json:"output_price_usd_per_million_tokens"`
+		Input              *string  `json:"input_price_usd_per_million_tokens,omitempty"`
+		Output             *string  `json:"output_price_usd_per_million_tokens,omitempty"`
 		CheckedAt          *int64   `json:"upstream_checked_at"`
 		PricingType        string   `json:"pricing_type"`
 		PublicDisplayGroup string   `json:"public_display_group,omitempty"`

@@ -159,7 +159,6 @@ func validatePrice(field string, price Price) []ValidationIssue {
 		value string
 	}{{"input", price.Input}, {"output", price.Output}} {
 		if component.value == "" {
-			issues = append(issues, ValidationIssue{Field: field + "." + component.name, Code: "missing_price"})
 			continue
 		}
 		if _, err := ParseDecimal(component.value); err != nil {

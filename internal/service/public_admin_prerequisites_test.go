@@ -10,7 +10,7 @@ import (
 )
 
 func TestAdminReleaseProjectionsUseRFC3339AndSafeFields(t *testing.T) {
-	release := projectPublicPriceReleaseDetail(models.PublicPriceSnapshot{Guid: 91, Version: 3, Reason: models.PublicPriceSnapshotReasonRootPublish, SourceRevision: 7, PublishedAt: 1_700_000_000_000}, []models.PublicPriceSnapshotItem{{ModelKey: "alpha", UpstreamModelID: "secret/upstream", DisplayName: "Alpha", Provider: "p", Capabilities: models.JSONSlice{"chat"}, ContextWindow: 10, InputPriceUSDPerMillionTokens: "1.23000000", OutputPriceUSDPerMillionTokens: "4.56000000"}})
+	release := projectPublicPriceReleaseDetail(models.PublicPriceSnapshot{Guid: 91, Version: 3, Reason: models.PublicPriceSnapshotReasonRootPublish, SourceRevision: 7, PublishedAt: 1_700_000_000_000}, []models.PublicPriceSnapshotItem{{ModelKey: "alpha", UpstreamModelID: "secret/upstream", DisplayName: "Alpha", Provider: "p", Capabilities: models.JSONSlice{"chat"}, ContextWindow: 10, InputPriceUSDPerMillionTokens: snapshotStringPointer("1.23000000"), OutputPriceUSDPerMillionTokens: snapshotStringPointer("4.56000000")}})
 	b, err := json.Marshal(release)
 	if err != nil {
 		t.Fatal(err)
@@ -40,9 +40,9 @@ func containsJSONCreatedAtRFC3339(v string) bool {
 
 func TestPriceDraftValidationPreservesNullableDecimals(t *testing.T) {
 	in := "0.10000000"
-	draft := PublicPriceDraft{Revision: 2, Models: []PublicModelAdmin{{GUID: "1", ModelKey: "a", UpstreamModelID: "u", DisplayName: "A", Provider: "p", Capabilities: []string{"chat"}, ContextWindow: 1, InputPriceUSDPerMillionTokens: &in, OutputPriceUSDPerMillionTokens: nil, Status: "active", Revision: 1}}, Currency: "USD", Unit: "million_tokens"}
+	draft := PublicPriceDraft{Revision: 2, Models: []PublicModelAdmin{{GUID: "1", ModelKey: "a", UpstreamModelID: "u", DisplayName: "A", Provider: "p", Capabilities: []string{"chat"}, ContextWindow: 1, InputPriceUSDPerMillionTokens: &in, OutputPriceUSDPerMillionTokens: nil, PriceSource: "approved catalog", PriceReviewer: "pricing team", PriceEffectiveAt: func() *int64 { v := int64(1_700_000_000_000); return &v }(), Status: "active", Revision: 1}}, Currency: "USD", Unit: "million_tokens"}
 	issues := validatePublicPriceDraft(draft)
-	if len(issues) != 1 || issues[0].Field != "models[0].output_price_usd_per_million_tokens" || issues[0].Code != "required" {
+	if len(issues) != 0 {
 		t.Fatalf("issues=%#v", issues)
 	}
 }

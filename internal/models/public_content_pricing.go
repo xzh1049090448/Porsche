@@ -356,8 +356,8 @@ type PublicPriceSnapshotItem struct {
 	Provider                       string    `gorm:"column:provider;type:varchar(128);not null;<-:create" json:"provider"`
 	Capabilities                   JSONSlice `gorm:"column:capabilities;type:json;not null;<-:create" json:"capabilities"`
 	ContextWindow                  int64     `gorm:"column:context_window;type:bigint;not null;<-:create" json:"context_window"`
-	InputPriceUSDPerMillionTokens  string    `gorm:"column:input_price_usd_per_million_tokens;type:decimal(20,8);not null;<-:create" json:"-"`
-	OutputPriceUSDPerMillionTokens string    `gorm:"column:output_price_usd_per_million_tokens;type:decimal(20,8);not null;<-:create" json:"-"`
+	InputPriceUSDPerMillionTokens  *string   `gorm:"column:input_price_usd_per_million_tokens;type:decimal(20,8);<-:create" json:"-"`
+	OutputPriceUSDPerMillionTokens *string   `gorm:"column:output_price_usd_per_million_tokens;type:decimal(20,8);<-:create" json:"-"`
 	UpstreamCheckedAt              *int64    `gorm:"column:upstream_checked_at;type:bigint;<-:create" json:"-"`
 	PricingType                    string    `gorm:"column:pricing_type;type:varchar(32);not null;<-:create" json:"pricing_type"`
 	PublicDisplayGroup             string    `gorm:"column:public_display_group;type:varchar(128);not null;<-:create" json:"public_display_group"`

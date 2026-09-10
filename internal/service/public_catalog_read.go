@@ -56,11 +56,18 @@ type PublicCatalogListRequest struct {
 	Page, PageSize                                                                           int
 }
 type PublicModelListRead struct {
-	Items          []PublicModelRead `json:"items"`
-	Page           int               `json:"page"`
-	PageSize       int               `json:"page_size"`
-	Total          int               `json:"total"`
-	ReleaseVersion int64             `json:"release_version"`
+	Items          []PublicModelRead   `json:"items"`
+	Page           int                 `json:"page"`
+	PageSize       int                 `json:"page_size"`
+	Total          int                 `json:"total"`
+	ReleaseVersion int64               `json:"release_version"`
+	Facets         PublicCatalogFacets `json:"facets"`
+}
+type PublicCatalogFacets struct {
+	Providers           []string `json:"providers"`
+	Capabilities        []string `json:"capabilities"`
+	EndpointTypes       []string `json:"endpoint_types"`
+	PublicDisplayGroups []string `json:"public_display_groups"`
 }
 type PublicModelDetailRead struct {
 	Model PublicModelRead `json:"model"`
@@ -216,7 +223,34 @@ func (p *PublicCatalogProjection) List(req PublicCatalogListRequest, authenticat
 	for _, item := range filtered[start:end] {
 		items = append(items, p.model(item, authenticated))
 	}
-	return PublicModelListRead{items, page, size, len(filtered), p.PriceReleaseVersion}
+	return PublicModelListRead{Items: items, Page: page, PageSize: size, Total: len(filtered), ReleaseVersion: p.PriceReleaseVersion, Facets: p.facets()}
+}
+
+func (p *PublicCatalogProjection) facets() PublicCatalogFacets {
+	providers, capabilities, endpoints, groups := map[string]bool{}, map[string]bool{}, map[string]bool{}, map[string]bool{}
+	for _, item := range p.Items {
+		if item.Provider != "" {
+			providers[item.Provider] = true
+		}
+		if item.PublicDisplayGroup != "" {
+			groups[item.PublicDisplayGroup] = true
+		}
+		for _, v := range item.Capabilities {
+			capabilities[v] = true
+		}
+		for _, v := range item.EndpointTypes {
+			endpoints[v] = true
+		}
+	}
+	return PublicCatalogFacets{Providers: sortedPublicFacet(providers), Capabilities: sortedPublicFacet(capabilities), EndpointTypes: sortedPublicFacet(endpoints), PublicDisplayGroups: sortedPublicFacet(groups)}
+}
+func sortedPublicFacet(values map[string]bool) []string {
+	out := make([]string, 0, len(values))
+	for v := range values {
+		out = append(out, v)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func containsExact(values []string, wanted string) bool {
@@ -236,6 +270,15 @@ func clonePublicStrings(values []string) []string {
 }
 
 func publicCatalogLess(a, b PublicCatalogItem, field, order string) bool {
+	if field == "input_price" || field == "output_price" {
+		av, bv := a.InputPriceUSDPerMillionTokens, b.InputPriceUSDPerMillionTokens
+		if field == "output_price" {
+			av, bv = a.OutputPriceUSDPerMillionTokens, b.OutputPriceUSDPerMillionTokens
+		}
+		if (av == "") != (bv == "") {
+			return av != ""
+		}
+	}
 	cmp := strings.Compare(a.ModelKey, b.ModelKey)
 	switch field {
 	case "name":
@@ -283,7 +326,13 @@ func projectPublicCatalogItem(row models.PublicPriceSnapshotItem, snapshot model
 	if pricingType == "" {
 		pricingType = "token"
 	}
-	return PublicCatalogItem{ModelKey: row.ModelKey, DisplayName: row.DisplayName, Provider: row.Provider, Capabilities: clonePublicStrings(row.Capabilities), ContextWindow: row.ContextWindow, InputPriceUSDPerMillionTokens: row.InputPriceUSDPerMillionTokens, OutputPriceUSDPerMillionTokens: row.OutputPriceUSDPerMillionTokens, PricingType: pricingType, PublicDisplayGroup: row.PublicDisplayGroup, EndpointTypes: clonePublicStrings(row.EndpointTypes), PublicRestrictions: clonePublicStrings(row.PublicRestrictions), PriceSource: row.PriceSource, PriceReviewer: row.PriceReviewer, EffectiveAt: effective, UpdatedAt: releaseTime(snapshot.PublishedAt)}
+	return PublicCatalogItem{ModelKey: row.ModelKey, DisplayName: row.DisplayName, Provider: row.Provider, Capabilities: clonePublicStrings(row.Capabilities), ContextWindow: row.ContextWindow, InputPriceUSDPerMillionTokens: publicPriceValue(row.InputPriceUSDPerMillionTokens), OutputPriceUSDPerMillionTokens: publicPriceValue(row.OutputPriceUSDPerMillionTokens), PricingType: pricingType, PublicDisplayGroup: row.PublicDisplayGroup, EndpointTypes: clonePublicStrings(row.EndpointTypes), PublicRestrictions: clonePublicStrings(row.PublicRestrictions), PriceSource: row.PriceSource, PriceReviewer: row.PriceReviewer, EffectiveAt: effective, UpdatedAt: releaseTime(snapshot.PublishedAt)}
+}
+func publicPriceValue(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
 }
 func (p *PublicCatalogProjection) Detail(key string, authenticated bool) (*PublicModelDetailRead, int) {
 	for _, item := range p.Items {

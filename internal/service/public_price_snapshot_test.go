@@ -14,8 +14,27 @@ func TestPublicPriceSnapshotValidationRunsBeforePublication(t *testing.T) {
 		t.Fatalf("valid model rejected: %v", err)
 	}
 	valid.OutputPriceUSDPerMillionTokens = nil
-	if _, err := preparePublicPriceSnapshot([]models.PublicModelConfig{valid}); status(err) != 422 {
-		t.Fatalf("missing price status=%d err=%v", status(err), err)
+	if got, err := preparePublicPriceSnapshot([]models.PublicModelConfig{valid}); err != nil || got.Items[0].OutputPriceUSDPerMillionTokens != nil {
+		t.Fatalf("missing price not preserved: got=%#v err=%v", got, err)
+	}
+}
+
+func TestPublicPriceSnapshotRequiresProvenanceOnlyWhenAnyPricePublished(t *testing.T) {
+	priced := snapshotModelFixture("priced")
+	priced.PriceSource = ""
+	priced.PriceReviewer = ""
+	priced.PriceEffectiveAt = nil
+	if _, err := preparePublicPriceSnapshot([]models.PublicModelConfig{priced}); status(err) != 422 {
+		t.Fatalf("priced without provenance err=%v", err)
+	}
+	unpriced := snapshotModelFixture("unpriced")
+	unpriced.InputPriceUSDPerMillionTokens = nil
+	unpriced.OutputPriceUSDPerMillionTokens = nil
+	unpriced.PriceSource = ""
+	unpriced.PriceReviewer = ""
+	unpriced.PriceEffectiveAt = nil
+	if _, err := preparePublicPriceSnapshot([]models.PublicModelConfig{unpriced}); err != nil {
+		t.Fatalf("unpriced metadata rejected: %v", err)
 	}
 }
 
@@ -34,7 +53,7 @@ func TestPublicPriceSnapshotCanonicalHashStableAndDecimalExact(t *testing.T) {
 	if one.Hash != two.Hash || len(one.Hash) != 64 {
 		t.Fatalf("unstable hash %q %q", one.Hash, two.Hash)
 	}
-	if one.Items[0].InputPriceUSDPerMillionTokens != "1.23000000" || one.Items[0].OutputPriceUSDPerMillionTokens != "999999999999.99999999" {
+	if publicPriceValue(one.Items[0].InputPriceUSDPerMillionTokens) != "1.23000000" || publicPriceValue(one.Items[0].OutputPriceUSDPerMillionTokens) != "999999999999.99999999" {
 		t.Fatalf("decimal text changed: %#v", one.Items[0])
 	}
 	one.Items[0].DisplayName = "changed"
@@ -73,7 +92,7 @@ func TestPublicPriceSnapshotContentCompatibilityRejectsMissingReferencedModel(t 
 	payload := models.JSONMap{"home": "[alpha](/pricing/alpha)", "about": "About", "terms": "Terms", "privacy": "Privacy", "legal_reviewed": true, "model_keys": []string{"alpha"}, "price_snapshot_guid": "1", "price_snapshot_version": int64(1)}
 	hash, _ := hashPublicContentPayload(payload)
 	release := models.PublicContentRelease{Payload: payload, ContentHash: hash}
-	alpha := models.PublicPriceSnapshotItem{ModelKey: "alpha", UpstreamModelID: "org/alpha", InputPriceUSDPerMillionTokens: "1", OutputPriceUSDPerMillionTokens: "2"}
+	alpha := models.PublicPriceSnapshotItem{ModelKey: "alpha", UpstreamModelID: "org/alpha", InputPriceUSDPerMillionTokens: snapshotStringPointer("1"), OutputPriceUSDPerMillionTokens: snapshotStringPointer("2")}
 	if err := validateContentReleaseForPriceItems(release, []models.PublicPriceSnapshotItem{alpha}); err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +116,7 @@ func TestPublicPriceSnapshotRestoreRevalidatesAndRehashesHistoricalItems(t *test
 		t.Fatalf("empty=%v", err)
 	}
 	invalid := append([]models.PublicPriceSnapshotItem(nil), prepared.Items...)
-	invalid[0].InputPriceUSDPerMillionTokens = "bad"
+	invalid[0].InputPriceUSDPerMillionTokens = snapshotStringPointer("bad")
 	if _, err = prepareRestoredPublicPriceSnapshot(invalid, prepared.Hash); status(err) != 422 {
 		t.Fatalf("invalid=%v", err)
 	}
@@ -158,7 +177,8 @@ func TestPublicPriceSnapshotRestorePlanMaterializesHistoricalDraft(t *testing.T)
 func snapshotModelFixture(key string) models.PublicModelConfig {
 	in, out := "0.00000001", "2.50000000"
 	checked := int64(1900000000000)
-	return models.PublicModelConfig{ID: int64(len(key) + 1), ModelKey: key, UpstreamModelID: "org/" + key, DisplayName: "Model " + key, Provider: "provider", Capabilities: models.JSONSlice{"chat"}, ContextWindow: 8192, InputPriceUSDPerMillionTokens: &in, OutputPriceUSDPerMillionTokens: &out, Status: models.PublicModelConfigStatusActive, Revision: 3, LastUpstreamCheckAt: &checked}
+	effective := int64(1899990000000)
+	return models.PublicModelConfig{ID: int64(len(key) + 1), ModelKey: key, UpstreamModelID: "org/" + key, DisplayName: "Model " + key, Provider: "provider", Capabilities: models.JSONSlice{"chat"}, ContextWindow: 8192, InputPriceUSDPerMillionTokens: &in, OutputPriceUSDPerMillionTokens: &out, Status: models.PublicModelConfigStatusActive, Revision: 3, LastUpstreamCheckAt: &checked, PriceSource: "approved catalog", PriceReviewer: "pricing team", PriceEffectiveAt: &effective}
 }
 
 func snapshotStringPointer(v string) *string { return &v }

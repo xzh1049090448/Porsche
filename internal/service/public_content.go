@@ -207,7 +207,7 @@ func preparePublicContent(d PublicContentDraft, price models.PublicPriceSnapshot
 	}
 	modelsV := make([]publiccontent.Model, 0, len(items))
 	for _, i := range items {
-		modelsV = append(modelsV, publiccontent.Model{ModelKey: i.ModelKey, UpstreamModelID: i.UpstreamModelID, Active: true, Price: publiccontent.Price{Currency: publiccontent.CurrencyUSD, Unit: publiccontent.UnitMillionTokens, Input: i.InputPriceUSDPerMillionTokens, Output: i.OutputPriceUSDPerMillionTokens}})
+		modelsV = append(modelsV, publiccontent.Model{ModelKey: i.ModelKey, UpstreamModelID: i.UpstreamModelID, Active: true, Price: publiccontent.Price{Currency: publiccontent.CurrencyUSD, Unit: publiccontent.UnitMillionTokens, Input: publicPriceValue(i.InputPriceUSDPerMillionTokens), Output: publicPriceValue(i.OutputPriceUSDPerMillionTokens)}})
 	}
 	refs := extractPublicContentModelReferences(d.Home)
 	pub := publiccontent.Publication{Models: modelsV, HomeModelKeys: refs, Documents: []publiccontent.Document{{Kind: publiccontent.DocumentHome, Body: d.Home}, {Kind: publiccontent.DocumentKind("about"), Body: d.About}, {Kind: publiccontent.DocumentTerms, Body: d.Terms, Reviewed: d.LegalReviewed}, {Kind: publiccontent.DocumentPrivacy, Body: d.Privacy, Reviewed: d.LegalReviewed}}}

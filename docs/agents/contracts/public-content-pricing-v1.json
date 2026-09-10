@@ -16,7 +16,14 @@
       "input_price_usd_per_million_tokens": "12.34567890",
       "output_price_usd_per_million_tokens": "3.21000000"
     },
-    "billing_semantics": "references_only_no_automatic_charge"
+    "billing_semantics": "references_only_no_automatic_charge",
+    "missing_component_semantics": "omit_field_never_zero_or_free",
+    "provenance_required_when_any_component_present": [
+      "price_source",
+      "price_reviewer",
+      "effective_at",
+      "updated_at"
+    ]
   },
   "roles": {
     "anonymous": "public_read_only",
@@ -170,8 +177,6 @@
         "provider",
         "capabilities",
         "context_window",
-        "input_price_usd_per_million_tokens",
-        "output_price_usd_per_million_tokens",
         "price_visibility",
         "release_version",
         "pricing_type",
@@ -541,7 +546,8 @@
         "page",
         "page_size",
         "total",
-        "release_version"
+        "release_version",
+        "facets"
       ],
       "properties": {
         "items": {
@@ -565,6 +571,10 @@
         },
         "release_version": {
           "type": "integer"
+        },
+        "facets": {
+          "type": "object",
+          "$ref": "PublicCatalogFacets"
         }
       }
     },
@@ -1288,6 +1298,41 @@
         "error": {
           "type": "object",
           "$ref": "Error"
+        }
+      }
+    },
+    "PublicCatalogFacets": {
+      "type": "object",
+      "required": [
+        "providers",
+        "capabilities",
+        "endpoint_types",
+        "public_display_groups"
+      ],
+      "properties": {
+        "providers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "capabilities": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "endpoint_types": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "public_display_groups": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         }
       }
     }

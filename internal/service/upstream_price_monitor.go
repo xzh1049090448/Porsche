@@ -205,7 +205,7 @@ func (m *UpstreamPriceMonitor) Tick(ctx context.Context) error {
 					continue
 				}
 				if snap, exists := published[cfg.ID]; exists && cfg.Status == models.PublicModelConfigStatusActive {
-					for _, c := range planPriceComparisons(cfg.ModelKey, &snap.InputPriceUSDPerMillionTokens, &snap.OutputPriceUSDPerMillionTokens, &item, observedAt) {
+					for _, c := range planPriceComparisons(cfg.ModelKey, snap.InputPriceUSDPerMillionTokens, snap.OutputPriceUSDPerMillionTokens, &item, observedAt) {
 						alerts = append(alerts, comparisonAlert(*cfg, c))
 					}
 				}

@@ -77,7 +77,7 @@ func TestPublicPriceSnapshotDBAtomicPublicationIdempotencyAndRestore(t *testing.
 	if err = f.db.Where("snapshot_id = ?", snapshot.ID).Order("model_key").Find(&items).Error; err != nil {
 		t.Fatal(err)
 	}
-	if len(items) != 2 || items[0].InputPriceUSDPerMillionTokens != "2.00000000" || items[0].OutputPriceUSDPerMillionTokens != "2.00000000" {
+	if len(items) != 2 || publicPriceValue(items[0].InputPriceUSDPerMillionTokens) != "2.00000000" || publicPriceValue(items[0].OutputPriceUSDPerMillionTokens) != "2.00000000" {
 		t.Fatalf("snapshot items=%#v", items)
 	}
 	assertPublicModelEverPublished(t, f.db, publicModelIDByGUID(t, f.db, created.GUID), true)

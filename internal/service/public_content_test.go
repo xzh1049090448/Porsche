@@ -18,7 +18,7 @@ func TestPublicContentSafeEmptyInitialDraft(t *testing.T) {
 func TestPublicContentPreparationSanitizesAndRequiresReviewedLegalAndExactModels(t *testing.T) {
 	d := PublicContentDraft{Revision: 2, Home: "Use [alpha](/pricing/alpha)", About: "About", Terms: "Terms", Privacy: "Privacy", LegalReviewed: true}
 	price := models.PublicPriceSnapshot{ID: 8, Guid: 80, Version: 4}
-	items := []models.PublicPriceSnapshotItem{{ModelKey: "alpha", UpstreamModelID: "org/alpha", InputPriceUSDPerMillionTokens: "1.00000000", OutputPriceUSDPerMillionTokens: "2.00000000"}}
+	items := []models.PublicPriceSnapshotItem{{ModelKey: "alpha", UpstreamModelID: "org/alpha", InputPriceUSDPerMillionTokens: snapshotStringPointer("1.00000000"), OutputPriceUSDPerMillionTokens: snapshotStringPointer("2.00000000")}}
 	p, issues := preparePublicContent(d, price, items)
 	if len(issues) != 0 || p.Hash == "" || p.Payload["home"] != d.Home {
 		t.Fatalf("prepared=%#v issues=%#v", p, issues)
@@ -55,7 +55,7 @@ func TestPublicContentIdempotencyBindingUsesActorOperationKeyAndPayload(t *testi
 func TestPublicContentAboutTruthGateAndParserReferences(t *testing.T) {
 	d := PublicContentDraft{Revision: 2, Home: "[alpha][model] <a href='/pricing/html'>html</a> `[/pricing/code]`\n\n[model]: /pricing/alpha", About: "100% reliable", Terms: "Terms", Privacy: "Privacy", LegalReviewed: true}
 	price := models.PublicPriceSnapshot{ID: 8, Guid: 80, Version: 4}
-	items := []models.PublicPriceSnapshotItem{{ModelKey: "alpha", UpstreamModelID: "org/alpha", InputPriceUSDPerMillionTokens: "1", OutputPriceUSDPerMillionTokens: "2"}}
+	items := []models.PublicPriceSnapshotItem{{ModelKey: "alpha", UpstreamModelID: "org/alpha", InputPriceUSDPerMillionTokens: snapshotStringPointer("1"), OutputPriceUSDPerMillionTokens: snapshotStringPointer("2")}}
 	_, issues := preparePublicContent(d, price, items)
 	if !hasPublicContentIssue(issues, "unsubstantiated_prototype_claim") || !hasPublicContentIssue(issues, "unknown_home_model") {
 		t.Fatalf("issues=%#v", issues)
@@ -122,7 +122,7 @@ func TestPublicContentReleaseIntegrityRejectsTamperingAndMalformedPayload(t *tes
 	if err = verifyPublicContentRelease(badHash); status(err) != 503 {
 		t.Fatalf("bad hash=%v", err)
 	}
-	items := []models.PublicPriceSnapshotItem{{ModelKey: "alpha", UpstreamModelID: "org/alpha", InputPriceUSDPerMillionTokens: "1", OutputPriceUSDPerMillionTokens: "2"}}
+	items := []models.PublicPriceSnapshotItem{{ModelKey: "alpha", UpstreamModelID: "org/alpha", InputPriceUSDPerMillionTokens: snapshotStringPointer("1"), OutputPriceUSDPerMillionTokens: snapshotStringPointer("2")}}
 	if err = validateContentReleaseForPriceItems(badHash, items); status(err) != 503 {
 		t.Fatalf("validation accepted bad hash=%v", err)
 	}

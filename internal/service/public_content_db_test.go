@@ -300,7 +300,7 @@ func seedContentPublicationFixture(db *gorm.DB, actor int64) (contentSeed, error
 	if e := db.Create(&model).Error; e != nil {
 		return contentSeed{}, e
 	}
-	item := models.PublicPriceSnapshotItem{Guid: persistence.NextGUID(), CreatedAt: now, CreatedBy: &actor, UpdatedAt: now, UpdatedBy: &actor, SnapshotID: price.ID, ModelConfigID: model.ID, ModelKey: modelKey, UpstreamModelID: "org/" + modelKey, DisplayName: "Content Model", Provider: "provider", Capabilities: models.JSONSlice{"chat"}, ContextWindow: 8192, InputPriceUSDPerMillionTokens: in, OutputPriceUSDPerMillionTokens: out}
+	item := models.PublicPriceSnapshotItem{Guid: persistence.NextGUID(), CreatedAt: now, CreatedBy: &actor, UpdatedAt: now, UpdatedBy: &actor, SnapshotID: price.ID, ModelConfigID: model.ID, ModelKey: modelKey, UpstreamModelID: "org/" + modelKey, DisplayName: "Content Model", Provider: "provider", Capabilities: models.JSONSlice{"chat"}, ContextWindow: 8192, InputPriceUSDPerMillionTokens: &in, OutputPriceUSDPerMillionTokens: &out}
 	if e := db.Create(&item).Error; e != nil {
 		return contentSeed{}, e
 	}

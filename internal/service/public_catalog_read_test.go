@@ -156,6 +156,32 @@ func TestProjectPublicCatalogFiltersEndpointAndGroupAndSortsGloballyBeforePagina
 	}
 }
 
+func TestProjectPublicCatalogReturnsGlobalFacetsIndependentOfCurrentPage(t *testing.T) {
+	p := &PublicCatalogProjection{PriceReleaseVersion: 2, PriceVisibility: models.PublicPriceVisibilityVisible, Items: []PublicCatalogItem{
+		{ModelKey: "a", Provider: "p1", Capabilities: []string{"chat"}, EndpointTypes: []string{"responses"}, PublicDisplayGroup: "featured", PricingType: "token"},
+		{ModelKey: "b", Provider: "p2", Capabilities: []string{"embedding"}, EndpointTypes: []string{"embeddings"}, PublicDisplayGroup: "other", PricingType: "token"},
+	}}
+	got := p.List(PublicCatalogListRequest{Page: 1, PageSize: 1}, false)
+	if len(got.Items) != 1 || fmt.Sprint(got.Facets.Providers) != "[p1 p2]" || fmt.Sprint(got.Facets.EndpointTypes) != "[embeddings responses]" || fmt.Sprint(got.Facets.PublicDisplayGroups) != "[featured other]" {
+		t.Fatalf("global facets=%#v", got)
+	}
+}
+
+func TestProjectPublicCatalogSortKeepsMissingPricesLastInBothDirections(t *testing.T) {
+	p := &PublicCatalogProjection{Items: []PublicCatalogItem{
+		{ModelKey: "missing"},
+		{ModelKey: "low", InputPriceUSDPerMillionTokens: "1.00000000"},
+		{ModelKey: "high", InputPriceUSDPerMillionTokens: "9.00000000"},
+	}}
+	for _, tc := range []struct{ order, want string }{{"asc", "[low high missing]"}, {"desc", "[high low missing]"}} {
+		got := p.List(PublicCatalogListRequest{Sort: "input_price", Order: tc.order, Page: 1, PageSize: 20}, false)
+		keys := []string{got.Items[0].ModelKey, got.Items[1].ModelKey, got.Items[2].ModelKey}
+		if fmt.Sprint(keys) != tc.want {
+			t.Fatalf("%s order=%v", tc.order, keys)
+		}
+	}
+}
+
 func TestProjectPublicCatalogDetailIncludesApprovedSnapshotMetadata(t *testing.T) {
 	p := &PublicCatalogProjection{PriceReleaseVersion: 4, PriceVisibility: models.PublicPriceVisibilityVisible, Items: []PublicCatalogItem{{
 		ModelKey: "alpha", DisplayName: "Alpha", PricingType: "token", PublicDisplayGroup: "featured",

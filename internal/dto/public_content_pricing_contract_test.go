@@ -100,6 +100,11 @@ func TestPublicContentPricingContract(t *testing.T) {
 			}
 		}
 	}
+	for _, field := range []string{"providers", "capabilities", "endpoint_types", "public_display_groups"} {
+		if _, ok := contract["schemas"].(map[string]any)["PublicCatalogFacets"].(map[string]any)["properties"].(map[string]any)[field]; !ok {
+			t.Fatalf("public catalog facets missing %s", field)
+		}
+	}
 	publicContentPricingAssertRevisionedMutationBodies(t, contract)
 	publicContentPricingAssertPathGUIDAbsentFromBodies(t, contract)
 	publicContentPricingAssertMutationBodyRules(t, contract)
@@ -471,7 +476,7 @@ func publicContentPricingAssertSchemas(t *testing.T, contract map[string]any) {
 			}
 		}
 	}
-	publicContentPricingRequire(t, contract, []any{"model_key", "display_name", "provider", "capabilities", "context_window", "input_price_usd_per_million_tokens", "output_price_usd_per_million_tokens", "price_visibility", "release_version", "pricing_type", "endpoint_types", "updated_at"}, "schemas", "PublicModelVisible", "required")
+	publicContentPricingRequire(t, contract, []any{"model_key", "display_name", "provider", "capabilities", "context_window", "price_visibility", "release_version", "pricing_type", "endpoint_types", "updated_at"}, "schemas", "PublicModelVisible", "required")
 	publicContentPricingRequire(t, contract, []any{"model_key", "display_name", "provider", "capabilities", "context_window", "price_visibility", "release_version", "pricing_type", "endpoint_types", "updated_at"}, "schemas", "PublicModelRedacted", "required")
 	for _, field := range []string{"input_price_usd_per_million_tokens", "output_price_usd_per_million_tokens"} {
 		if _, exists := publicContentPricingSchemaProperties(t, contract, "PublicModelRedacted")[field]; exists {
