@@ -2,6 +2,7 @@ package service
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"errors"
 	"strings"
@@ -12,6 +13,149 @@ import (
 )
 
 const cancellationRegistryGenerationID = "c0a8012e-ef48-4a5d-9ca7-9a78d055e7f6"
+
+func TestPlatformGenerationCancellationRegistryCloseCancelsAndDrains(t *testing.T) {
+	registry := NewPlatformGenerationCancellationRegistry()
+	cancelled := make(chan int64, 2)
+	firstToken, err := registry.Register(7, cancellationRegistryGenerationID, func() { cancelled <- 7 })
+	if err != nil {
+		t.Fatalf("first Register() error = %v", err)
+	}
+	secondToken, err := registry.Register(8, cancellationRegistryGenerationID, func() { cancelled <- 8 })
+	if err != nil {
+		t.Fatalf("second Register() error = %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- registry.CloseAndWait(ctx) }()
+	cancelledUsers := make(map[int64]bool, 2)
+	for range 2 {
+		select {
+		case userID := <-cancelled:
+			cancelledUsers[userID] = true
+		case <-time.After(time.Second):
+			t.Fatal("CloseAndWait() did not cancel all active registrations")
+		}
+	}
+	if !cancelledUsers[7] || !cancelledUsers[8] {
+		t.Fatalf("cancelled users = %#v, want 7 and 8", cancelledUsers)
+	}
+	if _, err := registry.Register(9, cancellationRegistryGenerationID, func() {}); !errors.Is(err, ErrPlatformGenerationUnavailable) {
+		t.Fatalf("Register after close error = %v, want ErrPlatformGenerationUnavailable", err)
+	}
+	if !registry.Unregister(7, cancellationRegistryGenerationID, firstToken) {
+		t.Fatal("Unregister first active runner = false")
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("CloseAndWait() returned before all runners drained: %v", err)
+	default:
+	}
+	if !registry.Unregister(8, cancellationRegistryGenerationID, secondToken) {
+		t.Fatal("Unregister second active runner = false")
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("CloseAndWait() error = %v", err)
+	}
+}
+
+func TestPlatformGenerationCancellationRegistryCloseCallbacksRunOutsideMutex(t *testing.T) {
+	registry := NewPlatformGenerationCancellationRegistry()
+	var token string
+	unregistered := make(chan bool, 1)
+	var err error
+	token, err = registry.Register(7, cancellationRegistryGenerationID, func() {
+		unregistered <- registry.Unregister(7, cancellationRegistryGenerationID, token)
+	})
+	if err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := registry.CloseAndWait(ctx); err != nil {
+		t.Fatalf("CloseAndWait() error = %v", err)
+	}
+	if ok := <-unregistered; !ok {
+		t.Fatal("callback Unregister() = false, want true")
+	}
+}
+
+func TestPlatformGenerationCancellationRegistryDrainTimeoutKeepsLiveEntry(t *testing.T) {
+	registry := NewPlatformGenerationCancellationRegistry()
+	var calls atomic.Int64
+	token, err := registry.Register(7, cancellationRegistryGenerationID, func() { calls.Add(1) })
+	if err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	if err := registry.CloseAndWait(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("CloseAndWait() error = %v, want context.DeadlineExceeded", err)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("callback calls = %d, want 1", got)
+	}
+	if !registry.Unregister(7, cancellationRegistryGenerationID, token) {
+		t.Fatal("Unregister after timeout = false, live entry was deleted")
+	}
+	if err := registry.CloseAndWait(context.Background()); err != nil {
+		t.Fatalf("repeated CloseAndWait() after drain error = %v", err)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("callback calls after repeated close = %d, want 1", got)
+	}
+}
+
+func TestPlatformGenerationCancellationRegistryCloseDoesNotRepeatExplicitCancel(t *testing.T) {
+	registry := NewPlatformGenerationCancellationRegistry()
+	var calls atomic.Int64
+	token, err := registry.Register(7, cancellationRegistryGenerationID, func() { calls.Add(1) })
+	if err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+	if !registry.Cancel(7, cancellationRegistryGenerationID) {
+		t.Fatal("first Cancel() = false, want true")
+	}
+	if registry.Cancel(7, cancellationRegistryGenerationID) {
+		t.Fatal("second Cancel() = true, want false")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- registry.CloseAndWait(ctx) }()
+	if !registry.Unregister(7, cancellationRegistryGenerationID, token) {
+		t.Fatal("Unregister() = false, want true")
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("CloseAndWait() error = %v", err)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("callback calls = %d, want 1", got)
+	}
+}
+
+func TestPlatformGenerationCancellationRegistryCloseSupportsZeroValueAndEmptyRegistry(t *testing.T) {
+	var registry PlatformGenerationCancellationRegistry
+	if err := registry.CloseAndWait(context.Background()); err != nil {
+		t.Fatalf("zero-value CloseAndWait() error = %v", err)
+	}
+	if _, err := registry.Register(7, cancellationRegistryGenerationID, func() {}); !errors.Is(err, ErrPlatformGenerationUnavailable) {
+		t.Fatalf("zero-value Register after close error = %v, want ErrPlatformGenerationUnavailable", err)
+	}
+
+	var nilRegistry *PlatformGenerationCancellationRegistry
+	if err := nilRegistry.CloseAndWait(context.Background()); !errors.Is(err, ErrPlatformGenerationUnavailable) {
+		t.Fatalf("nil CloseAndWait() error = %v, want ErrPlatformGenerationUnavailable", err)
+	}
+	if err := NewPlatformGenerationCancellationRegistry().CloseAndWait(nil); !errors.Is(err, ErrPlatformGenerationUnavailable) {
+		t.Fatalf("nil-context CloseAndWait() error = %v, want ErrPlatformGenerationUnavailable", err)
+	}
+}
 
 func TestPlatformGenerationCancellationRegistryRegistrationTokenUsesSequentialRawURLEncoding(t *testing.T) {
 	raw := make([]byte, 64)
