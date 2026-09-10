@@ -177,8 +177,8 @@ type DeletePublicModelRequest struct {
 	Reason           string `json:"reason"`
 }
 type AdminModelListRequest struct {
-	Search, Status, UpstreamState string
-	Page, PageSize                int
+	Search, Status, UpstreamState, Completeness string
+	Page, PageSize                              int
 }
 type AdminModelListResponse struct {
 	Items    []PublicModelAdmin `json:"items"`
@@ -350,6 +350,17 @@ func (s *PublicModelAdminService) List(ctx context.Context, q AdminModelListRequ
 			op = "> 0"
 		}
 		db = db.Where("consecutive_absences " + op)
+	}
+	if q.Completeness != "" {
+		if q.Completeness != "complete" && q.Completeness != "incomplete" {
+			return nil, errBadRequest("invalid completeness")
+		}
+		complete := "input_price_usd_per_million_tokens IS NOT NULL AND output_price_usd_per_million_tokens IS NOT NULL AND TRIM(price_source) <> '' AND TRIM(price_reviewer) <> '' AND price_effective_at IS NOT NULL AND price_effective_at > 0"
+		if q.Completeness == "complete" {
+			db = db.Where(complete)
+		} else {
+			db = db.Where("NOT (" + complete + ")")
+		}
 	}
 	var total int64
 	if err := db.Count(&total).Error; err != nil {

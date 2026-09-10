@@ -116,6 +116,59 @@ func TestPublicModelCreateObservationAgeBoundary(t *testing.T) {
 		t.Fatalf("boundary observation=%v", err)
 	}
 }
+
+func TestPublicModelListCompletenessIsGlobalBeforePagination(t *testing.T) {
+	f := openPublicModelDBFixture(t)
+	ctx := context.Background()
+	p := "1.00000000"
+	now := persistence.NowMillis()
+	actor := f.actor.ID
+	prefix := fmt.Sprintf("complete-%d-", persistence.NextGUID())
+	rows := make([]models.PublicModelConfig, 0, 26)
+	for i := 0; i < 26; i++ {
+		source, reviewer := "source", "reviewer"
+		effective := now
+		input, output := &p, &p
+		switch i {
+		case 0:
+			input = nil
+		case 1:
+			output = nil
+		case 2:
+			source = ""
+		case 3:
+			reviewer = ""
+		case 4:
+			effective = 0
+		}
+		status, absences := models.PublicModelConfigStatusDraft, 0
+		if i == 5 {
+			status, absences = models.PublicModelConfigStatusInactive, 3
+		}
+		rows = append(rows, models.PublicModelConfig{
+			AuditFields: models.AuditFields{Guid: persistence.NextGUID(), CreatedAt: now + int64(i), CreatedBy: &actor, UpdatedAt: now + int64(i), UpdatedBy: &actor},
+			ModelKey:    prefix + fmt.Sprint(i), UpstreamModelID: "org/" + prefix + fmt.Sprint(i), DisplayName: "Model", Provider: "provider", Capabilities: models.JSONSlice{"chat"}, ContextWindow: 1,
+			InputPriceUSDPerMillionTokens: input, OutputPriceUSDPerMillionTokens: output, PriceSource: source, PriceReviewer: reviewer, PriceEffectiveAt: &effective, Status: status, ConsecutiveAbsences: absences, Revision: 1,
+		})
+	}
+	if err := f.db.Create(&rows).Error; err != nil {
+		t.Fatal(err)
+	}
+	s := NewPublicModelAdminService(f.db)
+	complete, err := s.List(ctx, AdminModelListRequest{Search: prefix, Completeness: "complete", Page: 2, PageSize: 20})
+	if err != nil || complete.Total != 21 || len(complete.Items) != 1 {
+		t.Fatalf("complete page %#v err=%v", complete, err)
+	}
+	incomplete, err := s.List(ctx, AdminModelListRequest{Search: prefix, Completeness: "incomplete", Page: 1, PageSize: 20})
+	if err != nil || incomplete.Total != 5 || len(incomplete.Items) != 5 {
+		t.Fatalf("incomplete page %#v err=%v", incomplete, err)
+	}
+	for _, tc := range []string{"COMPLETE", "stale", " complete "} {
+		if _, err = s.List(ctx, AdminModelListRequest{Search: prefix, Completeness: tc}); status(err) != 400 {
+			t.Fatalf("completeness %q accepted: %v", tc, err)
+		}
+	}
+}
 func (f *publicModelDBFixture) input(s string) CreatePublicModelRequest {
 	p := "2.00000000"
 	return CreatePublicModelRequest{UpstreamModelID: "org/model-" + s, ModelKey: "model-" + s, DisplayName: "Model", Provider: "provider", Capabilities: []string{"chat"}, ContextWindow: 8192, InputPriceUSDPerMillionTokens: &p, OutputPriceUSDPerMillionTokens: &p}

@@ -25,6 +25,26 @@
       "updated_at"
     ]
   },
+  "admin_model_completeness": {
+    "canonical_values": [
+      "complete",
+      "incomplete"
+    ],
+    "complete_requires": [
+      "input_price_usd_per_million_tokens",
+      "output_price_usd_per_million_tokens",
+      "price_source",
+      "price_reviewer",
+      "price_effective_at"
+    ],
+    "semantics": "complete requires both price components, nonblank source and reviewer, and a positive effective timestamp; incomplete is the exact complement among non-deleted rows",
+    "evaluation_scope": "server_global_before_pagination",
+    "excluded_fields": [
+      "status",
+      "consecutive_absences",
+      "last_upstream_check_at"
+    ]
+  },
   "roles": {
     "anonymous": "public_read_only",
     "root": "authenticated_root_role_required"
@@ -612,6 +632,13 @@
           "enum": [
             "present",
             "missing"
+          ]
+        },
+        "completeness": {
+          "type": "string",
+          "enum": [
+            "complete",
+            "incomplete"
           ]
         },
         "page": {

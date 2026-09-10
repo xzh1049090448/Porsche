@@ -93,6 +93,10 @@ func TestPublicContentPricingContract(t *testing.T) {
 			t.Fatalf("public list query missing %s", field)
 		}
 	}
+	publicContentPricingRequire(t, contract, []any{"complete", "incomplete"}, "schemas", "AdminModelListRequest", "properties", "completeness", "enum")
+	publicContentPricingRequire(t, contract, []any{"input_price_usd_per_million_tokens", "output_price_usd_per_million_tokens", "price_source", "price_reviewer", "price_effective_at"}, "admin_model_completeness", "complete_requires")
+	publicContentPricingRequire(t, contract, "server_global_before_pagination", "admin_model_completeness", "evaluation_scope")
+	publicContentPricingRequire(t, contract, []any{"status", "consecutive_absences", "last_upstream_check_at"}, "admin_model_completeness", "excluded_fields")
 	for _, schema := range []string{"PublicModelVisible", "PublicModelRedacted"} {
 		for _, field := range []string{"pricing_type", "public_display_group", "endpoint_types", "updated_at"} {
 			if _, ok := contract["schemas"].(map[string]any)[schema].(map[string]any)["properties"].(map[string]any)[field]; !ok {

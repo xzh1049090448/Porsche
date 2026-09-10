@@ -155,3 +155,13 @@ func TestPublicAdminQueryUsesStandardPercentAndPlusDecoding(t *testing.T) {
 		}
 	}
 }
+
+func TestPublicAdminQueryAcceptsCanonicalCompletenessOnce(t *testing.T) {
+	q, ok := publicAdminQuery("completeness=complete", map[string]bool{"completeness": true})
+	if !ok || q["completeness"] != "complete" {
+		t.Fatalf("query=%#v ok=%v", q, ok)
+	}
+	if _, ok := publicAdminQuery("completeness=complete&completeness=incomplete", map[string]bool{"completeness": true}); ok {
+		t.Fatal("duplicate completeness accepted")
+	}
+}

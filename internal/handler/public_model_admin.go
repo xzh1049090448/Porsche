@@ -41,7 +41,7 @@ func RegisterPublicModelAdmin(r *gin.Engine, state *app.State) {
 			publicAdminError(c, &service.HTTPError{Status: 400, Message: "invalid request"})
 			return
 		}
-		q, ok := publicAdminQuery(c.Request.URL.RawQuery, map[string]bool{"search": true, "status": true, "upstream_state": true, "page": true, "page_size": true})
+		q, ok := publicAdminQuery(c.Request.URL.RawQuery, map[string]bool{"search": true, "status": true, "upstream_state": true, "completeness": true, "page": true, "page_size": true})
 		if !ok {
 			publicAdminError(c, &service.HTTPError{Status: 400, Message: "invalid request"})
 			return
@@ -51,7 +51,7 @@ func RegisterPublicModelAdmin(r *gin.Engine, state *app.State) {
 			publicAdminError(c, &service.HTTPError{Status: 400, Message: "invalid pagination"})
 			return
 		}
-		out, err := state.PublicModels.List(c.Request.Context(), service.AdminModelListRequest{Search: q["search"], Status: q["status"], UpstreamState: q["upstream_state"], Page: page, PageSize: size})
+		out, err := state.PublicModels.List(c.Request.Context(), service.AdminModelListRequest{Search: q["search"], Status: q["status"], UpstreamState: q["upstream_state"], Completeness: q["completeness"], Page: page, PageSize: size})
 		if err != nil {
 			publicAdminError(c, err)
 			return
