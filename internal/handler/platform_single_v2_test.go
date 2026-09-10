@@ -252,6 +252,43 @@ func TestPlatformSingleV2DecodeAndAuthorizationPrecedeRunner(t *testing.T) {
 	}
 }
 
+func TestPlatformSingleV2RejectsMissingStreamBeforeAuthorizationOrRunner(t *testing.T) {
+	runner := &platformSingleV2RunnerFake{run: func(service.PlatformSingleGenerationInput) (service.PlatformSingleGenerationRunResult, error) {
+		t.Fatal("runner must not be called")
+		return service.PlatformSingleGenerationRunResult{}, nil
+	}}
+	control := &platformSingleV2ControllerFake{}
+	whiteLabel, err := whitelabel.NewWhiteLabelService(config.WhiteLabelSettings{
+		BaseURL: "https://white-label.test/v1", APIKey: "provider-secret",
+		AllowedModels: map[string]struct{}{"model-a": {}},
+	}, &http.Client{Transport: platformRoundTripper(func(*http.Request) (*http.Response, error) {
+		t.Fatal("model catalog authorization must not run")
+		return nil, errors.New("unexpected catalog call")
+	})}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := &app.State{
+		Settings: &config.Settings{}, WhiteLabel: whiteLabel,
+		PlatformGenerationControl: control, PlatformSingleGeneration: runner,
+	}
+	engine := gin.New()
+	registerPlatformWithAuthentication(engine, state, func(c *gin.Context) {
+		c.Set(middleware.ContextUser, &models.User{ID: 47, Status: models.UserStatusActive, AllowedModels: models.JSONSlice{"model-a"}})
+		c.Set(middleware.ContextUserID, int64(47))
+		c.Next()
+	})
+	payload := strings.Replace(platformSingleV2Payload(""), `"stream":true,`, "", 1)
+	rec := platformSingleV2Request(engine, payload)
+	want := `{"error":{"code":"invalid_request","message":"Invalid request.","type":"invalid_request_error","request_id":"request-public-1"}}`
+	if rec.Code != http.StatusBadRequest || rec.Body.String() != want {
+		t.Fatalf("status=%d body=%s want=%s", rec.Code, rec.Body.String(), want)
+	}
+	if runner.calls != 0 || control.calls != 0 {
+		t.Fatalf("runner/control calls=%d/%d, want zero", runner.calls, control.calls)
+	}
+}
+
 func TestPlatformSingleV2NeverWritesJSONAfterStreamStarts(t *testing.T) {
 	runner := &platformSingleV2RunnerFake{run: func(input service.PlatformSingleGenerationInput) (service.PlatformSingleGenerationRunResult, error) {
 		if err := input.Write([]byte("event: meta\ndata: {}\n\n")); err != nil {
