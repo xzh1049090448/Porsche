@@ -1,6 +1,8 @@
 package handler
 
 import (
+	"encoding/json"
+	"errors"
 	"net/http"
 	"reflect"
 	"testing"
@@ -52,7 +54,31 @@ func TestPublicVerificationHTTPDispatchesFiveReachableActions(t *testing.T) {
 		if response.Code != http.StatusCreated || backend.issueCalls != 1 || backend.issueAction != tc.action || !reflect.DeepEqual(backend.issueAny, tc.intent) {
 			t.Fatalf("action=%v status=%d calls=%d gotAction=%v intent=%#v body=%s", tc.action, response.Code, backend.issueCalls, backend.issueAction, backend.issueAny, response.Body.String())
 		}
+		for _, value := range backend.issueCurrent {
+			if value != 0 {
+				t.Fatal("public verification retained current_password bytes")
+			}
+		}
 		assertActionTestExactBody(t, response, `{"ticket":"`+testActionTicket+`","expires_at":1790000300000}`)
+	}
+}
+
+func TestPublicVerificationPasswordWireNeverUsesStringAndClearsOnServiceError(t *testing.T) {
+	field, ok := reflect.TypeOf(publicVerificationEnvelope{}).FieldByName("CurrentPassword")
+	if !ok || field.Type != reflect.TypeOf(json.RawMessage{}) || field.Type.Kind() == reflect.String {
+		t.Fatalf("current password wire type=%v", field.Type)
+	}
+	backend := adminUserCreateBackend("admin")
+	backend.issueErr = errors.New("injected service failure")
+	engine := newScriptedUserManagementEngine(t, backend, models.UserRoleRoot)
+	response := performActionRequest(engine, http.MethodPost, "/admin/v2/action-verifications", `{"action":"public_pricing.publish","intent":{"expected_revision":5},"current_password":"Current!Pass9"}`, nil)
+	if response.Code != http.StatusServiceUnavailable || backend.issueCalls != 1 {
+		t.Fatalf("service failure status=%d calls=%d", response.Code, backend.issueCalls)
+	}
+	for _, value := range backend.issueCurrent {
+		if value != 0 {
+			t.Fatal("service error retained current_password bytes")
+		}
 	}
 }
 

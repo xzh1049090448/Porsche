@@ -17,7 +17,7 @@ import (
 type publicVerificationEnvelope struct {
 	Action          string          `json:"action"`
 	Intent          json.RawMessage `json:"intent"`
-	CurrentPassword string          `json:"current_password"`
+	CurrentPassword json.RawMessage `json:"current_password"`
 }
 
 type publicModelDeleteVerificationIntent struct {
@@ -38,12 +38,16 @@ func issuePublicAdminVerification(c *gin.Context, backend userManagementActionBa
 		return
 	}
 	var envelope publicVerificationEnvelope
-	if !decodeExactPublicVerification(raw, &envelope) || envelope.CurrentPassword == "" {
+	if !decodeExactPublicVerification(raw, &envelope) {
 		adminUserActionError(c, errInvalidAdminUserAction, "")
 		return
 	}
-	password := []byte(envelope.CurrentPassword)
-	envelope.CurrentPassword = ""
+	password, ok := dto.DecodeOwnedJSONString(envelope.CurrentPassword)
+	if !ok || len(password) == 0 {
+		clear(password)
+		adminUserActionError(c, errInvalidAdminUserAction, "")
+		return
+	}
 	defer clear(password)
 	action, target, intent, ok := decodePublicVerificationIntent(envelope.Action, envelope.Intent)
 	if !ok {
