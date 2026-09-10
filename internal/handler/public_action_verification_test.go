@@ -82,6 +82,40 @@ func TestPublicVerificationPasswordWireNeverUsesStringAndClearsOnServiceError(t 
 	}
 }
 
+func TestPublicVerificationEnvelopeClearsOwnedRawMessageBuffers(t *testing.T) {
+	raw := []byte(`{"action":"public_pricing.publish","intent":{"expected_revision":5},"current_password":"Current!Pass9"}`)
+	var envelope publicVerificationEnvelope
+	if !decodeExactPublicVerification(raw, &envelope) {
+		t.Fatal("decode valid envelope")
+	}
+	passwordBacking := envelope.CurrentPassword
+	intentBacking := envelope.Intent
+	envelope.clearRawMessages()
+	if envelope.CurrentPassword != nil || envelope.Intent != nil {
+		t.Fatal("clear left raw message references attached")
+	}
+	for _, owned := range [][]byte{passwordBacking, intentBacking} {
+		for _, value := range owned {
+			if value != 0 {
+				t.Fatal("clear left owned raw message bytes")
+			}
+		}
+	}
+
+	for _, malformed := range [][]byte{
+		[]byte(`{"action":"public_pricing.publish","intent":{"expected_revision":5},"current_password":"unterminated}`),
+		[]byte(`{"action":"public_pricing.publish","intent":{"expected_revision":5},"current_password":{"partial":"secret"},"unknown":1}`),
+	} {
+		var invalid publicVerificationEnvelope
+		if decodeExactPublicVerification(malformed, &invalid) {
+			t.Fatal("accepted malformed password envelope")
+		}
+		if invalid.CurrentPassword != nil || invalid.Intent != nil {
+			t.Fatal("decode error retained raw message buffers")
+		}
+	}
+}
+
 func TestPublicVerificationRejectsUnknownDuplicateEscapedAndDeepJSON(t *testing.T) {
 	for _, raw := range []string{`{"expected_revision":1,"expected_revision":2}`, `{"payload":{"a":1,"\u0061":2}}`} {
 		if dto.ValidateNoDuplicateJSON([]byte(raw), 64) == nil {

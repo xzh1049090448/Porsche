@@ -20,6 +20,16 @@ type publicVerificationEnvelope struct {
 	CurrentPassword json.RawMessage `json:"current_password"`
 }
 
+func (envelope *publicVerificationEnvelope) clearRawMessages() {
+	if envelope == nil {
+		return
+	}
+	clear(envelope.Intent)
+	clear(envelope.CurrentPassword)
+	envelope.Intent = nil
+	envelope.CurrentPassword = nil
+}
+
 type publicModelDeleteVerificationIntent struct {
 	TargetGUID       string `json:"target_guid"`
 	ExpectedRevision int64  `json:"expected_revision"`
@@ -42,6 +52,7 @@ func issuePublicAdminVerification(c *gin.Context, backend userManagementActionBa
 		adminUserActionError(c, errInvalidAdminUserAction, "")
 		return
 	}
+	defer envelope.clearRawMessages()
 	password, ok := dto.DecodeOwnedJSONString(envelope.CurrentPassword)
 	if !ok || len(password) == 0 {
 		clear(password)
@@ -75,13 +86,21 @@ func issuePublicAdminVerification(c *gin.Context, backend userManagementActionBa
 }
 
 func decodeExactPublicVerification(raw []byte, out *publicVerificationEnvelope) bool {
+	if out == nil {
+		return false
+	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
 	if dec.Decode(out) != nil {
+		out.clearRawMessages()
 		return false
 	}
 	var trailing any
-	return dec.Decode(&trailing) == io.EOF && out.Action != "" && len(out.Intent) != 0
+	if dec.Decode(&trailing) != io.EOF || out.Action == "" || len(out.Intent) == 0 {
+		out.clearRawMessages()
+		return false
+	}
+	return true
 }
 
 func decodePublicVerificationIntent(name string, raw []byte) (actionsecurity.Action, *int64, any, bool) {
