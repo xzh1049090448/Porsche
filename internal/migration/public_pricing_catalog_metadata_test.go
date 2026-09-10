@@ -38,3 +38,32 @@ func TestPublicPricingCatalogMetadataMigrationIsLatestAndReversible(t *testing.T
 		}
 	}
 }
+
+func TestPublicPricingCatalogMetadataStopsBeforeSecondDDLWhenFirstVerificationFails(t *testing.T) {
+	steps := []publicPricingCatalogMetadataStep{{"first", []string{"a"}}, {"second", []string{"b"}}}
+	executed, verified := []string{}, []string{}
+	err := applyPublicPricingCatalogMetadataSteps(steps, []string{"ALTER first", "ALTER second"},
+		func(publicPricingCatalogMetadataStep) (int64, error) { return 0, nil },
+		func(sql string) error { executed = append(executed, sql); return nil },
+		func(table string) error {
+			verified = append(verified, table)
+			return ErrPublicPricingCatalogMetadataMigration
+		},
+	)
+	if !errors.Is(err, ErrPublicPricingCatalogMetadataMigration) || strings.Join(executed, ",") != "ALTER first" || strings.Join(verified, ",") != "first" {
+		t.Fatalf("err=%v executed=%v verified=%v", err, executed, verified)
+	}
+}
+
+func TestPublicPricingCatalogMetadataFreshPathExecutesAndVerifiesEachStep(t *testing.T) {
+	steps := []publicPricingCatalogMetadataStep{{"first", []string{"a"}}, {"second", []string{"b"}}}
+	executed, verified := []string{}, []string{}
+	err := applyPublicPricingCatalogMetadataSteps(steps, []string{"ALTER first", "ALTER second"},
+		func(publicPricingCatalogMetadataStep) (int64, error) { return 0, nil },
+		func(sql string) error { executed = append(executed, sql); return nil },
+		func(table string) error { verified = append(verified, table); return nil },
+	)
+	if err != nil || strings.Join(executed, ",") != "ALTER first,ALTER second" || strings.Join(verified, ",") != "first,second" {
+		t.Fatalf("err=%v executed=%v verified=%v", err, executed, verified)
+	}
+}

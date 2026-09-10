@@ -15,37 +15,56 @@ func applyPublicPricingCatalogMetadataMigration(db *gorm.DB, sql []byte) error {
 		return ErrPublicPricingCatalogMetadataMigration
 	}
 	statements := splitStatements(string(sql))
-	steps := []struct {
-		table   string
-		columns []string
-	}{
+	steps := []publicPricingCatalogMetadataStep{
 		{"public_model_configs", []string{"public_display_group", "endpoint_types", "public_restrictions", "price_source", "price_reviewer", "price_effective_at"}},
 		{"public_price_snapshot_items", []string{"pricing_type", "public_display_group", "endpoint_types", "public_restrictions", "price_source", "price_reviewer", "effective_at"}},
 	}
 	if len(statements) != len(steps) {
 		return fmt.Errorf("invalid statement count")
 	}
+	return applyPublicPricingCatalogMetadataSteps(steps, statements,
+		func(step publicPricingCatalogMetadataStep) (int64, error) {
+			var count int64
+			err := db.Raw("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name=? AND column_name IN ?", step.table, step.columns).Scan(&count).Error
+			return count, err
+		},
+		func(statement string) error { return db.Exec(statement).Error },
+		func(table string) error {
+			return verifyPublicPricingCatalogMetadataTable(context.Background(), db, table)
+		},
+	)
+}
+
+type publicPricingCatalogMetadataStep struct {
+	table   string
+	columns []string
+}
+
+func applyPublicPricingCatalogMetadataSteps(steps []publicPricingCatalogMetadataStep, statements []string, count func(publicPricingCatalogMetadataStep) (int64, error), exec func(string) error, verify func(string) error) error {
 	for i, step := range steps {
-		var count int64
-		if err := db.Raw("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name=? AND column_name IN ?", step.table, step.columns).Scan(&count).Error; err != nil {
+		n, err := count(step)
+		if err != nil {
 			return err
 		}
-		switch count {
+		switch n {
 		case 0:
-			if err := db.Exec(statements[i]).Error; err != nil {
+			if err := exec(statements[i]); err != nil {
+				return err
+			}
+			if err := verify(step.table); err != nil {
 				return err
 			}
 		case int64(len(step.columns)):
 			// Verify the completed step before allowing any later DDL. A malformed
 			// unledgered first step must not mutate the second table.
-			if err := verifyPublicPricingCatalogMetadataTable(context.Background(), db, step.table); err != nil {
+			if err := verify(step.table); err != nil {
 				return err
 			}
 		default:
 			return ErrPublicPricingCatalogMetadataMigration
 		}
 	}
-	return VerifyPublicPricingCatalogMetadataSchema(context.Background(), db)
+	return nil
 }
 
 // VerifyPublicPricingCatalogMetadataSchema fails closed when the frozen public
