@@ -157,11 +157,10 @@ func validPublishedPriceProvenance(m models.PublicModelConfig) bool {
 }
 
 func prepareRestoredPublicPriceSnapshot(items []models.PublicPriceSnapshotItem, storedHash string) (*preparedPublicPriceSnapshot, error) {
-	if len(storedHash) != 64 {
+	legacyMatch, integrityOK := verifyPublicPriceSnapshotHash(items, storedHash)
+	if !integrityOK {
 		return nil, errUnprocessable("historical price snapshot integrity validation failed")
 	}
-	legacyHash, legacyOK := hashLegacyPublicPriceSnapshotItems(items)
-	legacyMatch := legacyOK && legacyHash == storedHash
 	rows := make([]models.PublicModelConfig, len(items))
 	for i, item := range items {
 		rows[i] = models.PublicModelConfig{ID: item.ModelConfigID, ModelKey: item.ModelKey, UpstreamModelID: item.UpstreamModelID, DisplayName: item.DisplayName, Provider: item.Provider, Capabilities: append(models.JSONSlice(nil), item.Capabilities...), ContextWindow: item.ContextWindow, InputPriceUSDPerMillionTokens: item.InputPriceUSDPerMillionTokens, OutputPriceUSDPerMillionTokens: item.OutputPriceUSDPerMillionTokens, Status: models.PublicModelConfigStatusActive, LastUpstreamCheckAt: item.UpstreamCheckedAt, PublicDisplayGroup: item.PublicDisplayGroup, EndpointTypes: append(models.JSONSlice(nil), item.EndpointTypes...), PublicRestrictions: append(models.JSONSlice(nil), item.PublicRestrictions...), PriceSource: item.PriceSource, PriceReviewer: item.PriceReviewer, PriceEffectiveAt: item.EffectiveAt}
@@ -181,6 +180,23 @@ func prepareRestoredPublicPriceSnapshot(items []models.PublicPriceSnapshotItem, 
 		return nil, errUnprocessable("historical price snapshot integrity validation failed")
 	}
 	return prepared, nil
+}
+
+func verifyPublicPriceSnapshotHash(items []models.PublicPriceSnapshotItem, storedHash string) (legacy, ok bool) {
+	if len(storedHash) != 64 {
+		return false, false
+	}
+	current, err := hashPublicPriceSnapshotItems(items)
+	if err == nil && current == storedHash {
+		return false, true
+	}
+	for _, item := range items {
+		if item.PricingType != "token" || item.PublicDisplayGroup != "" || len(item.EndpointTypes) != 0 || len(item.PublicRestrictions) != 0 || item.PriceSource != "" || item.PriceReviewer != "" || item.EffectiveAt != nil {
+			return false, false
+		}
+	}
+	legacyHash, legacyOK := hashLegacyPublicPriceSnapshotItems(items)
+	return legacyOK && legacyHash == storedHash, legacyOK && legacyHash == storedHash
 }
 
 func hashLegacyPublicPriceSnapshotItems(items []models.PublicPriceSnapshotItem) (string, bool) {

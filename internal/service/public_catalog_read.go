@@ -117,12 +117,11 @@ func (s *PublicCatalogReadService) Projection(ctx context.Context) (*PublicCatal
 		if e := tx.Where("snapshot_id=? AND is_deleted=0", price.ID).Order("model_key").Find(&rows).Error; e != nil {
 			return errUnavailable("committed price snapshot unavailable")
 		}
-		hash, e := hashPublicPriceSnapshotItems(rows)
-		if e != nil || len(price.ContentHash) != 64 || hash != price.ContentHash {
+		if _, ok := verifyPublicPriceSnapshotHash(rows, price.ContentHash); !ok {
 			return errUnavailable("committed price snapshot integrity unavailable")
 		}
 		var configs []models.PublicModelConfig
-		if e = tx.Find(&configs).Error; e != nil {
+		if e := tx.Find(&configs).Error; e != nil {
 			return errUnavailable("public model state unavailable")
 		}
 		byID := make(map[int64]models.PublicModelConfig, len(configs))
@@ -141,7 +140,7 @@ func (s *PublicCatalogReadService) Projection(ctx context.Context) (*PublicCatal
 			}
 			items = append(items, projectPublicCatalogItem(row, price))
 		}
-		if e = validateContentReleaseForPriceItems(content, rows); e != nil {
+		if e := validateContentReleaseForPriceItems(content, rows); e != nil {
 			return errUnavailable("committed publication generation pending")
 		}
 		sum := sha256.Sum256([]byte(content.ContentHash + ":" + price.ContentHash + ":" + state.PriceVisibility.String()))

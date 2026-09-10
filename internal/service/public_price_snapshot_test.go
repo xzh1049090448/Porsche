@@ -136,7 +136,7 @@ func TestPublicPriceSnapshotRestoreRevalidatesAndRehashesHistoricalItems(t *test
 
 func TestPublicPriceSnapshotRestoreAcceptsExactLegacyCanonicalHash(t *testing.T) {
 	checked := int64(1_700_000_000_000)
-	items := []models.PublicPriceSnapshotItem{{ModelConfigID: 7, ModelKey: "alpha", UpstreamModelID: "org/alpha", DisplayName: "Alpha", Provider: "acme", Capabilities: models.JSONSlice{"chat"}, ContextWindow: 8192, InputPriceUSDPerMillionTokens: snapshotStringPointer("1.25000000"), OutputPriceUSDPerMillionTokens: snapshotStringPointer("2.50000000"), UpstreamCheckedAt: &checked}}
+	items := []models.PublicPriceSnapshotItem{{ModelConfigID: 7, ModelKey: "alpha", UpstreamModelID: "org/alpha", DisplayName: "Alpha", Provider: "acme", Capabilities: models.JSONSlice{"chat"}, ContextWindow: 8192, InputPriceUSDPerMillionTokens: snapshotStringPointer("1.25000000"), OutputPriceUSDPerMillionTokens: snapshotStringPointer("2.50000000"), UpstreamCheckedAt: &checked, PricingType: "token"}}
 	const legacyHash = "bac92bee165a7967fb5420ff2e15e0ec4e281e5608c29008361bcf5ca62b7922"
 	got, ok := hashLegacyPublicPriceSnapshotItems(items)
 	if !ok || got != legacyHash {
@@ -150,6 +150,41 @@ func TestPublicPriceSnapshotRestoreAcceptsExactLegacyCanonicalHash(t *testing.T)
 	tampered[0].DisplayName = "Tampered"
 	if _, err := prepareRestoredPublicPriceSnapshot(tampered, legacyHash); status(err) != 422 {
 		t.Fatalf("tampered legacy hash accepted: %v", err)
+	}
+}
+
+func TestLegacyPublicPriceSnapshotHashRequiresEveryExtensionDefault(t *testing.T) {
+	input, output := "1.00000000", "2.00000000"
+	base := models.PublicPriceSnapshotItem{ModelKey: "alpha", UpstreamModelID: "org/alpha", DisplayName: "Alpha", Provider: "acme", Capabilities: models.JSONSlice{"chat"}, ContextWindow: 1, InputPriceUSDPerMillionTokens: &input, OutputPriceUSDPerMillionTokens: &output, PricingType: "token"}
+	hash, ok := hashLegacyPublicPriceSnapshotItems([]models.PublicPriceSnapshotItem{base})
+	if !ok {
+		t.Fatal("legacy fixture unavailable")
+	}
+	if legacy, valid := verifyPublicPriceSnapshotHash([]models.PublicPriceSnapshotItem{base}, hash); !legacy || !valid {
+		t.Fatal("default legacy snapshot rejected")
+	}
+	mutations := []func(*models.PublicPriceSnapshotItem){
+		func(v *models.PublicPriceSnapshotItem) { v.PricingType = "request" },
+		func(v *models.PublicPriceSnapshotItem) { v.PublicDisplayGroup = "featured" },
+		func(v *models.PublicPriceSnapshotItem) { v.EndpointTypes = models.JSONSlice{"responses"} },
+		func(v *models.PublicPriceSnapshotItem) { v.PublicRestrictions = models.JSONSlice{"region"} },
+		func(v *models.PublicPriceSnapshotItem) { v.PriceSource = "source" },
+		func(v *models.PublicPriceSnapshotItem) { v.PriceReviewer = "reviewer" },
+		func(v *models.PublicPriceSnapshotItem) { n := int64(1); v.EffectiveAt = &n },
+	}
+	for i, mutate := range mutations {
+		item := base
+		mutate(&item)
+		if _, valid := verifyPublicPriceSnapshotHash([]models.PublicPriceSnapshotItem{item}, hash); valid {
+			t.Fatalf("extension mutation %d accepted", i)
+		}
+	}
+	current, err := hashPublicPriceSnapshotItems([]models.PublicPriceSnapshotItem{base})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if legacy, valid := verifyPublicPriceSnapshotHash([]models.PublicPriceSnapshotItem{base}, current); legacy || !valid {
+		t.Fatal("current hash path rejected")
 	}
 }
 
