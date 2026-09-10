@@ -81,6 +81,22 @@ func TestValidatePlatformGenerationPersistenceInputRequiresOneConversationIdenti
 	if err := validatePlatformGenerationPersistenceInput(neither); !errors.Is(err, ErrPlatformGenerationPersistenceInvalid) {
 		t.Fatalf("missing conversation identity error = %v", err)
 	}
+
+	for _, test := range []struct {
+		name     string
+		reserved int64
+	}{
+		{"zero reserved conversation GUID", 0},
+		{"negative reserved conversation GUID", -1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			invalid := valid
+			invalid.ReservedConversationGUID = &test.reserved
+			if err := validatePlatformGenerationPersistenceInput(invalid); !errors.Is(err, ErrPlatformGenerationPersistenceInvalid) {
+				t.Fatalf("reserved conversation GUID %d error = %v", test.reserved, err)
+			}
+		})
+	}
 }
 
 func TestValidatePlatformGenerationPersistenceInputRejectsInvalidBeforeDependencies(t *testing.T) {
@@ -2131,6 +2147,12 @@ func TestPlatformGenerationPersistenceDuplicateIgnoresRetryTimestamp(t *testing.
 		if !platformReceiptMatchesInput(receipt, input) {
 			t.Fatal("receipt match incorrectly compared retry timestamp or Redis-only sequence")
 		}
+		differentReservedConversationGUID := receipt.ConversationGUID + 1
+		input.ReservedConversationGUID = &differentReservedConversationGUID
+		if platformReceiptMatchesInput(receipt, input) {
+			t.Fatal("new-conversation receipt accepted a retry with a different reserved conversation GUID")
+		}
+		input.ReservedConversationGUID = &reservedConversationGUID
 		conversationGUID := receipt.ConversationGUID
 		setPlatformGenerationPersistenceExistingConversation(&input, &conversationGUID)
 		if platformReceiptMatchesInput(receipt, input) {
@@ -2256,6 +2278,24 @@ func TestPlatformGenerationPersistenceDuplicateRequiresExactConversationProvenan
 		if _, err := p.Finalize(context.Background(), f.db, input); !errors.Is(err, ErrPlatformGenerationPersistenceConflict) {
 			t.Fatalf("new-to-explicit-result retry error=%v, want conflict", err)
 		}
+	})
+
+	t.Run("new conversation requires exact reserved request guid", func(t *testing.T) {
+		f := openPlatformGenerationFinalizationFixture(t)
+		input := f.committingSingle(t)
+		p, err := NewPlatformGenerationPersistence(f.store)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := p.Finalize(context.Background(), f.db, input); err != nil {
+			t.Fatal(err)
+		}
+		differentReservedConversationGUID := testSnowflake.Next()
+		input.ReservedConversationGUID = &differentReservedConversationGUID
+		if _, err := p.Finalize(context.Background(), f.db, input); !errors.Is(err, ErrPlatformGenerationPersistenceConflict) {
+			t.Fatalf("different reserved GUID retry error=%v, want conflict", err)
+		}
+		assertPlatformGenerationFinalizationEffects(t, f, 1, 2, 1, 1, 1, 3, 17)
 	})
 }
 
