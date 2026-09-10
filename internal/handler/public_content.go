@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -16,6 +17,22 @@ import (
 const publicCacheControl = "public, max-age=60, stale-while-revalidate=300"
 
 func RegisterPublicContent(r *gin.Engine, state *app.State) {
+	var reader publicProjectionReader
+	if state != nil {
+		reader = state.PublicCatalogReads
+	}
+	registerPublicContentWithReader(r, reader, func(c *gin.Context) bool {
+		return middleware.AuthenticateUserWithError(c, state, func(c *gin.Context, status int, _ string) {
+			publicReadError(c, &service.HTTPError{Status: status, Message: "authentication required"})
+		})
+	})
+}
+
+type publicProjectionReader interface {
+	Projection(context.Context) (*service.PublicCatalogProjection, error)
+}
+
+func registerPublicContentWithReader(r *gin.Engine, reader publicProjectionReader, authenticate func(*gin.Context) bool) {
 	// Preserve escaped path bytes so an encoded slash cannot be normalized into
 	// another public resource before the model-key validator sees it.
 	r.UseRawPath = true
@@ -28,18 +45,16 @@ func RegisterPublicContent(r *gin.Engine, state *app.State) {
 		}
 		authenticated := false
 		if c.GetHeader("Authorization") != "" {
-			if !middleware.AuthenticateUserWithError(c, state, func(c *gin.Context, status int, _ string) {
-				publicReadError(c, &service.HTTPError{Status: status, Message: "authentication required"})
-			}) {
+			if authenticate == nil || !authenticate(c) {
 				return nil, false
 			}
-			authenticated = middleware.CurrentUser(c) != nil
+			authenticated = true
 		}
-		if state == nil || state.PublicCatalogReads == nil {
+		if reader == nil {
 			publicReadError(c, &service.HTTPError{Status: 503, Message: "public content unavailable"})
 			return nil, false
 		}
-		projection, err := state.PublicCatalogReads.Projection(c.Request.Context())
+		projection, err := reader.Projection(c.Request.Context())
 		if err != nil {
 			publicReadError(c, err)
 			return nil, false
@@ -177,11 +192,56 @@ func parsePublicCatalogQuery(q map[string]string) (service.PublicCatalogListRequ
 	return out, true
 }
 func publicNotModified(c *gin.Context, etag string) bool {
-	if c.GetHeader("If-None-Match") == etag {
+	if publicIfNoneMatch(strings.Join(c.Request.Header.Values("If-None-Match"), ","), etag) {
 		c.Status(http.StatusNotModified)
 		return true
 	}
 	return false
+}
+
+func publicIfNoneMatch(raw, current string) bool {
+	currentOpaque, ok := publicEntityTag(current)
+	if !ok || raw == "" {
+		return false
+	}
+	if strings.TrimSpace(raw) == "*" {
+		return true
+	}
+	parts := strings.Split(raw, ",")
+	if len(parts) == 0 {
+		return false
+	}
+	matched := false
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" || part == "*" {
+			return false
+		}
+		opaque, valid := publicEntityTag(part)
+		if !valid {
+			return false
+		}
+		if opaque == currentOpaque {
+			matched = true
+		}
+	}
+	return matched
+}
+
+func publicEntityTag(raw string) (string, bool) {
+	if strings.HasPrefix(raw, "W/") {
+		raw = raw[2:]
+	}
+	if len(raw) < 2 || raw[0] != '"' || raw[len(raw)-1] != '"' {
+		return "", false
+	}
+	body := raw[1 : len(raw)-1]
+	for i := 0; i < len(body); i++ {
+		if body[i] == '"' || body[i] < 0x21 || body[i] == 0x7f {
+			return "", false
+		}
+	}
+	return body, true
 }
 func publicReadError(c *gin.Context, err error) {
 	status, message := service.StatusFromError(err)

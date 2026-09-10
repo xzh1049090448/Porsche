@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/porsche/ai-gateway-go/internal/models"
@@ -65,6 +66,15 @@ func TestPublicCatalogReadDBCommittedIntegrityAndDynamicInactivation(t *testing.
 	if got, readErr := reader.Projection(context.Background()); status(readErr) != 503 || got != nil {
 		t.Fatalf("tampered projection=%#v err=%v", got, readErr)
 	}
+	if err = tx.Model(&models.PublicPriceSnapshotItem{}).Where("snapshot_id=?", price.ID).Update("display_name", priceItems[0].DisplayName).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err = tx.Model(&models.PublicModelConfig{}).Where("model_key=?", seed.modelKey).Update("status", models.PublicModelConfigStatusInactive).Error; err != nil {
+		t.Fatal(err)
+	}
+	if got, readErr := reader.Projection(context.Background()); status(readErr) != 503 || got != nil {
+		t.Fatalf("pending inactivation projection=%#v err=%v", got, readErr)
+	}
 }
 
 func TestProjectPublicCatalogFiltersAndRedactsWithoutInternalFields(t *testing.T) {
@@ -123,6 +133,15 @@ func TestProjectPublicCatalogSearchProviderCapabilityAndPagination(t *testing.T)
 	p.GoneKeys = map[string]struct{}{"retired": {}}
 	if _, status := p.Detail("retired", false); status != 410 {
 		t.Fatalf("retired status=%d", status)
+	}
+}
+
+func TestProjectPublicCatalogOmitsUnavailablePriceFields(t *testing.T) {
+	p := &PublicCatalogProjection{PriceReleaseVersion: 1, PriceVisibility: models.PublicPriceVisibilityVisible, Items: []PublicCatalogItem{{ModelKey: "alpha", DisplayName: "Alpha", Capabilities: []string{}}}}
+	out := p.List(PublicCatalogListRequest{Page: 1, PageSize: 20}, true)
+	raw, _ := json.Marshal(out.Items[0])
+	if strings.Contains(string(raw), "input_price_") || strings.Contains(string(raw), "output_price_") {
+		t.Fatalf("missing prices serialized: %s", raw)
 	}
 }
 
