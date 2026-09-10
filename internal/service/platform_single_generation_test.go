@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"reflect"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -21,16 +23,26 @@ import (
 const platformSingleTestGenerationID = "550e8400-e29b-41d4-a716-446655440000"
 
 type platformSingleTestStore struct {
+	mu             sync.Mutex
 	calls          *[]string
 	claim          PlatformGenerationClaimResult
 	claimErr       error
 	onClaim        func(context.Context, PlatformGenerationClaimInput)
 	claimContext   context.Context
 	recordErr      error
+	record         func(context.Context, int64, string, string, string, int64, int64) (PlatformGenerationSnapshot, error)
+	renew          func(context.Context, int64, string, string, int64) (PlatformGenerationSnapshot, error)
+	get            func(context.Context, int64, string) (PlatformGenerationSnapshot, error)
+	fail           func(context.Context, int64, string, string, string, int64) (PlatformGenerationSnapshot, error)
+	ack            func(context.Context, int64, string, string, int64) (PlatformGenerationSnapshot, error)
+	complete       func(context.Context, int64, string, map[string]string, int64) (PlatformGenerationSnapshot, error)
+	reconcile      func(context.Context, int64, string, map[string]string, int64) (PlatformGenerationSnapshot, error)
 	completeCalled bool
 }
 
 func (s *platformSingleTestStore) add(call string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.calls != nil {
 		*s.calls = append(*s.calls, call)
 	}
@@ -43,8 +55,11 @@ func (s *platformSingleTestStore) Claim(ctx context.Context, in PlatformGenerati
 	}
 	return s.claim, s.claimErr
 }
-func (s *platformSingleTestStore) RecordDeltaOwned(context.Context, int64, string, string, string, int64, int64) (PlatformGenerationSnapshot, error) {
+func (s *platformSingleTestStore) RecordDeltaOwned(ctx context.Context, userID int64, generationID, token, model string, seq, now int64) (PlatformGenerationSnapshot, error) {
 	s.add("record:1")
+	if s.record != nil {
+		return s.record(ctx, userID, generationID, token, model, seq, now)
+	}
 	return PlatformGenerationSnapshot{}, s.recordErr
 }
 func (s *platformSingleTestStore) MarkModelDoneOwned(context.Context, int64, string, string, string, int64, int64) (PlatformGenerationSnapshot, error) {
@@ -55,19 +70,65 @@ func (s *platformSingleTestStore) BeginCommitOwned(context.Context, int64, strin
 	s.add("begin_commit")
 	return PlatformGenerationSnapshot{}, nil
 }
-func (s *platformSingleTestStore) Complete(context.Context, int64, string, map[string]string, int64) (PlatformGenerationSnapshot, error) {
+func (s *platformSingleTestStore) Complete(ctx context.Context, userID int64, generationID string, guids map[string]string, now int64) (PlatformGenerationSnapshot, error) {
 	s.add("complete")
+	s.mu.Lock()
 	s.completeCalled = true
-	return PlatformGenerationSnapshot{}, nil
+	s.mu.Unlock()
+	if s.complete != nil {
+		return s.complete(ctx, userID, generationID, guids, now)
+	}
+	return platformSingleCompletedSnapshot(), nil
 }
-func (s *platformSingleTestStore) RenewLease(context.Context, int64, string, string, int64) (PlatformGenerationSnapshot, error) {
-	return PlatformGenerationSnapshot{}, nil
+func (s *platformSingleTestStore) RenewLease(ctx context.Context, userID int64, generationID, token string, now int64) (PlatformGenerationSnapshot, error) {
+	s.add("renew")
+	if s.renew != nil {
+		return s.renew(ctx, userID, generationID, token, now)
+	}
+	snapshot := s.claim.Snapshot
+	snapshot.UpdatedAtMillis = now
+	snapshot.LeaseUntilMillis = now + platformGenerationLeaseDuration.Milliseconds()
+	return snapshot, nil
 }
-func (s *platformSingleTestStore) FailRunningOwned(context.Context, int64, string, string, string, int64) (PlatformGenerationSnapshot, error) {
-	return PlatformGenerationSnapshot{}, nil
+func (s *platformSingleTestStore) Get(ctx context.Context, userID int64, generationID string) (PlatformGenerationSnapshot, error) {
+	s.add("get")
+	if s.get != nil {
+		return s.get(ctx, userID, generationID)
+	}
+	return s.claim.Snapshot, nil
 }
-func (s *platformSingleTestStore) AcknowledgeCancelledOwned(context.Context, int64, string, string, int64) (PlatformGenerationSnapshot, error) {
-	return PlatformGenerationSnapshot{}, nil
+func (s *platformSingleTestStore) ReconcileComplete(ctx context.Context, userID int64, generationID string, guids map[string]string, now int64) (PlatformGenerationSnapshot, error) {
+	s.add("reconcile_complete")
+	if s.reconcile != nil {
+		return s.reconcile(ctx, userID, generationID, guids, now)
+	}
+	return platformSingleCompletedSnapshot(), nil
+}
+func (s *platformSingleTestStore) FailRunningOwned(ctx context.Context, userID int64, generationID, token, code string, now int64) (PlatformGenerationSnapshot, error) {
+	s.add("fail:" + code)
+	if s.fail != nil {
+		return s.fail(ctx, userID, generationID, token, code, now)
+	}
+	snapshot := s.claim.Snapshot
+	snapshot.State = PlatformGenerationStateFailed
+	snapshot.ErrorCode = code
+	snapshot.LeaseOwnerSHA256 = ""
+	snapshot.LeaseUntilMillis = 0
+	snapshot.ModelStates["model-a"] = PlatformGenerationModel{State: PlatformGenerationStateFailed, ErrorCode: code}
+	return snapshot, nil
+}
+func (s *platformSingleTestStore) AcknowledgeCancelledOwned(ctx context.Context, userID int64, generationID, token string, now int64) (PlatformGenerationSnapshot, error) {
+	s.add("ack_cancel")
+	if s.ack != nil {
+		return s.ack(ctx, userID, generationID, token, now)
+	}
+	snapshot := s.claim.Snapshot
+	snapshot.State = PlatformGenerationStateCancelled
+	snapshot.ErrorCode = ""
+	snapshot.LeaseOwnerSHA256 = ""
+	snapshot.LeaseUntilMillis = 0
+	snapshot.ModelStates["model-a"] = PlatformGenerationModel{State: PlatformGenerationStateCancelled}
+	return snapshot, nil
 }
 
 type platformSingleTestPersistence struct {
@@ -85,13 +146,16 @@ func (p *platformSingleTestPersistence) Finalize(_ context.Context, _ *gorm.DB, 
 	return p.receipt, p.err
 }
 
-type platformSingleTestRegistry struct{ calls *[]string }
+type platformSingleTestRegistry struct {
+	calls *[]string
+	err   error
+}
 
 func (r *platformSingleTestRegistry) Register(int64, string, context.CancelFunc) (string, error) {
 	if r.calls != nil {
 		*r.calls = append(*r.calls, "register")
 	}
-	return platformSingleTestLeaseToken(), nil
+	return platformSingleTestLeaseToken(), r.err
 }
 func (r *platformSingleTestRegistry) Unregister(int64, string, string) bool {
 	if r.calls != nil {
@@ -101,22 +165,34 @@ func (r *platformSingleTestRegistry) Unregister(int64, string, string) bool {
 }
 
 type platformSingleTestUpstream struct {
-	calls      *[]string
-	body       []byte
-	response   *http.Response
-	chatErr    *whitelabel.Error
-	chunks     []whitelabel.ChatCompletionChunk
-	consumeErr *whitelabel.Error
+	calls       *[]string
+	body        []byte
+	response    *http.Response
+	chatErr     *whitelabel.Error
+	chunks      []whitelabel.ChatCompletionChunk
+	consumeErr  *whitelabel.Error
+	consume     func(context.Context, func(whitelabel.ChatCompletionChunk) error) *whitelabel.Error
+	cancelled   atomic.Bool
+	chatStarted chan struct{}
+	chatOnce    sync.Once
 }
 
 type platformSingleTestReadCloser struct {
 	io.Reader
-	closed bool
+	closed     bool
+	closeCalls atomic.Int32
 }
 
-func (r *platformSingleTestReadCloser) Close() error { r.closed = true; return nil }
+func (r *platformSingleTestReadCloser) Close() error {
+	r.closeCalls.Add(1)
+	r.closed = true
+	return nil
+}
 
 func (u *platformSingleTestUpstream) Chat(_ context.Context, body []byte) (*http.Response, *whitelabel.Error) {
+	if u.chatStarted != nil {
+		u.chatOnce.Do(func() { close(u.chatStarted) })
+	}
 	if u.calls != nil {
 		*u.calls = append(*u.calls, "upstream")
 	}
@@ -124,12 +200,45 @@ func (u *platformSingleTestUpstream) Chat(_ context.Context, body []byte) (*http
 	return u.response, u.chatErr
 }
 func (u *platformSingleTestUpstream) ConsumeChatCompletionSSEContext(ctx context.Context, _ io.Reader, _ string, emit func(whitelabel.ChatCompletionChunk) error) *whitelabel.Error {
+	if u.consume != nil {
+		return u.consume(ctx, emit)
+	}
 	for _, chunk := range u.chunks {
 		if err := emit(chunk); err != nil {
 			return whitelabel.ErrUpstreamUnavailable("callback")
 		}
 	}
 	return u.consumeErr
+}
+
+func platformSingleCompletedSnapshot() PlatformGenerationSnapshot {
+	snapshot := platformSingleTestClaim(1_000, "model-a").Snapshot
+	snapshot.State = PlatformGenerationStateCompleted
+	snapshot.LeaseOwnerSHA256 = ""
+	snapshot.LeaseUntilMillis = 0
+	snapshot.ModelStates["model-a"] = PlatformGenerationModel{State: PlatformGenerationStateCompleted, Seq: 1, AssistantMessageGUID: "9001"}
+	return snapshot
+}
+
+type platformSingleTestTimer struct {
+	ch      chan time.Time
+	stopped atomic.Bool
+}
+
+func (t *platformSingleTestTimer) Chan() <-chan time.Time { return t.ch }
+func (t *platformSingleTestTimer) Stop()                  { t.stopped.Store(true) }
+
+type platformSingleTestTimerFactory struct {
+	created chan *platformSingleTestTimer
+}
+
+func (f *platformSingleTestTimerFactory) New(duration time.Duration) platformSingleTimer {
+	if duration != 10*time.Second {
+		panic("unexpected timer duration")
+	}
+	timer := &platformSingleTestTimer{ch: make(chan time.Time, 1)}
+	f.created <- timer
+	return timer
 }
 
 func platformSingleTestLeaseToken() string {
@@ -182,6 +291,8 @@ func platformSingleTestRunner(calls *[]string) (*PlatformSingleGenerationRunner,
 		loadTotalTokens:  func(context.Context, *gorm.DB, int64) (int64, error) { return 30, nil },
 		loadConversation: func(context.Context, *gorm.DB, int64, int64) error { return nil },
 		upstreamTimeout:  time.Minute,
+		newTimer:         newPlatformSingleTimer,
+		newRunnerContext: context.WithTimeout,
 	}}
 	return runner, store, persist, upstream
 }
@@ -424,6 +535,29 @@ func TestPlatformSingleGenerationDetachedWriterStillCompletes(t *testing.T) {
 	}
 }
 
+func TestPlatformSingleGenerationRequestCancelAndSecondWriteFailureOnlyDetachOutput(t *testing.T) {
+	f := newPlatformSingleTestRunnerFixture()
+	requestCtx, cancelRequest := context.WithCancel(context.Background())
+	f.store.onClaim = func(context.Context, PlatformGenerationClaimInput) { cancelRequest() }
+	writes := 0
+	in := f.input()
+	in.Context = requestCtx
+	in.Write = func([]byte) error {
+		writes++
+		if writes == 2 {
+			return io.ErrClosedPipe
+		}
+		return nil
+	}
+	result, err := f.runner.Run(in)
+	if err != nil || !result.Started || writes != 2 || !f.store.completeCalled || f.persist.input.GenerationID == "" {
+		t.Fatalf("result=%+v err=%v writes=%d complete=%v persistence=%+v", result, err, writes, f.store.completeCalled, f.persist.input)
+	}
+	if f.upstream.cancelled.Load() {
+		t.Fatal("request cancellation cancelled the application runner")
+	}
+}
+
 func TestPlatformSingleGenerationRejectsInvalidClaimResult(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -448,6 +582,26 @@ func TestPlatformSingleGenerationRejectsInvalidClaimResult(t *testing.T) {
 				t.Fatalf("result=%+v err=%v", result, err)
 			}
 		})
+	}
+}
+
+func TestPlatformSingleGenerationRegistrationFailureDoesNotOverwriteCommitting(t *testing.T) {
+	f := newPlatformSingleTestRunnerFixture()
+	f.runner.deps.registry = &platformSingleTestRegistry{err: errors.New("registry closed")}
+	committing := clonePlatformGeneration(f.store.claim.Snapshot)
+	committing.State = PlatformGenerationStateCommitting
+	committing.LeaseOwnerSHA256 = ""
+	committing.LeaseUntilMillis = 0
+	committing.ModelStates["model-a"] = PlatformGenerationModel{State: PlatformGenerationStateCompleted, Seq: 1}
+	f.store.get = func(context.Context, int64, string) (PlatformGenerationSnapshot, error) { return committing, nil }
+	var failCalled atomic.Bool
+	f.store.fail = func(context.Context, int64, string, string, string, int64) (PlatformGenerationSnapshot, error) {
+		failCalled.Store(true)
+		return PlatformGenerationSnapshot{}, nil
+	}
+	result, err := f.runner.Run(f.input())
+	if !errors.Is(err, ErrPlatformSingleGenerationUnavailable) || result.Started || failCalled.Load() {
+		t.Fatalf("result=%+v err=%v fail_called=%v", result, err, failCalled.Load())
 	}
 }
 
@@ -541,8 +695,8 @@ func TestPlatformSingleGenerationClosesResponseOnUpstreamError(t *testing.T) {
 	f.upstream.response = &http.Response{StatusCode: http.StatusOK, Body: body}
 	f.upstream.chatErr = whitelabel.ErrUpstreamUnavailable("failed")
 	result, err := f.runner.Run(f.input())
-	if !errors.Is(err, ErrPlatformSingleGenerationUpstream) || !result.Started || !body.closed {
-		t.Fatalf("result=%+v err=%v closed=%v", result, err, body.closed)
+	if !errors.Is(err, ErrPlatformSingleGenerationUpstream) || !result.Started || !body.closed || body.closeCalls.Load() != 1 {
+		t.Fatalf("result=%+v err=%v closed=%v close_calls=%d", result, err, body.closed, body.closeCalls.Load())
 	}
 }
 
@@ -553,7 +707,7 @@ func TestPlatformSingleGenerationRejectsInvalidReceiptBeforeComplete(t *testing.
 	in := f.input()
 	in.Write = func([]byte) error { writes++; return nil }
 	result, err := f.runner.Run(in)
-	if !errors.Is(err, ErrPlatformSingleGenerationUnavailable) || !result.Started || f.store.completeCalled || writes != 3 {
+	if !errors.Is(err, ErrPlatformSingleGenerationUnavailable) || !result.Started || f.store.completeCalled || writes != 4 {
 		t.Fatalf("result=%+v err=%v complete=%v writes=%d", result, err, f.store.completeCalled, writes)
 	}
 }
@@ -593,7 +747,7 @@ func TestPlatformSingleGenerationDeltaStoreFailureDoesNotEmitOrPersist(t *testin
 	in := f.input()
 	in.Write = func([]byte) error { writes++; return nil }
 	result, err := f.runner.Run(in)
-	if !errors.Is(err, ErrPlatformSingleGenerationUnavailable) || !result.Started || writes != 1 || f.persist.input.GenerationID != "" {
+	if !errors.Is(err, ErrPlatformSingleGenerationUnavailable) || !result.Started || writes != 3 || f.persist.input.GenerationID != "" {
 		t.Fatalf("result=%+v err=%v writes=%d persist=%+v", result, err, writes, f.persist.input)
 	}
 }
@@ -607,4 +761,401 @@ func TestPlatformSingleGenerationDeltaOversizeDoesNotStore(t *testing.T) {
 	if !errors.Is(err, ErrPlatformSingleGenerationOversize) || !result.Started {
 		t.Fatalf("result=%+v err=%v", result, err)
 	}
+}
+
+func TestPlatformSingleGenerationRenewsEveryTenSecondsWithoutSleeping(t *testing.T) {
+	f := newPlatformSingleTestRunnerFixture()
+	var now atomic.Int64
+	now.Store(1_000)
+	f.runner.deps.now = func() time.Time { return time.UnixMilli(now.Load()).UTC() }
+	timers := &platformSingleTestTimerFactory{created: make(chan *platformSingleTestTimer, 4)}
+	f.runner.deps.newTimer = timers.New
+	release := make(chan struct{})
+	f.upstream.consume = func(ctx context.Context, emit func(whitelabel.ChatCompletionChunk) error) *whitelabel.Error {
+		select {
+		case <-release:
+			for _, chunk := range f.upstream.chunks {
+				if err := emit(chunk); err != nil {
+					return whitelabel.ErrUpstreamUnavailable("callback")
+				}
+			}
+			return nil
+		case <-ctx.Done():
+			f.upstream.cancelled.Store(true)
+			return whitelabel.ErrUpstreamUnavailable("cancelled")
+		}
+	}
+	renewed := make(chan struct{}, 1)
+	f.store.renew = func(_ context.Context, _ int64, _ string, token string, now int64) (PlatformGenerationSnapshot, error) {
+		if token != platformSingleTestLeaseToken() {
+			t.Fatalf("renew token changed")
+		}
+		snapshot := f.store.claim.Snapshot
+		snapshot.UpdatedAtMillis = now
+		snapshot.LeaseUntilMillis = now + platformGenerationLeaseDuration.Milliseconds()
+		renewed <- struct{}{}
+		return snapshot, nil
+	}
+	done := make(chan error, 1)
+	go func() { _, err := f.runner.Run(f.input()); done <- err }()
+	first := <-timers.created
+	now.Store(11_000)
+	first.ch <- time.UnixMilli(11_000)
+	<-renewed
+	second := <-timers.created
+	if !first.stopped.Load() || second.stopped.Load() {
+		t.Fatalf("timer lifecycle first=%v second=%v", first.stopped.Load(), second.stopped.Load())
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatalf("Run() err=%v", err)
+	}
+	if !second.stopped.Load() {
+		t.Fatal("last renewal timer was not stopped")
+	}
+}
+
+func TestPlatformSingleGenerationMalformedRenewalStopsWithoutFailMutation(t *testing.T) {
+	f := newPlatformSingleTestRunnerFixture()
+	timers := &platformSingleTestTimerFactory{created: make(chan *platformSingleTestTimer, 2)}
+	f.runner.deps.newTimer = timers.New
+	f.upstream.consume = blockingPlatformSingleConsume(f.upstream)
+	f.store.renew = func(context.Context, int64, string, string, int64) (PlatformGenerationSnapshot, error) {
+		return PlatformGenerationSnapshot{GenerationID: "malformed"}, nil
+	}
+	var getCalled, failCalled atomic.Bool
+	f.store.get = func(context.Context, int64, string) (PlatformGenerationSnapshot, error) {
+		getCalled.Store(true)
+		return PlatformGenerationSnapshot{}, ErrPlatformGenerationUnavailable
+	}
+	f.store.fail = func(context.Context, int64, string, string, string, int64) (PlatformGenerationSnapshot, error) {
+		failCalled.Store(true)
+		return PlatformGenerationSnapshot{}, ErrPlatformGenerationUnavailable
+	}
+	var frames bytes.Buffer
+	in := f.input()
+	in.Write = func(frame []byte) error { _, _ = frames.Write(frame); return nil }
+	done := make(chan error, 1)
+	go func() { _, err := f.runner.Run(in); done <- err }()
+	timer := <-timers.created
+	timer.ch <- time.UnixMilli(11_000)
+	if err := <-done; !errors.Is(err, ErrPlatformSingleGenerationUnavailable) {
+		t.Fatalf("Run() err=%v", err)
+	}
+	if getCalled.Load() || failCalled.Load() {
+		t.Fatalf("malformed renewal retrusted authority get=%v fail=%v", getCalled.Load(), failCalled.Load())
+	}
+	if got := platformSingleTestEventNames(frames.Bytes()); !reflect.DeepEqual(got, []string{"meta", "model_error", "error"}) {
+		t.Fatalf("events=%v", got)
+	}
+}
+
+func TestPlatformSingleGenerationRenewalCancellingSnapshotIsAcknowledgedWithoutReload(t *testing.T) {
+	f := newPlatformSingleTestRunnerFixture()
+	timers := &platformSingleTestTimerFactory{created: make(chan *platformSingleTestTimer, 2)}
+	f.runner.deps.newTimer = timers.New
+	f.upstream.consume = blockingPlatformSingleConsume(f.upstream)
+	cancelling := f.store.claim.Snapshot
+	cancelling.State = PlatformGenerationStateCancelling
+	cancelling.LeaseUntilMillis = 0
+	f.store.renew = func(context.Context, int64, string, string, int64) (PlatformGenerationSnapshot, error) {
+		return cancelling, ErrPlatformGenerationConflict
+	}
+	var getCalled atomic.Bool
+	f.store.get = func(context.Context, int64, string) (PlatformGenerationSnapshot, error) {
+		getCalled.Store(true)
+		return PlatformGenerationSnapshot{}, ErrPlatformGenerationUnavailable
+	}
+	done := make(chan error, 1)
+	go func() { _, err := f.runner.Run(f.input()); done <- err }()
+	timer := <-timers.created
+	timer.ch <- time.UnixMilli(11_000)
+	if err := <-done; !errors.Is(err, ErrPlatformSingleGenerationUpstream) {
+		t.Fatalf("Run() err=%v", err)
+	}
+	if getCalled.Load() {
+		t.Fatal("authoritative renewal snapshot was reloaded")
+	}
+}
+
+func TestPlatformSingleGenerationSerializesDeltaAndRenewalMutations(t *testing.T) {
+	f := newPlatformSingleTestRunnerFixture()
+	timers := &platformSingleTestTimerFactory{created: make(chan *platformSingleTestTimer, 2)}
+	f.runner.deps.newTimer = timers.New
+	var active, overlap atomic.Int32
+	recordEntered := make(chan struct{})
+	releaseRecord := make(chan struct{})
+	f.store.record = func(context.Context, int64, string, string, string, int64, int64) (PlatformGenerationSnapshot, error) {
+		if active.Add(1) != 1 {
+			overlap.Store(1)
+		}
+		close(recordEntered)
+		<-releaseRecord
+		active.Add(-1)
+		return f.store.claim.Snapshot, nil
+	}
+	f.store.renew = func(_ context.Context, _ int64, _ string, _ string, now int64) (PlatformGenerationSnapshot, error) {
+		if active.Add(1) != 1 {
+			overlap.Store(1)
+		}
+		active.Add(-1)
+		snapshot := f.store.claim.Snapshot
+		snapshot.UpdatedAtMillis = now
+		snapshot.LeaseUntilMillis = now + platformGenerationLeaseDuration.Milliseconds()
+		return snapshot, nil
+	}
+	done := make(chan error, 1)
+	go func() { _, err := f.runner.Run(f.input()); done <- err }()
+	timer := <-timers.created
+	<-recordEntered
+	timer.ch <- time.UnixMilli(11_000)
+	close(releaseRecord)
+	if err := <-done; err != nil {
+		t.Fatalf("Run() err=%v", err)
+	}
+	if overlap.Load() != 0 {
+		t.Fatal("runner-owned store mutations overlapped")
+	}
+}
+
+func TestPlatformSingleGenerationCancelAcknowledgesAuthorityAndStopsUpstream(t *testing.T) {
+	f := newPlatformSingleTestRunnerFixture()
+	registry := &platformSingleCapturingRegistry{registered: make(chan context.CancelFunc, 1)}
+	f.runner.deps.registry = registry
+	f.runner.deps.newTimer = (&platformSingleTestTimerFactory{created: make(chan *platformSingleTestTimer, 1)}).New
+	f.upstream.consume = blockingPlatformSingleConsume(f.upstream)
+	cancelling := f.store.claim.Snapshot
+	cancelling.State = PlatformGenerationStateCancelling
+	cancelling.LeaseUntilMillis = 0
+	f.store.get = func(context.Context, int64, string) (PlatformGenerationSnapshot, error) { return cancelling, nil }
+	var frames bytes.Buffer
+	in := f.input()
+	in.Write = func(frame []byte) error { _, _ = frames.Write(frame); return nil }
+	done := make(chan error, 1)
+	go func() { _, err := f.runner.Run(in); done <- err }()
+	cancel := <-registry.registered
+	cancel()
+	if err := <-done; !errors.Is(err, ErrPlatformSingleGenerationUpstream) {
+		t.Fatalf("Run() err=%v", err)
+	}
+	if !f.upstream.cancelled.Load() {
+		t.Fatal("upstream was not cancelled")
+	}
+	if got := platformSingleTestEventNames(frames.Bytes()); !reflect.DeepEqual(got, []string{"meta", "model_error", "error"}) {
+		t.Fatalf("events=%v", got)
+	}
+	if f.persist.input.GenerationID != "" {
+		t.Fatalf("unexpected persistence=%+v", f.persist.input)
+	}
+}
+
+func TestPlatformSingleGenerationShutdownFailsOnlyProvenRunningAuthority(t *testing.T) {
+	f := newPlatformSingleTestRunnerFixture()
+	root, shutdown := context.WithCancel(context.Background())
+	f.runner.deps.rootContext = root
+	f.runner.deps.newTimer = (&platformSingleTestTimerFactory{created: make(chan *platformSingleTestTimer, 1)}).New
+	f.upstream.chatStarted = make(chan struct{})
+	f.upstream.consume = blockingPlatformSingleConsume(f.upstream)
+	f.store.get = func(context.Context, int64, string) (PlatformGenerationSnapshot, error) {
+		return f.store.claim.Snapshot, nil
+	}
+	var code string
+	f.store.fail = func(_ context.Context, _ int64, _ string, _ string, got string, _ int64) (PlatformGenerationSnapshot, error) {
+		code = got
+		snapshot := f.store.claim.Snapshot
+		snapshot.State = PlatformGenerationStateFailed
+		snapshot.ErrorCode = got
+		snapshot.LeaseOwnerSHA256 = ""
+		snapshot.LeaseUntilMillis = 0
+		snapshot.ModelStates["model-a"] = PlatformGenerationModel{State: PlatformGenerationStateFailed, ErrorCode: got}
+		return snapshot, nil
+	}
+	done := make(chan error, 1)
+	go func() { _, err := f.runner.Run(f.input()); done <- err }()
+	<-f.upstream.chatStarted
+	shutdown()
+	if err := <-done; !errors.Is(err, ErrPlatformSingleGenerationUpstream) {
+		t.Fatalf("Run() err=%v", err)
+	}
+	if code != "internal_error" || !f.upstream.cancelled.Load() {
+		t.Fatalf("code=%q cancelled=%v", code, f.upstream.cancelled.Load())
+	}
+}
+
+func TestPlatformSingleGenerationShutdownPreservesCommittingAuthority(t *testing.T) {
+	f := newPlatformSingleTestRunnerFixture()
+	root, shutdown := context.WithCancel(context.Background())
+	f.runner.deps.rootContext = root
+	f.runner.deps.newTimer = (&platformSingleTestTimerFactory{created: make(chan *platformSingleTestTimer, 1)}).New
+	f.upstream.chatStarted = make(chan struct{})
+	f.upstream.consume = blockingPlatformSingleConsume(f.upstream)
+	committing := clonePlatformGeneration(f.store.claim.Snapshot)
+	committing.State = PlatformGenerationStateCommitting
+	committing.LeaseOwnerSHA256 = ""
+	committing.LeaseUntilMillis = 0
+	committing.ModelStates["model-a"] = PlatformGenerationModel{State: PlatformGenerationStateCompleted, Seq: 1}
+	f.store.get = func(context.Context, int64, string) (PlatformGenerationSnapshot, error) { return committing, nil }
+	var failCalled atomic.Bool
+	f.store.fail = func(context.Context, int64, string, string, string, int64) (PlatformGenerationSnapshot, error) {
+		failCalled.Store(true)
+		return PlatformGenerationSnapshot{}, nil
+	}
+	var frames bytes.Buffer
+	in := f.input()
+	in.Write = func(frame []byte) error { _, _ = frames.Write(frame); return nil }
+	done := make(chan error, 1)
+	go func() { _, err := f.runner.Run(in); done <- err }()
+	<-f.upstream.chatStarted
+	shutdown()
+	if err := <-done; !errors.Is(err, ErrPlatformSingleGenerationUnavailable) {
+		t.Fatalf("Run() err=%v", err)
+	}
+	if failCalled.Load() {
+		t.Fatal("shutdown overwrote committing authority")
+	}
+	if got := platformSingleTestEventNames(frames.Bytes()); !reflect.DeepEqual(got, []string{"meta", "error"}) {
+		t.Fatalf("events=%v", got)
+	}
+}
+
+func TestPlatformSingleGenerationFailureCodesAndTerminalOrder(t *testing.T) {
+	over := strings.Repeat("x", platformGenerationMessageTextMaxBytes+1)
+	finish := "stop"
+	tests := []struct {
+		name, code string
+		events     []string
+		configure  func(*platformSingleTestRunnerFixture)
+	}{
+		{name: "timeout", code: "timeout", events: []string{"meta", "model_error", "error"}, configure: func(f *platformSingleTestRunnerFixture) {
+			f.runner.deps.newRunnerContext = func(context.Context, time.Duration) (context.Context, context.CancelFunc) {
+				return platformSingleExpiredContext{}, func() {}
+			}
+			f.upstream.consume = blockingPlatformSingleConsume(f.upstream)
+		}},
+		{name: "malformed", code: "gateway_upstream_error", events: []string{"meta", "delta", "model_error", "error"}, configure: func(f *platformSingleTestRunnerFixture) {
+			f.upstream.consumeErr = whitelabel.ErrUpstreamUnavailable("raw secret")
+		}},
+		{name: "early eof", code: "gateway_upstream_error", events: []string{"meta", "model_error", "error"}, configure: func(f *platformSingleTestRunnerFixture) { f.upstream.chunks = nil }},
+		{name: "oversize", code: "upstream_error", events: []string{"meta", "model_error", "error"}, configure: func(f *platformSingleTestRunnerFixture) {
+			f.upstream.chunks = []whitelabel.ChatCompletionChunk{{Choices: []whitelabel.ChatCompletionChunkChoice{{Index: 0, Delta: whitelabel.ChatCompletionChunkDelta{Content: &over}, FinishReason: &finish}}}}
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newPlatformSingleTestRunnerFixture()
+			tc.configure(f)
+			var frames bytes.Buffer
+			in := f.input()
+			in.Write = func(frame []byte) error { _, _ = frames.Write(frame); return nil }
+			result, err := f.runner.Run(in)
+			if err == nil || !result.Started {
+				t.Fatalf("result=%+v err=%v", result, err)
+			}
+			if got := platformSingleTestEventNames(frames.Bytes()); !reflect.DeepEqual(got, tc.events) {
+				t.Fatalf("events=%v", got)
+			}
+			if count := strings.Count(frames.String(), `"code":"`+tc.code+`"`); count != 2 {
+				t.Fatalf("code count=%d stream=%q", count, frames.String())
+			}
+			if strings.Contains(frames.String(), "raw secret") || f.persist.input.GenerationID != "" {
+				t.Fatalf("leak or persistence stream=%q persist=%+v", frames.String(), f.persist.input)
+			}
+		})
+	}
+}
+
+type platformSingleExpiredContext struct{ context.Context }
+
+func (platformSingleExpiredContext) Deadline() (time.Time, bool) { return time.Unix(0, 0), true }
+func (platformSingleExpiredContext) Done() <-chan struct{} {
+	ch := make(chan struct{})
+	close(ch)
+	return ch
+}
+func (platformSingleExpiredContext) Err() error { return context.DeadlineExceeded }
+func (platformSingleExpiredContext) Value(key interface{}) interface{} {
+	return context.Background().Value(key)
+}
+
+func TestPlatformSingleGenerationCommitUnknownReconcilesWithoutReplayingSQL(t *testing.T) {
+	f := newPlatformSingleTestRunnerFixture()
+	f.runner.deps.newTimer = (&platformSingleTestTimerFactory{created: make(chan *platformSingleTestTimer, 1)}).New
+	f.store.complete = func(context.Context, int64, string, map[string]string, int64) (PlatformGenerationSnapshot, error) {
+		return PlatformGenerationSnapshot{}, ErrPlatformGenerationUnavailable
+	}
+	f.store.reconcile = func(context.Context, int64, string, map[string]string, int64) (PlatformGenerationSnapshot, error) {
+		return platformSingleCompletedSnapshot(), nil
+	}
+	writes := 0
+	in := f.input()
+	in.Write = func([]byte) error { writes++; return nil }
+	result, err := f.runner.Run(in)
+	if err != nil || !result.Started || writes != 4 {
+		t.Fatalf("result=%+v err=%v writes=%d", result, err, writes)
+	}
+	if f.persist.input.GenerationID == "" {
+		t.Fatal("Finalize not called")
+	}
+}
+
+func TestPlatformSingleGenerationUnprovenCompletionNeverEmitsDone(t *testing.T) {
+	f := newPlatformSingleTestRunnerFixture()
+	f.runner.deps.newTimer = (&platformSingleTestTimerFactory{created: make(chan *platformSingleTestTimer, 1)}).New
+	f.store.complete = func(context.Context, int64, string, map[string]string, int64) (PlatformGenerationSnapshot, error) {
+		return PlatformGenerationSnapshot{}, ErrPlatformGenerationUnavailable
+	}
+	f.store.reconcile = func(context.Context, int64, string, map[string]string, int64) (PlatformGenerationSnapshot, error) {
+		return PlatformGenerationSnapshot{}, ErrPlatformGenerationUnavailable
+	}
+	var frames bytes.Buffer
+	in := f.input()
+	in.Write = func(frame []byte) error { _, _ = frames.Write(frame); return nil }
+	result, err := f.runner.Run(in)
+	if !errors.Is(err, ErrPlatformSingleGenerationUnavailable) || !result.Started {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	if got := platformSingleTestEventNames(frames.Bytes()); !reflect.DeepEqual(got, []string{"meta", "delta", "model_done", "error"}) {
+		t.Fatalf("events=%v", got)
+	}
+}
+
+func TestPlatformSingleGenerationUnsafeDoneTotalEmitsOnlyGlobalError(t *testing.T) {
+	f := newPlatformSingleTestRunnerFixture()
+	f.runner.deps.loadTotalTokens = func(context.Context, *gorm.DB, int64) (int64, error) { return platformSSEV2MaxSafeInteger + 1, nil }
+	var frames bytes.Buffer
+	in := f.input()
+	in.Write = func(frame []byte) error { _, _ = frames.Write(frame); return nil }
+	result, err := f.runner.Run(in)
+	if !errors.Is(err, ErrPlatformSingleGenerationUnavailable) || !result.Started {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	if got := platformSingleTestEventNames(frames.Bytes()); !reflect.DeepEqual(got, []string{"meta", "delta", "model_done", "error"}) {
+		t.Fatalf("events=%v", got)
+	}
+}
+
+type platformSingleCapturingRegistry struct{ registered chan context.CancelFunc }
+
+func (r *platformSingleCapturingRegistry) Register(_ int64, _ string, cancel context.CancelFunc) (string, error) {
+	r.registered <- cancel
+	return platformSingleTestLeaseToken(), nil
+}
+func (r *platformSingleCapturingRegistry) Unregister(int64, string, string) bool { return true }
+
+func blockingPlatformSingleConsume(upstream *platformSingleTestUpstream) func(context.Context, func(whitelabel.ChatCompletionChunk) error) *whitelabel.Error {
+	return func(ctx context.Context, _ func(whitelabel.ChatCompletionChunk) error) *whitelabel.Error {
+		<-ctx.Done()
+		upstream.cancelled.Store(true)
+		return whitelabel.ErrUpstreamUnavailable("cancelled")
+	}
+}
+
+func platformSingleTestEventNames(stream []byte) []string {
+	var names []string
+	for _, line := range strings.Split(string(stream), "\n") {
+		if strings.HasPrefix(line, "event: ") {
+			names = append(names, strings.TrimPrefix(line, "event: "))
+		}
+	}
+	return names
 }

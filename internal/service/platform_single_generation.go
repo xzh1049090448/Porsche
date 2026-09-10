@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -32,6 +33,8 @@ type platformSingleGenerationStore interface {
 	MarkModelDoneOwned(context.Context, int64, string, string, string, int64, int64) (PlatformGenerationSnapshot, error)
 	BeginCommitOwned(context.Context, int64, string, string, int64) (PlatformGenerationSnapshot, error)
 	Complete(context.Context, int64, string, map[string]string, int64) (PlatformGenerationSnapshot, error)
+	ReconcileComplete(context.Context, int64, string, map[string]string, int64) (PlatformGenerationSnapshot, error)
+	Get(context.Context, int64, string) (PlatformGenerationSnapshot, error)
 	RenewLease(context.Context, int64, string, string, int64) (PlatformGenerationSnapshot, error)
 	FailRunningOwned(context.Context, int64, string, string, string, int64) (PlatformGenerationSnapshot, error)
 	AcknowledgeCancelledOwned(context.Context, int64, string, string, int64) (PlatformGenerationSnapshot, error)
@@ -81,6 +84,23 @@ type platformSingleGenerationDeps struct {
 	loadTotalTokens  func(context.Context, *gorm.DB, int64) (int64, error)
 	loadConversation func(context.Context, *gorm.DB, int64, int64) error
 	upstreamTimeout  time.Duration
+	newTimer         platformSingleTimerFactory
+	newRunnerContext func(context.Context, time.Duration) (context.Context, context.CancelFunc)
+}
+
+type platformSingleTimer interface {
+	Chan() <-chan time.Time
+	Stop()
+}
+
+type platformSingleTimerFactory func(time.Duration) platformSingleTimer
+
+type platformSingleRealTimer struct{ timer *time.Timer }
+
+func (t *platformSingleRealTimer) Chan() <-chan time.Time { return t.timer.C }
+func (t *platformSingleRealTimer) Stop()                  { t.timer.Stop() }
+func newPlatformSingleTimer(duration time.Duration) platformSingleTimer {
+	return &platformSingleRealTimer{timer: time.NewTimer(duration)}
 }
 
 type PlatformSingleGenerationRunner struct {
@@ -102,6 +122,8 @@ func NewPlatformSingleGenerationRunner(
 		newGUID: persistence.NextGUID, loadTotalTokens: loadPlatformSingleTotalTokens,
 		loadConversation: loadPlatformSingleConversation,
 		upstreamTimeout:  upstreamTimeout,
+		newTimer:         newPlatformSingleTimer,
+		newRunnerContext: context.WithTimeout,
 	}
 	if !validPlatformSingleGenerationDeps(deps) {
 		return nil, ErrPlatformSingleGenerationUnavailable
@@ -112,7 +134,7 @@ func NewPlatformSingleGenerationRunner(
 func validPlatformSingleGenerationDeps(deps platformSingleGenerationDeps) bool {
 	return deps.db != nil && deps.store != nil && deps.persistence != nil && deps.registry != nil &&
 		deps.upstream != nil && deps.rootContext != nil && deps.now != nil && deps.newGUID != nil &&
-		deps.loadTotalTokens != nil && deps.loadConversation != nil && deps.upstreamTimeout > 0
+		deps.loadTotalTokens != nil && deps.loadConversation != nil && deps.upstreamTimeout > 0 && deps.newTimer != nil && deps.newRunnerContext != nil
 }
 
 type platformSingleRun struct {
@@ -157,11 +179,11 @@ func (r *PlatformSingleGenerationRunner) Run(input PlatformSingleGenerationInput
 	}
 	run.leaseToken = claim.LeaseToken
 
-	runnerCtx, cancelRunner := context.WithTimeout(r.deps.rootContext, r.deps.upstreamTimeout)
+	runnerCtx, cancelRunner := r.deps.newRunnerContext(r.deps.rootContext, r.deps.upstreamTimeout)
 	defer cancelRunner()
 	registrationToken, err := r.deps.registry.Register(run.userID, run.generationID, cancelRunner)
 	if err != nil {
-		_, _ = r.deps.store.FailRunningOwned(context.WithoutCancel(runnerCtx), run.userID, run.generationID, run.leaseToken, "internal_error", r.nowMillis())
+		r.settleRegistrationFailure(run)
 		return PlatformSingleGenerationRunResult{}, ErrPlatformSingleGenerationUnavailable
 	}
 	defer r.deps.registry.Unregister(run.userID, run.generationID, registrationToken)
@@ -174,68 +196,80 @@ func (r *PlatformSingleGenerationRunner) Run(input PlatformSingleGenerationInput
 	result := PlatformSingleGenerationRunResult{Started: true}
 	output.emit(meta)
 
-	response, upstreamErr := r.deps.upstream.Chat(runnerCtx, run.payload)
-	if response != nil && response.Body != nil {
-		defer response.Body.Close()
+	var mutationMu sync.Mutex
+	body := &platformSingleResponseBody{}
+	consumeResults := make(chan platformSingleConsumeResult, 1)
+	go r.consume(runnerCtx, run, &output, &mutationMu, body, consumeResults)
+
+	renewCtx, cancelRenew := context.WithCancel(context.WithoutCancel(runnerCtx))
+	renewResults := make(chan platformSingleRenewalResult, 1)
+	var renewWG sync.WaitGroup
+	renewWG.Add(1)
+	go func() {
+		defer renewWG.Done()
+		r.renew(renewCtx, run, &mutationMu, renewResults)
+	}()
+
+	var consumed platformSingleConsumeResult
+	var terminalCause error
+	var renewalAuthority *PlatformGenerationSnapshot
+	renewalAuthorityUnknown := false
+	select {
+	case consumed = <-consumeResults:
+		terminalCause = consumed.cause
+	case renewed := <-renewResults:
+		terminalCause = renewed.err
+		if terminalCause == nil {
+			terminalCause = ErrPlatformSingleGenerationUnavailable
+		}
+		if validPlatformSingleSnapshotIdentity(renewed.snapshot, run) {
+			snapshot := clonePlatformGeneration(renewed.snapshot)
+			renewalAuthority = &snapshot
+		} else {
+			renewalAuthorityUnknown = true
+		}
+		cancelRunner()
+		body.Close()
+		consumed = <-consumeResults
+	case <-runnerCtx.Done():
+		terminalCause = runnerCtx.Err()
+		cancelRunner()
+		body.Close()
+		consumed = <-consumeResults
 	}
-	if upstreamErr != nil || response == nil || response.Body == nil || response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		return result, ErrPlatformSingleGenerationUpstream
+	cancelRenew()
+	renewWG.Wait()
+	body.Close()
+	if terminalCause == nil {
+		terminalCause = consumed.cause
+	}
+	if terminalCause != nil {
+		if renewalAuthorityUnknown {
+			r.emitFailure(run, &output, "internal_error", false)
+			return result, ErrPlatformSingleGenerationUnavailable
+		}
+		if renewalAuthority != nil {
+			return result, r.finishFailureAuthority(run, &output, &mutationMu, terminalCause, false, *renewalAuthority)
+		}
+		return result, r.finishFailure(run, &output, &mutationMu, terminalCause, false)
+	}
+	chunkState := consumed.state
+	if runnerCtx.Err() != nil {
+		return result, r.finishFailure(run, &output, &mutationMu, runnerCtx.Err(), false)
 	}
 
-	chunkState := platformSingleChunkState{}
-	var callbackCause error
-	consumeErr := r.deps.upstream.ConsumeChatCompletionSSEContext(runnerCtx, response.Body, run.model, func(chunk whitelabel.ChatCompletionChunk) error {
-		delta, acceptErr := chunkState.accept(chunk)
-		if acceptErr != nil {
-			callbackCause = acceptErr
-			return acceptErr
-		}
-		if delta == "" {
-			return nil
-		}
-		if !utf8.ValidString(delta) {
-			callbackCause = ErrPlatformSingleGenerationUpstream
-			return callbackCause
-		}
-		if len(delta) > platformGenerationMessageTextMaxBytes-chunkState.content.Len() {
-			callbackCause = ErrPlatformSingleGenerationOversize
-			return callbackCause
-		}
-		nextSeq := chunkState.seq + 1
-		if !platformSSEV2SafeInteger(nextSeq) || nextSeq == 0 {
-			callbackCause = ErrPlatformSingleGenerationOversize
-			return callbackCause
-		}
-		if _, storeErr := r.deps.store.RecordDeltaOwned(runnerCtx, run.userID, run.generationID, run.leaseToken, run.model, nextSeq, r.nowMillis()); storeErr != nil {
-			callbackCause = ErrPlatformSingleGenerationUnavailable
-			return callbackCause
-		}
-		frame := run.encoder.Delta(run.model, nextSeq, delta)
-		if frame == nil || run.encoder.Err() != nil {
-			callbackCause = ErrPlatformSingleGenerationUnavailable
-			return callbackCause
-		}
-		chunkState.seq = nextSeq
-		_, _ = chunkState.content.WriteString(delta)
-		output.emit(frame)
-		return nil
-	})
-	if callbackCause != nil {
-		return result, callbackCause
+	mutationMu.Lock()
+	_, err = r.deps.store.MarkModelDoneOwned(runnerCtx, run.userID, run.generationID, run.leaseToken, run.model, chunkState.seq, r.nowMillis())
+	if err == nil {
+		_, err = r.deps.store.BeginCommitOwned(runnerCtx, run.userID, run.generationID, run.leaseToken, r.nowMillis())
 	}
-	if consumeErr != nil || !chunkState.complete() {
-		return result, ErrPlatformSingleGenerationUpstream
-	}
-
-	if _, err = r.deps.store.MarkModelDoneOwned(runnerCtx, run.userID, run.generationID, run.leaseToken, run.model, chunkState.seq, r.nowMillis()); err != nil {
-		return result, ErrPlatformSingleGenerationUnavailable
-	}
-	if _, err = r.deps.store.BeginCommitOwned(runnerCtx, run.userID, run.generationID, run.leaseToken, r.nowMillis()); err != nil {
-		return result, ErrPlatformSingleGenerationUnavailable
+	mutationMu.Unlock()
+	if err != nil {
+		return result, r.finishFailure(run, &output, &mutationMu, ErrPlatformSingleGenerationUnavailable, false)
 	}
 	modelDone := run.encoder.ModelDone(run.model, chunkState.seq)
 	if modelDone == nil || run.encoder.Err() != nil {
-		return result, ErrPlatformSingleGenerationUnavailable
+		return result, r.finishFailure(run, &output, &mutationMu, ErrPlatformSingleGenerationUnavailable, false)
 	}
 	output.emit(modelDone)
 
@@ -251,14 +285,25 @@ func (r *PlatformSingleGenerationRunner) Run(input PlatformSingleGenerationInput
 	}
 	receipt, err := r.deps.persistence.Finalize(runnerCtx, r.deps.db, persistenceInput)
 	if err != nil || !platformSingleReceiptMatches(receipt, persistenceInput) {
+		r.emitGlobalError(run, &output, "internal_error")
 		return result, ErrPlatformSingleGenerationUnavailable
 	}
 	assistantGUIDs := map[string]string{run.model: receipt.Results[0].AssistantMessageGUID}
-	if _, err = r.deps.store.Complete(runnerCtx, run.userID, run.generationID, assistantGUIDs, r.nowMillis()); err != nil {
+	mutationMu.Lock()
+	completed, completeErr := r.deps.store.Complete(runnerCtx, run.userID, run.generationID, assistantGUIDs, r.nowMillis())
+	if completeErr != nil || !validPlatformSingleCompleted(completed, run, assistantGUIDs) {
+		reconcileCtx, reconcileCancel := r.terminalContext()
+		completed, completeErr = r.deps.store.ReconcileComplete(reconcileCtx, run.userID, run.generationID, assistantGUIDs, r.nowMillis())
+		reconcileCancel()
+	}
+	mutationMu.Unlock()
+	if completeErr != nil || !validPlatformSingleCompleted(completed, run, assistantGUIDs) {
+		r.emitGlobalError(run, &output, "internal_error")
 		return result, ErrPlatformSingleGenerationUnavailable
 	}
 	totalTokensUsed, err := r.deps.loadTotalTokens(runnerCtx, r.deps.db, run.userID)
-	if err != nil {
+	if err != nil || !platformSSEV2SafeInteger(receipt.Results[0].Tokens) || !platformSSEV2SafeInteger(totalTokensUsed) {
+		r.emitGlobalError(run, &output, "internal_error")
 		return result, ErrPlatformSingleGenerationUnavailable
 	}
 	done := run.encoder.DoneSingle(strconv.FormatInt(receipt.ConversationGUID, 10), receipt.Results[0].Tokens, totalTokensUsed)
@@ -267,6 +312,288 @@ func (r *PlatformSingleGenerationRunner) Run(input PlatformSingleGenerationInput
 	}
 	output.emit(done)
 	return result, nil
+}
+
+func (r *PlatformSingleGenerationRunner) settleRegistrationFailure(run platformSingleRun) {
+	ctx, cancel := r.terminalContext()
+	defer cancel()
+	snapshot, err := r.deps.store.Get(ctx, run.userID, run.generationID)
+	if err != nil || !validPlatformSingleSnapshotIdentity(snapshot, run) {
+		return
+	}
+	switch snapshot.State {
+	case PlatformGenerationStateCancelling:
+		_, _ = r.deps.store.AcknowledgeCancelledOwned(ctx, run.userID, run.generationID, run.leaseToken, r.nowMillis())
+	case PlatformGenerationStateRunning:
+		if platformGenerationRunningLeaseAuthorized(snapshot, platformGenerationLeaseDigest(run.leaseToken), r.nowMillis()) {
+			_, _ = r.deps.store.FailRunningOwned(ctx, run.userID, run.generationID, run.leaseToken, "internal_error", r.nowMillis())
+		}
+	}
+}
+
+type platformSingleConsumeResult struct {
+	state platformSingleChunkState
+	cause error
+}
+
+type platformSingleRenewalResult struct {
+	snapshot PlatformGenerationSnapshot
+	err      error
+}
+
+type platformSingleResponseBody struct {
+	mu     sync.Mutex
+	body   io.ReadCloser
+	closed bool
+}
+
+func (b *platformSingleResponseBody) Set(body io.ReadCloser) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.closed {
+		_ = body.Close()
+		return
+	}
+	b.body = body
+}
+
+func (b *platformSingleResponseBody) Close() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.closed {
+		return
+	}
+	b.closed = true
+	if b.body != nil {
+		_ = b.body.Close()
+	}
+}
+
+func (r *PlatformSingleGenerationRunner) consume(ctx context.Context, run platformSingleRun, output *platformSingleOutput, mutationMu *sync.Mutex, body *platformSingleResponseBody, results chan<- platformSingleConsumeResult) {
+	state := platformSingleChunkState{}
+	response, upstreamErr := r.deps.upstream.Chat(ctx, run.payload)
+	if response != nil && response.Body != nil {
+		body.Set(response.Body)
+	}
+	if upstreamErr != nil || response == nil || response.Body == nil || response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		results <- platformSingleConsumeResult{state: state, cause: ErrPlatformSingleGenerationUpstream}
+		return
+	}
+	var callbackCause error
+	consumeErr := r.deps.upstream.ConsumeChatCompletionSSEContext(ctx, response.Body, run.model, func(chunk whitelabel.ChatCompletionChunk) error {
+		delta, acceptErr := state.accept(chunk)
+		if acceptErr != nil {
+			callbackCause = acceptErr
+			return acceptErr
+		}
+		if delta == "" {
+			return nil
+		}
+		if !utf8.ValidString(delta) {
+			callbackCause = ErrPlatformSingleGenerationUpstream
+			return callbackCause
+		}
+		if len(delta) > platformGenerationMessageTextMaxBytes-state.content.Len() {
+			callbackCause = ErrPlatformSingleGenerationOversize
+			return callbackCause
+		}
+		nextSeq := state.seq + 1
+		if !platformSSEV2SafeInteger(nextSeq) || nextSeq == 0 {
+			callbackCause = ErrPlatformSingleGenerationOversize
+			return callbackCause
+		}
+		mutationMu.Lock()
+		_, storeErr := r.deps.store.RecordDeltaOwned(ctx, run.userID, run.generationID, run.leaseToken, run.model, nextSeq, r.nowMillis())
+		mutationMu.Unlock()
+		if storeErr != nil {
+			callbackCause = ErrPlatformSingleGenerationUnavailable
+			return callbackCause
+		}
+		frame := run.encoder.Delta(run.model, nextSeq, delta)
+		if frame == nil || run.encoder.Err() != nil {
+			callbackCause = ErrPlatformSingleGenerationUnavailable
+			return callbackCause
+		}
+		state.seq = nextSeq
+		_, _ = state.content.WriteString(delta)
+		output.emit(frame)
+		return nil
+	})
+	if callbackCause != nil {
+		results <- platformSingleConsumeResult{state: state, cause: callbackCause}
+		return
+	}
+	if consumeErr != nil || !state.complete() {
+		results <- platformSingleConsumeResult{state: state, cause: ErrPlatformSingleGenerationUpstream}
+		return
+	}
+	results <- platformSingleConsumeResult{state: state}
+}
+
+func (r *PlatformSingleGenerationRunner) renew(ctx context.Context, run platformSingleRun, mutationMu *sync.Mutex, results chan<- platformSingleRenewalResult) {
+	timer := r.deps.newTimer(10 * time.Second)
+	defer func() { timer.Stop() }()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-timer.Chan():
+			now := r.nowMillis()
+			mutationMu.Lock()
+			snapshot, err := r.deps.store.RenewLease(ctx, run.userID, run.generationID, run.leaseToken, now)
+			mutationMu.Unlock()
+			if err != nil || !validPlatformSingleRenewal(snapshot, run, now) {
+				if err == nil {
+					err = ErrPlatformSingleGenerationUnavailable
+				}
+				select {
+				case results <- platformSingleRenewalResult{snapshot: snapshot, err: err}:
+				case <-ctx.Done():
+				}
+				return
+			}
+			timer.Stop()
+			timer = r.deps.newTimer(10 * time.Second)
+		}
+	}
+}
+
+func (r *PlatformSingleGenerationRunner) terminalContext() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(r.deps.rootContext), 2*time.Second)
+}
+
+func (r *PlatformSingleGenerationRunner) finishFailure(run platformSingleRun, output *platformSingleOutput, mutationMu *sync.Mutex, cause error, afterModelDone bool) error {
+	ctx, cancel := r.terminalContext()
+	defer cancel()
+	mutationMu.Lock()
+	snapshot, err := r.deps.store.Get(ctx, run.userID, run.generationID)
+	mutationMu.Unlock()
+	if err != nil || !validPlatformSingleSnapshotIdentity(snapshot, run) {
+		r.emitFailure(run, output, "internal_error", afterModelDone)
+		return ErrPlatformSingleGenerationUnavailable
+	}
+	return r.finishFailureAuthority(run, output, mutationMu, cause, afterModelDone, snapshot)
+}
+
+func (r *PlatformSingleGenerationRunner) finishFailureAuthority(run platformSingleRun, output *platformSingleOutput, mutationMu *sync.Mutex, cause error, afterModelDone bool, snapshot PlatformGenerationSnapshot) error {
+	ctx, cancel := r.terminalContext()
+	defer cancel()
+	now := r.nowMillis()
+	switch snapshot.State {
+	case PlatformGenerationStateCancelling:
+		mutationMu.Lock()
+		cancelled, ackErr := r.deps.store.AcknowledgeCancelledOwned(ctx, run.userID, run.generationID, run.leaseToken, now)
+		mutationMu.Unlock()
+		if ackErr == nil && validPlatformSingleTerminal(cancelled, run, PlatformGenerationStateCancelled, "cancelled") {
+			r.emitFailure(run, output, "cancelled", afterModelDone)
+			return ErrPlatformSingleGenerationUpstream
+		}
+		r.emitFailure(run, output, "internal_error", afterModelDone)
+		return ErrPlatformSingleGenerationUnavailable
+	case PlatformGenerationStateCancelled:
+		r.emitFailure(run, output, "cancelled", afterModelDone)
+		return ErrPlatformSingleGenerationUpstream
+	case PlatformGenerationStateFailed:
+		code := snapshot.ErrorCode
+		if !platformGenerationStableCode(code) {
+			code = "internal_error"
+		}
+		r.emitFailure(run, output, code, afterModelDone)
+		return platformSingleRunError(cause)
+	case PlatformGenerationStateCommitting, PlatformGenerationStateCompleted:
+		r.emitGlobalError(run, output, "internal_error")
+		return ErrPlatformSingleGenerationUnavailable
+	case PlatformGenerationStateRunning:
+		if !platformGenerationRunningLeaseAuthorized(snapshot, platformGenerationLeaseDigest(run.leaseToken), now) {
+			r.emitFailure(run, output, "internal_error", afterModelDone)
+			return ErrPlatformSingleGenerationUnavailable
+		}
+		code := platformSingleStableCode(cause, r.deps.rootContext.Err())
+		mutationMu.Lock()
+		failed, failErr := r.deps.store.FailRunningOwned(ctx, run.userID, run.generationID, run.leaseToken, code, now)
+		mutationMu.Unlock()
+		if failErr != nil || !validPlatformSingleTerminal(failed, run, PlatformGenerationStateFailed, code) {
+			r.emitFailure(run, output, "internal_error", afterModelDone)
+			return ErrPlatformSingleGenerationUnavailable
+		}
+		r.emitFailure(run, output, code, afterModelDone)
+		return platformSingleRunError(cause)
+	default:
+		r.emitFailure(run, output, "internal_error", afterModelDone)
+		return ErrPlatformSingleGenerationUnavailable
+	}
+}
+
+func (r *PlatformSingleGenerationRunner) emitFailure(run platformSingleRun, output *platformSingleOutput, code string, afterModelDone bool) {
+	if !afterModelDone {
+		output.emit(run.encoder.ModelError(run.model, code, run.requestID))
+	}
+	r.emitGlobalError(run, output, code)
+}
+
+func (r *PlatformSingleGenerationRunner) emitGlobalError(run platformSingleRun, output *platformSingleOutput, code string) {
+	frame := run.encoder.Error(code, run.requestID)
+	if frame != nil && run.encoder.Err() == nil {
+		output.emit(frame)
+	}
+}
+
+func platformSingleStableCode(cause error, rootCtxErr error) string {
+	switch {
+	case rootCtxErr != nil:
+		return "internal_error"
+	case errors.Is(cause, context.DeadlineExceeded):
+		return "timeout"
+	case errors.Is(cause, ErrPlatformSingleGenerationOversize):
+		return "upstream_error"
+	case errors.Is(cause, ErrPlatformSingleGenerationUnavailable):
+		return "internal_error"
+	default:
+		return "gateway_upstream_error"
+	}
+}
+
+func platformSingleRunError(cause error) error {
+	switch {
+	case errors.Is(cause, ErrPlatformSingleGenerationOversize):
+		return ErrPlatformSingleGenerationOversize
+	case errors.Is(cause, ErrPlatformSingleGenerationUnavailable):
+		return ErrPlatformSingleGenerationUnavailable
+	default:
+		return ErrPlatformSingleGenerationUpstream
+	}
+}
+
+func validPlatformSingleRenewal(snapshot PlatformGenerationSnapshot, run platformSingleRun, nowMillis int64) bool {
+	if !validPlatformSingleSnapshotIdentity(snapshot, run) || snapshot.State != PlatformGenerationStateRunning ||
+		snapshot.UpdatedAtMillis != nowMillis || snapshot.LeaseUntilMillis != nowMillis+platformGenerationLeaseDuration.Milliseconds() ||
+		snapshot.LeaseOwnerSHA256 != platformGenerationLeaseDigest(run.leaseToken) {
+		return false
+	}
+	model, ok := snapshot.ModelStates[run.model]
+	return ok && model.State == PlatformGenerationStateRunning && model.Seq >= 0
+}
+
+func validPlatformSingleTerminal(snapshot PlatformGenerationSnapshot, run platformSingleRun, state PlatformGenerationState, code string) bool {
+	expectedSnapshotCode := code
+	expectedModelCode := code
+	if state == PlatformGenerationStateCancelled {
+		expectedSnapshotCode = ""
+		expectedModelCode = ""
+	}
+	if !validPlatformSingleSnapshotIdentity(snapshot, run) || snapshot.State != state || snapshot.LeaseOwnerSHA256 != "" || snapshot.LeaseUntilMillis != 0 || snapshot.ErrorCode != expectedSnapshotCode {
+		return false
+	}
+	model, ok := snapshot.ModelStates[run.model]
+	return ok && model.State == state && model.ErrorCode == expectedModelCode
+}
+
+func validPlatformSingleCompleted(snapshot PlatformGenerationSnapshot, run platformSingleRun, guids map[string]string) bool {
+	if !validPlatformSingleSnapshotIdentity(snapshot, run) || snapshot.State != PlatformGenerationStateCompleted || snapshot.LeaseOwnerSHA256 != "" || snapshot.LeaseUntilMillis != 0 || len(guids) != 1 {
+		return false
+	}
+	model, ok := snapshot.ModelStates[run.model]
+	return ok && model.State == PlatformGenerationStateCompleted && model.AssistantMessageGUID == guids[run.model]
 }
 
 func (r *PlatformSingleGenerationRunner) prepare(input PlatformSingleGenerationInput) (platformSingleRun, int64, error) {
