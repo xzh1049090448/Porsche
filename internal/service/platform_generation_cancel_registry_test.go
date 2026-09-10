@@ -61,6 +61,77 @@ func TestPlatformGenerationCancellationRegistryCloseCancelsAndDrains(t *testing.
 	}
 }
 
+func TestPlatformGenerationCancellationRegistryCloseWaitsForAdmissions(t *testing.T) {
+	registry := NewPlatformGenerationCancellationRegistry()
+	release, err := registry.BeginAdmission()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- registry.CloseAndWait(ctx) }()
+
+	deadline := time.After(time.Second)
+	for {
+		probeRelease, probeErr := registry.BeginAdmission()
+		if errors.Is(probeErr, ErrPlatformGenerationUnavailable) {
+			break
+		}
+		if probeErr != nil {
+			t.Fatalf("BeginAdmission probe error = %v", probeErr)
+		}
+		probeRelease()
+		select {
+		case <-deadline:
+			t.Fatal("CloseAndWait did not close admission gate")
+		default:
+		}
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("CloseAndWait returned with an active admission: %v", err)
+	default:
+	}
+	release()
+	release()
+	if err := <-done; err != nil {
+		t.Fatalf("CloseAndWait after admission release = %v", err)
+	}
+}
+
+func TestPlatformGenerationCancellationRegistryAdmissionTransfersDrainToRegistration(t *testing.T) {
+	registry := NewPlatformGenerationCancellationRegistry()
+	release, err := registry.BeginAdmission()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancelled := make(chan struct{})
+	token, err := registry.Register(7, cancellationRegistryGenerationID, func() { close(cancelled) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	release()
+	done := make(chan error, 1)
+	go func() { done <- registry.CloseAndWait(context.Background()) }()
+	select {
+	case <-cancelled:
+	case <-time.After(time.Second):
+		t.Fatal("CloseAndWait did not cancel transferred registration")
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("CloseAndWait returned before transferred registration drained: %v", err)
+	default:
+	}
+	if !registry.Unregister(7, cancellationRegistryGenerationID, token) {
+		t.Fatal("Unregister transferred registration = false")
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestPlatformGenerationCancellationRegistryCloseCallbacksRunOutsideMutex(t *testing.T) {
 	registry := NewPlatformGenerationCancellationRegistry()
 	var token string

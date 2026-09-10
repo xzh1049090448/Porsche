@@ -25,12 +25,47 @@ type platformGenerationCancellationEntry struct {
 // this process. Its registrations are deliberately independent from the
 // durable generation lifecycle record.
 type PlatformGenerationCancellationRegistry struct {
-	mu        sync.Mutex
-	entropyMu sync.Mutex
-	entries   map[platformGenerationCancellationKey]platformGenerationCancellationEntry
-	reader    io.Reader
-	closed    bool
-	drained   chan struct{}
+	mu         sync.Mutex
+	entropyMu  sync.Mutex
+	entries    map[platformGenerationCancellationKey]platformGenerationCancellationEntry
+	reader     io.Reader
+	closed     bool
+	admissions int
+	drained    chan struct{}
+}
+
+// BeginAdmission holds the application shutdown drain open while a runner is
+// preparing, claiming durable ownership, and registering its cancel callback.
+func (r *PlatformGenerationCancellationRegistry) BeginAdmission() (func(), error) {
+	if r == nil {
+		return nil, ErrPlatformGenerationUnavailable
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.drainLocked()
+	if r.closed {
+		return nil, ErrPlatformGenerationUnavailable
+	}
+	if r.admissions == 0 && len(r.entries) == 0 {
+		r.drained = make(chan struct{})
+	}
+	r.admissions++
+	var once sync.Once
+	return func() {
+		once.Do(r.releaseAdmission)
+	}, nil
+}
+
+func (r *PlatformGenerationCancellationRegistry) releaseAdmission() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.admissions <= 0 {
+		return
+	}
+	r.admissions--
+	if r.admissions == 0 && len(r.entries) == 0 {
+		close(r.drained)
+	}
 }
 
 func NewPlatformGenerationCancellationRegistry() *PlatformGenerationCancellationRegistry {
@@ -124,7 +159,7 @@ func (r *PlatformGenerationCancellationRegistry) Register(userID int64, generati
 	if _, exists := r.entries[key]; exists {
 		return "", ErrPlatformGenerationConflict
 	}
-	if len(r.entries) == 0 {
+	if len(r.entries) == 0 && r.admissions == 0 {
 		r.drained = make(chan struct{})
 	}
 	r.entries[key] = platformGenerationCancellationEntry{token: token, cancel: cancel}
@@ -167,7 +202,7 @@ func (r *PlatformGenerationCancellationRegistry) Unregister(userID int64, genera
 		return false
 	}
 	delete(r.entries, key)
-	if len(r.entries) == 0 {
+	if len(r.entries) == 0 && r.admissions == 0 {
 		close(r.drained)
 	}
 	return true

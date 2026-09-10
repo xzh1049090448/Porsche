@@ -28,6 +28,7 @@ type platformSingleTestStore struct {
 	claim          PlatformGenerationClaimResult
 	claimErr       error
 	onClaim        func(context.Context, PlatformGenerationClaimInput)
+	claimFn        func(context.Context, PlatformGenerationClaimInput) (PlatformGenerationClaimResult, error)
 	claimContext   context.Context
 	recordErr      error
 	record         func(context.Context, int64, string, string, string, int64, int64) (PlatformGenerationSnapshot, error)
@@ -54,6 +55,9 @@ func (s *platformSingleTestStore) Claim(ctx context.Context, in PlatformGenerati
 	s.claimContext = ctx
 	if s.onClaim != nil {
 		s.onClaim(ctx, in)
+	}
+	if s.claimFn != nil {
+		return s.claimFn(ctx, in)
 	}
 	return s.claim, s.claimErr
 }
@@ -173,6 +177,7 @@ func (r *platformSingleTestRegistry) Register(int64, string, context.CancelFunc)
 	}
 	return platformSingleTestLeaseToken(), r.err
 }
+func (r *platformSingleTestRegistry) BeginAdmission() (func(), error) { return func() {}, nil }
 func (r *platformSingleTestRegistry) Unregister(int64, string, string) bool {
 	if r.calls != nil {
 		*r.calls = append(*r.calls, "unregister")
@@ -499,20 +504,157 @@ func TestPlatformSingleGenerationAdmissionCancellationStopsBeforeClaim(t *testin
 	})
 }
 
+func TestPlatformSingleGenerationRootCancellationInterruptsPreflightAndDrainsAdmission(t *testing.T) {
+	root, cancelRoot := context.WithCancel(context.Background())
+	registry := NewPlatformGenerationCancellationRegistry()
+	runner, _, _, _ := platformSingleTestRunner(nil)
+	runner.deps.rootContext = root
+	runner.deps.registry = registry
+	preflightEntered := make(chan struct{})
+	allowPreflightReturn := make(chan struct{})
+	runner.deps.loadConversation = func(ctx context.Context, _ *gorm.DB, _, _ int64) error {
+		close(preflightEntered)
+		<-ctx.Done()
+		<-allowPreflightReturn
+		return ctx.Err()
+	}
+	conversationGUID := "8001"
+	in := PlatformSingleGenerationInput{Context: context.Background(), User: platformSingleTestUser(), GenerationID: platformSingleTestGenerationID, Params: platformSingleTestParams("hello"), Write: func([]byte) error { return nil }}
+	in.Params.ConversationGUID = &conversationGUID
+	runDone := make(chan error, 1)
+	go func() {
+		_, err := runner.Run(in)
+		runDone <- err
+	}()
+	<-preflightEntered
+	cancelRoot()
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- registry.CloseAndWait(context.Background()) }()
+	deadline := time.After(time.Second)
+	for {
+		probeRelease, probeErr := registry.BeginAdmission()
+		if errors.Is(probeErr, ErrPlatformGenerationUnavailable) {
+			break
+		}
+		if probeErr != nil {
+			t.Fatal(probeErr)
+		}
+		probeRelease()
+		select {
+		case <-deadline:
+			t.Fatal("shutdown did not close admission gate")
+		default:
+		}
+	}
+	select {
+	case err := <-closeDone:
+		t.Fatalf("shutdown crossed blocked preflight admission: %v", err)
+	default:
+	}
+	close(allowPreflightReturn)
+	if err := <-runDone; !errors.Is(err, ErrPlatformSingleGenerationUnavailable) {
+		t.Fatalf("Run after root-cancelled preflight = %v", err)
+	}
+	if err := <-closeDone; err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestPlatformSingleGenerationRequestCancellationAfterClaimDoesNotStopRunner(t *testing.T) {
 	var calls []string
 	runner, store, _, _ := platformSingleTestRunner(&calls)
 	ctx, cancel := context.WithCancel(context.Background())
 	store.onClaim = func(claimCtx context.Context, _ PlatformGenerationClaimInput) {
-		if claimCtx != ctx {
-			t.Fatalf("claim context does not match admission context")
-		}
 		cancel()
+		select {
+		case <-claimCtx.Done():
+		case <-time.After(time.Second):
+			t.Fatal("request cancellation did not cancel claim admission context")
+		}
 	}
 	in := PlatformSingleGenerationInput{Context: ctx, User: platformSingleTestUser(), GenerationID: platformSingleTestGenerationID, Params: platformSingleTestParams("hello"), Write: func([]byte) error { return nil }}
 	result, err := runner.Run(in)
 	if err != nil || !result.Started || !store.completeCalled {
 		t.Fatalf("result=%+v err=%v complete=%v calls=%v", result, err, store.completeCalled, calls)
+	}
+}
+
+func TestPlatformSingleGenerationShutdownDrainsClaimThroughRejectedRegistrationSettlement(t *testing.T) {
+	root, cancelRoot := context.WithCancel(context.Background())
+	registry := NewPlatformGenerationCancellationRegistry()
+	runner, store, _, _ := platformSingleTestRunner(nil)
+	runner.deps.rootContext = root
+	runner.deps.registry = registry
+	claimEntered := make(chan struct{})
+	allowClaimReturn := make(chan struct{})
+	store.claimFn = func(ctx context.Context, _ PlatformGenerationClaimInput) (PlatformGenerationClaimResult, error) {
+		close(claimEntered)
+		<-ctx.Done()
+		<-allowClaimReturn
+		return store.claim, nil
+	}
+	var eventsMu sync.Mutex
+	var events []string
+	store.fail = func(context.Context, int64, string, string, string, int64) (PlatformGenerationSnapshot, error) {
+		eventsMu.Lock()
+		events = append(events, "settle")
+		eventsMu.Unlock()
+		snapshot := store.claim.Snapshot
+		snapshot.State = PlatformGenerationStateFailed
+		snapshot.ErrorCode = "internal_error"
+		snapshot.LeaseOwnerSHA256 = ""
+		snapshot.LeaseUntilMillis = 0
+		snapshot.ModelStates["model-a"] = PlatformGenerationModel{State: PlatformGenerationStateFailed, ErrorCode: "internal_error"}
+		return snapshot, nil
+	}
+	runDone := make(chan error, 1)
+	go func() {
+		_, err := runner.Run(PlatformSingleGenerationInput{Context: context.Background(), User: platformSingleTestUser(), GenerationID: platformSingleTestGenerationID, Params: platformSingleTestParams("hello"), Write: func([]byte) error { return nil }})
+		runDone <- err
+	}()
+	<-claimEntered
+	cancelRoot()
+	closeDone := make(chan error, 1)
+	go func() {
+		err := registry.CloseAndWait(context.Background())
+		eventsMu.Lock()
+		events = append(events, "generation-redis-close")
+		eventsMu.Unlock()
+		closeDone <- err
+	}()
+	deadline := time.After(time.Second)
+	for {
+		probeRelease, probeErr := registry.BeginAdmission()
+		if errors.Is(probeErr, ErrPlatformGenerationUnavailable) {
+			break
+		}
+		if probeErr != nil {
+			t.Fatal(probeErr)
+		}
+		probeRelease()
+		select {
+		case <-deadline:
+			t.Fatal("shutdown did not close admission gate")
+		default:
+		}
+	}
+	select {
+	case err := <-closeDone:
+		t.Fatalf("shutdown crossed active claim admission: %v", err)
+	default:
+	}
+	close(allowClaimReturn)
+	if err := <-runDone; !errors.Is(err, ErrPlatformSingleGenerationUnavailable) {
+		t.Fatalf("Run after rejected registration = %v", err)
+	}
+	if err := <-closeDone; err != nil {
+		t.Fatal(err)
+	}
+	eventsMu.Lock()
+	got := append([]string(nil), events...)
+	eventsMu.Unlock()
+	if !reflect.DeepEqual(got, []string{"settle", "generation-redis-close"}) {
+		t.Fatalf("shutdown settlement order = %v", got)
 	}
 }
 
@@ -1334,6 +1476,8 @@ type platformSingleCapturingRegistry struct {
 	registered   chan context.CancelFunc
 	unregistered atomic.Bool
 }
+
+func (r *platformSingleCapturingRegistry) BeginAdmission() (func(), error) { return func() {}, nil }
 
 func (r *platformSingleCapturingRegistry) Register(_ int64, _ string, cancel context.CancelFunc) (string, error) {
 	r.registered <- cancel

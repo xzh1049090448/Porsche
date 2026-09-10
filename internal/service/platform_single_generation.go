@@ -50,6 +50,7 @@ type platformSingleGenerationUpstream interface {
 }
 
 type platformSingleGenerationRegistry interface {
+	BeginAdmission() (func(), error)
 	Register(int64, string, context.CancelFunc) (string, error)
 	Unregister(int64, string, string) bool
 }
@@ -159,6 +160,22 @@ func (r *PlatformSingleGenerationRunner) Run(input PlatformSingleGenerationInput
 	if r == nil || !validPlatformSingleGenerationDeps(r.deps) {
 		return PlatformSingleGenerationRunResult{}, ErrPlatformSingleGenerationUnavailable
 	}
+	if input.Context == nil {
+		return PlatformSingleGenerationRunResult{}, ErrPlatformSingleGenerationInvalid
+	}
+	releaseAdmission, err := r.deps.registry.BeginAdmission()
+	if err != nil || releaseAdmission == nil {
+		return PlatformSingleGenerationRunResult{}, ErrPlatformSingleGenerationUnavailable
+	}
+	defer releaseAdmission()
+	admissionCtx, cancelAdmission := context.WithCancel(input.Context)
+	stopRootCancellation := context.AfterFunc(r.deps.rootContext, cancelAdmission)
+	if r.deps.rootContext.Err() != nil {
+		cancelAdmission()
+	}
+	defer stopRootCancellation()
+	defer cancelAdmission()
+	input.Context = admissionCtx
 	run, claimAt, err := r.prepare(input)
 	if err != nil {
 		return PlatformSingleGenerationRunResult{}, err
@@ -186,6 +203,9 @@ func (r *PlatformSingleGenerationRunner) Run(input PlatformSingleGenerationInput
 		r.settleRegistrationFailure(run)
 		return PlatformSingleGenerationRunResult{}, ErrPlatformSingleGenerationUnavailable
 	}
+	releaseAdmission()
+	stopRootCancellation()
+	cancelAdmission()
 	defer r.deps.registry.Unregister(run.userID, run.generationID, registrationToken)
 
 	output := platformSingleOutput{write: input.Write}

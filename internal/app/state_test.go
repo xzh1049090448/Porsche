@@ -627,6 +627,49 @@ func TestStateCloseCancelsAndDrainsRunnersBeforeWorkerAndClients(t *testing.T) {
 	}
 }
 
+func TestStateCloseWaitsForPlatformSingleGenerationAdmissionBeforeRedis(t *testing.T) {
+	registry := service.NewPlatformGenerationCancellationRegistry()
+	release, err := registry.BeginAdmission()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rootCancelled := make(chan struct{})
+	generationClosed := make(chan struct{})
+	state := &State{
+		PlatformGenerationCancellations: registry,
+		PlatformGenerations:             mustStateGenerationStore(t, newStateCloseTrackingRedisClient()),
+		platformGenerationRootCancel:    func() { close(rootCancelled) },
+		closeTimeout:                    time.Second,
+		closePlatformGenerations: func(*service.PlatformGenerationStore) error {
+			close(generationClosed)
+			return nil
+		},
+	}
+	done := make(chan error, 1)
+	go func() { done <- state.Close() }()
+	select {
+	case <-rootCancelled:
+	case <-time.After(time.Second):
+		t.Fatal("State.Close did not cancel runner root")
+	}
+	select {
+	case <-generationClosed:
+		t.Fatal("generation Redis closed while admission remained active")
+	case err := <-done:
+		t.Fatalf("State.Close returned while admission remained active: %v", err)
+	default:
+	}
+	release()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-generationClosed:
+	default:
+		t.Fatal("generation Redis was not closed after admission drained")
+	}
+}
+
 func TestStateCloseGenerationRunnerTimeoutRetainsEntryAndContinuesSanitizedCleanup(t *testing.T) {
 	var events []string
 	registry := service.NewPlatformGenerationCancellationRegistry()
