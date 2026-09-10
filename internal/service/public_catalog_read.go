@@ -175,13 +175,16 @@ func (p *PublicCatalogProjection) List(req PublicCatalogListRequest, authenticat
 	if size == 0 {
 		size = 20
 	}
-	start := (page - 1) * size
-	end := start + size
-	if start > len(filtered) {
-		start = len(filtered)
+	start := len(filtered)
+	if page-1 <= len(filtered)/size {
+		start = (page - 1) * size
+		if start > len(filtered) {
+			start = len(filtered)
+		}
 	}
-	if end > len(filtered) {
-		end = len(filtered)
+	end := len(filtered)
+	if start < len(filtered) && size < len(filtered)-start {
+		end = start + size
 	}
 	items := make([]PublicModelRead, 0, end-start)
 	for _, item := range filtered[start:end] {

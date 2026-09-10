@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -143,6 +144,24 @@ func TestProjectPublicCatalogOmitsUnavailablePriceFields(t *testing.T) {
 	if strings.Contains(string(raw), "input_price_") || strings.Contains(string(raw), "output_price_") {
 		t.Fatalf("missing prices serialized: %s", raw)
 	}
+}
+
+func TestProjectPublicCatalogPaginationNeverOverflows(t *testing.T) {
+	p := &PublicCatalogProjection{Items: []PublicCatalogItem{{ModelKey: "alpha"}}}
+	for _, page := range []int{1, 2, int(^uint(0) >> 1)} {
+		func() {
+			defer func() {
+				if recovered := recover(); recovered != nil {
+					t.Fatalf("page=%d panic=%v", page, recovered)
+				}
+			}()
+			got := p.List(PublicCatalogListRequest{Page: page, PageSize: 100}, false)
+			if page > 1 && len(got.Items) != 0 {
+				t.Fatalf("page=%d items=%d", page, len(got.Items))
+			}
+		}()
+	}
+	_ = strconv.IntSize
 }
 
 func containsJSONField(raw []byte, field string) bool {

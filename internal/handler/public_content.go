@@ -2,6 +2,10 @@ package handler
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -67,7 +71,6 @@ func registerPublicContentWithReader(r *gin.Engine, reader publicProjectionReade
 		} else {
 			c.Header("Cache-Control", publicCacheControl)
 		}
-		c.Header("ETag", projection.ETag)
 		return projection, authenticated
 	}
 	plain := func(document func(*service.PublicCatalogProjection) string) gin.HandlerFunc {
@@ -81,10 +84,7 @@ func registerPublicContentWithReader(r *gin.Engine, reader publicProjectionReade
 				return
 			}
 			c.Header("X-Public-Release-Version", strconv.FormatInt(p.ContentReleaseVersion, 10))
-			if publicNotModified(c, p.ETag) {
-				return
-			}
-			c.JSON(200, gin.H{"document": document(p), "release_version": p.ContentReleaseVersion})
+			publicWriteJSON(c, p, c.FullPath(), gin.H{"document": document(p), "release_version": p.ContentReleaseVersion})
 		}
 	}
 	g.GET("/site", func(c *gin.Context) {
@@ -97,10 +97,7 @@ func registerPublicContentWithReader(r *gin.Engine, reader publicProjectionReade
 			return
 		}
 		c.Header("X-Public-Release-Version", strconv.FormatInt(p.ContentReleaseVersion, 10))
-		if publicNotModified(c, p.ETag) {
-			return
-		}
-		c.JSON(200, gin.H{"content_release_version": p.ContentReleaseVersion, "price_release_version": p.PriceReleaseVersion, "price_visibility": p.PriceVisibility.String()})
+		publicWriteJSON(c, p, c.FullPath(), gin.H{"content_release_version": p.ContentReleaseVersion, "price_release_version": p.PriceReleaseVersion, "price_visibility": p.PriceVisibility.String()})
 	})
 	g.GET("/home", plain(func(p *service.PublicCatalogProjection) string { return p.Content.Home }))
 	g.GET("/pages/about", plain(func(p *service.PublicCatalogProjection) string { return p.Content.About }))
@@ -122,10 +119,8 @@ func registerPublicContentWithReader(r *gin.Engine, reader publicProjectionReade
 			return
 		}
 		c.Header("X-Public-Release-Version", strconv.FormatInt(p.PriceReleaseVersion, 10))
-		if publicNotModified(c, p.ETag) {
-			return
-		}
-		c.JSON(200, p.List(req, auth))
+		identity := fmt.Sprintf("%s|search=%q|provider=%q|capability=%q|page=%d|page_size=%d", c.FullPath(), req.Search, req.Provider, req.Capability, req.Page, req.PageSize)
+		publicWriteJSON(c, p, identity, p.List(req, auth))
 	})
 	g.GET("/models/:modelKey", func(c *gin.Context) {
 		if !publicReadNoQuery(c) || c.Request.URL.RawPath != "" || !publiccontent.ValidModelKey(c.Param("modelKey")) {
@@ -142,10 +137,7 @@ func registerPublicContentWithReader(r *gin.Engine, reader publicProjectionReade
 			publicReadError(c, &service.HTTPError{Status: status, Message: map[int]string{404: "public model not found", 410: "public model unavailable"}[status]})
 			return
 		}
-		if publicNotModified(c, p.ETag) {
-			return
-		}
-		c.JSON(200, out)
+		publicWriteJSON(c, p, c.FullPath()+"|model_key="+c.Param("modelKey"), out)
 	})
 }
 
@@ -189,6 +181,10 @@ func parsePublicCatalogQuery(q map[string]string) (service.PublicCatalogListRequ
 		}
 		out.PageSize = v
 	}
+	maxInt := int(^uint(0) >> 1)
+	if out.Page-1 > maxInt/out.PageSize {
+		return out, false
+	}
 	return out, true
 }
 func publicNotModified(c *gin.Context, etag string) bool {
@@ -197,6 +193,21 @@ func publicNotModified(c *gin.Context, etag string) bool {
 		return true
 	}
 	return false
+}
+
+func publicWriteJSON(c *gin.Context, p *service.PublicCatalogProjection, identity string, body any) {
+	raw, err := json.Marshal(body)
+	if err != nil {
+		publicReadError(c, &service.HTTPError{Status: 503, Message: "public content unavailable"})
+		return
+	}
+	sum := sha256.Sum256(append(append([]byte(p.ETag+"\x00"+identity+"\x00"), raw...), byte('\n')))
+	etag := `"` + hex.EncodeToString(sum[:]) + `"`
+	c.Header("ETag", etag)
+	if publicNotModified(c, etag) {
+		return
+	}
+	c.Data(http.StatusOK, "application/json; charset=utf-8", raw)
 }
 
 func publicIfNoneMatch(raw, current string) bool {

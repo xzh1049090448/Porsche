@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -85,7 +87,7 @@ func TestPublicReadSuccessfulHTTPBoundaryAllRoutes(t *testing.T) {
 		if strings.Join(got, ",") != strings.Join(tc.keys, ",") {
 			t.Fatalf("%s keys=%v want=%v", tc.path, got, tc.keys)
 		}
-		if rec.Header().Get("ETag") != `"abc"` || rec.Header().Get("X-Public-Release-Version") == "" {
+		if rec.Header().Get("ETag") == "" || rec.Header().Get("X-Public-Release-Version") == "" {
 			t.Fatalf("%s headers=%#v", tc.path, rec.Header())
 		}
 		if rec.Header().Get("Cache-Control") != publicCacheControl || rec.Header().Get("Vary") != "Authorization" {
@@ -122,14 +124,19 @@ func TestPublicReadUnsupportedMethodsRemainReal404(t *testing.T) {
 }
 
 func TestPublicReadConditionalVariantsPreserveHeadersAndEmptyBody(t *testing.T) {
-	for _, value := range []string{`"abc"`, `W/"abc"`, ` "no", W/"abc" `, `"non,current", W/"abc"`, `W/abc, "abc"`, `, "abc",`, `*`} {
+	base := gin.New()
+	registerPublicContentWithReader(base, publicReadStub{projection: testPublicProjection()}, func(*gin.Context) bool { return false })
+	first := httptest.NewRecorder()
+	base.ServeHTTP(first, httptest.NewRequest(http.MethodGet, "/api/v1/public/models", nil))
+	tag := first.Header().Get("ETag")
+	for _, value := range []string{tag, `W/` + tag, ` "no", W/` + tag, `"non,current", W/` + tag, `W/abc, ` + tag, `, ` + tag + `,`, `*`} {
 		r := gin.New()
 		registerPublicContentWithReader(r, publicReadStub{projection: testPublicProjection()}, func(*gin.Context) bool { return false })
 		req := httptest.NewRequest(http.MethodGet, "/api/v1/public/models", nil)
 		req.Header.Set("If-None-Match", value)
 		rec := httptest.NewRecorder()
 		r.ServeHTTP(rec, req)
-		if rec.Code != 304 || rec.Body.Len() != 0 || rec.Header().Get("ETag") != `"abc"` || rec.Header().Get("Vary") != "Authorization" || rec.Header().Get("X-Public-Release-Version") != "9" {
+		if rec.Code != 304 || rec.Body.Len() != 0 || rec.Header().Get("ETag") != tag || rec.Header().Get("Vary") != "Authorization" || rec.Header().Get("X-Public-Release-Version") != "9" {
 			t.Fatalf("%q status=%d headers=%#v body=%q", value, rec.Code, rec.Header(), rec.Body.String())
 		}
 	}
@@ -138,9 +145,12 @@ func TestPublicReadConditionalVariantsPreserveHeadersAndEmptyBody(t *testing.T) 
 func TestPublicReadConditionalCombinesRepeatedHeaderLines(t *testing.T) {
 	r := gin.New()
 	registerPublicContentWithReader(r, publicReadStub{projection: testPublicProjection()}, func(*gin.Context) bool { return false })
+	first := httptest.NewRecorder()
+	r.ServeHTTP(first, httptest.NewRequest(http.MethodGet, "/api/v1/public/site", nil))
+	tag := first.Header().Get("ETag")
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/public/site", nil)
 	req.Header.Add("If-None-Match", `"other"`)
-	req.Header.Add("If-None-Match", `W/"abc"`)
+	req.Header.Add("If-None-Match", `W/`+tag)
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	if rec.Code != 304 || rec.Body.Len() != 0 {
@@ -241,6 +251,83 @@ func TestPublicReadMalformedIfNoneMatchDoesNotSuppressBody(t *testing.T) {
 		if rec.Code != 200 || rec.Body.Len() == 0 {
 			t.Fatalf("%q status=%d body=%q", value, rec.Code, rec.Body.String())
 		}
+	}
+}
+
+func TestPublicReadRejectsPaginationOverflowWithStableEnvelope(t *testing.T) {
+	maxInt := int(^uint(0) >> 1)
+	tooLarge := strconv.Itoa(maxInt/100 + 2)
+	r := gin.New()
+	registerPublicContentWithReader(r, publicReadStub{projection: testPublicProjection()}, func(*gin.Context) bool { return false })
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/public/models?page="+tooLarge+"&page_size=100", nil))
+	if rec.Code != 400 || rec.Header().Get("Cache-Control") != "no-store" || rec.Header().Get("X-Request-ID") == "" || !strings.Contains(rec.Body.String(), `"code":"invalid_request"`) {
+		t.Fatalf("status=%d headers=%#v body=%s", rec.Code, rec.Header(), rec.Body.String())
+	}
+	boundary := strconv.Itoa(maxInt/100 + 1)
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/public/models?page="+boundary+"&page_size=100", nil))
+	if rec.Code != 200 {
+		t.Fatalf("boundary status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestPublicReadETagIdentifiesExactRepresentation(t *testing.T) {
+	r := gin.New()
+	registerPublicContentWithReader(r, publicReadStub{projection: testPublicProjection()}, func(*gin.Context) bool { return true })
+	requests := []struct{ path, auth string }{{"/api/v1/public/site", ""}, {"/api/v1/public/home", ""}, {"/api/v1/public/pages/about", ""}, {"/api/v1/public/models", ""}, {"/api/v1/public/models?page=2", ""}, {"/api/v1/public/models?search=alpha", ""}, {"/api/v1/public/models/alpha-chat", ""}, {"/api/v1/public/models", "Bearer valid"}}
+	tags := map[string]string{}
+	for _, tc := range requests {
+		req := httptest.NewRequest(http.MethodGet, tc.path, nil)
+		if tc.auth != "" {
+			req.Header.Set("Authorization", tc.auth)
+		}
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+		if rec.Code != 200 {
+			t.Fatalf("%s status=%d", tc.path, rec.Code)
+		}
+		tag := rec.Header().Get("ETag")
+		key := tc.path + "|" + tc.auth
+		if tag == "" {
+			t.Fatalf("%s missing etag", key)
+		}
+		for oldKey, oldTag := range tags {
+			if oldTag == tag {
+				t.Fatalf("etag collision %s and %s: %s", oldKey, key, tag)
+			}
+		}
+		tags[key] = tag
+	}
+	for key, tag := range tags {
+		parts := strings.SplitN(key, "|", 2)
+		req := httptest.NewRequest(http.MethodGet, parts[0], nil)
+		if parts[1] != "" {
+			req.Header.Set("Authorization", parts[1])
+		}
+		req.Header.Set("If-None-Match", "W/"+tag)
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+		if rec.Code != 304 || rec.Body.Len() != 0 || rec.Header().Get("ETag") != tag {
+			t.Fatalf("%s conditional status=%d headers=%#v", key, rec.Code, rec.Header())
+		}
+	}
+	for _, path := range []string{"/api/v1/public/models?page=1&page_size=20", "/api/v1/public/models?page_size=20&page=1"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+		if rec.Header().Get("ETag") != tags["/api/v1/public/models|"] {
+			t.Fatalf("canonical query %s tag=%s default=%s", path, rec.Header().Get("ETag"), tags["/api/v1/public/models|"])
+		}
+	}
+	changed := testPublicProjection()
+	changed.ETag = `"generation-two"`
+	other := gin.New()
+	registerPublicContentWithReader(other, publicReadStub{projection: changed}, func(*gin.Context) bool { return true })
+	rec := httptest.NewRecorder()
+	other.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/public/site", nil))
+	if rec.Header().Get("ETag") == tags["/api/v1/public/site|"] || !regexp.MustCompile(`^"[0-9a-f]{64}"$`).MatchString(rec.Header().Get("ETag")) {
+		t.Fatalf("generation tag=%s", rec.Header().Get("ETag"))
 	}
 }
 
