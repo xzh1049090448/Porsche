@@ -45,14 +45,15 @@ type PlatformGenerationPersistenceResult struct {
 }
 
 type PlatformGenerationPersistenceInput struct {
-	UserID           int64
-	GenerationID     string
-	Mode             PlatformGenerationMode
-	Models           []string
-	ConversationGUID *int64
-	UserMessage      string
-	Results          []PlatformGenerationPersistenceResult
-	NowMillis        int64
+	UserID                   int64
+	GenerationID             string
+	Mode                     PlatformGenerationMode
+	Models                   []string
+	ConversationGUID         *int64
+	ReservedConversationGUID *int64
+	UserMessage              string
+	Results                  []PlatformGenerationPersistenceResult
+	NowMillis                int64
 }
 
 type PlatformGenerationCommittedResult struct {
@@ -158,6 +159,7 @@ func discardPlatformGenerationPinnedSession(conn *gorm.DB) {
 func validatePlatformGenerationPersistenceInput(input PlatformGenerationPersistenceInput) error {
 	if validatePlatformGenerationIdentity(input.UserID, input.GenerationID) != nil ||
 		!platformSSEV2SafeInteger(input.NowMillis) || input.NowMillis <= 0 ||
+		!validPlatformGenerationConversationIdentity(input) ||
 		input.UserMessage == "" || !utf8.ValidString(input.UserMessage) ||
 		len([]byte(input.UserMessage)) > platformGenerationMessageTextMaxBytes ||
 		len(input.Models) != len(input.Results) {
@@ -195,10 +197,19 @@ func validatePlatformGenerationPersistenceInput(input PlatformGenerationPersiste
 	if successes == 0 || (input.Mode == PlatformGenerationModeSingle && successes != 1) {
 		return ErrPlatformGenerationPersistenceInvalid
 	}
-	if input.ConversationGUID != nil && *input.ConversationGUID <= 0 {
-		return ErrPlatformGenerationPersistenceInvalid
-	}
 	return nil
+}
+
+func validPlatformGenerationConversationIdentity(input PlatformGenerationPersistenceInput) bool {
+	existing := input.ConversationGUID != nil
+	reserved := input.ReservedConversationGUID != nil
+	if existing == reserved {
+		return false
+	}
+	if existing {
+		return *input.ConversationGUID > 0
+	}
+	return *input.ReservedConversationGUID > 0
 }
 
 func (p *PlatformGenerationPersistence) Finalize(ctx context.Context, db *gorm.DB, input PlatformGenerationPersistenceInput) (PlatformGenerationReceiptSnapshot, error) {
@@ -291,7 +302,13 @@ func platformReceiptMatchesInput(receipt PlatformGenerationReceiptSnapshot, inpu
 		receipt.UserMessage != input.UserMessage || len(receipt.Results) != len(input.Results) {
 		return false
 	}
-	if input.ConversationGUID != nil && receipt.ConversationGUID != *input.ConversationGUID {
+	var expectedConversationGUID int64
+	if input.ConversationGUID != nil {
+		expectedConversationGUID = *input.ConversationGUID
+	} else {
+		expectedConversationGUID = *input.ReservedConversationGUID
+	}
+	if receipt.ConversationGUID != expectedConversationGUID {
 		return false
 	}
 	successes := 0
@@ -379,8 +396,10 @@ func persistPlatformGeneration(tx *gorm.DB, input PlatformGenerationPersistenceI
 	} else {
 		model := input.Models[0]
 		conversationCreated = true
+		audit := platformPersistenceAudit(input.UserID, input.NowMillis)
+		audit.Guid = *input.ReservedConversationGUID
 		conversation = models.Conversation{
-			AuditFields: platformPersistenceAudit(input.UserID, input.NowMillis),
+			AuditFields: audit,
 			UserID:      input.UserID,
 			Title:       truncateTitle(input.UserMessage),
 			Model:       &model,
