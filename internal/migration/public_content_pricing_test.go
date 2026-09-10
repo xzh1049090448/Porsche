@@ -3,6 +3,7 @@ package migration
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -132,6 +133,12 @@ func TestPublicContentPricingMigrationRealMySQL(t *testing.T) {
 	}
 	assertPublicContentPricingTablesAbsent(t, db)
 	assertPublicContentPricingLedger(t, db, migration, false)
+	if err := VerifyPublicContentPricingSchema(context.Background(), db); !errors.Is(err, ErrPublicContentPricingSchema) {
+		t.Fatalf("dedicated verifier after 0012 down = %v, want %v", err, ErrPublicContentPricingSchema)
+	}
+	if err := Verify(context.Background(), db); err == nil {
+		t.Fatal("global verifier accepted inactive/down 0012")
+	}
 	if err := executePublicContentPricingSQL(db, migration.UpSQL); err != nil {
 		t.Fatal(err)
 	}
@@ -139,6 +146,10 @@ func TestPublicContentPricingMigrationRealMySQL(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertPublicContentPricingRealSchema(t, db, migration)
+	if err := VerifyPublicContentPricingSchema(context.Background(), db); err != nil {
+		t.Fatalf("dedicated verifier after 0012 reapply: %v", err)
+	}
+	assertPublicContentPricingLedger(t, db, migration, true)
 	if err := Up(context.Background(), db, generator.Next, func() int64 { return 1_900_000_000_000 }); err != nil {
 		t.Fatalf("rerun with active 0012 ledger entry: %v", err)
 	}

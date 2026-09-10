@@ -58,6 +58,9 @@ func TestUpstreamMonitorLeaseMigrationRealMySQLDownAndReapply(t *testing.T) {
 	if err := Up(context.Background(), db, generator.Next, func() int64 { return now }); err != nil {
 		t.Fatal(err)
 	}
+	if err := VerifyUpstreamMonitorLeaseSchema(context.Background(), db); err != nil {
+		t.Fatalf("dedicated verify after 0014 reapply: %v", err)
+	}
 	if err := Verify(context.Background(), db); err != nil {
 		t.Fatal(err)
 	}

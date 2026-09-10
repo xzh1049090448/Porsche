@@ -10,18 +10,22 @@ This report covers backend-local integration only. P03–P07 have backend implem
 
 ## Fixture identity and migrations
 
-Disposable resources used unique names `pcp-task12-mysql-0909`, `pcp-task12-redis-0909`, and network `pcp-task12-net-0909`, all labeled `codex.task=public-content-pricing-task12`. MySQL was exposed only on loopback port 33317 and Redis on loopback port 36387 DB 11. No `.env` or production secret was read.
+The original implementer run used unique disposable resources named `pcp-task12-mysql-0909`, `pcp-task12-redis-0909`, and `pcp-task12-net-0909`. The 2026-09-10 spec-repair run independently used `pcp-task12-r2-mysql-0910`, `pcp-task12-r2-redis-0910`, and `pcp-task12-r2-net-0910`, all labeled `codex.task=public-content-pricing-task12-r2`. Both data services were exposed only on loopback. No `.env` or production secret was read. The sanitized rerun manifest records image identities, commands, failures, cleanup, and unrelated-resource preservation without fixture credentials or URLs.
 
-The migrated ledger contained exact versions `0001` through `0015`. Focused real-MySQL tests independently removed and reapplied 0012, 0013, 0014, and 0015; their exact schema verifiers failed closed while removed or weakened and the global verifier passed after reapply. All four leaf tests passed with zero skips.
+The migrated ledger contained exact active versions `0001` through `0015` with the embedded checksums. Each focused real-MySQL case removes one migration and marks its ledger row inactive, requires its dedicated verifier to reject the absent schema, and requires the global verifier to fail. The 0013 and 0014 cases reapply through the migration runner; the 0012 and 0015 cases restore their SQL and ledger state before rerunning the global migration/verifier path. Every case then requires its dedicated verifier, global verifier, and active checksum-bearing ledger row to pass. The 0015 case also rejects a weakened terminal-state CHECK constraint. The fresh four-case migration command passed with zero skips.
 
 ## Verification
 
-- Focused service coverage passed for model CRUD/revision/identity races, immutable price snapshots, content releases and binding, Root alerts, monitor lease/safety retry, public catalog integrity, and ticket/business atomicity. Render lease/fence/replay tests passed separately on a clean fixture. No focused fixture test skipped.
+- Focused service coverage passed for model CRUD/revision/identity races, immutable price snapshots, content releases and binding, Root alerts, monitor lease/safety retry, public catalog integrity, and ticket/business atomicity. Render lease/fence/replay tests passed on the migrated fixture. The fresh four-case migration and verbose handler/security/catalog/renderer commands recorded zero skips; the final passing service command was not emitted in JSON form, so this report does not assign it a machine-counted skip total.
 - Handler, router, action-security, white-label catalog observation, app selection, and renderer CLI suites passed. Adversarial cases included duplicate/unknown/trailing JSON, malformed and oversized catalogs, wrong actor/action/resource/intent tickets, immutable snapshot tampering, lease loss, concurrent revision winners, and failed transaction rollback.
 - `TEST_DATABASE_URL=… TEST_REDIS_URL=… go test -race ./internal/service ./internal/handler -run '(Public|RootAlert|UpstreamPrice)' -count=1` passed for both packages.
 - `GOCACHE=/private/tmp/porsche-go-build-cache go test ./... -count=1` passed for every package when run with loopback listener permission. A sandbox-only attempt failed solely because `httptest` could not bind `[::1]`.
 - `GOCACHE=/private/tmp/porsche-go-build-cache go build ./...` and `go vet ./...` passed.
 - Intended Go files were formatted and `git diff --check` passed. No `.env`, credential file, or generated binary is included.
+
+The first rerun used a driver DSN where the fixture guard requires a URL, so all four migration cases failed before database access. A second attempt correctly exposed that the new 0012 global assertion was too narrow: `Verify` reports the earlier ledger-level unmigrated error, while the dedicated verifier reports `ErrPublicContentPricingSchema`. The assertion was corrected to require the exact dedicated error and any non-nil global failure. A broad service attempt before migrating the parent fixture failed with missing-table diagnostics. After applying the exact 0001–0015 ledger, the focused service package passed. A diagnostic JSON rerun attempted after the disposable resources had already been removed failed and is not pass evidence. These setup failures are retained in the manifest and excluded from the pass claims.
+
+Sanitized evidence: `docs/superpowers/reports/validation/2026-09-10-public-content-pricing-task12-r2/manifest.json`.
 
 ## Integration defects corrected
 
