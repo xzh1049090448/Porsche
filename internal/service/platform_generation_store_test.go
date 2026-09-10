@@ -1138,6 +1138,29 @@ func TestPlatformGenerationOwnedMutationsValidateArgumentsBeforeRedis(t *testing
 	}
 }
 
+func TestPlatformGenerationOwnedMutationAuthorizationExpiresOnlyRunningLease(t *testing.T) {
+	digest := strings.Repeat("a", sha256.Size*2)
+	tests := []struct {
+		name     string
+		snapshot PlatformGenerationSnapshot
+		now      int64
+		want     bool
+	}{
+		{"running before deadline", PlatformGenerationSnapshot{State: PlatformGenerationStateRunning, LeaseOwnerSHA256: digest, LeaseUntilMillis: 31_000}, 30_999, true},
+		{"running at deadline", PlatformGenerationSnapshot{State: PlatformGenerationStateRunning, LeaseOwnerSHA256: digest, LeaseUntilMillis: 31_000}, 31_000, false},
+		{"running after deadline", PlatformGenerationSnapshot{State: PlatformGenerationStateRunning, LeaseOwnerSHA256: digest, LeaseUntilMillis: 31_000}, 31_001, false},
+		{"cancelling ignores cleared deadline", PlatformGenerationSnapshot{State: PlatformGenerationStateCancelling, LeaseOwnerSHA256: digest}, 99_000, true},
+		{"wrong capability", PlatformGenerationSnapshot{State: PlatformGenerationStateRunning, LeaseOwnerSHA256: strings.Repeat("b", sha256.Size*2), LeaseUntilMillis: 31_000}, 30_999, false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := platformGenerationOwnedMutationAuthorized(test.snapshot, digest, test.now); got != test.want {
+				t.Fatalf("authorized=%v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
 func TestPlatformGenerationLeaseRenewalUsesDigestAndPreservesUpdatedAtAndTTL(t *testing.T) {
 	store, client := openTestPlatformGenerationStore(t)
 	input := PlatformGenerationClaimInput{UserID: 930010, GenerationID: "81000000-0000-4000-8000-000000000010", Mode: PlatformGenerationModeSingle, Models: []string{"a"}, NowMillis: 1000}

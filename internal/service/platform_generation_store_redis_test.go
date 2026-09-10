@@ -95,6 +95,125 @@ func TestPlatformGenerationFailRunningOwnedFailsOnlyRunningModels(t *testing.T) 
 	requirePlatformGenerationTTLNotIncreased(t, client, key, beforeTTL)
 }
 
+func TestPlatformGenerationRunningOwnedMutationsRejectExpiredLeaseWithoutMutation(t *testing.T) {
+	store, client := openTestPlatformGenerationStore(t)
+	ctx := context.Background()
+	operations := []struct {
+		name    string
+		prepare func(*PlatformGenerationStore, PlatformGenerationClaimInput, string) error
+		run     func(*PlatformGenerationStore, PlatformGenerationClaimInput, string, int64) (PlatformGenerationSnapshot, error)
+	}{
+		{
+			name:    "record delta",
+			prepare: func(*PlatformGenerationStore, PlatformGenerationClaimInput, string) error { return nil },
+			run: func(store *PlatformGenerationStore, input PlatformGenerationClaimInput, token string, nowMillis int64) (PlatformGenerationSnapshot, error) {
+				return store.RecordDeltaOwned(ctx, input.UserID, input.GenerationID, token, "a", 1, nowMillis)
+			},
+		},
+		{
+			name:    "mark model done",
+			prepare: func(*PlatformGenerationStore, PlatformGenerationClaimInput, string) error { return nil },
+			run: func(store *PlatformGenerationStore, input PlatformGenerationClaimInput, token string, nowMillis int64) (PlatformGenerationSnapshot, error) {
+				return store.MarkModelDoneOwned(ctx, input.UserID, input.GenerationID, token, "a", 0, nowMillis)
+			},
+		},
+		{
+			name: "begin commit",
+			prepare: func(store *PlatformGenerationStore, input PlatformGenerationClaimInput, token string) error {
+				_, err := store.MarkModelDoneOwned(ctx, input.UserID, input.GenerationID, token, "a", 0, 1001)
+				return err
+			},
+			run: func(store *PlatformGenerationStore, input PlatformGenerationClaimInput, token string, nowMillis int64) (PlatformGenerationSnapshot, error) {
+				return store.BeginCommitOwned(ctx, input.UserID, input.GenerationID, token, nowMillis)
+			},
+		},
+		{
+			name:    "fail running",
+			prepare: func(*PlatformGenerationStore, PlatformGenerationClaimInput, string) error { return nil },
+			run: func(store *PlatformGenerationStore, input PlatformGenerationClaimInput, token string, nowMillis int64) (PlatformGenerationSnapshot, error) {
+				return store.FailRunningOwned(ctx, input.UserID, input.GenerationID, token, "internal_error", nowMillis)
+			},
+		},
+	}
+	caseID := 0
+	for _, nowMillis := range []int64{31_000, 31_001} {
+		for _, operation := range operations {
+			caseID++
+			t.Run(fmt.Sprintf("%s_at_%d", operation.name, nowMillis), func(t *testing.T) {
+				generationID := fmt.Sprintf("90500000-0000-4000-8000-%012x", caseID)
+				input := PlatformGenerationClaimInput{UserID: int64(980500 + caseID), GenerationID: generationID, Mode: PlatformGenerationModeSingle, Models: []string{"a"}, NowMillis: 1000}
+				key := store.key(input.UserID, input.GenerationID)
+				preparePlatformGenerationTestKey(t, client, key)
+				claim := claimTestGeneration(t, store, input)
+				if err := operation.prepare(store, input, claim.LeaseToken); err != nil {
+					t.Fatal(err)
+				}
+				before, err := store.Get(ctx, input.UserID, input.GenerationID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				rawBefore, err := client.Get(ctx, key).Result()
+				if err != nil {
+					t.Fatal(err)
+				}
+				ttlBefore := requirePositivePlatformGenerationTTL(t, client, key)
+				authoritative, err := operation.run(store, input, claim.LeaseToken, nowMillis)
+				if !errors.Is(err, ErrPlatformGenerationConflict) || !reflect.DeepEqual(authoritative, before) {
+					t.Fatalf("authority=%#v before=%#v error=%v", authoritative, before, err)
+				}
+				if rawAfter, readErr := client.Get(ctx, key).Result(); readErr != nil || rawAfter != rawBefore {
+					t.Fatalf("expired operation mutated raw=%q before=%q error=%v", rawAfter, rawBefore, readErr)
+				}
+				requirePlatformGenerationTTLNotIncreased(t, client, key, ttlBefore)
+			})
+		}
+	}
+}
+
+func TestPlatformGenerationOwnerExpiredMutationRaceWithFailExpiredReturnsLegalAuthority(t *testing.T) {
+	store, client := openTestPlatformGenerationStore(t)
+	ctx := context.Background()
+	for iteration := 0; iteration < 24; iteration++ {
+		generationID := fmt.Sprintf("90600000-0000-4000-8000-%012x", iteration+1)
+		userID := int64(980600 + iteration)
+		key := store.key(userID, generationID)
+		preparePlatformGenerationTestKey(t, client, key)
+		claim := claimTestGeneration(t, store, PlatformGenerationClaimInput{UserID: userID, GenerationID: generationID, Mode: PlatformGenerationModeSingle, Models: []string{"a"}, NowMillis: 1000})
+		beforeTTL := requirePositivePlatformGenerationTTL(t, client, key)
+		start := make(chan struct{})
+		type outcome struct {
+			snapshot PlatformGenerationSnapshot
+			err      error
+		}
+		results := make(chan outcome, 2)
+		go func() {
+			<-start
+			snapshot, err := store.RecordDeltaOwned(ctx, userID, generationID, claim.LeaseToken, "a", 1, 31_000)
+			results <- outcome{snapshot, err}
+		}()
+		go func() {
+			<-start
+			snapshot, err := store.FailExpiredRunning(ctx, userID, generationID, 31_000)
+			results <- outcome{snapshot, err}
+		}()
+		close(start)
+		first, second := <-results, <-results
+		final, err := store.Get(ctx, userID, generationID)
+		if err != nil || final.State != PlatformGenerationStateFailed || final.LeaseOwnerSHA256 != "" || final.LeaseUntilMillis != 0 {
+			t.Fatalf("iteration %d final=%#v error=%v", iteration, final, err)
+		}
+		for _, result := range []outcome{first, second} {
+			if result.err != nil && !errors.Is(result.err, ErrPlatformGenerationConflict) {
+				t.Fatalf("iteration %d result=%#v", iteration, result)
+			}
+			if result.snapshot.State != PlatformGenerationStateRunning && result.snapshot.State != PlatformGenerationStateFailed {
+				t.Fatalf("iteration %d illegal authority=%#v", iteration, result)
+			}
+		}
+		requirePlatformGenerationTTLNotIncreased(t, client, key, beforeTTL)
+	}
+}
+
 func TestPlatformGenerationAcknowledgeCancelledOwnedPreservesAuthority(t *testing.T) {
 	store, client := openTestPlatformGenerationStore(t)
 	ctx := context.Background()
@@ -117,7 +236,7 @@ func TestPlatformGenerationAcknowledgeCancelledOwnedPreservesAuthority(t *testin
 	if !errors.Is(err, ErrPlatformGenerationConflict) || !reflect.DeepEqual(authoritative, decision.Snapshot) {
 		t.Fatalf("wrong-token authority=%#v error=%v", authoritative, err)
 	}
-	cancelled, err := store.AcknowledgeCancelledOwned(ctx, input.UserID, input.GenerationID, claim.LeaseToken, 1002)
+	cancelled, err := store.AcknowledgeCancelledOwned(ctx, input.UserID, input.GenerationID, claim.LeaseToken, 31_001)
 	if err != nil || cancelled.State != PlatformGenerationStateCancelled || cancelled.ModelStates["a"].State != PlatformGenerationStateCancelled || cancelled.LeaseOwnerSHA256 != "" || cancelled.LeaseUntilMillis != 0 {
 		t.Fatalf("cancelled=%#v error=%v", cancelled, err)
 	}
