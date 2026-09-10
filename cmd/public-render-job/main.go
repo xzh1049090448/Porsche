@@ -28,17 +28,8 @@ type renderJobs interface {
 	Renew(context.Context, service.PublicRenderTransitionInput) error
 	Complete(context.Context, service.PublicRenderTransitionInput) error
 	Fail(context.Context, service.PublicRenderTransitionInput) error
-	Health(context.Context, int64) (service.PublicRenderHealthStatus, error)
-	Lookup(context.Context, int64) (*service.PublicRenderGeneration, error)
-}
-
-type commandInput struct {
-	OwnerToken  string `json:"owner_token"`
-	JobGUID     int64  `json:"job_guid"`
-	Fence       int    `json:"fence"`
-	NowMillis   int64  `json:"now_millis"`
-	LeaseMillis int64  `json:"lease_millis"`
-	Failure     string `json:"failure"`
+	Health(context.Context) (service.PublicRenderHealthStatus, error)
+	Lookup(context.Context) (*service.PublicRenderGeneration, error)
 }
 
 func main() {
@@ -93,89 +84,75 @@ func run(ctx context.Context, args []string, in io.Reader, out, stderr io.Writer
 	case "lease":
 		var input struct {
 			OwnerToken  string `json:"owner_token"`
-			NowMillis   int64  `json:"now_millis"`
 			LeaseMillis int64  `json:"lease_millis"`
 		}
 		if !decodeExact(raw, &input) {
 			return invalidInput(stderr)
 		}
-		if !validLeaseFields(input.OwnerToken, input.NowMillis, input.LeaseMillis) {
+		if !validLeaseFields(input.OwnerToken, input.LeaseMillis) {
 			return invalidInput(stderr)
 		}
 		var lease *service.PublicRenderLease
-		lease, err = jobs.Lease(ctx, service.PublicRenderLeaseInput{OwnerToken: input.OwnerToken, NowMillis: input.NowMillis, LeaseMillis: input.LeaseMillis})
+		lease, err = jobs.Lease(ctx, service.PublicRenderLeaseInput{OwnerToken: input.OwnerToken, LeaseMillis: input.LeaseMillis})
 		result = map[string]any{"job": lease}
 	case "renew":
 		var input struct {
 			OwnerToken  string `json:"owner_token"`
 			JobGUID     int64  `json:"job_guid"`
 			Fence       int    `json:"fence"`
-			NowMillis   int64  `json:"now_millis"`
 			LeaseMillis int64  `json:"lease_millis"`
 		}
 		if !decodeExact(raw, &input) {
 			return invalidInput(stderr)
 		}
-		if !validLeaseFields(input.OwnerToken, input.NowMillis, input.LeaseMillis) || input.JobGUID <= 0 || input.Fence <= 0 {
+		if !validLeaseFields(input.OwnerToken, input.LeaseMillis) || input.JobGUID <= 0 || input.Fence <= 0 {
 			return invalidInput(stderr)
 		}
-		err = jobs.Renew(ctx, service.PublicRenderTransitionInput{OwnerToken: input.OwnerToken, JobGUID: input.JobGUID, Fence: input.Fence, NowMillis: input.NowMillis, LeaseMillis: input.LeaseMillis})
+		err = jobs.Renew(ctx, service.PublicRenderTransitionInput{OwnerToken: input.OwnerToken, JobGUID: input.JobGUID, Fence: input.Fence, LeaseMillis: input.LeaseMillis})
 		result = map[string]any{"status": "renewed"}
 	case "complete":
 		var input struct {
 			OwnerToken string `json:"owner_token"`
 			JobGUID    int64  `json:"job_guid"`
 			Fence      int    `json:"fence"`
-			NowMillis  int64  `json:"now_millis"`
 		}
 		if !decodeExact(raw, &input) {
 			return invalidInput(stderr)
 		}
-		if !service.ValidPublicRenderOwnerToken(input.OwnerToken) || input.JobGUID <= 0 || input.Fence <= 0 || input.NowMillis <= 0 {
+		if !service.ValidPublicRenderOwnerToken(input.OwnerToken) || input.JobGUID <= 0 || input.Fence <= 0 {
 			return invalidInput(stderr)
 		}
-		err = jobs.Complete(ctx, service.PublicRenderTransitionInput{OwnerToken: input.OwnerToken, JobGUID: input.JobGUID, Fence: input.Fence, NowMillis: input.NowMillis})
+		err = jobs.Complete(ctx, service.PublicRenderTransitionInput{OwnerToken: input.OwnerToken, JobGUID: input.JobGUID, Fence: input.Fence})
 		result = map[string]any{"status": "completed"}
 	case "fail":
 		var input struct {
 			OwnerToken string `json:"owner_token"`
 			JobGUID    int64  `json:"job_guid"`
 			Fence      int    `json:"fence"`
-			NowMillis  int64  `json:"now_millis"`
 			Failure    string `json:"failure"`
 		}
 		if !decodeExact(raw, &input) {
 			return invalidInput(stderr)
 		}
-		if !service.ValidPublicRenderOwnerToken(input.OwnerToken) || input.JobGUID <= 0 || input.Fence <= 0 || input.NowMillis <= 0 || input.Failure == "" {
+		if !service.ValidPublicRenderOwnerToken(input.OwnerToken) || input.JobGUID <= 0 || input.Fence <= 0 || input.Failure == "" {
 			return invalidInput(stderr)
 		}
-		err = jobs.Fail(ctx, service.PublicRenderTransitionInput{OwnerToken: input.OwnerToken, JobGUID: input.JobGUID, Fence: input.Fence, NowMillis: input.NowMillis, Failure: input.Failure})
+		err = jobs.Fail(ctx, service.PublicRenderTransitionInput{OwnerToken: input.OwnerToken, JobGUID: input.JobGUID, Fence: input.Fence, Failure: input.Failure})
 		result = map[string]any{"status": "recorded"}
 	case "health":
-		var input struct {
-			NowMillis int64 `json:"now_millis"`
-		}
+		var input struct{}
 		if !decodeExact(raw, &input) {
-			return invalidInput(stderr)
-		}
-		if input.NowMillis <= 0 {
 			return invalidInput(stderr)
 		}
 		var health service.PublicRenderHealthStatus
-		health, err = jobs.Health(ctx, input.NowMillis)
+		health, err = jobs.Health(ctx)
 		result = health
 	case "lookup":
-		var input struct {
-			NowMillis int64 `json:"now_millis"`
-		}
+		var input struct{}
 		if !decodeExact(raw, &input) {
 			return invalidInput(stderr)
 		}
-		if input.NowMillis <= 0 {
-			return invalidInput(stderr)
-		}
-		result, err = jobs.Lookup(ctx, input.NowMillis)
+		result, err = jobs.Lookup(ctx)
 	}
 	if err != nil {
 		if errors.Is(err, service.ErrPublicRenderInvalid) {
@@ -197,9 +174,6 @@ func run(ctx context.Context, args []string, in io.Reader, out, stderr io.Writer
 	return 0
 }
 
-func transition(in commandInput) service.PublicRenderTransitionInput {
-	return service.PublicRenderTransitionInput{JobGUID: in.JobGUID, OwnerToken: in.OwnerToken, Fence: in.Fence, NowMillis: in.NowMillis, LeaseMillis: in.LeaseMillis, Failure: in.Failure}
-}
 func validCommand(command string) bool {
 	switch command {
 	case "lease", "renew", "complete", "fail", "health", "lookup":
@@ -209,8 +183,8 @@ func validCommand(command string) bool {
 }
 func writeCLIError(w io.Writer, code string) { _, _ = fmt.Fprintf(w, "{\"error\":%q}\n", code) }
 func invalidInput(w io.Writer) int           { writeCLIError(w, "invalid_input"); return 2 }
-func validLeaseFields(owner string, now, lease int64) bool {
-	return service.ValidPublicRenderOwnerToken(owner) && now > 0 && lease >= 5_000 && lease <= 300_000
+func validLeaseFields(owner string, lease int64) bool {
+	return service.ValidPublicRenderOwnerToken(owner) && lease >= 5_000 && lease <= 300_000
 }
 func decodeExact(raw []byte, target any) bool {
 	d := json.NewDecoder(strings.NewReader(string(raw)))

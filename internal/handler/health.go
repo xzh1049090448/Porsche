@@ -23,7 +23,7 @@ func RegisterHealth(r *gin.Engine, state *app.State) {
 	r.GET("/health", func(c *gin.Context) {
 		payload := gin.H{"status": "ok"}
 		if state.DB != nil {
-			renderer, err := service.NewPublicRenderJobService(state.DB, nil).Health(c.Request.Context(), time.Now().UTC().UnixMilli())
+			renderer, err := service.NewPublicRenderJobService(state.DB, nil).Health(c.Request.Context())
 			if err == nil {
 				payload["renderer"] = renderer
 			} else {

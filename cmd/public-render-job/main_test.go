@@ -29,23 +29,23 @@ func (f *fakeRenderJobs) Fail(context.Context, service.PublicRenderTransitionInp
 	f.command = "fail"
 	return nil
 }
-func (f *fakeRenderJobs) Health(context.Context, int64) (service.PublicRenderHealthStatus, error) {
+func (f *fakeRenderJobs) Health(context.Context) (service.PublicRenderHealthStatus, error) {
 	f.command = "health"
 	return service.PublicRenderHealthStatus{Status: "healthy"}, nil
 }
-func (f *fakeRenderJobs) Lookup(context.Context, int64) (*service.PublicRenderGeneration, error) {
+func (f *fakeRenderJobs) Lookup(context.Context) (*service.PublicRenderGeneration, error) {
 	f.command = "lookup"
 	return &service.PublicRenderGeneration{Generation: 1}, nil
 }
 
 func TestPublicRenderCLICommandsAreStrictAndJSONOnly(t *testing.T) {
 	valid := map[string]string{
-		"lease":    `{"owner_token":"owner-one-long-random-token","now_millis":1900000000000,"lease_millis":30000}`,
-		"renew":    `{"owner_token":"owner-one-long-random-token","job_guid":123,"fence":1,"now_millis":1900000000000,"lease_millis":30000}`,
-		"complete": `{"owner_token":"owner-one-long-random-token","job_guid":123,"fence":1,"now_millis":1900000000000}`,
-		"fail":     `{"owner_token":"owner-one-long-random-token","job_guid":123,"fence":1,"now_millis":1900000000000,"failure":"render_failed"}`,
-		"health":   `{"now_millis":1900000000000}`,
-		"lookup":   `{"now_millis":1900000000000}`,
+		"lease":    `{"owner_token":"owner-one-long-random-token","lease_millis":30000}`,
+		"renew":    `{"owner_token":"owner-one-long-random-token","job_guid":123,"fence":1,"lease_millis":30000}`,
+		"complete": `{"owner_token":"owner-one-long-random-token","job_guid":123,"fence":1}`,
+		"fail":     `{"owner_token":"owner-one-long-random-token","job_guid":123,"fence":1,"failure":"render_failed"}`,
+		"health":   `{}`,
+		"lookup":   `{}`,
 	}
 	for command, body := range valid {
 		t.Run(command, func(t *testing.T) {
@@ -73,6 +73,11 @@ func TestPublicRenderCLIRejectsUnknownCommandsFieldsAndOversizedInput(t *testing
 		{"extra arg", []string{"health", "again"}, `{}`},
 		{"unknown field", []string{"health"}, `{"now_millis":1,"path":"/private"}`},
 		{"cross command health", []string{"health"}, `{"now_millis":1,"owner_token":"1234567890123456"}`},
+		{"caller time lease", []string{"lease"}, `{"owner_token":"1234567890123456","lease_millis":5000,"now_millis":1}`},
+		{"caller time renew", []string{"renew"}, `{"owner_token":"1234567890123456","job_guid":1,"fence":1,"lease_millis":5000,"now_millis":1}`},
+		{"caller time complete", []string{"complete"}, `{"owner_token":"1234567890123456","job_guid":1,"fence":1,"now_millis":9223372036854775807}`},
+		{"caller time fail", []string{"fail"}, `{"owner_token":"1234567890123456","job_guid":1,"fence":1,"failure":"render_failed","now_millis":9223372036854775807}`},
+		{"caller time lookup", []string{"lookup"}, `{"now_millis":9223372036854775807}`},
 		{"cross command complete", []string{"complete"}, `{"owner_token":"1234567890123456","job_guid":1,"fence":1,"now_millis":1,"failure":"x"}`},
 		{"duplicate field", []string{"health"}, `{"now_millis":1,"now_millis":2}`},
 		{"invalid utf8", []string{"health"}, string([]byte{'{', '"', 'n', 'o', 'w', '_', 'm', 'i', 'l', 'l', 'i', 's', '"', ':', '1', ',', '"', 'x', '"', ':', '"', 0xff, '"', '}'})},
@@ -105,7 +110,7 @@ func TestPublicRenderJSONShapeRejectsNestedDuplicatesAndDepth(t *testing.T) {
 }
 
 func TestPublicRenderEveryCommandRejectsTrailingScalars(t *testing.T) {
-	valid := map[string]string{"lease": `{"owner_token":"1234567890123456","now_millis":1,"lease_millis":5000}`, "renew": `{"owner_token":"1234567890123456","job_guid":1,"fence":1,"now_millis":1,"lease_millis":5000}`, "complete": `{"owner_token":"1234567890123456","job_guid":1,"fence":1,"now_millis":1}`, "fail": `{"owner_token":"1234567890123456","job_guid":1,"fence":1,"now_millis":1,"failure":"render_failed"}`, "health": `{"now_millis":1}`, "lookup": `{"now_millis":1}`}
+	valid := map[string]string{"lease": `{"owner_token":"1234567890123456","lease_millis":5000}`, "renew": `{"owner_token":"1234567890123456","job_guid":1,"fence":1,"lease_millis":5000}`, "complete": `{"owner_token":"1234567890123456","job_guid":1,"fence":1}`, "fail": `{"owner_token":"1234567890123456","job_guid":1,"fence":1,"failure":"render_failed"}`, "health": `{}`, "lookup": `{}`}
 	for command, body := range valid {
 		for _, suffix := range []string{" true", " 0", ` "tail"`, " null"} {
 			t.Run(command+suffix, func(t *testing.T) {
@@ -120,10 +125,8 @@ func TestPublicRenderEveryCommandRejectsTrailingScalars(t *testing.T) {
 }
 
 func TestPublicRenderDecodeExactAllowsTrailingWhitespace(t *testing.T) {
-	var input struct {
-		NowMillis int64 `json:"now_millis"`
-	}
-	if !decodeExact([]byte("{\"now_millis\":1}\n\t "), &input) || input.NowMillis != 1 {
+	var input struct{}
+	if !decodeExact([]byte("{}\n\t "), &input) {
 		t.Fatal("valid trailing whitespace rejected")
 	}
 }
@@ -131,7 +134,7 @@ func TestPublicRenderDecodeExactAllowsTrailingWhitespace(t *testing.T) {
 func TestPublicRenderCLIMapsLeaseLossToConflictExit(t *testing.T) {
 	jobs := &errorRenderJobs{err: service.ErrPublicRenderLeaseLost}
 	var out, stderr bytes.Buffer
-	code := run(context.Background(), []string{"complete"}, strings.NewReader(`{"owner_token":"owner-one-long-random-token","job_guid":123,"fence":1,"now_millis":1900000000000}`), &out, &stderr, jobs)
+	code := run(context.Background(), []string{"complete"}, strings.NewReader(`{"owner_token":"owner-one-long-random-token","job_guid":123,"fence":1}`), &out, &stderr, jobs)
 	if code != 3 || !strings.Contains(stderr.String(), "lease_lost") || errors.Is(jobs.err, nil) {
 		t.Fatalf("code=%d stderr=%q", code, stderr.String())
 	}
@@ -151,9 +154,9 @@ func (e *errorRenderJobs) Complete(context.Context, service.PublicRenderTransiti
 func (e *errorRenderJobs) Fail(context.Context, service.PublicRenderTransitionInput) error {
 	return e.err
 }
-func (e *errorRenderJobs) Health(context.Context, int64) (service.PublicRenderHealthStatus, error) {
+func (e *errorRenderJobs) Health(context.Context) (service.PublicRenderHealthStatus, error) {
 	return service.PublicRenderHealthStatus{}, e.err
 }
-func (e *errorRenderJobs) Lookup(context.Context, int64) (*service.PublicRenderGeneration, error) {
+func (e *errorRenderJobs) Lookup(context.Context) (*service.PublicRenderGeneration, error) {
 	return nil, e.err
 }

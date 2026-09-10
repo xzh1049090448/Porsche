@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"math"
 	"strings"
 	"sync"
 	"testing"
@@ -12,6 +13,10 @@ import (
 	"github.com/porsche/ai-gateway-go/internal/persistence"
 	"gorm.io/gorm"
 )
+
+type fakePublicRenderClock struct{ millis int64 }
+
+func (c *fakePublicRenderClock) Now() time.Time { return time.UnixMilli(c.millis).UTC() }
 
 func TestPublicRenderFailureSanitizationAndBackoff(t *testing.T) {
 	got := sanitizePublicRenderFailure("render failed at /var/www/private: Authorization: Bearer super-secret\nraw stderr")
@@ -23,6 +28,19 @@ func TestPublicRenderFailureSanitizationAndBackoff(t *testing.T) {
 	}
 	if d := publicRenderRetryDelay(publicRenderMaxAttempts); d != 0 {
 		t.Fatalf("terminal retry = %s", d)
+	}
+}
+
+func TestPublicRenderCheckedDeadlineAndHealthClockSkew(t *testing.T) {
+	if _, ok := publicRenderAddMillis(math.MaxInt64-1, 2); ok {
+		t.Fatal("overflow accepted")
+	}
+	if got, ok := publicRenderAddMillis(1000, 5000); !ok || got != 6000 {
+		t.Fatalf("deadline=%d/%v", got, ok)
+	}
+	health := PublicRenderHealth(100, PublicRenderHealthInput{CurrentGeneration: 2, RenderedGeneration: 1, PublishedAt: 200, PendingGeneration: 2})
+	if health.LagMillis != 0 || health.Status != "degraded" {
+		t.Fatalf("skew health=%#v", health)
 	}
 }
 
@@ -65,36 +83,38 @@ func TestPublicRenderJobFixtureLeaseFencingAndCurrentGeneration(t *testing.T) {
 	db := openTestMySQL(t)
 	ctx := context.Background()
 	fixture := seedPublicRenderJobFixture(t, db)
-	service := NewPublicRenderJobService(db, []byte("fixture-render-job-purpose-key-32"))
 	now := int64(1_900_000_000_000)
+	clock := &fakePublicRenderClock{now}
+	service := NewPublicRenderJobServiceWithClock(db, []byte("fixture-render-job-purpose-key-32"), clock)
 
-	lease, err := service.Lease(ctx, PublicRenderLeaseInput{OwnerToken: "owner-one-long-random-token", NowMillis: now, LeaseMillis: 30_000})
+	lease, err := service.Lease(ctx, PublicRenderLeaseInput{OwnerToken: "owner-one-long-random-token", LeaseMillis: 30_000})
 	if err != nil || lease == nil || lease.Generation != fixture.generation || lease.PriceHash == "" || lease.ContentHash == "" {
 		t.Fatalf("lease = %#v, %v", lease, err)
 	}
-	if other, err := service.Lease(ctx, PublicRenderLeaseInput{OwnerToken: "owner-two-long-random-token", NowMillis: now + 1, LeaseMillis: 30_000}); err != nil || other != nil {
+	if other, err := service.Lease(ctx, PublicRenderLeaseInput{OwnerToken: "owner-two-long-random-token", LeaseMillis: 30_000}); err != nil || other != nil {
 		t.Fatalf("concurrent lease = %#v, %v", other, err)
 	}
-	if err := service.Complete(ctx, PublicRenderTransitionInput{JobGUID: lease.JobGUID, OwnerToken: "wrong-owner-long-random-token", Fence: lease.Fence, NowMillis: now + 2}); err != ErrPublicRenderLeaseLost {
+	if err := service.Complete(ctx, PublicRenderTransitionInput{JobGUID: lease.JobGUID, OwnerToken: "wrong-owner-long-random-token", Fence: lease.Fence}); err != ErrPublicRenderLeaseLost {
 		t.Fatalf("wrong owner complete = %v", err)
 	}
-	if err := service.Renew(ctx, PublicRenderTransitionInput{JobGUID: lease.JobGUID, OwnerToken: lease.OwnerToken, Fence: lease.Fence, NowMillis: now + 3, LeaseMillis: 30_000}); err != nil {
+	if err := service.Renew(ctx, PublicRenderTransitionInput{JobGUID: lease.JobGUID, OwnerToken: lease.OwnerToken, Fence: lease.Fence, LeaseMillis: 30_000}); err != nil {
 		t.Fatalf("renew: %v", err)
 	}
-	if err := service.Complete(ctx, PublicRenderTransitionInput{JobGUID: lease.JobGUID, OwnerToken: lease.OwnerToken, Fence: lease.Fence, NowMillis: now + 4}); err != nil {
+	if err := service.Complete(ctx, PublicRenderTransitionInput{JobGUID: lease.JobGUID, OwnerToken: lease.OwnerToken, Fence: lease.Fence}); err != nil {
 		t.Fatalf("complete: %v", err)
 	}
-	if err := service.Complete(ctx, PublicRenderTransitionInput{JobGUID: lease.JobGUID, OwnerToken: lease.OwnerToken, Fence: lease.Fence, NowMillis: now + 5}); err != nil {
-		t.Fatalf("identical complete replay: %v", err)
+	clock.millis = now + 30_001
+	if err := service.Complete(ctx, PublicRenderTransitionInput{JobGUID: lease.JobGUID, OwnerToken: lease.OwnerToken, Fence: lease.Fence}); err != nil {
+		t.Fatalf("identical complete replay after expiry: %v", err)
 	}
-	if err := service.Fail(ctx, PublicRenderTransitionInput{JobGUID: lease.JobGUID, OwnerToken: lease.OwnerToken, Fence: lease.Fence, NowMillis: now + 5, Failure: "render_failed"}); err != ErrPublicRenderLeaseLost {
+	if err := service.Fail(ctx, PublicRenderTransitionInput{JobGUID: lease.JobGUID, OwnerToken: lease.OwnerToken, Fence: lease.Fence, Failure: "render_failed"}); err != ErrPublicRenderLeaseLost {
 		t.Fatalf("cross-operation replay=%v", err)
 	}
-	health, err := service.Health(ctx, now+5)
+	health, err := service.Health(ctx)
 	if err != nil || health.Status != "healthy" || health.RenderedGeneration != fixture.generation {
 		t.Fatalf("health = %#v, %v", health, err)
 	}
-	if err := service.Complete(ctx, PublicRenderTransitionInput{JobGUID: lease.JobGUID, OwnerToken: lease.OwnerToken, Fence: lease.Fence + 1, NowMillis: now + 6}); err != ErrPublicRenderLeaseLost {
+	if err := service.Complete(ctx, PublicRenderTransitionInput{JobGUID: lease.JobGUID, OwnerToken: lease.OwnerToken, Fence: lease.Fence + 1}); err != ErrPublicRenderLeaseLost {
 		t.Fatalf("stale fence complete = %v", err)
 	}
 
@@ -105,40 +125,50 @@ func TestPublicRenderJobFixtureExpiryRetryAndTerminalFailure(t *testing.T) {
 	db := openTestMySQL(t)
 	ctx := context.Background()
 	seedPublicRenderJobFixture(t, db)
-	svc := NewPublicRenderJobService(db, []byte("fixture-render-job-purpose-key-32"))
 	now := int64(1_900_000_100_000)
-	first, err := svc.Lease(ctx, PublicRenderLeaseInput{OwnerToken: "owner-one-long-random-token", NowMillis: now, LeaseMillis: 5_000})
+	clock := &fakePublicRenderClock{now}
+	svc := NewPublicRenderJobServiceWithClock(db, []byte("fixture-render-job-purpose-key-32"), clock)
+	first, err := svc.Lease(ctx, PublicRenderLeaseInput{OwnerToken: "owner-one-long-random-token", LeaseMillis: 5_000})
 	if err != nil || first == nil {
 		t.Fatalf("first lease=%#v %v", first, err)
 	}
-	second, err := svc.Lease(ctx, PublicRenderLeaseInput{OwnerToken: "owner-two-long-random-token", NowMillis: now + 5_001, LeaseMillis: 5_000})
+	clock.millis = now + 5_000
+	if err := svc.Complete(ctx, PublicRenderTransitionInput{JobGUID: first.JobGUID, OwnerToken: first.OwnerToken, Fence: first.Fence}); err != ErrPublicRenderLeaseLost {
+		t.Fatalf("complete at exact expiry=%v", err)
+	}
+	clock.millis = now + 5_001
+	second, err := svc.Lease(ctx, PublicRenderLeaseInput{OwnerToken: "owner-two-long-random-token", LeaseMillis: 5_000})
 	if err != nil || second == nil || second.Fence != 2 {
 		t.Fatalf("takeover=%#v %v", second, err)
 	}
-	if err := svc.Fail(ctx, PublicRenderTransitionInput{JobGUID: second.JobGUID, OwnerToken: second.OwnerToken, Fence: second.Fence, NowMillis: now + 5_002, Failure: "/private/raw stderr SECRET"}); err != nil {
+	clock.millis = now + 5_002
+	if err := svc.Fail(ctx, PublicRenderTransitionInput{JobGUID: second.JobGUID, OwnerToken: second.OwnerToken, Fence: second.Fence, Failure: "/private/raw stderr SECRET"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := svc.Fail(ctx, PublicRenderTransitionInput{JobGUID: second.JobGUID, OwnerToken: second.OwnerToken, Fence: second.Fence, NowMillis: now + 5_003, Failure: "render_failed"}); err != nil {
-		t.Fatalf("identical fail replay: %v", err)
+	clock.millis = now + 10_000
+	if early, err := svc.Lease(ctx, PublicRenderLeaseInput{OwnerToken: "owner-three-long-random-token", LeaseMillis: 5_000}); err != nil || early != nil {
+		t.Fatalf("early retry=%#v %v", early, err)
 	}
-	if err := svc.Fail(ctx, PublicRenderTransitionInput{JobGUID: second.JobGUID, OwnerToken: second.OwnerToken, Fence: second.Fence, NowMillis: now + 5_003, Failure: "validation_failed"}); err != ErrPublicRenderLeaseLost {
+	clock.millis = now + 15_003
+	if err := svc.Fail(ctx, PublicRenderTransitionInput{JobGUID: second.JobGUID, OwnerToken: second.OwnerToken, Fence: second.Fence, Failure: "render_failed"}); err != nil {
+		t.Fatalf("identical fail replay after retry expiry: %v", err)
+	}
+	if err := svc.Fail(ctx, PublicRenderTransitionInput{JobGUID: second.JobGUID, OwnerToken: second.OwnerToken, Fence: second.Fence, Failure: "validation_failed"}); err != ErrPublicRenderLeaseLost {
 		t.Fatalf("different fail replay=%v", err)
 	}
 	var afterReplay models.PublicRenderJob
 	if err := db.Where("guid=?", second.JobGUID).First(&afterReplay).Error; err != nil || afterReplay.AttemptCount != 2 || afterReplay.LeaseExpiresAt == nil || *afterReplay.LeaseExpiresAt != now+15_002 {
 		t.Fatalf("fail replay mutated outcome=%#v %v", afterReplay, err)
 	}
-	if early, err := svc.Lease(ctx, PublicRenderLeaseInput{OwnerToken: "owner-three-long-random-token", NowMillis: now + 10_000, LeaseMillis: 5_000}); err != nil || early != nil {
-		t.Fatalf("early retry=%#v %v", early, err)
-	}
-	third, err := svc.Lease(ctx, PublicRenderLeaseInput{OwnerToken: "owner-three-long-random-token", NowMillis: now + 15_003, LeaseMillis: 5_000})
+	third, err := svc.Lease(ctx, PublicRenderLeaseInput{OwnerToken: "owner-three-long-random-token", LeaseMillis: 5_000})
 	if err != nil || third == nil || third.Fence != 3 {
 		t.Fatalf("third=%#v %v", third, err)
 	}
-	if err := svc.Fail(ctx, PublicRenderTransitionInput{JobGUID: third.JobGUID, OwnerToken: third.OwnerToken, Fence: third.Fence, NowMillis: now + 15_004, Failure: "validation_failed"}); err != nil {
+	if err := svc.Fail(ctx, PublicRenderTransitionInput{JobGUID: third.JobGUID, OwnerToken: third.OwnerToken, Fence: third.Fence, Failure: "validation_failed"}); err != nil {
 		t.Fatal(err)
 	}
-	if retry, err := svc.Lease(ctx, PublicRenderLeaseInput{OwnerToken: "owner-four-long-random-token", NowMillis: now + 99_000, LeaseMillis: 5_000}); err != nil || retry != nil {
+	clock.millis = now + 99_000
+	if retry, err := svc.Lease(ctx, PublicRenderLeaseInput{OwnerToken: "owner-four-long-random-token", LeaseMillis: 5_000}); err != nil || retry != nil {
 		t.Fatalf("terminal retried=%#v %v", retry, err)
 	}
 	var job models.PublicRenderJob
@@ -150,9 +180,15 @@ func TestPublicRenderJobFixtureExpiryRetryAndTerminalFailure(t *testing.T) {
 func TestPublicRenderJobFixtureLeaseRaceHasOneOwner(t *testing.T) {
 	db := openTestMySQL(t)
 	seedPublicRenderJobFixture(t, db)
-	svc := NewPublicRenderJobService(db, []byte("fixture-render-job-purpose-key-32"))
 	ctx := context.Background()
 	now := int64(1_900_000_200_000)
+	clock := &fakePublicRenderClock{now}
+	svc := NewPublicRenderJobServiceWithClock(db, []byte("fixture-render-job-purpose-key-32"), clock)
+	first, err := svc.Lease(ctx, PublicRenderLeaseInput{OwnerToken: "expired-race-owner-token", LeaseMillis: 30_000})
+	if err != nil || first == nil {
+		t.Fatalf("initial lease=%#v %v", first, err)
+	}
+	clock.millis = now + 30_001
 	start := make(chan struct{})
 	results := make(chan *PublicRenderLease, 2)
 	errs := make(chan error, 2)
@@ -162,7 +198,7 @@ func TestPublicRenderJobFixtureLeaseRaceHasOneOwner(t *testing.T) {
 		go func(owner string) {
 			defer wg.Done()
 			<-start
-			lease, err := svc.Lease(ctx, PublicRenderLeaseInput{OwnerToken: owner, NowMillis: now, LeaseMillis: 30_000})
+			lease, err := svc.Lease(ctx, PublicRenderLeaseInput{OwnerToken: owner, LeaseMillis: 30_000})
 			results <- lease
 			errs <- err
 		}(owner)
@@ -175,6 +211,9 @@ func TestPublicRenderJobFixtureLeaseRaceHasOneOwner(t *testing.T) {
 	for lease := range results {
 		if lease != nil {
 			winners++
+			if lease.Fence != first.Fence+1 {
+				t.Fatalf("takeover fence=%d want=%d", lease.Fence, first.Fence+1)
+			}
 		}
 	}
 	for err := range errs {
@@ -190,10 +229,11 @@ func TestPublicRenderJobFixtureLeaseRaceHasOneOwner(t *testing.T) {
 func TestPublicRenderJobFixtureConcurrentCompleteReplayConverges(t *testing.T) {
 	db := openTestMySQL(t)
 	seedPublicRenderJobFixture(t, db)
-	svc := NewPublicRenderJobService(db, []byte("fixture-render-job-purpose-key-32"))
 	ctx := context.Background()
 	now := int64(1_900_000_250_000)
-	lease, err := svc.Lease(ctx, PublicRenderLeaseInput{OwnerToken: "concurrent-complete-owner", NowMillis: now, LeaseMillis: 30_000})
+	clock := &fakePublicRenderClock{now}
+	svc := NewPublicRenderJobServiceWithClock(db, []byte("fixture-render-job-purpose-key-32"), clock)
+	lease, err := svc.Lease(ctx, PublicRenderLeaseInput{OwnerToken: "concurrent-complete-owner", LeaseMillis: 30_000})
 	if err != nil || lease == nil {
 		t.Fatal(err)
 	}
@@ -205,7 +245,7 @@ func TestPublicRenderJobFixtureConcurrentCompleteReplayConverges(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			errs <- svc.Complete(ctx, PublicRenderTransitionInput{JobGUID: lease.JobGUID, OwnerToken: lease.OwnerToken, Fence: lease.Fence, NowMillis: now + 1})
+			errs <- svc.Complete(ctx, PublicRenderTransitionInput{JobGUID: lease.JobGUID, OwnerToken: lease.OwnerToken, Fence: lease.Fence})
 		}()
 	}
 	close(start)
@@ -248,7 +288,8 @@ func TestPublicRenderJobFixtureSkipsObsoleteGeneration(t *testing.T) {
 		db.Exec("DELETE FROM public_content_releases WHERE id=?", content.ID)
 		db.Exec("DELETE FROM public_price_snapshots WHERE id=?", price.ID)
 	})
-	lease, err := NewPublicRenderJobService(db, []byte("fixture-render-job-purpose-key-32")).Lease(ctx, PublicRenderLeaseInput{OwnerToken: "obsolete-scan-owner-token", NowMillis: now + 1, LeaseMillis: 30_000})
+	clock := &fakePublicRenderClock{now + 1}
+	lease, err := NewPublicRenderJobServiceWithClock(db, []byte("fixture-render-job-purpose-key-32"), clock).Lease(ctx, PublicRenderLeaseInput{OwnerToken: "obsolete-scan-owner-token", LeaseMillis: 30_000})
 	if err != nil || lease == nil || lease.JobGUID != job.Guid {
 		t.Fatalf("current lease=%#v %v", lease, err)
 	}
