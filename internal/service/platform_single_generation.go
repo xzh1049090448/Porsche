@@ -229,6 +229,7 @@ func (r *PlatformSingleGenerationRunner) Run(input PlatformSingleGenerationInput
 		consumed = <-consumeResults
 	case <-runnerCtx.Done():
 		terminalCause = runnerCtx.Err()
+		cancelRenew()
 		cancelRunner()
 		body.Close()
 		consumed = <-consumeResults

@@ -1121,6 +1121,76 @@ func TestPlatformSingleGenerationShutdownPreservesCommittingAuthority(t *testing
 	}
 }
 
+func TestPlatformSingleGenerationShutdownCancelsRenewBeforeJoiningConsumer(t *testing.T) {
+	runner, store, persist, upstream := platformSingleTestRunner(nil)
+	registry := &platformSingleCapturingRegistry{registered: make(chan context.CancelFunc, 1)}
+	runner.deps.registry = registry
+	timers := &platformSingleTestTimerFactory{created: make(chan *platformSingleTestTimer, 1)}
+	runner.deps.newTimer = timers.New
+	cancelRunner := make(chan context.CancelFunc, 1)
+	runner.deps.newRunnerContext = func(parent context.Context, _ time.Duration) (context.Context, context.CancelFunc) {
+		ctx, cancel := context.WithCancel(parent)
+		cancelRunner <- cancel
+		return ctx, cancel
+	}
+	renewEntered := make(chan struct{})
+	renewReturned := make(chan struct{})
+	store.renew = func(ctx context.Context, _ int64, _ string, _ string, _ int64) (PlatformGenerationSnapshot, error) {
+		close(renewEntered)
+		<-ctx.Done()
+		close(renewReturned)
+		return PlatformGenerationSnapshot{}, ErrPlatformGenerationUnavailable
+	}
+	allowConsumer := make(chan struct{})
+	consumerReturned := make(chan struct{})
+	content := "partial secret"
+	upstream.consume = func(_ context.Context, emit func(whitelabel.ChatCompletionChunk) error) *whitelabel.Error {
+		defer close(consumerReturned)
+		<-allowConsumer
+		_ = emit(whitelabel.ChatCompletionChunk{Choices: []whitelabel.ChatCompletionChunkChoice{{Index: 0, Delta: whitelabel.ChatCompletionChunkDelta{Content: &content}}}})
+		return whitelabel.ErrUpstreamUnavailable("cancelled")
+	}
+	body := &platformSingleTestReadCloser{Reader: strings.NewReader("ignored")}
+	upstream.response = &http.Response{StatusCode: http.StatusOK, Body: body}
+	done := make(chan error, 1)
+	go func() {
+		_, err := runner.Run(PlatformSingleGenerationInput{Context: context.Background(), User: platformSingleTestUser(), GenerationID: platformSingleTestGenerationID, Params: platformSingleTestParams("hello"), Write: func([]byte) error { return nil }})
+		done <- err
+	}()
+	timer := <-timers.created
+	timer.ch <- time.UnixMilli(11_000)
+	<-renewEntered
+	close(allowConsumer)
+	(<-cancelRunner)()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("shutdown unexpectedly succeeded")
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("runner deadlocked joining consumer before cancelling renewal")
+	}
+	select {
+	case <-renewReturned:
+	default:
+		t.Fatal("renewal goroutine was not joined")
+	}
+	select {
+	case <-consumerReturned:
+	default:
+		t.Fatal("consumer goroutine was not joined")
+	}
+	if body.closeCalls.Load() != 1 {
+		t.Fatalf("response body close calls=%d", body.closeCalls.Load())
+	}
+	if persist.callCount.Load() != 0 {
+		t.Fatalf("Finalize calls=%d", persist.callCount.Load())
+	}
+	if !registry.unregistered.Load() {
+		t.Fatal("runner did not unregister")
+	}
+}
+
 func TestPlatformSingleGenerationFailureCodesAndTerminalOrder(t *testing.T) {
 	over := strings.Repeat("x", platformGenerationMessageTextMaxBytes+1)
 	finish := "stop"
@@ -1260,13 +1330,19 @@ func TestPlatformSingleGenerationUnsafeDoneTotalEmitsOnlyGlobalError(t *testing.
 	}
 }
 
-type platformSingleCapturingRegistry struct{ registered chan context.CancelFunc }
+type platformSingleCapturingRegistry struct {
+	registered   chan context.CancelFunc
+	unregistered atomic.Bool
+}
 
 func (r *platformSingleCapturingRegistry) Register(_ int64, _ string, cancel context.CancelFunc) (string, error) {
 	r.registered <- cancel
 	return platformSingleTestLeaseToken(), nil
 }
-func (r *platformSingleCapturingRegistry) Unregister(int64, string, string) bool { return true }
+func (r *platformSingleCapturingRegistry) Unregister(int64, string, string) bool {
+	r.unregistered.Store(true)
+	return true
+}
 
 func blockingPlatformSingleConsume(upstream *platformSingleTestUpstream) func(context.Context, func(whitelabel.ChatCompletionChunk) error) *whitelabel.Error {
 	return func(ctx context.Context, _ func(whitelabel.ChatCompletionChunk) error) *whitelabel.Error {
