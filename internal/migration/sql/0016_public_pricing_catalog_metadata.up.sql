@@ -15,5 +15,3 @@ ALTER TABLE public_price_snapshot_items
   ADD COLUMN price_source VARCHAR(255) NOT NULL DEFAULT '' AFTER public_restrictions,
   ADD COLUMN price_reviewer VARCHAR(128) NOT NULL DEFAULT '' AFTER price_source,
   ADD COLUMN effective_at BIGINT NULL AFTER price_reviewer;
-
-\n

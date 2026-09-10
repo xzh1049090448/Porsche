@@ -27,4 +27,14 @@ func TestPublicPricingCatalogMetadataMigrationIsLatestAndReversible(t *testing.T
 	if strings.Contains(up, "upstream_url") || strings.Contains(up, "api_key") {
 		t.Fatal("0016 contains secret-bearing column")
 	}
+	statements := splitStatements(string(ms[15].UpSQL))
+	if len(statements) != 2 {
+		t.Fatalf("0016 statements=%d want=2: %#v", len(statements), statements)
+	}
+	for i, statement := range statements {
+		normalized := strings.ToLower(strings.TrimSpace(statement))
+		if !strings.HasPrefix(normalized, "alter table ") || strings.Contains(statement, `\n`) {
+			t.Fatalf("0016 statement %d invalid: %q", i, statement)
+		}
+	}
 }

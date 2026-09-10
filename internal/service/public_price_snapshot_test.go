@@ -134,6 +134,25 @@ func TestPublicPriceSnapshotRestoreRevalidatesAndRehashesHistoricalItems(t *test
 	}
 }
 
+func TestPublicPriceSnapshotRestoreAcceptsExactLegacyCanonicalHash(t *testing.T) {
+	checked := int64(1_700_000_000_000)
+	items := []models.PublicPriceSnapshotItem{{ModelConfigID: 7, ModelKey: "alpha", UpstreamModelID: "org/alpha", DisplayName: "Alpha", Provider: "acme", Capabilities: models.JSONSlice{"chat"}, ContextWindow: 8192, InputPriceUSDPerMillionTokens: snapshotStringPointer("1.25000000"), OutputPriceUSDPerMillionTokens: snapshotStringPointer("2.50000000"), UpstreamCheckedAt: &checked}}
+	const legacyHash = "bac92bee165a7967fb5420ff2e15e0ec4e281e5608c29008361bcf5ca62b7922"
+	got, ok := hashLegacyPublicPriceSnapshotItems(items)
+	if !ok || got != legacyHash {
+		t.Fatalf("legacy hash=%s ok=%v", got, ok)
+	}
+	restored, err := prepareRestoredPublicPriceSnapshot(items, legacyHash)
+	if err != nil || restored.Hash == legacyHash {
+		t.Fatalf("legacy restore=%#v err=%v", restored, err)
+	}
+	tampered := append([]models.PublicPriceSnapshotItem(nil), items...)
+	tampered[0].DisplayName = "Tampered"
+	if _, err := prepareRestoredPublicPriceSnapshot(tampered, legacyHash); status(err) != 422 {
+		t.Fatalf("tampered legacy hash accepted: %v", err)
+	}
+}
+
 func TestPublicPriceSnapshotRestoreRequiresCurrentActiveExactIdentity(t *testing.T) {
 	prepared, err := preparePublicPriceSnapshot([]models.PublicModelConfig{snapshotModelFixture("alpha")})
 	if err != nil {

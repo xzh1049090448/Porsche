@@ -3,11 +3,47 @@ package migration
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"gorm.io/gorm"
 )
 
 var ErrPublicPricingCatalogMetadataMigration = errors.New("public pricing catalog metadata migration partial or unavailable")
+
+func applyPublicPricingCatalogMetadataMigration(db *gorm.DB, sql []byte) error {
+	if db == nil {
+		return ErrPublicPricingCatalogMetadataMigration
+	}
+	statements := splitStatements(string(sql))
+	steps := []struct {
+		table   string
+		columns []string
+	}{
+		{"public_model_configs", []string{"public_display_group", "endpoint_types", "public_restrictions", "price_source", "price_reviewer", "price_effective_at"}},
+		{"public_price_snapshot_items", []string{"pricing_type", "public_display_group", "endpoint_types", "public_restrictions", "price_source", "price_reviewer", "effective_at"}},
+	}
+	if len(statements) != len(steps) {
+		return fmt.Errorf("invalid statement count")
+	}
+	for i, step := range steps {
+		var count int64
+		if err := db.Raw("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name=? AND column_name IN ?", step.table, step.columns).Scan(&count).Error; err != nil {
+			return err
+		}
+		switch count {
+		case 0:
+			if err := db.Exec(statements[i]).Error; err != nil {
+				return err
+			}
+		case int64(len(step.columns)):
+			// A prior unledgered attempt completed this atomic ALTER. The final
+			// exact verifier below decides whether its shape is trustworthy.
+		default:
+			return ErrPublicPricingCatalogMetadataMigration
+		}
+	}
+	return VerifyPublicPricingCatalogMetadataSchema(context.Background(), db)
+}
 
 // VerifyPublicPricingCatalogMetadataSchema fails closed when the frozen public
 // catalog fields are absent from either mutable configuration or immutable snapshots.

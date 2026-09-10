@@ -157,18 +157,58 @@ func validPublishedPriceProvenance(m models.PublicModelConfig) bool {
 }
 
 func prepareRestoredPublicPriceSnapshot(items []models.PublicPriceSnapshotItem, storedHash string) (*preparedPublicPriceSnapshot, error) {
+	if len(storedHash) != 64 {
+		return nil, errUnprocessable("historical price snapshot integrity validation failed")
+	}
+	legacyHash, legacyOK := hashLegacyPublicPriceSnapshotItems(items)
+	legacyMatch := legacyOK && legacyHash == storedHash
 	rows := make([]models.PublicModelConfig, len(items))
 	for i, item := range items {
 		rows[i] = models.PublicModelConfig{ID: item.ModelConfigID, ModelKey: item.ModelKey, UpstreamModelID: item.UpstreamModelID, DisplayName: item.DisplayName, Provider: item.Provider, Capabilities: append(models.JSONSlice(nil), item.Capabilities...), ContextWindow: item.ContextWindow, InputPriceUSDPerMillionTokens: item.InputPriceUSDPerMillionTokens, OutputPriceUSDPerMillionTokens: item.OutputPriceUSDPerMillionTokens, Status: models.PublicModelConfigStatusActive, LastUpstreamCheckAt: item.UpstreamCheckedAt, PublicDisplayGroup: item.PublicDisplayGroup, EndpointTypes: append(models.JSONSlice(nil), item.EndpointTypes...), PublicRestrictions: append(models.JSONSlice(nil), item.PublicRestrictions...), PriceSource: item.PriceSource, PriceReviewer: item.PriceReviewer, PriceEffectiveAt: item.EffectiveAt}
 	}
 	prepared, err := preparePublicPriceSnapshot(rows)
 	if err != nil {
-		return nil, err
+		if !legacyMatch {
+			return nil, err
+		}
+		currentHash, hashErr := hashPublicPriceSnapshotItems(items)
+		if hashErr != nil {
+			return nil, errUnavailable("public price snapshot hashing unavailable")
+		}
+		return &preparedPublicPriceSnapshot{Items: append([]models.PublicPriceSnapshotItem(nil), items...), Hash: currentHash}, nil
 	}
-	if len(storedHash) != 64 || prepared.Hash != storedHash {
+	if prepared.Hash != storedHash && !legacyMatch {
 		return nil, errUnprocessable("historical price snapshot integrity validation failed")
 	}
 	return prepared, nil
+}
+
+func hashLegacyPublicPriceSnapshotItems(items []models.PublicPriceSnapshotItem) (string, bool) {
+	type legacyCanonical struct {
+		ModelKey        string   `json:"model_key"`
+		UpstreamModelID string   `json:"upstream_model_id"`
+		DisplayName     string   `json:"display_name"`
+		Provider        string   `json:"provider"`
+		Capabilities    []string `json:"capabilities"`
+		ContextWindow   int64    `json:"context_window"`
+		Input           string   `json:"input_price_usd_per_million_tokens"`
+		Output          string   `json:"output_price_usd_per_million_tokens"`
+		CheckedAt       *int64   `json:"upstream_checked_at"`
+	}
+	values := make([]legacyCanonical, len(items))
+	for i, v := range items {
+		if v.InputPriceUSDPerMillionTokens == nil || v.OutputPriceUSDPerMillionTokens == nil {
+			return "", false
+		}
+		values[i] = legacyCanonical{v.ModelKey, v.UpstreamModelID, v.DisplayName, v.Provider, append([]string(nil), v.Capabilities...), v.ContextWindow, *v.InputPriceUSDPerMillionTokens, *v.OutputPriceUSDPerMillionTokens, v.UpstreamCheckedAt}
+	}
+	sort.Slice(values, func(i, j int) bool { return values[i].ModelKey < values[j].ModelKey })
+	b, err := json.Marshal(values)
+	if err != nil {
+		return "", false
+	}
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:]), true
 }
 
 func hashPublicPriceSnapshotItems(items []models.PublicPriceSnapshotItem) (string, error) {

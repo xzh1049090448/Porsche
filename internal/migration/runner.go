@@ -314,6 +314,10 @@ func Up(ctx context.Context, db *gorm.DB, nextGUID func() int64, nowMillis func(
 				if err := conn.Exec("INSERT INTO upstream_monitor_leases (guid,lease_key,owner_token,lease_expires_at,revision,created_at,updated_at,is_deleted) VALUES (?,'catalog',NULL,0,1,?,?,0) ON DUPLICATE KEY UPDATE lease_key=VALUES(lease_key)", nextGUID(), now, now).Error; err != nil {
 					return fmt.Errorf("apply migration 0014: %w", err)
 				}
+			} else if migration.Version == "0016" {
+				if err := applyPublicPricingCatalogMetadataMigration(conn, migration.UpSQL); err != nil {
+					return fmt.Errorf("apply migration 0016: %w", err)
+				}
 			} else {
 				for _, statement := range splitStatements(string(migration.UpSQL)) {
 					if err := conn.Exec(statement).Error; err != nil {

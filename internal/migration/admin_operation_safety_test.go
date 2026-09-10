@@ -432,7 +432,7 @@ func TestMigrationSequencePreservesPublishedChecksums(t *testing.T) {
 		{"0013", "62a91248a861e1a1208255bdfe7f0660e0ca8750c6bd52fb96f29722a82a989c"},
 		{"0014", "cc016d547a07e44d140b8c7c5e39b64859e12993b8f2d4aeae42ba235fd69671"},
 		{"0015", "998e273023e4a6992f6bf78b8ac6f7a0ee7e7d85bb3bcfa468659e7e4db7f9be"},
-		{"0016", "4bcb4ef5e107b2b6ceacdcf334b0f997a2eddbd03174816ad6aad6547924f57c"},
+		{"0016", "107d1c9f547e5988068d10bbaf3adbc892d63c683f71209725473be6bacc0afa"},
 		{"0017", "04e8c22b9c3ead34a4572f81ca0060a9305acf635cc0ead5c10136239b031ff2"},
 	}
 	if len(want) != len(migrations) {
