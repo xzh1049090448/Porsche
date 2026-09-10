@@ -1,10 +1,12 @@
 package whitelabel
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
 	"io"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -180,6 +182,86 @@ func TestConsumeChatCompletionSSEContextRejectsInvalidUTF8(t *testing.T) {
 	if record.Stages[diagnostics.Stream].Reason != diagnostics.Malformed || record.MalformedChunkDetail == nil || record.MalformedChunkDetail.Reason != diagnostics.ChunkJSONSyntax || record.MalformedChunkDetail.Field != diagnostics.ChunkRoot {
 		t.Fatalf("record = %#v", record)
 	}
+}
+
+func TestConsumeChatCompletionSSEContextRejectsOversizePhysicalLineBeforeCallback(t *testing.T) {
+	for _, size := range []int{platformChatSSEMaxLineBytes + 1, platformChatSSEMaxLineBytes + 4096} {
+		t.Run(strconv.Itoa(size), func(t *testing.T) {
+			calls := 0
+			err := (&WhiteLabelService{}).ConsumeChatCompletionSSEContext(context.Background(), strings.NewReader(strings.Repeat("x", size)), "model-a", func(ChatCompletionChunk) error {
+				calls++
+				return nil
+			})
+			if err == nil || err.Detail != "malformed chat completion chunk" || calls != 0 {
+				t.Fatalf("error=%#v calls=%d", err, calls)
+			}
+		})
+	}
+}
+
+func TestConsumeChatCompletionSSEContextRejectsOversizeAccumulatedEventBeforeCallback(t *testing.T) {
+	calls := 0
+	input := platformChatSSEEventWithPayloadSize(t, platformChatSSEMaxEventBytes+1)
+	err := (&WhiteLabelService{}).ConsumeChatCompletionSSEContext(context.Background(), strings.NewReader(input), "model-a", func(ChatCompletionChunk) error {
+		calls++
+		return nil
+	})
+	if err == nil || err.Detail != "malformed chat completion chunk" || calls != 0 {
+		t.Fatalf("error=%#v calls=%d", err, calls)
+	}
+}
+
+func TestConsumeChatCompletionSSEContextAcceptsExactLineAndEventLimits(t *testing.T) {
+	t.Run("line", func(t *testing.T) {
+		padding := platformChatSSEMaxLineBytes - len("data: ") - len(typedChunk)
+		if padding < 0 {
+			t.Fatal("test chunk exceeds line limit")
+		}
+		input := "data: " + typedChunk + strings.Repeat(" ", padding) + "\n\ndata: [DONE]\n\n"
+		line, readErr := readPlatformChatSSELine(bufio.NewReader(strings.NewReader(input)))
+		if readErr != nil || len(line) != platformChatSSEMaxLineBytes {
+			t.Fatalf("boundary line read len=%d err=%v", len(line), readErr)
+		}
+		calls := 0
+		ctx, trace := diagnostics.New(context.Background())
+		err := (&WhiteLabelService{}).ConsumeChatCompletionSSEContext(ctx, strings.NewReader(input), "model-a", func(ChatCompletionChunk) error { calls++; return nil })
+		if err != nil || calls != 1 {
+			record := diagnosticRecord(t, trace)
+			t.Fatalf("error=%#v calls=%d detail=%+v", err, calls, record.MalformedChunkDetail)
+		}
+	})
+	t.Run("event", func(t *testing.T) {
+		calls := 0
+		input := platformChatSSEEventWithPayloadSize(t, platformChatSSEMaxEventBytes)
+		ctx, trace := diagnostics.New(context.Background())
+		err := (&WhiteLabelService{}).ConsumeChatCompletionSSEContext(ctx, strings.NewReader(input), "model-a", func(ChatCompletionChunk) error { calls++; return nil })
+		if err != nil || calls != 1 {
+			record := diagnosticRecord(t, trace)
+			t.Fatalf("error=%#v calls=%d detail=%+v", err, calls, record.MalformedChunkDetail)
+		}
+	})
+}
+
+func platformChatSSEEventWithPayloadSize(t *testing.T, size int) string {
+	t.Helper()
+	if size < len(typedChunk) {
+		t.Fatalf("payload size %d is too small", size)
+	}
+	lines := []string{"data: " + typedChunk}
+	remaining := size - len(typedChunk)
+	for remaining > 0 {
+		remaining-- // The parser inserts one newline between data lines.
+		if remaining < 0 {
+			t.Fatal("invalid payload remainder")
+		}
+		part := remaining
+		if part > 64<<10 {
+			part = 64 << 10
+		}
+		lines = append(lines, "data: "+strings.Repeat(" ", part))
+		remaining -= part
+	}
+	return strings.Join(lines, "\n") + "\n\ndata: [DONE]\n\n"
 }
 
 func TestProjectChatCompletionSSERequiresTerminalDoneFrame(t *testing.T) {

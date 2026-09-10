@@ -13,6 +13,13 @@ import (
 	"github.com/porsche/ai-gateway-go/internal/diagnostics"
 )
 
+const (
+	platformChatSSEMaxLineBytes  = 1 << 20
+	platformChatSSEMaxEventBytes = 1 << 20
+)
+
+var errPlatformChatSSELimit = errors.New("platform chat SSE size limit exceeded")
+
 // ProjectChatCompletionSSE consumes upstream SSE frames and invokes emit with
 // client-safe OpenAI data frames only. Upstream SSE fields are never retained.
 func (s *WhiteLabelService) ProjectChatCompletionSSE(reader io.Reader, logicalModelID string, emit func([]byte) error) *Error {
@@ -64,13 +71,20 @@ func (s *WhiteLabelService) consumeChatCompletionSSEContext(
 	}
 	buffered := bufio.NewReader(reader)
 	var dataLines []string
+	dataBytes := 0
 	for {
 		if failure := contextFailure(); failure != nil {
 			return failure
 		}
-		line, err := buffered.ReadString('\n')
+		line, err := readPlatformChatSSELine(buffered)
 		if failure := contextFailure(); failure != nil {
 			return failure
+		}
+		if errors.Is(err, errPlatformChatSSELimit) {
+			if trace := diagnostics.From(ctx); trace != nil {
+				trace.MalformedChunk(diagnostics.ChunkInvalidShape, diagnostics.ChunkRoot, nil)
+			}
+			return fail(diagnostics.Malformed, "malformed chat completion chunk")
 		}
 		if err != nil && err != io.EOF {
 			reason := diagnostics.NetworkReason(err)
@@ -82,13 +96,14 @@ func (s *WhiteLabelService) consumeChatCompletionSSEContext(
 			}
 			return fail(reason, "stream read failed")
 		}
-		if len(line) > 0 {
+		if len(line) > 0 || err == nil {
 			line = strings.TrimSuffix(line, "\n")
 			line = strings.TrimSuffix(line, "\r")
 			if line == "" {
 				if len(dataLines) > 0 {
 					payload := strings.Join(dataLines, "\n")
 					dataLines = nil
+					dataBytes = 0
 					if payload == "[DONE]" {
 						if failure := contextFailure(); failure != nil {
 							return failure
@@ -135,7 +150,19 @@ func (s *WhiteLabelService) consumeChatCompletionSSEContext(
 				}
 			} else if strings.HasPrefix(line, "data:") {
 				value := strings.TrimPrefix(line, "data:")
-				dataLines = append(dataLines, strings.TrimPrefix(value, " "))
+				value = strings.TrimPrefix(value, " ")
+				extra := len(value)
+				if len(dataLines) > 0 {
+					extra++
+				}
+				if extra > platformChatSSEMaxEventBytes-dataBytes {
+					if trace := diagnostics.From(ctx); trace != nil {
+						trace.MalformedChunk(diagnostics.ChunkInvalidShape, diagnostics.ChunkRoot, nil)
+					}
+					return fail(diagnostics.Malformed, "malformed chat completion chunk")
+				}
+				dataBytes += extra
+				dataLines = append(dataLines, value)
 			}
 		}
 		if err == io.EOF {
@@ -145,6 +172,29 @@ func (s *WhiteLabelService) consumeChatCompletionSSEContext(
 			}
 			return fail(reason, "incomplete stream")
 		}
+	}
+}
+
+func readPlatformChatSSELine(reader *bufio.Reader) (string, error) {
+	if reader == nil {
+		return "", io.ErrUnexpectedEOF
+	}
+	line := make([]byte, 0, reader.Size())
+	for {
+		fragment, err := reader.ReadSlice('\n')
+		if len(fragment) > platformChatSSEMaxLineBytes+2-len(line) {
+			return "", errPlatformChatSSELimit
+		}
+		line = append(line, fragment...)
+		if errors.Is(err, bufio.ErrBufferFull) {
+			continue
+		}
+		line = bytes.TrimSuffix(line, []byte{'\n'})
+		line = bytes.TrimSuffix(line, []byte{'\r'})
+		if len(line) > platformChatSSEMaxLineBytes {
+			return "", errPlatformChatSSELimit
+		}
+		return string(line), err
 	}
 }
 

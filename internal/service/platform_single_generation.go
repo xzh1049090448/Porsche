@@ -52,6 +52,7 @@ type platformSingleGenerationRegistry interface {
 }
 
 type PlatformSingleGenerationInput struct {
+	Context      context.Context
 	User         *models.User
 	GenerationID string
 	RequestID    string
@@ -140,7 +141,7 @@ func (r *PlatformSingleGenerationRunner) Run(input PlatformSingleGenerationInput
 	if err != nil {
 		return PlatformSingleGenerationRunResult{}, err
 	}
-	claim, claimErr := r.deps.store.Claim(r.deps.rootContext, PlatformGenerationClaimInput{
+	claim, claimErr := r.deps.store.Claim(input.Context, PlatformGenerationClaimInput{
 		UserID: run.userID, GenerationID: run.generationID, Mode: PlatformGenerationModeSingle,
 		Models: []string{run.model}, NowMillis: claimAt,
 	})
@@ -269,8 +270,11 @@ func (r *PlatformSingleGenerationRunner) Run(input PlatformSingleGenerationInput
 }
 
 func (r *PlatformSingleGenerationRunner) prepare(input PlatformSingleGenerationInput) (platformSingleRun, int64, error) {
-	if input.User == nil || input.Write == nil {
+	if input.Context == nil || input.User == nil || input.Write == nil {
 		return platformSingleRun{}, 0, ErrPlatformSingleGenerationInvalid
+	}
+	if input.Context.Err() != nil {
+		return platformSingleRun{}, 0, ErrPlatformSingleGenerationUnavailable
 	}
 	user := models.User{
 		ID: input.User.ID, AuditFields: models.AuditFields{IsDeleted: input.User.IsDeleted},
@@ -311,7 +315,7 @@ func (r *PlatformSingleGenerationRunner) prepare(input PlatformSingleGenerationI
 		if parseErr != nil {
 			return platformSingleRun{}, 0, ErrPlatformSingleGenerationInvalid
 		}
-		if loadErr := r.deps.loadConversation(r.deps.rootContext, r.deps.db, user.ID, guid); loadErr != nil {
+		if loadErr := r.deps.loadConversation(input.Context, r.deps.db, user.ID, guid); loadErr != nil {
 			if errors.Is(loadErr, gorm.ErrRecordNotFound) {
 				return platformSingleRun{}, 0, ErrPlatformSingleGenerationInvalid
 			}
@@ -326,6 +330,9 @@ func (r *PlatformSingleGenerationRunner) prepare(input PlatformSingleGenerationI
 		}
 		run.conversationGUID = guid
 		run.reservedConversationGUID = &guid
+	}
+	if input.Context.Err() != nil {
+		return platformSingleRun{}, 0, ErrPlatformSingleGenerationUnavailable
 	}
 	return run, claimAt, nil
 }

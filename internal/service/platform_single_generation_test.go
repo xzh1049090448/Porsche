@@ -24,7 +24,8 @@ type platformSingleTestStore struct {
 	calls          *[]string
 	claim          PlatformGenerationClaimResult
 	claimErr       error
-	onClaim        func(PlatformGenerationClaimInput)
+	onClaim        func(context.Context, PlatformGenerationClaimInput)
+	claimContext   context.Context
 	recordErr      error
 	completeCalled bool
 }
@@ -34,10 +35,11 @@ func (s *platformSingleTestStore) add(call string) {
 		*s.calls = append(*s.calls, call)
 	}
 }
-func (s *platformSingleTestStore) Claim(_ context.Context, in PlatformGenerationClaimInput) (PlatformGenerationClaimResult, error) {
+func (s *platformSingleTestStore) Claim(ctx context.Context, in PlatformGenerationClaimInput) (PlatformGenerationClaimResult, error) {
 	s.add("claim")
+	s.claimContext = ctx
 	if s.onClaim != nil {
-		s.onClaim(in)
+		s.onClaim(ctx, in)
 	}
 	return s.claim, s.claimErr
 }
@@ -188,7 +190,7 @@ func TestPlatformSingleGenerationNewConversationSuccess(t *testing.T) {
 	var calls []string
 	runner, store, persist, upstream := platformSingleTestRunner(&calls)
 	var output bytes.Buffer
-	result, err := runner.Run(PlatformSingleGenerationInput{User: platformSingleTestUser(), GenerationID: platformSingleTestGenerationID, RequestID: "request-1", Params: platformSingleTestParams("hello"), Write: func(frame []byte) error {
+	result, err := runner.Run(PlatformSingleGenerationInput{Context: context.Background(), User: platformSingleTestUser(), GenerationID: platformSingleTestGenerationID, RequestID: "request-1", Params: platformSingleTestParams("hello"), Write: func(frame []byte) error {
 		var event string
 		if bytes.HasPrefix(frame, []byte("event: ")) {
 			event = strings.SplitN(strings.TrimPrefix(string(frame), "event: "), "\n", 2)[0]
@@ -251,7 +253,7 @@ func TestPlatformSingleGenerationDuplicateHasNoPostClaimSideEffects(t *testing.T
 	duplicate.ModelStates["model-a"] = PlatformGenerationModel{State: PlatformGenerationStateCompleted, AssistantMessageGUID: "9001"}
 	store.claim = PlatformGenerationClaimResult{Duplicate: true, Snapshot: duplicate}
 	store.claimErr = ErrPlatformGenerationConflict
-	result, err := runner.Run(PlatformSingleGenerationInput{User: platformSingleTestUser(), GenerationID: platformSingleTestGenerationID, Params: platformSingleTestParams("hello"), Write: func([]byte) error { t.Fatal("unexpected output"); return nil }})
+	result, err := runner.Run(PlatformSingleGenerationInput{Context: context.Background(), User: platformSingleTestUser(), GenerationID: platformSingleTestGenerationID, Params: platformSingleTestParams("hello"), Write: func([]byte) error { t.Fatal("unexpected output"); return nil }})
 	if err != nil || result.Started || result.Duplicate == nil || result.Duplicate.State != PlatformGenerationStateCompleted {
 		t.Fatalf("Run() result=%+v err=%v", result, err)
 	}
@@ -270,6 +272,7 @@ func TestPlatformSingleGenerationPreflightRejectsBeforeClaim(t *testing.T) {
 		want   error
 	}{
 		{"nil user", func(in *PlatformSingleGenerationInput) { in.User = nil }, ErrPlatformSingleGenerationInvalid},
+		{"nil context", func(in *PlatformSingleGenerationInput) { in.Context = nil }, ErrPlatformSingleGenerationInvalid},
 		{"inactive", func(in *PlatformSingleGenerationInput) { in.User.Status = models.UserStatusDisabled }, ErrPlatformSingleGenerationQuota},
 		{"deleted", func(in *PlatformSingleGenerationInput) { in.User.IsDeleted = 1 }, ErrPlatformSingleGenerationQuota},
 		{"quota", func(in *PlatformSingleGenerationInput) {
@@ -305,7 +308,7 @@ func TestPlatformSingleGenerationPreflightRejectsBeforeClaim(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var calls []string
 			runner, _, _, _ := platformSingleTestRunner(&calls)
-			in := PlatformSingleGenerationInput{User: platformSingleTestUser(), GenerationID: platformSingleTestGenerationID, Params: platformSingleTestParams("hello"), Write: func([]byte) error { return nil }}
+			in := PlatformSingleGenerationInput{Context: context.Background(), User: platformSingleTestUser(), GenerationID: platformSingleTestGenerationID, Params: platformSingleTestParams("hello"), Write: func([]byte) error { return nil }}
 			tc.mutate(&in)
 			if result, err := runner.Run(in); !errors.Is(err, tc.want) || result.Started {
 				t.Fatalf("Run() result=%+v err=%v", result, err)
@@ -319,12 +322,79 @@ func TestPlatformSingleGenerationPreflightRejectsBeforeClaim(t *testing.T) {
 	}
 }
 
+func TestPlatformSingleGenerationAdmissionCancellationStopsBeforeClaim(t *testing.T) {
+	t.Run("pre-cancelled", func(t *testing.T) {
+		var calls []string
+		runner, _, _, _ := platformSingleTestRunner(&calls)
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		in := PlatformSingleGenerationInput{Context: ctx, User: platformSingleTestUser(), GenerationID: platformSingleTestGenerationID, Params: platformSingleTestParams("hello"), Write: func([]byte) error { return nil }}
+		result, err := runner.Run(in)
+		if !errors.Is(err, ErrPlatformSingleGenerationUnavailable) || result.Started || len(calls) != 0 {
+			t.Fatalf("result=%+v err=%v calls=%v", result, err, calls)
+		}
+	})
+
+	t.Run("cancelled after preflight", func(t *testing.T) {
+		var calls []string
+		runner, _, _, _ := platformSingleTestRunner(&calls)
+		ctx, cancel := context.WithCancel(context.Background())
+		runner.deps.newGUID = func() int64 { cancel(); return 8001 }
+		in := PlatformSingleGenerationInput{Context: ctx, User: platformSingleTestUser(), GenerationID: platformSingleTestGenerationID, Params: platformSingleTestParams("hello"), Write: func([]byte) error { return nil }}
+		result, err := runner.Run(in)
+		if !errors.Is(err, ErrPlatformSingleGenerationUnavailable) || result.Started {
+			t.Fatalf("result=%+v err=%v", result, err)
+		}
+		for _, call := range calls {
+			if call == "claim" || call == "register" || call == "upstream" {
+				t.Fatalf("post-cancel call: %v", calls)
+			}
+		}
+	})
+
+	t.Run("cancelled ownership query", func(t *testing.T) {
+		var calls []string
+		runner, _, _, _ := platformSingleTestRunner(&calls)
+		ctx, cancel := context.WithCancel(context.Background())
+		runner.deps.loadConversation = func(queryCtx context.Context, _ *gorm.DB, _, _ int64) error { cancel(); return queryCtx.Err() }
+		guid := "8001"
+		in := PlatformSingleGenerationInput{Context: ctx, User: platformSingleTestUser(), GenerationID: platformSingleTestGenerationID, Params: platformSingleTestParams("hello"), Write: func([]byte) error { return nil }}
+		in.Params.ConversationGUID = &guid
+		result, err := runner.Run(in)
+		if !errors.Is(err, ErrPlatformSingleGenerationUnavailable) || result.Started {
+			t.Fatalf("result=%+v err=%v", result, err)
+		}
+		for _, call := range calls {
+			if call == "claim" || call == "register" || call == "upstream" {
+				t.Fatalf("post-cancel call: %v", calls)
+			}
+		}
+	})
+}
+
+func TestPlatformSingleGenerationRequestCancellationAfterClaimDoesNotStopRunner(t *testing.T) {
+	var calls []string
+	runner, store, _, _ := platformSingleTestRunner(&calls)
+	ctx, cancel := context.WithCancel(context.Background())
+	store.onClaim = func(claimCtx context.Context, _ PlatformGenerationClaimInput) {
+		if claimCtx != ctx {
+			t.Fatalf("claim context does not match admission context")
+		}
+		cancel()
+	}
+	in := PlatformSingleGenerationInput{Context: ctx, User: platformSingleTestUser(), GenerationID: platformSingleTestGenerationID, Params: platformSingleTestParams("hello"), Write: func([]byte) error { return nil }}
+	result, err := runner.Run(in)
+	if err != nil || !result.Started || !store.completeCalled {
+		t.Fatalf("result=%+v err=%v complete=%v calls=%v", result, err, store.completeCalled, calls)
+	}
+}
+
 func TestPlatformSingleGenerationCopiesRequestBeforeClaim(t *testing.T) {
 	var calls []string
 	runner, store, persist, upstream := platformSingleTestRunner(&calls)
 	params := platformSingleTestParams("hello")
 	user := platformSingleTestUser()
-	store.onClaim = func(in PlatformGenerationClaimInput) {
+	store.onClaim = func(_ context.Context, in PlatformGenerationClaimInput) {
 		params.Model = "mutated"
 		params.Messages[0]["content"] = "mutated"
 		params.WhiteLabelBody[0] = '['
@@ -333,7 +403,7 @@ func TestPlatformSingleGenerationCopiesRequestBeforeClaim(t *testing.T) {
 			t.Fatalf("claim models aliased: %v", in.Models)
 		}
 	}
-	result, err := runner.Run(PlatformSingleGenerationInput{User: user, GenerationID: platformSingleTestGenerationID, Params: params, Write: func([]byte) error { return nil }})
+	result, err := runner.Run(PlatformSingleGenerationInput{Context: context.Background(), User: user, GenerationID: platformSingleTestGenerationID, Params: params, Write: func([]byte) error { return nil }})
 	if err != nil || !result.Started {
 		t.Fatalf("Run()=%+v err=%v", result, err)
 	}
@@ -348,7 +418,7 @@ func TestPlatformSingleGenerationCopiesRequestBeforeClaim(t *testing.T) {
 func TestPlatformSingleGenerationDetachedWriterStillCompletes(t *testing.T) {
 	runner, store, _, _ := platformSingleTestRunner(nil)
 	writes := 0
-	result, err := runner.Run(PlatformSingleGenerationInput{User: platformSingleTestUser(), GenerationID: platformSingleTestGenerationID, Params: platformSingleTestParams("hello"), Write: func([]byte) error { writes++; return errors.New("disconnected") }})
+	result, err := runner.Run(PlatformSingleGenerationInput{Context: context.Background(), User: platformSingleTestUser(), GenerationID: platformSingleTestGenerationID, Params: platformSingleTestParams("hello"), Write: func([]byte) error { writes++; return errors.New("disconnected") }})
 	if err != nil || !result.Started || writes != 1 || !store.completeCalled {
 		t.Fatalf("result=%+v err=%v writes=%d complete=%v", result, err, writes, store.completeCalled)
 	}
@@ -373,7 +443,7 @@ func TestPlatformSingleGenerationRejectsInvalidClaimResult(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			runner, store, _, _ := platformSingleTestRunner(nil)
 			tc.mutate(&store.claim)
-			result, err := runner.Run(PlatformSingleGenerationInput{User: platformSingleTestUser(), GenerationID: platformSingleTestGenerationID, Params: platformSingleTestParams("hello"), Write: func([]byte) error { return nil }})
+			result, err := runner.Run(PlatformSingleGenerationInput{Context: context.Background(), User: platformSingleTestUser(), GenerationID: platformSingleTestGenerationID, Params: platformSingleTestParams("hello"), Write: func([]byte) error { return nil }})
 			if !errors.Is(err, ErrPlatformSingleGenerationUnavailable) || result.Started {
 				t.Fatalf("result=%+v err=%v", result, err)
 			}
@@ -386,7 +456,7 @@ func TestPlatformSingleGenerationRejectsInvalidDuplicateSnapshot(t *testing.T) {
 	store.claim.Duplicate = true
 	store.claimErr = ErrPlatformGenerationConflict
 	store.claim.Snapshot.State = PlatformGenerationStateCompleted
-	result, err := runner.Run(PlatformSingleGenerationInput{User: platformSingleTestUser(), GenerationID: platformSingleTestGenerationID, Params: platformSingleTestParams("hello"), Write: func([]byte) error { return nil }})
+	result, err := runner.Run(PlatformSingleGenerationInput{Context: context.Background(), User: platformSingleTestUser(), GenerationID: platformSingleTestGenerationID, Params: platformSingleTestParams("hello"), Write: func([]byte) error { return nil }})
 	if !errors.Is(err, ErrPlatformSingleGenerationUnavailable) || result.Started || result.Duplicate != nil {
 		t.Fatalf("result=%+v err=%v", result, err)
 	}
@@ -402,7 +472,7 @@ func TestPlatformSingleGenerationExistingConversationOwnership(t *testing.T) {
 			guid := "8001"
 			persist.receipt.RequestedExistingConversation = true
 			runner.deps.loadConversation = func(context.Context, *gorm.DB, int64, int64) error { return tc.loadErr }
-			in := PlatformSingleGenerationInput{User: platformSingleTestUser(), GenerationID: platformSingleTestGenerationID, Params: platformSingleTestParams("hello"), Write: func([]byte) error { return nil }}
+			in := PlatformSingleGenerationInput{Context: context.Background(), User: platformSingleTestUser(), GenerationID: platformSingleTestGenerationID, Params: platformSingleTestParams("hello"), Write: func([]byte) error { return nil }}
 			in.Params.ConversationGUID = &guid
 			result, err := runner.Run(in)
 			if !errors.Is(err, tc.want) {
@@ -513,7 +583,7 @@ func newPlatformSingleTestRunnerFixture() *platformSingleTestRunnerFixture {
 	return &platformSingleTestRunnerFixture{r, s, p, u}
 }
 func (f *platformSingleTestRunnerFixture) input() PlatformSingleGenerationInput {
-	return PlatformSingleGenerationInput{User: platformSingleTestUser(), GenerationID: platformSingleTestGenerationID, Params: platformSingleTestParams("hello"), Write: func([]byte) error { return nil }}
+	return PlatformSingleGenerationInput{Context: context.Background(), User: platformSingleTestUser(), GenerationID: platformSingleTestGenerationID, Params: platformSingleTestParams("hello"), Write: func([]byte) error { return nil }}
 }
 
 func TestPlatformSingleGenerationDeltaStoreFailureDoesNotEmitOrPersist(t *testing.T) {
