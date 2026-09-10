@@ -35,6 +35,7 @@ type State struct {
 	PublicModels                  *service.PublicModelAdminService
 	PublicContent                 *service.PublicContentService
 	PublicPriceSnapshots          *service.PublicPriceSnapshotService
+	PublicCatalogReads            *service.PublicCatalogReadService
 	UpstreamPriceMonitor          *service.UpstreamPriceMonitor
 	HTTP                          *http.Client
 }
@@ -151,6 +152,7 @@ func newState(settings *config.Settings, db *gorm.DB, constructors stateConstruc
 		s.PublicModels = service.NewPublicModelAdminService(db)
 		s.PublicContent = service.NewPublicContentService(db)
 		s.PublicPriceSnapshots = service.NewPublicPriceSnapshotService(db)
+		s.PublicCatalogReads = service.NewPublicCatalogReadService(db)
 		if s.WhiteLabel != nil {
 			s.UpstreamPriceMonitor = service.NewUpstreamPriceMonitor(db, s.WhiteLabel, s.RootAlerts)
 		}

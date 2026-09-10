@@ -30,6 +30,7 @@ func New(state *app.State) *gin.Engine {
 	handler.RegisterBilling(r, state)
 	handler.RegisterPlatform(r, state)
 	handler.RegisterAnalytics(r, state)
+	handler.RegisterPublicContent(r, state)
 
 	handler.RegisterAdmin(r, state)
 	handler.RegisterAdminUsers(r, state)

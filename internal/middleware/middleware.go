@@ -48,6 +48,12 @@ func RequireUser(state *app.State) gin.HandlerFunc {
 	}
 }
 
+// AuthenticateUserWithError authenticates an optional-session request while
+// allowing the owning API family to keep its error and cache contract.
+func AuthenticateUserWithError(c *gin.Context, state *app.State, abort func(*gin.Context, int, string)) bool {
+	return authenticateUserWithError(c, state, abort)
+}
+
 // RequireAdmin accepts only an authenticated server session whose persisted
 // role is at least Admin; it deliberately has no ADMIN_TOKEN bypass.
 func RequireAdmin(state *app.State) gin.HandlerFunc {
