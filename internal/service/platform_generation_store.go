@@ -565,11 +565,17 @@ func platformGenerationLeaseMatches(snapshot PlatformGenerationSnapshot, digest 
 	return subtle.ConstantTimeCompare([]byte(snapshot.LeaseOwnerSHA256), []byte(digest)) == 1
 }
 
+func platformGenerationRunningLeaseAuthorized(snapshot PlatformGenerationSnapshot, digest string, nowMillis int64) bool {
+	return snapshot.State == PlatformGenerationStateRunning &&
+		platformGenerationLeaseMatches(snapshot, digest) &&
+		nowMillis < snapshot.LeaseUntilMillis
+}
+
 func platformGenerationOwnedMutationAuthorized(snapshot PlatformGenerationSnapshot, digest string, nowMillis int64) bool {
-	if !platformGenerationLeaseMatches(snapshot, digest) {
-		return false
+	if snapshot.State == PlatformGenerationStateRunning {
+		return platformGenerationRunningLeaseAuthorized(snapshot, digest, nowMillis)
 	}
-	return snapshot.State != PlatformGenerationStateRunning || nowMillis < snapshot.LeaseUntilMillis
+	return platformGenerationLeaseMatches(snapshot, digest)
 }
 
 func (s *PlatformGenerationStore) mutateOwned(

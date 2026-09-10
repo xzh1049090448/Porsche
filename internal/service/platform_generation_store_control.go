@@ -143,7 +143,7 @@ func (s *PlatformGenerationStore) RenewLease(ctx context.Context, userID int64, 
 	if err != nil {
 		return PlatformGenerationSnapshot{}, err
 	}
-	if current.State != PlatformGenerationStateRunning || current.LeaseOwnerSHA256 == "" || current.LeaseOwnerSHA256 != digest || nowMillis < platformGenerationLatestRunningActivity(current) || nowMillis > current.LeaseUntilMillis {
+	if !platformGenerationRunningLeaseAuthorized(current, digest, nowMillis) || nowMillis < platformGenerationLatestRunningActivity(current) {
 		return current, ErrPlatformGenerationConflict
 	}
 	next := clonePlatformGeneration(current)

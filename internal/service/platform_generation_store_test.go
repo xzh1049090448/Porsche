@@ -1161,6 +1161,30 @@ func TestPlatformGenerationOwnedMutationAuthorizationExpiresOnlyRunningLease(t *
 	}
 }
 
+func TestPlatformGenerationRunningLeaseAuthorizationRejectsDeadline(t *testing.T) {
+	digest := strings.Repeat("a", sha256.Size*2)
+	running := PlatformGenerationSnapshot{State: PlatformGenerationStateRunning, LeaseOwnerSHA256: digest, LeaseUntilMillis: 31_000}
+	for _, test := range []struct {
+		name     string
+		snapshot PlatformGenerationSnapshot
+		digest   string
+		now      int64
+		want     bool
+	}{
+		{"before deadline", running, digest, 30_999, true},
+		{"at deadline", running, digest, 31_000, false},
+		{"after deadline", running, digest, 31_001, false},
+		{"wrong capability", running, strings.Repeat("b", sha256.Size*2), 30_999, false},
+		{"cancelling is not renewable", PlatformGenerationSnapshot{State: PlatformGenerationStateCancelling, LeaseOwnerSHA256: digest}, digest, 30_999, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := platformGenerationRunningLeaseAuthorized(test.snapshot, test.digest, test.now); got != test.want {
+				t.Fatalf("authorized=%v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
 func TestPlatformGenerationLeaseRenewalUsesDigestAndPreservesUpdatedAtAndTTL(t *testing.T) {
 	store, client := openTestPlatformGenerationStore(t)
 	input := PlatformGenerationClaimInput{UserID: 930010, GenerationID: "81000000-0000-4000-8000-000000000010", Mode: PlatformGenerationModeSingle, Models: []string{"a"}, NowMillis: 1000}
@@ -1207,6 +1231,7 @@ func TestPlatformGenerationLeaseRenewalRejectsLateAndNonRunningRecords(t *testin
 		now      int64
 	}{
 		{"late", 930011, PlatformGenerationSnapshot{GenerationID: "81000000-0000-4000-8000-000000000011", Mode: PlatformGenerationModeSingle, Models: []string{"a"}, State: PlatformGenerationStateRunning, ModelStates: map[string]PlatformGenerationModel{"a": {State: PlatformGenerationStateRunning}}, CreatedAtMillis: 1000, UpdatedAtMillis: 1000, LeaseOwnerSHA256: digest, LeaseUntilMillis: 31000}, 31001},
+		{"deadline", 930012, PlatformGenerationSnapshot{GenerationID: "81000000-0000-4000-8000-000000000012", Mode: PlatformGenerationModeSingle, Models: []string{"a"}, State: PlatformGenerationStateRunning, ModelStates: map[string]PlatformGenerationModel{"a": {State: PlatformGenerationStateRunning}}, CreatedAtMillis: 1000, UpdatedAtMillis: 1000, LeaseOwnerSHA256: digest, LeaseUntilMillis: 31000}, 31000},
 		{"cancelled", 930013, PlatformGenerationSnapshot{GenerationID: "81000000-0000-4000-8000-000000000013", Mode: PlatformGenerationModeSingle, Models: []string{"a"}, State: PlatformGenerationStateCancelled, ModelStates: map[string]PlatformGenerationModel{"a": {State: PlatformGenerationStateCancelled}}, CreatedAtMillis: 1000, UpdatedAtMillis: 1001}, 2000},
 		{"committing", 930014, PlatformGenerationSnapshot{GenerationID: "81000000-0000-4000-8000-000000000014", Mode: PlatformGenerationModeSingle, Models: []string{"a"}, State: PlatformGenerationStateCommitting, ModelStates: map[string]PlatformGenerationModel{"a": {State: PlatformGenerationStateCompleted}}, CreatedAtMillis: 1000, UpdatedAtMillis: 1001}, 2000},
 		{"completed", 930015, PlatformGenerationSnapshot{GenerationID: "81000000-0000-4000-8000-000000000015", Mode: PlatformGenerationModeSingle, Models: []string{"a"}, State: PlatformGenerationStateCompleted, ModelStates: map[string]PlatformGenerationModel{"a": {State: PlatformGenerationStateCompleted, AssistantMessageGUID: "900000000000000015"}}, CreatedAtMillis: 1000, UpdatedAtMillis: 1001}, 2000},
@@ -1326,7 +1351,7 @@ func TestPlatformGenerationExpiredRunningRejectsClockRegressionWithoutMutation(t
 	}
 }
 
-func TestPlatformGenerationLeaseRenewVersusExpireHasOneAuthority(t *testing.T) {
+func TestPlatformGenerationLeaseDeadlineExpiryBeatsRenewal(t *testing.T) {
 	store, client := openTestPlatformGenerationStore(t)
 	ctx := context.Background()
 	for iteration := 0; iteration < 24; iteration++ {
@@ -1368,13 +1393,15 @@ func TestPlatformGenerationLeaseRenewVersusExpireHasOneAuthority(t *testing.T) {
 			t.Fatalf("iteration %d winners=%d first=%#v second=%#v", iteration, winners, first, second)
 		}
 		authoritative, err := store.Get(ctx, input.UserID, generationID)
-		if err != nil || (authoritative.State == PlatformGenerationStateRunning && authoritative.LeaseUntilMillis != 61000) || (authoritative.State != PlatformGenerationStateRunning && authoritative.State != PlatformGenerationStateFailed) {
+		if err != nil || authoritative.State != PlatformGenerationStateFailed {
 			t.Fatalf("iteration %d authority=%#v error=%v", iteration, authoritative, err)
 		}
-		for _, result := range []outcome{first, second} {
-			if !reflect.DeepEqual(result.snapshot, authoritative) {
-				t.Fatalf("iteration %d %s snapshot=%#v authority=%#v error=%v", iteration, result.operation, result.snapshot, authoritative, result.err)
-			}
+		byOperation := map[string]outcome{first.operation: first, second.operation: second}
+		if renewal := byOperation["renew"]; !errors.Is(renewal.err, ErrPlatformGenerationConflict) || (renewal.snapshot.State != PlatformGenerationStateRunning && renewal.snapshot.State != PlatformGenerationStateFailed) {
+			t.Fatalf("iteration %d renewal=%#v authority=%#v", iteration, renewal, authoritative)
+		}
+		if expiry := byOperation["expire"]; expiry.err != nil || !reflect.DeepEqual(expiry.snapshot, authoritative) {
+			t.Fatalf("iteration %d expiry=%#v authority=%#v", iteration, expiry, authoritative)
 		}
 		requirePlatformGenerationTTLNotIncreased(t, client, key, beforeTTL)
 	}
