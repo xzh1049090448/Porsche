@@ -440,7 +440,7 @@ git commit -m "feat: manage public render jobs"
 
 - [ ] **Step 1: Run focused real-fixture integration**
 
-Apply 0001-0013 in isolated MySQL 8 and use isolated Redis 7. The migration fixture must exercise 0012 and 0013 down/reapply independently and finish with both exact schema verifiers plus the global verifier passing. Run model CRUD, snapshot, alert, monitor, public read, handler, and race suites with zero unexpected skip.
+Apply 0001-0015 in isolated MySQL 8 and use isolated Redis 7. The migration fixture must exercise 0012, 0013, 0014, and 0015 down/reapply independently and finish with every exact schema verifier plus the global verifier passing. Run model CRUD, snapshot, alert, monitor, public read, handler, and race suites with zero unexpected skip.
 
 - [ ] **Step 2: Run full gates**
 

@@ -1,5 +1,13 @@
 # Porsche 开发进度
 
+## 2026-09-10：公共内容与定价后端 Task 12 本地集成
+
+- 在独立工作树从 `3d01a6664d0c3c18176e1f227382c9c874c2a6d4` 开始，使用唯一名称和标签的 disposable MySQL 8.0 / Redis 7；显式测试 URL 仅传给测试命令，未读取 `.env` 或生产凭据。迁移账本为 `0001`–`0015`，0012–0015 均完成独立 down/reapply、精确 schema verifier 与 global verifier。
+- 真实 fixture 暴露并修复了 0015 MySQL CHECK 规范化、0012 对已知 0015 additive schema 的严格兼容、aggregate pricing publish ticket target、同一时钟续租 RowsAffected=0、不可变快照测试写法、fixture 初始化/清理及旧测试迁移总数假设。
+- focused handler/router/actionsecurity/whitelabel/renderer 通过；focused service 的业务组和独立 render-job 组通过且无 skip；`go test -race ./internal/service ./internal/handler -run '(Public|RootAlert|UpstreamPrice)' -count=1`、`go test ./... -count=1`、build、vet 与 diff 检查通过。沙箱内 full 首次仅因禁止监听 `[::1]` 失败，允许 loopback 后原命令通过。
+- P03–P07 仅记为 `PASS_BACKEND_LOCAL`。P08 的 safe-draft/truth gate 已实现并验证，但生产 claims、terms、privacy 与最终内容仍需产品/法务批准，保持 `BLOCKED_PRODUCT`。未执行前端联合、push、merge、生产迁移、部署或生产验收。
+
+
 ## 2026-09-08：Ubuntu GNU stat 环境合并兼容性修复候选
 
 - 生产执行 `restart-all.sh` 时，`merge-env-example.sh` 在 Ubuntu GNU coreutils 8.32 误报 `candidate metadata changed`。根因是脚本尝试 BSD `stat -f <format>` 后再回退 GNU `stat -c`；GNU `stat -f` 会把格式参数当作文件名，并可能在失败前输出包含候选路径的文件系统信息，使不同临时文件的元数据哈希必然不同。
