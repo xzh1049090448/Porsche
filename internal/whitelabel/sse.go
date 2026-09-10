@@ -20,6 +20,33 @@ func (s *WhiteLabelService) ProjectChatCompletionSSE(reader io.Reader, logicalMo
 
 // ProjectChatCompletionSSEContext retains the public projection contract and records fixed diagnostics when present.
 func (s *WhiteLabelService) ProjectChatCompletionSSEContext(ctx context.Context, reader io.Reader, logicalModelID string, emit func([]byte) error) *Error {
+	return s.consumeChatCompletionSSEContext(ctx, reader, logicalModelID, func(chunk ChatCompletionChunk) error {
+		encoded, err := json.Marshal(chunk)
+		if err != nil {
+			return err
+		}
+		frame := append([]byte("data: "), encoded...)
+		frame = append(frame, '\n', '\n')
+		return emit(frame)
+	}, func() error {
+		return emit([]byte("data: [DONE]\n\n"))
+	})
+}
+
+// ConsumeChatCompletionSSEContext consumes upstream SSE frames and invokes emit
+// with each client-safe projected chunk. The exact [DONE] frame terminates the
+// stream but is not exposed as a synthetic chunk.
+func (s *WhiteLabelService) ConsumeChatCompletionSSEContext(ctx context.Context, reader io.Reader, logicalModelID string, emit func(ChatCompletionChunk) error) *Error {
+	return s.consumeChatCompletionSSEContext(ctx, reader, logicalModelID, emit, nil)
+}
+
+func (s *WhiteLabelService) consumeChatCompletionSSEContext(
+	ctx context.Context,
+	reader io.Reader,
+	logicalModelID string,
+	emitChunk func(ChatCompletionChunk) error,
+	emitDone func() error,
+) *Error {
 	end := diagnostics.From(ctx).Begin(diagnostics.Stream)
 	fail := func(reason diagnostics.Reason, detail string) *Error {
 		end(reason)
@@ -50,12 +77,14 @@ func (s *WhiteLabelService) ProjectChatCompletionSSEContext(ctx context.Context,
 					payload := strings.Join(dataLines, "\n")
 					dataLines = nil
 					if payload == "[DONE]" {
-						if emitErr := emit([]byte("data: [DONE]\n\n")); emitErr != nil {
-							reason := diagnostics.Write
-							if ctx.Err() != nil {
-								reason = diagnostics.NetworkReason(ctx.Err())
+						if emitDone != nil {
+							if emitErr := emitDone(); emitErr != nil {
+								reason := diagnostics.Write
+								if ctx.Err() != nil {
+									reason = diagnostics.NetworkReason(ctx.Err())
+								}
+								return fail(reason, "stream write failed")
 							}
-							return fail(reason, "stream write failed")
 						}
 						end(diagnostics.OK)
 						return nil
@@ -68,13 +97,7 @@ func (s *WhiteLabelService) ProjectChatCompletionSSEContext(ctx context.Context,
 							}
 							return fail(diagnostics.Malformed, "malformed chat completion chunk")
 						}
-						encoded, marshalErr := json.Marshal(projected)
-						if marshalErr != nil {
-							return fail(diagnostics.Invalid, "chunk encoding failed")
-						}
-						frame := append([]byte("data: "), encoded...)
-						frame = append(frame, '\n', '\n')
-						if emitErr := emit(frame); emitErr != nil {
+						if emitErr := emitChunk(projected); emitErr != nil {
 							reason := diagnostics.Write
 							if ctx.Err() != nil {
 								reason = diagnostics.NetworkReason(ctx.Err())
