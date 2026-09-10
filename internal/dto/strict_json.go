@@ -8,7 +8,8 @@ import (
 )
 
 // ValidateNoDuplicateJSON rejects duplicate decoded object keys at every
-// nesting level. Token decoding makes escaped-equivalent keys compare equal.
+// nesting level. Depth counts open object/array containers: a scalar has depth
+// zero, so maxDepth containers around one scalar are accepted.
 func ValidateNoDuplicateJSON(raw []byte, maxDepth int) error {
 	if maxDepth < 1 {
 		return fmt.Errorf("invalid depth")
@@ -16,9 +17,6 @@ func ValidateNoDuplicateJSON(raw []byte, maxDepth int) error {
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	var value func(int) error
 	value = func(depth int) error {
-		if depth > maxDepth {
-			return fmt.Errorf("json nesting too deep")
-		}
 		token, err := dec.Token()
 		if err != nil {
 			return err
@@ -26,6 +24,9 @@ func ValidateNoDuplicateJSON(raw []byte, maxDepth int) error {
 		delim, ok := token.(json.Delim)
 		if !ok {
 			return nil
+		}
+		if depth >= maxDepth {
+			return fmt.Errorf("json nesting too deep")
 		}
 		switch delim {
 		case '{':
@@ -66,7 +67,7 @@ func ValidateNoDuplicateJSON(raw []byte, maxDepth int) error {
 		}
 		return nil
 	}
-	if err := value(1); err != nil {
+	if err := value(0); err != nil {
 		return err
 	}
 	if _, err := dec.Token(); err != io.EOF {

@@ -12,6 +12,7 @@ import (
 	"unicode/utf8"
 
 	drivermysql "github.com/go-sql-driver/mysql"
+	"github.com/porsche/ai-gateway-go/internal/actionsecurity"
 	"github.com/porsche/ai-gateway-go/internal/models"
 	"github.com/porsche/ai-gateway-go/internal/persistence"
 	"github.com/porsche/ai-gateway-go/internal/publiccontent"
@@ -362,7 +363,7 @@ func (s *PublicModelAdminService) Deactivate(ctx context.Context, actorID, guid 
 	})
 }
 func (s *PublicModelAdminService) Delete(ctx context.Context, actorID, guid int64, in DeletePublicModelRequest, options ...PublicAdminTransactionOption) error {
-	if !validPublicModelText(in.Reason, 128) {
+	if !actionsecurity.ValidPublicModelDeleteReason(in.Reason) {
 		return errBadRequest("reason is required")
 	}
 	resolved, err := resolvePublicAdminTransactionOptions(options)

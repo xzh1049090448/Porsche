@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/porsche/ai-gateway-go/internal/actionsecurity"
@@ -94,7 +93,7 @@ func decodePublicVerificationIntent(name string, raw []byte) (actionsecurity.Act
 	switch name {
 	case "public_models.delete":
 		var value publicModelDeleteVerificationIntent
-		if !decode(&value) || value.ExpectedRevision < 1 || value.Reason == "" || value.Reason != strings.TrimSpace(value.Reason) {
+		if !decode(&value) || value.ExpectedRevision < 1 || !actionsecurity.ValidPublicModelDeleteReason(value.Reason) {
 			return 0, nil, nil, false
 		}
 		guid, ok := publicAdminGUID(value.TargetGUID)

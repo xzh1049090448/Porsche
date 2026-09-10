@@ -1,5 +1,11 @@
 package actionsecurity
 
+import (
+	"strings"
+	"unicode"
+	"unicode/utf8"
+)
+
 type PublishIntent struct {
 	ContentType                      string
 	VersionGUID, ExpectedBaseVersion int64
@@ -20,8 +26,22 @@ type PublicPricingRestoreIntent struct{ ReleaseGUID, ExpectedRevision int64 }
 type PublicContentPublishIntent struct{ PriceReleaseGUID, ExpectedRevision int64 }
 type PublicContentRestoreIntent struct{ ReleaseGUID, ExpectedRevision int64 }
 
+// ValidPublicModelDeleteReason is shared by ticket issuance, intent encoding,
+// and execution so the ticket binds the exact accepted business value.
+func ValidPublicModelDeleteReason(value string) bool {
+	if value == "" || value != strings.TrimSpace(value) || !utf8.ValidString(value) || utf8.RuneCountInString(value) > 128 {
+		return false
+	}
+	for _, r := range value {
+		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
+			return false
+		}
+	}
+	return true
+}
+
 func encodePublicModelDeleteIntent(intent PublicModelDeleteIntent) ([]byte, error) {
-	if intent.ModelGUID <= 0 || intent.ExpectedRevision <= 0 || intent.Reason == "" {
+	if intent.ModelGUID <= 0 || intent.ExpectedRevision <= 0 || !ValidPublicModelDeleteReason(intent.Reason) {
 		return nil, errInvalidIntent
 	}
 	return encodeIntent(func(w *intentWriter) error {
