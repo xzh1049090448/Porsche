@@ -38,6 +38,8 @@ type platformSingleTestStore struct {
 	complete       func(context.Context, int64, string, map[string]string, int64) (PlatformGenerationSnapshot, error)
 	reconcile      func(context.Context, int64, string, map[string]string, int64) (PlatformGenerationSnapshot, error)
 	completeCalled bool
+	completeGUIDs  map[string]string
+	reconcileGUIDs map[string]string
 }
 
 func (s *platformSingleTestStore) add(call string) {
@@ -74,6 +76,7 @@ func (s *platformSingleTestStore) Complete(ctx context.Context, userID int64, ge
 	s.add("complete")
 	s.mu.Lock()
 	s.completeCalled = true
+	s.completeGUIDs = clonePlatformSingleGUIDMap(guids)
 	s.mu.Unlock()
 	if s.complete != nil {
 		return s.complete(ctx, userID, generationID, guids, now)
@@ -99,6 +102,9 @@ func (s *platformSingleTestStore) Get(ctx context.Context, userID int64, generat
 }
 func (s *platformSingleTestStore) ReconcileComplete(ctx context.Context, userID int64, generationID string, guids map[string]string, now int64) (PlatformGenerationSnapshot, error) {
 	s.add("reconcile_complete")
+	s.mu.Lock()
+	s.reconcileGUIDs = clonePlatformSingleGUIDMap(guids)
+	s.mu.Unlock()
 	if s.reconcile != nil {
 		return s.reconcile(ctx, userID, generationID, guids, now)
 	}
@@ -132,18 +138,28 @@ func (s *platformSingleTestStore) AcknowledgeCancelledOwned(ctx context.Context,
 }
 
 type platformSingleTestPersistence struct {
-	calls   *[]string
-	input   PlatformGenerationPersistenceInput
-	receipt PlatformGenerationReceiptSnapshot
-	err     error
+	calls     *[]string
+	input     PlatformGenerationPersistenceInput
+	receipt   PlatformGenerationReceiptSnapshot
+	err       error
+	callCount atomic.Int32
 }
 
 func (p *platformSingleTestPersistence) Finalize(_ context.Context, _ *gorm.DB, in PlatformGenerationPersistenceInput) (PlatformGenerationReceiptSnapshot, error) {
+	p.callCount.Add(1)
 	if p.calls != nil {
 		*p.calls = append(*p.calls, "persist")
 	}
 	p.input = in
 	return p.receipt, p.err
+}
+
+func clonePlatformSingleGUIDMap(source map[string]string) map[string]string {
+	copyMap := make(map[string]string, len(source))
+	for key, value := range source {
+		copyMap[key] = value
+	}
+	return copyMap
 }
 
 type platformSingleTestRegistry struct {
@@ -878,6 +894,93 @@ func TestPlatformSingleGenerationRenewalCancellingSnapshotIsAcknowledgedWithoutR
 	}
 }
 
+func TestPlatformSingleGenerationRenewalCompletionHandshakeNeverDropsUnknownResult(t *testing.T) {
+	f := newPlatformSingleTestRunnerFixture()
+	timers := &platformSingleTestTimerFactory{created: make(chan *platformSingleTestTimer, 1)}
+	f.runner.deps.newTimer = timers.New
+	started := make(chan struct{})
+	f.store.renew = func(ctx context.Context, _ int64, _ string, _ string, _ int64) (PlatformGenerationSnapshot, error) {
+		close(started)
+		<-ctx.Done()
+		return PlatformGenerationSnapshot{}, ErrPlatformGenerationUnavailable
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	results := make(chan platformSingleRenewalResult, 1)
+	done := make(chan struct{})
+	var mutationMu sync.Mutex
+	run := platformSingleRun{userID: 7, generationID: platformSingleTestGenerationID, model: "model-a", leaseToken: platformSingleTestLeaseToken()}
+	go f.runner.renew(ctx, run, &mutationMu, results, done)
+	timer := <-timers.created
+	timer.ch <- time.UnixMilli(11_000)
+	<-started
+	cancel()
+	<-done
+	select {
+	case result := <-results:
+		if !errors.Is(result.err, ErrPlatformGenerationUnavailable) {
+			t.Fatalf("renewal result=%+v", result)
+		}
+	default:
+		t.Fatal("completed renewal result was dropped")
+	}
+}
+
+func TestPlatformSingleGenerationUpstreamCompletionWaitsForInflightUnknownRenewal(t *testing.T) {
+	var calls []string
+	runner, store, persist, upstream := platformSingleTestRunner(&calls)
+	timers := &platformSingleTestTimerFactory{created: make(chan *platformSingleTestTimer, 1)}
+	runner.deps.newTimer = timers.New
+	renewStarted := make(chan struct{})
+	store.renew = func(ctx context.Context, _ int64, _ string, _ string, _ int64) (PlatformGenerationSnapshot, error) {
+		close(renewStarted)
+		<-ctx.Done()
+		return PlatformGenerationSnapshot{}, ErrPlatformGenerationUnavailable
+	}
+	releaseUpstream := make(chan struct{})
+	deltaRecorded := make(chan struct{})
+	upstream.consume = func(_ context.Context, emit func(whitelabel.ChatCompletionChunk) error) *whitelabel.Error {
+		content := "answer"
+		if err := emit(whitelabel.ChatCompletionChunk{Choices: []whitelabel.ChatCompletionChunkChoice{{Index: 0, Delta: whitelabel.ChatCompletionChunkDelta{Content: &content}}}}); err != nil {
+			return whitelabel.ErrUpstreamUnavailable("callback")
+		}
+		close(deltaRecorded)
+		<-releaseUpstream
+		finish := "stop"
+		for _, chunk := range []whitelabel.ChatCompletionChunk{
+			{Choices: []whitelabel.ChatCompletionChunkChoice{{Index: 0, FinishReason: &finish}}},
+			{Usage: &whitelabel.ChatCompletionUsage{TotalTokens: 3}},
+		} {
+			if err := emit(chunk); err != nil {
+				return whitelabel.ErrUpstreamUnavailable("callback")
+			}
+		}
+		return nil
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := runner.Run(PlatformSingleGenerationInput{Context: context.Background(), User: platformSingleTestUser(), GenerationID: platformSingleTestGenerationID, Params: platformSingleTestParams("hello"), Write: func([]byte) error { return nil }})
+		done <- err
+	}()
+	timer := <-timers.created
+	<-deltaRecorded
+	timer.ch <- time.UnixMilli(11_000)
+	<-renewStarted
+	close(releaseUpstream)
+	if err := <-done; !errors.Is(err, ErrPlatformSingleGenerationUnavailable) {
+		t.Fatalf("Run() err=%v", err)
+	}
+	for _, forbidden := range []string{"model_done_store", "begin_commit", "persist", "complete"} {
+		for _, call := range calls {
+			if call == forbidden {
+				t.Fatalf("%s ran after unknown renewal: %v", forbidden, calls)
+			}
+		}
+	}
+	if persist.callCount.Load() != 0 {
+		t.Fatalf("Finalize calls=%d", persist.callCount.Load())
+	}
+}
+
 func TestPlatformSingleGenerationSerializesDeltaAndRenewalMutations(t *testing.T) {
 	f := newPlatformSingleTestRunnerFixture()
 	timers := &platformSingleTestTimerFactory{created: make(chan *platformSingleTestTimer, 2)}
@@ -1093,8 +1196,9 @@ func TestPlatformSingleGenerationCommitUnknownReconcilesWithoutReplayingSQL(t *t
 	if err != nil || !result.Started || writes != 4 {
 		t.Fatalf("result=%+v err=%v writes=%d", result, err, writes)
 	}
-	if f.persist.input.GenerationID == "" {
-		t.Fatal("Finalize not called")
+	wantGUIDs := map[string]string{"model-a": "9001"}
+	if f.persist.callCount.Load() != 1 || f.persist.input.GenerationID == "" || !reflect.DeepEqual(f.store.completeGUIDs, wantGUIDs) || !reflect.DeepEqual(f.store.reconcileGUIDs, wantGUIDs) {
+		t.Fatalf("Finalize calls=%d complete_guids=%v reconcile_guids=%v", f.persist.callCount.Load(), f.store.completeGUIDs, f.store.reconcileGUIDs)
 	}
 }
 
@@ -1116,6 +1220,28 @@ func TestPlatformSingleGenerationUnprovenCompletionNeverEmitsDone(t *testing.T) 
 	}
 	if got := platformSingleTestEventNames(frames.Bytes()); !reflect.DeepEqual(got, []string{"meta", "delta", "model_done", "error"}) {
 		t.Fatalf("events=%v", got)
+	}
+}
+
+func TestPlatformSingleGenerationMismatchedReconciledCompletionNeverEmitsDone(t *testing.T) {
+	f := newPlatformSingleTestRunnerFixture()
+	f.store.complete = func(context.Context, int64, string, map[string]string, int64) (PlatformGenerationSnapshot, error) {
+		return PlatformGenerationSnapshot{}, ErrPlatformGenerationUnavailable
+	}
+	f.store.reconcile = func(context.Context, int64, string, map[string]string, int64) (PlatformGenerationSnapshot, error) {
+		snapshot := platformSingleCompletedSnapshot()
+		snapshot.ModelStates["model-a"] = PlatformGenerationModel{State: PlatformGenerationStateCompleted, Seq: 1, AssistantMessageGUID: "9002"}
+		return snapshot, nil
+	}
+	var frames bytes.Buffer
+	in := f.input()
+	in.Write = func(frame []byte) error { _, _ = frames.Write(frame); return nil }
+	result, err := f.runner.Run(in)
+	if !errors.Is(err, ErrPlatformSingleGenerationUnavailable) || !result.Started {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	if f.persist.callCount.Load() != 1 || strings.Contains(frames.String(), "event: done") {
+		t.Fatalf("Finalize calls=%d stream=%q", f.persist.callCount.Load(), frames.String())
 	}
 }
 

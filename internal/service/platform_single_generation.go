@@ -203,12 +203,8 @@ func (r *PlatformSingleGenerationRunner) Run(input PlatformSingleGenerationInput
 
 	renewCtx, cancelRenew := context.WithCancel(context.WithoutCancel(runnerCtx))
 	renewResults := make(chan platformSingleRenewalResult, 1)
-	var renewWG sync.WaitGroup
-	renewWG.Add(1)
-	go func() {
-		defer renewWG.Done()
-		r.renew(renewCtx, run, &mutationMu, renewResults)
-	}()
+	renewDone := make(chan struct{})
+	go r.renew(renewCtx, run, &mutationMu, renewResults, renewDone)
 
 	var consumed platformSingleConsumeResult
 	var terminalCause error
@@ -238,8 +234,24 @@ func (r *PlatformSingleGenerationRunner) Run(input PlatformSingleGenerationInput
 		consumed = <-consumeResults
 	}
 	cancelRenew()
-	renewWG.Wait()
+	<-renewDone
 	body.Close()
+	if renewalAuthority == nil && !renewalAuthorityUnknown {
+		select {
+		case renewed := <-renewResults:
+			terminalCause = renewed.err
+			if terminalCause == nil {
+				terminalCause = ErrPlatformSingleGenerationUnavailable
+			}
+			if validPlatformSingleSnapshotIdentity(renewed.snapshot, run) {
+				snapshot := clonePlatformGeneration(renewed.snapshot)
+				renewalAuthority = &snapshot
+			} else {
+				renewalAuthorityUnknown = true
+			}
+		default:
+		}
+	}
 	if terminalCause == nil {
 		terminalCause = consumed.cause
 	}
@@ -430,9 +442,10 @@ func (r *PlatformSingleGenerationRunner) consume(ctx context.Context, run platfo
 	results <- platformSingleConsumeResult{state: state}
 }
 
-func (r *PlatformSingleGenerationRunner) renew(ctx context.Context, run platformSingleRun, mutationMu *sync.Mutex, results chan<- platformSingleRenewalResult) {
+func (r *PlatformSingleGenerationRunner) renew(ctx context.Context, run platformSingleRun, mutationMu *sync.Mutex, results chan<- platformSingleRenewalResult, done chan<- struct{}) {
 	timer := r.deps.newTimer(10 * time.Second)
 	defer func() { timer.Stop() }()
+	defer close(done)
 	for {
 		select {
 		case <-ctx.Done():
@@ -446,10 +459,7 @@ func (r *PlatformSingleGenerationRunner) renew(ctx context.Context, run platform
 				if err == nil {
 					err = ErrPlatformSingleGenerationUnavailable
 				}
-				select {
-				case results <- platformSingleRenewalResult{snapshot: snapshot, err: err}:
-				case <-ctx.Done():
-				}
+				results <- platformSingleRenewalResult{snapshot: snapshot, err: err}
 				return
 			}
 			timer.Stop()
