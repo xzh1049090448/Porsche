@@ -29,6 +29,18 @@
 - 不增加 `/v1/embeddings`、Anthropic Messages 或 Realtime API。
 - 不改变 Gateway Token 的创建、哈希、ACL、IP 白名单、有效期或 owner 权限规则。
 
+## 后续兼容性扩展 TODO
+
+首期实现完成后，建立并持续维护 Codex、OpenCode 及其他主流 Agent/CLI 的兼容性矩阵，在不削弱鉴权、字段投影和敏感信息保护的前提下尽可能扩大兼容范围。后续工作至少包括：
+
+- 固定并跟踪各客户端版本、所用协议、请求字段、SSE 事件和工具回传形状。
+- 为 Codex 补充当前 Responses-only provider 所需的 reasoning、text、include、prompt cache、stream options 与无状态 reasoning item 回传能力。
+- 同时覆盖 OpenCode 的 `@ai-sdk/openai-compatible` Chat provider 和 `@ai-sdk/openai` Responses provider。
+- 收集其他常见 OpenAI-compatible SDK/CLI 自动发送的可选字段，为安全兼容字段采用显式接收、验证、转换或有记录的降级策略。
+- 每次客户端或协议升级后重放脱敏 fixture，并执行真实客户端的文本、单工具、并行工具和多轮闭环验收。
+
+本 TODO 不扩大本次已批准的首期实现范围，也不能替代首期 OpenCode fixture 和本地闭环验收。
+
 ## 总体架构
 
 新增 `internal/openaicompat` 包，公开协议适配与上游协议之间只交换规范化类型：
