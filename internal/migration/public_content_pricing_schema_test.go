@@ -121,6 +121,66 @@ func TestPublicContentPricingSchemaAcceptsNormalizedChecksAndImplicitForeignKeyI
 	}
 }
 
+func TestPublicContentPricingSchemaAcceptsOnlyCompleteOptionalSnapshotPriceMigration(t *testing.T) {
+	contracts := publicContentPricingTableContracts()
+	metadata := publicContentPricingMetadataFromContracts(contracts, "porsche_test")
+	applyPublicContentPricingExpectedChecks(metadata)
+
+	setNullable := func(metadata map[string]businessGroupTableMetadata, columnName, nullable string) {
+		table := metadata["public_price_snapshot_items"]
+		for index := range table.columns {
+			if table.columns[index].name == columnName {
+				table.columns[index].nullable = nullable
+			}
+		}
+		metadata["public_price_snapshot_items"] = table
+	}
+	setNullable(metadata, "input_price_usd_per_million_tokens", "YES")
+	setNullable(metadata, "output_price_usd_per_million_tokens", "YES")
+	if !matchesPublicContentPricingSchema(contracts, metadata, "porsche_test") {
+		t.Fatal("schema verifier rejected the complete schema produced by migration 0017")
+	}
+
+	t.Run("partial_nullable_transition", func(t *testing.T) {
+		partial := publicContentPricingMetadataFromContracts(contracts, "porsche_test")
+		applyPublicContentPricingExpectedChecks(partial)
+		setNullable(partial, "input_price_usd_per_million_tokens", "YES")
+		if matchesPublicContentPricingSchema(contracts, partial, "porsche_test") {
+			t.Fatal("schema verifier accepted only one optional snapshot price column")
+		}
+	})
+
+	t.Run("nullable_column_type_drift", func(t *testing.T) {
+		drifted := publicContentPricingMetadataFromContracts(contracts, "porsche_test")
+		applyPublicContentPricingExpectedChecks(drifted)
+		setNullable(drifted, "input_price_usd_per_million_tokens", "YES")
+		setNullable(drifted, "output_price_usd_per_million_tokens", "YES")
+		table := drifted["public_price_snapshot_items"]
+		for index := range table.columns {
+			if table.columns[index].name == "output_price_usd_per_million_tokens" {
+				table.columns[index].columnType = "decimal(18,6)"
+			}
+		}
+		drifted["public_price_snapshot_items"] = table
+		if matchesPublicContentPricingSchema(contracts, drifted, "porsche_test") {
+			t.Fatal("schema verifier accepted drifted optional snapshot price metadata")
+		}
+	})
+
+	t.Run("weakened_check", func(t *testing.T) {
+		drifted := publicContentPricingMetadataFromContracts(contracts, "porsche_test")
+		applyPublicContentPricingExpectedChecks(drifted)
+		setNullable(drifted, "input_price_usd_per_million_tokens", "YES")
+		setNullable(drifted, "output_price_usd_per_million_tokens", "YES")
+		table := drifted["public_price_snapshot_items"]
+		table.checks[0].clause = "context_window > 0 AND is_deleted IN (0, 1)"
+		drifted["public_price_snapshot_items"] = table
+		if matchesPublicContentPricingSchema(contracts, drifted, "porsche_test") {
+			t.Fatal("schema verifier accepted a weakened snapshot price CHECK")
+		}
+	})
+}
+
 func TestVerifyPublicContentPricingSchemaRejectsNilDB(t *testing.T) {
 	if err := VerifyPublicContentPricingSchema(nil, nil); err != ErrPublicContentPricingSchema {
 		t.Fatalf("VerifyPublicContentPricingSchema(nil) = %v, want %v", err, ErrPublicContentPricingSchema)

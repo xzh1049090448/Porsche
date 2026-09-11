@@ -205,6 +205,13 @@ func matchesPublicContentPricingTableContract(want publicContentPricingTableCont
 	if want.table.name == "public_model_configs" || want.table.name == "public_price_snapshot_items" {
 		got = withoutPublicPricingCatalogMetadataAdditions(want.table.name, got)
 	}
+	if want.table.name == "public_price_snapshot_items" {
+		var ok bool
+		got, ok = normalizePublicPricingOptionalPriceColumns(got)
+		if !ok {
+			return false
+		}
+	}
 	if want.table.name == "public_render_jobs" {
 		var ok bool
 		got, ok = withoutPublicRenderTerminalAdditions(got)
@@ -279,6 +286,38 @@ func matchesPublicContentPricingTableContract(want publicContentPricingTableCont
 		}
 	}
 	return true
+}
+
+// Migration 0017 changes both immutable snapshot price columns from NOT NULL
+// to NULL together. The 0012 verifier remains valid both immediately after
+// 0012 and after that known additive migration, but rejects partial transitions.
+// All other column metadata and the original non-negative CHECK are still
+// compared exactly by matchesPublicContentPricingTableContract.
+func normalizePublicPricingOptionalPriceColumns(got businessGroupTableMetadata) (businessGroupTableMetadata, bool) {
+	names := map[string]bool{
+		"input_price_usd_per_million_tokens":  true,
+		"output_price_usd_per_million_tokens": true,
+	}
+	found := 0
+	nullable := 0
+	for index := range got.columns {
+		if !names[got.columns[index].name] {
+			continue
+		}
+		found++
+		switch got.columns[index].nullable {
+		case "NO":
+		case "YES":
+			nullable++
+			got.columns[index].nullable = "NO"
+		default:
+			return got, false
+		}
+	}
+	if found != len(names) || (nullable != 0 && nullable != len(names)) {
+		return got, false
+	}
+	return got, true
 }
 
 func withoutPublicPricingCatalogMetadataAdditions(table string, got businessGroupTableMetadata) businessGroupTableMetadata {
