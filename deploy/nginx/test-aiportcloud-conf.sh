@@ -55,6 +55,9 @@ require_line "$config_file" '        proxy_send_timeout 300s;'
 require_line "$config_file" '    root /var/www/porsche-web;'
 require_line "$config_file" '    index index.html;'
 require_location_block 'location /' '        try_files $uri $uri/ /index.html;'
+require_location_block 'location = /admin/public-content/preview' '        add_header Cache-Control "no-store" always;'
+require_location_block 'location = /admin/public-content/preview' '        add_header X-Robots-Tag "noindex, nofollow" always;'
+require_location_block 'location = /admin/public-content/preview' '        try_files /index.html =404;'
 
 for location in \
     'location /api/' 'location = /api' \

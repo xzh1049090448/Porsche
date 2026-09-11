@@ -7,6 +7,12 @@
 - fixture 已按两个完整容器 ID 精确 stop/remove，命名 network/volumes、私有凭据目录与 label-filter 残留均清理，两个 loopback 端口无 listener。固定基线 `944309003ce47bbaf949f6c0f28d9bd302016d0f`，pre-report 候选 `20e51fe90a08f0581d3fdf261a3564deaf392b6b`；未 fetch/rebase/push。
 - `go-018` 仍为 `in_progress`：BE01–BE06 仅后端本地完成，前后端合同对齐、Porsche-Web 实现、联合验收、生产迁移/部署、公开 HTTPS 与真实上游仍未完成；未 push、PR 或 merge。完整证据见 `docs/superpowers/reports/2026-09-11-platform-compare-stream-v2.md`。
 
+## 2026-09-11：公共内容与定价分支同步主分支
+
+- `feature/public-content-pricing` 已语义合并最新 `origin/main`，保留主分支的用户管理、平台生成控制与安全动作能力，同时接入公共内容、公开定价及 Root 管理动作。
+- 主分支已占用迁移 `0012`–`0013`，公共内容与定价迁移顺延为 `0014`–`0019`；迁移校验、动作注册、身份鉴权及应用状态初始化已完成兼容合并。
+- 后端 `go test ./... -count=1` 全量通过；配对前端 681/681 测试及生产构建通过。P08 仍为 `BLOCKED_PRODUCT`，本次未执行生产内容发布、数据库迁移或部署。
+
 ## 2026-09-11：BE05 platform single v2 stream 本地候选完成
 
 - 八个 BE05 真实 MySQL/Redis integration 顶层测试全部通过且零跳过，覆盖新/既有会话、断连后 GET、取消无持久化、续租与 converger、commit-unknown reconcile、duplicate/quota 竞争和失败矩阵；成功图的 receipt/result、精确消息、usage、daily/token、provenance 与 GET 水合均一致，失败图 durable snapshot 不变。

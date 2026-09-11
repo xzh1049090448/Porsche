@@ -22,7 +22,7 @@ func TestBusinessGroupMigrationLatest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(migrations) != 13 || migrations[6].Version != "0007" || migrations[7].Version != "0008" || migrations[8].Version != "0009" || migrations[9].Version != "0010" {
+	if len(migrations) != 19 || migrations[6].Version != "0007" || migrations[7].Version != "0008" || migrations[8].Version != "0009" || migrations[9].Version != "0010" {
 		t.Fatalf("All() count/tail = %d/%q, want ten migrations with business groups at 0007", len(migrations), migrations[len(migrations)-1].Version)
 	}
 
@@ -40,6 +40,12 @@ func TestBusinessGroupMigrationLatest(t *testing.T) {
 		"be6ea3beb18a64cf2a2e03b2730df5abbcc457900e9da6292eefee0dd15a2792",
 		"d2f1f841f7176684cd6b953bc69f0f1143e64eca0d758ae7b9e3d1104c97de01",
 		"7ed008718e76bf8251a15f4d115ef9f959f5f0f2c7e1f8a9a9398201a7239bde",
+		"7291cfeedc837702fb5f8de4125807fb1e475dceb8bf6687ec9509b74c366e11",
+		"62a91248a861e1a1208255bdfe7f0660e0ca8750c6bd52fb96f29722a82a989c",
+		"cc016d547a07e44d140b8c7c5e39b64859e12993b8f2d4aeae42ba235fd69671",
+		"998e273023e4a6992f6bf78b8ac6f7a0ee7e7d85bb3bcfa468659e7e4db7f9be",
+		"107d1c9f547e5988068d10bbaf3adbc892d63c683f71209725473be6bacc0afa",
+		"04e8c22b9c3ead34a4572f81ca0060a9305acf635cc0ead5c10136239b031ff2",
 	}
 	if len(wantPublished) != len(migrations) {
 		t.Fatalf("checksum list length = %d, migrations = %d", len(wantPublished), len(migrations))

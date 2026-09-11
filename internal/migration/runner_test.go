@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -13,6 +14,16 @@ import (
 	"github.com/porsche/ai-gateway-go/internal/persistence"
 	"gorm.io/gorm"
 )
+
+func TestUpDoesNotVerifyExtendedAdminOperationShapeAtBaseMigration(t *testing.T) {
+	source, err := os.ReadFile(filepath.Join("runner.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(source), `migration.Version == "0005"`) {
+		t.Fatal("migration 0005 must not use the extended admin operation verifier before 0012 can be applied")
+	}
+}
 
 func TestUpRerunUsesActiveAdminOperationSchemaVersionAndRejectsDrift(t *testing.T) {
 	runUp := func(gdb *gorm.DB) error {
@@ -257,7 +268,7 @@ func TestAdminUsersReadCountIndexMigrationContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(migrations) != 13 || migrations[3].Version != "0004" || migrations[5].Version != "0006" || migrations[6].Version != "0007" || migrations[7].Version != "0008" || migrations[8].Version != "0009" || migrations[9].Version != "0010" {
+	if len(migrations) != 19 || migrations[3].Version != "0004" || migrations[5].Version != "0006" || migrations[6].Version != "0007" || migrations[7].Version != "0008" || migrations[8].Version != "0009" || migrations[9].Version != "0010" {
 		t.Fatalf("admin users count migration 0004 is missing: %#v", migrations)
 	}
 	up := strings.ToLower(string(migrations[3].UpSQL))
@@ -282,7 +293,7 @@ func TestAuthCoreMigrationContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(migrations) != 13 || migrations[1].Version != "0002" || migrations[2].Version != "0003" || migrations[3].Version != "0004" || migrations[5].Version != "0006" || migrations[6].Version != "0007" || migrations[7].Version != "0008" || migrations[8].Version != "0009" || migrations[9].Version != "0010" {
+	if len(migrations) != 19 || migrations[1].Version != "0002" || migrations[2].Version != "0003" || migrations[3].Version != "0004" || migrations[5].Version != "0006" || migrations[6].Version != "0007" || migrations[7].Version != "0008" || migrations[8].Version != "0009" || migrations[9].Version != "0010" {
 		t.Fatalf("auth migration 0002 is missing: %#v", migrations)
 	}
 

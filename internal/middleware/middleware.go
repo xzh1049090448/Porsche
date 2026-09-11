@@ -64,6 +64,17 @@ func RequireUserWithErrorWriter(state *app.State, writeError func(*gin.Context, 
 	}
 }
 
+// AuthenticateUserWithError authenticates an optional-session request while
+// allowing the owning API family to keep its error and cache contract.
+func AuthenticateUserWithError(c *gin.Context, state *app.State, abort func(*gin.Context, int, string)) bool {
+	if abort == nil {
+		abort = func(c *gin.Context, status int, detail string) { httpx.AbortJSON(c, status, detail) }
+	}
+	return authenticateUserWithErrorWriter(c, state, func(c *gin.Context, detail string) {
+		abort(c, http.StatusUnauthorized, detail)
+	})
+}
+
 // RequireAdmin accepts only an authenticated server session whose persisted
 // role is at least Admin; it deliberately has no ADMIN_TOKEN bypass.
 func RequireAdmin(state *app.State) gin.HandlerFunc {
@@ -87,6 +98,21 @@ func RequireRoot(state *app.State) gin.HandlerFunc {
 		}
 		if !hasMinimumRole(CurrentUser(c).Role, models.UserRoleRoot) {
 			httpx.AbortJSON(c, http.StatusForbidden, "无Root权限")
+			return
+		}
+		c.Next()
+	}
+}
+
+// RequireRootWithError applies the same persisted-session Root policy while
+// allowing a scoped API family to own its error envelope.
+func RequireRootWithError(state *app.State, abort func(*gin.Context, int, string)) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if abort == nil || !AuthenticateUserWithError(c, state, abort) {
+			return
+		}
+		if !hasMinimumRole(CurrentUser(c).Role, models.UserRoleRoot) {
+			abort(c, http.StatusForbidden, "root role required")
 			return
 		}
 		c.Next()

@@ -10,12 +10,227 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/porsche/ai-gateway-go/internal/config"
 )
+
+var exactCatalogPrice = regexp.MustCompile(`^(0|[1-9][0-9]{0,11})(\.[0-9]{1,8})?$`)
+
+const catalogObservationMaxBytes = 2 << 20
+
+// ObserveCatalog bypasses the serving cache and returns a newly fetched,
+// allowlist-filtered, sanitized projection for safety monitoring.
+func (s *WhiteLabelService) ObserveCatalog(ctx context.Context) (CatalogObservation, error) {
+	fetchedAt := s.now().UTC()
+	request, err := s.newRequest(ctx, s.baseURL+"/models")
+	if err != nil {
+		return CatalogObservation{FetchedAt: fetchedAt}, ErrUpstreamUnavailable("catalog observation failed")
+	}
+	response, err := s.client.Do(request)
+	if err != nil {
+		return CatalogObservation{FetchedAt: fetchedAt}, ErrUpstreamUnavailable("catalog observation failed")
+	}
+	defer response.Body.Close()
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		return CatalogObservation{FetchedAt: fetchedAt}, ErrUpstreamUnavailable("catalog observation failed")
+	}
+	var payload struct {
+		Data []struct {
+			ID      string          `json:"id"`
+			OwnedBy string          `json:"owned_by"`
+			Input   json.RawMessage `json:"input_token_price_per_m"`
+			Output  json.RawMessage `json:"output_token_price_per_m"`
+		} `json:"data"`
+		Complete *bool `json:"complete"`
+	}
+	raw, err := io.ReadAll(io.LimitReader(response.Body, catalogObservationMaxBytes+1))
+	if err != nil || len(raw) > catalogObservationMaxBytes || !utf8.Valid(raw) || validateCatalogJSONKeys(raw) != nil {
+		return CatalogObservation{FetchedAt: fetchedAt}, ErrUpstreamUnavailable("catalog observation failed")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err = decoder.Decode(&payload); err != nil {
+		return CatalogObservation{FetchedAt: fetchedAt}, ErrUpstreamUnavailable("catalog observation failed")
+	}
+	if err = requireJSONEOF(decoder); err != nil {
+		return CatalogObservation{FetchedAt: fetchedAt}, ErrUpstreamUnavailable("catalog observation failed")
+	}
+	complete := payload.Complete != nil && *payload.Complete
+	seen := map[string]bool{}
+	models := make([]CatalogObservedModel, 0, len(payload.Data))
+	for _, raw := range payload.Data {
+		if !validCatalogPriceType(raw.Input) || !validCatalogPriceType(raw.Output) {
+			return CatalogObservation{FetchedAt: fetchedAt}, ErrUpstreamUnavailable("catalog observation failed")
+		}
+		id := strings.TrimSpace(raw.ID)
+		if !validModelID(id) || !s.globallyAllows(id) || seen[id] {
+			continue
+		}
+		seen[id] = true
+		models = append(models, CatalogObservedModel{NormalizedID: id, Provider: safeText(raw.OwnedBy), InputPriceUSDPerMillionTokens: exactPrice(raw.Input), OutputPriceUSDPerMillionTokens: exactPrice(raw.Output)})
+	}
+	sort.Slice(models, func(i, j int) bool { return models[i].NormalizedID < models[j].NormalizedID })
+	return CatalogObservation{Models: models, FetchedAt: fetchedAt, Successful: true, Complete: complete, Fresh: true}, nil
+}
+
+func validCatalogPriceType(raw json.RawMessage) bool {
+	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
+		return true
+	}
+	var value any
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	if decoder.Decode(&value) != nil {
+		return false
+	}
+	switch value.(type) {
+	case string, json.Number:
+		return true
+	default:
+		return false
+	}
+}
+
+func requireJSONEOF(decoder *json.Decoder) error {
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return fmt.Errorf("multiple JSON documents")
+		}
+		return err
+	}
+	return nil
+}
+
+func validateCatalogJSONKeys(raw []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	token, err := decoder.Token()
+	if err != nil || token != json.Delim('{') {
+		return fmt.Errorf("catalog root must be object")
+	}
+	seen := map[string]struct{}{}
+	for decoder.More() {
+		keyToken, keyErr := decoder.Token()
+		if keyErr != nil {
+			return keyErr
+		}
+		key, ok := keyToken.(string)
+		if !ok || (key != "data" && key != "complete") {
+			return fmt.Errorf("unknown catalog field")
+		}
+		if _, duplicate := seen[key]; duplicate {
+			return fmt.Errorf("duplicate catalog field")
+		}
+		seen[key] = struct{}{}
+		if key == "data" {
+			if err := validateCatalogDataKeys(decoder); err != nil {
+				return err
+			}
+		} else {
+			var complete bool
+			if err := decoder.Decode(&complete); err != nil {
+				return fmt.Errorf("catalog complete must be boolean")
+			}
+		}
+	}
+	_, err = decoder.Token()
+	if err != nil {
+		return err
+	}
+	if _, ok := seen["data"]; !ok {
+		return fmt.Errorf("catalog data missing")
+	}
+	if _, ok := seen["complete"]; !ok {
+		return fmt.Errorf("catalog completeness missing")
+	}
+	return nil
+}
+
+func validateCatalogDataKeys(decoder *json.Decoder) error {
+	token, err := decoder.Token()
+	if err != nil || token != json.Delim('[') {
+		return fmt.Errorf("catalog data must be array")
+	}
+	allowed := map[string]struct{}{"id": {}, "owned_by": {}, "input_token_price_per_m": {}, "output_token_price_per_m": {}}
+	for decoder.More() {
+		token, err = decoder.Token()
+		if err != nil || token != json.Delim('{') {
+			return fmt.Errorf("catalog model must be object")
+		}
+		seen := map[string]struct{}{}
+		for decoder.More() {
+			keyToken, keyErr := decoder.Token()
+			if keyErr != nil {
+				return keyErr
+			}
+			key, ok := keyToken.(string)
+			if !ok {
+				return fmt.Errorf("invalid catalog model field")
+			}
+			if _, known := allowed[key]; !known {
+				return fmt.Errorf("unknown catalog model field")
+			}
+			if _, duplicate := seen[key]; duplicate {
+				return fmt.Errorf("duplicate catalog model field")
+			}
+			seen[key] = struct{}{}
+			switch key {
+			case "id":
+				var id string
+				if err := decoder.Decode(&id); err != nil || id != strings.TrimSpace(id) || !validModelID(id) {
+					return fmt.Errorf("invalid catalog model id")
+				}
+			case "owned_by":
+				var provider string
+				if err := decoder.Decode(&provider); err != nil {
+					return fmt.Errorf("invalid catalog model owner")
+				}
+			default:
+				if err := skipCatalogJSONValue(decoder); err != nil {
+					return err
+				}
+			}
+		}
+		if _, err = decoder.Token(); err != nil {
+			return err
+		}
+		if _, ok := seen["id"]; !ok {
+			return fmt.Errorf("catalog model id missing")
+		}
+	}
+	_, err = decoder.Token()
+	return err
+}
+
+func skipCatalogJSONValue(decoder *json.Decoder) error {
+	var value any
+	return decoder.Decode(&value)
+}
+
+func exactPrice(raw json.RawMessage) *string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil
+	}
+	value := string(raw)
+	if len(value) >= 2 && value[0] == '"' {
+		var text string
+		if json.Unmarshal(raw, &text) != nil {
+			return nil
+		}
+		value = text
+	}
+	if _, err := strconv.ParseFloat(value, 64); err != nil || !exactCatalogPrice.MatchString(value) {
+		return nil
+	}
+	copy := value
+	return &copy
+}
 
 // WhiteLabelService is the single, cached source for permitted upstream model
 // metadata. It owns an HTTP client configured by the application, never a

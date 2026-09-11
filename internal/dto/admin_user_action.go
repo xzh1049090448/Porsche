@@ -572,6 +572,12 @@ func decodeOwnedUserDeleteJSONString(raw json.RawMessage) ([]byte, bool) {
 	return decoded, true
 }
 
+// DecodeOwnedJSONString decodes a JSON string into caller-owned mutable bytes.
+// Callers must clear the returned slice when it may contain a secret.
+func DecodeOwnedJSONString(raw json.RawMessage) ([]byte, bool) {
+	return decodeOwnedUserDeleteJSONString(raw)
+}
+
 func parseCanonicalPositiveInt64(raw string) (int64, bool) {
 	if raw == "" || raw[0] < '1' || raw[0] > '9' {
 		return 0, false

@@ -169,7 +169,7 @@ func (bundle *UserManagementActions) DeleteActions() *UserDeleteActions {
 
 func exactActiveUserManagementDescriptors(descriptors []actionsecurity.Descriptor) bool {
 	expected := actionsecurity.FutureActionDescriptors()
-	if len(descriptors) != 7 || len(expected) != len(descriptors) {
+	if len(descriptors) < len(expected) {
 		return false
 	}
 	for index := range expected {

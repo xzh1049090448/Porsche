@@ -170,27 +170,33 @@
         },
         {
           "id": "P03",
-          "status": "BLOCKED_NOT_IMPLEMENTED"
+          "status": "PASS_BACKEND_LOCAL",
+          "evidence": "Backend Task 12 isolated MySQL 8.0 / Redis 7 fixtures, migrations 0001-0019, focused integration and race gates passed; frontend, deployment, production migration, and production acceptance remain not run."
         },
         {
           "id": "P04",
-          "status": "BLOCKED_NOT_IMPLEMENTED"
+          "status": "PASS_BACKEND_LOCAL",
+          "evidence": "Backend Task 12 isolated MySQL 8.0 / Redis 7 fixtures, migrations 0001-0019, focused integration and race gates passed; frontend, deployment, production migration, and production acceptance remain not run."
         },
         {
           "id": "P05",
-          "status": "BLOCKED_NOT_IMPLEMENTED"
+          "status": "PASS_BACKEND_LOCAL",
+          "evidence": "Backend Task 12 isolated MySQL 8.0 / Redis 7 fixtures, migrations 0001-0019, focused integration and race gates passed; frontend, deployment, production migration, and production acceptance remain not run."
         },
         {
           "id": "P06",
-          "status": "BLOCKED_NOT_IMPLEMENTED"
+          "status": "PASS_BACKEND_LOCAL",
+          "evidence": "Backend Task 12 isolated MySQL 8.0 / Redis 7 fixtures, migrations 0001-0019, focused integration and race gates passed; frontend, deployment, production migration, and production acceptance remain not run."
         },
         {
           "id": "P07",
-          "status": "BLOCKED_NOT_IMPLEMENTED"
+          "status": "PASS_BACKEND_LOCAL",
+          "evidence": "Backend Task 12 isolated MySQL 8.0 / Redis 7 fixtures, migrations 0001-0019, focused integration and race gates passed; frontend, deployment, production migration, and production acceptance remain not run."
         },
         {
           "id": "P08",
-          "status": "BLOCKED_PRODUCT"
+          "status": "BLOCKED_PRODUCT",
+          "evidence": "Safe draft and publication truth gates are implemented and locally tested; reviewed production claims, terms, privacy, and final product content remain unapproved."
         },
         {
           "id": "R02",
@@ -213,7 +219,9 @@
         "A05 Task8：BE/FE nickname-edit代码、r5 backend service/DTO/handler/router/HTTP及r10真实浏览器/adversarial/privacy/cleanup均通过",
         "A06：真实MySQL/Redis状态迁移与旧Access/Refresh/Key失效、focused race、no-fixture full、前端364/364、真实挂载13/13、生产构建及375/390 Chrome布局均通过",
         "A07：真实 MySQL/Redis 登录/令牌/三会话审计、Bearer 套餐额度、并发与故障回滚，focused race、no-fixture full、前端 395/395、生产构建、375/390 Chrome 及三项独立复审通过",
-        "A08 后端候选 9fdc07b：focused/focused-race/build/vet/diff 与 loopback-enabled full/full-race 通过；真实 MySQL 8/Redis 7、migration 0012、凭据生命周期、并发与回滚因 fixture 未配置为 BLOCKED_FIXTURE/NOT_RUN"
+        "A08 后端候选 9fdc07b：focused/focused-race/build/vet/diff 与 loopback-enabled full/full-race 通过；真实 MySQL 8/Redis 7、migration 0012、凭据生命周期、并发与回滚因 fixture 未配置为 BLOCKED_FIXTURE/NOT_RUN",
+        "Public content/pricing Backend Task 12：隔离 MySQL 8.0 / Redis 7，迁移 0001–0016，0012–0015 与 0016 独立 down/reapply、focused integration/race、full/build/vet/diff 通过。",
+        "2026-09-11：Root 后台 public-models 列表新增 complete/incomplete 服务端全局筛选，冻结精确完整性语义并在 COUNT/分页前组合过滤；一次性 MySQL 8.0 的 26 行跨页测试与 0001–0017 账本通过，focused/full/build/vet/diff 通过并已精确清理 fixture。"
       ],
       "evidence": [
         "Task 1–11 交付严格 external-value、用途隔离密钥、8个 inactive typed descriptors、canonical intent、0005 schema/verifier、Redis Lua limits、Issue/Begin/Query/Execute/lease/recovery/transaction primitives；冻结生产路由仍404，active consumer为0。",
@@ -227,9 +235,10 @@
         "A06 managed-user status：代码BE 08617d4 / FE 07c7b9e；canonical evidence commits BE 1677bc5 / FE b620552；合同SHA-256 c3662b25500879d67c6811fa270d4a6a39a44db812c7c493d6f02e535940b415；双端独立复审PASS。",
         "A07 managed-user credentials/entitlements：候选 BE a600a08 / FE 4164818；canonical evidence commits BE 5d5a1e9ee230bcc42fe9fde8d3f9f7badf34b658 / FE 39b79582110347ae11b95e58217b3afe3236b4f7；合同 SHA-256 9e1969b238911b6eee5b6aa85ed364e795a6854f0a026daac5d15e2ab78851be；本地联合切片 PASS_LIMITED_SCOPE。",
         "A08 managed-user roles/permissions：后端候选 9fdc07b；合同 SHA-256 dd202cb5019b10a891e10f03f77629b5f54e993110f148f417e05d089df35698；代码评审 findings 已闭环，但真实 fixture 与独立 SECURITY_REVIEW 均未完成，状态 BLOCKED_FIXTURE。",
-        "2026-09-09：A08 本地联合切片 PASS_LIMITED_SCOPE。BE f2f9760 / FE 25b0731；真实 MySQL 8.0.46、Redis 7.4.11、0012 down/up、事务/并发/运行时、可见 Chromium 提升/权限修改/降级、375/390 与 exact cleanup 通过；生产和外部 PM 未运行。"
+        "2026-09-09：A08 本地联合切片 PASS_LIMITED_SCOPE。BE f2f9760 / FE 25b0731；真实 MySQL 8.0.46、Redis 7.4.11、0012 down/up、事务/并发/运行时、可见 Chromium 提升/权限修改/降级、375/390 与 exact cleanup 通过；生产和外部 PM 未运行。",
+        "P03–P07 仅提升为 PASS_BACKEND_LOCAL；P08 继续 BLOCKED_PRODUCT。未执行前端联合、生产迁移、部署或生产验收。报告 docs/superpowers/reports/2026-09-09-public-content-pricing-backend.md。"
       ],
-      "notes": "当前权威本地矩阵为 18 PASS_LIMITED_SCOPE、6 BLOCKED_NOT_IMPLEMENTED、1 BLOCKED_PRODUCT、1 BLOCKED_ENV，合计 8 项阻塞。A09/A10 为前端开发专用 CNY Mock；A11 的后端职责仅为保持真实调额动作和代表性写路径 404；A12/A14 沿用 users.delete 限定切片并在当前候选复验。真实金额/账本/充值/退款/扣费、生产迁移、部署、生产验收和真实业务账号均 NOT_RUN。外部后端 project_manager 本轮书面确认未获得。ACTION_SECURITY_HMAC_KEY v1 lacks key ID/multi-key verification; rotation is prohibited while replayable post-0010 active snapshots exist unless a separately approved multi-key verifier or atomic full re-HMAC migration is delivered.",
+      "notes": "当前权威本地矩阵为 18 PASS_LIMITED_SCOPE、6 BLOCKED_NOT_IMPLEMENTED、1 BLOCKED_PRODUCT、1 BLOCKED_ENV，合计 8 项阻塞。A09/A10 为前端开发专用 CNY Mock；A11 的后端职责仅为保持真实调额动作和代表性写路径 404；A12/A14 沿用 users.delete 限定切片并在当前候选复验。真实金额/账本/充值/退款/扣费、生产迁移、部署、生产验收和真实业务账号均 NOT_RUN。外部后端 project_manager 本轮书面确认未获得。ACTION_SECURITY_HMAC_KEY v1 lacks key ID/multi-key verification; rotation is prohibited while replayable post-0010 active snapshots exist unless a separately approved multi-key verifier or atomic full re-HMAC migration is delivered. PASS_LIMITED_SUBSCOPE：B1-E内部安全原语及A03 users.create/users.create_admin本地联合切片已验证；A03为PASS_LIMITED_SCOPE。ActiveActionRegistry当前3项（users.create、users.create_admin、users.delete）。当前 joint_acceptance_blockers 中有12个BLOCKED条目：10个BLOCKED_NOT_IMPLEMENTED、P08 BLOCKED_PRODUCT、R02 BLOCKED_ENV；A03为PASS_LIMITED_SCOPE，P03–P07仅为PASS_BACKEND_LOCAL，均不代表完整联合验收通过。生产迁移、部署、真实业务账号和完整PRD验收均未运行。ACTION_SECURITY_HMAC_KEY v1 lacks key ID/multi-key verification; rotation is prohibited while replayable post-0010 active snapshots exist unless a separately approved multi-key verifier or atomic full re-HMAC migration is delivered. Public content/pricing 后端本地 Task 12 已验证，P08 仍 BLOCKED_PRODUCT；生产边界不变。",
       "a03_joint_acceptance": {
         "status": "PASS_LIMITED_SCOPE",
         "code_under_test": {

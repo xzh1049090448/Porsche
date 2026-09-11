@@ -525,11 +525,22 @@ func (p *checkClauseParser) parsePrimary() (string, bool) {
 	}
 	operator := p.tokens[p.pos]
 	p.pos++
-	value, ok := p.parseNumber()
+	value, ok := p.parseComparisonValue()
 	if !ok {
 		return "", false
 	}
 	return "compare(" + operator + "," + identifier + "," + value + ")", true
+}
+
+// parseComparisonValue accepts the numeric bounds used by older migrations and
+// an identifier for cross-column invariants such as end_at >= start_at.
+func (p *checkClauseParser) parseComparisonValue() (string, bool) {
+	if p.pos < len(p.tokens) && isCheckIdentifier(p.tokens[p.pos]) {
+		identifier := p.tokens[p.pos]
+		p.pos++
+		return "identifier(" + identifier + ")", true
+	}
+	return p.parseNumber()
 }
 
 func (p *checkClauseParser) parseNumber() (string, bool) {

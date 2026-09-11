@@ -36,3 +36,44 @@ func TestPublicIntentRejectsNonCanonicalOrEmptyFields(t *testing.T) {
 		}
 	}
 }
+
+func TestExactPublicAdministrationIntentsBindEveryMutationField(t *testing.T) {
+	tests := []struct {
+		action Action
+		intent any
+		fields int
+	}{
+		{ActionPublicModelDelete, PublicModelDeleteIntent{ModelGUID: 11, ExpectedRevision: 3, Reason: "retired"}, 3},
+		{ActionPublicPricingPublish, PublicPricingPublishIntent{ExpectedRevision: 4}, 1},
+		{ActionPublicPricingRestore, PublicPricingRestoreIntent{ReleaseGUID: 12, ExpectedRevision: 5}, 2},
+		{ActionPublicContentPublish, PublicContentPublishIntent{PriceReleaseGUID: 13, ExpectedRevision: 6}, 2},
+		{ActionPublicContentRestore, PublicContentRestoreIntent{ReleaseGUID: 14, ExpectedRevision: 7}, 2},
+	}
+	for _, tc := range tests {
+		encoded, err := descriptorFor(t, tc.action).Encode(tc.intent)
+		if err != nil {
+			t.Fatalf("action %d: %v", tc.action, err)
+		}
+		if got := len(decodeFields(t, encoded)); got != tc.fields {
+			t.Fatalf("action %d encoded %d fields, want %d", tc.action, got, tc.fields)
+		}
+	}
+}
+
+func TestExactPublicAdministrationIntentsRejectMissingBindings(t *testing.T) {
+	tests := []struct {
+		action Action
+		intent any
+	}{
+		{ActionPublicModelDelete, PublicModelDeleteIntent{ModelGUID: 1, ExpectedRevision: 1}},
+		{ActionPublicPricingPublish, PublicPricingPublishIntent{}},
+		{ActionPublicPricingRestore, PublicPricingRestoreIntent{ReleaseGUID: 1}},
+		{ActionPublicContentPublish, PublicContentPublishIntent{ExpectedRevision: 1}},
+		{ActionPublicContentRestore, PublicContentRestoreIntent{ReleaseGUID: 1}},
+	}
+	for _, tc := range tests {
+		if _, err := descriptorFor(t, tc.action).Encode(tc.intent); err == nil {
+			t.Fatalf("action %d accepted incomplete binding", tc.action)
+		}
+	}
+}
