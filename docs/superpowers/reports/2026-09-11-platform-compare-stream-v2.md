@@ -9,10 +9,10 @@
 
 ## 冻结审查证据
 
-- scope：`/private/tmp/porsche-be06-review.VszjrX/scope.json`，SHA-256 `c97964d319f615589c9af59e9e5d751ca4b1bf9f714c62beeaf690de9bb15faa`。
-- baseline：`/private/tmp/porsche-be06-review.VszjrX/baseline-v2.json`，SHA-256 `49928c9c4e8a6435e3363ae5c749624738adb1a9553e71870d12daa720c60b41`。
-- implementation snapshot：`/private/tmp/porsche-be06-review.VszjrX/snapshot-vet-fix.json`，snapshot ID `7eb74da31b7be10dcf3c5078ec8cf7cfd907335ec78ea3ccf99c2247ab8d4971`，文件 SHA-256 `082803b968a7ad747527c34a50a2f683a656e080db36f908fcf194cd8ce141c5`。
-- implementer、Spec、Security 与 Test 角色均使用同一验证命令：`python3 docs/agents/review_snapshot.py verify --scope /private/tmp/porsche-be06-review.VszjrX/scope.json --baseline /private/tmp/porsche-be06-review.VszjrX/baseline-v2.json --snapshot /private/tmp/porsche-be06-review.VszjrX/snapshot-vet-fix.json`；pre-report clean HEAD 的现场复核返回 snapshot verified。加入本文和 tracker 后当前工作树按冻结语义不再等于该 implementation snapshot。
+- external scope evidence `scope.json`：SHA-256 `c97964d319f615589c9af59e9e5d751ca4b1bf9f714c62beeaf690de9bb15faa`。
+- external baseline evidence `baseline-v2.json`：SHA-256 `49928c9c4e8a6435e3363ae5c749624738adb1a9553e71870d12daa720c60b41`。
+- external implementation snapshot evidence `snapshot-vet-fix.json`：snapshot ID `7eb74da31b7be10dcf3c5078ec8cf7cfd907335ec78ea3ccf99c2247ab8d4971`，文件 SHA-256 `082803b968a7ad747527c34a50a2f683a656e080db36f908fcf194cd8ce141c5`。
+- implementer、Spec、Security 与 Test 角色均使用 `python3 docs/agents/review_snapshot.py verify --scope scope.json --baseline baseline-v2.json --snapshot snapshot-vet-fix.json` 的相同验证语义；pre-report clean HEAD 的现场复核返回 snapshot verified。加入本文和 tracker 后当前工作树按冻结语义不再等于该 implementation snapshot。
 
 ## 实现与协议覆盖
 
@@ -106,7 +106,7 @@ Task 9 的精确 fixture 门禁：
 
 该 inventory 仅含两份 BE06 plan/design、service/store/compare runner 代码与测试、handler 代码与测试、app state 代码与测试；没有 migration、dependency、deploy 或 frontend 文件。本文所在提交随后只新增本报告并更新 `progress.md`、`feature_list.json`。
 
-Porsche-Web 合同文件 `/Users/xuzhihao/code/Porsche-Web/interface-contract.json` 的 SHA-256 为 `0891e452f122922f576745db89c96c853a9a7cf4ff00078c30ae3b3f0769e970`；当前仍为 `v1.0.0` draft，`interfaces` 与 `events` 为空。frontend coordinator 状态为 `DONE_WITH_CONCERNS`，尚无 compare v2、cancel 或 GET recovery integration。本批没有修改 Porsche-Web，也不宣称前后端联合验收通过。
+配对仓库合同文件 `Porsche-Web/interface-contract.json` 的 SHA-256 为 `0891e452f122922f576745db89c96c853a9a7cf4ff00078c30ae3b3f0769e970`；当前仍为 `v1.0.0` draft，`interfaces` 与 `events` 为空。frontend coordinator 状态为 `DONE_WITH_CONCERNS`，尚无 compare v2、cancel 或 GET recovery integration。本批没有修改 Porsche-Web，也不宣称前后端联合验收通过。
 
 ## 未执行事项
 
