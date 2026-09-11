@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strconv"
 	"sync"
@@ -29,6 +30,9 @@ type platformCompareGenerationStore interface {
 	RecordDeltaOwned(context.Context, int64, string, string, string, int64, int64) (PlatformGenerationSnapshot, error)
 	MarkModelDoneOwned(context.Context, int64, string, string, string, int64, int64) (PlatformGenerationSnapshot, error)
 	MarkModelFailedOwned(context.Context, int64, string, string, string, string, int64) (PlatformGenerationSnapshot, error)
+	RenewLease(context.Context, int64, string, string, int64) (PlatformGenerationSnapshot, error)
+	AcknowledgeCancelledOwned(context.Context, int64, string, string, int64) (PlatformGenerationSnapshot, error)
+	ReconcileComplete(context.Context, int64, string, map[string]string, int64) (PlatformGenerationSnapshot, error)
 }
 
 type platformCompareEncoder interface {
@@ -36,6 +40,7 @@ type platformCompareEncoder interface {
 	Delta(string, int64, string) []byte
 	ModelDone(string, int64) []byte
 	ModelError(string, string, string) []byte
+	Error(string, string) []byte
 	Err() error
 }
 
@@ -72,6 +77,7 @@ type platformCompareGenerationDeps struct {
 	upstreamTimeout  time.Duration
 	newRunnerContext func(context.Context, time.Duration) (context.Context, context.CancelFunc)
 	newEncoder       func(string, []string) (platformCompareEncoder, error)
+	newTimer         func(time.Duration) platformSingleTimer
 }
 
 type PlatformCompareGenerationRunner struct {
@@ -105,6 +111,7 @@ func NewPlatformCompareGenerationRunner(
 		newEncoder: func(generationID string, models []string) (platformCompareEncoder, error) {
 			return NewPlatformSSEV2Encoder(generationID, models)
 		},
+		newTimer: newPlatformSingleTimer,
 	}
 	if !validPlatformCompareGenerationDeps(deps) {
 		return nil, ErrPlatformCompareGenerationUnavailable
@@ -115,7 +122,7 @@ func NewPlatformCompareGenerationRunner(
 func validPlatformCompareGenerationDeps(deps platformCompareGenerationDeps) bool {
 	return deps.db != nil && deps.store != nil && deps.persistence != nil && deps.registry != nil &&
 		deps.upstream != nil && deps.rootContext != nil && deps.now != nil && deps.newGUID != nil &&
-		deps.loadConversation != nil && deps.loadReceipt != nil && deps.upstreamTimeout > 0 && deps.newRunnerContext != nil && deps.newEncoder != nil
+		deps.loadConversation != nil && deps.loadReceipt != nil && deps.upstreamTimeout > 0 && deps.newRunnerContext != nil && deps.newEncoder != nil && deps.newTimer != nil
 }
 
 type platformCompareRun struct {
@@ -173,8 +180,57 @@ type platformCompareOwnedRun struct {
 	cancel            context.CancelFunc
 	registrationToken string
 	output            platformCompareOutput
+	bodies            *platformCompareBodySet
 	closeOnce         sync.Once
 	cancelOnce        sync.Once
+}
+
+type platformCompareBodySet struct {
+	mu     sync.Mutex
+	bodies map[string]io.ReadCloser
+	closed bool
+}
+
+func newPlatformCompareBodySet() *platformCompareBodySet {
+	return &platformCompareBodySet{bodies: make(map[string]io.ReadCloser)}
+}
+
+func (s *platformCompareBodySet) Set(model string, body io.ReadCloser) {
+	if body == nil {
+		return
+	}
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		_ = body.Close()
+		return
+	}
+	s.bodies[model] = body
+	s.mu.Unlock()
+}
+
+func (s *platformCompareBodySet) Release(model string) {
+	s.mu.Lock()
+	body := s.bodies[model]
+	delete(s.bodies, model)
+	s.mu.Unlock()
+	if body != nil {
+		_ = body.Close()
+	}
+}
+
+func (s *platformCompareBodySet) CloseAll() {
+	s.mu.Lock()
+	s.closed = true
+	bodies := make([]io.ReadCloser, 0, len(s.bodies))
+	for model, body := range s.bodies {
+		bodies = append(bodies, body)
+		delete(s.bodies, model)
+	}
+	s.mu.Unlock()
+	for _, body := range bodies {
+		_ = body.Close()
+	}
 }
 
 func (entry *platformCompareOwnedRun) cancelRunner() {
@@ -212,12 +268,13 @@ func (r *PlatformCompareGenerationRunner) Run(input PlatformCompareGenerationInp
 	}
 	entry, result, err := r.enterValidated(validated)
 	if entry != nil {
-		_, fatal := r.runModels(entry)
-		if fatal {
-			entry.Close()
-		} else {
-			entry.Release()
+		execution := r.runModels(entry)
+		if execution.fatal {
+			r.convergeCompareFailure(execution, "internal_error", false)
+		} else if platformCompareAllModelsFailed(execution.results) {
+			r.convergeCompareFailure(execution, platformCompareAllFailedCode(execution.results), true)
 		}
+		entry.Release()
 		if err == nil {
 			err = ErrPlatformCompareGenerationUnavailable
 		}
@@ -242,8 +299,14 @@ type platformCompareExecution struct {
 	fatal   bool
 }
 
-func (r *PlatformCompareGenerationRunner) runModels(entry *platformCompareOwnedRun) ([]platformCompareModelResult, bool) {
+func (r *PlatformCompareGenerationRunner) runModels(entry *platformCompareOwnedRun) *platformCompareExecution {
 	execution := &platformCompareExecution{entry: entry, results: make([]platformCompareModelResult, len(entry.run.models))}
+	renewalDone := make(chan struct{})
+	renewalStop := make(chan struct{})
+	go func() {
+		defer close(renewalDone)
+		r.renewCompareLease(execution, renewalStop)
+	}()
 	var workers sync.WaitGroup
 	workers.Add(len(entry.run.models))
 	for index, model := range entry.run.models {
@@ -255,14 +318,220 @@ func (r *PlatformCompareGenerationRunner) runModels(entry *platformCompareOwnedR
 		}()
 	}
 	workers.Wait()
-	return execution.results, execution.fatal
+	close(renewalStop)
+	<-renewalDone
+	execution.mu.Lock()
+	if entry.ctx.Err() != nil {
+		execution.fatal = true
+	}
+	execution.mu.Unlock()
+	return execution
+}
+
+func (r *PlatformCompareGenerationRunner) renewCompareLease(execution *platformCompareExecution, stop <-chan struct{}) {
+	timer := r.deps.newTimer(10 * time.Second)
+	if timer == nil || timer.Chan() == nil {
+		execution.mu.Lock()
+		execution.fatal = true
+		execution.mu.Unlock()
+		execution.entry.cancelRunner()
+		return
+	}
+	defer func() {
+		if timer != nil {
+			timer.Stop()
+		}
+	}()
+	for {
+		select {
+		case <-stop:
+			return
+		case <-execution.entry.ctx.Done():
+			execution.entry.cancelRunner()
+			return
+		case <-timer.Chan():
+			nowMillis := r.nowMillis()
+			execution.mu.Lock()
+			if execution.fatal {
+				execution.mu.Unlock()
+				return
+			}
+			snapshot, err := r.deps.store.RenewLease(execution.entry.ctx, execution.entry.run.userID, execution.entry.run.generationID, execution.entry.run.leaseToken, nowMillis)
+			if err != nil || !validPlatformCompareRenewed(snapshot, execution.entry.run, nowMillis) {
+				execution.fatal = true
+				execution.mu.Unlock()
+				execution.entry.cancelRunner()
+				return
+			}
+			execution.mu.Unlock()
+			timer.Stop()
+			timer = r.deps.newTimer(10 * time.Second)
+			if timer == nil || timer.Chan() == nil {
+				execution.mu.Lock()
+				execution.fatal = true
+				execution.mu.Unlock()
+				execution.entry.cancelRunner()
+				return
+			}
+		}
+	}
+}
+
+func validPlatformCompareRenewed(snapshot PlatformGenerationSnapshot, run platformCompareRun, nowMillis int64) bool {
+	return validPlatformCompareSnapshotIdentity(snapshot, run) && snapshot.State == PlatformGenerationStateRunning &&
+		platformGenerationLeaseMatches(snapshot, platformGenerationLeaseDigest(run.leaseToken)) &&
+		snapshot.UpdatedAtMillis == nowMillis && snapshot.LeaseUntilMillis == nowMillis+platformGenerationLeaseDuration.Milliseconds()
+}
+
+func platformCompareAllModelsFailed(results []platformCompareModelResult) bool {
+	if len(results) == 0 {
+		return false
+	}
+	for _, result := range results {
+		if !result.terminalSet || result.state != PlatformGenerationStateFailed {
+			return false
+		}
+	}
+	return true
+}
+
+func platformCompareAllFailedCode(results []platformCompareModelResult) string {
+	for _, result := range results {
+		if result.errorCode == "internal_error" {
+			return "internal_error"
+		}
+	}
+	for _, result := range results {
+		if result.errorCode == "timeout" {
+			return "timeout"
+		}
+	}
+	return "gateway_upstream_error"
+}
+
+func (r *PlatformCompareGenerationRunner) convergeCompareFailure(execution *platformCompareExecution, code string, emit bool) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.deps.rootContext), 2*time.Second)
+	defer cancel()
+	execution.mu.Lock()
+	defer execution.mu.Unlock()
+	snapshot, err := r.deps.store.Get(ctx, execution.entry.run.userID, execution.entry.run.generationID)
+	if err != nil || !validPlatformCompareSnapshotIdentity(snapshot, execution.entry.run) {
+		return
+	}
+	nowMillis := r.nowMillis()
+	switch snapshot.State {
+	case PlatformGenerationStateRunning:
+		if !platformGenerationRunningLeaseAuthorized(snapshot, platformGenerationLeaseDigest(execution.entry.run.leaseToken), nowMillis) {
+			return
+		}
+		snapshot, err = r.deps.store.FailRunningOwned(ctx, execution.entry.run.userID, execution.entry.run.generationID, execution.entry.run.leaseToken, code, nowMillis)
+		if err != nil || !validPlatformCompareTerminalSnapshot(snapshot, execution.entry.run, PlatformGenerationStateFailed) || snapshot.ErrorCode != code {
+			return
+		}
+		code = snapshot.ErrorCode
+	case PlatformGenerationStateCancelling:
+		snapshot, err = r.deps.store.AcknowledgeCancelledOwned(ctx, execution.entry.run.userID, execution.entry.run.generationID, execution.entry.run.leaseToken, nowMillis)
+		if err != nil || !validPlatformCompareTerminalSnapshot(snapshot, execution.entry.run, PlatformGenerationStateCancelled) {
+			return
+		}
+		code = "cancelled"
+	case PlatformGenerationStateCancelled:
+		if !validPlatformCompareTerminalSnapshot(snapshot, execution.entry.run, PlatformGenerationStateCancelled) {
+			return
+		}
+		code = "cancelled"
+	case PlatformGenerationStateFailed:
+		if !validPlatformCompareTerminalSnapshot(snapshot, execution.entry.run, PlatformGenerationStateFailed) {
+			return
+		}
+		code = snapshot.ErrorCode
+	case PlatformGenerationStateCommitting, PlatformGenerationStateCompleted:
+		receipt, receiptErr := r.deps.loadReceipt(ctx, r.deps.db, execution.entry.run.userID, execution.entry.run.generationID)
+		assistantGUIDs, valid := platformCompareReceiptGUIDs(receipt, execution.entry.run, execution.results)
+		if receiptErr != nil || !valid {
+			return
+		}
+		snapshot, err = r.deps.store.ReconcileComplete(ctx, execution.entry.run.userID, execution.entry.run.generationID, assistantGUIDs, nowMillis)
+		if err != nil || !validPlatformCompareCompleted(snapshot, execution.entry.run, execution.results, assistantGUIDs) {
+			return
+		}
+		return
+	default:
+		return
+	}
+	if emit {
+		frame := execution.entry.run.encoder.Error(code, execution.entry.run.requestID)
+		if frame != nil && execution.entry.run.encoder.Err() == nil {
+			execution.entry.output.emit(frame)
+		}
+	}
+}
+
+func validPlatformCompareTerminalSnapshot(snapshot PlatformGenerationSnapshot, run platformCompareRun, state PlatformGenerationState) bool {
+	return validPlatformCompareSnapshotIdentity(snapshot, run) && snapshot.State == state && snapshot.LeaseOwnerSHA256 == "" && snapshot.LeaseUntilMillis == 0
+}
+
+func platformCompareReceiptGUIDs(receipt PlatformGenerationReceiptSnapshot, run platformCompareRun, results []platformCompareModelResult) (map[string]string, bool) {
+	if receipt.UserID != run.userID || receipt.GenerationID != run.generationID || receipt.Mode != PlatformGenerationModeCompare || receipt.ConversationGUID != run.conversationGUID ||
+		receipt.RequestedExistingConversation != (run.existingConversationGUID != nil) || receipt.UserMessage != run.userMessage || receipt.CommittedAtMillis <= 0 ||
+		len(receipt.Results) != len(run.models) || len(results) != len(run.models) {
+		return nil, false
+	}
+	guids := make(map[string]string)
+	var successful int
+	var totalTokens int64
+	for index, model := range run.models {
+		committed, local := receipt.Results[index], results[index]
+		if committed.Model != model || local.model != model || !local.terminalSet || committed.State != local.state {
+			return nil, false
+		}
+		switch local.state {
+		case PlatformGenerationStateCompleted:
+			if !platformGenerationMessageGUID(committed.AssistantMessageGUID) || committed.Content != local.content || committed.Tokens != local.tokens || committed.ErrorCode != "" {
+				return nil, false
+			}
+			guids[model] = committed.AssistantMessageGUID
+			successful++
+			totalTokens += local.tokens
+		case PlatformGenerationStateFailed:
+			if committed.AssistantMessageGUID != "" || committed.Content != "" || committed.Tokens != 0 || committed.ErrorCode != local.errorCode {
+				return nil, false
+			}
+		default:
+			return nil, false
+		}
+	}
+	return guids, successful > 0 && receipt.SuccessfulModelCount == successful && receipt.DailyCallsCharged == successful && receipt.TotalTokens == totalTokens
+}
+
+func validPlatformCompareCompleted(snapshot PlatformGenerationSnapshot, run platformCompareRun, results []platformCompareModelResult, guids map[string]string) bool {
+	if !validPlatformCompareSnapshotIdentity(snapshot, run) || snapshot.State != PlatformGenerationStateCompleted || snapshot.LeaseOwnerSHA256 != "" || snapshot.LeaseUntilMillis != 0 || len(results) != len(run.models) {
+		return false
+	}
+	for index, model := range run.models {
+		state := snapshot.ModelStates[model]
+		switch results[index].state {
+		case PlatformGenerationStateCompleted:
+			if state.State != PlatformGenerationStateCompleted || state.AssistantMessageGUID != guids[model] {
+				return false
+			}
+		case PlatformGenerationStateFailed:
+			if state.State != PlatformGenerationStateFailed || state.ErrorCode != results[index].errorCode || state.AssistantMessageGUID != "" {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func (r *PlatformCompareGenerationRunner) runModel(execution *platformCompareExecution, index int, model string, payload []byte) {
 	state := platformSingleChunkState{}
 	response, upstreamErr := r.deps.upstream.Chat(execution.entry.ctx, payload)
 	if response != nil && response.Body != nil {
-		defer response.Body.Close()
+		execution.entry.bodies.Set(model, response.Body)
+		defer execution.entry.bodies.Release(model)
 	}
 	if upstreamErr != nil || response == nil || response.Body == nil || response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		r.failModel(execution, index, model, platformCompareUpstreamCause(execution.entry.ctx))
@@ -384,6 +653,12 @@ func (r *PlatformCompareGenerationRunner) failModel(execution *platformCompareEx
 		execution.mu.Unlock()
 		return
 	}
+	if errors.Is(cause, context.Canceled) {
+		execution.fatal = true
+		execution.mu.Unlock()
+		execution.entry.cancelRunner()
+		return
+	}
 	code := platformCompareStableCode(cause)
 	terminalCtx, cancel := context.WithTimeout(context.WithoutCancel(r.deps.rootContext), 2*time.Second)
 	if _, err := r.deps.store.MarkModelFailedOwned(terminalCtx, execution.entry.run.userID, execution.entry.run.generationID, execution.entry.run.leaseToken, model, code, r.nowMillis()); err != nil {
@@ -455,9 +730,17 @@ func (r *PlatformCompareGenerationRunner) enterValidated(input platformCompareVa
 		r.settleOwnedRunning(run)
 		return nil, PlatformCompareGenerationRunResult{}, ErrPlatformCompareGenerationUnavailable
 	}
-	registrationToken, err := r.deps.registry.Register(run.userID, run.generationID, cancelRunner)
+	bodies := newPlatformCompareBodySet()
+	var cancelOwnedOnce sync.Once
+	cancelOwned := func() {
+		cancelOwnedOnce.Do(func() {
+			cancelRunner()
+			bodies.CloseAll()
+		})
+	}
+	registrationToken, err := r.deps.registry.Register(run.userID, run.generationID, cancelOwned)
 	if err != nil {
-		cancelRunner()
+		cancelOwned()
 		r.settleOwnedRunning(run)
 		return nil, PlatformCompareGenerationRunResult{}, ErrPlatformCompareGenerationUnavailable
 	}
@@ -466,8 +749,8 @@ func (r *PlatformCompareGenerationRunner) enterValidated(input platformCompareVa
 	cancelAdmission()
 
 	entry := &platformCompareOwnedRun{
-		runner: r, run: run, ctx: runnerCtx, cancel: cancelRunner, registrationToken: registrationToken,
-		output: platformCompareOutput{write: input.write},
+		runner: r, run: run, ctx: runnerCtx, cancel: cancelOwned, registrationToken: registrationToken,
+		output: platformCompareOutput{write: input.write}, bodies: bodies,
 	}
 	meta := run.encoder.Meta(strconv.FormatInt(run.conversationGUID, 10))
 	if meta == nil || run.encoder.Err() != nil {

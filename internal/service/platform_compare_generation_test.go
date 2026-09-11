@@ -81,6 +81,15 @@ func (s *platformCompareTestStore) MarkModelFailedOwned(context.Context, int64, 
 	s.effects.modelFailed++
 	return PlatformGenerationSnapshot{}, nil
 }
+func (s *platformCompareTestStore) RenewLease(context.Context, int64, string, string, int64) (PlatformGenerationSnapshot, error) {
+	return PlatformGenerationSnapshot{}, errors.New("unexpected renewal")
+}
+func (s *platformCompareTestStore) AcknowledgeCancelledOwned(context.Context, int64, string, string, int64) (PlatformGenerationSnapshot, error) {
+	return PlatformGenerationSnapshot{}, errors.New("unexpected cancellation acknowledgement")
+}
+func (s *platformCompareTestStore) ReconcileComplete(context.Context, int64, string, map[string]string, int64) (PlatformGenerationSnapshot, error) {
+	return PlatformGenerationSnapshot{}, errors.New("unexpected completion reconciliation")
+}
 
 type platformCompareTestPersistence struct{ effects *platformCompareTestEffects }
 
@@ -196,6 +205,7 @@ func platformCompareTestRunner(now time.Time) (*PlatformCompareGenerationRunner,
 		newEncoder: func(generationID string, models []string) (platformCompareEncoder, error) {
 			return NewPlatformSSEV2Encoder(generationID, models)
 		},
+		newTimer: newPlatformSingleTimer,
 	}
 	return &PlatformCompareGenerationRunner{deps: deps}, effects
 }
@@ -680,7 +690,7 @@ func TestPlatformCompareGenerationClaimsOrderedModelsOnce(t *testing.T) {
 		t.Fatalf("unexpected post-entry work: %+v", effects)
 	}
 
-	if effects.unregister != 1 || effects.runnerCancel != 1 || effects.get != 0 || effects.fail != 0 || registry.unregisterUID != 17 || registry.unregisterID != platformCompareTestGenerationID || registry.unregisterToken != registry.token {
+	if effects.unregister != 1 || effects.runnerCancel != 1 || effects.get != 1 || effects.fail != 1 || registry.unregisterUID != 17 || registry.unregisterID != platformCompareTestGenerationID || registry.unregisterToken != registry.token {
 		t.Fatalf("cleanup effects=%+v store=%+v", effects, store)
 	}
 }
@@ -907,7 +917,7 @@ func TestPlatformCompareGenerationRequestCancellationAfterClaimDoesNotStopRunner
 	if !errors.Is(err, ErrPlatformCompareGenerationUnavailable) || !result.Started || runnerParent != root || runnerContext == nil || runnerErr == nil || requestCtx.Err() == nil {
 		t.Fatalf("result=%+v error=%v parentRoot=%v runnerErr=%v requestErr=%v", result, err, runnerParent == root, runnerErr, requestCtx.Err())
 	}
-	if effects.unregister != 1 || effects.runnerCancel != 1 || effects.get != 0 || effects.fail != 0 || effects.upstream != 2 || effects.modelFailed != 2 {
+	if effects.unregister != 1 || effects.runnerCancel != 1 || effects.get != 1 || effects.fail != 1 || effects.upstream != 2 || effects.modelFailed != 2 {
 		t.Fatalf("cleanup effects=%+v", effects)
 	}
 }
@@ -918,6 +928,8 @@ type platformCompareStreamStore struct {
 	settleSnapshot       PlatformGenerationSnapshot
 	records              map[string][]int64
 	done                 map[string]int64
+	doneObserved         chan struct{}
+	doneObservedOnce     sync.Once
 	failed               map[string]string
 	recordErrModel       string
 	doneErrModel         string
@@ -929,6 +941,15 @@ type platformCompareStreamStore struct {
 	globalFailLease      string
 	globalFailCode       string
 	globalFailedSnapshot PlatformGenerationSnapshot
+	renewCalls           int
+	renewUserID          int64
+	renewGeneration      string
+	renewLease           string
+	renewNowMillis       int64
+	renewErr             error
+	renewed              chan struct{}
+	ackCalls             int
+	acknowledgedSnapshot PlatformGenerationSnapshot
 	mutationActive       atomic.Int32
 	mutationMax          atomic.Int32
 }
@@ -951,6 +972,9 @@ func (s *platformCompareStreamStore) FailRunningOwned(_ context.Context, userID 
 	s.globalFails++
 	s.globalFailUserID, s.globalFailGeneration, s.globalFailLease, s.globalFailCode = userID, generationID, lease, code
 	snapshot := clonePlatformGeneration(s.settleSnapshot)
+	if snapshot.GenerationID == "" {
+		snapshot = clonePlatformGeneration(s.claim.Snapshot)
+	}
 	for model, state := range snapshot.ModelStates {
 		if state.State == PlatformGenerationStateRunning {
 			state.State, state.ErrorCode = PlatformGenerationStateFailed, code
@@ -958,6 +982,7 @@ func (s *platformCompareStreamStore) FailRunningOwned(_ context.Context, userID 
 		}
 	}
 	snapshot.State, snapshot.ErrorCode = PlatformGenerationStateFailed, code
+	snapshot.LeaseOwnerSHA256, snapshot.LeaseUntilMillis = "", 0
 	s.globalFailedSnapshot = snapshot
 	return snapshot, nil
 }
@@ -986,6 +1011,9 @@ func (s *platformCompareStreamStore) MarkModelDoneOwned(_ context.Context, _ int
 		return PlatformGenerationSnapshot{}, ErrPlatformGenerationUnavailable
 	}
 	s.mutate(func() { s.done[model] = lastSeq })
+	if s.doneObserved != nil {
+		s.doneObservedOnce.Do(func() { close(s.doneObserved) })
+	}
 	return PlatformGenerationSnapshot{}, nil
 }
 func (s *platformCompareStreamStore) MarkModelFailedOwned(_ context.Context, _ int64, _, _, model, code string, _ int64) (PlatformGenerationSnapshot, error) {
@@ -994,6 +1022,40 @@ func (s *platformCompareStreamStore) MarkModelFailedOwned(_ context.Context, _ i
 	}
 	s.mutate(func() { s.failed[model] = code })
 	return PlatformGenerationSnapshot{}, nil
+}
+func (s *platformCompareStreamStore) RenewLease(_ context.Context, userID int64, generationID, lease string, now int64) (PlatformGenerationSnapshot, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.renewCalls++
+	s.renewUserID, s.renewGeneration, s.renewLease, s.renewNowMillis = userID, generationID, lease, now
+	if s.renewed != nil && s.renewCalls == 1 {
+		close(s.renewed)
+	}
+	if s.renewErr != nil {
+		return PlatformGenerationSnapshot{}, s.renewErr
+	}
+	snapshot := clonePlatformGeneration(s.claim.Snapshot)
+	snapshot.UpdatedAtMillis = now
+	snapshot.LeaseUntilMillis = now + platformGenerationLeaseDuration.Milliseconds()
+	return snapshot, nil
+}
+func (s *platformCompareStreamStore) AcknowledgeCancelledOwned(_ context.Context, _ int64, _ string, _ string, now int64) (PlatformGenerationSnapshot, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ackCalls++
+	snapshot := clonePlatformGeneration(s.settleSnapshot)
+	snapshot.State, snapshot.UpdatedAtMillis, snapshot.LeaseOwnerSHA256, snapshot.LeaseUntilMillis = PlatformGenerationStateCancelled, now, "", 0
+	for model, state := range snapshot.ModelStates {
+		if state.State == PlatformGenerationStateRunning {
+			state.State = PlatformGenerationStateCancelled
+			snapshot.ModelStates[model] = state
+		}
+	}
+	s.acknowledgedSnapshot = clonePlatformGeneration(snapshot)
+	return snapshot, nil
+}
+func (*platformCompareStreamStore) ReconcileComplete(context.Context, int64, string, map[string]string, int64) (PlatformGenerationSnapshot, error) {
+	return PlatformGenerationSnapshot{}, ErrPlatformGenerationUnavailable
 }
 
 type platformCompareStreamBody struct {
@@ -1042,6 +1104,12 @@ type platformCompareFrameWriter struct {
 	failFirst      bool
 	onModelError   chan struct{}
 	modelErrorOnce sync.Once
+}
+
+func (w *platformCompareFrameWriter) count() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return len(w.frames)
 }
 
 func (w *platformCompareFrameWriter) Write(frame []byte) error {
@@ -1099,6 +1167,9 @@ func (e *platformCompareFailingEncoder) ModelError(model, code, requestID string
 		return nil
 	}
 	return e.inner.ModelError(model, code, requestID)
+}
+func (e *platformCompareFailingEncoder) Error(code, requestID string) []byte {
+	return e.inner.Error(code, requestID)
 }
 func (e *platformCompareFailingEncoder) Err() error {
 	if e.err != nil {
@@ -1520,5 +1591,206 @@ func TestPlatformCompareGenerationDetachedWriterStillRunsAllModels(t *testing.T)
 		if body.closes.Load() != 1 {
 			t.Fatalf("model=%s closes=%d", model, body.closes.Load())
 		}
+	}
+}
+
+func TestPlatformCompareGenerationRenewsOneLeaseEveryTenSeconds(t *testing.T) {
+	finish := make(chan struct{})
+	started := make(chan string, 2)
+	scripts := map[string]func(context.Context, func(whitelabel.ChatCompletionChunk) error) *whitelabel.Error{}
+	for _, model := range []string{"model-a", "model-b"} {
+		model := model
+		scripts[model] = func(ctx context.Context, emit func(whitelabel.ChatCompletionChunk) error) *whitelabel.Error {
+			started <- model
+			select {
+			case <-finish:
+			case <-ctx.Done():
+				return whitelabel.ErrUpstreamUnavailable("cancelled")
+			}
+			return platformCompareSuccessfulScript(model, "ok")(ctx, emit)
+		}
+	}
+	runner, store, _, writer := platformCompareStreamFixture(t, []string{"model-a", "model-b"}, scripts)
+	timers := &platformSingleTestTimerFactory{created: make(chan *platformSingleTestTimer, 2)}
+	runner.deps.newTimer = timers.New
+	store.renewed = make(chan struct{})
+	input := platformCompareTestInput()
+	input.Models, input.Write = []string{"model-a", "model-b"}, writer.Write
+	done := make(chan struct{})
+	go func() { _, _ = runner.Run(input); close(done) }()
+	<-started
+	<-started
+	timer := <-timers.created
+	timer.ch <- time.UnixMilli(20_000)
+	<-store.renewed
+	if writer.count() != 1 {
+		t.Fatalf("renewal advanced encoder or wrote output: frames=%d", writer.count())
+	}
+	second := <-timers.created
+	close(finish)
+	<-done
+	if store.renewCalls != 1 || store.renewUserID != 17 || store.renewGeneration != platformCompareTestGenerationID || store.renewLease != store.claim.LeaseToken || store.renewNowMillis != 10_000 || !timer.stopped.Load() || !second.stopped.Load() {
+		t.Fatalf("renewals=%d firstStopped=%v secondStopped=%v", store.renewCalls, timer.stopped.Load(), second.stopped.Load())
+	}
+}
+
+func testPlatformCompareCancellationClosesBodies(t *testing.T, shutdown bool) {
+	abort := make(chan struct{})
+	started := make(chan string, 2)
+	scripts := map[string]func(context.Context, func(whitelabel.ChatCompletionChunk) error) *whitelabel.Error{}
+	for _, model := range []string{"model-a", "model-b"} {
+		model := model
+		scripts[model] = func(context.Context, func(whitelabel.ChatCompletionChunk) error) *whitelabel.Error {
+			started <- model
+			<-abort
+			return whitelabel.ErrUpstreamUnavailable("blocked consumer")
+		}
+	}
+	runner, _, upstream, writer := platformCompareStreamFixture(t, []string{"model-a", "model-b"}, scripts)
+	registry := runner.deps.registry.(*platformCompareTestRegistry)
+	root, cancelRoot := context.WithCancel(context.Background())
+	runner.deps.rootContext = root
+	input := platformCompareTestInput()
+	input.Models, input.Write = []string{"model-a", "model-b"}, writer.Write
+	done := make(chan struct{})
+	go func() { _, _ = runner.Run(input); close(done) }()
+	<-started
+	<-started
+	if shutdown {
+		cancelRoot()
+	} else {
+		registry.registered()
+	}
+	for _, body := range upstream.bodies {
+		<-body.closed
+	}
+	close(abort)
+	<-done
+	for model, body := range upstream.bodies {
+		if body.closes.Load() != 1 {
+			t.Fatalf("model=%s closes=%d", model, body.closes.Load())
+		}
+	}
+	effects := registry.effects
+	if effects.admission != 1 || effects.admissionRelease != 1 || effects.register != 1 || effects.unregister != 1 || effects.runnerCancel != 1 || effects.persist != 0 || effects.receipt != 0 {
+		t.Fatalf("cancellation cleanup effects=%+v", effects)
+	}
+}
+
+func TestPlatformCompareGenerationExplicitCancelStopsAllWorkersAndBodies(t *testing.T) {
+	testPlatformCompareCancellationClosesBodies(t, false)
+}
+func TestPlatformCompareGenerationShutdownDrainsAdmissionAndRegistration(t *testing.T) {
+	testPlatformCompareCancellationClosesBodies(t, true)
+}
+
+func TestPlatformCompareGenerationAllModelsFailedSkipsCommitAndPersistence(t *testing.T) {
+	scripts := map[string]func(context.Context, func(whitelabel.ChatCompletionChunk) error) *whitelabel.Error{}
+	for _, model := range []string{"model-a", "model-b"} {
+		model := model
+		scripts[model] = func(context.Context, func(whitelabel.ChatCompletionChunk) error) *whitelabel.Error {
+			return whitelabel.ErrUpstreamUnavailable("provider secret")
+		}
+	}
+	runner, store, _, writer := platformCompareStreamFixture(t, []string{"model-a", "model-b"}, scripts)
+	snapshot := clonePlatformGeneration(store.claim.Snapshot)
+	for model := range snapshot.ModelStates {
+		snapshot.ModelStates[model] = PlatformGenerationModel{State: PlatformGenerationStateFailed, ErrorCode: "gateway_upstream_error"}
+	}
+	store.settleSnapshot = snapshot
+	input := platformCompareTestInput()
+	input.Models, input.Write = []string{"model-a", "model-b"}, writer.Write
+	result, err := runner.Run(input)
+	effects := runner.deps.persistence.(*platformCompareTestPersistence).effects
+	frames := platformCompareDecodeFrames(t, writer.frames)
+	globalErrors := 0
+	for _, frame := range frames {
+		if frame.event == "error" {
+			globalErrors++
+			if frame.data["code"] != "gateway_upstream_error" {
+				t.Fatalf("unsanitized global error=%+v", frame)
+			}
+		}
+		if frame.event == "done" {
+			t.Fatal("all-failed emitted done")
+		}
+	}
+	if !result.Started || !errors.Is(err, ErrPlatformCompareGenerationUnavailable) || store.globalFails != 1 || globalErrors != 1 || effects.persist != 0 || effects.receipt != 0 {
+		t.Fatalf("result=%+v err=%v store=%+v frames=%+v", result, err, store, frames)
+	}
+}
+
+func TestPlatformCompareGenerationRenewalFailureCancelsWorkersAndFailsClosed(t *testing.T) {
+	finish := make(chan struct{})
+	started := make(chan string, 2)
+	scripts := map[string]func(context.Context, func(whitelabel.ChatCompletionChunk) error) *whitelabel.Error{}
+	for _, model := range []string{"model-a", "model-b"} {
+		model := model
+		scripts[model] = func(ctx context.Context, _ func(whitelabel.ChatCompletionChunk) error) *whitelabel.Error {
+			started <- model
+			select {
+			case <-ctx.Done():
+				return whitelabel.ErrUpstreamUnavailable("cancelled")
+			case <-finish:
+				return nil
+			}
+		}
+	}
+	runner, store, upstream, writer := platformCompareStreamFixture(t, []string{"model-a", "model-b"}, scripts)
+	timers := &platformSingleTestTimerFactory{created: make(chan *platformSingleTestTimer, 1)}
+	runner.deps.newTimer = timers.New
+	store.renewErr, store.renewed = ErrPlatformGenerationUnavailable, make(chan struct{})
+	input := platformCompareTestInput()
+	input.Models, input.Write = []string{"model-a", "model-b"}, writer.Write
+	done := make(chan struct{})
+	go func() { _, _ = runner.Run(input); close(done) }()
+	<-started
+	<-started
+	timer := <-timers.created
+	timer.ch <- time.UnixMilli(20_000)
+	<-store.renewed
+	<-done
+	if store.globalFails != 1 || store.renewCalls != 1 || !timer.stopped.Load() {
+		t.Fatalf("store=%+v timerStopped=%v", store, timer.stopped.Load())
+	}
+	for model, body := range upstream.bodies {
+		if body.closes.Load() != 1 {
+			t.Fatalf("model=%s closes=%d", model, body.closes.Load())
+		}
+	}
+}
+
+func TestPlatformCompareGenerationCancelAndTerminalRaceHasOneAuthority(t *testing.T) {
+	doneObserved := make(chan struct{})
+	abort := make(chan struct{})
+	modelBStarted := make(chan struct{})
+	scripts := map[string]func(context.Context, func(whitelabel.ChatCompletionChunk) error) *whitelabel.Error{
+		"model-a": platformCompareSuccessfulScript("model-a", "winner"),
+		"model-b": func(context.Context, func(whitelabel.ChatCompletionChunk) error) *whitelabel.Error {
+			close(modelBStarted)
+			<-abort
+			return whitelabel.ErrUpstreamUnavailable("cancelled loser")
+		},
+	}
+	runner, store, upstream, writer := platformCompareStreamFixture(t, []string{"model-a", "model-b"}, scripts)
+	store.doneObserved = doneObserved
+	cancelling := clonePlatformGeneration(store.claim.Snapshot)
+	cancelling.State = PlatformGenerationStateCancelling
+	cancelling.LeaseUntilMillis = 0
+	cancelling.ModelStates["model-a"] = PlatformGenerationModel{State: PlatformGenerationStateCompleted, Seq: 1}
+	store.settleSnapshot = cancelling
+	registry := runner.deps.registry.(*platformCompareTestRegistry)
+	input := platformCompareTestInput()
+	input.Models, input.Write = []string{"model-a", "model-b"}, writer.Write
+	finished := make(chan struct{})
+	go func() { _, _ = runner.Run(input); close(finished) }()
+	<-doneObserved
+	<-modelBStarted
+	registry.registered()
+	<-upstream.bodies["model-b"].closed
+	close(abort)
+	<-finished
+	if store.ackCalls != 1 || store.globalFails != 0 || store.acknowledgedSnapshot.State != PlatformGenerationStateCancelled || store.acknowledgedSnapshot.ModelStates["model-a"].State != PlatformGenerationStateCompleted || store.acknowledgedSnapshot.ModelStates["model-b"].State != PlatformGenerationStateCancelled {
+		t.Fatalf("authority store=%+v", store)
 	}
 }
