@@ -24,7 +24,45 @@ import (
 
 const platformCompareIntegrationPrompt = "compare integration prompt"
 
+const platformCompareIntegrationSyncTimeout = 5 * time.Second
+
 var platformCompareIntegrationSequence atomic.Uint64
+
+func receivePlatformCompareIntegration[T any](t *testing.T, channel <-chan T, operation string) T {
+	t.Helper()
+	timer := time.NewTimer(platformCompareIntegrationSyncTimeout)
+	defer timer.Stop()
+	select {
+	case value, ok := <-channel:
+		if !ok {
+			t.Fatalf("compare integration %s channel closed unexpectedly", operation)
+		}
+		return value
+	case <-timer.C:
+		t.Fatalf("timed out waiting for compare integration %s", operation)
+		var zero T
+		return zero
+	}
+}
+
+func sendPlatformCompareIntegration[T any](t *testing.T, channel chan<- T, value T, operation string) {
+	t.Helper()
+	timer := time.NewTimer(platformCompareIntegrationSyncTimeout)
+	defer timer.Stop()
+	select {
+	case channel <- value:
+	case <-timer.C:
+		t.Fatalf("timed out sending compare integration %s", operation)
+	}
+}
+
+func releasePlatformCompareIntegration(t *testing.T, channel chan struct{}) func() {
+	t.Helper()
+	var once sync.Once
+	release := func() { once.Do(func() { close(channel) }) }
+	t.Cleanup(release)
+	return release
+}
 
 type platformCompareIntegrationFixture struct {
 	db          *gorm.DB
@@ -85,7 +123,11 @@ func platformCompareIntegrationHandler(failed map[string]bool, release <-chan st
 			return
 		}
 		if started != nil {
-			started <- request.Model
+			select {
+			case started <- request.Model:
+			case <-r.Context().Done():
+				return
+			}
 		}
 		if release != nil {
 			select {
@@ -381,16 +423,22 @@ func requirePlatformCompareIntegrationReceipt(t *testing.T, f *platformCompareIn
 
 func waitPlatformCompareIntegrationSnapshot(t *testing.T, f *platformCompareIntegrationFixture, generationID string, predicate func(PlatformGenerationSnapshot) bool) PlatformGenerationSnapshot {
 	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
+	ticker := time.NewTicker(5 * time.Millisecond)
+	defer ticker.Stop()
+	timer := time.NewTimer(platformCompareIntegrationSyncTimeout)
+	defer timer.Stop()
+	for {
 		snapshot, err := f.store.Get(context.Background(), f.user.ID, generationID)
 		if err == nil && predicate(snapshot) {
 			return snapshot
 		}
-		time.Sleep(5 * time.Millisecond)
+		select {
+		case <-ticker.C:
+		case <-timer.C:
+			t.Fatal("timed out waiting for authoritative compare snapshot")
+			return PlatformGenerationSnapshot{}
+		}
 	}
-	t.Fatal("timed out waiting for authoritative compare snapshot")
-	return PlatformGenerationSnapshot{}
 }
 
 func requirePlatformCompareIntegrationAllModelsSucceed(t *testing.T) {
@@ -461,7 +509,9 @@ func requirePlatformCompareIntegrationDisconnect(t *testing.T) {
 
 func requirePlatformCompareIntegrationCancelBeforeResponse(t *testing.T) {
 	release, started := make(chan struct{}), make(chan string, 3)
+	releaseRun := releasePlatformCompareIntegration(t, release)
 	f := requirePlatformCompareIntegrationFixture(t, platformCompareIntegrationHandler(nil, release, started, nil))
+	t.Cleanup(releaseRun)
 	modelIDs, generationID := []string{"model-a", "model-b", "model-c"}, platformCompareIntegrationGenerationID()
 	before := f.counts(t)
 	type runOutcome struct {
@@ -469,19 +519,24 @@ func requirePlatformCompareIntegrationCancelBeforeResponse(t *testing.T) {
 		err    error
 	}
 	done := make(chan runOutcome, 1)
+	runnerCtx, cancelRunner := context.WithCancel(context.Background())
+	t.Cleanup(cancelRunner)
 	go func() {
-		result, err := f.run(context.Background(), generationID, modelIDs, nil)
-		done <- runOutcome{result, err}
+		result, err := f.run(runnerCtx, generationID, modelIDs, nil)
+		select {
+		case done <- runOutcome{result, err}:
+		case <-runnerCtx.Done():
+		}
 	}()
 	for range modelIDs {
-		<-started
+		receivePlatformCompareIntegration(t, started, "upstream arrival")
 	}
 	view, _, cancelErr := f.control.Cancel(context.Background(), f.user.ID, generationID)
 	if cancelErr != nil || view.Status != "cancelled" {
 		t.Fatalf("cancel compare view=%+v err=%v", view, cancelErr)
 	}
-	outcome := <-done
-	close(release)
+	outcome := receivePlatformCompareIntegration(t, done, "cancelled runner completion")
+	releaseRun()
 	if !outcome.result.Started || !errors.Is(outcome.err, ErrPlatformCompareGenerationUnavailable) {
 		t.Fatalf("cancelled run result=%+v err=%v", outcome.result, outcome.err)
 	}
@@ -496,6 +551,8 @@ func requirePlatformCompareIntegrationCancelBeforeResponse(t *testing.T) {
 
 func requirePlatformCompareIntegrationCancelDuringConsumption(t *testing.T) {
 	started := make(chan string, 2)
+	handlerStop := make(chan struct{})
+	stopHandler := releasePlatformCompareIntegration(t, handlerStop)
 	handler := func(w http.ResponseWriter, r *http.Request) {
 		var request struct {
 			Model string `json:"model"`
@@ -509,10 +566,22 @@ func requirePlatformCompareIntegrationCancelDuringConsumption(t *testing.T) {
 		if flusher, ok := w.(http.Flusher); ok {
 			flusher.Flush()
 		}
-		started <- request.Model
-		<-r.Context().Done()
+		select {
+		case started <- request.Model:
+		case <-r.Context().Done():
+			return
+		case <-handlerStop:
+			return
+		}
+		select {
+		case <-r.Context().Done():
+			return
+		case <-handlerStop:
+			return
+		}
 	}
 	f := requirePlatformCompareIntegrationFixture(t, handler)
+	t.Cleanup(stopHandler)
 	modelIDs, generationID := []string{"model-a", "model-b"}, platformCompareIntegrationGenerationID()
 	before := f.counts(t)
 	type runOutcome struct {
@@ -520,12 +589,17 @@ func requirePlatformCompareIntegrationCancelDuringConsumption(t *testing.T) {
 		err    error
 	}
 	done := make(chan runOutcome, 1)
+	runnerCtx, cancelRunner := context.WithCancel(context.Background())
+	t.Cleanup(cancelRunner)
 	go func() {
-		result, err := f.run(context.Background(), generationID, modelIDs, nil)
-		done <- runOutcome{result: result, err: err}
+		result, err := f.run(runnerCtx, generationID, modelIDs, nil)
+		select {
+		case done <- runOutcome{result: result, err: err}:
+		case <-runnerCtx.Done():
+		}
 	}()
-	<-started
-	<-started
+	receivePlatformCompareIntegration(t, started, "owned response body")
+	receivePlatformCompareIntegration(t, started, "owned response body")
 	waitPlatformCompareIntegrationSnapshot(t, f, generationID, func(snapshot PlatformGenerationSnapshot) bool {
 		return snapshot.State == PlatformGenerationStateRunning && snapshot.ModelStates["model-a"].Seq == 1 && snapshot.ModelStates["model-b"].Seq == 1
 	})
@@ -533,7 +607,7 @@ func requirePlatformCompareIntegrationCancelDuringConsumption(t *testing.T) {
 	if cancelErr != nil || view.Status != "cancelled" {
 		t.Fatalf("cancel owned-body compare view=%+v err=%v", view, cancelErr)
 	}
-	outcome := <-done
+	outcome := receivePlatformCompareIntegration(t, done, "owned-body cancelled runner completion")
 	if !outcome.result.Started || !errors.Is(outcome.err, ErrPlatformCompareGenerationUnavailable) {
 		t.Fatalf("cancel owned-body run result=%+v err=%v", outcome.result, outcome.err)
 	}
@@ -548,7 +622,9 @@ func requirePlatformCompareIntegrationCancelDuringConsumption(t *testing.T) {
 
 func requirePlatformCompareIntegrationRenewal(t *testing.T) {
 	release, started := make(chan struct{}), make(chan string, 2)
+	releaseRun := releasePlatformCompareIntegration(t, release)
 	f := requirePlatformCompareIntegrationFixture(t, platformCompareIntegrationHandler(nil, release, started, nil))
+	t.Cleanup(releaseRun)
 	clockMillis := atomic.Int64{}
 	clockMillis.Store(time.Now().UTC().UnixMilli())
 	f.runner.deps.now = func() time.Time { return time.UnixMilli(clockMillis.Load()).UTC() }
@@ -558,15 +634,23 @@ func requirePlatformCompareIntegrationRenewal(t *testing.T) {
 	modelIDs, generationID := []string{"model-a", "model-b"}, platformCompareIntegrationGenerationID()
 	before := f.counts(t)
 	done := make(chan error, 1)
-	go func() { _, err := f.run(context.Background(), generationID, modelIDs, nil); done <- err }()
-	<-started
-	<-started
+	runnerCtx, cancelRunner := context.WithCancel(context.Background())
+	t.Cleanup(cancelRunner)
+	go func() {
+		_, err := f.run(runnerCtx, generationID, modelIDs, nil)
+		select {
+		case done <- err:
+		case <-runnerCtx.Done():
+		}
+	}()
+	receivePlatformCompareIntegration(t, started, "renewal worker arrival")
+	receivePlatformCompareIntegration(t, started, "renewal worker arrival")
 	initial := waitPlatformCompareIntegrationSnapshot(t, f, generationID, func(snapshot PlatformGenerationSnapshot) bool {
 		return snapshot.State == PlatformGenerationStateRunning
 	})
-	timer := <-timers.created
+	timer := receivePlatformCompareIntegration(t, timers.created, "renewal timer creation")
 	clockMillis.Store(initial.CreatedAtMillis + 20_000)
-	timer.ch <- time.UnixMilli(clockMillis.Load())
+	sendPlatformCompareIntegration(t, timer.ch, time.UnixMilli(clockMillis.Load()), "renewal tick")
 	renewed := waitPlatformCompareIntegrationSnapshot(t, f, generationID, func(snapshot PlatformGenerationSnapshot) bool {
 		return snapshot.LeaseUntilMillis > initial.LeaseUntilMillis
 	})
@@ -583,8 +667,8 @@ func requirePlatformCompareIntegrationRenewal(t *testing.T) {
 	if err != nil || afterPass.State != PlatformGenerationStateRunning || afterPass.LeaseUntilMillis != renewed.LeaseUntilMillis {
 		t.Fatalf("converger defeated renewed lease")
 	}
-	close(release)
-	if err := <-done; err != nil {
+	releaseRun()
+	if err := receivePlatformCompareIntegration(t, done, "renewed runner completion"); err != nil {
 		t.Fatalf("renewed compare run: %v", err)
 	}
 	requirePlatformCompareIntegrationReceipt(t, f, generationID, platformCompareIntegrationExpected(modelIDs, nil), before)
@@ -643,21 +727,31 @@ func requirePlatformCompareIntegrationCommitUnknownWithRecoveryCounts(t *testing
 func requirePlatformCompareIntegrationRaces(t *testing.T) {
 	t.Run("duplicate_claim_once", func(t *testing.T) {
 		release, started := make(chan struct{}), make(chan string, 2)
+		releaseRun := releasePlatformCompareIntegration(t, release)
 		calls := atomic.Int32{}
 		f := requirePlatformCompareIntegrationFixture(t, platformCompareIntegrationHandler(nil, release, started, &calls))
+		t.Cleanup(releaseRun)
 		modelIDs, generationID := []string{"model-b", "model-a"}, platformCompareIntegrationGenerationID()
 		before := f.counts(t)
 		firstDone := make(chan error, 1)
-		go func() { _, err := f.run(context.Background(), generationID, modelIDs, nil); firstDone <- err }()
-		<-started
-		<-started
+		runnerCtx, cancelRunner := context.WithCancel(context.Background())
+		t.Cleanup(cancelRunner)
+		go func() {
+			_, err := f.run(runnerCtx, generationID, modelIDs, nil)
+			select {
+			case firstDone <- err:
+			case <-runnerCtx.Done():
+			}
+		}()
+		receivePlatformCompareIntegration(t, started, "duplicate worker arrival")
+		receivePlatformCompareIntegration(t, started, "duplicate worker arrival")
 		duplicateWrites := atomic.Int32{}
 		duplicate, err := f.run(context.Background(), generationID, modelIDs, func([]byte) error { duplicateWrites.Add(1); return nil })
 		if err != nil || duplicate.Started || duplicate.Duplicate == nil || duplicate.Duplicate.State != PlatformGenerationStateRunning || duplicateWrites.Load() != 0 || calls.Load() != int32(len(modelIDs)) {
 			t.Fatalf("duplicate side effect result=%+v err=%v writes=%d calls=%d", duplicate, err, duplicateWrites.Load(), calls.Load())
 		}
-		close(release)
-		if err := <-firstDone; err != nil {
+		releaseRun()
+		if err := receivePlatformCompareIntegration(t, firstDone, "duplicate winner completion"); err != nil {
 			t.Fatalf("first duplicate-race run: %v", err)
 		}
 		requirePlatformCompareIntegrationReceipt(t, f, generationID, platformCompareIntegrationExpected(modelIDs, nil), before)
@@ -665,10 +759,10 @@ func requirePlatformCompareIntegrationRaces(t *testing.T) {
 
 	t.Run("concurrent_quota", func(t *testing.T) {
 		release, started := make(chan struct{}), make(chan string, 5)
+		releaseRun := releasePlatformCompareIntegration(t, release)
 		calls := atomic.Int32{}
 		f := requirePlatformCompareIntegrationFixture(t, platformCompareIntegrationHandler(nil, release, started, &calls))
-		var releaseOnce sync.Once
-		t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
+		t.Cleanup(releaseRun)
 		now := time.Now().UTC().UnixMilli()
 		f.configureUser(t, models.PlanFree, 3, 0, now)
 		modelSets := [][]string{{"model-a", "model-b"}, {"model-c", "model-a", "model-b"}}
@@ -679,27 +773,29 @@ func requirePlatformCompareIntegrationRaces(t *testing.T) {
 			result PlatformCompareGenerationRunResult
 			err    error
 		}
-		start := make(chan struct{})
 		outcomes := make(chan outcome, 2)
 		for index := range generationIDs {
 			index := index
+			runnerCtx, cancelRunner := context.WithCancel(context.Background())
+			t.Cleanup(cancelRunner)
 			go func() {
-				<-start
-				result, err := f.run(context.Background(), generationIDs[index], modelSets[index], nil)
-				outcomes <- outcome{index: index, result: result, err: err}
+				result, err := f.run(runnerCtx, generationIDs[index], modelSets[index], nil)
+				select {
+				case outcomes <- outcome{index: index, result: result, err: err}:
+				case <-runnerCtx.Done():
+				}
 			}()
 		}
-		close(start)
 		for totalWorkers := 0; totalWorkers < 5; totalWorkers++ {
-			<-started
+			receivePlatformCompareIntegration(t, started, "quota competitor worker arrival")
 		}
 		if calls.Load() != 5 {
 			t.Fatalf("quota competitors did not both reach upstream: calls=%d", calls.Load())
 		}
-		releaseOnce.Do(func() { close(release) })
+		releaseRun()
 		winner := -1
 		for range generationIDs {
-			got := <-outcomes
+			got := receivePlatformCompareIntegration(t, outcomes, "quota competitor completion")
 			if got.err == nil {
 				if winner != -1 || !got.result.Started {
 					t.Fatalf("unexpected second/non-started quota winner")
