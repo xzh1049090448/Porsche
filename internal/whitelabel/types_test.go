@@ -6,6 +6,14 @@ import (
 	"testing"
 )
 
+func TestProjectChatCompletionAllowsNullContentWithToolCalls(t *testing.T) {
+	raw := []byte(`{"id":"safe","object":"chat.completion","created":1,"choices":[{"index":0,"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"lookup","arguments":"raw"}}]},"finish_reason":"tool_calls"}]}`)
+	got, err := (&WhiteLabelService{}).ProjectChatCompletion(raw, "model-a")
+	if err != nil || got.Choices[0].Message.Content != nil || len(got.Choices[0].Message.ToolCalls) != 1 {
+		t.Fatalf("completion=%#v err=%#v", got, err)
+	}
+}
+
 func TestProjectChatCompletionProjectsNestedMessageAndDropsLogprobs(t *testing.T) {
 	var service WhiteLabelService
 	completion, err := service.ProjectChatCompletion([]byte(`{
@@ -39,7 +47,12 @@ func TestProjectChatCompletionRejectsMalformedNestedKnownFields(t *testing.T) {
 	var service WhiteLabelService
 	for _, malformed := range []string{
 		`{"role":"assistant","content":123}`,
+		`{"role":"assistant","content":null}`,
 		`{"role":"assistant","content":"hello","tool_calls":[{"id":"call_1","type":"function","function":{"name":"lookup","arguments":123}}]}`,
+		`{"role":"assistant","content":null,"tool_calls":[{"id":"call 1","type":"function","function":{"name":"lookup","arguments":"{}"}}]}`,
+		`{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"custom","function":{"name":"lookup","arguments":"{}"}}]}`,
+		`{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"bad name","arguments":"{}"}}]}`,
+		`{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{}"}},{"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{}"}}]}`,
 		`{"role":"assistant","content":[{"type":"text","text":123}]}`,
 	} {
 		_, err := service.ProjectChatCompletion([]byte(`{"id":"safe","object":"chat.completion","created":1,"choices":[{"index":0,"message":`+malformed+`,"finish_reason":"stop"}]}`), "model-a")
