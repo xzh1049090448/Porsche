@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"bytes"
 	"encoding/json"
 	"testing"
 
@@ -14,8 +15,11 @@ func TestPublicContentValidationResponseUsesArrayAndPreservesIssues(t *testing.T
 	}
 	issues := []publiccontent.ValidationIssue{{Field: "terms", Code: "legal_review_required"}, {Field: "home", Code: "unknown_home_model"}}
 	raw, err = json.Marshal(publicContentValidationResponse(issues))
-	if err != nil || string(raw) != `{"issues":[{"Field":"terms","Code":"legal_review_required"},{"Field":"home","Code":"unknown_home_model"}],"valid":false}` {
+	if err != nil || string(raw) != `{"issues":[{"field":"terms","code":"legal_review_required"},{"field":"home","code":"unknown_home_model"}],"valid":false}` {
 		t.Fatalf("invalid validation response=%s err=%v", raw, err)
+	}
+	if bytes.Contains(raw, []byte(`"Field"`)) || bytes.Contains(raw, []byte(`"Code"`)) {
+		t.Fatalf("validation response leaked Go field names: %s", raw)
 	}
 }
 

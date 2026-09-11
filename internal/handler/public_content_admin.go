@@ -13,13 +13,20 @@ import (
 )
 
 type publicContentValidationResult struct {
-	Issues []publiccontent.ValidationIssue `json:"issues"`
-	Valid  bool                            `json:"valid"`
+	Issues []publicContentValidationIssue `json:"issues"`
+	Valid  bool                           `json:"valid"`
+}
+
+type publicContentValidationIssue struct {
+	Field string `json:"field"`
+	Code  string `json:"code"`
 }
 
 func publicContentValidationResponse(issues []publiccontent.ValidationIssue) publicContentValidationResult {
-	stable := make([]publiccontent.ValidationIssue, len(issues))
-	copy(stable, issues)
+	stable := make([]publicContentValidationIssue, len(issues))
+	for index, issue := range issues {
+		stable[index] = publicContentValidationIssue{Field: issue.Field, Code: issue.Code}
+	}
 	return publicContentValidationResult{Issues: stable, Valid: len(stable) == 0}
 }
 
