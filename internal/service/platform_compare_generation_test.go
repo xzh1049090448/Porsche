@@ -1487,17 +1487,27 @@ func TestPlatformCompareGenerationSerializesMutationStateEncoderAndFrames(t *tes
 				t.Fatalf("outcome=%+v", outcome)
 			}
 			frames := platformCompareDecodeFrames(t, failingWriter.frames)
+			globalErrors := 0
 			for _, frame := range frames {
 				if frame.event == "model_error" || frame.event == "model_done" {
 					t.Fatalf("invented terminal frame after %s mutation failure: %+v", mutation, frame)
 				}
+				if frame.event == "error" {
+					globalErrors++
+					if frame.data["code"] != "internal_error" {
+						t.Fatalf("fatal error frame=%+v", frame)
+					}
+				}
 			}
 			if mutation == "done" {
-				if len(frames) != 2 || frames[1].event != "delta" {
+				if len(frames) != 3 || frames[1].event != "delta" || frames[2].event != "error" {
 					t.Fatalf("done failure frames=%+v", frames)
 				}
-			} else if len(frames) != 1 {
+			} else if len(frames) != 2 || frames[1].event != "error" {
 				t.Fatalf("%s failure frames=%+v", mutation, frames)
+			}
+			if globalErrors != 1 {
+				t.Fatalf("global errors=%d frames=%+v", globalErrors, frames)
 			}
 			if len(failingStore.failed) != 0 || len(failingStore.done) != 0 || failingStore.globalFails != 1 || failingStore.gets != 1 || failingStore.globalFailUserID != 17 || failingStore.globalFailGeneration != platformCompareTestGenerationID || failingStore.globalFailLease != failingStore.claim.LeaseToken || failingStore.globalFailCode != "internal_error" || failingStore.globalFailedSnapshot.ModelStates["model-b"].State != PlatformGenerationStateCompleted {
 				t.Fatalf("store after fatal=%+v", failingStore)
@@ -1634,7 +1644,7 @@ func TestPlatformCompareGenerationRenewsOneLeaseEveryTenSeconds(t *testing.T) {
 	}
 }
 
-func testPlatformCompareCancellationClosesBodies(t *testing.T, shutdown bool) {
+func testPlatformCompareCancellationClosesBodies(t *testing.T, shutdown, detached bool) {
 	abort := make(chan struct{})
 	started := make(chan string, 2)
 	scripts := map[string]func(context.Context, func(whitelabel.ChatCompletionChunk) error) *whitelabel.Error{}
@@ -1646,8 +1656,15 @@ func testPlatformCompareCancellationClosesBodies(t *testing.T, shutdown bool) {
 			return whitelabel.ErrUpstreamUnavailable("blocked consumer")
 		}
 	}
-	runner, _, upstream, writer := platformCompareStreamFixture(t, []string{"model-a", "model-b"}, scripts)
+	runner, store, upstream, writer := platformCompareStreamFixture(t, []string{"model-a", "model-b"}, scripts)
 	registry := runner.deps.registry.(*platformCompareTestRegistry)
+	if !shutdown {
+		cancelling := clonePlatformGeneration(store.claim.Snapshot)
+		cancelling.State = PlatformGenerationStateCancelling
+		cancelling.LeaseUntilMillis = 0
+		store.settleSnapshot = cancelling
+	}
+	writer.failFirst = detached
 	root, cancelRoot := context.WithCancel(context.Background())
 	runner.deps.rootContext = root
 	input := platformCompareTestInput()
@@ -1675,13 +1692,54 @@ func testPlatformCompareCancellationClosesBodies(t *testing.T, shutdown bool) {
 	if effects.admission != 1 || effects.admissionRelease != 1 || effects.register != 1 || effects.unregister != 1 || effects.runnerCancel != 1 || effects.persist != 0 || effects.receipt != 0 {
 		t.Fatalf("cancellation cleanup effects=%+v", effects)
 	}
+	if shutdown {
+		if store.globalFails != 1 || store.ackCalls != 0 {
+			t.Fatalf("shutdown authority fail=%d ack=%d", store.globalFails, store.ackCalls)
+		}
+	} else if store.ackCalls != 1 || store.globalFails != 0 {
+		t.Fatalf("explicit cancel authority fail=%d ack=%d", store.globalFails, store.ackCalls)
+	}
+	frames := platformCompareDecodeFrames(t, writer.frames)
+	if detached {
+		if len(frames) != 1 || frames[0].event != "meta" {
+			t.Fatalf("detached writer received post-detach frames=%+v", frames)
+		}
+		return
+	}
+	wantCode := "cancelled"
+	if shutdown {
+		wantCode = "internal_error"
+	}
+	globalErrors := 0
+	for _, frame := range frames {
+		if frame.event == "done" {
+			t.Fatalf("cancellation emitted done: %+v", frames)
+		}
+		if frame.event == "error" {
+			globalErrors++
+			if frame.data["code"] != wantCode {
+				t.Fatalf("global error=%+v want code=%s", frame, wantCode)
+			}
+		}
+	}
+	if globalErrors != 1 {
+		t.Fatalf("global errors=%d frames=%+v", globalErrors, frames)
+	}
 }
 
 func TestPlatformCompareGenerationExplicitCancelStopsAllWorkersAndBodies(t *testing.T) {
-	testPlatformCompareCancellationClosesBodies(t, false)
+	for _, detached := range []bool{false, true} {
+		t.Run(strconv.FormatBool(detached), func(t *testing.T) {
+			testPlatformCompareCancellationClosesBodies(t, false, detached)
+		})
+	}
 }
 func TestPlatformCompareGenerationShutdownDrainsAdmissionAndRegistration(t *testing.T) {
-	testPlatformCompareCancellationClosesBodies(t, true)
+	for _, detached := range []bool{false, true} {
+		t.Run(strconv.FormatBool(detached), func(t *testing.T) {
+			testPlatformCompareCancellationClosesBodies(t, true, detached)
+		})
+	}
 }
 
 func TestPlatformCompareGenerationAllModelsFailedSkipsCommitAndPersistence(t *testing.T) {
@@ -1758,6 +1816,59 @@ func TestPlatformCompareGenerationRenewalFailureCancelsWorkersAndFailsClosed(t *
 			t.Fatalf("model=%s closes=%d", model, body.closes.Load())
 		}
 	}
+	frames := platformCompareDecodeFrames(t, writer.frames)
+	globalErrors := 0
+	for _, frame := range frames {
+		if frame.event == "done" {
+			t.Fatalf("renewal failure emitted done: %+v", frames)
+		}
+		if frame.event == "error" {
+			globalErrors++
+			if frame.data["code"] != "internal_error" {
+				t.Fatalf("renewal failure error=%+v", frame)
+			}
+		}
+	}
+	if globalErrors != 1 {
+		t.Fatalf("renewal failure global errors=%d frames=%+v", globalErrors, frames)
+	}
+}
+
+func TestPlatformCompareGenerationRenewalFailureUnknownAuthorityEmitsNothing(t *testing.T) {
+	started := make(chan string, 2)
+	scripts := map[string]func(context.Context, func(whitelabel.ChatCompletionChunk) error) *whitelabel.Error{}
+	for _, model := range []string{"model-a", "model-b"} {
+		model := model
+		scripts[model] = func(ctx context.Context, _ func(whitelabel.ChatCompletionChunk) error) *whitelabel.Error {
+			started <- model
+			<-ctx.Done()
+			return whitelabel.ErrUpstreamUnavailable("cancelled")
+		}
+	}
+	runner, store, _, writer := platformCompareStreamFixture(t, []string{"model-a", "model-b"}, scripts)
+	timers := &platformSingleTestTimerFactory{created: make(chan *platformSingleTestTimer, 1)}
+	runner.deps.newTimer = timers.New
+	store.renewErr, store.renewed = ErrPlatformGenerationUnavailable, make(chan struct{})
+	store.settleSnapshot = PlatformGenerationSnapshot{GenerationID: "unknown-authority"}
+	input := platformCompareTestInput()
+	input.Models, input.Write = []string{"model-a", "model-b"}, writer.Write
+	done := make(chan struct{})
+	go func() { _, _ = runner.Run(input); close(done) }()
+	<-started
+	<-started
+	timer := <-timers.created
+	timer.ch <- time.UnixMilli(20_000)
+	<-store.renewed
+	<-done
+	frames := platformCompareDecodeFrames(t, writer.frames)
+	for _, frame := range frames {
+		if frame.event == "error" || frame.event == "done" {
+			t.Fatalf("unknown authority invented terminal frame=%+v", frames)
+		}
+	}
+	if store.gets != 1 || store.globalFails != 0 || store.ackCalls != 0 {
+		t.Fatalf("unknown authority mutated store=%+v", store)
+	}
 }
 
 func TestPlatformCompareGenerationCancelAndTerminalRaceHasOneAuthority(t *testing.T) {
@@ -1792,5 +1903,21 @@ func TestPlatformCompareGenerationCancelAndTerminalRaceHasOneAuthority(t *testin
 	<-finished
 	if store.ackCalls != 1 || store.globalFails != 0 || store.acknowledgedSnapshot.State != PlatformGenerationStateCancelled || store.acknowledgedSnapshot.ModelStates["model-a"].State != PlatformGenerationStateCompleted || store.acknowledgedSnapshot.ModelStates["model-b"].State != PlatformGenerationStateCancelled {
 		t.Fatalf("authority store=%+v", store)
+	}
+	frames := platformCompareDecodeFrames(t, writer.frames)
+	globalErrors := 0
+	for _, frame := range frames {
+		if frame.event == "error" {
+			globalErrors++
+			if frame.data["code"] != "cancelled" {
+				t.Fatalf("race error=%+v", frame)
+			}
+		}
+		if frame.event == "done" {
+			t.Fatalf("race emitted done=%+v", frames)
+		}
+	}
+	if globalErrors != 1 {
+		t.Fatalf("race global errors=%d frames=%+v", globalErrors, frames)
 	}
 }

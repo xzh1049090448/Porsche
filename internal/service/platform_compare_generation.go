@@ -269,11 +269,13 @@ func (r *PlatformCompareGenerationRunner) Run(input PlatformCompareGenerationInp
 	entry, result, err := r.enterValidated(validated)
 	if entry != nil {
 		execution := r.runModels(entry)
+		var outcome platformCompareConvergenceOutcome
 		if execution.fatal {
-			r.convergeCompareFailure(execution, "internal_error", false)
+			outcome = r.convergeCompareFailure(execution, "internal_error")
 		} else if platformCompareAllModelsFailed(execution.results) {
-			r.convergeCompareFailure(execution, platformCompareAllFailedCode(execution.results), true)
+			outcome = r.convergeCompareFailure(execution, platformCompareAllFailedCode(execution.results))
 		}
+		r.emitCompareConvergence(execution, outcome)
 		entry.Release()
 		if err == nil {
 			err = ErrPlatformCompareGenerationUnavailable
@@ -293,10 +295,17 @@ type platformCompareModelResult struct {
 }
 
 type platformCompareExecution struct {
-	mu      sync.Mutex
-	entry   *platformCompareOwnedRun
-	results []platformCompareModelResult
-	fatal   bool
+	mu                    sync.Mutex
+	entry                 *platformCompareOwnedRun
+	results               []platformCompareModelResult
+	fatal                 bool
+	globalTerminalAttempt bool
+}
+
+type platformCompareConvergenceOutcome struct {
+	authoritative bool
+	state         PlatformGenerationState
+	code          string
 }
 
 func (r *PlatformCompareGenerationRunner) runModels(entry *platformCompareOwnedRun) *platformCompareExecution {
@@ -409,61 +418,72 @@ func platformCompareAllFailedCode(results []platformCompareModelResult) string {
 	return "gateway_upstream_error"
 }
 
-func (r *PlatformCompareGenerationRunner) convergeCompareFailure(execution *platformCompareExecution, code string, emit bool) {
+func (r *PlatformCompareGenerationRunner) convergeCompareFailure(execution *platformCompareExecution, code string) platformCompareConvergenceOutcome {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.deps.rootContext), 2*time.Second)
 	defer cancel()
 	execution.mu.Lock()
 	defer execution.mu.Unlock()
 	snapshot, err := r.deps.store.Get(ctx, execution.entry.run.userID, execution.entry.run.generationID)
 	if err != nil || !validPlatformCompareSnapshotIdentity(snapshot, execution.entry.run) {
-		return
+		return platformCompareConvergenceOutcome{}
 	}
 	nowMillis := r.nowMillis()
 	switch snapshot.State {
 	case PlatformGenerationStateRunning:
 		if !platformGenerationRunningLeaseAuthorized(snapshot, platformGenerationLeaseDigest(execution.entry.run.leaseToken), nowMillis) {
-			return
+			return platformCompareConvergenceOutcome{}
 		}
 		snapshot, err = r.deps.store.FailRunningOwned(ctx, execution.entry.run.userID, execution.entry.run.generationID, execution.entry.run.leaseToken, code, nowMillis)
 		if err != nil || !validPlatformCompareTerminalSnapshot(snapshot, execution.entry.run, PlatformGenerationStateFailed) || snapshot.ErrorCode != code {
-			return
+			return platformCompareConvergenceOutcome{}
 		}
 		code = snapshot.ErrorCode
 	case PlatformGenerationStateCancelling:
 		snapshot, err = r.deps.store.AcknowledgeCancelledOwned(ctx, execution.entry.run.userID, execution.entry.run.generationID, execution.entry.run.leaseToken, nowMillis)
 		if err != nil || !validPlatformCompareTerminalSnapshot(snapshot, execution.entry.run, PlatformGenerationStateCancelled) {
-			return
+			return platformCompareConvergenceOutcome{}
 		}
 		code = "cancelled"
 	case PlatformGenerationStateCancelled:
 		if !validPlatformCompareTerminalSnapshot(snapshot, execution.entry.run, PlatformGenerationStateCancelled) {
-			return
+			return platformCompareConvergenceOutcome{}
 		}
 		code = "cancelled"
 	case PlatformGenerationStateFailed:
 		if !validPlatformCompareTerminalSnapshot(snapshot, execution.entry.run, PlatformGenerationStateFailed) {
-			return
+			return platformCompareConvergenceOutcome{}
 		}
 		code = snapshot.ErrorCode
 	case PlatformGenerationStateCommitting, PlatformGenerationStateCompleted:
 		receipt, receiptErr := r.deps.loadReceipt(ctx, r.deps.db, execution.entry.run.userID, execution.entry.run.generationID)
 		assistantGUIDs, valid := platformCompareReceiptGUIDs(receipt, execution.entry.run, execution.results)
 		if receiptErr != nil || !valid {
-			return
+			return platformCompareConvergenceOutcome{}
 		}
 		snapshot, err = r.deps.store.ReconcileComplete(ctx, execution.entry.run.userID, execution.entry.run.generationID, assistantGUIDs, nowMillis)
 		if err != nil || !validPlatformCompareCompleted(snapshot, execution.entry.run, execution.results, assistantGUIDs) {
-			return
+			return platformCompareConvergenceOutcome{}
 		}
-		return
+		return platformCompareConvergenceOutcome{}
 	default:
+		return platformCompareConvergenceOutcome{}
+	}
+	return platformCompareConvergenceOutcome{authoritative: true, state: snapshot.State, code: code}
+}
+
+func (r *PlatformCompareGenerationRunner) emitCompareConvergence(execution *platformCompareExecution, outcome platformCompareConvergenceOutcome) {
+	if !outcome.authoritative || (outcome.state != PlatformGenerationStateCancelled && outcome.state != PlatformGenerationStateFailed) {
 		return
 	}
-	if emit {
-		frame := execution.entry.run.encoder.Error(code, execution.entry.run.requestID)
-		if frame != nil && execution.entry.run.encoder.Err() == nil {
-			execution.entry.output.emit(frame)
-		}
+	execution.mu.Lock()
+	defer execution.mu.Unlock()
+	if execution.globalTerminalAttempt {
+		return
+	}
+	execution.globalTerminalAttempt = true
+	frame := execution.entry.run.encoder.Error(outcome.code, execution.entry.run.requestID)
+	if frame != nil && execution.entry.run.encoder.Err() == nil {
+		execution.entry.output.emit(frame)
 	}
 }
 
