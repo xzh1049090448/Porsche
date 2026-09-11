@@ -226,6 +226,13 @@ func (r *PlatformCompareGenerationRunner) enterValidated(input platformCompareVa
 	run.leaseToken = claim.LeaseToken
 
 	runnerCtx, cancelRunner := r.deps.newRunnerContext(r.deps.rootContext, r.deps.upstreamTimeout)
+	if runnerCtx == nil || cancelRunner == nil {
+		if cancelRunner != nil {
+			cancelRunner()
+		}
+		r.settleOwnedRunning(run)
+		return nil, PlatformCompareGenerationRunResult{}, ErrPlatformCompareGenerationUnavailable
+	}
 	registrationToken, err := r.deps.registry.Register(run.userID, run.generationID, cancelRunner)
 	if err != nil {
 		cancelRunner()

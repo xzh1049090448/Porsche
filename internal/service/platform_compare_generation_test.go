@@ -674,6 +674,52 @@ func TestPlatformCompareGenerationRegistrationFailureSettlesOwnedRunningState(t 
 	}
 }
 
+func TestPlatformCompareGenerationRegistrationRejectsInvalidRunnerContext(t *testing.T) {
+	now := time.UnixMilli(10_000).UTC()
+	for _, test := range []struct {
+		name       string
+		newContext func(*platformCompareTestEffects) (context.Context, context.CancelFunc)
+		wantCancel int
+	}{
+		{
+			name: "nil context",
+			newContext: func(effects *platformCompareTestEffects) (context.Context, context.CancelFunc) {
+				return nil, func() { effects.runnerCancel++ }
+			},
+			wantCancel: 1,
+		},
+		{
+			name: "nil cancel",
+			newContext: func(*platformCompareTestEffects) (context.Context, context.CancelFunc) {
+				return context.Background(), nil
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			runner, effects := platformCompareTestRunner(now)
+			store := runner.deps.store.(*platformCompareTestStore)
+			store.claim = platformCompareTestClaim(now.UnixMilli(), []string{"model-b", "model-a"})
+			store.getSnapshot = clonePlatformGeneration(store.claim.Snapshot)
+			runner.deps.newRunnerContext = func(context.Context, time.Duration) (context.Context, context.CancelFunc) {
+				return test.newContext(effects)
+			}
+
+			defer func() {
+				if recovered := recover(); recovered != nil {
+					t.Fatalf("Run panicked for invalid runner context: %v", recovered)
+				}
+			}()
+			result, err := runner.Run(platformCompareTestInput())
+			if !errors.Is(err, ErrPlatformCompareGenerationUnavailable) || result.Started || result.Duplicate != nil {
+				t.Fatalf("Run result=%+v error=%v", result, err)
+			}
+			if effects.claim != 1 || effects.get != 1 || effects.fail != 1 || effects.runnerCancel != test.wantCancel || effects.admission != 1 || effects.admissionRelease != 1 || effects.register != 0 || effects.unregister != 0 || effects.write != 0 || effects.upstream != 0 || effects.persist != 0 || effects.receipt != 0 {
+				t.Fatalf("invalid runner context effects=%+v wantCancel=%d", effects, test.wantCancel)
+			}
+		})
+	}
+}
+
 func TestPlatformCompareGenerationRequestCancellationAfterClaimDoesNotStopRunner(t *testing.T) {
 	now := time.UnixMilli(10_000).UTC()
 	runner, effects := platformCompareTestRunner(now)
