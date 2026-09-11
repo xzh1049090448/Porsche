@@ -2068,6 +2068,7 @@ func testPlatformCompareCancellationClosesBodies(t *testing.T, shutdown, detache
 	}
 	writer.failFirst = detached
 	root, cancelRoot := context.WithCancel(context.Background())
+	t.Cleanup(cancelRoot)
 	runner.deps.rootContext = root
 	input := platformCompareTestInput()
 	input.Models, input.Write = []string{"model-a", "model-b"}, writer.Write
