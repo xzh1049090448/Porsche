@@ -1,0 +1,8 @@
+{
+  "model": "model-a",
+  "input": "tools-please",
+  "tools": [{"type": "function", "name": "read_file", "parameters": {"type": "object"}}],
+  "tool_choice": "required",
+  "store": false,
+  "stream": false
+}
