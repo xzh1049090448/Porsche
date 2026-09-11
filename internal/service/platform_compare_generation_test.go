@@ -2,12 +2,15 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -19,7 +22,7 @@ import (
 const platformCompareTestGenerationID = "93000000-0000-4000-8000-000000000001"
 
 type platformCompareTestEffects struct {
-	claim, get, fail, persist, admission, admissionRelease, register, unregister, upstream, receipt, write, guid, runnerCancel int
+	claim, get, fail, record, modelDone, modelFailed, persist, admission, admissionRelease, register, unregister, upstream, receipt, write, guid, runnerCancel int
 }
 
 type platformCompareTestStore struct {
@@ -65,6 +68,18 @@ func (s *platformCompareTestStore) FailRunningOwned(_ context.Context, userID in
 	s.failUserID, s.failGeneration = userID, generationID
 	s.failLease, s.failCode, s.failNowMillis = leaseToken, code, nowMillis
 	return s.failSnapshot, s.failErr
+}
+func (s *platformCompareTestStore) RecordDeltaOwned(context.Context, int64, string, string, string, int64, int64) (PlatformGenerationSnapshot, error) {
+	s.effects.record++
+	return PlatformGenerationSnapshot{}, nil
+}
+func (s *platformCompareTestStore) MarkModelDoneOwned(context.Context, int64, string, string, string, int64, int64) (PlatformGenerationSnapshot, error) {
+	s.effects.modelDone++
+	return PlatformGenerationSnapshot{}, nil
+}
+func (s *platformCompareTestStore) MarkModelFailedOwned(context.Context, int64, string, string, string, string, int64) (PlatformGenerationSnapshot, error) {
+	s.effects.modelFailed++
+	return PlatformGenerationSnapshot{}, nil
 }
 
 type platformCompareTestPersistence struct{ effects *platformCompareTestEffects }
@@ -119,9 +134,14 @@ func (r *platformCompareTestRegistry) Unregister(userID int64, generationID, tok
 	return userID == r.registeredUID && generationID == r.registeredID && token == r.token
 }
 
-type platformCompareTestUpstream struct{ effects *platformCompareTestEffects }
+type platformCompareTestUpstream struct {
+	mu      sync.Mutex
+	effects *platformCompareTestEffects
+}
 
 func (u *platformCompareTestUpstream) Chat(context.Context, []byte) (*http.Response, *whitelabel.Error) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
 	u.effects.upstream++
 	return nil, whitelabel.ErrUpstreamUnavailable("unexpected upstream")
 }
@@ -179,7 +199,7 @@ func platformCompareTestRunner(now time.Time) (*PlatformCompareGenerationRunner,
 
 func requireNoPlatformComparePostPrepareEffects(t *testing.T, effects *platformCompareTestEffects) {
 	t.Helper()
-	if effects.claim != 0 || effects.get != 0 || effects.fail != 0 || effects.persist != 0 || effects.admission != 0 || effects.admissionRelease != 0 || effects.register != 0 || effects.unregister != 0 || effects.upstream != 0 || effects.receipt != 0 || effects.write != 0 || effects.runnerCancel != 0 {
+	if effects.claim != 0 || effects.get != 0 || effects.fail != 0 || effects.record != 0 || effects.modelDone != 0 || effects.modelFailed != 0 || effects.persist != 0 || effects.admission != 0 || effects.admissionRelease != 0 || effects.register != 0 || effects.unregister != 0 || effects.upstream != 0 || effects.receipt != 0 || effects.write != 0 || effects.runnerCancel != 0 {
 		t.Fatalf("unexpected post-prepare effects: %+v", effects)
 	}
 }
@@ -532,11 +552,11 @@ func TestPlatformCompareGenerationClaimsOrderedModelsOnce(t *testing.T) {
 	if encoderErr != nil || string(frame) != string(expectedEncoder.Meta(strconv.FormatInt(8101, 10))) {
 		t.Fatalf("meta=%q encoder error=%v", frame, encoderErr)
 	}
-	if effects.upstream != 0 || effects.persist != 0 || effects.receipt != 0 {
+	if effects.upstream != 2 || effects.modelFailed != 2 || effects.persist != 0 || effects.receipt != 0 {
 		t.Fatalf("unexpected post-entry work: %+v", effects)
 	}
 
-	if effects.unregister != 1 || effects.runnerCancel != 1 || effects.get != 1 || effects.fail != 1 || store.getUserID != 17 || store.getGeneration != platformCompareTestGenerationID || store.failUserID != 17 || store.failGeneration != platformCompareTestGenerationID || store.failLease != store.claim.LeaseToken || store.failCode != "internal_error" || store.failNowMillis != now.UnixMilli() || registry.unregisterUID != 17 || registry.unregisterID != platformCompareTestGenerationID || registry.unregisterToken != registry.token {
+	if effects.unregister != 1 || effects.runnerCancel != 1 || effects.get != 0 || effects.fail != 0 || registry.unregisterUID != 17 || registry.unregisterID != platformCompareTestGenerationID || registry.unregisterToken != registry.token {
 		t.Fatalf("cleanup effects=%+v store=%+v", effects, store)
 	}
 }
@@ -763,7 +783,388 @@ func TestPlatformCompareGenerationRequestCancellationAfterClaimDoesNotStopRunner
 	if !errors.Is(err, ErrPlatformCompareGenerationUnavailable) || !result.Started || runnerParent != root || runnerContext == nil || runnerErr == nil || requestCtx.Err() == nil {
 		t.Fatalf("result=%+v error=%v parentRoot=%v runnerErr=%v requestErr=%v", result, err, runnerParent == root, runnerErr, requestCtx.Err())
 	}
-	if effects.unregister != 1 || effects.runnerCancel != 1 || effects.get != 1 || effects.fail != 1 {
+	if effects.unregister != 1 || effects.runnerCancel != 1 || effects.get != 0 || effects.fail != 0 || effects.upstream != 2 || effects.modelFailed != 2 {
 		t.Fatalf("cleanup effects=%+v", effects)
+	}
+}
+
+type platformCompareStreamStore struct {
+	mu             sync.Mutex
+	claim          PlatformGenerationClaimResult
+	records        map[string][]int64
+	done           map[string]int64
+	failed         map[string]string
+	mutationActive atomic.Int32
+	mutationMax    atomic.Int32
+}
+
+func (s *platformCompareStreamStore) Claim(context.Context, PlatformGenerationClaimInput) (PlatformGenerationClaimResult, error) {
+	return s.claim, nil
+}
+func (s *platformCompareStreamStore) Get(context.Context, int64, string) (PlatformGenerationSnapshot, error) {
+	return clonePlatformGeneration(s.claim.Snapshot), nil
+}
+func (*platformCompareStreamStore) FailRunningOwned(context.Context, int64, string, string, string, int64) (PlatformGenerationSnapshot, error) {
+	return PlatformGenerationSnapshot{}, nil
+}
+func (s *platformCompareStreamStore) mutate(fn func()) {
+	active := s.mutationActive.Add(1)
+	for {
+		maximum := s.mutationMax.Load()
+		if active <= maximum || s.mutationMax.CompareAndSwap(maximum, active) {
+			break
+		}
+	}
+	defer s.mutationActive.Add(-1)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	fn()
+}
+func (s *platformCompareStreamStore) RecordDeltaOwned(_ context.Context, _ int64, _, _, model string, seq, _ int64) (PlatformGenerationSnapshot, error) {
+	s.mutate(func() { s.records[model] = append(s.records[model], seq) })
+	return PlatformGenerationSnapshot{}, nil
+}
+func (s *platformCompareStreamStore) MarkModelDoneOwned(_ context.Context, _ int64, _, _, model string, lastSeq, _ int64) (PlatformGenerationSnapshot, error) {
+	s.mutate(func() { s.done[model] = lastSeq })
+	return PlatformGenerationSnapshot{}, nil
+}
+func (s *platformCompareStreamStore) MarkModelFailedOwned(_ context.Context, _ int64, _, _, model, code string, _ int64) (PlatformGenerationSnapshot, error) {
+	s.mutate(func() { s.failed[model] = code })
+	return PlatformGenerationSnapshot{}, nil
+}
+
+type platformCompareStreamBody struct{ closes atomic.Int32 }
+
+func (*platformCompareStreamBody) Read([]byte) (int, error) { return 0, io.EOF }
+func (b *platformCompareStreamBody) Close() error {
+	b.closes.Add(1)
+	return nil
+}
+
+type platformCompareStreamUpstream struct {
+	mu      sync.Mutex
+	scripts map[string]func(context.Context, func(whitelabel.ChatCompletionChunk) error) *whitelabel.Error
+	bodies  map[string]*platformCompareStreamBody
+	calls   []string
+}
+
+func (u *platformCompareStreamUpstream) Chat(_ context.Context, payload []byte) (*http.Response, *whitelabel.Error) {
+	var request struct {
+		Model string `json:"model"`
+	}
+	if json.Unmarshal(payload, &request) != nil || request.Model == "" {
+		return nil, whitelabel.ErrUpstreamUnavailable("invalid test payload")
+	}
+	u.mu.Lock()
+	u.calls = append(u.calls, request.Model)
+	body := &platformCompareStreamBody{}
+	u.bodies[request.Model] = body
+	u.mu.Unlock()
+	return &http.Response{StatusCode: http.StatusOK, Body: body}, nil
+}
+func (u *platformCompareStreamUpstream) ConsumeChatCompletionSSEContext(ctx context.Context, _ io.Reader, model string, emit func(whitelabel.ChatCompletionChunk) error) *whitelabel.Error {
+	return u.scripts[model](ctx, emit)
+}
+
+type platformCompareFrameWriter struct {
+	mu        sync.Mutex
+	frames    [][]byte
+	active    atomic.Int32
+	maximum   atomic.Int32
+	failFirst bool
+}
+
+func (w *platformCompareFrameWriter) Write(frame []byte) error {
+	active := w.active.Add(1)
+	for {
+		maximum := w.maximum.Load()
+		if active <= maximum || w.maximum.CompareAndSwap(maximum, active) {
+			break
+		}
+	}
+	defer w.active.Add(-1)
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.frames = append(w.frames, append([]byte(nil), frame...))
+	if w.failFirst && len(w.frames) == 1 {
+		return errors.New("detached")
+	}
+	return nil
+}
+
+type platformCompareDecodedFrame struct {
+	event string
+	data  map[string]interface{}
+}
+
+func platformCompareDecodeFrames(t *testing.T, frames [][]byte) []platformCompareDecodedFrame {
+	t.Helper()
+	decoded := make([]platformCompareDecodedFrame, 0, len(frames))
+	for _, frame := range frames {
+		text := string(frame)
+		if !strings.HasSuffix(text, "\n\n") || strings.Count(text, "event: ") != 1 || strings.Count(text, "data: ") != 1 {
+			t.Fatalf("torn SSE frame: %q", text)
+		}
+		lines := strings.Split(strings.TrimSuffix(text, "\n\n"), "\n")
+		if len(lines) != 2 || !strings.HasPrefix(lines[0], "event: ") || !strings.HasPrefix(lines[1], "data: ") {
+			t.Fatalf("invalid SSE frame: %q", text)
+		}
+		var data map[string]interface{}
+		if err := json.Unmarshal([]byte(strings.TrimPrefix(lines[1], "data: ")), &data); err != nil {
+			t.Fatalf("invalid SSE data: %v", err)
+		}
+		decoded = append(decoded, platformCompareDecodedFrame{event: strings.TrimPrefix(lines[0], "event: "), data: data})
+	}
+	return decoded
+}
+
+func platformCompareDeltaChunk(model, content string, terminal bool) whitelabel.ChatCompletionChunk {
+	chunk := whitelabel.ChatCompletionChunk{Model: model, Choices: []whitelabel.ChatCompletionChunkChoice{{Index: 0, Delta: whitelabel.ChatCompletionChunkDelta{Content: &content}}}}
+	if terminal {
+		finish := "stop"
+		chunk.Choices[0].FinishReason = &finish
+	}
+	return chunk
+}
+func platformCompareUsageChunk(model string, tokens int) whitelabel.ChatCompletionChunk {
+	return whitelabel.ChatCompletionChunk{Model: model, Usage: &whitelabel.ChatCompletionUsage{TotalTokens: tokens}}
+}
+
+func platformCompareStreamFixture(t *testing.T, models []string, scripts map[string]func(context.Context, func(whitelabel.ChatCompletionChunk) error) *whitelabel.Error) (*PlatformCompareGenerationRunner, *platformCompareStreamStore, *platformCompareStreamUpstream, *platformCompareFrameWriter) {
+	t.Helper()
+	now := time.UnixMilli(10_000).UTC()
+	runner, effects := platformCompareTestRunner(now)
+	store := &platformCompareStreamStore{claim: platformCompareTestClaim(now.UnixMilli(), models), records: map[string][]int64{}, done: map[string]int64{}, failed: map[string]string{}}
+	upstream := &platformCompareStreamUpstream{scripts: scripts, bodies: map[string]*platformCompareStreamBody{}}
+	writer := &platformCompareFrameWriter{}
+	runner.deps.store, runner.deps.upstream = store, upstream
+	input := platformCompareTestInput()
+	input.Models, input.Write = append([]string(nil), models...), writer.Write
+	runner.deps.registry = &platformCompareTestRegistry{effects: effects}
+	return runner, store, upstream, writer
+}
+
+func platformCompareSuccessfulScript(model string, parts ...string) func(context.Context, func(whitelabel.ChatCompletionChunk) error) *whitelabel.Error {
+	return func(_ context.Context, emit func(whitelabel.ChatCompletionChunk) error) *whitelabel.Error {
+		for index, part := range parts {
+			if err := emit(platformCompareDeltaChunk(model, part, index == len(parts)-1)); err != nil {
+				return whitelabel.ErrUpstreamUnavailable("callback")
+			}
+		}
+		if err := emit(platformCompareUsageChunk(model, len(parts))); err != nil {
+			return whitelabel.ErrUpstreamUnavailable("callback")
+		}
+		return nil
+	}
+}
+
+func TestPlatformCompareGenerationFansOutTwoAndThreeModels(t *testing.T) {
+	for _, models := range [][]string{{"model-a", "model-b"}, {"model-a", "model-b", "model-c"}} {
+		scripts := map[string]func(context.Context, func(whitelabel.ChatCompletionChunk) error) *whitelabel.Error{}
+		started, release := make(chan string, len(models)), make(chan struct{})
+		for _, model := range models {
+			model := model
+			scripts[model] = func(ctx context.Context, emit func(whitelabel.ChatCompletionChunk) error) *whitelabel.Error {
+				started <- model
+				select {
+				case <-release:
+				case <-ctx.Done():
+					return whitelabel.ErrUpstreamUnavailable("cancelled")
+				}
+				return platformCompareSuccessfulScript(model, model)(ctx, emit)
+			}
+		}
+		runner, store, upstream, writer := platformCompareStreamFixture(t, models, scripts)
+		input := platformCompareTestInput()
+		input.Models, input.Write = models, writer.Write
+		done := make(chan PlatformCompareGenerationRunResult, 1)
+		go func() { result, _ := runner.Run(input); done <- result }()
+		seen := map[string]bool{}
+		for range models {
+			select {
+			case model := <-started:
+				seen[model] = true
+			case result := <-done:
+				t.Fatalf("Run returned before fan-out barrier: %+v", result)
+			}
+		}
+		close(release)
+		result := <-done
+		if !result.Started || len(seen) != len(models) || len(store.done) != len(models) || len(store.failed) != 0 || len(upstream.calls) != len(models) {
+			t.Fatalf("models=%v result=%+v seen=%v done=%v failed=%v calls=%v", models, result, seen, store.done, store.failed, upstream.calls)
+		}
+		frames := platformCompareDecodeFrames(t, writer.frames)
+		if len(frames) != 1+2*len(models) {
+			t.Fatalf("models=%v frames=%+v", models, frames)
+		}
+	}
+}
+
+func TestPlatformCompareGenerationAllowsCrossModelInterleavingWithStrictPerModelSequence(t *testing.T) {
+	aFirst, bFinished := make(chan struct{}), make(chan struct{})
+	scripts := map[string]func(context.Context, func(whitelabel.ChatCompletionChunk) error) *whitelabel.Error{
+		"model-a": func(ctx context.Context, emit func(whitelabel.ChatCompletionChunk) error) *whitelabel.Error {
+			if emit(platformCompareDeltaChunk("model-a", "a1", false)) != nil {
+				return whitelabel.ErrUpstreamUnavailable("callback")
+			}
+			close(aFirst)
+			select {
+			case <-bFinished:
+			case <-ctx.Done():
+				return whitelabel.ErrUpstreamUnavailable("cancelled")
+			}
+			return platformCompareSuccessfulScript("model-a", "a2")(ctx, emit)
+		},
+		"model-b": func(ctx context.Context, emit func(whitelabel.ChatCompletionChunk) error) *whitelabel.Error {
+			select {
+			case <-aFirst:
+			case <-ctx.Done():
+				return whitelabel.ErrUpstreamUnavailable("cancelled")
+			}
+			result := platformCompareSuccessfulScript("model-b", "b1")(ctx, emit)
+			close(bFinished)
+			return result
+		},
+	}
+	runner, store, _, writer := platformCompareStreamFixture(t, []string{"model-a", "model-b"}, scripts)
+	input := platformCompareTestInput()
+	input.Models, input.Write = []string{"model-a", "model-b"}, writer.Write
+	result, _ := runner.Run(input)
+	if !result.Started || !reflect.DeepEqual(store.records["model-a"], []int64{1, 2}) || !reflect.DeepEqual(store.records["model-b"], []int64{1}) {
+		t.Fatalf("result=%+v records=%v", result, store.records)
+	}
+	frames := platformCompareDecodeFrames(t, writer.frames)
+	var order []string
+	for _, frame := range frames {
+		if frame.event == "delta" {
+			order = append(order, frame.data["model"].(string)+":"+strconv.Itoa(int(frame.data["seq"].(float64))))
+		}
+	}
+	if !reflect.DeepEqual(order, []string{"model-a:1", "model-b:1", "model-a:2"}) {
+		t.Fatalf("delta order=%v", order)
+	}
+}
+
+func TestPlatformCompareGenerationModelFailureDoesNotCancelSiblings(t *testing.T) {
+	failureObserved := make(chan struct{})
+	scripts := map[string]func(context.Context, func(whitelabel.ChatCompletionChunk) error) *whitelabel.Error{
+		"model-a": func(_ context.Context, emit func(whitelabel.ChatCompletionChunk) error) *whitelabel.Error {
+			_ = emit(platformCompareDeltaChunk("wrong-model", "bad", true))
+			close(failureObserved)
+			return whitelabel.ErrUpstreamUnavailable("provider secret")
+		},
+		"model-b": func(ctx context.Context, emit func(whitelabel.ChatCompletionChunk) error) *whitelabel.Error {
+			select {
+			case <-failureObserved:
+			case <-ctx.Done():
+				return whitelabel.ErrUpstreamUnavailable("cancelled")
+			}
+			return platformCompareSuccessfulScript("model-b", "sibling-ok")(ctx, emit)
+		},
+	}
+	runner, store, _, writer := platformCompareStreamFixture(t, []string{"model-a", "model-b"}, scripts)
+	input := platformCompareTestInput()
+	input.Models, input.Write = []string{"model-a", "model-b"}, writer.Write
+	result, _ := runner.Run(input)
+	frames := platformCompareDecodeFrames(t, writer.frames)
+	terminals := map[string]string{}
+	terminalCount := map[string]int{}
+	for _, frame := range frames {
+		if frame.event == "model_error" || frame.event == "model_done" {
+			model := frame.data["model"].(string)
+			terminals[model] = frame.event
+			terminalCount[model]++
+		}
+	}
+	allFrames := string(func() []byte {
+		var joined []byte
+		for _, frame := range writer.frames {
+			joined = append(joined, frame...)
+		}
+		return joined
+	}())
+	if !result.Started || store.failed["model-a"] != "gateway_upstream_error" || store.done["model-b"] != 1 || !reflect.DeepEqual(terminals, map[string]string{"model-a": "model_error", "model-b": "model_done"}) || terminalCount["model-a"] != 1 || terminalCount["model-b"] != 1 || strings.Contains(allFrames, "provider secret") {
+		t.Fatalf("result=%+v failed=%v done=%v terminals=%v counts=%v frames=%q", result, store.failed, store.done, terminals, terminalCount, allFrames)
+	}
+}
+
+func platformCompareConcurrentFixture(t *testing.T, detached bool) (*platformCompareStreamStore, *platformCompareFrameWriter, map[string]*platformCompareStreamBody, PlatformCompareGenerationRunResult) {
+	t.Helper()
+	ready, release := make(chan string, 2), make(chan struct{})
+	scripts := map[string]func(context.Context, func(whitelabel.ChatCompletionChunk) error) *whitelabel.Error{}
+	for _, model := range []string{"model-a", "model-b"} {
+		model := model
+		scripts[model] = func(ctx context.Context, emit func(whitelabel.ChatCompletionChunk) error) *whitelabel.Error {
+			ready <- model
+			select {
+			case <-release:
+			case <-ctx.Done():
+				return whitelabel.ErrUpstreamUnavailable("cancelled")
+			}
+			return platformCompareSuccessfulScript(model, "one", "two")(ctx, emit)
+		}
+	}
+	runner, store, upstream, writer := platformCompareStreamFixture(t, []string{"model-a", "model-b"}, scripts)
+	writer.failFirst = detached
+	input := platformCompareTestInput()
+	input.Models, input.Write = []string{"model-a", "model-b"}, writer.Write
+	done := make(chan PlatformCompareGenerationRunResult, 1)
+	go func() { result, _ := runner.Run(input); done <- result }()
+	for index := 0; index < 2; index++ {
+		select {
+		case <-ready:
+		case result := <-done:
+			t.Fatalf("Run returned before concurrent workers started: %+v", result)
+		}
+	}
+	close(release)
+	return store, writer, upstream.bodies, <-done
+}
+
+func TestPlatformCompareGenerationSerializesMutationStateEncoderAndFrames(t *testing.T) {
+	store, writer, _, result := platformCompareConcurrentFixture(t, false)
+	if !result.Started || store.mutationMax.Load() != 1 || len(platformCompareDecodeFrames(t, writer.frames)) != 7 {
+		t.Fatalf("result=%+v mutationMax=%d frames=%d", result, store.mutationMax.Load(), len(writer.frames))
+	}
+}
+func TestPlatformCompareGenerationNeverCallsHTTPWriterConcurrently(t *testing.T) {
+	_, writer, _, result := platformCompareConcurrentFixture(t, false)
+	if !result.Started || writer.maximum.Load() != 1 {
+		t.Fatalf("result=%+v writer max=%d", result, writer.maximum.Load())
+	}
+}
+func TestPlatformCompareGenerationClosesEveryResponseBodyExactlyOnce(t *testing.T) {
+	scripts := map[string]func(context.Context, func(whitelabel.ChatCompletionChunk) error) *whitelabel.Error{
+		"model-a": platformCompareSuccessfulScript("model-a", "ok"),
+		"model-b": func(_ context.Context, emit func(whitelabel.ChatCompletionChunk) error) *whitelabel.Error {
+			_ = emit(platformCompareDeltaChunk("wrong-model", "bad", true))
+			return whitelabel.ErrUpstreamUnavailable("callback")
+		},
+		"model-c": func(context.Context, func(whitelabel.ChatCompletionChunk) error) *whitelabel.Error {
+			return whitelabel.ErrUpstreamUnavailable("provider failure")
+		},
+	}
+	runner, store, upstream, writer := platformCompareStreamFixture(t, []string{"model-a", "model-b", "model-c"}, scripts)
+	input := platformCompareTestInput()
+	input.Models, input.Write = []string{"model-a", "model-b", "model-c"}, writer.Write
+	result, _ := runner.Run(input)
+	if !result.Started || len(upstream.bodies) != 3 || len(store.done) != 1 || len(store.failed) != 2 {
+		t.Fatalf("result=%+v bodies=%v done=%v failed=%v", result, upstream.bodies, store.done, store.failed)
+	}
+	for model, body := range upstream.bodies {
+		if body.closes.Load() != 1 {
+			t.Fatalf("model=%s closes=%d", model, body.closes.Load())
+		}
+	}
+}
+func TestPlatformCompareGenerationDetachedWriterStillRunsAllModels(t *testing.T) {
+	store, writer, bodies, result := platformCompareConcurrentFixture(t, true)
+	if !result.Started || len(writer.frames) != 1 || len(store.done) != 2 || len(store.records) != 2 {
+		t.Fatalf("result=%+v writes=%d records=%v done=%v", result, len(writer.frames), store.records, store.done)
+	}
+	for model, body := range bodies {
+		if body.closes.Load() != 1 {
+			t.Fatalf("model=%s closes=%d", model, body.closes.Load())
+		}
 	}
 }

@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"strconv"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/porsche/ai-gateway-go/internal/models"
 	"github.com/porsche/ai-gateway-go/internal/persistence"
@@ -24,6 +26,9 @@ type platformCompareGenerationStore interface {
 	Claim(context.Context, PlatformGenerationClaimInput) (PlatformGenerationClaimResult, error)
 	Get(context.Context, int64, string) (PlatformGenerationSnapshot, error)
 	FailRunningOwned(context.Context, int64, string, string, string, int64) (PlatformGenerationSnapshot, error)
+	RecordDeltaOwned(context.Context, int64, string, string, string, int64, int64) (PlatformGenerationSnapshot, error)
+	MarkModelDoneOwned(context.Context, int64, string, string, string, int64, int64) (PlatformGenerationSnapshot, error)
+	MarkModelFailedOwned(context.Context, int64, string, string, string, string, int64) (PlatformGenerationSnapshot, error)
 }
 
 type PlatformCompareGenerationInput struct {
@@ -62,6 +67,10 @@ type platformCompareGenerationDeps struct {
 
 type PlatformCompareGenerationRunner struct {
 	deps platformCompareGenerationDeps
+}
+
+func (r *PlatformCompareGenerationRunner) nowMillis() int64 {
+	return r.deps.now().UTC().UnixMilli()
 }
 
 func NewPlatformCompareGenerationRunner(
@@ -156,12 +165,22 @@ type platformCompareOwnedRun struct {
 }
 
 func (entry *platformCompareOwnedRun) Close() {
+	entry.release(true)
+}
+
+func (entry *platformCompareOwnedRun) Release() {
+	entry.release(false)
+}
+
+func (entry *platformCompareOwnedRun) release(settle bool) {
 	if entry == nil {
 		return
 	}
 	entry.closeOnce.Do(func() {
 		entry.cancel()
-		entry.runner.settleOwnedRunning(entry.run)
+		if settle {
+			entry.runner.settleOwnedRunning(entry.run)
+		}
 		entry.runner.deps.registry.Unregister(entry.run.userID, entry.run.generationID, entry.registrationToken)
 	})
 }
@@ -176,12 +195,166 @@ func (r *PlatformCompareGenerationRunner) Run(input PlatformCompareGenerationInp
 	}
 	entry, result, err := r.enterValidated(validated)
 	if entry != nil {
-		entry.Close()
+		r.runModels(entry)
+		entry.Release()
 		if err == nil {
 			err = ErrPlatformCompareGenerationUnavailable
 		}
 	}
 	return result, err
+}
+
+type platformCompareModelResult struct {
+	model       string
+	content     string
+	tokens      int64
+	lastSeq     int64
+	state       PlatformGenerationState
+	errorCode   string
+	terminalSet bool
+}
+
+type platformCompareExecution struct {
+	mu      sync.Mutex
+	entry   *platformCompareOwnedRun
+	results []platformCompareModelResult
+}
+
+func (r *PlatformCompareGenerationRunner) runModels(entry *platformCompareOwnedRun) []platformCompareModelResult {
+	execution := &platformCompareExecution{entry: entry, results: make([]platformCompareModelResult, len(entry.run.models))}
+	var workers sync.WaitGroup
+	workers.Add(len(entry.run.models))
+	for index, model := range entry.run.models {
+		index, model := index, model
+		payload := append([]byte(nil), entry.run.payloads[model]...)
+		go func() {
+			defer workers.Done()
+			r.runModel(execution, index, model, payload)
+		}()
+	}
+	workers.Wait()
+	return execution.results
+}
+
+func (r *PlatformCompareGenerationRunner) runModel(execution *platformCompareExecution, index int, model string, payload []byte) {
+	state := platformSingleChunkState{}
+	response, upstreamErr := r.deps.upstream.Chat(execution.entry.ctx, payload)
+	if response != nil && response.Body != nil {
+		defer response.Body.Close()
+	}
+	if upstreamErr != nil || response == nil || response.Body == nil || response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		r.failModel(execution, index, model, platformCompareUpstreamCause(execution.entry.ctx))
+		return
+	}
+	var callbackCause error
+	consumeErr := r.deps.upstream.ConsumeChatCompletionSSEContext(execution.entry.ctx, response.Body, model, func(chunk whitelabel.ChatCompletionChunk) error {
+		if chunk.Model != model {
+			callbackCause = errPlatformCompareUpstream
+			return callbackCause
+		}
+		delta, err := state.accept(chunk)
+		if err != nil {
+			callbackCause = errPlatformCompareUpstream
+			return callbackCause
+		}
+		if delta == "" {
+			return nil
+		}
+		if !utf8.ValidString(delta) {
+			callbackCause = errPlatformCompareUpstream
+			return callbackCause
+		}
+		if len(delta) > platformGenerationMessageTextMaxBytes-state.content.Len() {
+			callbackCause = errPlatformCompareOversize
+			return callbackCause
+		}
+		nextSeq := state.seq + 1
+		if !platformSSEV2SafeInteger(nextSeq) || nextSeq == 0 {
+			callbackCause = errPlatformCompareOversize
+			return callbackCause
+		}
+		execution.mu.Lock()
+		defer execution.mu.Unlock()
+		if _, err := r.deps.store.RecordDeltaOwned(execution.entry.ctx, execution.entry.run.userID, execution.entry.run.generationID, execution.entry.run.leaseToken, model, nextSeq, r.nowMillis()); err != nil {
+			callbackCause = ErrPlatformCompareGenerationUnavailable
+			return callbackCause
+		}
+		state.seq = nextSeq
+		_, _ = state.content.WriteString(delta)
+		frame := execution.entry.run.encoder.Delta(model, nextSeq, delta)
+		if frame == nil || execution.entry.run.encoder.Err() != nil {
+			callbackCause = ErrPlatformCompareGenerationUnavailable
+			return callbackCause
+		}
+		execution.entry.output.emit(frame)
+		return nil
+	})
+	if callbackCause != nil {
+		r.failModel(execution, index, model, callbackCause)
+		return
+	}
+	if consumeErr != nil || !state.complete() {
+		r.failModel(execution, index, model, platformCompareUpstreamCause(execution.entry.ctx))
+		return
+	}
+	execution.mu.Lock()
+	defer execution.mu.Unlock()
+	if _, err := r.deps.store.MarkModelDoneOwned(execution.entry.ctx, execution.entry.run.userID, execution.entry.run.generationID, execution.entry.run.leaseToken, model, state.seq, r.nowMillis()); err != nil {
+		r.failModelLocked(execution, index, model, "internal_error")
+		return
+	}
+	execution.results[index] = platformCompareModelResult{model: model, content: state.content.String(), tokens: state.totalTokens, lastSeq: state.seq, state: PlatformGenerationStateCompleted, terminalSet: true}
+	frame := execution.entry.run.encoder.ModelDone(model, state.seq)
+	if frame != nil && execution.entry.run.encoder.Err() == nil {
+		execution.entry.output.emit(frame)
+	}
+}
+
+var (
+	errPlatformCompareUpstream = errors.New("platform compare upstream failure")
+	errPlatformCompareOversize = errors.New("platform compare upstream content overflow")
+)
+
+func platformCompareUpstreamCause(ctx context.Context) error {
+	if ctx != nil && ctx.Err() != nil {
+		return ctx.Err()
+	}
+	return errPlatformCompareUpstream
+}
+
+func platformCompareStableCode(cause error) string {
+	switch {
+	case errors.Is(cause, context.DeadlineExceeded):
+		return "timeout"
+	case errors.Is(cause, errPlatformCompareOversize):
+		return "upstream_error"
+	case errors.Is(cause, ErrPlatformCompareGenerationUnavailable):
+		return "internal_error"
+	default:
+		return "gateway_upstream_error"
+	}
+}
+
+func (r *PlatformCompareGenerationRunner) failModel(execution *platformCompareExecution, index int, model string, cause error) {
+	execution.mu.Lock()
+	defer execution.mu.Unlock()
+	r.failModelLocked(execution, index, model, platformCompareStableCode(cause))
+}
+
+func (r *PlatformCompareGenerationRunner) failModelLocked(execution *platformCompareExecution, index int, model, code string) {
+	if execution.results[index].terminalSet {
+		return
+	}
+	terminalCtx, cancel := context.WithTimeout(context.WithoutCancel(r.deps.rootContext), 2*time.Second)
+	defer cancel()
+	if _, err := r.deps.store.MarkModelFailedOwned(terminalCtx, execution.entry.run.userID, execution.entry.run.generationID, execution.entry.run.leaseToken, model, code, r.nowMillis()); err != nil {
+		code = "internal_error"
+	}
+	execution.results[index] = platformCompareModelResult{model: model, state: PlatformGenerationStateFailed, errorCode: code, terminalSet: true}
+	frame := execution.entry.run.encoder.ModelError(model, code, execution.entry.run.requestID)
+	if frame != nil && execution.entry.run.encoder.Err() == nil {
+		execution.entry.output.emit(frame)
+	}
 }
 
 func (r *PlatformCompareGenerationRunner) enterValidated(input platformCompareValidatedInput) (*platformCompareOwnedRun, PlatformCompareGenerationRunResult, error) {
