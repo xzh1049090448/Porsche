@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"errors"
+	"math"
 	"os"
 	"sync"
 	"testing"
@@ -14,6 +15,7 @@ import (
 	"github.com/porsche/ai-gateway-go/internal/actionsecurity"
 	"github.com/porsche/ai-gateway-go/internal/config"
 	"github.com/porsche/ai-gateway-go/internal/service"
+	"github.com/porsche/ai-gateway-go/internal/whitelabel"
 	"github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
 )
@@ -130,6 +132,225 @@ func TestNewStateWiresAndStartsGenerationControlOnce(t *testing.T) {
 	}
 	if err := state.Close(); err != nil || workerCloses != 1 || authClient.closes != 1 || generationClient.closes != 1 {
 		t.Fatalf("second state cleanup error/counts = %v worker:%d generation:%d auth:%d", err, workerCloses, generationClient.closes, authClient.closes)
+	}
+}
+
+type statePlatformSingleRunner struct{}
+
+func (*statePlatformSingleRunner) Run(service.PlatformSingleGenerationInput) (service.PlatformSingleGenerationRunResult, error) {
+	return service.PlatformSingleGenerationRunResult{}, nil
+}
+
+func statePlatformSingleSettings(timeout float64) *config.Settings {
+	return &config.Settings{
+		RedisURL:               "redis://configured",
+		AuthHMACKey:            "configured",
+		UpstreamTimeoutSeconds: timeout,
+		WhiteLabel: config.WhiteLabelSettings{
+			BaseURL:       "https://white-label.test/v1",
+			APIKey:        "test-key",
+			AllowedModels: map[string]struct{}{"model-a": {}},
+		},
+	}
+}
+
+func statePlatformSingleConstructors(t *testing.T, events *[]string) stateConstructors {
+	t.Helper()
+	authClient := newStateCloseTrackingRedisClientWithClose(func() error {
+		if events != nil {
+			*events = append(*events, "auth")
+		}
+		return nil
+	})
+	generationClient := newStateCloseTrackingRedisClientWithClose(func() error {
+		if events != nil {
+			*events = append(*events, "generation")
+		}
+		return nil
+	})
+	constructors := defaultStateConstructors()
+	constructors.newAuthRedisFromURL = func(context.Context, string, string) (*service.AuthRedis, error) {
+		return service.NewAuthRedis(authClient, "state-test-auth-hmac-key")
+	}
+	constructors.newPlatformGenerationStoreFromURL = func(context.Context, string) (*service.PlatformGenerationStore, error) {
+		return service.NewPlatformGenerationStore(generationClient)
+	}
+	constructors.newPlatformGenerationControl = func(*gorm.DB, *service.PlatformGenerationStore, *service.PlatformGenerationCancellationRegistry) (*service.PlatformGenerationControl, error) {
+		return &service.PlatformGenerationControl{}, nil
+	}
+	constructors.newPlatformGenerationConverger = func(*service.PlatformGenerationControl) (*service.PlatformGenerationConverger, error) {
+		return &service.PlatformGenerationConverger{}, nil
+	}
+	constructors.startPlatformGenerationConverger = func(*service.PlatformGenerationConverger) {
+		if events != nil {
+			*events = append(*events, "start")
+		}
+	}
+	constructors.closePlatformGenerationConverger = func(context.Context, *service.PlatformGenerationConverger) error {
+		if events != nil {
+			*events = append(*events, "converger")
+		}
+		return nil
+	}
+	return constructors
+}
+
+func TestNewStateWiresPlatformSingleGenerationWithExactDependencies(t *testing.T) {
+	constructors := statePlatformSingleConstructors(t, nil)
+	db := &gorm.DB{Config: &gorm.Config{}}
+	wantRunner := &statePlatformSingleRunner{}
+	var root context.Context
+	var gotStore *service.PlatformGenerationStore
+	var gotPersistence *service.PlatformGenerationPersistence
+	var gotRegistry *service.PlatformGenerationCancellationRegistry
+	var gotUpstream *whitelabel.WhiteLabelService
+	constructors.newPlatformSingleGeneration = func(
+		gotDB *gorm.DB,
+		store *service.PlatformGenerationStore,
+		persistence *service.PlatformGenerationPersistence,
+		registry *service.PlatformGenerationCancellationRegistry,
+		upstream *whitelabel.WhiteLabelService,
+		gotRoot context.Context,
+		timeout time.Duration,
+	) (service.PlatformSingleGenerationRunnerAPI, error) {
+		if gotDB != db || store == nil || persistence == nil || registry == nil || upstream == nil || gotRoot == nil {
+			t.Fatalf("runner constructor dependencies = db:%p store:%p persistence:%p registry:%p upstream:%p root:%v", gotDB, store, persistence, registry, upstream, gotRoot)
+		}
+		if timeout != 1250*time.Millisecond {
+			t.Fatalf("runner timeout = %v, want 1.25s", timeout)
+		}
+		gotStore, gotPersistence, gotRegistry, gotUpstream = store, persistence, registry, upstream
+		root = gotRoot
+		return wantRunner, nil
+	}
+
+	state, err := newState(statePlatformSingleSettings(1.25), db, constructors)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.PlatformSingleGeneration != wantRunner {
+		t.Fatalf("state runner = %#v, want injected runner", state.PlatformSingleGeneration)
+	}
+	if gotStore != state.PlatformGenerations || gotPersistence != state.PlatformGenerationPersistence || gotRegistry != state.PlatformGenerationCancellations || gotUpstream != state.WhiteLabel {
+		t.Fatalf("runner dependencies differ from State-owned dependencies")
+	}
+	select {
+	case <-root.Done():
+		t.Fatal("runner root context cancelled before State.Close")
+	default:
+	}
+	if err := state.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-root.Done():
+	default:
+		t.Fatal("runner root context remains active after State.Close")
+	}
+}
+
+func TestNewStatePlatformSingleGenerationDependencyMatrix(t *testing.T) {
+	tests := []struct {
+		name     string
+		settings *config.Settings
+		db       *gorm.DB
+	}{
+		{name: "no redis", settings: &config.Settings{UpstreamTimeoutSeconds: 1, WhiteLabel: statePlatformSingleSettings(1).WhiteLabel}, db: &gorm.DB{Config: &gorm.Config{}}},
+		{name: "no database", settings: statePlatformSingleSettings(1)},
+		{name: "no upstream", settings: &config.Settings{RedisURL: "redis://configured", AuthHMACKey: "configured", UpstreamTimeoutSeconds: 1}, db: &gorm.DB{Config: &gorm.Config{}}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			constructors := statePlatformSingleConstructors(t, nil)
+			calls := 0
+			constructors.newPlatformSingleGeneration = func(*gorm.DB, *service.PlatformGenerationStore, *service.PlatformGenerationPersistence, *service.PlatformGenerationCancellationRegistry, *whitelabel.WhiteLabelService, context.Context, time.Duration) (service.PlatformSingleGenerationRunnerAPI, error) {
+				calls++
+				return &statePlatformSingleRunner{}, nil
+			}
+			state, err := newState(test.settings, test.db, constructors)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = state.Close() }()
+			if calls != 0 || state.PlatformSingleGeneration != nil || state.platformGenerationRootCancel != nil {
+				t.Fatalf("partial dependencies constructed runner: calls=%d state=%#v", calls, state)
+			}
+		})
+	}
+}
+
+func TestNewStatePlatformSingleGenerationFailsClosed(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		configure func(*stateConstructors)
+	}{
+		{name: "missing constructor", configure: func(c *stateConstructors) { c.newPlatformSingleGeneration = nil }},
+		{name: "constructor error", configure: func(c *stateConstructors) {
+			c.newPlatformSingleGeneration = func(*gorm.DB, *service.PlatformGenerationStore, *service.PlatformGenerationPersistence, *service.PlatformGenerationCancellationRegistry, *whitelabel.WhiteLabelService, context.Context, time.Duration) (service.PlatformSingleGenerationRunnerAPI, error) {
+				return nil, errors.New("https://secret.example/runner")
+			}
+		}},
+		{name: "nil result", configure: func(c *stateConstructors) {
+			c.newPlatformSingleGeneration = func(*gorm.DB, *service.PlatformGenerationStore, *service.PlatformGenerationPersistence, *service.PlatformGenerationCancellationRegistry, *whitelabel.WhiteLabelService, context.Context, time.Duration) (service.PlatformSingleGenerationRunnerAPI, error) {
+				return nil, nil
+			}
+		}},
+		{name: "typed nil result", configure: func(c *stateConstructors) {
+			c.newPlatformSingleGeneration = func(*gorm.DB, *service.PlatformGenerationStore, *service.PlatformGenerationPersistence, *service.PlatformGenerationCancellationRegistry, *whitelabel.WhiteLabelService, context.Context, time.Duration) (service.PlatformSingleGenerationRunnerAPI, error) {
+				var runner *statePlatformSingleRunner
+				return runner, nil
+			}
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var events []string
+			constructors := statePlatformSingleConstructors(t, &events)
+			var root context.Context
+			var capturedRegistry *service.PlatformGenerationCancellationRegistry
+			test.configure(&constructors)
+			if constructors.newPlatformSingleGeneration != nil {
+				configured := constructors.newPlatformSingleGeneration
+				constructors.newPlatformSingleGeneration = func(db *gorm.DB, store *service.PlatformGenerationStore, persistence *service.PlatformGenerationPersistence, gotRegistry *service.PlatformGenerationCancellationRegistry, upstream *whitelabel.WhiteLabelService, gotRoot context.Context, timeout time.Duration) (service.PlatformSingleGenerationRunnerAPI, error) {
+					root, capturedRegistry = gotRoot, gotRegistry
+					return configured(db, store, persistence, gotRegistry, upstream, gotRoot, timeout)
+				}
+			}
+			state, err := newState(statePlatformSingleSettings(1), &gorm.DB{Config: &gorm.Config{}}, constructors)
+			if state != nil || !errors.Is(err, service.ErrPlatformSingleGenerationUnavailable) || err.Error() != service.ErrPlatformSingleGenerationUnavailable.Error() {
+				t.Fatalf("state/error = %#v/%v, want nil/fixed runner unavailable", state, err)
+			}
+			if root != nil {
+				select {
+				case <-root.Done():
+				default:
+					t.Fatal("runner root context not cancelled after constructor failure")
+				}
+			}
+			if capturedRegistry != nil {
+				_, registerErr := capturedRegistry.Register(42, "123e4567-e89b-42d3-a456-426614174002", func() {})
+				if !errors.Is(registerErr, service.ErrPlatformGenerationUnavailable) {
+					t.Fatalf("partial cleanup left runner registry open: %v", registerErr)
+				}
+			}
+			if got := events; len(got) != 3 || got[0] != "converger" || got[1] != "generation" || got[2] != "auth" {
+				t.Fatalf("partial cleanup order = %v, want [converger generation auth]", got)
+			}
+		})
+	}
+}
+
+func TestNewStatePlatformSingleGenerationRejectsInvalidTimeoutBeforeConstruction(t *testing.T) {
+	for _, timeout := range []float64{math.NaN(), math.Inf(1), math.Inf(-1), 0, -1, float64(math.MaxInt64)/float64(time.Second) + 1, 0.5 / float64(time.Second)} {
+		constructors := statePlatformSingleConstructors(t, nil)
+		calls := 0
+		constructors.newPlatformSingleGeneration = func(*gorm.DB, *service.PlatformGenerationStore, *service.PlatformGenerationPersistence, *service.PlatformGenerationCancellationRegistry, *whitelabel.WhiteLabelService, context.Context, time.Duration) (service.PlatformSingleGenerationRunnerAPI, error) {
+			calls++
+			return &statePlatformSingleRunner{}, nil
+		}
+		state, err := newState(statePlatformSingleSettings(timeout), &gorm.DB{Config: &gorm.Config{}}, constructors)
+		if state != nil || !errors.Is(err, service.ErrPlatformSingleGenerationUnavailable) || calls != 0 {
+			t.Fatalf("timeout %v: state/error/calls = %#v/%v/%d, want nil/unavailable/0", timeout, state, err, calls)
+		}
 	}
 }
 
@@ -319,6 +540,187 @@ func TestStateCloseStopsWorkerBeforeClientsAndIsConcurrentSafe(t *testing.T) {
 	var nilState *State
 	if err := nilState.Close(); err != nil {
 		t.Fatalf("nil State.Close() error = %v", err)
+	}
+}
+
+func TestStateCloseCancelsAndDrainsRunnersBeforeWorkerAndClients(t *testing.T) {
+	var mu sync.Mutex
+	var events []string
+	record := func(event string) {
+		mu.Lock()
+		events = append(events, event)
+		mu.Unlock()
+	}
+	root, rootCancel := context.WithCancel(context.Background())
+	registry := service.NewPlatformGenerationCancellationRegistry()
+	generationID := "123e4567-e89b-42d3-a456-426614174000"
+	runnerCancelled := make(chan struct{})
+	token, err := registry.Register(42, generationID, func() { close(runnerCancelled) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		<-runnerCancelled
+		record("runner-unregister")
+		registry.Unregister(42, generationID, token)
+	}()
+	state := &State{
+		PlatformGenerationCancellations: registry,
+		PlatformGenerationConverger:     &service.PlatformGenerationConverger{},
+		PlatformGenerations:             mustStateGenerationStore(t, newStateCloseTrackingRedisClient()),
+		AuthRedis:                       mustStateAuthRedis(t, newStateCloseTrackingRedisClient()),
+		platformGenerationRootCancel: func() {
+			record("cancel-root")
+			rootCancel()
+		},
+		closeTimeout: time.Second,
+		closePlatformGenerationRunners: func(ctx context.Context, got *service.PlatformGenerationCancellationRegistry) error {
+			select {
+			case <-root.Done():
+			default:
+				t.Fatal("runner registry close started before root cancellation")
+			}
+			record("close-runners")
+			return got.CloseAndWait(ctx)
+		},
+		closePlatformGenerationConverger: func(context.Context, *service.PlatformGenerationConverger) error {
+			record("converger")
+			return nil
+		},
+		closePlatformGenerations: func(*service.PlatformGenerationStore) error {
+			record("generation")
+			return nil
+		},
+		closeAuthRedis: func(*service.AuthRedis) error {
+			record("auth")
+			return nil
+		},
+	}
+	const runnerCloseCallers = 32
+	errs := make(chan error, runnerCloseCallers)
+	var closeWG sync.WaitGroup
+	for i := 0; i < runnerCloseCallers; i++ {
+		closeWG.Add(1)
+		go func() {
+			defer closeWG.Done()
+			errs <- state.Close()
+		}()
+	}
+	closeWG.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	mu.Lock()
+	got := append([]string(nil), events...)
+	mu.Unlock()
+	want := []string{"cancel-root", "close-runners", "runner-unregister", "converger", "generation", "auth"}
+	if len(got) != len(want) {
+		t.Fatalf("close order = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("close order = %v, want %v", got, want)
+		}
+	}
+}
+
+func TestStateCloseWaitsForPlatformSingleGenerationAdmissionBeforeRedis(t *testing.T) {
+	registry := service.NewPlatformGenerationCancellationRegistry()
+	release, err := registry.BeginAdmission()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rootCancelled := make(chan struct{})
+	generationClosed := make(chan struct{})
+	state := &State{
+		PlatformGenerationCancellations: registry,
+		PlatformGenerations:             mustStateGenerationStore(t, newStateCloseTrackingRedisClient()),
+		platformGenerationRootCancel:    func() { close(rootCancelled) },
+		closeTimeout:                    time.Second,
+		closePlatformGenerations: func(*service.PlatformGenerationStore) error {
+			close(generationClosed)
+			return nil
+		},
+	}
+	done := make(chan error, 1)
+	go func() { done <- state.Close() }()
+	select {
+	case <-rootCancelled:
+	case <-time.After(time.Second):
+		t.Fatal("State.Close did not cancel runner root")
+	}
+	select {
+	case <-generationClosed:
+		t.Fatal("generation Redis closed while admission remained active")
+	case err := <-done:
+		t.Fatalf("State.Close returned while admission remained active: %v", err)
+	default:
+	}
+	release()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-generationClosed:
+	default:
+		t.Fatal("generation Redis was not closed after admission drained")
+	}
+}
+
+func TestStateCloseGenerationRunnerTimeoutRetainsEntryAndContinuesSanitizedCleanup(t *testing.T) {
+	var events []string
+	registry := service.NewPlatformGenerationCancellationRegistry()
+	generationID := "123e4567-e89b-42d3-a456-426614174001"
+	token, err := registry.Register(42, generationID, func() { events = append(events, "cancel-runner") })
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := &State{
+		PlatformGenerationCancellations: registry,
+		PlatformGenerationConverger:     &service.PlatformGenerationConverger{},
+		PlatformGenerations:             mustStateGenerationStore(t, newStateCloseTrackingRedisClient()),
+		AuthRedis:                       mustStateAuthRedis(t, newStateCloseTrackingRedisClient()),
+		platformGenerationRootCancel:    func() { events = append(events, "cancel-root") },
+		closeTimeout:                    time.Nanosecond,
+		closePlatformGenerationRunners: func(ctx context.Context, got *service.PlatformGenerationCancellationRegistry) error {
+			events = append(events, "close-runners")
+			return got.CloseAndWait(ctx)
+		},
+		closePlatformGenerationConverger: func(context.Context, *service.PlatformGenerationConverger) error {
+			events = append(events, "converger")
+			return errors.New("redis://secret/worker")
+		},
+		closePlatformGenerations: func(*service.PlatformGenerationStore) error {
+			events = append(events, "generation")
+			return errors.New("redis://secret/generation")
+		},
+		closeAuthRedis: func(*service.AuthRedis) error {
+			events = append(events, "auth")
+			return errors.New("redis://secret/auth")
+		},
+	}
+	err = state.Close()
+	wantError := "close platform generation runners\nclose platform generation worker\nclose platform generation store\nclose authentication Redis"
+	if err == nil || err.Error() != wantError {
+		t.Fatalf("Close() error = %q, want %q", err, wantError)
+	}
+	want := []string{"cancel-root", "close-runners", "cancel-runner", "converger", "generation", "auth"}
+	if len(events) != len(want) {
+		t.Fatalf("timeout close order = %v, want %v", events, want)
+	}
+	for i := range want {
+		if events[i] != want[i] {
+			t.Fatalf("timeout close order = %v, want %v", events, want)
+		}
+	}
+	if !registry.Unregister(42, generationID, token) {
+		t.Fatal("timed-out runner entry was removed before runner unregistered")
+	}
+	if err2 := state.Close(); err2 == nil || err2.Error() != err.Error() || len(events) != len(want) {
+		t.Fatalf("repeated Close() = %v, events=%v; want cached error/no repeated cleanup", err2, events)
 	}
 }
 

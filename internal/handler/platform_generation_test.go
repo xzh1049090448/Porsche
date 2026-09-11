@@ -370,9 +370,10 @@ func TestPlatformGenerationHandlerIntegrationReceiptAndOwnerIsolation(t *testing
 		if _, err := state.PlatformGenerations.BeginCommit(context.Background(), user.ID, generationID, nowMillis+2); err != nil {
 			t.Fatal(err)
 		}
+		reservedConversationGUID := platformTestSnowflake.Next()
 		receipt, err := state.PlatformGenerationPersistence.Finalize(context.Background(), state.DB, service.PlatformGenerationPersistenceInput{
 			UserID: user.ID, GenerationID: generationID, Mode: service.PlatformGenerationModeSingle,
-			Models: []string{"model-a"}, UserMessage: "private prompt bytes", NowMillis: nowMillis + 3,
+			Models: []string{"model-a"}, ReservedConversationGUID: &reservedConversationGUID, UserMessage: "private prompt bytes", NowMillis: nowMillis + 3,
 			Results: []service.PlatformGenerationPersistenceResult{{Model: "model-a", State: service.PlatformGenerationStateCompleted, Content: "real receipt answer", Tokens: 7, Seq: 0}},
 		})
 		if err != nil {
@@ -457,9 +458,10 @@ func TestPlatformGenerationHandlerIntegrationPartialCompareReceipt(t *testing.T)
 		if _, err := state.PlatformGenerations.BeginCommit(context.Background(), user.ID, generationID, nowMillis+3); err != nil {
 			t.Fatal(err)
 		}
+		reservedConversationGUID := platformTestSnowflake.Next()
 		receipt, err := state.PlatformGenerationPersistence.Finalize(context.Background(), state.DB, service.PlatformGenerationPersistenceInput{
 			UserID: user.ID, GenerationID: generationID, Mode: service.PlatformGenerationModeCompare,
-			Models: modelsInOrder, UserMessage: "private compare prompt", NowMillis: nowMillis + 4,
+			Models: modelsInOrder, ReservedConversationGUID: &reservedConversationGUID, UserMessage: "private compare prompt", NowMillis: nowMillis + 4,
 			Results: []service.PlatformGenerationPersistenceResult{
 				{Model: modelsInOrder[0], State: service.PlatformGenerationStateCompleted, Content: "compare receipt answer", Tokens: 7, Seq: 0},
 				{Model: modelsInOrder[1], State: service.PlatformGenerationStateFailed, ErrorCode: "timeout", Seq: 0},

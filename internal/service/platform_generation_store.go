@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -270,11 +271,41 @@ func (s *PlatformGenerationStore) RecordDelta(ctx context.Context, userID int64,
 	})
 }
 
+func (s *PlatformGenerationStore) RecordDeltaOwned(ctx context.Context, userID int64, generationID, leaseToken, model string, seq, nowMillis int64) (PlatformGenerationSnapshot, error) {
+	if !platformSSEV2ModelIdentifier(model) || !platformSSEV2SafeInteger(seq) || seq == 0 {
+		return PlatformGenerationSnapshot{}, ErrPlatformGenerationInvalid
+	}
+	return s.mutateOwned(ctx, userID, generationID, leaseToken, nowMillis, func(snapshot *PlatformGenerationSnapshot) error {
+		modelState, found := snapshot.ModelStates[model]
+		if snapshot.State != PlatformGenerationStateRunning || !found || modelState.State != PlatformGenerationStateRunning || seq != modelState.Seq+1 {
+			return ErrPlatformGenerationConflict
+		}
+		modelState.Seq = seq
+		snapshot.ModelStates[model] = modelState
+		return nil
+	})
+}
+
 func (s *PlatformGenerationStore) MarkModelDone(ctx context.Context, userID int64, generationID, model string, lastSeq, nowMillis int64) (PlatformGenerationSnapshot, error) {
 	if !platformSSEV2ModelIdentifier(model) || !platformSSEV2SafeInteger(lastSeq) {
 		return PlatformGenerationSnapshot{}, ErrPlatformGenerationInvalid
 	}
 	return s.mutate(ctx, userID, generationID, nowMillis, func(snapshot *PlatformGenerationSnapshot) error {
+		modelState, found := snapshot.ModelStates[model]
+		if snapshot.State != PlatformGenerationStateRunning || !found || modelState.State != PlatformGenerationStateRunning || modelState.Seq != lastSeq {
+			return ErrPlatformGenerationConflict
+		}
+		modelState.State = PlatformGenerationStateCompleted
+		snapshot.ModelStates[model] = modelState
+		return nil
+	})
+}
+
+func (s *PlatformGenerationStore) MarkModelDoneOwned(ctx context.Context, userID int64, generationID, leaseToken, model string, lastSeq, nowMillis int64) (PlatformGenerationSnapshot, error) {
+	if !platformSSEV2ModelIdentifier(model) || !platformSSEV2SafeInteger(lastSeq) {
+		return PlatformGenerationSnapshot{}, ErrPlatformGenerationInvalid
+	}
+	return s.mutateOwned(ctx, userID, generationID, leaseToken, nowMillis, func(snapshot *PlatformGenerationSnapshot) error {
 		modelState, found := snapshot.ModelStates[model]
 		if snapshot.State != PlatformGenerationStateRunning || !found || modelState.State != PlatformGenerationStateRunning || modelState.Seq != lastSeq {
 			return ErrPlatformGenerationConflict
@@ -329,6 +360,29 @@ func (s *PlatformGenerationStore) MarkCancelled(ctx context.Context, userID int6
 
 func (s *PlatformGenerationStore) BeginCommit(ctx context.Context, userID int64, generationID string, nowMillis int64) (PlatformGenerationSnapshot, error) {
 	return s.mutate(ctx, userID, generationID, nowMillis, func(snapshot *PlatformGenerationSnapshot) error {
+		if snapshot.State != PlatformGenerationStateRunning {
+			return ErrPlatformGenerationConflict
+		}
+		successes := 0
+		for _, model := range snapshot.Models {
+			switch snapshot.ModelStates[model].State {
+			case PlatformGenerationStateCompleted:
+				successes++
+			case PlatformGenerationStateFailed:
+			default:
+				return ErrPlatformGenerationConflict
+			}
+		}
+		if successes == 0 {
+			return ErrPlatformGenerationConflict
+		}
+		snapshot.State = PlatformGenerationStateCommitting
+		return nil
+	})
+}
+
+func (s *PlatformGenerationStore) BeginCommitOwned(ctx context.Context, userID int64, generationID, leaseToken string, nowMillis int64) (PlatformGenerationSnapshot, error) {
+	return s.mutateOwned(ctx, userID, generationID, leaseToken, nowMillis, func(snapshot *PlatformGenerationSnapshot) error {
 		if snapshot.State != PlatformGenerationStateRunning {
 			return ErrPlatformGenerationConflict
 		}
@@ -461,6 +515,89 @@ func (s *PlatformGenerationStore) Fail(ctx context.Context, userID int64, genera
 	})
 }
 
+func (s *PlatformGenerationStore) FailRunningOwned(ctx context.Context, userID int64, generationID, leaseToken, code string, nowMillis int64) (PlatformGenerationSnapshot, error) {
+	if !platformGenerationStableCode(code) {
+		return PlatformGenerationSnapshot{}, ErrPlatformGenerationInvalid
+	}
+	return s.mutateOwned(ctx, userID, generationID, leaseToken, nowMillis, func(snapshot *PlatformGenerationSnapshot) error {
+		return failOwnedSnapshot(snapshot, code)
+	})
+}
+
+func failOwnedSnapshot(snapshot *PlatformGenerationSnapshot, code string) error {
+	if snapshot.State != PlatformGenerationStateRunning {
+		return ErrPlatformGenerationConflict
+	}
+	for model, state := range snapshot.ModelStates {
+		if state.State == PlatformGenerationStateRunning {
+			state.State = PlatformGenerationStateFailed
+			state.ErrorCode = code
+			snapshot.ModelStates[model] = state
+		}
+	}
+	snapshot.State = PlatformGenerationStateFailed
+	snapshot.ErrorCode = code
+	return nil
+}
+
+func (s *PlatformGenerationStore) AcknowledgeCancelledOwned(ctx context.Context, userID int64, generationID, leaseToken string, nowMillis int64) (PlatformGenerationSnapshot, error) {
+	return s.mutateOwned(ctx, userID, generationID, leaseToken, nowMillis, acknowledgeCancelledOwnedSnapshot)
+}
+
+func acknowledgeCancelledOwnedSnapshot(snapshot *PlatformGenerationSnapshot) error {
+	if snapshot.State != PlatformGenerationStateCancelling {
+		return ErrPlatformGenerationConflict
+	}
+	for model, state := range snapshot.ModelStates {
+		if state.State == PlatformGenerationStateRunning {
+			state.State = PlatformGenerationStateCancelled
+			snapshot.ModelStates[model] = state
+		}
+	}
+	snapshot.State = PlatformGenerationStateCancelled
+	return nil
+}
+
+func platformGenerationLeaseMatches(snapshot PlatformGenerationSnapshot, digest string) bool {
+	if len(snapshot.LeaseOwnerSHA256) != sha256.Size*2 || len(digest) != sha256.Size*2 {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(snapshot.LeaseOwnerSHA256), []byte(digest)) == 1
+}
+
+func platformGenerationRunningLeaseAuthorized(snapshot PlatformGenerationSnapshot, digest string, nowMillis int64) bool {
+	return snapshot.State == PlatformGenerationStateRunning &&
+		platformGenerationLeaseMatches(snapshot, digest) &&
+		nowMillis < snapshot.LeaseUntilMillis
+}
+
+func platformGenerationOwnedMutationAuthorized(snapshot PlatformGenerationSnapshot, digest string, nowMillis int64) bool {
+	if snapshot.State == PlatformGenerationStateRunning {
+		return platformGenerationRunningLeaseAuthorized(snapshot, digest, nowMillis)
+	}
+	return platformGenerationLeaseMatches(snapshot, digest)
+}
+
+func (s *PlatformGenerationStore) mutateOwned(
+	ctx context.Context,
+	userID int64,
+	generationID string,
+	leaseToken string,
+	nowMillis int64,
+	change func(*PlatformGenerationSnapshot) error,
+) (PlatformGenerationSnapshot, error) {
+	if ctx == nil || !validPlatformGenerationLeaseToken(leaseToken) {
+		return PlatformGenerationSnapshot{}, ErrPlatformGenerationInvalid
+	}
+	digest := platformGenerationLeaseDigest(leaseToken)
+	return s.mutate(ctx, userID, generationID, nowMillis, func(snapshot *PlatformGenerationSnapshot) error {
+		if !platformGenerationOwnedMutationAuthorized(*snapshot, digest, nowMillis) {
+			return ErrPlatformGenerationConflict
+		}
+		return change(snapshot)
+	})
+}
+
 func (s *PlatformGenerationStore) mutate(ctx context.Context, userID int64, generationID string, nowMillis int64, change func(*PlatformGenerationSnapshot) error) (PlatformGenerationSnapshot, error) {
 	if err := validatePlatformGenerationIdentity(userID, generationID); err != nil || !platformSSEV2SafeInteger(nowMillis) {
 		return PlatformGenerationSnapshot{}, ErrPlatformGenerationInvalid
@@ -491,7 +628,9 @@ func (s *PlatformGenerationStore) mutate(ctx context.Context, userID int64, gene
 		return current, err
 	}
 	next.UpdatedAtMillis = nowMillis
-	if next.State != PlatformGenerationStateRunning {
+	if next.State == PlatformGenerationStateCancelling {
+		next.LeaseUntilMillis = 0
+	} else if next.State != PlatformGenerationStateRunning {
 		next.LeaseOwnerSHA256 = ""
 		next.LeaseUntilMillis = 0
 	}
@@ -669,10 +808,15 @@ func validPlatformGenerationWire(raw string, snapshot PlatformGenerationSnapshot
 	if snapshot.State == PlatformGenerationStateRunning {
 		digestPresent := platformGenerationWirePresent(fields, "lease_owner_sha256")
 		deadlinePresent := platformGenerationWirePresent(fields, "lease_until_ms")
-		if digestPresent != deadlinePresent {
+		if !digestPresent || !deadlinePresent {
 			return false
 		}
-		if digestPresent && (!platformGenerationWireRequired(fields, "lease_owner_sha256", "lease_until_ms") || snapshot.LeaseOwnerSHA256 == "" || snapshot.LeaseUntilMillis <= 0) {
+		if !platformGenerationWireRequired(fields, "lease_owner_sha256", "lease_until_ms") || snapshot.LeaseOwnerSHA256 == "" || snapshot.LeaseUntilMillis <= 0 {
+			return false
+		}
+	} else if snapshot.State == PlatformGenerationStateCancelling {
+		digestPresent := platformGenerationWirePresent(fields, "lease_owner_sha256")
+		if !digestPresent || platformGenerationWirePresent(fields, "lease_until_ms") || !platformGenerationWireRequired(fields, "lease_owner_sha256") || snapshot.LeaseOwnerSHA256 == "" {
 			return false
 		}
 	} else if platformGenerationWirePresent(fields, "lease_owner_sha256") || platformGenerationWirePresent(fields, "lease_until_ms") {
@@ -794,19 +938,22 @@ func validPlatformGenerationTombstone(snapshot PlatformGenerationSnapshot) bool 
 }
 
 func validPlatformGenerationLease(snapshot PlatformGenerationSnapshot) bool {
-	hasDigest := snapshot.LeaseOwnerSHA256 != ""
-	hasDeadline := snapshot.LeaseUntilMillis != 0
-	if hasDigest != hasDeadline {
+	switch snapshot.State {
+	case PlatformGenerationStateRunning:
+		return validPlatformGenerationLeaseDigest(snapshot.LeaseOwnerSHA256) && platformSSEV2SafeInteger(snapshot.LeaseUntilMillis) && snapshot.LeaseUntilMillis > 0
+	case PlatformGenerationStateCancelling:
+		return validPlatformGenerationLeaseDigest(snapshot.LeaseOwnerSHA256) && snapshot.LeaseUntilMillis == 0
+	default:
+		return snapshot.LeaseOwnerSHA256 == "" && snapshot.LeaseUntilMillis == 0
+	}
+}
+
+func validPlatformGenerationLeaseDigest(value string) bool {
+	if len(value) != sha256.Size*2 {
 		return false
 	}
-	if !hasDigest {
-		return true
-	}
-	if snapshot.State != PlatformGenerationStateRunning || !platformSSEV2SafeInteger(snapshot.LeaseUntilMillis) || snapshot.LeaseUntilMillis <= snapshot.UpdatedAtMillis || len(snapshot.LeaseOwnerSHA256) != sha256.Size*2 {
-		return false
-	}
-	for index := 0; index < len(snapshot.LeaseOwnerSHA256); index++ {
-		char := snapshot.LeaseOwnerSHA256[index]
+	for index := 0; index < len(value); index++ {
+		char := value[index]
 		if !(char >= '0' && char <= '9') && !(char >= 'a' && char <= 'f') {
 			return false
 		}

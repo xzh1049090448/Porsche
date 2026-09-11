@@ -166,6 +166,14 @@ func Up(ctx context.Context, db *gorm.DB, nextGUID func() int64, nowMillis func(
 		if err != nil {
 			return err
 		}
+		appliedMigrations, err := Status(ctx, conn)
+		if err != nil {
+			return fmt.Errorf("read migration status: %w", err)
+		}
+		appliedByVersion := make(map[string]AppliedMigration, len(appliedMigrations))
+		for _, applied := range appliedMigrations {
+			appliedByVersion[applied.Version] = applied
+		}
 		for _, migration := range migrations {
 			checksum := fmt.Sprintf("%x", sha256.Sum256(migration.UpSQL))
 			var applied AppliedMigration
@@ -200,15 +208,8 @@ func Up(ctx context.Context, db *gorm.DB, nextGUID func() int64, nowMillis func(
 						return err
 					}
 				}
-				if migration.Version == "0013" {
-					if err := VerifyAdminOperationRolePermissionResultsSchema(ctx, conn); err != nil {
-						return err
-					}
-				}
-				if migration.Version == "0012" {
-					if err := VerifyAdminOperationSafetySchema(ctx, conn); err != nil {
-						return err
-					}
+				if err := verifyAdminOperationMigrationSchema(ctx, conn, migration.Version, appliedByVersion); err != nil {
+					return err
 				}
 				if migration.Version == "0011" {
 					if err := VerifyPlatformGenerationReceiptSchema(ctx, conn); err != nil {
@@ -244,15 +245,8 @@ func Up(ctx context.Context, db *gorm.DB, nextGUID func() int64, nowMillis func(
 					return err
 				}
 			}
-			if migration.Version == "0012" {
-				if err := VerifyAdminOperationSafetySchema(ctx, conn); err != nil {
-					return err
-				}
-			}
-			if migration.Version == "0013" {
-				if err := VerifyAdminOperationRolePermissionResultsSchema(ctx, conn); err != nil {
-					return err
-				}
+			if err := verifyAdminOperationMigrationSchema(ctx, conn, migration.Version, appliedByVersion); err != nil {
+				return err
 			}
 			if migration.Version == "0003" {
 				if err := VerifyPermissionSchema(ctx, conn); err != nil {
@@ -281,9 +275,35 @@ func Up(ctx context.Context, db *gorm.DB, nextGUID func() int64, nowMillis func(
 			).Error; err != nil {
 				return fmt.Errorf("record migration %s: %w", migration.Version, err)
 			}
+			appliedByVersion[migration.Version] = AppliedMigration{Version: migration.Version, Checksum: checksum}
 		}
 		return nil
 	})
+}
+
+func adminOperationVerifierVersion(migrationVersion string, applied map[string]AppliedMigration) string {
+	switch migrationVersion {
+	case "0012":
+		if _, extended := applied["0013"]; extended {
+			return "0013"
+		}
+		return "0012"
+	case "0013":
+		return "0013"
+	default:
+		return ""
+	}
+}
+
+func verifyAdminOperationMigrationSchema(ctx context.Context, db *gorm.DB, migrationVersion string, applied map[string]AppliedMigration) error {
+	switch adminOperationVerifierVersion(migrationVersion, applied) {
+	case "0012":
+		return VerifyAdminOperationSafetySchema(ctx, db)
+	case "0013":
+		return VerifyAdminOperationRolePermissionResultsSchema(ctx, db)
+	default:
+		return nil
+	}
 }
 
 // Status returns the applied migration ledger without changing database state.

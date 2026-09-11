@@ -49,6 +49,7 @@ func TestDecodePlatformRequestProjectsV2FieldsOutOfUpstreamPayload(t *testing.T)
 func TestDecodePlatformRequestRejectsIncompleteOrInvalidV2Contract(t *testing.T) {
 	valid := `{"model":"model-a","messages":[{"role":"user","content":"hello"}],"max_tokens":1,"stream":true,"stream_version":"platform-chat-sse.v2","generation_id":"` + platformV2GenerationID + `"}`
 	for name, payload := range map[string]string{
+		"missing stream":     strings.Replace(valid, `"stream":true,`, "", 1),
 		"stream false":       strings.Replace(valid, `"stream":true`, `"stream":false`, 1),
 		"wrong version":      strings.Replace(valid, "platform-chat-sse.v2", "platform-chat-sse.v3", 1),
 		"malformed UUID":     strings.Replace(valid, platformV2GenerationID, "not-a-uuid", 1),
@@ -56,6 +57,7 @@ func TestDecodePlatformRequestRejectsIncompleteOrInvalidV2Contract(t *testing.T)
 		"missing generation": strings.Replace(valid, `,"generation_id":"`+platformV2GenerationID+`"`, "", 1),
 		"version only":       strings.Replace(valid, `,"generation_id":"`+platformV2GenerationID+`"`, "", 1),
 		"ID only":            strings.Replace(valid, `,"stream_version":"platform-chat-sse.v2"`, "", 1),
+		"usage false":        strings.Replace(valid, `}`, `,"stream_options":{"include_usage":false}}`, 1),
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := decodePlatformV2Body(t, payload); err == nil {

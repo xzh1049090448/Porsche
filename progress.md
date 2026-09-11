@@ -1,5 +1,12 @@
 # Porsche 开发进度
 
+## 2026-09-11：BE05 platform single v2 stream 本地候选完成
+
+- 八个 BE05 真实 MySQL/Redis integration 顶层测试全部通过且零跳过，覆盖新/既有会话、断连后 GET、取消无持久化、续租与 converger、commit-unknown reconcile、duplicate/quota 竞争和失败矩阵；成功图的 receipt/result、精确消息、usage、daily/token、provenance 与 GET 水合均一致，失败图 durable snapshot 不变。
+- loopback-only、read-only、tmpfs、AutoRemove 的 MySQL 8.4.11 / Redis 7.4.11 fixture 在每个主要门禁前 fresh reset 并通过 `0001`–`0013` migration。focused normal/race 各 114 PASS；full 3403 PASS；affected race 2488 PASS；build/vet/diff/privacy 均通过。唯一 skip 是非 BE05 的显式 opt-in `TestAdminUsersReadPerformance`。
+- 两个真实产品失败均保留：续租 activity timestamp 修复为 `027073509225d7d9384d529d7222dbb32ea3772a`，已迁移数据库重跑 verifier 修复为 `d09d493532d1730745599bbc2d50377b6f6447ee`；两条修复链均已分别通过独立 SPEC、SECURITY 与真实 fixture TEST review。
+- 两只 disposable 容器已按完整 ID 精确停止并自动删除，任务标签资源、命名卷/网络及 loopback listener 均为零；私有凭据目录已删除。`go-018` 仍为 `in_progress`：BE01–BE05 本地完成，但 BE06、前后端联合验收、生产迁移/部署、公开 HTTPS、真实上游、push、PR 与 merge 均未运行。完整证据见 `docs/superpowers/reports/2026-09-10-platform-single-stream-v2.md`。
+
 ## 2026-09-09：BE04 platform generation control 本地候选完成
 
 - BE04 production code HEAD 为 `620dcd852222284e0d9c057d1e50ae6d3bb5e0cb`；交付候选为 `c55ca7f52bc92ecfae08411cf0d0b9d50f5bdf10`，其后只增加 test-only uppercase scan fixture stabilization，不改变生产代码。早期 `23820ac` 隔离修复后曾有 `40a195d`、`1f78b81`、`412d790` 三个证据提交；最终生产修复链为 `b114ef5` 中间修复、`9b7e925` 的逐记录损坏容忍与 caller cancellation、`fee9ae4` 的 receipt pre-CAS 精确匹配，以及 `620dcd8` 的 cancel deadline/锁清理。

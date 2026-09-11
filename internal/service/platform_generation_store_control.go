@@ -56,7 +56,6 @@ func (s *PlatformGenerationStore) CancelOrCreate(ctx context.Context, userID int
 				next := clonePlatformGeneration(current)
 				next.State = PlatformGenerationStateCancelling
 				next.UpdatedAtMillis = nowMillis
-				next.LeaseOwnerSHA256 = ""
 				next.LeaseUntilMillis = 0
 				transitionedRaw, err = encodePlatformGeneration(next)
 				if err != nil {
@@ -144,12 +143,17 @@ func (s *PlatformGenerationStore) RenewLease(ctx context.Context, userID int64, 
 	if err != nil {
 		return PlatformGenerationSnapshot{}, err
 	}
-	if current.State != PlatformGenerationStateRunning || current.LeaseOwnerSHA256 == "" || current.LeaseOwnerSHA256 != digest || nowMillis < platformGenerationLatestRunningActivity(current) || nowMillis > current.LeaseUntilMillis {
+	if !platformGenerationRunningLeaseAuthorized(current, digest, nowMillis) || nowMillis < platformGenerationLatestRunningActivity(current) {
 		return current, ErrPlatformGenerationConflict
 	}
 	next := clonePlatformGeneration(current)
-	next.LeaseUntilMillis = nowMillis + platformGenerationLeaseDuration.Milliseconds()
+	renewPlatformGenerationLeaseSnapshot(&next, nowMillis)
 	return s.writePlatformGenerationControlCAS(ctx, userID, generationID, raw, next)
+}
+
+func renewPlatformGenerationLeaseSnapshot(snapshot *PlatformGenerationSnapshot, nowMillis int64) {
+	snapshot.UpdatedAtMillis = nowMillis
+	snapshot.LeaseUntilMillis = nowMillis + platformGenerationLeaseDuration.Milliseconds()
 }
 
 func platformGenerationLatestRunningActivity(snapshot PlatformGenerationSnapshot) int64 {
@@ -221,6 +225,8 @@ func (s *PlatformGenerationStore) ConvergeStaleCancelling(ctx context.Context, u
 	}
 	next.State = PlatformGenerationStateCancelled
 	next.UpdatedAtMillis = nowMillis
+	next.LeaseOwnerSHA256 = ""
+	next.LeaseUntilMillis = 0
 	return s.writePlatformGenerationControlCAS(ctx, userID, generationID, raw, next)
 }
 
