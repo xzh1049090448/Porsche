@@ -2,9 +2,9 @@
 
 ## 结论
 
-状态：`BLOCKED_FIXTURE`
+状态：`PASS_LIMITED_SCOPE`
 
-当前代码完成了既定首期范围，并通过无数据库单元测试、回归、竞态、构建、静态检查和协议对抗探针。依赖隔离 MySQL 的 5 个真实 handler 闭环用例由于未配置 `TEST_DATABASE_URL` 全部跳过，因此不能标记为完整实现验收通过。
+当前代码完成了既定首期范围，并通过单元测试、回归、竞态、构建、静态检查、协议对抗探针以及隔离 MySQL 上的真实 handler 闭环。由于独立规格/安全复审和真实 OpenCode/Codex/上游验收尚未执行，本结论保持限定范围，不代表生产或所有客户端兼容性通过。
 
 实现代码头为 `6ce54bb`；本报告和进度记录属于后续文档收尾提交。
 
@@ -40,15 +40,21 @@ invalid_first_chunk err=invalid Responses stream chunk events_before_error=0
 
 敏感数据扫描只命中测试中的 deliberate sentinel 和设计中说明的 `sk-gw-` 公开前缀；Responses 事件扫描确认其终态为 `response.completed` 或 `response.failed`，`[DONE]` 仅保留在既有 Chat 路径。
 
-## 未闭环门禁
+## 真实 handler 夹具证据
 
-以下测试均以 `requires isolated TEST_DATABASE_URL MySQL fixture` 跳过：
+本批使用本地已有的 MySQL 8.0.46 镜像启动独立、tmpfs、无命名卷、仅绑定 loopback 随机端口的临时容器。专用数据库 `porsche_openai_cli_test` 完成 0001–0019 迁移。首次迁移尝试因测试环境缺少有效 `SNOWFLAKE_NODE_ID` 在连接业务流程前退出；补充测试专用节点号后，迁移和测试成功。
+
+以下测试在 normal 与 race 下均 PASS、零 skip：
 
 - `TestGatewayResponsesRejectsStateBeforeUpstream`
 - `TestGatewayChatToolRoundTrip`
 - `TestGatewayResponsesToolRoundTrip`
 - `TestGatewayResponsesStreamUsesResponsesEventsWithoutDoneSentinel`
 - `TestGatewayResponsesPostStartFailureEmitsFailed`
+
+测试后精确停止 `porsche-openai-cli-260912-mysql`；容器因 `--rm` 自动删除，未创建命名卷。包含随机 MySQL 密码、测试 HMAC key 和运行脚本的 0700 私有目录已删除。
+
+## 未闭环门禁
 
 还未执行独立规格复审、独立安全复审、真实 OpenCode/Codex 会话、真实付费上游调用、push、PR、merge、部署或生产验收。
 

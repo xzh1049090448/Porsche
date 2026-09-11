@@ -1,11 +1,11 @@
 # Porsche 开发进度
 
-## 2026-09-12：OpenAI CLI 工具调用兼容实现完成，真实 handler 夹具阻塞
+## 2026-09-12：OpenAI CLI 工具调用兼容首期本地限定通过
 
 - Gateway 新增统一的 OpenAI 协议规范化层：`/v1/chat/completions` 支持 assistant `tool_calls` 与 tool result 往返；`/v1/responses` 支持无状态文本、自定义函数工具、并行调用、非流式输出和 Responses SSE。未知字段、托管工具、`store:true`、非空 `previous_response_id`、重复或悬空调用 ID 在访问上游前拒绝。
 - 设计文档新增长期 TODO：建立 Codex、OpenCode 及其他 CLI 的版本/协议兼容矩阵，逐步支持 reasoning 和各客户端可选字段，并使用冻结 fixture 与真实客户端回归防止漂移。
 - 候选实现代码头 `6ce54bb`。受影响包 race、全仓 `go test ./... -count=1`、`go vet ./...`、`go build ./...`、`git diff --check` 和三项额外协议对抗探针全部退出 0；敏感字段扫描仅命中测试哨兵和设计中的公开 token 前缀。
-- 5 个真实网关验收用例因未配置隔离的 `TEST_DATABASE_URL` 全部 SKIP，覆盖 Chat/Responses 两轮工具闭环、Responses SSE、启动后失败终态与有状态请求拒绝。因此本子项目当前为 `BLOCKED_FIXTURE`，独立规格/安全复审、真实 OpenCode/Codex、真实上游、push、PR、merge、部署和生产验收均 `NOT_RUN`。完整证据见 `docs/superpowers/reports/2026-09-12-openai-cli-tool-compat.md`。
+- 使用独立、tmpfs、无命名卷的 MySQL 8.0.46 完成 0001–0019 迁移；Chat/Responses 两轮工具闭环、Responses SSE、启动后失败终态与有状态请求零上游拒绝共 5 个真实 handler 用例在 normal 与 race 下均 PASS、零 skip。精确命名容器自动删除，私有测试凭据目录已删除。本子项目为 `PASS_LIMITED_SCOPE`；独立规格/安全复审、真实 OpenCode/Codex、真实上游、push、PR、merge、部署和生产验收均 `NOT_RUN`。完整证据见 `docs/superpowers/reports/2026-09-12-openai-cli-tool-compat.md`。
 
 ## 2026-09-11：公共内容与定价分支同步主分支
 
