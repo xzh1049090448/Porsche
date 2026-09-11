@@ -176,7 +176,7 @@ func TestPlatformCompareV2RejectsModelCardinalityAndDuplicatesBeforeRunner(t *te
 		t.Fatal("invalid compare models reached runner")
 		return service.PlatformCompareGenerationRunResult{}, nil
 	}}
-	for _, modelsJSON := range []string{`[]`, `["model-a"]`, `["model-a","model-b","model-c","model-d"]`, `["model-a","model-a"]`, `["model-a",""]`, `["model-a","../model"]`} {
+	for _, modelsJSON := range []string{`[]`, `["model-a"]`, `["model-a","model-b","model-c","model-d"]`, `["model-a","model-a"]`, `["model-a",""]`} {
 		rec := platformCompareV2Request(platformCompareV2Engine(t, runner, nil, models.JSONSlice{"model-a", "model-b", "model-c"}), platformCompareV2Payload(modelsJSON, ""))
 		if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), `"code":"invalid_request"`) {
 			t.Fatalf("models=%s status=%d body=%s", modelsJSON, rec.Code, rec.Body.String())
@@ -184,6 +184,78 @@ func TestPlatformCompareV2RejectsModelCardinalityAndDuplicatesBeforeRunner(t *te
 	}
 	if runner.calls != 0 {
 		t.Fatalf("invalid model runner calls=%d", runner.calls)
+	}
+}
+
+func TestPlatformCompareV2ModelIdentifierMatchesServiceBoundary(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		value string
+		valid bool
+	}{
+		{name: "128 ascii bytes", value: strings.Repeat("a", 128), valid: true},
+		{name: "129 ascii bytes", value: strings.Repeat("a", 129)},
+		{name: "128 multibyte bytes", value: strings.Repeat("é", 64), valid: true},
+		{name: "130 multibyte bytes", value: strings.Repeat("é", 65)},
+		{name: "leading unicode whitespace", value: "\u00a0model"},
+		{name: "trailing unicode whitespace", value: "model\u00a0"},
+		{name: "invalid utf8", value: string([]byte{0xff})},
+		{name: "interior space", value: "model a", valid: true},
+		{name: "query marker", value: "model?a", valid: true},
+		{name: "percent", value: "model%a", valid: true},
+		{name: "backslash", value: `model\a`, valid: true},
+		{name: "empty slash segment", value: "org//model", valid: true},
+		{name: "dot segment", value: "org/../model", valid: true},
+		{name: "format character", value: "model\u200ba", valid: true},
+		{name: "control character", value: "model\x00a", valid: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := validPlatformCompareV2ModelID(test.value); got != test.valid {
+				t.Fatalf("validPlatformCompareV2ModelID(%q)=%v want=%v bytes=%d", test.value, got, test.valid, len([]byte(test.value)))
+			}
+		})
+	}
+
+	for _, boundary := range []struct {
+		name string
+		size int
+	}{{name: "http 128 bytes", size: 128}, {name: "http 129 bytes", size: 129}} {
+		t.Run(boundary.name, func(t *testing.T) {
+			size := boundary.size
+			modelID := strings.Repeat("x", size)
+			catalogCalls := 0
+			whiteLabel, err := whitelabel.NewWhiteLabelService(config.WhiteLabelSettings{
+				BaseURL: "https://white-label.test/v1", APIKey: "provider-secret",
+				AllowedModels: map[string]struct{}{modelID: {}, "model-a": {}},
+			}, &http.Client{Transport: platformRoundTripper(func(req *http.Request) (*http.Response, error) {
+				catalogCalls++
+				body := `{"data":[{"id":"` + modelID + `"},{"id":"model-a"}]}`
+				return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: req}, nil
+			})}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			runner := &platformCompareV2RunnerFake{run: func(service.PlatformCompareGenerationInput) (service.PlatformCompareGenerationRunResult, error) {
+				return service.PlatformCompareGenerationRunResult{}, service.ErrPlatformCompareGenerationInvalid
+			}}
+			state := &app.State{Settings: &config.Settings{}, WhiteLabel: whiteLabel, PlatformCompareGeneration: runner}
+			engine := gin.New()
+			registerPlatformWithAuthentication(engine, state, func(c *gin.Context) {
+				c.Set(middleware.ContextUser, &models.User{ID: 47, Status: models.UserStatusActive, AllowedModels: models.JSONSlice{modelID, "model-a"}})
+				c.Next()
+			})
+			rec := platformCompareV2Request(engine, platformCompareV2Payload(`["`+modelID+`","model-a"]`, ""))
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("size=%d status=%d body=%s", size, rec.Code, rec.Body.String())
+			}
+			wantCalls := 1
+			if size == 129 {
+				wantCalls = 0
+			}
+			if runner.calls != wantCalls || catalogCalls != wantCalls {
+				t.Fatalf("size=%d runner calls=%d catalog calls=%d want=%d", size, runner.calls, catalogCalls, wantCalls)
+			}
+		})
 	}
 }
 

@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"unicode"
 	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
@@ -464,17 +463,7 @@ func validPlatformCompareV2Models(modelIDs []string) bool {
 }
 
 func validPlatformCompareV2ModelID(modelID string) bool {
-	if modelID == "" || len(modelID) > 256 || modelID != strings.TrimSpace(modelID) || !utf8.ValidString(modelID) {
-		return false
-	}
-	for _, segment := range strings.Split(modelID, "/") {
-		if segment == "" || segment == "." || segment == ".." || strings.IndexFunc(segment, func(r rune) bool {
-			return unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || unicode.IsSpace(r) || strings.ContainsRune("\\?#%", r)
-		}) >= 0 {
-			return false
-		}
-	}
-	return true
+	return modelID != "" && utf8.ValidString(modelID) && modelID == strings.TrimSpace(modelID) && len([]byte(modelID)) <= 128
 }
 
 func isCanonicalUUID(value string) bool {
