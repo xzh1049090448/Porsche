@@ -454,7 +454,11 @@ func TestGatewayChatAuthenticatesBeforeReadingOrValidatingBody(t *testing.T) {
 		if rec.Code != http.StatusUnauthorized && rec.Code != http.StatusForbidden {
 			t.Fatalf("secret=%q status=%d body=%s", secret, rec.Code, rec.Body.String())
 		}
-		assertGatewayError(t, rec, "authentication_error")
+		wantType := "authentication_error"
+		if rec.Code == http.StatusForbidden {
+			wantType = "permission_error"
+		}
+		assertGatewayError(t, rec, wantType)
 	}
 	if got := calls.Load(); got != 0 {
 		t.Fatalf("upstream calls=%d, want 0", got)

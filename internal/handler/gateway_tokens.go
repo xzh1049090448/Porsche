@@ -388,6 +388,10 @@ func validRequestID(id string) bool {
 	return true
 }
 func gatewayAuthenticationError(c *gin.Context, status int, code service.GatewayTokenError) {
+	if status == http.StatusForbidden {
+		gatewayWhiteLabelError(c, &whitelabel.Error{Code: whitelabel.Code(code), Status: status, Type: whitelabel.TypePermission})
+		return
+	}
 	gatewayWhiteLabelError(c, whitelabel.ErrGatewayAuthentication(whitelabel.Code(code), status))
 }
 
