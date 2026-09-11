@@ -2378,6 +2378,86 @@ func TestPlatformCompareGenerationPersistsAllSuccessesInRequestOrder(t *testing.
 	}
 }
 
+func TestPlatformCompareGenerationPersistsInvalidInputConvergesOwnedRunning(t *testing.T) {
+	for _, test := range []struct {
+		name             string
+		unknownAuthority bool
+	}{
+		{name: "owned running"},
+		{name: "unknown authority", unknownAuthority: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			scripts := map[string]func(context.Context, func(whitelabel.ChatCompletionChunk) error) *whitelabel.Error{
+				"model-a": platformCompareSuccessfulScript("model-a", "alpha"),
+				"model-b": platformCompareSuccessfulScript("model-b", "bravo"),
+			}
+			runner, store, upstream, writer := platformCompareStreamFixture(t, []string{"model-a", "model-b"}, scripts)
+			effects := runner.deps.persistence.(*platformCompareTestPersistence).effects
+			timer := &platformCompareHandshakeTimer{ch: make(chan time.Time)}
+			runner.deps.newTimer = func(time.Duration) platformSingleTimer { return timer }
+			var clockCalls atomic.Int32
+			runner.deps.now = func() time.Time {
+				call := clockCalls.Add(1)
+				if call == 6 {
+					if test.unknownAuthority {
+						store.mu.Lock()
+						store.settleSnapshot = PlatformGenerationSnapshot{GenerationID: "unknown-authority"}
+						store.mu.Unlock()
+					}
+					return time.UnixMilli(-1).UTC()
+				}
+				return time.UnixMilli(10_000).UTC()
+			}
+			input := platformCompareTestInput()
+			input.Models, input.Write = []string{"model-a", "model-b"}, writer.Write
+			result, err := runner.Run(input)
+			frames := platformCompareDecodeFrames(t, writer.frames)
+			globalErrors, doneFrames := 0, 0
+			for _, frame := range frames {
+				switch frame.event {
+				case "error":
+					globalErrors++
+					if frame.data["code"] != "internal_error" {
+						t.Fatalf("global error=%+v", frame)
+					}
+				case "done":
+					doneFrames++
+				}
+			}
+			wantFails, wantErrors := 1, 1
+			if test.unknownAuthority {
+				wantFails, wantErrors = 0, 0
+			}
+			if !result.Started || !errors.Is(err, ErrPlatformCompareGenerationUnavailable) || store.gets != 1 || store.globalFails != wantFails || globalErrors != wantErrors || doneFrames != 0 {
+				t.Fatalf("result=%+v err=%v gets=%d fails=%d frames=%+v", result, err, store.gets, store.globalFails, frames)
+			}
+			if wantFails == 1 && (store.globalFailUserID != 17 || store.globalFailGeneration != platformCompareTestGenerationID || store.globalFailLease != store.claim.LeaseToken || store.globalFailCode != "internal_error") {
+				t.Fatalf("failure authority user=%d generation=%q lease=%q code=%q", store.globalFailUserID, store.globalFailGeneration, store.globalFailLease, store.globalFailCode)
+			}
+			if effects.persist != 0 || effects.receipt != 0 || effects.totalTokens != 0 || store.beginCommitCalls != 0 || store.completeCalls != 0 || store.reconcileCalls != 0 {
+				t.Fatalf("unexpected completion effects=%+v store=%+v", effects, store)
+			}
+			wantClockCalls := int32(7)
+			if test.unknownAuthority {
+				wantClockCalls = 6
+			}
+			if effects.admissionRelease != 1 || effects.unregister != 1 || effects.runnerCancel != 1 || timer.stops.Load() != 1 || clockCalls.Load() != wantClockCalls {
+				t.Fatalf("cleanup effects=%+v timerStops=%d clockCalls=%d", effects, timer.stops.Load(), clockCalls.Load())
+			}
+			upstream.mu.Lock()
+			defer upstream.mu.Unlock()
+			if len(upstream.bodies) != 2 {
+				t.Fatalf("bodies=%v", upstream.bodies)
+			}
+			for model, body := range upstream.bodies {
+				if body.closes.Load() != 1 {
+					t.Fatalf("model=%s closes=%d", model, body.closes.Load())
+				}
+			}
+		})
+	}
+}
+
 func TestPlatformCompareGenerationPersistsPartialSuccessAndFailedReceiptResult(t *testing.T) {
 	store, persistence, _, result, err := platformCompareTask6DirectRun(t, true)
 	failed := persistence.input.Results[1]

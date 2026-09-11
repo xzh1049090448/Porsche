@@ -601,6 +601,8 @@ func validPlatformCompareCompleted(snapshot PlatformGenerationSnapshot, run plat
 func (r *PlatformCompareGenerationRunner) persistCompareCompletion(execution *platformCompareExecution) bool {
 	input, ok := platformComparePersistenceInput(execution.entry.run, execution.results, r.nowMillis())
 	if !ok {
+		outcome := r.convergeCompareFailure(execution, "internal_error")
+		r.emitCompareConvergence(execution, outcome)
 		return false
 	}
 	execution.mu.Lock()
