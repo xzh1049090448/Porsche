@@ -1,5 +1,12 @@
 # Porsche 开发进度
 
+## 2026-09-11：BE06 platform compare v2 stream 后端本地候选完成
+
+- BE06 compare v2 后端的 owner-bound 单模型失败、专用 runner、2/3 模型并发 fan-out、共享续租与取消收敛、部分成功持久化、commit-unknown reconcile、app wiring 和 handler 已完成。Task 1–9 implementer/spec/quality 链最终通过；冻结实现快照为 `SPEC_PASS`、`SECURITY_PASS`、`PASS_LIMITED_SCOPE`，限定仅因报告/tracker 当时尚未加入且前端/生产未验收。
+- 八个真实 MySQL 8.4.11 / Redis 7.4.11 integration 顶层测试在 normal/race 中分别全部 PASS、零 skip；覆盖精确 graph/order、成功模型计费、GET、all-failed/cancel 零持久化、续租、commit-unknown 精确 reconcile、额度/reset/unlimited 和 duplicate/quota races。full normal 为 3688 PASS event、0 FAIL；canonical serialized race 无 race；build/vet/diff/JSON 均通过。
+- fixture 已按两个完整容器 ID 精确 stop/remove，命名 network/volumes、私有凭据目录与 label-filter 残留均清理，两个 loopback 端口无 listener。固定基线 `944309003ce47bbaf949f6c0f28d9bd302016d0f`，pre-report 候选 `20e51fe90a08f0581d3fdf261a3564deaf392b6b`；未 fetch/rebase/push。
+- `go-018` 仍为 `in_progress`：BE01–BE06 仅后端本地完成，前后端合同对齐、Porsche-Web 实现、联合验收、生产迁移/部署、公开 HTTPS 与真实上游仍未完成；未 push、PR 或 merge。完整证据见 `docs/superpowers/reports/2026-09-11-platform-compare-stream-v2.md`。
+
 ## 2026-09-11：BE05 platform single v2 stream 本地候选完成
 
 - 八个 BE05 真实 MySQL/Redis integration 顶层测试全部通过且零跳过，覆盖新/既有会话、断连后 GET、取消无持久化、续租与 converger、commit-unknown reconcile、duplicate/quota 竞争和失败矩阵；成功图的 receipt/result、精确消息、usage、daily/token、provenance 与 GET 水合均一致，失败图 durable snapshot 不变。
