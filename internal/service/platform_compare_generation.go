@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strconv"
+	"sync"
 	"time"
 
 	"github.com/porsche/ai-gateway-go/internal/models"
@@ -20,6 +22,8 @@ var (
 
 type platformCompareGenerationStore interface {
 	Claim(context.Context, PlatformGenerationClaimInput) (PlatformGenerationClaimResult, error)
+	Get(context.Context, int64, string) (PlatformGenerationSnapshot, error)
+	FailRunningOwned(context.Context, int64, string, string, string, int64) (PlatformGenerationSnapshot, error)
 }
 
 type PlatformCompareGenerationInput struct {
@@ -53,6 +57,7 @@ type platformCompareGenerationDeps struct {
 	loadConversation func(context.Context, *gorm.DB, int64, int64) error
 	loadReceipt      func(context.Context, *gorm.DB, int64, string) (PlatformGenerationReceiptSnapshot, error)
 	upstreamTimeout  time.Duration
+	newRunnerContext func(context.Context, time.Duration) (context.Context, context.CancelFunc)
 }
 
 type PlatformCompareGenerationRunner struct {
@@ -78,6 +83,7 @@ func NewPlatformCompareGenerationRunner(
 		loadConversation: loadPlatformSingleConversation,
 		loadReceipt:      LoadPlatformGenerationReceipt,
 		upstreamTimeout:  upstreamTimeout,
+		newRunnerContext: context.WithTimeout,
 	}
 	if !validPlatformCompareGenerationDeps(deps) {
 		return nil, ErrPlatformCompareGenerationUnavailable
@@ -88,7 +94,7 @@ func NewPlatformCompareGenerationRunner(
 func validPlatformCompareGenerationDeps(deps platformCompareGenerationDeps) bool {
 	return deps.db != nil && deps.store != nil && deps.persistence != nil && deps.registry != nil &&
 		deps.upstream != nil && deps.rootContext != nil && deps.now != nil && deps.newGUID != nil &&
-		deps.loadConversation != nil && deps.loadReceipt != nil && deps.upstreamTimeout > 0
+		deps.loadConversation != nil && deps.loadReceipt != nil && deps.upstreamTimeout > 0 && deps.newRunnerContext != nil
 }
 
 type platformCompareRun struct {
@@ -101,8 +107,48 @@ type platformCompareRun struct {
 	conversationGUID         int64
 	existingConversationGUID *int64
 	reservedConversationGUID *int64
+	leaseToken               string
 	payloads                 map[string][]byte
 	encoder                  *PlatformSSEV2Encoder
+}
+
+type platformCompareOutput struct {
+	write    func([]byte) error
+	detached bool
+}
+
+func (o *platformCompareOutput) emit(frame []byte) bool {
+	if o.detached || len(frame) == 0 {
+		return false
+	}
+	if err := o.write(frame); err != nil {
+		o.detached = true
+		return false
+	}
+	return true
+}
+
+// platformCompareOwnedRun is the lifecycle handoff Task 4 will continue. Its
+// Close method is safe to call from every post-registration exit path.
+type platformCompareOwnedRun struct {
+	runner            *PlatformCompareGenerationRunner
+	run               platformCompareRun
+	ctx               context.Context
+	cancel            context.CancelFunc
+	registrationToken string
+	output            platformCompareOutput
+	closeOnce         sync.Once
+}
+
+func (entry *platformCompareOwnedRun) Close() {
+	if entry == nil {
+		return
+	}
+	entry.closeOnce.Do(func() {
+		entry.cancel()
+		entry.runner.settleOwnedRunning(entry.run)
+		entry.runner.deps.registry.Unregister(entry.run.userID, entry.run.generationID, entry.registrationToken)
+	})
 }
 
 func (r *PlatformCompareGenerationRunner) Run(input PlatformCompareGenerationInput) (PlatformCompareGenerationRunResult, error) {
@@ -113,6 +159,119 @@ func (r *PlatformCompareGenerationRunner) Run(input PlatformCompareGenerationInp
 		return PlatformCompareGenerationRunResult{}, err
 	}
 	return PlatformCompareGenerationRunResult{}, ErrPlatformCompareGenerationUnavailable
+}
+
+func (r *PlatformCompareGenerationRunner) enter(input PlatformCompareGenerationInput) (*platformCompareOwnedRun, PlatformCompareGenerationRunResult, error) {
+	if r == nil || !validPlatformCompareGenerationDeps(r.deps) {
+		return nil, PlatformCompareGenerationRunResult{}, ErrPlatformCompareGenerationUnavailable
+	}
+	if input.Context == nil {
+		return nil, PlatformCompareGenerationRunResult{}, ErrPlatformCompareGenerationInvalid
+	}
+	releaseAdmission, err := r.deps.registry.BeginAdmission()
+	if err != nil || releaseAdmission == nil {
+		return nil, PlatformCompareGenerationRunResult{}, ErrPlatformCompareGenerationUnavailable
+	}
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(releaseAdmission) }
+	defer release()
+
+	admissionCtx, cancelAdmission := context.WithCancel(input.Context)
+	stopRootCancellation := context.AfterFunc(r.deps.rootContext, cancelAdmission)
+	if r.deps.rootContext.Err() != nil {
+		cancelAdmission()
+	}
+	defer stopRootCancellation()
+	defer cancelAdmission()
+	input.Context = admissionCtx
+
+	run, claimAt, err := r.prepare(input)
+	if err != nil {
+		return nil, PlatformCompareGenerationRunResult{}, err
+	}
+	claim, claimErr := r.deps.store.Claim(input.Context, PlatformGenerationClaimInput{
+		UserID: run.userID, GenerationID: run.generationID, Mode: PlatformGenerationModeCompare,
+		Models: append([]string(nil), run.models...), NowMillis: claimAt,
+	})
+	if claim.Duplicate {
+		if (claimErr != nil && !errors.Is(claimErr, ErrPlatformGenerationConflict)) || !validPlatformCompareDuplicate(claim.Snapshot, run) {
+			return nil, PlatformCompareGenerationRunResult{}, ErrPlatformCompareGenerationUnavailable
+		}
+		duplicate := clonePlatformGeneration(claim.Snapshot)
+		return nil, PlatformCompareGenerationRunResult{Duplicate: &duplicate}, nil
+	}
+	if claimErr != nil || !validPlatformCompareClaim(claim, run, claimAt) {
+		return nil, PlatformCompareGenerationRunResult{}, ErrPlatformCompareGenerationUnavailable
+	}
+	run.leaseToken = claim.LeaseToken
+
+	runnerCtx, cancelRunner := r.deps.newRunnerContext(r.deps.rootContext, r.deps.upstreamTimeout)
+	registrationToken, err := r.deps.registry.Register(run.userID, run.generationID, cancelRunner)
+	if err != nil {
+		cancelRunner()
+		r.settleOwnedRunning(run)
+		return nil, PlatformCompareGenerationRunResult{}, ErrPlatformCompareGenerationUnavailable
+	}
+	release()
+	stopRootCancellation()
+	cancelAdmission()
+
+	entry := &platformCompareOwnedRun{
+		runner: r, run: run, ctx: runnerCtx, cancel: cancelRunner, registrationToken: registrationToken,
+		output: platformCompareOutput{write: input.Write},
+	}
+	meta := run.encoder.Meta(strconv.FormatInt(run.conversationGUID, 10))
+	if meta == nil || run.encoder.Err() != nil {
+		entry.Close()
+		return nil, PlatformCompareGenerationRunResult{}, ErrPlatformCompareGenerationUnavailable
+	}
+	result := PlatformCompareGenerationRunResult{Started: true}
+	entry.output.emit(meta)
+	return entry, result, nil
+}
+
+func (r *PlatformCompareGenerationRunner) settleOwnedRunning(run platformCompareRun) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.deps.rootContext), 2*time.Second)
+	defer cancel()
+	snapshot, err := r.deps.store.Get(ctx, run.userID, run.generationID)
+	if err != nil || !validPlatformCompareSnapshotIdentity(snapshot, run) || snapshot.State != PlatformGenerationStateRunning {
+		return
+	}
+	nowMillis := r.deps.now().UTC().UnixMilli()
+	if !platformGenerationRunningLeaseAuthorized(snapshot, platformGenerationLeaseDigest(run.leaseToken), nowMillis) {
+		return
+	}
+	_, _ = r.deps.store.FailRunningOwned(ctx, run.userID, run.generationID, run.leaseToken, "internal_error", nowMillis)
+}
+
+func validPlatformCompareClaim(claim PlatformGenerationClaimResult, run platformCompareRun, nowMillis int64) bool {
+	if claim.Duplicate || !validPlatformGenerationLeaseToken(claim.LeaseToken) || !validPlatformCompareSnapshotIdentity(claim.Snapshot, run) || claim.Snapshot.State != PlatformGenerationStateRunning ||
+		!platformGenerationRunningLeaseAuthorized(claim.Snapshot, platformGenerationLeaseDigest(claim.LeaseToken), nowMillis) {
+		return false
+	}
+	for _, model := range run.models {
+		state := claim.Snapshot.ModelStates[model]
+		if state.State != PlatformGenerationStateRunning || state.Seq != 0 {
+			return false
+		}
+	}
+	return true
+}
+
+func validPlatformCompareDuplicate(snapshot PlatformGenerationSnapshot, run platformCompareRun) bool {
+	return validPlatformCompareSnapshotIdentity(snapshot, run) && snapshot.State >= PlatformGenerationStateRunning && snapshot.State <= PlatformGenerationStateFailed
+}
+
+func validPlatformCompareSnapshotIdentity(snapshot PlatformGenerationSnapshot, run platformCompareRun) bool {
+	if !validPlatformGenerationSnapshot(snapshot) || snapshot.GenerationID != run.generationID || snapshot.Mode != PlatformGenerationModeCompare || len(snapshot.Models) != len(run.models) || len(snapshot.ModelStates) != len(run.models) {
+		return false
+	}
+	for index := range run.models {
+		if snapshot.Models[index] != run.models[index] {
+			return false
+		}
+	}
+	return true
 }
 
 func (r *PlatformCompareGenerationRunner) prepare(input PlatformCompareGenerationInput) (platformCompareRun, int64, error) {

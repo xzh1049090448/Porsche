@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -18,14 +19,52 @@ import (
 const platformCompareTestGenerationID = "93000000-0000-4000-8000-000000000001"
 
 type platformCompareTestEffects struct {
-	claim, persist, admission, register, upstream, receipt, write int
+	claim, get, fail, persist, admission, admissionRelease, register, unregister, upstream, receipt, write, guid, runnerCancel int
 }
 
-type platformCompareTestStore struct{ effects *platformCompareTestEffects }
+type platformCompareTestStore struct {
+	effects        *platformCompareTestEffects
+	claim          PlatformGenerationClaimResult
+	claimErr       error
+	claimInput     PlatformGenerationClaimInput
+	claimContext   context.Context
+	onClaim        func(context.Context, PlatformGenerationClaimInput)
+	getSnapshot    PlatformGenerationSnapshot
+	getErr         error
+	failSnapshot   PlatformGenerationSnapshot
+	failErr        error
+	failLease      string
+	failCode       string
+	failNowMillis  int64
+	getUserID      int64
+	getGeneration  string
+	failUserID     int64
+	failGeneration string
+}
 
-func (s *platformCompareTestStore) Claim(context.Context, PlatformGenerationClaimInput) (PlatformGenerationClaimResult, error) {
+func (s *platformCompareTestStore) Claim(ctx context.Context, input PlatformGenerationClaimInput) (PlatformGenerationClaimResult, error) {
 	s.effects.claim++
+	s.claimContext, s.claimInput = ctx, input
+	if s.onClaim != nil {
+		s.onClaim(ctx, input)
+	}
+	if s.claimErr != nil || s.claim.Snapshot.GenerationID != "" || s.claim.Duplicate {
+		return s.claim, s.claimErr
+	}
 	return PlatformGenerationClaimResult{}, errors.New("unexpected claim")
+}
+
+func (s *platformCompareTestStore) Get(_ context.Context, userID int64, generationID string) (PlatformGenerationSnapshot, error) {
+	s.effects.get++
+	s.getUserID, s.getGeneration = userID, generationID
+	return s.getSnapshot, s.getErr
+}
+
+func (s *platformCompareTestStore) FailRunningOwned(_ context.Context, userID int64, generationID, leaseToken, code string, nowMillis int64) (PlatformGenerationSnapshot, error) {
+	s.effects.fail++
+	s.failUserID, s.failGeneration = userID, generationID
+	s.failLease, s.failCode, s.failNowMillis = leaseToken, code, nowMillis
+	return s.failSnapshot, s.failErr
 }
 
 type platformCompareTestPersistence struct{ effects *platformCompareTestEffects }
@@ -35,17 +74,46 @@ func (p *platformCompareTestPersistence) Finalize(context.Context, *gorm.DB, Pla
 	return PlatformGenerationReceiptSnapshot{}, errors.New("unexpected persistence")
 }
 
-type platformCompareTestRegistry struct{ effects *platformCompareTestEffects }
+type platformCompareTestRegistry struct {
+	effects         *platformCompareTestEffects
+	onBegin         func()
+	beginErr        error
+	registerErr     error
+	registeredUID   int64
+	registeredID    string
+	registered      context.CancelFunc
+	token           string
+	unregisterUID   int64
+	unregisterID    string
+	unregisterToken string
+}
 
 func (r *platformCompareTestRegistry) BeginAdmission() (func(), error) {
 	r.effects.admission++
-	return func() {}, nil
+	if r.onBegin != nil {
+		r.onBegin()
+	}
+	if r.beginErr != nil {
+		return nil, r.beginErr
+	}
+	return func() { r.effects.admissionRelease++ }, nil
 }
-func (r *platformCompareTestRegistry) Register(int64, string, context.CancelFunc) (string, error) {
+func (r *platformCompareTestRegistry) Register(userID int64, generationID string, cancel context.CancelFunc) (string, error) {
 	r.effects.register++
-	return "unexpected", nil
+	r.registeredUID, r.registeredID, r.registered = userID, generationID, cancel
+	if r.registerErr != nil {
+		return "", r.registerErr
+	}
+	if r.token == "" {
+		r.token = "compare-registration"
+	}
+	return r.token, nil
 }
-func (*platformCompareTestRegistry) Unregister(int64, string, string) bool { return false }
+func (r *platformCompareTestRegistry) Unregister(userID int64, generationID, token string) bool {
+	r.effects.unregister++
+	r.unregisterUID, r.unregisterID, r.unregisterToken = userID, generationID, token
+	return userID == r.registeredUID && generationID == r.registeredID && token == r.token
+}
 
 type platformCompareTestUpstream struct{ effects *platformCompareTestEffects }
 
@@ -90,20 +158,24 @@ func platformCompareTestRunner(now time.Time) (*PlatformCompareGenerationRunner,
 	deps := platformCompareGenerationDeps{
 		db: &gorm.DB{}, store: &platformCompareTestStore{effects: effects}, persistence: &platformCompareTestPersistence{effects: effects},
 		registry: &platformCompareTestRegistry{effects: effects}, upstream: &platformCompareTestUpstream{effects: effects}, rootContext: context.Background(),
-		now: func() time.Time { return now }, newGUID: func() int64 { return 8101 },
+		now: func() time.Time { return now }, newGUID: func() int64 { effects.guid++; return 8101 },
 		loadConversation: func(context.Context, *gorm.DB, int64, int64) error { return nil },
 		loadReceipt: func(context.Context, *gorm.DB, int64, string) (PlatformGenerationReceiptSnapshot, error) {
 			effects.receipt++
 			return PlatformGenerationReceiptSnapshot{}, errors.New("unexpected receipt")
 		},
 		upstreamTimeout: time.Minute,
+		newRunnerContext: func(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+			ctx, cancel := context.WithTimeout(parent, timeout)
+			return ctx, func() { effects.runnerCancel++; cancel() }
+		},
 	}
 	return &PlatformCompareGenerationRunner{deps: deps}, effects
 }
 
 func requireNoPlatformComparePostPrepareEffects(t *testing.T, effects *platformCompareTestEffects) {
 	t.Helper()
-	if effects.claim != 0 || effects.persist != 0 || effects.admission != 0 || effects.register != 0 || effects.upstream != 0 || effects.receipt != 0 || effects.write != 0 {
+	if effects.claim != 0 || effects.get != 0 || effects.fail != 0 || effects.persist != 0 || effects.admission != 0 || effects.admissionRelease != 0 || effects.register != 0 || effects.unregister != 0 || effects.upstream != 0 || effects.receipt != 0 || effects.write != 0 || effects.runnerCancel != 0 {
 		t.Fatalf("unexpected post-prepare effects: %+v", effects)
 	}
 }
@@ -399,5 +471,222 @@ func TestPlatformCompareGenerationProfessionalAndEnterpriseQuotaRemainUnlimited(
 			}
 			requireNoPlatformComparePostPrepareEffects(t, effects)
 		})
+	}
+}
+
+func platformCompareTestClaim(nowMillis int64, orderedModels []string) PlatformGenerationClaimResult {
+	token := platformSingleTestLeaseToken()
+	states := make(map[string]PlatformGenerationModel, len(orderedModels))
+	for _, model := range orderedModels {
+		states[model] = PlatformGenerationModel{State: PlatformGenerationStateRunning}
+	}
+	return PlatformGenerationClaimResult{LeaseToken: token, Snapshot: PlatformGenerationSnapshot{
+		GenerationID: platformCompareTestGenerationID, Mode: PlatformGenerationModeCompare,
+		Models: append([]string(nil), orderedModels...), State: PlatformGenerationStateRunning, ModelStates: states,
+		CreatedAtMillis: nowMillis, UpdatedAtMillis: nowMillis, LeaseOwnerSHA256: platformGenerationLeaseDigest(token),
+		LeaseUntilMillis: nowMillis + platformGenerationLeaseDuration.Milliseconds(),
+	}}
+}
+
+func TestPlatformCompareGenerationClaimsOrderedModelsOnce(t *testing.T) {
+	now := time.UnixMilli(10_000).UTC()
+	runner, effects := platformCompareTestRunner(now)
+	store := runner.deps.store.(*platformCompareTestStore)
+	registry := runner.deps.registry.(*platformCompareTestRegistry)
+	store.claim = platformCompareTestClaim(now.UnixMilli(), []string{"model-b", "model-a"})
+	store.getSnapshot = clonePlatformGeneration(store.claim.Snapshot)
+	var frame []byte
+	input := platformCompareTestInput()
+	input.Write = func(value []byte) error {
+		effects.write++
+		frame = append([]byte(nil), value...)
+		return errors.New("client left after meta")
+	}
+
+	entry, result, err := runner.enter(input)
+	if err != nil || entry == nil || !result.Started || result.Duplicate != nil {
+		t.Fatalf("enter entry=%#v result=%+v error=%v", entry, result, err)
+	}
+	if effects.claim != 1 || effects.admission != 1 || effects.admissionRelease != 1 || effects.guid != 1 || effects.register != 1 || effects.write != 1 {
+		t.Fatalf("entry effects=%+v", effects)
+	}
+	if store.claimInput.UserID != 17 || store.claimInput.GenerationID != platformCompareTestGenerationID || store.claimInput.Mode != PlatformGenerationModeCompare || !reflect.DeepEqual(store.claimInput.Models, []string{"model-b", "model-a"}) || store.claimInput.NowMillis != now.UnixMilli() {
+		t.Fatalf("claim input=%+v", store.claimInput)
+	}
+	if registry.registeredUID != 17 || registry.registeredID != platformCompareTestGenerationID || entry.run.reservedConversationGUID == nil || *entry.run.reservedConversationGUID != 8101 || entry.run.existingConversationGUID != nil || entry.run.leaseToken != store.claim.LeaseToken {
+		t.Fatalf("registration/run registry=%+v run=%+v", registry, entry.run)
+	}
+	expectedEncoder, encoderErr := NewPlatformSSEV2Encoder(platformCompareTestGenerationID, []string{"model-b", "model-a"})
+	if encoderErr != nil || string(frame) != string(expectedEncoder.Meta(strconv.FormatInt(8101, 10))) {
+		t.Fatalf("meta=%q encoder error=%v", frame, encoderErr)
+	}
+	if effects.upstream != 0 || effects.persist != 0 || effects.receipt != 0 {
+		t.Fatalf("unexpected post-entry work: %+v", effects)
+	}
+
+	entry.Close()
+	entry.Close()
+	if effects.unregister != 1 || effects.runnerCancel != 1 || effects.get != 1 || effects.fail != 1 || store.getUserID != 17 || store.getGeneration != platformCompareTestGenerationID || store.failUserID != 17 || store.failGeneration != platformCompareTestGenerationID || store.failLease != store.claim.LeaseToken || store.failCode != "internal_error" || store.failNowMillis != now.UnixMilli() || registry.unregisterUID != 17 || registry.unregisterID != platformCompareTestGenerationID || registry.unregisterToken != registry.token {
+		t.Fatalf("cleanup effects=%+v store=%+v", effects, store)
+	}
+}
+
+func TestPlatformCompareGenerationDuplicateHasNoPostClaimSideEffects(t *testing.T) {
+	now := time.UnixMilli(10_000).UTC()
+	for _, test := range []struct {
+		name      string
+		mutate    func(*PlatformGenerationSnapshot)
+		wantError bool
+	}{
+		{name: "valid duplicate"},
+		{name: "reordered identity rejected", mutate: func(snapshot *PlatformGenerationSnapshot) {
+			snapshot.Models[0], snapshot.Models[1] = snapshot.Models[1], snapshot.Models[0]
+		}, wantError: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			runner, effects := platformCompareTestRunner(now)
+			store := runner.deps.store.(*platformCompareTestStore)
+			claim := platformCompareTestClaim(now.UnixMilli(), []string{"model-b", "model-a"})
+			claim.Duplicate, claim.LeaseToken = true, ""
+			if test.mutate != nil {
+				test.mutate(&claim.Snapshot)
+			}
+			store.claim, store.claimErr = claim, ErrPlatformGenerationConflict
+			entry, result, err := runner.enter(platformCompareTestInput())
+			if test.wantError {
+				if entry != nil || !errors.Is(err, ErrPlatformCompareGenerationUnavailable) || result.Started || result.Duplicate != nil {
+					t.Fatalf("malformed duplicate entry=%#v result=%+v error=%v", entry, result, err)
+				}
+			} else {
+				if err != nil || entry != nil || result.Started || result.Duplicate == nil || !reflect.DeepEqual(*result.Duplicate, claim.Snapshot) {
+					t.Fatalf("duplicate entry=%#v result=%+v error=%v", entry, result, err)
+				}
+				claim.Snapshot.Models[0] = "mutated"
+				claim.Snapshot.ModelStates["model-b"] = PlatformGenerationModel{State: PlatformGenerationStateFailed, ErrorCode: "internal_error"}
+				if result.Duplicate.Models[0] != "model-b" || result.Duplicate.ModelStates["model-b"].State != PlatformGenerationStateRunning {
+					t.Fatalf("duplicate projection aliases store snapshot: %+v", result.Duplicate)
+				}
+			}
+			if effects.claim != 1 || effects.admission != 1 || effects.admissionRelease != 1 || effects.register != 0 || effects.unregister != 0 || effects.write != 0 || effects.upstream != 0 || effects.persist != 0 || effects.receipt != 0 || effects.get != 0 || effects.fail != 0 || effects.runnerCancel != 0 {
+				t.Fatalf("duplicate side effects=%+v", effects)
+			}
+		})
+	}
+}
+
+func TestPlatformCompareGenerationAdmissionCancellationStopsBeforeClaim(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		cancelWhen string
+	}{
+		{name: "request already cancelled", cancelWhen: "before"},
+		{name: "request cancelled after admission", cancelWhen: "during"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			runner, effects := platformCompareTestRunner(time.UnixMilli(10_000).UTC())
+			registry := runner.deps.registry.(*platformCompareTestRegistry)
+			input := platformCompareTestInput()
+			ctx, cancel := context.WithCancel(input.Context)
+			input.Context = ctx
+			if test.cancelWhen == "before" {
+				cancel()
+			} else {
+				registry.onBegin = cancel
+			}
+			entry, result, err := runner.enter(input)
+			if entry != nil || !errors.Is(err, ErrPlatformCompareGenerationUnavailable) || result.Started || result.Duplicate != nil {
+				t.Fatalf("enter entry=%#v result=%+v error=%v", entry, result, err)
+			}
+			if effects.admission != 1 || effects.admissionRelease != 1 || effects.claim != 0 || effects.register != 0 || effects.write != 0 {
+				t.Fatalf("cancellation effects=%+v", effects)
+			}
+		})
+	}
+}
+
+func TestPlatformCompareGenerationRegistrationFailureSettlesOwnedRunningState(t *testing.T) {
+	now := time.UnixMilli(10_000).UTC()
+	for _, test := range []struct {
+		name     string
+		mutate   func(*PlatformGenerationSnapshot)
+		wantFail int
+	}{
+		{name: "owned running", wantFail: 1},
+		{name: "wrong owner", mutate: func(snapshot *PlatformGenerationSnapshot) { snapshot.LeaseOwnerSHA256 = strings.Repeat("a", 64) }},
+		{name: "expired lease", mutate: func(snapshot *PlatformGenerationSnapshot) { snapshot.LeaseUntilMillis = now.UnixMilli() }},
+		{name: "cancelling", mutate: func(snapshot *PlatformGenerationSnapshot) {
+			snapshot.State, snapshot.LeaseUntilMillis = PlatformGenerationStateCancelling, 0
+		}},
+		{name: "committing", mutate: func(snapshot *PlatformGenerationSnapshot) {
+			snapshot.State, snapshot.LeaseOwnerSHA256, snapshot.LeaseUntilMillis = PlatformGenerationStateCommitting, "", 0
+			for model := range snapshot.ModelStates {
+				snapshot.ModelStates[model] = PlatformGenerationModel{State: PlatformGenerationStateCompleted}
+			}
+		}},
+		{name: "terminal", mutate: func(snapshot *PlatformGenerationSnapshot) {
+			snapshot.State, snapshot.LeaseOwnerSHA256, snapshot.LeaseUntilMillis = PlatformGenerationStateCancelled, "", 0
+			for model := range snapshot.ModelStates {
+				snapshot.ModelStates[model] = PlatformGenerationModel{State: PlatformGenerationStateCancelled}
+			}
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			runner, effects := platformCompareTestRunner(now)
+			store := runner.deps.store.(*platformCompareTestStore)
+			registry := runner.deps.registry.(*platformCompareTestRegistry)
+			store.claim = platformCompareTestClaim(now.UnixMilli(), []string{"model-b", "model-a"})
+			store.getSnapshot = clonePlatformGeneration(store.claim.Snapshot)
+			if test.mutate != nil {
+				test.mutate(&store.getSnapshot)
+			}
+			registry.registerErr = errors.New("registry draining")
+			entry, result, err := runner.enter(platformCompareTestInput())
+			if entry != nil || !errors.Is(err, ErrPlatformCompareGenerationUnavailable) || result.Started || result.Duplicate != nil {
+				t.Fatalf("entry=%#v result=%+v error=%v", entry, result, err)
+			}
+			if effects.claim != 1 || effects.register != 1 || effects.get != 1 || effects.fail != test.wantFail || effects.unregister != 0 || effects.write != 0 || effects.runnerCancel != 1 || effects.admissionRelease != 1 {
+				t.Fatalf("registration failure effects=%+v wantFail=%d", effects, test.wantFail)
+			}
+		})
+	}
+}
+
+func TestPlatformCompareGenerationRequestCancellationAfterClaimDoesNotStopRunner(t *testing.T) {
+	now := time.UnixMilli(10_000).UTC()
+	runner, effects := platformCompareTestRunner(now)
+	store := runner.deps.store.(*platformCompareTestStore)
+	registry := runner.deps.registry.(*platformCompareTestRegistry)
+	input := platformCompareTestInput()
+	requestCtx, cancelRequest := context.WithCancel(input.Context)
+	input.Context = requestCtx
+	store.claim = platformCompareTestClaim(now.UnixMilli(), []string{"model-b", "model-a"})
+	store.getSnapshot = clonePlatformGeneration(store.claim.Snapshot)
+	store.onClaim = func(ctx context.Context, _ PlatformGenerationClaimInput) {
+		cancelRequest()
+		if ctx.Err() == nil {
+			t.Fatal("claim context did not observe request cancellation")
+		}
+	}
+	root := context.WithValue(context.Background(), struct{ name string }{"root"}, "application")
+	runner.deps.rootContext = root
+	var runnerParent context.Context
+	runner.deps.newRunnerContext = func(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+		runnerParent = parent
+		if timeout != time.Minute {
+			t.Fatalf("runner timeout=%v", timeout)
+		}
+		ctx, cancel := context.WithCancel(parent)
+		return ctx, func() { effects.runnerCancel++; cancel() }
+	}
+	registry.onBegin = func() {}
+
+	entry, result, err := runner.enter(input)
+	if err != nil || entry == nil || !result.Started || runnerParent != root || entry.ctx.Err() != nil || requestCtx.Err() == nil {
+		t.Fatalf("entry=%#v result=%+v error=%v parentRoot=%v runnerErr=%v requestErr=%v", entry, result, err, runnerParent == root, entry.ctx.Err(), requestCtx.Err())
+	}
+	entry.Close()
+	entry.Close()
+	if effects.unregister != 1 || effects.runnerCancel != 1 || effects.get != 1 || effects.fail != 1 {
+		t.Fatalf("cleanup effects=%+v", effects)
 	}
 }
