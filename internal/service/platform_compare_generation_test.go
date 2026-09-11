@@ -789,23 +789,53 @@ func TestPlatformCompareGenerationRequestCancellationAfterClaimDoesNotStopRunner
 }
 
 type platformCompareStreamStore struct {
-	mu             sync.Mutex
-	claim          PlatformGenerationClaimResult
-	records        map[string][]int64
-	done           map[string]int64
-	failed         map[string]string
-	mutationActive atomic.Int32
-	mutationMax    atomic.Int32
+	mu                   sync.Mutex
+	claim                PlatformGenerationClaimResult
+	settleSnapshot       PlatformGenerationSnapshot
+	records              map[string][]int64
+	done                 map[string]int64
+	failed               map[string]string
+	recordErrModel       string
+	doneErrModel         string
+	failedErrModel       string
+	gets                 int
+	globalFails          int
+	globalFailUserID     int64
+	globalFailGeneration string
+	globalFailLease      string
+	globalFailCode       string
+	globalFailedSnapshot PlatformGenerationSnapshot
+	mutationActive       atomic.Int32
+	mutationMax          atomic.Int32
 }
 
 func (s *platformCompareStreamStore) Claim(context.Context, PlatformGenerationClaimInput) (PlatformGenerationClaimResult, error) {
 	return s.claim, nil
 }
 func (s *platformCompareStreamStore) Get(context.Context, int64, string) (PlatformGenerationSnapshot, error) {
+	s.mu.Lock()
+	s.gets++
+	s.mu.Unlock()
+	if s.settleSnapshot.GenerationID != "" {
+		return clonePlatformGeneration(s.settleSnapshot), nil
+	}
 	return clonePlatformGeneration(s.claim.Snapshot), nil
 }
-func (*platformCompareStreamStore) FailRunningOwned(context.Context, int64, string, string, string, int64) (PlatformGenerationSnapshot, error) {
-	return PlatformGenerationSnapshot{}, nil
+func (s *platformCompareStreamStore) FailRunningOwned(_ context.Context, userID int64, generationID, lease, code string, _ int64) (PlatformGenerationSnapshot, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.globalFails++
+	s.globalFailUserID, s.globalFailGeneration, s.globalFailLease, s.globalFailCode = userID, generationID, lease, code
+	snapshot := clonePlatformGeneration(s.settleSnapshot)
+	for model, state := range snapshot.ModelStates {
+		if state.State == PlatformGenerationStateRunning {
+			state.State, state.ErrorCode = PlatformGenerationStateFailed, code
+			snapshot.ModelStates[model] = state
+		}
+	}
+	snapshot.State, snapshot.ErrorCode = PlatformGenerationStateFailed, code
+	s.globalFailedSnapshot = snapshot
+	return snapshot, nil
 }
 func (s *platformCompareStreamStore) mutate(fn func()) {
 	active := s.mutationActive.Add(1)
@@ -821,14 +851,23 @@ func (s *platformCompareStreamStore) mutate(fn func()) {
 	fn()
 }
 func (s *platformCompareStreamStore) RecordDeltaOwned(_ context.Context, _ int64, _, _, model string, seq, _ int64) (PlatformGenerationSnapshot, error) {
+	if model == s.recordErrModel {
+		return PlatformGenerationSnapshot{}, ErrPlatformGenerationUnavailable
+	}
 	s.mutate(func() { s.records[model] = append(s.records[model], seq) })
 	return PlatformGenerationSnapshot{}, nil
 }
 func (s *platformCompareStreamStore) MarkModelDoneOwned(_ context.Context, _ int64, _, _, model string, lastSeq, _ int64) (PlatformGenerationSnapshot, error) {
+	if model == s.doneErrModel {
+		return PlatformGenerationSnapshot{}, ErrPlatformGenerationUnavailable
+	}
 	s.mutate(func() { s.done[model] = lastSeq })
 	return PlatformGenerationSnapshot{}, nil
 }
 func (s *platformCompareStreamStore) MarkModelFailedOwned(_ context.Context, _ int64, _, _, model, code string, _ int64) (PlatformGenerationSnapshot, error) {
+	if model == s.failedErrModel {
+		return PlatformGenerationSnapshot{}, ErrPlatformGenerationUnavailable
+	}
 	s.mutate(func() { s.failed[model] = code })
 	return PlatformGenerationSnapshot{}, nil
 }
@@ -867,11 +906,13 @@ func (u *platformCompareStreamUpstream) ConsumeChatCompletionSSEContext(ctx cont
 }
 
 type platformCompareFrameWriter struct {
-	mu        sync.Mutex
-	frames    [][]byte
-	active    atomic.Int32
-	maximum   atomic.Int32
-	failFirst bool
+	mu             sync.Mutex
+	frames         [][]byte
+	active         atomic.Int32
+	maximum        atomic.Int32
+	failFirst      bool
+	onModelError   chan struct{}
+	modelErrorOnce sync.Once
 }
 
 func (w *platformCompareFrameWriter) Write(frame []byte) error {
@@ -886,6 +927,9 @@ func (w *platformCompareFrameWriter) Write(frame []byte) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.frames = append(w.frames, append([]byte(nil), frame...))
+	if w.onModelError != nil && strings.Contains(string(frame), "event: model_error") {
+		w.modelErrorOnce.Do(func() { close(w.onModelError) })
+	}
 	if w.failFirst && len(w.frames) == 1 {
 		return errors.New("detached")
 	}
@@ -1125,6 +1169,114 @@ func TestPlatformCompareGenerationSerializesMutationStateEncoderAndFrames(t *tes
 	store, writer, _, result := platformCompareConcurrentFixture(t, false)
 	if !result.Started || store.mutationMax.Load() != 1 || len(platformCompareDecodeFrames(t, writer.frames)) != 7 {
 		t.Fatalf("result=%+v mutationMax=%d frames=%d", result, store.mutationMax.Load(), len(writer.frames))
+	}
+	for _, mutation := range []string{"delta", "done", "failed"} {
+		t.Run(mutation+" mutation failure cancels coordinator", func(t *testing.T) {
+			models := []string{"model-a", "model-b"}
+			ready, release, abortSibling := make(chan string, 2), make(chan struct{}), make(chan struct{})
+			scripts := map[string]func(context.Context, func(whitelabel.ChatCompletionChunk) error) *whitelabel.Error{
+				"model-a": func(ctx context.Context, emit func(whitelabel.ChatCompletionChunk) error) *whitelabel.Error {
+					ready <- "model-a"
+					select {
+					case <-release:
+					case <-ctx.Done():
+						return whitelabel.ErrUpstreamUnavailable("cancelled")
+					}
+					if mutation == "failed" {
+						_ = emit(platformCompareDeltaChunk("wrong-model", "bad", true))
+						return whitelabel.ErrUpstreamUnavailable("malformed")
+					}
+					return platformCompareSuccessfulScript("model-a", "answer")(ctx, emit)
+				},
+				"model-b": func(ctx context.Context, _ func(whitelabel.ChatCompletionChunk) error) *whitelabel.Error {
+					ready <- "model-b"
+					select {
+					case <-release:
+					case <-ctx.Done():
+						return whitelabel.ErrUpstreamUnavailable("cancelled")
+					}
+					select {
+					case <-ctx.Done():
+						return whitelabel.ErrUpstreamUnavailable("cancelled")
+					case <-abortSibling:
+						return whitelabel.ErrUpstreamUnavailable("test abort")
+					}
+				},
+			}
+			runner, failingStore, upstream, failingWriter := platformCompareStreamFixture(t, models, scripts)
+			registry := runner.deps.registry.(*platformCompareTestRegistry)
+			snapshot := clonePlatformGeneration(failingStore.claim.Snapshot)
+			snapshot.ModelStates["model-b"] = PlatformGenerationModel{State: PlatformGenerationStateCompleted, Seq: 1}
+			failingStore.settleSnapshot = snapshot
+			switch mutation {
+			case "delta":
+				failingStore.recordErrModel = "model-a"
+			case "done":
+				failingStore.doneErrModel = "model-a"
+			case "failed":
+				failingStore.failedErrModel = "model-a"
+			}
+			modelErrorWritten := make(chan struct{})
+			failingWriter.onModelError = modelErrorWritten
+			cancelCalled := make(chan struct{})
+			var cancelCalls atomic.Int32
+			runner.deps.newRunnerContext = func(parent context.Context, _ time.Duration) (context.Context, context.CancelFunc) {
+				ctx, cancel := context.WithCancel(parent)
+				return ctx, func() {
+					if cancelCalls.Add(1) == 1 {
+						close(cancelCalled)
+					}
+					cancel()
+				}
+			}
+			input := platformCompareTestInput()
+			input.Models, input.Write = models, failingWriter.Write
+			type runOutcome struct {
+				result PlatformCompareGenerationRunResult
+				err    error
+			}
+			done := make(chan runOutcome, 1)
+			go func() { result, err := runner.Run(input); done <- runOutcome{result: result, err: err} }()
+			<-ready
+			<-ready
+			close(release)
+			select {
+			case <-cancelCalled:
+			case <-modelErrorWritten:
+				close(abortSibling)
+			}
+			outcome := <-done
+			if !outcome.result.Started || !errors.Is(outcome.err, ErrPlatformCompareGenerationUnavailable) {
+				t.Fatalf("outcome=%+v", outcome)
+			}
+			frames := platformCompareDecodeFrames(t, failingWriter.frames)
+			for _, frame := range frames {
+				if frame.event == "model_error" || frame.event == "model_done" {
+					t.Fatalf("invented terminal frame after %s mutation failure: %+v", mutation, frame)
+				}
+			}
+			if mutation == "done" {
+				if len(frames) != 2 || frames[1].event != "delta" {
+					t.Fatalf("done failure frames=%+v", frames)
+				}
+			} else if len(frames) != 1 {
+				t.Fatalf("%s failure frames=%+v", mutation, frames)
+			}
+			if len(failingStore.failed) != 0 || len(failingStore.done) != 0 || failingStore.globalFails != 1 || failingStore.gets != 1 || failingStore.globalFailUserID != 17 || failingStore.globalFailGeneration != platformCompareTestGenerationID || failingStore.globalFailLease != failingStore.claim.LeaseToken || failingStore.globalFailCode != "internal_error" || failingStore.globalFailedSnapshot.ModelStates["model-b"].State != PlatformGenerationStateCompleted {
+				t.Fatalf("store after fatal=%+v", failingStore)
+			}
+			if cancelCalls.Load() != 1 || registry.effects.unregister != 1 || registry.effects.persist != 0 || registry.effects.receipt != 0 {
+				t.Fatalf("cancel=%d registry effects=%+v", cancelCalls.Load(), registry.effects)
+			}
+			if len(upstream.bodies) != 2 {
+				t.Fatalf("bodies=%v", upstream.bodies)
+			}
+			for model, body := range upstream.bodies {
+				if body.closes.Load() != 1 {
+					t.Fatalf("model=%s closes=%d", model, body.closes.Load())
+				}
+			}
+		})
 	}
 }
 func TestPlatformCompareGenerationNeverCallsHTTPWriterConcurrently(t *testing.T) {

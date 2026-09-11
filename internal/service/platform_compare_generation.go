@@ -162,6 +162,11 @@ type platformCompareOwnedRun struct {
 	registrationToken string
 	output            platformCompareOutput
 	closeOnce         sync.Once
+	cancelOnce        sync.Once
+}
+
+func (entry *platformCompareOwnedRun) cancelRunner() {
+	entry.cancelOnce.Do(entry.cancel)
 }
 
 func (entry *platformCompareOwnedRun) Close() {
@@ -177,7 +182,7 @@ func (entry *platformCompareOwnedRun) release(settle bool) {
 		return
 	}
 	entry.closeOnce.Do(func() {
-		entry.cancel()
+		entry.cancelRunner()
 		if settle {
 			entry.runner.settleOwnedRunning(entry.run)
 		}
@@ -195,8 +200,12 @@ func (r *PlatformCompareGenerationRunner) Run(input PlatformCompareGenerationInp
 	}
 	entry, result, err := r.enterValidated(validated)
 	if entry != nil {
-		r.runModels(entry)
-		entry.Release()
+		_, fatal := r.runModels(entry)
+		if fatal {
+			entry.Close()
+		} else {
+			entry.Release()
+		}
 		if err == nil {
 			err = ErrPlatformCompareGenerationUnavailable
 		}
@@ -218,9 +227,10 @@ type platformCompareExecution struct {
 	mu      sync.Mutex
 	entry   *platformCompareOwnedRun
 	results []platformCompareModelResult
+	fatal   bool
 }
 
-func (r *PlatformCompareGenerationRunner) runModels(entry *platformCompareOwnedRun) []platformCompareModelResult {
+func (r *PlatformCompareGenerationRunner) runModels(entry *platformCompareOwnedRun) ([]platformCompareModelResult, bool) {
 	execution := &platformCompareExecution{entry: entry, results: make([]platformCompareModelResult, len(entry.run.models))}
 	var workers sync.WaitGroup
 	workers.Add(len(entry.run.models))
@@ -233,7 +243,7 @@ func (r *PlatformCompareGenerationRunner) runModels(entry *platformCompareOwnedR
 		}()
 	}
 	workers.Wait()
-	return execution.results
+	return execution.results, execution.fatal
 }
 
 func (r *PlatformCompareGenerationRunner) runModel(execution *platformCompareExecution, index int, model string, payload []byte) {
@@ -274,8 +284,15 @@ func (r *PlatformCompareGenerationRunner) runModel(execution *platformCompareExe
 			return callbackCause
 		}
 		execution.mu.Lock()
-		defer execution.mu.Unlock()
+		if execution.fatal {
+			execution.mu.Unlock()
+			callbackCause = ErrPlatformCompareGenerationUnavailable
+			return callbackCause
+		}
 		if _, err := r.deps.store.RecordDeltaOwned(execution.entry.ctx, execution.entry.run.userID, execution.entry.run.generationID, execution.entry.run.leaseToken, model, nextSeq, r.nowMillis()); err != nil {
+			execution.fatal = true
+			execution.mu.Unlock()
+			execution.entry.cancelRunner()
 			callbackCause = ErrPlatformCompareGenerationUnavailable
 			return callbackCause
 		}
@@ -283,10 +300,12 @@ func (r *PlatformCompareGenerationRunner) runModel(execution *platformCompareExe
 		_, _ = state.content.WriteString(delta)
 		frame := execution.entry.run.encoder.Delta(model, nextSeq, delta)
 		if frame == nil || execution.entry.run.encoder.Err() != nil {
+			execution.mu.Unlock()
 			callbackCause = ErrPlatformCompareGenerationUnavailable
 			return callbackCause
 		}
 		execution.entry.output.emit(frame)
+		execution.mu.Unlock()
 		return nil
 	})
 	if callbackCause != nil {
@@ -298,9 +317,14 @@ func (r *PlatformCompareGenerationRunner) runModel(execution *platformCompareExe
 		return
 	}
 	execution.mu.Lock()
-	defer execution.mu.Unlock()
+	if execution.fatal {
+		execution.mu.Unlock()
+		return
+	}
 	if _, err := r.deps.store.MarkModelDoneOwned(execution.entry.ctx, execution.entry.run.userID, execution.entry.run.generationID, execution.entry.run.leaseToken, model, state.seq, r.nowMillis()); err != nil {
-		r.failModelLocked(execution, index, model, "internal_error")
+		execution.fatal = true
+		execution.mu.Unlock()
+		execution.entry.cancelRunner()
 		return
 	}
 	execution.results[index] = platformCompareModelResult{model: model, content: state.content.String(), tokens: state.totalTokens, lastSeq: state.seq, state: PlatformGenerationStateCompleted, terminalSet: true}
@@ -308,6 +332,7 @@ func (r *PlatformCompareGenerationRunner) runModel(execution *platformCompareExe
 	if frame != nil && execution.entry.run.encoder.Err() == nil {
 		execution.entry.output.emit(frame)
 	}
+	execution.mu.Unlock()
 }
 
 var (
@@ -337,24 +362,26 @@ func platformCompareStableCode(cause error) string {
 
 func (r *PlatformCompareGenerationRunner) failModel(execution *platformCompareExecution, index int, model string, cause error) {
 	execution.mu.Lock()
-	defer execution.mu.Unlock()
-	r.failModelLocked(execution, index, model, platformCompareStableCode(cause))
-}
-
-func (r *PlatformCompareGenerationRunner) failModelLocked(execution *platformCompareExecution, index int, model, code string) {
-	if execution.results[index].terminalSet {
+	if execution.fatal || execution.results[index].terminalSet {
+		execution.mu.Unlock()
 		return
 	}
+	code := platformCompareStableCode(cause)
 	terminalCtx, cancel := context.WithTimeout(context.WithoutCancel(r.deps.rootContext), 2*time.Second)
-	defer cancel()
 	if _, err := r.deps.store.MarkModelFailedOwned(terminalCtx, execution.entry.run.userID, execution.entry.run.generationID, execution.entry.run.leaseToken, model, code, r.nowMillis()); err != nil {
-		code = "internal_error"
+		cancel()
+		execution.fatal = true
+		execution.mu.Unlock()
+		execution.entry.cancelRunner()
+		return
 	}
+	cancel()
 	execution.results[index] = platformCompareModelResult{model: model, state: PlatformGenerationStateFailed, errorCode: code, terminalSet: true}
 	frame := execution.entry.run.encoder.ModelError(model, code, execution.entry.run.requestID)
 	if frame != nil && execution.entry.run.encoder.Err() == nil {
 		execution.entry.output.emit(frame)
 	}
+	execution.mu.Unlock()
 }
 
 func (r *PlatformCompareGenerationRunner) enterValidated(input platformCompareValidatedInput) (*platformCompareOwnedRun, PlatformCompareGenerationRunResult, error) {
