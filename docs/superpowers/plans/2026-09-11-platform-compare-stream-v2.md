@@ -12,7 +12,7 @@
 
 ## Delivery boundary and execution rules
 
-- Work only in `/Users/xuzhihao/code/Porsche/.worktrees/platform-compare-stream-v2` on `feature/platform-compare-stream-v2`.
+- Work only in the dedicated `platform-compare-stream-v2` worktree on `feature/platform-compare-stream-v2`.
 - Do not edit Porsche-Web, migrations, deployment files, production configuration, or the legacy compare implementation.
 - Do not call real or paid upstreams. Unit tests use controlled fakes; integration tests use disposable MySQL and Redis plus local deterministic upstream doubles.
 - Keep `go-018` as `in_progress`. BE06 completion does not imply frontend/backend joint acceptance, production migration/deployment, public HTTPS acceptance, or real-upstream acceptance.
