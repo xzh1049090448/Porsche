@@ -160,6 +160,14 @@ func (s *ActionVerificationService) Issue(ctx context.Context, in VerificationIs
 			if err := validateLockedRolePermissionIntent(descriptor, in.Intent, identity.target); err != nil {
 				return err
 			}
+		case actionsecurity.ActionPublicModelDelete,
+			actionsecurity.ActionPublicPricingPublish,
+			actionsecurity.ActionPublicPricingRestore,
+			actionsecurity.ActionPublicContentPublish,
+			actionsecurity.ActionPublicContentRestore:
+			if err := validatePublicVerificationBinding(descriptor.Action, in.Intent, in.TargetGUID); err != nil {
+				return err
+			}
 		default:
 			return ErrActionVerificationUnavailable
 		}

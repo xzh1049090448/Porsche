@@ -24,9 +24,13 @@ func TestInactiveActionDescriptorsExactContract(t *testing.T) {
 		{ActionUsersDemote, "users.demote", "users.demote", true, true, false, TargetUser, nil},
 		{ActionUsersPermissionsWrite, "users.permissions.write", "users.permissions.write", true, true, false, TargetUser, nil},
 		{ActionUsersDelete, "users.delete", "users.delete", false, true, false, TargetUser, nil},
-		{ActionPublicContentPublish, "public_content.publish", "public_content.publish", false, true, false, TargetPublicContent, nil},
+		{ActionPublicContentPublish, "public_content.publish", "public_content.publish", true, true, false, TargetPublicContent, nil},
 		{ActionPublicContentRollback, "public_content.rollback", "public_content.rollback", false, true, false, TargetPublicContent, nil},
 		{ActionUsersCreate, "users.create", "users.create", false, false, false, TargetNone, nil},
+		{ActionPublicModelDelete, "public_models.delete", "public_content.edit", true, true, false, TargetPublicContent, nil},
+		{ActionPublicPricingPublish, "public_pricing.publish", "public_content.publish", true, true, false, TargetNone, nil},
+		{ActionPublicPricingRestore, "public_pricing.restore", "public_content.rollback", true, true, false, TargetPublicContent, nil},
+		{ActionPublicContentRestore, "public_content.restore", "public_content.rollback", true, true, false, TargetPublicContent, nil},
 	}
 	got := InactiveActionDescriptors()
 	if len(got) != len(want) {
@@ -57,8 +61,8 @@ func TestRegistryReturnsCopiesAndActivatesExactUserManagementBundle(t *testing.T
 		t.Fatalf("inactive registry was mutated through returned slice: %q", got)
 	}
 	active := ActiveActionRegistry()
-	if len(active) != 7 {
-		t.Fatalf("active registry length = %d, want 7", len(active))
+	if len(active) != 12 {
+		t.Fatalf("active registry length = %d, want 12", len(active))
 	}
 	want := []Descriptor{
 		{ActionUsersCreate, "users.create", "users.create", false, false, true, TargetNone, nil},
@@ -68,6 +72,11 @@ func TestRegistryReturnsCopiesAndActivatesExactUserManagementBundle(t *testing.T
 		{ActionUsersPromote, "users.promote", "users.promote", true, true, true, TargetUser, nil},
 		{ActionUsersDemote, "users.demote", "users.demote", true, true, true, TargetUser, nil},
 		{ActionUsersPermissionsWrite, "users.permissions.write", "users.permissions.write", true, true, true, TargetUser, nil},
+		{ActionPublicModelDelete, "public_models.delete", "public_content.edit", true, true, true, TargetPublicContent, nil},
+		{ActionPublicPricingPublish, "public_pricing.publish", "public_content.publish", true, true, true, TargetNone, nil},
+		{ActionPublicPricingRestore, "public_pricing.restore", "public_content.rollback", true, true, true, TargetPublicContent, nil},
+		{ActionPublicContentPublish, "public_content.publish", "public_content.publish", true, true, true, TargetPublicContent, nil},
+		{ActionPublicContentRestore, "public_content.restore", "public_content.rollback", true, true, true, TargetPublicContent, nil},
 	}
 	for i, got := range active {
 		if got.Action != want[i].Action || got.Name != want[i].Name || got.Capability != want[i].Capability || got.RootOnly != want[i].RootOnly ||
@@ -77,10 +86,10 @@ func TestRegistryReturnsCopiesAndActivatesExactUserManagementBundle(t *testing.T
 	}
 	active[0].Name = "mutated"
 	active = append(active, Descriptor{Name: "mutated"})
-	if got := ActiveActionRegistry(); len(got) != 7 || got[6].Name != "users.permissions.write" {
+	if got := ActiveActionRegistry(); len(got) != 12 || got[6].Name != "users.permissions.write" || got[11].Name != "public_content.restore" {
 		t.Fatal("active registry was mutated through returned slice")
 	}
-	for _, action := range []Action{ActionPublicContentPublish, ActionPublicContentRollback} {
+	for _, action := range []Action{ActionPublicContentRollback} {
 		if _, ok := ResolveActiveAction(action); ok {
 			t.Fatalf("inactive action %d resolved from production registry", action)
 		}
@@ -120,8 +129,8 @@ func TestFutureCreateActionDescriptorsExactCanonicalOrder(t *testing.T) {
 }
 
 func TestRegistryViewsProjectOneCanonicalDescriptorPerAction(t *testing.T) {
-	if len(canonicalActionDescriptors) != 9 {
-		t.Fatalf("canonical descriptor count = %d, want 9", len(canonicalActionDescriptors))
+	if len(canonicalActionDescriptors) != 13 {
+		t.Fatalf("canonical descriptor count = %d, want 13", len(canonicalActionDescriptors))
 	}
 	seen := map[Action]bool{}
 	for _, descriptor := range canonicalActionDescriptors {
@@ -234,7 +243,7 @@ func TestA08InactiveDescriptorsUseDedicatedTypedEncoders(t *testing.T) {
 			t.Fatalf("action %d wrong type error = %v, want %v", tc.action, err, errWrongIntentType)
 		}
 	}
-	if got := ActiveActionRegistry(); len(got) != 7 {
-		t.Fatalf("active registry length = %d, want 7", len(got))
+	if got := ActiveActionRegistry(); len(got) != 12 {
+		t.Fatalf("active registry length = %d, want 12", len(got))
 	}
 }

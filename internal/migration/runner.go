@@ -90,6 +90,42 @@ var platformGenerationReceiptsUp []byte
 //go:embed sql/0011_platform_generation_receipts.down.sql
 var platformGenerationReceiptsDown []byte
 
+//go:embed sql/0012_public_content_pricing.up.sql
+var publicContentPricingUp []byte
+
+//go:embed sql/0012_public_content_pricing.down.sql
+var publicContentPricingDown []byte
+
+//go:embed sql/0013_public_price_draft_state.up.sql
+var publicPriceDraftStateUp []byte
+
+//go:embed sql/0013_public_price_draft_state.down.sql
+var publicPriceDraftStateDown []byte
+
+//go:embed sql/0014_upstream_monitor_lease.up.sql
+var upstreamMonitorLeaseUp []byte
+
+//go:embed sql/0014_upstream_monitor_lease.down.sql
+var upstreamMonitorLeaseDown []byte
+
+//go:embed sql/0015_public_render_job_terminal.up.sql
+var publicRenderJobTerminalUp []byte
+
+//go:embed sql/0015_public_render_job_terminal.down.sql
+var publicRenderJobTerminalDown []byte
+
+//go:embed sql/0016_public_pricing_catalog_metadata.up.sql
+var publicPricingCatalogMetadataUp []byte
+
+//go:embed sql/0016_public_pricing_catalog_metadata.down.sql
+var publicPricingCatalogMetadataDown []byte
+
+//go:embed sql/0017_public_pricing_optional_prices.up.sql
+var publicPricingOptionalPricesUp []byte
+
+//go:embed sql/0017_public_pricing_optional_prices.down.sql
+var publicPricingOptionalPricesDown []byte
+
 // Migration is an immutable, embedded schema version.
 type Migration struct {
 	Version string
@@ -119,6 +155,12 @@ func All() ([]Migration, error) {
 		{Version: "0011", UpSQL: platformGenerationReceiptsUp, DownSQL: platformGenerationReceiptsDown},
 		{Version: "0012", UpSQL: adminOperationResultAuthVersionUp, DownSQL: adminOperationResultAuthVersionDown},
 		{Version: "0013", UpSQL: adminOperationRolePermissionResultsUp, DownSQL: adminOperationRolePermissionResultsDown},
+		{Version: "0014", UpSQL: publicContentPricingUp, DownSQL: publicContentPricingDown},
+		{Version: "0015", UpSQL: publicPriceDraftStateUp, DownSQL: publicPriceDraftStateDown},
+		{Version: "0016", UpSQL: upstreamMonitorLeaseUp, DownSQL: upstreamMonitorLeaseDown},
+		{Version: "0017", UpSQL: publicRenderJobTerminalUp, DownSQL: publicRenderJobTerminalDown},
+		{Version: "0018", UpSQL: publicPricingCatalogMetadataUp, DownSQL: publicPricingCatalogMetadataDown},
+		{Version: "0019", UpSQL: publicPricingOptionalPricesUp, DownSQL: publicPricingOptionalPricesDown},
 	}
 	sort.Slice(migrations, func(i, j int) bool { return migrations[i].Version < migrations[j].Version })
 	return migrations, nil
@@ -195,6 +237,11 @@ func Up(ctx context.Context, db *gorm.DB, nextGUID func() int64, nowMillis func(
 						return err
 					}
 				}
+				if migration.Version == "0005" {
+					if err := VerifyAdminOperationSafetySchema(ctx, conn); err != nil {
+						return err
+					}
+				}
 				if migration.Version == "0007" {
 					if err := VerifyBusinessGroupsSchema(ctx, conn); err != nil {
 						return err
@@ -208,11 +255,41 @@ func Up(ctx context.Context, db *gorm.DB, nextGUID func() int64, nowMillis func(
 						return err
 					}
 				}
+				if migration.Version == "0011" {
+					if err := VerifyPlatformGenerationReceiptSchema(ctx, conn); err != nil {
+						return err
+					}
+				}
 				if err := verifyAdminOperationMigrationSchema(ctx, conn, migration.Version, appliedByVersion); err != nil {
 					return err
 				}
-				if migration.Version == "0011" {
-					if err := VerifyPlatformGenerationReceiptSchema(ctx, conn); err != nil {
+				if migration.Version == "0014" {
+					if err := VerifyPublicContentPricingSchema(ctx, conn); err != nil {
+						return err
+					}
+				}
+				if migration.Version == "0015" {
+					if err := VerifyPublicPriceDraftStateSchema(ctx, conn); err != nil {
+						return err
+					}
+				}
+				if migration.Version == "0016" {
+					if err := VerifyUpstreamMonitorLeaseSchema(ctx, conn); err != nil {
+						return err
+					}
+				}
+				if migration.Version == "0017" {
+					if err := VerifyPublicRenderJobTerminalSchema(ctx, conn); err != nil {
+						return err
+					}
+				}
+				if migration.Version == "0018" {
+					if err := VerifyPublicPricingCatalogMetadataSchema(ctx, conn); err != nil {
+						return err
+					}
+				}
+				if migration.Version == "0019" {
+					if err := VerifyPublicPricingOptionalPricesSchema(ctx, conn); err != nil {
 						return err
 					}
 				}
@@ -229,6 +306,42 @@ func Up(ctx context.Context, db *gorm.DB, nextGUID func() int64, nowMillis func(
 			} else if migration.Version == "0010" {
 				if err := applyAdminOperationResponseTargetsMigration(conn, migration.UpSQL); err != nil {
 					return fmt.Errorf("apply migration %s: %w", migration.Version, err)
+				}
+			} else if migration.Version == "0015" {
+				parts := strings.Split(string(migration.UpSQL), "-- porsche:seed-public-price-draft-state")
+				if len(parts) != 2 {
+					return fmt.Errorf("apply migration 0015: invalid seed marker")
+				}
+				statements := splitStatements(parts[0])
+				if len(statements) != 1 {
+					return fmt.Errorf("apply migration 0015: invalid statement count")
+				}
+				if err := conn.Exec(statements[0]).Error; err != nil {
+					return fmt.Errorf("apply migration 0015: %w", err)
+				}
+				now := nowMillis()
+				if err := conn.Exec("INSERT INTO public_price_draft_state (guid,state_key,revision,created_at,updated_at,is_deleted) VALUES (?,'pricing',1,?,?,0) ON DUPLICATE KEY UPDATE state_key=VALUES(state_key)", nextGUID(), now, now).Error; err != nil {
+					return fmt.Errorf("apply migration 0015: %w", err)
+				}
+			} else if migration.Version == "0016" {
+				parts := strings.Split(string(migration.UpSQL), "-- porsche:seed-upstream-monitor-lease")
+				if len(parts) != 2 {
+					return fmt.Errorf("apply migration 0016: invalid seed marker")
+				}
+				statements := splitStatements(parts[0])
+				if len(statements) != 1 {
+					return fmt.Errorf("apply migration 0016: invalid statement count")
+				}
+				if err := conn.Exec(statements[0]).Error; err != nil {
+					return fmt.Errorf("apply migration 0016: %w", err)
+				}
+				now := nowMillis()
+				if err := conn.Exec("INSERT INTO upstream_monitor_leases (guid,lease_key,owner_token,lease_expires_at,revision,created_at,updated_at,is_deleted) VALUES (?,'catalog',NULL,0,1,?,?,0) ON DUPLICATE KEY UPDATE lease_key=VALUES(lease_key)", nextGUID(), now, now).Error; err != nil {
+					return fmt.Errorf("apply migration 0016: %w", err)
+				}
+			} else if migration.Version == "0018" {
+				if err := applyPublicPricingCatalogMetadataMigration(conn, migration.UpSQL); err != nil {
+					return fmt.Errorf("apply migration 0018: %w", err)
 				}
 			} else {
 				for _, statement := range splitStatements(string(migration.UpSQL)) {
@@ -258,6 +371,11 @@ func Up(ctx context.Context, db *gorm.DB, nextGUID func() int64, nowMillis func(
 					return err
 				}
 			}
+			if migration.Version == "0005" {
+				if err := VerifyAdminOperationSafetySchema(ctx, conn); err != nil {
+					return err
+				}
+			}
 			if migration.Version == "0007" {
 				if err := VerifyBusinessGroupsSchema(ctx, conn); err != nil {
 					return err
@@ -268,9 +386,39 @@ func Up(ctx context.Context, db *gorm.DB, nextGUID func() int64, nowMillis func(
 					return err
 				}
 			}
+			if migration.Version == "0014" {
+				if err := VerifyPublicContentPricingSchema(ctx, conn); err != nil {
+					return err
+				}
+			}
+			if migration.Version == "0015" {
+				if err := VerifyPublicPriceDraftStateSchema(ctx, conn); err != nil {
+					return err
+				}
+			}
+			if migration.Version == "0016" {
+				if err := VerifyUpstreamMonitorLeaseSchema(ctx, conn); err != nil {
+					return err
+				}
+			}
+			if migration.Version == "0017" {
+				if err := VerifyPublicRenderJobTerminalSchema(ctx, conn); err != nil {
+					return err
+				}
+			}
+			if migration.Version == "0018" {
+				if err := VerifyPublicPricingCatalogMetadataSchema(ctx, conn); err != nil {
+					return err
+				}
+			}
+			if migration.Version == "0019" {
+				if err := VerifyPublicPricingOptionalPricesSchema(ctx, conn); err != nil {
+					return err
+				}
+			}
 			now := nowMillis()
 			if err := conn.Exec(
-				"INSERT INTO schema_migrations (guid, version, checksum, created_at, updated_at, is_deleted) VALUES (?, ?, ?, ?, ?, 0)",
+				"INSERT INTO schema_migrations (guid, version, checksum, created_at, updated_at, is_deleted) VALUES (?, ?, ?, ?, ?, 0) ON DUPLICATE KEY UPDATE checksum=VALUES(checksum),updated_at=VALUES(updated_at),updated_by=NULL,is_deleted=0",
 				nextGUID(), migration.Version, checksum, now, now,
 			).Error; err != nil {
 				return fmt.Errorf("record migration %s: %w", migration.Version, err)
@@ -342,7 +490,7 @@ func Verify(ctx context.Context, db *gorm.DB) error {
 	if err := VerifyAdminUsersReadCountIndex(ctx, db); err != nil {
 		return err
 	}
-	if err := VerifyAdminOperationRolePermissionResultsSchema(ctx, db); err != nil {
+	if err := VerifyAdminOperationSafetySchema(ctx, db); err != nil {
 		return err
 	}
 	if err := VerifyAdminActionOutboxSchema(ctx, db); err != nil {
@@ -354,7 +502,28 @@ func Verify(ctx context.Context, db *gorm.DB) error {
 	if err := VerifyAdminOperationResponseSchema(ctx, db); err != nil {
 		return err
 	}
-	return VerifyPlatformGenerationReceiptSchema(ctx, db)
+	if err := VerifyPlatformGenerationReceiptSchema(ctx, db); err != nil {
+		return err
+	}
+	if err := VerifyAdminOperationRolePermissionResultsSchema(ctx, db); err != nil {
+		return err
+	}
+	if err := VerifyPublicContentPricingSchema(ctx, db); err != nil {
+		return err
+	}
+	if err := VerifyPublicPriceDraftStateSchema(ctx, db); err != nil {
+		return err
+	}
+	if err := VerifyUpstreamMonitorLeaseSchema(ctx, db); err != nil {
+		return err
+	}
+	if err := VerifyPublicRenderJobTerminalSchema(ctx, db); err != nil {
+		return err
+	}
+	if err := VerifyPublicPricingCatalogMetadataSchema(ctx, db); err != nil {
+		return err
+	}
+	return VerifyPublicPricingOptionalPricesSchema(ctx, db)
 }
 
 // VerifyApplied is the side-effect-free portion of Verify, kept separate so

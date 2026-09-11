@@ -50,6 +50,7 @@ type scriptedUserManagementBackend struct {
 	outcomeCalls      int
 	issueAction       actionsecurity.Action
 	issueIntent       actionsecurity.CreateAccountIntent
+	issueAny          any
 	issueInitial      []byte
 	issueCurrent      []byte
 	issueInitialHash  [sha256.Size]byte
@@ -136,6 +137,7 @@ func (backend *concurrentUserCreateHashBackend) Query(context.Context, actionsec
 func (s *scriptedUserManagementBackend) Issue(_ context.Context, issue service.VerificationIssue) (*service.IssuedVerification, error) {
 	s.issueCalls++
 	s.issueAction = issue.Action
+	s.issueAny = issue.Intent
 	s.issueIntent, _ = issue.Intent.(actionsecurity.CreateAccountIntent)
 	s.issueInitial = s.issueIntent.Password
 	s.issueCurrent = issue.CurrentPassword

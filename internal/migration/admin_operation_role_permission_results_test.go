@@ -13,7 +13,7 @@ func TestAdminOperationRolePermissionResults0013MigrationContract(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(migrations) != 13 || migrations[12].Version != "0013" {
+	if len(migrations) != 19 || migrations[12].Version != "0013" {
 		t.Fatalf("migration 0013 is missing or out of order: %#v", migrations)
 	}
 	up := strings.ToLower(strings.TrimSpace(string(migrations[12].UpSQL)))

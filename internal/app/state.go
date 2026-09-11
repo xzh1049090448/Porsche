@@ -49,6 +49,12 @@ type State struct {
 	UserManagementActions           *service.UserManagementActions
 	UserDeleteActions               *service.UserDeleteActions
 	ActionVerifications             *service.ActionVerificationService
+	RootAlerts                      *service.RootAlertService
+	PublicModels                    *service.PublicModelAdminService
+	PublicContent                   *service.PublicContentService
+	PublicPriceSnapshots            *service.PublicPriceSnapshotService
+	PublicCatalogReads              *service.PublicCatalogReadService
+	UpstreamPriceMonitor            *service.UpstreamPriceMonitor
 	HTTP                            *http.Client
 
 	closeOnce sync.Once
@@ -256,6 +262,16 @@ func newState(settings *config.Settings, db *gorm.DB, constructors stateConstruc
 		s.PlatformSingleGeneration = generationRunner
 		s.platformGenerationRootCancel = generationRootCancel
 		constructors.startPlatformGenerationConverger(generationConverger)
+	}
+	if db != nil {
+		s.RootAlerts = service.NewRootAlertService(db)
+		s.PublicModels = service.NewPublicModelAdminService(db)
+		s.PublicContent = service.NewPublicContentService(db)
+		s.PublicPriceSnapshots = service.NewPublicPriceSnapshotService(db)
+		s.PublicCatalogReads = service.NewPublicCatalogReadService(db)
+		if s.WhiteLabel != nil {
+			s.UpstreamPriceMonitor = service.NewUpstreamPriceMonitor(db, s.WhiteLabel, s.RootAlerts)
+		}
 	}
 
 	dependenciesTransferred = true

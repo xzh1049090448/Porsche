@@ -1,5 +1,11 @@
 # Porsche 开发进度
 
+## 2026-09-11：公共内容与定价分支同步主分支
+
+- `feature/public-content-pricing` 已语义合并最新 `origin/main`，保留主分支的用户管理、平台生成控制与安全动作能力，同时接入公共内容、公开定价及 Root 管理动作。
+- 主分支已占用迁移 `0012`–`0013`，公共内容与定价迁移顺延为 `0014`–`0019`；迁移校验、动作注册、身份鉴权及应用状态初始化已完成兼容合并。
+- 后端 `go test ./... -count=1` 全量通过；配对前端 681/681 测试及生产构建通过。P08 仍为 `BLOCKED_PRODUCT`，本次未执行生产内容发布、数据库迁移或部署。
+
 ## 2026-09-11：BE05 platform single v2 stream 本地候选完成
 
 - 八个 BE05 真实 MySQL/Redis integration 顶层测试全部通过且零跳过，覆盖新/既有会话、断连后 GET、取消无持久化、续租与 converger、commit-unknown reconcile、duplicate/quota 竞争和失败矩阵；成功图的 receipt/result、精确消息、usage、daily/token、provenance 与 GET 水合均一致，失败图 durable snapshot 不变。

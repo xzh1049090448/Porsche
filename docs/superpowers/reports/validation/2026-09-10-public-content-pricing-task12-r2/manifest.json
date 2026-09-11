@@ -1,0 +1,114 @@
+{
+  "schema_version": 1,
+  "recorded_at": "2026-09-10T11:53:00+08:00",
+  "verification_base_head": "9cde7e58a498a2b2cf76434e20d85a4ee275ce81",
+  "scope": "backend local disposable fixtures only",
+  "fixture_policy": {
+    "expected_skip_count": 0,
+    "production_access": false,
+    "environment_files_read": false,
+    "credentials_or_urls_recorded": false
+  },
+  "images": [
+    {
+      "reference": "mysql:8.0",
+      "image_id": "sha256:7dcddc01f13bab2f15cde676d44d01f61fc9f99fe7785e86196dfc07d358ae2b"
+    },
+    {
+      "reference": "redis:7-alpine",
+      "image_id": "sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf"
+    }
+  ],
+  "owned_resources": {
+    "label": "codex.task=public-content-pricing-task12-r2",
+    "mysql": {
+      "name": "pcp-task12-r2-mysql-0910",
+      "id": "f8389af757a25d9aa51295a571373c28ea8f5775670f1d0ed1043ea5d58cbfb8"
+    },
+    "redis": {
+      "name": "pcp-task12-r2-redis-0910",
+      "id": "6f34ba54fa3e7503aef73db236f5993f0ddfbb8f5367c39c12dac6dd96f6b8ed"
+    },
+    "network": {
+      "name": "pcp-task12-r2-net-0910",
+      "id": "0538d97234d7dc604a0eb42f18d5111e53e069f6c13bf6162463fad00f8185e0"
+    },
+    "cleanup_verified": true,
+    "remaining_matching_names": 0
+  },
+  "unrelated_resources": {
+    "before": [
+      "porsche-mysql-test|8cbc801a8e0ad5f37f12577bf03439e371659e914cff0690dda25eb4e4b94ada|running",
+      "porsche-redis-test|ef49a5a080dffbec7e863f0827b56181add4e9057a79c1e2aad68d4f7b129780|running"
+    ],
+    "after": [
+      "porsche-mysql-test|8cbc801a8e0ad5f37f12577bf03439e371659e914cff0690dda25eb4e4b94ada|running",
+      "porsche-redis-test|ef49a5a080dffbec7e863f0827b56181add4e9057a79c1e2aad68d4f7b129780|running"
+    ]
+  },
+  "commands": [
+    {
+      "name": "migration_0012_0015_final",
+      "command": "go test ./internal/migration -run Test(PublicContentPricingMigrationRealMySQL|PublicPriceDraftStateMigrationRealMySQLDownAndReapply|UpstreamMonitorLeaseMigrationRealMySQLDownAndReapply|PublicRenderJobTerminalMigrationRealMySQLDownAndReapply)$ -count=1 -v",
+      "exit_status": 0,
+      "leaf_pass": 4,
+      "skip_count": 0
+    },
+    {
+      "name": "base_migration_0001_0015",
+      "command": "go run ./cmd/migrate up",
+      "exit_status": 0,
+      "ledger": "0001-0015 active with exact printed checksums",
+      "task12_checksums": {
+        "0012": "7291cfeedc837702fb5f8de4125807fb1e475dceb8bf6687ec9509b74c366e11",
+        "0013": "62a91248a861e1a1208255bdfe7f0660e0ca8750c6bd52fb96f29722a82a989c",
+        "0014": "cc016d547a07e44d140b8c7c5e39b64859e12993b8f2d4aeae42ba235fd69671",
+        "0015": "998e273023e4a6992f6bf78b8ac6f7a0ee7e7d85bb3bcfa468659e7e4db7f9be"
+      }
+    },
+    {
+      "name": "focused_service_final",
+      "command": "go test ./internal/service -run (Public|RootAlert|UpstreamPrice) -count=1",
+      "exit_status": 0
+    },
+    {
+      "name": "focused_handler_security_catalog_renderer",
+      "command": "go test ./internal/handler ./internal/actionsecurity ./internal/whitelabel ./internal/app ./cmd/public-render-job -run (Public|RootAlert|UpstreamPrice|Pricing) -count=1 -v",
+      "exit_status": 0,
+      "skip_count": 0,
+      "note": "internal/app selected no matching tests and reported no-tests-to-run; it is not fixture-pass evidence"
+    },
+    {
+      "name": "focused_race",
+      "command": "go test -race ./internal/service ./internal/handler -run (Public|RootAlert|UpstreamPrice) -count=1",
+      "exit_status": 0
+    },
+    {
+      "name": "full",
+      "command": "go test ./... -count=1",
+      "exit_status": 0,
+      "fixture_environment": false
+    },
+    {
+      "name": "build",
+      "command": "go build ./...",
+      "exit_status": 0
+    },
+    {
+      "name": "vet",
+      "command": "go vet ./...",
+      "exit_status": 0
+    }
+  ],
+  "failed_attempts_excluded_from_pass_evidence": [
+    "migration URL guard rejected a driver DSN before database access",
+    "initial 0012 assertion incorrectly required the global verifier to wrap the dedicated schema error",
+    "focused service ran before the parent fixture received migrations 0001-0015",
+    "diagnostic JSON service rerun occurred after fixture cleanup"
+  ],
+  "status": {
+    "P03-P07": "PASS_BACKEND_LOCAL",
+    "P08": "BLOCKED_PRODUCT",
+    "deployment_or_production_acceptance": false
+  }
+}

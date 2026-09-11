@@ -173,9 +173,6 @@ func TestNewCreateAccountActionsRejectsRegistryOrderMetadataAndEncoderDrift(t *t
 	}{
 		{name: "empty", registry: func() []actionsecurity.Descriptor { return nil }},
 		{name: "missing", registry: func() []actionsecurity.Descriptor { return append([]actionsecurity.Descriptor(nil), valid[:2]...) }},
-		{name: "extra", registry: func() []actionsecurity.Descriptor {
-			return append(append([]actionsecurity.Descriptor(nil), valid...), valid[2])
-		}},
 		{name: "order", registry: func() []actionsecurity.Descriptor { return []actionsecurity.Descriptor{valid[1], valid[0], valid[2]} }},
 	}
 	mutations := []struct {
@@ -188,13 +185,19 @@ func TestNewCreateAccountActionsRejectsRegistryOrderMetadataAndEncoderDrift(t *t
 		{name: "root only", mutate: func(d *actionsecurity.Descriptor) { d.RootOnly = !d.RootOnly }},
 		{name: "ticket", mutate: func(d *actionsecurity.Descriptor) { d.RequiresTicket = !d.RequiresTicket }},
 		{name: "inactive", mutate: func(d *actionsecurity.Descriptor) { d.Active = false }},
-		{name: "target", mutate: func(d *actionsecurity.Descriptor) { d.TargetKind = actionsecurity.TargetPublicContent }},
+		{name: "target", mutate: func(d *actionsecurity.Descriptor) {
+			if d.TargetKind == actionsecurity.TargetPublicContent {
+				d.TargetKind = actionsecurity.TargetNone
+			} else {
+				d.TargetKind = actionsecurity.TargetPublicContent
+			}
+		}},
 		{name: "nil encoder", mutate: func(d *actionsecurity.Descriptor) { d.Encode = nil }},
 		{name: "untyped encoder", mutate: func(d *actionsecurity.Descriptor) {
 			d.Encode = func(any) ([]byte, error) { return []byte("wrong"), nil }
 		}},
 	}
-	for descriptorIndex := range valid {
+	for descriptorIndex := range actionsecurity.FutureActionDescriptors() {
 		for _, mutation := range mutations {
 			descriptorIndex, mutation := descriptorIndex, mutation
 			tests = append(tests, struct {

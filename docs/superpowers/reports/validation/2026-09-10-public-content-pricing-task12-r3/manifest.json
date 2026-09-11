@@ -1,0 +1,96 @@
+{
+  "schema_version": 1,
+  "recorded_at": "2026-09-10T12:03:00+08:00",
+  "verification_base_head": "cbe92b98c03bfdbcf9674e35f60e8b0a88d5d442",
+  "scope": "backend local machine-counted disposable fixture verification",
+  "environment": {
+    "variable_names": [
+      "TEST_DATABASE_URL",
+      "TEST_REDIS_URL",
+      "GOCACHE"
+    ],
+    "values_recorded": false,
+    "production_access": false,
+    "environment_files_read": false
+  },
+  "owned_resources": {
+    "label": "codex.task=public-content-pricing-task12-r3",
+    "mysql": {
+      "name": "pcp-task12-r3-mysql-0910",
+      "id": "db0490929100b406336b348251bde843534645276203c68b747085af2cc4acda",
+      "image": "mysql:8.0"
+    },
+    "redis": {
+      "name": "pcp-task12-r3-redis-0910",
+      "id": "00ffbd5a9290c680b0631e1599a4412bcc86ead3ba143fed5c5909cc5738f76c",
+      "image": "redis:7-alpine"
+    },
+    "network": {
+      "name": "pcp-task12-r3-net-0910",
+      "id": "15c45d28f37f4fb72f9e2968b19f62a089dadb0a29047503999c7d5a13c3220d"
+    },
+    "cleanup_verified": true,
+    "remaining_matching_names": 0
+  },
+  "unrelated_resources": {
+    "before": [
+      "porsche-mysql-test|8cbc801a8e0ad5f37f12577bf03439e371659e914cff0690dda25eb4e4b94ada|running",
+      "porsche-redis-test|ef49a5a080dffbec7e863f0827b56181add4e9057a79c1e2aad68d4f7b129780|running"
+    ],
+    "after": [
+      "porsche-mysql-test|8cbc801a8e0ad5f37f12577bf03439e371659e914cff0690dda25eb4e4b94ada|running",
+      "porsche-redis-test|ef49a5a080dffbec7e863f0827b56181add4e9057a79c1e2aad68d4f7b129780|running"
+    ]
+  },
+  "commands": [
+    {
+      "name": "migration",
+      "command": "TEST_DATABASE_URL=<isolated> TEST_REDIS_URL=<isolated> GOCACHE=<task-cache> go test -json ./internal/migration -run 'Test(PublicContentPricingMigrationRealMySQL|PublicPriceDraftStateMigrationRealMySQLDownAndReapply|UpstreamMonitorLeaseMigrationRealMySQLDownAndReapply|PublicRenderJobTerminalMigrationRealMySQLDownAndReapply)$' -count=1",
+      "exit_status": 0,
+      "artifact": "migration.json.gz"
+    },
+    {
+      "name": "focused_service",
+      "command": "TEST_DATABASE_URL=<isolated> TEST_REDIS_URL=<isolated> GOCACHE=<task-cache> go test -json ./internal/service -run '(Public|RootAlert|UpstreamPrice)' -count=1",
+      "exit_status": 0,
+      "artifact": "service.json.gz"
+    },
+    {
+      "name": "focused_http_security_renderer",
+      "command": "TEST_DATABASE_URL=<isolated> TEST_REDIS_URL=<isolated> GOCACHE=<task-cache> go test -json ./internal/handler ./internal/actionsecurity ./internal/whitelabel ./cmd/public-render-job -run '(Public|RootAlert|UpstreamPrice|Pricing)' -count=1",
+      "exit_status": 0,
+      "artifact": "http-security-renderer.json.gz"
+    },
+    {
+      "name": "focused_race",
+      "command": "TEST_DATABASE_URL=<isolated> TEST_REDIS_URL=<isolated> GOCACHE=<task-cache> go test -json -race ./internal/service ./internal/handler -run '(Public|RootAlert|UpstreamPrice)' -count=1",
+      "exit_status": 0,
+      "artifact": "race.json.gz"
+    }
+  ],
+  "machine_counts": {
+    "artifact": "counts.json",
+    "required_test_fail": 0,
+    "required_test_skip": 0,
+    "required_package_fail": 0,
+    "result": "PASS"
+  },
+  "app_no_match": {
+    "package": "internal/app",
+    "result": "no tests matched the public pricing regex in the prior diagnostic command",
+    "included_in_fixture_pass": false
+  },
+  "artifacts": {
+    "counts.json": "cf95437ed3941f391f99106917714bb9c793da0d3121ea242d99f10a70cf11e7",
+    "http-security-renderer.json.gz": "28ecf6ac2fb4e2be4cd8db418da43cc05aa6b1d01fe8aa025900fe7c1a539464",
+    "migration-ledger.txt": "8d4c3d84fa57f4fced8e85bf7963253b0e98da927fab43bab7f4c2bc385858d1",
+    "migration.json.gz": "72a21c0f3175a242fd79d83db3650bbc9ec0b03099126b95feebe74f34e96c1a",
+    "race.json.gz": "a19bad2aa42d616a61ef80bf0cec60d649494c97cada30b3bdcfabff75aaeb01",
+    "service.json.gz": "26d4dcb937b7ef58dd8cfa47c309f6e7b19db7bce4e1a3421ccafdafd6a1e582"
+  },
+  "status": {
+    "P03-P07": "PASS_BACKEND_LOCAL",
+    "P08": "BLOCKED_PRODUCT",
+    "deployment_or_production_acceptance": false
+  }
+}

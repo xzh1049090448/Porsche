@@ -289,7 +289,7 @@ func TestActionVerificationIssueInactiveFailsBeforeRedisAndClearsPassword(t *tes
 	service := newTestActionVerificationService(t, db, client, &actionIssueClock{now: 1_800_000_000_000}, bytes.NewReader(bytes.Repeat([]byte{1}, 32)), func() int64 { return 1 })
 	service.resolve = actionsecurity.ResolveActiveAction
 	password := []byte("sensitive-password")
-	_, err := service.Issue(context.Background(), VerificationIssue{Action: actionsecurity.ActionPublicContentPublish, CurrentPassword: password})
+	_, err := service.Issue(context.Background(), VerificationIssue{Action: actionsecurity.ActionPublicContentRollback, CurrentPassword: password})
 	if !errors.Is(err, ErrActionVerificationInactive) {
 		t.Fatalf("Issue inactive error = %v", err)
 	}

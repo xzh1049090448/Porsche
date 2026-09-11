@@ -233,6 +233,8 @@ func issueUserManagementVerification(c *gin.Context, backend userManagementActio
 		issueAdminUserPasswordResetVerification(c, backend, settings, raw)
 	case "users.promote", "users.demote", "users.permissions.write":
 		issueRolePermissionVerification(c, backend, settings, action, raw)
+	case "public_models.delete", "public_pricing.publish", "public_pricing.restore", "public_content.publish", "public_content.restore":
+		issuePublicAdminVerification(c, backend, settings, raw)
 	default:
 		adminUserActionFixedError(c, http.StatusUnprocessableEntity, "action_inactive", "")
 	}

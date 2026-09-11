@@ -129,6 +129,8 @@ func lockActionIdentity(tx *gorm.DB, actor ActionActor, descriptor actionsecurit
 		} else {
 			decision = evaluator.User(descriptor.Capability, actionAccount(target))
 		}
+	case actionsecurity.TargetPublicContent:
+		decision = evaluator.Resource(descriptor.Capability)
 	default:
 		return lockedActionIdentity{}, ErrActionVerificationUnavailable
 	}

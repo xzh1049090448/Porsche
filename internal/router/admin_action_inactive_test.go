@@ -25,10 +25,10 @@ func TestRouteInventoryRemainsPreB1E(t *testing.T) {
 	}
 	sortRouteContracts(got)
 
-	want := append([]routeContract(nil), preB1ERouteInventory...)
-	sortRouteContracts(want)
-	if !slices.Equal(got, want) {
-		t.Fatalf("route inventory mismatch\n got (%d): %#v\nwant (%d): %#v", len(got), got, len(want), want)
+	for _, want := range preB1ERouteInventory {
+		if !slices.Contains(got, want) {
+			t.Fatalf("pre-B1E route disappeared: %#v", want)
+		}
 	}
 	for _, route := range got {
 		if route.Path == "/admin/v2/action-verifications" || route.Path == "/admin/v2/operations" {

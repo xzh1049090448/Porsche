@@ -19,7 +19,7 @@ func TestAdminOperationResponseMigrationIsLatestAndChecksumProtected(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(migrations) != 13 || migrations[8].Version != "0009" || migrations[9].Version != "0010" {
+	if len(migrations) != 19 || migrations[8].Version != "0009" || migrations[9].Version != "0010" {
 		t.Fatalf("All() = %#v, want exactly ten migrations ending at 0010", migrations)
 	}
 	up := strings.ToLower(string(migrations[8].UpSQL))
@@ -180,7 +180,7 @@ func TestAdminOperationResponseTargetMigrationContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(migrations) != 13 || migrations[9].Version != "0010" {
+	if len(migrations) != 19 || migrations[9].Version != "0010" {
 		t.Fatalf("missing 0010 response target migration: %#v", migrations)
 	}
 	up := strings.ToLower(string(migrations[9].UpSQL))
@@ -240,7 +240,7 @@ func prepareAdminResponseTargetPrefix(t *testing.T, gdb *gorm.DB) []string {
 	t.Helper()
 	permissionUp(t, gdb)
 	migrations, err := All()
-	if err != nil || len(migrations) != 13 || migrations[9].Version != "0010" {
+	if err != nil || len(migrations) != 19 || migrations[9].Version != "0010" {
 		t.Fatalf("load 0010 = %d/%v", len(migrations), err)
 	}
 	migration := migrations[9]
@@ -590,7 +590,7 @@ func adminResponseIntegrityMigration(t *testing.T) Migration {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(migrations) != 13 || migrations[8].Version != "0009" {
+	if len(migrations) != 19 || migrations[8].Version != "0009" {
 		t.Fatalf("unexpected migration count/tail: %d/%q", len(migrations), migrations[8].Version)
 	}
 	return migrations[8]
@@ -599,7 +599,7 @@ func adminResponseIntegrityMigration(t *testing.T) Migration {
 func adminResponseTargetMigration(t *testing.T) Migration {
 	t.Helper()
 	migrations, err := All()
-	if err != nil || len(migrations) != 13 || migrations[9].Version != "0010" {
+	if err != nil || len(migrations) != 19 || migrations[9].Version != "0010" {
 		t.Fatalf("unexpected 0010 migration count/tail: %d/%v", len(migrations), err)
 	}
 	return migrations[9]

@@ -1,0 +1,91 @@
+{
+  "schema_version": 1,
+  "artifacts": {
+    "migration.json": {
+      "package_pass": 1,
+      "package_fail": 0,
+      "test_pass": 4,
+      "test_fail": 0,
+      "test_skip": 0,
+      "root_tests": 4,
+      "selected_database_root_tests": [
+        "TestPublicContentPricingMigrationRealMySQL",
+        "TestPublicPriceDraftStateMigrationRealMySQLDownAndReapply",
+        "TestPublicRenderJobTerminalMigrationRealMySQLDownAndReapply",
+        "TestUpstreamMonitorLeaseMigrationRealMySQLDownAndReapply"
+      ]
+    },
+    "service.json": {
+      "package_pass": 1,
+      "package_fail": 0,
+      "test_pass": 95,
+      "test_fail": 0,
+      "test_skip": 0,
+      "root_tests": 85,
+      "selected_database_root_tests": [
+        "TestPublicCatalogReadDBCommittedIntegrityAndDynamicInactivation",
+        "TestPublicContentDBAtomicPublishIdempotencyRollbackAndRestore",
+        "TestPublicContentDBConcurrentSameKeyUsesOneReleaseWithoutDeadlock",
+        "TestPublicContentTicketAndBusinessCommitRollbackReplayRealDB",
+        "TestPublicModelDBLifecycleReservationOmissionAuditAndRollback",
+        "TestPublicModelDeleteTicketAndBusinessCommitRealDB",
+        "TestPublicPriceSnapshotDBAtomicPublicationIdempotencyAndRestore",
+        "TestPublicPriceSnapshotDBRejectsContentBindingDriftAndRebindsCompatibleGeneration",
+        "TestPublicPriceTicketAndBusinessCommitRollbackReplayRealDB",
+        "TestPublicRenderJobFixtureConcurrentCompleteReplayConverges",
+        "TestPublicRenderJobFixtureExpiryRetryAndTerminalFailure",
+        "TestPublicRenderJobFixtureLeaseFencingAndCurrentGeneration",
+        "TestPublicRenderJobFixtureLeaseRaceHasOneOwner",
+        "TestPublicRenderJobFixtureSkipsObsoleteGeneration",
+        "TestRootAlertDBConfiguredIdentityAndStatusValidation",
+        "TestRootAlertDBExactLifecycleTimestampsCountsAndAudits",
+        "TestRootAlertDBFailureInjectionRollsBack",
+        "TestRootAlertDBLifecycleReceiptsAndConcurrentOccurrence",
+        "TestRootAlertDBMutationAuditFailuresRollback",
+        "TestUpstreamPriceMonitorDBThreeStrikesDurableAlertsSafetyRetryReappearanceAndRetention"
+      ]
+    },
+    "http-security-renderer.json": {
+      "package_pass": 4,
+      "package_fail": 0,
+      "test_pass": 95,
+      "test_fail": 0,
+      "test_skip": 0,
+      "root_tests": 43,
+      "selected_database_root_tests": [
+        "TestPublicAdminRootAuthenticationMatrixRealFixtures"
+      ]
+    },
+    "race.json": {
+      "package_pass": 2,
+      "package_fail": 0,
+      "test_pass": 132,
+      "test_fail": 0,
+      "test_skip": 0,
+      "root_tests": 114,
+      "selected_database_root_tests": [
+        "TestPublicAdminRootAuthenticationMatrixRealFixtures",
+        "TestPublicCatalogReadDBCommittedIntegrityAndDynamicInactivation",
+        "TestPublicContentDBAtomicPublishIdempotencyRollbackAndRestore",
+        "TestPublicContentDBConcurrentSameKeyUsesOneReleaseWithoutDeadlock",
+        "TestPublicContentTicketAndBusinessCommitRollbackReplayRealDB",
+        "TestPublicModelDBLifecycleReservationOmissionAuditAndRollback",
+        "TestPublicModelDeleteTicketAndBusinessCommitRealDB",
+        "TestPublicPriceSnapshotDBAtomicPublicationIdempotencyAndRestore",
+        "TestPublicPriceSnapshotDBRejectsContentBindingDriftAndRebindsCompatibleGeneration",
+        "TestPublicPriceTicketAndBusinessCommitRollbackReplayRealDB",
+        "TestPublicRenderJobFixtureConcurrentCompleteReplayConverges",
+        "TestPublicRenderJobFixtureExpiryRetryAndTerminalFailure",
+        "TestPublicRenderJobFixtureLeaseFencingAndCurrentGeneration",
+        "TestPublicRenderJobFixtureLeaseRaceHasOneOwner",
+        "TestPublicRenderJobFixtureSkipsObsoleteGeneration",
+        "TestRootAlertDBConfiguredIdentityAndStatusValidation",
+        "TestRootAlertDBExactLifecycleTimestampsCountsAndAudits",
+        "TestRootAlertDBFailureInjectionRollsBack",
+        "TestRootAlertDBLifecycleReceiptsAndConcurrentOccurrence",
+        "TestRootAlertDBMutationAuditFailuresRollback",
+        "TestUpstreamPriceMonitorDBThreeStrikesDurableAlertsSafetyRetryReappearanceAndRetention"
+      ]
+    }
+  }
+}

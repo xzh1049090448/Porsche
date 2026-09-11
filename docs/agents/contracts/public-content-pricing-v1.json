@@ -1,0 +1,1813 @@
+{
+  "version": "v1",
+  "status": "approved_contract_pending_implementation",
+  "pricing": {
+    "currency": "USD",
+    "unit": "million_tokens",
+    "components": [
+      "input",
+      "output"
+    ],
+    "wire_type": "decimal_string",
+    "fractional_digits_maximum": 8,
+    "minimum": "0",
+    "maximum": "999999999999.99999999",
+    "safe_examples": {
+      "input_price_usd_per_million_tokens": "12.34567890",
+      "output_price_usd_per_million_tokens": "3.21000000"
+    },
+    "billing_semantics": "references_only_no_automatic_charge",
+    "missing_component_semantics": "omit_field_never_zero_or_free",
+    "provenance_required_when_any_component_present": [
+      "price_source",
+      "price_reviewer",
+      "effective_at",
+      "updated_at"
+    ]
+  },
+  "admin_model_completeness": {
+    "canonical_values": [
+      "complete",
+      "incomplete"
+    ],
+    "complete_requires": [
+      "input_price_usd_per_million_tokens",
+      "output_price_usd_per_million_tokens",
+      "price_source",
+      "price_reviewer",
+      "price_effective_at"
+    ],
+    "semantics": "complete requires both price components, nonblank source and reviewer, and a positive effective timestamp; incomplete is the exact complement among non-deleted rows",
+    "evaluation_scope": "server_global_before_pagination",
+    "excluded_fields": [
+      "status",
+      "consecutive_absences",
+      "last_upstream_check_at"
+    ]
+  },
+  "roles": {
+    "anonymous": "public_read_only",
+    "root": "authenticated_root_role_required"
+  },
+  "public_request_headers": {},
+  "public_response_headers": {
+    "ETag": "required",
+    "X-Public-Release-Version": "required_release_version",
+    "Cache-Control": "public_max_age_60_stale_while_revalidate_300"
+  },
+  "admin_request_headers": {
+    "Authorization": "required_authenticated_root_session_or_bearer"
+  },
+  "admin_verified_action_request_headers": {
+    "Authorization": "required_authenticated_root_session_or_bearer",
+    "X-Action-Ticket": "required_single_use_action_ticket"
+  },
+  "admin_publish_request_headers": {
+    "Authorization": "required_authenticated_root_session_or_bearer",
+    "Idempotency-Key": "required_exactly_once_unique_per_root_and_operation",
+    "X-Action-Ticket": "required_single_use_action_ticket"
+  },
+  "admin_response_headers": {
+    "Cache-Control": "no-store",
+    "X-Request-ID": "required_non_empty"
+  },
+  "admin_preview_response_headers": {
+    "Cache-Control": "no-store",
+    "X-Request-ID": "required_non_empty",
+    "X-Robots-Tag": "noindex_nofollow"
+  },
+  "body_rules": {
+    "object_mutation": {
+      "applies_to_body_schema_type": "object",
+      "payload": "one_exact_json_object_no_unknown_duplicate_or_trailing_fields"
+    },
+    "no_body_mutation": {
+      "applies_to_body_schema": "NoBody",
+      "payload": "no_request_body_content_allowed",
+      "routes": [
+        "POST /admin/v2/public-models/sync",
+        "POST /admin/v2/notifications/{guid}/read",
+        "POST /admin/v2/notifications/{guid}/acknowledge"
+      ]
+    },
+    "forbidden_body_fields": [
+      "action_ticket"
+    ],
+    "rejection": "400_invalid_public_content_pricing_request"
+  },
+  "mutation_requirements": {
+    "optimistic_concurrency_field": "expected_revision",
+    "expected_revision_routes": [
+      "PATCH /admin/v2/public-models/{guid}",
+      "POST /admin/v2/public-models/{guid}/activate",
+      "POST /admin/v2/public-models/{guid}/deactivate",
+      "DELETE /admin/v2/public-models/{guid}",
+      "PUT /admin/v2/public-pricing/draft",
+      "POST /admin/v2/public-pricing/validate",
+      "POST /admin/v2/public-pricing/publish",
+      "POST /admin/v2/public-pricing/releases/{guid}/restore",
+      "PUT /admin/v2/public-content/draft",
+      "POST /admin/v2/public-content/validate",
+      "POST /admin/v2/public-content/publish",
+      "POST /admin/v2/public-content/releases/{guid}/restore"
+    ],
+    "idempotency_key_routes": [
+      "POST /admin/v2/public-pricing/publish",
+      "POST /admin/v2/public-pricing/releases/{guid}/restore",
+      "POST /admin/v2/public-content/publish",
+      "POST /admin/v2/public-content/releases/{guid}/restore"
+    ],
+    "action_ticket_header_routes": [
+      "DELETE /admin/v2/public-models/{guid}",
+      "POST /admin/v2/public-pricing/publish",
+      "POST /admin/v2/public-pricing/releases/{guid}/restore",
+      "POST /admin/v2/public-content/publish",
+      "POST /admin/v2/public-content/releases/{guid}/restore"
+    ],
+    "idempotency_header": "Idempotency-Key required_exactly_once_unique_per_root_and_operation"
+  },
+  "model_lookup_semantics": {
+    "unknown_or_never_published": "404",
+    "previously_published_inactive_or_deleted": "410"
+  },
+  "notifications": {
+    "delivery": "in_app_only",
+    "types": [
+      "published_price_below_upstream",
+      "upstream_missing",
+      "automatic_inactivation",
+      "upstream_reappearance",
+      "catalog_sync_failure",
+      "price_not_comparable",
+      "renderer_failure"
+    ],
+    "receipt_scope": "independent_read_and_acknowledgement_per_root"
+  },
+  "schemas": {
+    "NoBody": {
+      "type": "null",
+      "properties": {}
+    },
+    "GUIDRequest": {
+      "type": "object",
+      "required": [
+        "guid"
+      ],
+      "properties": {
+        "guid": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]{0,18}$"
+        }
+      }
+    },
+    "PaginationRequest": {
+      "type": "object",
+      "properties": {
+        "page": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "page_size": {
+          "type": "integer",
+          "enum": [
+            20,
+            50,
+            100
+          ]
+        }
+      }
+    },
+    "RevisionRequest": {
+      "type": "object",
+      "required": [
+        "expected_revision"
+      ],
+      "properties": {
+        "expected_revision": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "PublicModelVisible": {
+      "type": "object",
+      "required": [
+        "model_key",
+        "display_name",
+        "provider",
+        "capabilities",
+        "context_window",
+        "price_visibility",
+        "release_version",
+        "pricing_type",
+        "endpoint_types",
+        "updated_at"
+      ],
+      "properties": {
+        "model_key": {
+          "type": "string"
+        },
+        "display_name": {
+          "type": "string"
+        },
+        "provider": {
+          "type": "string"
+        },
+        "capabilities": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "context_window": {
+          "type": "integer"
+        },
+        "input_price_usd_per_million_tokens": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,11})(\\.[0-9]{1,8})?$",
+          "minimum": "0",
+          "maximum": "999999999999.99999999"
+        },
+        "output_price_usd_per_million_tokens": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,11})(\\.[0-9]{1,8})?$",
+          "minimum": "0",
+          "maximum": "999999999999.99999999"
+        },
+        "price_visibility": {
+          "type": "string",
+          "enum": [
+            "visible"
+          ]
+        },
+        "release_version": {
+          "type": "integer"
+        },
+        "pricing_type": {
+          "type": "string",
+          "enum": [
+            "token"
+          ]
+        },
+        "public_display_group": {
+          "type": "string"
+        },
+        "endpoint_types": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "public_restrictions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "price_source": {
+          "type": "string"
+        },
+        "price_reviewer": {
+          "type": "string"
+        },
+        "effective_at": {
+          "type": "string",
+          "format": "date-time-rfc3339-utc"
+        },
+        "updated_at": {
+          "type": "string",
+          "format": "date-time-rfc3339-utc"
+        }
+      }
+    },
+    "PublicModelRedacted": {
+      "type": "object",
+      "required": [
+        "model_key",
+        "display_name",
+        "provider",
+        "capabilities",
+        "context_window",
+        "price_visibility",
+        "release_version",
+        "pricing_type",
+        "endpoint_types",
+        "updated_at"
+      ],
+      "properties": {
+        "model_key": {
+          "type": "string"
+        },
+        "display_name": {
+          "type": "string"
+        },
+        "provider": {
+          "type": "string"
+        },
+        "capabilities": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "context_window": {
+          "type": "integer"
+        },
+        "price_visibility": {
+          "type": "string",
+          "enum": [
+            "authenticated_only"
+          ]
+        },
+        "release_version": {
+          "type": "integer"
+        },
+        "pricing_type": {
+          "type": "string",
+          "enum": [
+            "token"
+          ]
+        },
+        "public_display_group": {
+          "type": "string"
+        },
+        "endpoint_types": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "public_restrictions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "price_source": {
+          "type": "string"
+        },
+        "price_reviewer": {
+          "type": "string"
+        },
+        "effective_at": {
+          "type": "string",
+          "format": "date-time-rfc3339-utc"
+        },
+        "updated_at": {
+          "type": "string",
+          "format": "date-time-rfc3339-utc"
+        }
+      }
+    },
+    "PublicModelAdmin": {
+      "type": "object",
+      "required": [
+        "guid",
+        "model_key",
+        "upstream_model_id",
+        "display_name",
+        "provider",
+        "capabilities",
+        "context_window",
+        "input_price_usd_per_million_tokens",
+        "output_price_usd_per_million_tokens",
+        "status",
+        "revision",
+        "last_upstream_check_at"
+      ],
+      "properties": {
+        "guid": {
+          "type": "string"
+        },
+        "model_key": {
+          "type": "string"
+        },
+        "upstream_model_id": {
+          "type": "string"
+        },
+        "display_name": {
+          "type": "string"
+        },
+        "provider": {
+          "type": "string"
+        },
+        "capabilities": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "context_window": {
+          "type": "integer"
+        },
+        "input_price_usd_per_million_tokens": {
+          "type": "string",
+          "nullable": true,
+          "pattern": "^(0|[1-9][0-9]{0,11})(\\.[0-9]{1,8})?$",
+          "minimum": "0",
+          "maximum": "999999999999.99999999"
+        },
+        "output_price_usd_per_million_tokens": {
+          "type": "string",
+          "nullable": true,
+          "pattern": "^(0|[1-9][0-9]{0,11})(\\.[0-9]{1,8})?$",
+          "minimum": "0",
+          "maximum": "999999999999.99999999"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "draft",
+            "active",
+            "inactive"
+          ]
+        },
+        "revision": {
+          "type": "integer"
+        },
+        "last_upstream_check_at": {
+          "type": "integer",
+          "nullable": true
+        },
+        "public_display_group": {
+          "type": "string"
+        },
+        "endpoint_types": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "public_restrictions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "price_source": {
+          "type": "string"
+        },
+        "price_reviewer": {
+          "type": "string"
+        },
+        "price_effective_at": {
+          "type": "integer",
+          "nullable": true
+        }
+      }
+    },
+    "SiteReleaseResponse": {
+      "type": "object",
+      "required": [
+        "content_release_version",
+        "price_release_version",
+        "price_visibility"
+      ],
+      "properties": {
+        "content_release_version": {
+          "type": "integer"
+        },
+        "price_release_version": {
+          "type": "integer"
+        },
+        "price_visibility": {
+          "type": "string",
+          "enum": [
+            "visible",
+            "authenticated_only"
+          ]
+        }
+      }
+    },
+    "PublishedDocumentResponse": {
+      "type": "object",
+      "required": [
+        "document",
+        "release_version"
+      ],
+      "properties": {
+        "document": {
+          "type": "string"
+        },
+        "release_version": {
+          "type": "integer"
+        }
+      }
+    },
+    "PublicModelsListRequest": {
+      "type": "object",
+      "properties": {
+        "search": {
+          "type": "string"
+        },
+        "provider": {
+          "type": "string"
+        },
+        "capability": {
+          "type": "string"
+        },
+        "page": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "page_size": {
+          "type": "integer",
+          "enum": [
+            20,
+            50,
+            100
+          ]
+        },
+        "endpoint_type": {
+          "type": "string"
+        },
+        "public_display_group": {
+          "type": "string"
+        },
+        "pricing_type": {
+          "type": "string",
+          "enum": [
+            "token"
+          ]
+        },
+        "sort": {
+          "type": "string",
+          "enum": [
+            "default",
+            "name",
+            "input_price",
+            "output_price"
+          ]
+        },
+        "order": {
+          "type": "string",
+          "enum": [
+            "asc",
+            "desc"
+          ]
+        }
+      }
+    },
+    "PublicModelDetailRequest": {
+      "type": "object",
+      "required": [
+        "modelKey"
+      ],
+      "properties": {
+        "modelKey": {
+          "type": "string"
+        }
+      }
+    },
+    "PublicModelListResponse": {
+      "type": "object",
+      "required": [
+        "items",
+        "page",
+        "page_size",
+        "total",
+        "release_version",
+        "facets"
+      ],
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "union",
+            "one_of": [
+              "PublicModelVisible",
+              "PublicModelRedacted"
+            ]
+          }
+        },
+        "page": {
+          "type": "integer"
+        },
+        "page_size": {
+          "type": "integer"
+        },
+        "total": {
+          "type": "integer"
+        },
+        "release_version": {
+          "type": "integer"
+        },
+        "facets": {
+          "type": "object",
+          "$ref": "PublicCatalogFacets"
+        }
+      }
+    },
+    "PublicModelDetailResponse": {
+      "type": "object",
+      "required": [
+        "model"
+      ],
+      "properties": {
+        "model": {
+          "type": "union",
+          "one_of": [
+            "PublicModelVisible",
+            "PublicModelRedacted"
+          ]
+        }
+      }
+    },
+    "AdminModelListRequest": {
+      "type": "object",
+      "properties": {
+        "search": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "draft",
+            "active",
+            "inactive"
+          ]
+        },
+        "upstream_state": {
+          "type": "string",
+          "enum": [
+            "present",
+            "missing"
+          ]
+        },
+        "completeness": {
+          "type": "string",
+          "enum": [
+            "complete",
+            "incomplete"
+          ]
+        },
+        "page": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "page_size": {
+          "type": "integer",
+          "enum": [
+            20,
+            50,
+            100
+          ]
+        }
+      }
+    },
+    "AdminModelListResponse": {
+      "type": "object",
+      "required": [
+        "items",
+        "page",
+        "page_size",
+        "total"
+      ],
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "PublicModelAdmin"
+          }
+        },
+        "page": {
+          "type": "integer"
+        },
+        "page_size": {
+          "type": "integer"
+        },
+        "total": {
+          "type": "integer"
+        }
+      }
+    },
+    "CreatePublicModelRequest": {
+      "type": "object",
+      "required": [
+        "upstream_model_id",
+        "model_key",
+        "display_name",
+        "provider",
+        "capabilities",
+        "context_window"
+      ],
+      "properties": {
+        "upstream_model_id": {
+          "type": "string"
+        },
+        "model_key": {
+          "type": "string"
+        },
+        "display_name": {
+          "type": "string"
+        },
+        "provider": {
+          "type": "string"
+        },
+        "capabilities": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "context_window": {
+          "type": "integer"
+        },
+        "input_price_usd_per_million_tokens": {
+          "type": "string",
+          "nullable": true,
+          "pattern": "^(0|[1-9][0-9]{0,11})(\\.[0-9]{1,8})?$",
+          "minimum": "0",
+          "maximum": "999999999999.99999999"
+        },
+        "output_price_usd_per_million_tokens": {
+          "type": "string",
+          "nullable": true,
+          "pattern": "^(0|[1-9][0-9]{0,11})(\\.[0-9]{1,8})?$",
+          "minimum": "0",
+          "maximum": "999999999999.99999999"
+        },
+        "public_display_group": {
+          "type": "string"
+        },
+        "endpoint_types": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "public_restrictions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "price_source": {
+          "type": "string"
+        },
+        "price_reviewer": {
+          "type": "string"
+        },
+        "price_effective_at": {
+          "type": "integer",
+          "nullable": true
+        }
+      }
+    },
+    "UpdatePublicModelRequest": {
+      "type": "object",
+      "required": [
+        "expected_revision"
+      ],
+      "properties": {
+        "expected_revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "display_name": {
+          "type": "string"
+        },
+        "provider": {
+          "type": "string"
+        },
+        "capabilities": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "context_window": {
+          "type": "integer"
+        },
+        "input_price_usd_per_million_tokens": {
+          "type": "string",
+          "nullable": true,
+          "pattern": "^(0|[1-9][0-9]{0,11})(\\.[0-9]{1,8})?$",
+          "minimum": "0",
+          "maximum": "999999999999.99999999"
+        },
+        "output_price_usd_per_million_tokens": {
+          "type": "string",
+          "nullable": true,
+          "pattern": "^(0|[1-9][0-9]{0,11})(\\.[0-9]{1,8})?$",
+          "minimum": "0",
+          "maximum": "999999999999.99999999"
+        },
+        "public_display_group": {
+          "type": "string"
+        },
+        "endpoint_types": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "public_restrictions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "price_source": {
+          "type": "string"
+        },
+        "price_reviewer": {
+          "type": "string"
+        },
+        "price_effective_at": {
+          "type": "integer",
+          "nullable": true
+        }
+      }
+    },
+    "DeactivationRequest": {
+      "type": "object",
+      "required": [
+        "expected_revision",
+        "reason"
+      ],
+      "properties": {
+        "expected_revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "reason": {
+          "type": "string"
+        }
+      }
+    },
+    "DeletePublicModelRequest": {
+      "type": "object",
+      "required": [
+        "expected_revision",
+        "reason"
+      ],
+      "properties": {
+        "expected_revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "reason": {
+          "type": "string"
+        }
+      }
+    },
+    "MissingModelsResponse": {
+      "type": "object",
+      "required": [
+        "observed_without_configuration",
+        "configured_missing_upstream"
+      ],
+      "properties": {
+        "observed_without_configuration": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "configured_missing_upstream": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "PublicModelAdmin"
+          }
+        }
+      }
+    },
+    "SyncAcceptedResponse": {
+      "type": "object",
+      "required": [
+        "accepted"
+      ],
+      "properties": {
+        "accepted": {
+          "type": "boolean"
+        }
+      }
+    },
+    "PriceDraft": {
+      "type": "object",
+      "required": [
+        "revision",
+        "models",
+        "currency",
+        "unit"
+      ],
+      "properties": {
+        "revision": {
+          "type": "integer"
+        },
+        "models": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "PublicModelAdmin"
+          }
+        },
+        "currency": {
+          "type": "string",
+          "enum": [
+            "USD"
+          ]
+        },
+        "unit": {
+          "type": "string",
+          "enum": [
+            "million_tokens"
+          ]
+        }
+      }
+    },
+    "PriceDraftSaveRequest": {
+      "type": "object",
+      "required": [
+        "expected_revision",
+        "models"
+      ],
+      "properties": {
+        "expected_revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "models": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "PublicModelAdmin"
+          }
+        }
+      }
+    },
+    "ValidationIssue": {
+      "type": "object",
+      "required": [
+        "field",
+        "code"
+      ],
+      "properties": {
+        "field": {
+          "type": "string"
+        },
+        "code": {
+          "type": "string"
+        }
+      }
+    },
+    "ValidationResponse": {
+      "type": "object",
+      "required": [
+        "valid",
+        "issues"
+      ],
+      "properties": {
+        "valid": {
+          "type": "boolean"
+        },
+        "issues": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "ValidationIssue"
+          }
+        }
+      }
+    },
+    "PublicationRequest": {
+      "type": "object",
+      "required": [
+        "expected_revision"
+      ],
+      "properties": {
+        "expected_revision": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "Release": {
+      "type": "object",
+      "required": [
+        "guid",
+        "version",
+        "reason",
+        "source_revision",
+        "created_at"
+      ],
+      "properties": {
+        "guid": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]{0,18}$"
+        },
+        "version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "reason": {
+          "type": "string",
+          "enum": [
+            "root_publish",
+            "upstream_safety",
+            "restore"
+          ]
+        },
+        "source_revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time-rfc3339-utc"
+        }
+      }
+    },
+    "ReleaseListResponse": {
+      "type": "object",
+      "required": [
+        "items",
+        "page",
+        "page_size",
+        "total"
+      ],
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "Release"
+          }
+        },
+        "page": {
+          "type": "integer"
+        },
+        "page_size": {
+          "type": "integer"
+        },
+        "total": {
+          "type": "integer"
+        }
+      }
+    },
+    "ImmutablePriceReleaseResponse": {
+      "type": "object",
+      "required": [
+        "release",
+        "items"
+      ],
+      "properties": {
+        "release": {
+          "type": "object",
+          "$ref": "Release"
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "PublicModelVisible"
+          }
+        }
+      }
+    },
+    "Notification": {
+      "type": "object",
+      "required": [
+        "guid",
+        "type",
+        "state",
+        "read",
+        "acknowledged",
+        "created_at",
+        "updated_at"
+      ],
+      "properties": {
+        "guid": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "published_price_below_upstream",
+            "upstream_missing",
+            "automatic_inactivation",
+            "upstream_reappearance",
+            "catalog_sync_failure",
+            "price_not_comparable",
+            "renderer_failure"
+          ]
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "active",
+            "resolved"
+          ]
+        },
+        "read": {
+          "type": "boolean"
+        },
+        "acknowledged": {
+          "type": "boolean"
+        },
+        "created_at": {
+          "type": "integer"
+        },
+        "updated_at": {
+          "type": "integer"
+        }
+      }
+    },
+    "NotificationListRequest": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "type": "string",
+          "enum": [
+            "active",
+            "resolved"
+          ]
+        },
+        "page": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "page_size": {
+          "type": "integer",
+          "enum": [
+            20,
+            50,
+            100
+          ]
+        }
+      }
+    },
+    "NotificationListResponse": {
+      "type": "object",
+      "required": [
+        "items",
+        "page",
+        "page_size",
+        "total"
+      ],
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "Notification"
+          }
+        },
+        "page": {
+          "type": "integer"
+        },
+        "page_size": {
+          "type": "integer"
+        },
+        "total": {
+          "type": "integer"
+        }
+      }
+    },
+    "UnreadCountResponse": {
+      "type": "object",
+      "required": [
+        "unread_count"
+      ],
+      "properties": {
+        "unread_count": {
+          "type": "integer"
+        }
+      }
+    },
+    "ContentDraft": {
+      "type": "object",
+      "required": [
+        "revision",
+        "home",
+        "about",
+        "terms",
+        "privacy",
+        "legal_reviewed"
+      ],
+      "properties": {
+        "revision": {
+          "type": "integer"
+        },
+        "home": {
+          "type": "string"
+        },
+        "about": {
+          "type": "string"
+        },
+        "terms": {
+          "type": "string"
+        },
+        "privacy": {
+          "type": "string"
+        },
+        "legal_reviewed": {
+          "type": "boolean"
+        }
+      }
+    },
+    "ContentDraftSaveRequest": {
+      "type": "object",
+      "required": [
+        "expected_revision",
+        "home",
+        "about",
+        "terms",
+        "privacy",
+        "legal_reviewed"
+      ],
+      "properties": {
+        "expected_revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "home": {
+          "type": "string"
+        },
+        "about": {
+          "type": "string"
+        },
+        "terms": {
+          "type": "string"
+        },
+        "privacy": {
+          "type": "string"
+        },
+        "legal_reviewed": {
+          "type": "boolean"
+        }
+      }
+    },
+    "PreviewRequest": {
+      "type": "object",
+      "properties": {
+        "revision": {
+          "type": "integer"
+        }
+      }
+    },
+    "PreviewResponse": {
+      "type": "object",
+      "required": [
+        "document",
+        "revision"
+      ],
+      "properties": {
+        "document": {
+          "type": "string"
+        },
+        "revision": {
+          "type": "integer"
+        }
+      }
+    },
+    "ContentPublicationRequest": {
+      "type": "object",
+      "required": [
+        "expected_revision",
+        "price_release_guid"
+      ],
+      "properties": {
+        "expected_revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "price_release_guid": {
+          "type": "string"
+        }
+      }
+    },
+    "ImmutableContentReleaseResponse": {
+      "type": "object",
+      "required": [
+        "release",
+        "content"
+      ],
+      "properties": {
+        "release": {
+          "type": "object",
+          "$ref": "Release"
+        },
+        "content": {
+          "type": "object",
+          "$ref": "ContentDraft"
+        }
+      }
+    },
+    "Error": {
+      "type": "object",
+      "required": [
+        "code",
+        "message",
+        "request_id"
+      ],
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "request_id": {
+          "type": "string"
+        }
+      }
+    },
+    "ErrorEnvelope": {
+      "type": "object",
+      "required": [
+        "error"
+      ],
+      "properties": {
+        "error": {
+          "type": "object",
+          "$ref": "Error"
+        }
+      }
+    },
+    "PublicCatalogFacets": {
+      "type": "object",
+      "required": [
+        "providers",
+        "capabilities",
+        "endpoint_types",
+        "public_display_groups"
+      ],
+      "properties": {
+        "providers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "capabilities": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "endpoint_types": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "public_display_groups": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  },
+  "routes": [
+    {
+      "method": "GET",
+      "path": "/api/v1/public/site",
+      "role": "anonymous",
+      "request_headers": "public_request_headers",
+      "response_headers": "public_response_headers",
+      "path_schema": "NoBody",
+      "query_schema": "NoBody",
+      "body_schema": "NoBody",
+      "response_schema": "SiteReleaseResponse",
+      "status": 200
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/public/home",
+      "role": "anonymous",
+      "request_headers": "public_request_headers",
+      "response_headers": "public_response_headers",
+      "path_schema": "NoBody",
+      "query_schema": "NoBody",
+      "body_schema": "NoBody",
+      "response_schema": "PublishedDocumentResponse",
+      "status": 200
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/public/models",
+      "role": "anonymous",
+      "request_headers": "public_request_headers",
+      "response_headers": "public_response_headers",
+      "path_schema": "NoBody",
+      "query_schema": "PublicModelsListRequest",
+      "body_schema": "NoBody",
+      "response_schema": "PublicModelListResponse",
+      "status": 200
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/public/models/{modelKey}",
+      "role": "anonymous",
+      "request_headers": "public_request_headers",
+      "response_headers": "public_response_headers",
+      "path_schema": "PublicModelDetailRequest",
+      "query_schema": "NoBody",
+      "body_schema": "NoBody",
+      "response_schema": "PublicModelDetailResponse",
+      "status": 200
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/public/pages/about",
+      "role": "anonymous",
+      "request_headers": "public_request_headers",
+      "response_headers": "public_response_headers",
+      "path_schema": "NoBody",
+      "query_schema": "NoBody",
+      "body_schema": "NoBody",
+      "response_schema": "PublishedDocumentResponse",
+      "status": 200
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/public/pages/terms",
+      "role": "anonymous",
+      "request_headers": "public_request_headers",
+      "response_headers": "public_response_headers",
+      "path_schema": "NoBody",
+      "query_schema": "NoBody",
+      "body_schema": "NoBody",
+      "response_schema": "PublishedDocumentResponse",
+      "status": 200
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/public/pages/privacy",
+      "role": "anonymous",
+      "request_headers": "public_request_headers",
+      "response_headers": "public_response_headers",
+      "path_schema": "NoBody",
+      "query_schema": "NoBody",
+      "body_schema": "NoBody",
+      "response_schema": "PublishedDocumentResponse",
+      "status": 200
+    },
+    {
+      "method": "GET",
+      "path": "/admin/v2/public-models",
+      "role": "root",
+      "request_headers": "admin_request_headers",
+      "response_headers": "admin_response_headers",
+      "path_schema": "NoBody",
+      "query_schema": "AdminModelListRequest",
+      "body_schema": "NoBody",
+      "response_schema": "AdminModelListResponse",
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/admin/v2/public-models",
+      "role": "root",
+      "request_headers": "admin_request_headers",
+      "response_headers": "admin_response_headers",
+      "path_schema": "NoBody",
+      "query_schema": "NoBody",
+      "body_schema": "CreatePublicModelRequest",
+      "response_schema": "PublicModelAdmin",
+      "status": 201
+    },
+    {
+      "method": "GET",
+      "path": "/admin/v2/public-models/{guid}",
+      "role": "root",
+      "request_headers": "admin_request_headers",
+      "response_headers": "admin_response_headers",
+      "path_schema": "GUIDRequest",
+      "query_schema": "NoBody",
+      "body_schema": "NoBody",
+      "response_schema": "PublicModelAdmin",
+      "status": 200
+    },
+    {
+      "method": "PATCH",
+      "path": "/admin/v2/public-models/{guid}",
+      "role": "root",
+      "request_headers": "admin_request_headers",
+      "response_headers": "admin_response_headers",
+      "path_schema": "GUIDRequest",
+      "query_schema": "NoBody",
+      "body_schema": "UpdatePublicModelRequest",
+      "response_schema": "PublicModelAdmin",
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/admin/v2/public-models/{guid}/activate",
+      "role": "root",
+      "request_headers": "admin_request_headers",
+      "response_headers": "admin_response_headers",
+      "path_schema": "GUIDRequest",
+      "query_schema": "NoBody",
+      "body_schema": "RevisionRequest",
+      "response_schema": "PublicModelAdmin",
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/admin/v2/public-models/{guid}/deactivate",
+      "role": "root",
+      "request_headers": "admin_request_headers",
+      "response_headers": "admin_response_headers",
+      "path_schema": "GUIDRequest",
+      "query_schema": "NoBody",
+      "body_schema": "DeactivationRequest",
+      "response_schema": "PublicModelAdmin",
+      "status": 200
+    },
+    {
+      "method": "DELETE",
+      "path": "/admin/v2/public-models/{guid}",
+      "role": "root",
+      "request_headers": "admin_verified_action_request_headers",
+      "response_headers": "admin_response_headers",
+      "path_schema": "GUIDRequest",
+      "query_schema": "NoBody",
+      "body_schema": "DeletePublicModelRequest",
+      "response_schema": "NoBody",
+      "status": 204
+    },
+    {
+      "method": "GET",
+      "path": "/admin/v2/public-models/missing",
+      "role": "root",
+      "request_headers": "admin_request_headers",
+      "response_headers": "admin_response_headers",
+      "path_schema": "NoBody",
+      "query_schema": "NoBody",
+      "body_schema": "NoBody",
+      "response_schema": "MissingModelsResponse",
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/admin/v2/public-models/sync",
+      "role": "root",
+      "request_headers": "admin_request_headers",
+      "response_headers": "admin_response_headers",
+      "path_schema": "NoBody",
+      "query_schema": "NoBody",
+      "body_schema": "NoBody",
+      "response_schema": "SyncAcceptedResponse",
+      "status": 202
+    },
+    {
+      "method": "GET",
+      "path": "/admin/v2/public-pricing/draft",
+      "role": "root",
+      "request_headers": "admin_request_headers",
+      "response_headers": "admin_response_headers",
+      "path_schema": "NoBody",
+      "query_schema": "NoBody",
+      "body_schema": "NoBody",
+      "response_schema": "PriceDraft",
+      "status": 200
+    },
+    {
+      "method": "PUT",
+      "path": "/admin/v2/public-pricing/draft",
+      "role": "root",
+      "request_headers": "admin_request_headers",
+      "response_headers": "admin_response_headers",
+      "path_schema": "NoBody",
+      "query_schema": "NoBody",
+      "body_schema": "PriceDraftSaveRequest",
+      "response_schema": "PriceDraft",
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/admin/v2/public-pricing/validate",
+      "role": "root",
+      "request_headers": "admin_request_headers",
+      "response_headers": "admin_response_headers",
+      "path_schema": "NoBody",
+      "query_schema": "NoBody",
+      "body_schema": "RevisionRequest",
+      "response_schema": "ValidationResponse",
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/admin/v2/public-pricing/publish",
+      "role": "root",
+      "request_headers": "admin_publish_request_headers",
+      "response_headers": "admin_response_headers",
+      "path_schema": "NoBody",
+      "query_schema": "NoBody",
+      "body_schema": "PublicationRequest",
+      "response_schema": "Release",
+      "status": 201
+    },
+    {
+      "method": "GET",
+      "path": "/admin/v2/public-pricing/releases",
+      "role": "root",
+      "request_headers": "admin_request_headers",
+      "response_headers": "admin_response_headers",
+      "path_schema": "NoBody",
+      "query_schema": "PaginationRequest",
+      "body_schema": "NoBody",
+      "response_schema": "ReleaseListResponse",
+      "status": 200
+    },
+    {
+      "method": "GET",
+      "path": "/admin/v2/public-pricing/releases/{guid}",
+      "role": "root",
+      "request_headers": "admin_request_headers",
+      "response_headers": "admin_response_headers",
+      "path_schema": "GUIDRequest",
+      "query_schema": "NoBody",
+      "body_schema": "NoBody",
+      "response_schema": "ImmutablePriceReleaseResponse",
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/admin/v2/public-pricing/releases/{guid}/restore",
+      "role": "root",
+      "request_headers": "admin_publish_request_headers",
+      "response_headers": "admin_response_headers",
+      "path_schema": "GUIDRequest",
+      "query_schema": "NoBody",
+      "body_schema": "RevisionRequest",
+      "response_schema": "Release",
+      "status": 201
+    },
+    {
+      "method": "GET",
+      "path": "/admin/v2/notifications",
+      "role": "root",
+      "request_headers": "admin_request_headers",
+      "response_headers": "admin_response_headers",
+      "path_schema": "NoBody",
+      "query_schema": "NotificationListRequest",
+      "body_schema": "NoBody",
+      "response_schema": "NotificationListResponse",
+      "status": 200
+    },
+    {
+      "method": "GET",
+      "path": "/admin/v2/notifications/unread-count",
+      "role": "root",
+      "request_headers": "admin_request_headers",
+      "response_headers": "admin_response_headers",
+      "path_schema": "NoBody",
+      "query_schema": "NoBody",
+      "body_schema": "NoBody",
+      "response_schema": "UnreadCountResponse",
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/admin/v2/notifications/{guid}/read",
+      "role": "root",
+      "request_headers": "admin_request_headers",
+      "response_headers": "admin_response_headers",
+      "path_schema": "GUIDRequest",
+      "query_schema": "NoBody",
+      "body_schema": "NoBody",
+      "response_schema": "Notification",
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/admin/v2/notifications/{guid}/acknowledge",
+      "role": "root",
+      "request_headers": "admin_request_headers",
+      "response_headers": "admin_response_headers",
+      "path_schema": "GUIDRequest",
+      "query_schema": "NoBody",
+      "body_schema": "NoBody",
+      "response_schema": "Notification",
+      "status": 200
+    },
+    {
+      "method": "GET",
+      "path": "/admin/v2/public-content/draft",
+      "role": "root",
+      "request_headers": "admin_request_headers",
+      "response_headers": "admin_response_headers",
+      "path_schema": "NoBody",
+      "query_schema": "NoBody",
+      "body_schema": "NoBody",
+      "response_schema": "ContentDraft",
+      "status": 200
+    },
+    {
+      "method": "PUT",
+      "path": "/admin/v2/public-content/draft",
+      "role": "root",
+      "request_headers": "admin_request_headers",
+      "response_headers": "admin_response_headers",
+      "path_schema": "NoBody",
+      "query_schema": "NoBody",
+      "body_schema": "ContentDraftSaveRequest",
+      "response_schema": "ContentDraft",
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/admin/v2/public-content/validate",
+      "role": "root",
+      "request_headers": "admin_request_headers",
+      "response_headers": "admin_response_headers",
+      "path_schema": "NoBody",
+      "query_schema": "NoBody",
+      "body_schema": "RevisionRequest",
+      "response_schema": "ValidationResponse",
+      "status": 200
+    },
+    {
+      "method": "GET",
+      "path": "/admin/v2/public-content/preview",
+      "role": "root",
+      "request_headers": "admin_request_headers",
+      "response_headers": "admin_preview_response_headers",
+      "path_schema": "NoBody",
+      "query_schema": "PreviewRequest",
+      "body_schema": "NoBody",
+      "response_schema": "PreviewResponse",
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/admin/v2/public-content/publish",
+      "role": "root",
+      "request_headers": "admin_publish_request_headers",
+      "response_headers": "admin_response_headers",
+      "path_schema": "NoBody",
+      "query_schema": "NoBody",
+      "body_schema": "ContentPublicationRequest",
+      "response_schema": "Release",
+      "status": 201
+    },
+    {
+      "method": "GET",
+      "path": "/admin/v2/public-content/releases",
+      "role": "root",
+      "request_headers": "admin_request_headers",
+      "response_headers": "admin_response_headers",
+      "path_schema": "NoBody",
+      "query_schema": "PaginationRequest",
+      "body_schema": "NoBody",
+      "response_schema": "ReleaseListResponse",
+      "status": 200
+    },
+    {
+      "method": "GET",
+      "path": "/admin/v2/public-content/releases/{guid}",
+      "role": "root",
+      "request_headers": "admin_request_headers",
+      "response_headers": "admin_response_headers",
+      "path_schema": "GUIDRequest",
+      "query_schema": "NoBody",
+      "body_schema": "NoBody",
+      "response_schema": "ImmutableContentReleaseResponse",
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/admin/v2/public-content/releases/{guid}/restore",
+      "role": "root",
+      "request_headers": "admin_publish_request_headers",
+      "response_headers": "admin_response_headers",
+      "path_schema": "GUIDRequest",
+      "query_schema": "NoBody",
+      "body_schema": "RevisionRequest",
+      "response_schema": "Release",
+      "status": 201
+    }
+  ],
+  "errors": {
+    "envelope_schema": "ErrorEnvelope",
+    "statuses": {
+      "400": "invalid_request_or_decimal_or_content",
+      "401": "authentication_required",
+      "403": "root_role_required",
+      "404": "unknown_or_never_published_public_model_or_missing_resource",
+      "409": "stale_expected_revision_or_idempotency_conflict",
+      "410": "previously_published_inactive_or_deleted_public_model",
+      "422": "publication_validation_failed",
+      "503": "dependency_or_publication_state_unavailable"
+    },
+    "prohibited_response_data": [
+      "raw_upstream_response",
+      "channel_address",
+      "draft_content_on_public_route"
+    ]
+  },
+  "deletion": {
+    "behavior": "non_recoverable_soft_delete",
+    "visibility": "omitted_from_management_search_detail_and_public_operational_routes",
+    "deleted_list_endpoint": "absent",
+    "identity_reservation": "model_key_and_upstream_model_id_remain_reserved"
+  }
+}
