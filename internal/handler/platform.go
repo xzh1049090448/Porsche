@@ -7,6 +7,9 @@ import (
 	"mime"
 	"net/http"
 	"net/url"
+	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
 	"github.com/porsche/ai-gateway-go/internal/app"
@@ -129,7 +132,7 @@ func registerPlatformWithAuthentication(r *gin.Engine, state *app.State, authent
 			return
 		}
 		if body.StreamVersion == platformSSEV2Version {
-			platformSSEV2Unavailable(c)
+			platformCompareSSEV2(c, state, user, body)
 			return
 		}
 		params := body.toParams()
@@ -379,6 +382,99 @@ func platformSingleSSEV2(c *gin.Context, state *app.State, user *models.User, bo
 	default:
 		platformSSEV2Unavailable(c)
 	}
+}
+
+func platformCompareSSEV2(c *gin.Context, state *app.State, user *models.User, body platformCompareBody) {
+	if state == nil || user == nil {
+		platformSSEV2Unavailable(c)
+		return
+	}
+	if body.MaxTokens == nil || !validPlatformCompareV2Models(body.Models) {
+		platformWhiteLabelError(c, &whitelabel.Error{Code: whitelabel.CodeInvalidRequest, Status: http.StatusBadRequest, Type: whitelabel.TypeInvalidRequest})
+		return
+	}
+	if err := platformAuthorizeModels(c, state, user, body.Models); err != nil {
+		if state.PlatformCompareGeneration == nil && err.Code == whitelabel.CodeGatewayUpstreamUnavailable {
+			platformSSEV2Unavailable(c)
+			return
+		}
+		platformWhiteLabelError(c, err)
+		return
+	}
+	if state.PlatformCompareGeneration == nil {
+		platformSSEV2Unavailable(c)
+		return
+	}
+
+	streamStarted := false
+	write := func(frame []byte) error {
+		if !streamStarted {
+			service.SetPlatformSSEV2Headers(c.Writer.Header())
+			streamStarted = true
+		}
+		_, err := c.Writer.Write(frame)
+		if err == nil {
+			c.Writer.Flush()
+		}
+		return err
+	}
+	result, err := state.PlatformCompareGeneration.Run(service.PlatformCompareGenerationInput{
+		Context: c.Request.Context(), User: user, GenerationID: body.GenerationID,
+		RequestID: c.Writer.Header().Get("X-Request-ID"), Models: body.Models, Params: body.toParams(), Write: write,
+	})
+	if streamStarted || result.Started {
+		return
+	}
+	switch {
+	case errors.Is(err, service.ErrPlatformCompareGenerationInvalid):
+		platformWhiteLabelError(c, &whitelabel.Error{Code: whitelabel.CodeInvalidRequest, Status: http.StatusBadRequest, Type: whitelabel.TypeInvalidRequest})
+	case errors.Is(err, service.ErrPlatformCompareGenerationQuota):
+		platformWhiteLabelError(c, &whitelabel.Error{Code: whitelabel.Code("rate_limited"), Status: http.StatusTooManyRequests, Type: whitelabel.TypeAPI})
+	case err == nil && result.Duplicate != nil:
+		if state.PlatformGenerationControl == nil {
+			platformSSEV2Unavailable(c)
+			return
+		}
+		view, getErr := state.PlatformGenerationControl.Get(c.Request.Context(), user.ID, body.GenerationID)
+		if getErr != nil {
+			platformSSEV2Unavailable(c)
+			return
+		}
+		c.JSON(http.StatusConflict, view)
+	default:
+		platformSSEV2Unavailable(c)
+	}
+}
+
+func validPlatformCompareV2Models(modelIDs []string) bool {
+	if len(modelIDs) < 2 || len(modelIDs) > 3 {
+		return false
+	}
+	seen := make(map[string]struct{}, len(modelIDs))
+	for _, modelID := range modelIDs {
+		if !validPlatformCompareV2ModelID(modelID) {
+			return false
+		}
+		if _, duplicate := seen[modelID]; duplicate {
+			return false
+		}
+		seen[modelID] = struct{}{}
+	}
+	return true
+}
+
+func validPlatformCompareV2ModelID(modelID string) bool {
+	if modelID == "" || len(modelID) > 256 || modelID != strings.TrimSpace(modelID) || !utf8.ValidString(modelID) {
+		return false
+	}
+	for _, segment := range strings.Split(modelID, "/") {
+		if segment == "" || segment == "." || segment == ".." || strings.IndexFunc(segment, func(r rune) bool {
+			return unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || unicode.IsSpace(r) || strings.ContainsRune("\\?#%", r)
+		}) >= 0 {
+			return false
+		}
+	}
+	return true
 }
 
 func isCanonicalUUID(value string) bool {
