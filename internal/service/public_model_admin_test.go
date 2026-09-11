@@ -1,13 +1,32 @@
 package service
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	drivermysql "github.com/go-sql-driver/mysql"
+	"github.com/porsche/ai-gateway-go/internal/models"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestProjectPublicModelSerializesEmptyCollectionsAsArrays(t *testing.T) {
+	projected := projectPublicModel(models.PublicModelConfig{})
+	raw, err := json.Marshal(projected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &body); err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"capabilities", "endpoint_types", "public_restrictions"} {
+		if string(body[field]) != "[]" {
+			t.Errorf("%s = %s, want []", field, body[field])
+		}
+	}
+}
 
 func TestPublicModelInputValidation(t *testing.T) {
 	if err := validatePublicModelCreate(CreatePublicModelRequest{}); err == nil {
