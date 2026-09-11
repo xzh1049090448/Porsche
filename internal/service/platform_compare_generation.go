@@ -31,6 +31,14 @@ type platformCompareGenerationStore interface {
 	MarkModelFailedOwned(context.Context, int64, string, string, string, string, int64) (PlatformGenerationSnapshot, error)
 }
 
+type platformCompareEncoder interface {
+	Meta(string) []byte
+	Delta(string, int64, string) []byte
+	ModelDone(string, int64) []byte
+	ModelError(string, string, string) []byte
+	Err() error
+}
+
 type PlatformCompareGenerationInput struct {
 	Context      context.Context
 	User         *models.User
@@ -63,6 +71,7 @@ type platformCompareGenerationDeps struct {
 	loadReceipt      func(context.Context, *gorm.DB, int64, string) (PlatformGenerationReceiptSnapshot, error)
 	upstreamTimeout  time.Duration
 	newRunnerContext func(context.Context, time.Duration) (context.Context, context.CancelFunc)
+	newEncoder       func(string, []string) (platformCompareEncoder, error)
 }
 
 type PlatformCompareGenerationRunner struct {
@@ -93,6 +102,9 @@ func NewPlatformCompareGenerationRunner(
 		loadReceipt:      LoadPlatformGenerationReceipt,
 		upstreamTimeout:  upstreamTimeout,
 		newRunnerContext: context.WithTimeout,
+		newEncoder: func(generationID string, models []string) (platformCompareEncoder, error) {
+			return NewPlatformSSEV2Encoder(generationID, models)
+		},
 	}
 	if !validPlatformCompareGenerationDeps(deps) {
 		return nil, ErrPlatformCompareGenerationUnavailable
@@ -103,7 +115,7 @@ func NewPlatformCompareGenerationRunner(
 func validPlatformCompareGenerationDeps(deps platformCompareGenerationDeps) bool {
 	return deps.db != nil && deps.store != nil && deps.persistence != nil && deps.registry != nil &&
 		deps.upstream != nil && deps.rootContext != nil && deps.now != nil && deps.newGUID != nil &&
-		deps.loadConversation != nil && deps.loadReceipt != nil && deps.upstreamTimeout > 0 && deps.newRunnerContext != nil
+		deps.loadConversation != nil && deps.loadReceipt != nil && deps.upstreamTimeout > 0 && deps.newRunnerContext != nil && deps.newEncoder != nil
 }
 
 type platformCompareRun struct {
@@ -118,7 +130,7 @@ type platformCompareRun struct {
 	reservedConversationGUID *int64
 	leaseToken               string
 	payloads                 map[string][]byte
-	encoder                  *PlatformSSEV2Encoder
+	encoder                  platformCompareEncoder
 }
 
 type platformCompareValidatedInput struct {
@@ -296,14 +308,16 @@ func (r *PlatformCompareGenerationRunner) runModel(execution *platformCompareExe
 			callbackCause = ErrPlatformCompareGenerationUnavailable
 			return callbackCause
 		}
-		state.seq = nextSeq
-		_, _ = state.content.WriteString(delta)
 		frame := execution.entry.run.encoder.Delta(model, nextSeq, delta)
 		if frame == nil || execution.entry.run.encoder.Err() != nil {
+			execution.fatal = true
 			execution.mu.Unlock()
+			execution.entry.cancelRunner()
 			callbackCause = ErrPlatformCompareGenerationUnavailable
 			return callbackCause
 		}
+		state.seq = nextSeq
+		_, _ = state.content.WriteString(delta)
 		execution.entry.output.emit(frame)
 		execution.mu.Unlock()
 		return nil
@@ -327,11 +341,15 @@ func (r *PlatformCompareGenerationRunner) runModel(execution *platformCompareExe
 		execution.entry.cancelRunner()
 		return
 	}
-	execution.results[index] = platformCompareModelResult{model: model, content: state.content.String(), tokens: state.totalTokens, lastSeq: state.seq, state: PlatformGenerationStateCompleted, terminalSet: true}
 	frame := execution.entry.run.encoder.ModelDone(model, state.seq)
-	if frame != nil && execution.entry.run.encoder.Err() == nil {
-		execution.entry.output.emit(frame)
+	if frame == nil || execution.entry.run.encoder.Err() != nil {
+		execution.fatal = true
+		execution.mu.Unlock()
+		execution.entry.cancelRunner()
+		return
 	}
+	execution.results[index] = platformCompareModelResult{model: model, content: state.content.String(), tokens: state.totalTokens, lastSeq: state.seq, state: PlatformGenerationStateCompleted, terminalSet: true}
+	execution.entry.output.emit(frame)
 	execution.mu.Unlock()
 }
 
@@ -376,11 +394,15 @@ func (r *PlatformCompareGenerationRunner) failModel(execution *platformCompareEx
 		return
 	}
 	cancel()
-	execution.results[index] = platformCompareModelResult{model: model, state: PlatformGenerationStateFailed, errorCode: code, terminalSet: true}
 	frame := execution.entry.run.encoder.ModelError(model, code, execution.entry.run.requestID)
-	if frame != nil && execution.entry.run.encoder.Err() == nil {
-		execution.entry.output.emit(frame)
+	if frame == nil || execution.entry.run.encoder.Err() != nil {
+		execution.fatal = true
+		execution.mu.Unlock()
+		execution.entry.cancelRunner()
+		return
 	}
+	execution.results[index] = platformCompareModelResult{model: model, state: PlatformGenerationStateFailed, errorCode: code, terminalSet: true}
+	execution.entry.output.emit(frame)
 	execution.mu.Unlock()
 }
 
@@ -590,8 +612,8 @@ func (r *PlatformCompareGenerationRunner) prepareValidated(input platformCompare
 		}
 		payloads[model] = append([]byte(nil), payload...)
 	}
-	encoder, err := NewPlatformSSEV2Encoder(input.generationID, input.models)
-	if err != nil {
+	encoder, err := r.deps.newEncoder(input.generationID, input.models)
+	if err != nil || encoder == nil {
 		return platformCompareRun{}, ErrPlatformCompareGenerationInvalid
 	}
 	run := platformCompareRun{

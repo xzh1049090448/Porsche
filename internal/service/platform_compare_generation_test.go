@@ -193,6 +193,9 @@ func platformCompareTestRunner(now time.Time) (*PlatformCompareGenerationRunner,
 			ctx, cancel := context.WithTimeout(parent, timeout)
 			return ctx, func() { effects.runnerCancel++; cancel() }
 		},
+		newEncoder: func(generationID string, models []string) (platformCompareEncoder, error) {
+			return NewPlatformSSEV2Encoder(generationID, models)
+		},
 	}
 	return &PlatformCompareGenerationRunner{deps: deps}, effects
 }
@@ -305,6 +308,127 @@ func TestPlatformCompareGenerationPreflightRejectsBeforeClaim(t *testing.T) {
 				t.Fatalf("Run result=%+v error=%v, want=%v", result, err, test.want)
 			}
 			requireNoPlatformComparePostPrepareEffects(t, effects)
+		})
+	}
+}
+
+func testPlatformCompareEncoderFailures(t *testing.T) {
+	for _, encoderFailure := range []string{"delta", "done", "failed"} {
+		t.Run(encoderFailure+" encoder failure cancels coordinator", func(t *testing.T) {
+			models := []string{"model-a", "model-b"}
+			ready, release, abortSibling := make(chan string, 2), make(chan struct{}), make(chan struct{})
+			scripts := map[string]func(context.Context, func(whitelabel.ChatCompletionChunk) error) *whitelabel.Error{
+				"model-a": func(ctx context.Context, emit func(whitelabel.ChatCompletionChunk) error) *whitelabel.Error {
+					ready <- "model-a"
+					select {
+					case <-release:
+					case <-ctx.Done():
+						return whitelabel.ErrUpstreamUnavailable("cancelled")
+					}
+					if encoderFailure == "failed" {
+						_ = emit(platformCompareDeltaChunk("wrong-model", "bad", true))
+						return whitelabel.ErrUpstreamUnavailable("malformed")
+					}
+					return platformCompareSuccessfulScript("model-a", "answer")(ctx, emit)
+				},
+				"model-b": func(ctx context.Context, _ func(whitelabel.ChatCompletionChunk) error) *whitelabel.Error {
+					ready <- "model-b"
+					select {
+					case <-release:
+					case <-ctx.Done():
+						return whitelabel.ErrUpstreamUnavailable("cancelled")
+					}
+					select {
+					case <-ctx.Done():
+						return whitelabel.ErrUpstreamUnavailable("cancelled")
+					case <-abortSibling:
+						return whitelabel.ErrUpstreamUnavailable("test abort")
+					}
+				},
+			}
+			runner, failingStore, upstream, failingWriter := platformCompareStreamFixture(t, models, scripts)
+			registry := runner.deps.registry.(*platformCompareTestRegistry)
+			snapshot := clonePlatformGeneration(failingStore.claim.Snapshot)
+			snapshot.ModelStates["model-b"] = PlatformGenerationModel{State: PlatformGenerationStateCompleted, Seq: 1}
+			switch encoderFailure {
+			case "delta":
+				snapshot.ModelStates["model-a"] = PlatformGenerationModel{State: PlatformGenerationStateRunning, Seq: 1}
+			case "done":
+				snapshot.ModelStates["model-a"] = PlatformGenerationModel{State: PlatformGenerationStateCompleted, Seq: 1}
+			case "failed":
+				snapshot.ModelStates["model-a"] = PlatformGenerationModel{State: PlatformGenerationStateFailed, ErrorCode: "gateway_upstream_error"}
+			}
+			failingStore.settleSnapshot = snapshot
+			runner.deps.newEncoder = func(generationID string, orderedModels []string) (platformCompareEncoder, error) {
+				inner, err := NewPlatformSSEV2Encoder(generationID, orderedModels)
+				if err != nil {
+					return nil, err
+				}
+				return &platformCompareFailingEncoder{inner: inner, failure: encoderFailure}, nil
+			}
+			cancelCalled := make(chan struct{})
+			var cancelCalls atomic.Int32
+			runner.deps.newRunnerContext = func(parent context.Context, _ time.Duration) (context.Context, context.CancelFunc) {
+				ctx, cancel := context.WithCancel(parent)
+				return ctx, func() {
+					if cancelCalls.Add(1) == 1 {
+						close(cancelCalled)
+					}
+					cancel()
+				}
+			}
+			input := platformCompareTestInput()
+			input.Models, input.Write = models, failingWriter.Write
+			type runOutcome struct {
+				result PlatformCompareGenerationRunResult
+				err    error
+			}
+			done := make(chan runOutcome, 1)
+			go func() { result, err := runner.Run(input); done <- runOutcome{result: result, err: err} }()
+			<-ready
+			<-ready
+			upstream.mu.Lock()
+			targetBody := upstream.bodies["model-a"]
+			upstream.mu.Unlock()
+			if targetBody == nil {
+				t.Fatal("target response body missing")
+			}
+			close(release)
+			<-targetBody.closed
+			if cancelCalls.Load() == 0 {
+				close(abortSibling)
+			}
+			outcome := <-done
+			if !outcome.result.Started || !errors.Is(outcome.err, ErrPlatformCompareGenerationUnavailable) || cancelCalls.Load() != 1 {
+				t.Fatalf("outcome=%+v cancelCalls=%d", outcome, cancelCalls.Load())
+			}
+			frames := platformCompareDecodeFrames(t, failingWriter.frames)
+			for _, frame := range frames {
+				if (encoderFailure == "delta" && frame.event == "delta") || (encoderFailure == "done" && frame.event == "model_done") || (encoderFailure == "failed" && frame.event == "model_error") {
+					t.Fatalf("invented %s frame after encoder failure: %+v", encoderFailure, frame)
+				}
+			}
+			if encoderFailure == "delta" && !reflect.DeepEqual(failingStore.records["model-a"], []int64{1}) {
+				t.Fatalf("delta mutation=%v", failingStore.records)
+			}
+			if encoderFailure == "done" && failingStore.done["model-a"] != 1 {
+				t.Fatalf("done mutation=%v", failingStore.done)
+			}
+			if encoderFailure == "failed" && failingStore.failed["model-a"] != "gateway_upstream_error" {
+				t.Fatalf("failed mutation=%v", failingStore.failed)
+			}
+			if failingStore.globalFails != 1 || failingStore.gets != 1 || failingStore.globalFailLease != failingStore.claim.LeaseToken || failingStore.globalFailedSnapshot.ModelStates["model-b"].State != PlatformGenerationStateCompleted || registry.effects.unregister != 1 {
+				t.Fatalf("cleanup store=%+v registry=%+v", failingStore, registry.effects)
+			}
+			targetAfterSettlement := failingStore.globalFailedSnapshot.ModelStates["model-a"]
+			if (encoderFailure == "delta" && (targetAfterSettlement.State != PlatformGenerationStateFailed || targetAfterSettlement.Seq != 1)) || (encoderFailure == "done" && targetAfterSettlement.State != PlatformGenerationStateCompleted) || (encoderFailure == "failed" && (targetAfterSettlement.State != PlatformGenerationStateFailed || targetAfterSettlement.ErrorCode != "gateway_upstream_error")) {
+				t.Fatalf("target state not preserved after %s encoder failure: %+v", encoderFailure, targetAfterSettlement)
+			}
+			for model, body := range upstream.bodies {
+				if body.closes.Load() != 1 {
+					t.Fatalf("model=%s closes=%d", model, body.closes.Load())
+				}
+			}
 		})
 	}
 }
@@ -872,11 +996,16 @@ func (s *platformCompareStreamStore) MarkModelFailedOwned(_ context.Context, _ i
 	return PlatformGenerationSnapshot{}, nil
 }
 
-type platformCompareStreamBody struct{ closes atomic.Int32 }
+type platformCompareStreamBody struct {
+	closes atomic.Int32
+	closed chan struct{}
+}
 
 func (*platformCompareStreamBody) Read([]byte) (int, error) { return 0, io.EOF }
 func (b *platformCompareStreamBody) Close() error {
-	b.closes.Add(1)
+	if b.closes.Add(1) == 1 && b.closed != nil {
+		close(b.closed)
+	}
 	return nil
 }
 
@@ -896,7 +1025,7 @@ func (u *platformCompareStreamUpstream) Chat(_ context.Context, payload []byte) 
 	}
 	u.mu.Lock()
 	u.calls = append(u.calls, request.Model)
-	body := &platformCompareStreamBody{}
+	body := &platformCompareStreamBody{closed: make(chan struct{})}
 	u.bodies[request.Model] = body
 	u.mu.Unlock()
 	return &http.Response{StatusCode: http.StatusOK, Body: body}, nil
@@ -939,6 +1068,43 @@ func (w *platformCompareFrameWriter) Write(frame []byte) error {
 type platformCompareDecodedFrame struct {
 	event string
 	data  map[string]interface{}
+}
+
+type platformCompareFailingEncoder struct {
+	inner   *PlatformSSEV2Encoder
+	failure string
+	err     error
+}
+
+func (e *platformCompareFailingEncoder) Meta(conversationGUID string) []byte {
+	return e.inner.Meta(conversationGUID)
+}
+func (e *platformCompareFailingEncoder) Delta(model string, seq int64, delta string) []byte {
+	if e.failure == "delta" {
+		e.err = errors.New("injected delta encoder failure")
+		return nil
+	}
+	return e.inner.Delta(model, seq, delta)
+}
+func (e *platformCompareFailingEncoder) ModelDone(model string, seq int64) []byte {
+	if e.failure == "done" {
+		e.err = errors.New("injected done encoder failure")
+		return nil
+	}
+	return e.inner.ModelDone(model, seq)
+}
+func (e *platformCompareFailingEncoder) ModelError(model, code, requestID string) []byte {
+	if e.failure == "failed" {
+		e.err = errors.New("injected failed encoder failure")
+		return nil
+	}
+	return e.inner.ModelError(model, code, requestID)
+}
+func (e *platformCompareFailingEncoder) Err() error {
+	if e.err != nil {
+		return e.err
+	}
+	return e.inner.Err()
 }
 
 func platformCompareDecodeFrames(t *testing.T, frames [][]byte) []platformCompareDecodedFrame {
@@ -1278,6 +1444,9 @@ func TestPlatformCompareGenerationSerializesMutationStateEncoderAndFrames(t *tes
 			}
 		})
 	}
+}
+func TestPlatformCompareGenerationSerializesEncoderFailures(t *testing.T) {
+	testPlatformCompareEncoderFailures(t)
 }
 func TestPlatformCompareGenerationNeverCallsHTTPWriterConcurrently(t *testing.T) {
 	_, writer, _, result := platformCompareConcurrentFixture(t, false)
