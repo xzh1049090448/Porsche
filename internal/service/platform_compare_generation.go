@@ -339,7 +339,15 @@ func (r *PlatformCompareGenerationRunner) runModels(entry *platformCompareOwnedR
 
 func (r *PlatformCompareGenerationRunner) renewCompareLease(execution *platformCompareExecution, stop <-chan struct{}) {
 	timer := r.deps.newTimer(10 * time.Second)
-	if timer == nil || timer.Chan() == nil {
+	if timer == nil {
+		execution.mu.Lock()
+		execution.fatal = true
+		execution.mu.Unlock()
+		execution.entry.cancelRunner()
+		return
+	}
+	if timer.Chan() == nil {
+		timer.Stop()
 		execution.mu.Lock()
 		execution.fatal = true
 		execution.mu.Unlock()

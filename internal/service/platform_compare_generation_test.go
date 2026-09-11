@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"reflect"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -932,7 +933,13 @@ type platformCompareStreamStore struct {
 	doneObservedOnce     sync.Once
 	failed               map[string]string
 	recordErrModel       string
+	recordEntered        chan struct{}
+	recordEnteredOnce    sync.Once
+	recordRelease        <-chan struct{}
 	doneErrModel         string
+	doneMutationEntered  chan struct{}
+	doneMutationOnce     sync.Once
+	doneMutationRelease  <-chan struct{}
 	failedErrModel       string
 	gets                 int
 	globalFails          int
@@ -948,6 +955,8 @@ type platformCompareStreamStore struct {
 	renewNowMillis       int64
 	renewErr             error
 	renewed              chan struct{}
+	renewEntered         chan struct{}
+	renewEnteredOnce     sync.Once
 	ackCalls             int
 	acknowledgedSnapshot PlatformGenerationSnapshot
 	mutationActive       atomic.Int32
@@ -995,22 +1004,40 @@ func (s *platformCompareStreamStore) mutate(fn func()) {
 		}
 	}
 	defer s.mutationActive.Add(-1)
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	fn()
 }
 func (s *platformCompareStreamStore) RecordDeltaOwned(_ context.Context, _ int64, _, _, model string, seq, _ int64) (PlatformGenerationSnapshot, error) {
 	if model == s.recordErrModel {
 		return PlatformGenerationSnapshot{}, ErrPlatformGenerationUnavailable
 	}
-	s.mutate(func() { s.records[model] = append(s.records[model], seq) })
+	s.mutate(func() {
+		if s.recordEntered != nil {
+			s.recordEnteredOnce.Do(func() { close(s.recordEntered) })
+		}
+		if s.recordRelease != nil {
+			<-s.recordRelease
+		}
+		s.mu.Lock()
+		s.records[model] = append(s.records[model], seq)
+		s.mu.Unlock()
+	})
 	return PlatformGenerationSnapshot{}, nil
 }
 func (s *platformCompareStreamStore) MarkModelDoneOwned(_ context.Context, _ int64, _, _, model string, lastSeq, _ int64) (PlatformGenerationSnapshot, error) {
 	if model == s.doneErrModel {
 		return PlatformGenerationSnapshot{}, ErrPlatformGenerationUnavailable
 	}
-	s.mutate(func() { s.done[model] = lastSeq })
+	s.mutate(func() {
+		if s.doneMutationEntered != nil {
+			s.doneMutationOnce.Do(func() { close(s.doneMutationEntered) })
+		}
+		if s.doneMutationRelease != nil {
+			<-s.doneMutationRelease
+		}
+		s.mu.Lock()
+		s.done[model] = lastSeq
+		s.mu.Unlock()
+	})
 	if s.doneObserved != nil {
 		s.doneObservedOnce.Do(func() { close(s.doneObserved) })
 	}
@@ -1020,24 +1047,33 @@ func (s *platformCompareStreamStore) MarkModelFailedOwned(_ context.Context, _ i
 	if model == s.failedErrModel {
 		return PlatformGenerationSnapshot{}, ErrPlatformGenerationUnavailable
 	}
-	s.mutate(func() { s.failed[model] = code })
+	s.mutate(func() {
+		s.mu.Lock()
+		s.failed[model] = code
+		s.mu.Unlock()
+	})
 	return PlatformGenerationSnapshot{}, nil
 }
 func (s *platformCompareStreamStore) RenewLease(_ context.Context, userID int64, generationID, lease string, now int64) (PlatformGenerationSnapshot, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.renewCalls++
-	s.renewUserID, s.renewGeneration, s.renewLease, s.renewNowMillis = userID, generationID, lease, now
-	if s.renewed != nil && s.renewCalls == 1 {
-		close(s.renewed)
-	}
-	if s.renewErr != nil {
-		return PlatformGenerationSnapshot{}, s.renewErr
-	}
-	snapshot := clonePlatformGeneration(s.claim.Snapshot)
-	snapshot.UpdatedAtMillis = now
-	snapshot.LeaseUntilMillis = now + platformGenerationLeaseDuration.Milliseconds()
-	return snapshot, nil
+	var snapshot PlatformGenerationSnapshot
+	var renewErr error
+	s.mutate(func() {
+		if s.renewEntered != nil {
+			s.renewEnteredOnce.Do(func() { close(s.renewEntered) })
+		}
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		s.renewCalls++
+		s.renewUserID, s.renewGeneration, s.renewLease, s.renewNowMillis = userID, generationID, lease, now
+		if s.renewed != nil && s.renewCalls == 1 {
+			close(s.renewed)
+		}
+		renewErr = s.renewErr
+		snapshot = clonePlatformGeneration(s.claim.Snapshot)
+		snapshot.UpdatedAtMillis = now
+		snapshot.LeaseUntilMillis = now + platformGenerationLeaseDuration.Milliseconds()
+	})
+	return snapshot, renewErr
 }
 func (s *platformCompareStreamStore) AcknowledgeCancelledOwned(_ context.Context, _ int64, _ string, _ string, now int64) (PlatformGenerationSnapshot, error) {
 	s.mu.Lock()
@@ -1641,6 +1677,192 @@ func TestPlatformCompareGenerationRenewsOneLeaseEveryTenSeconds(t *testing.T) {
 	<-done
 	if store.renewCalls != 1 || store.renewUserID != 17 || store.renewGeneration != platformCompareTestGenerationID || store.renewLease != store.claim.LeaseToken || store.renewNowMillis != 10_000 || !timer.stopped.Load() || !second.stopped.Load() {
 		t.Fatalf("renewals=%d firstStopped=%v secondStopped=%v", store.renewCalls, timer.stopped.Load(), second.stopped.Load())
+	}
+}
+
+type platformCompareHandshakeTimer struct {
+	ch    chan time.Time
+	stops atomic.Int32
+}
+
+func (t *platformCompareHandshakeTimer) Chan() <-chan time.Time { return t.ch }
+func (t *platformCompareHandshakeTimer) Stop()                  { t.stops.Add(1) }
+
+type platformCompareHandshakeTimerFactory struct {
+	created chan *platformCompareHandshakeTimer
+}
+
+func (f *platformCompareHandshakeTimerFactory) New(duration time.Duration) platformSingleTimer {
+	if duration != 10*time.Second {
+		panic("unexpected compare renewal duration")
+	}
+	timer := &platformCompareHandshakeTimer{ch: make(chan time.Time)}
+	f.created <- timer
+	return timer
+}
+
+type platformCompareTimerSequence struct {
+	mu     sync.Mutex
+	timers []platformSingleTimer
+	calls  chan int
+	next   int
+}
+
+func (f *platformCompareTimerSequence) New(duration time.Duration) platformSingleTimer {
+	if duration != 10*time.Second {
+		panic("unexpected compare renewal duration")
+	}
+	f.mu.Lock()
+	index := f.next
+	f.next++
+	if index >= len(f.timers) {
+		index = len(f.timers) - 1
+	}
+	timer := f.timers[index]
+	f.mu.Unlock()
+	f.calls <- index
+	return timer
+}
+
+func TestPlatformCompareGenerationRenewsSerializedWithModelMutations(t *testing.T) {
+	for _, mutation := range []string{"delta", "done"} {
+		t.Run(mutation, func(t *testing.T) {
+			finishSibling := make(chan struct{})
+			siblingStarted := make(chan struct{})
+			scripts := map[string]func(context.Context, func(whitelabel.ChatCompletionChunk) error) *whitelabel.Error{
+				"model-a": platformCompareSuccessfulScript("model-a", "serialized"),
+				"model-b": func(ctx context.Context, emit func(whitelabel.ChatCompletionChunk) error) *whitelabel.Error {
+					close(siblingStarted)
+					select {
+					case <-finishSibling:
+					case <-ctx.Done():
+						return whitelabel.ErrUpstreamUnavailable("cancelled")
+					}
+					return platformCompareSuccessfulScript("model-b", "sibling")(ctx, emit)
+				},
+			}
+			runner, store, _, writer := platformCompareStreamFixture(t, []string{"model-a", "model-b"}, scripts)
+			mutationEntered, releaseMutation := make(chan struct{}), make(chan struct{})
+			if mutation == "delta" {
+				store.recordEntered, store.recordRelease = mutationEntered, releaseMutation
+			} else {
+				store.doneMutationEntered, store.doneMutationRelease = mutationEntered, releaseMutation
+			}
+			store.renewEntered = make(chan struct{})
+			timers := &platformCompareHandshakeTimerFactory{created: make(chan *platformCompareHandshakeTimer, 2)}
+			runner.deps.newTimer = timers.New
+			input := platformCompareTestInput()
+			input.Models, input.Write = []string{"model-a", "model-b"}, writer.Write
+			finished := make(chan struct{})
+			go func() { _, _ = runner.Run(input); close(finished) }()
+			<-siblingStarted
+			<-mutationEntered
+			timer := <-timers.created
+			tickConsumed := make(chan struct{})
+			go func() {
+				timer.ch <- time.UnixMilli(20_000)
+				close(tickConsumed)
+			}()
+			<-tickConsumed
+			runtime.Gosched()
+			select {
+			case <-store.renewEntered:
+				t.Fatal("renewal entered while model mutation held the shared execution lock")
+			default:
+			}
+			close(releaseMutation)
+			<-store.renewEntered
+			second := <-timers.created
+			close(finishSibling)
+			<-finished
+			if store.mutationMax.Load() != 1 || store.renewCalls != 1 || timer.stops.Load() != 1 || second.stops.Load() != 1 {
+				t.Fatalf("mutation=%s max=%d renew=%d stops=%d/%d", mutation, store.mutationMax.Load(), store.renewCalls, timer.stops.Load(), second.stops.Load())
+			}
+		})
+	}
+}
+
+func TestPlatformCompareGenerationRenewalFailureRejectsInvalidTimers(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		replacement bool
+		secondNil   bool
+	}{
+		{name: "initial nil"},
+		{name: "initial nil channel", secondNil: true},
+		{name: "replacement nil", replacement: true},
+		{name: "replacement nil channel", replacement: true, secondNil: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			started := make(chan string, 2)
+			scripts := map[string]func(context.Context, func(whitelabel.ChatCompletionChunk) error) *whitelabel.Error{}
+			for _, model := range []string{"model-a", "model-b"} {
+				model := model
+				scripts[model] = func(ctx context.Context, _ func(whitelabel.ChatCompletionChunk) error) *whitelabel.Error {
+					started <- model
+					<-ctx.Done()
+					return whitelabel.ErrUpstreamUnavailable("cancelled")
+				}
+			}
+			runner, store, upstream, writer := platformCompareStreamFixture(t, []string{"model-a", "model-b"}, scripts)
+			var first, invalid *platformCompareHandshakeTimer
+			var timers []platformSingleTimer
+			if test.replacement {
+				first = &platformCompareHandshakeTimer{ch: make(chan time.Time)}
+				timers = append(timers, first)
+			}
+			if test.secondNil {
+				invalid = &platformCompareHandshakeTimer{}
+				timers = append(timers, invalid)
+			} else {
+				timers = append(timers, nil)
+			}
+			factory := &platformCompareTimerSequence{timers: timers, calls: make(chan int, len(timers))}
+			runner.deps.newTimer = factory.New
+			input := platformCompareTestInput()
+			input.Models, input.Write = []string{"model-a", "model-b"}, writer.Write
+			finished := make(chan struct{})
+			go func() { _, _ = runner.Run(input); close(finished) }()
+			<-started
+			<-started
+			if call := <-factory.calls; call != 0 {
+				t.Fatalf("first timer call=%d", call)
+			}
+			if test.replacement {
+				tickConsumed := make(chan struct{})
+				go func() {
+					first.ch <- time.UnixMilli(20_000)
+					close(tickConsumed)
+				}()
+				<-tickConsumed
+				if call := <-factory.calls; call != 1 {
+					t.Fatalf("replacement timer call=%d", call)
+				}
+			}
+			<-finished
+			if first != nil && first.stops.Load() != 1 {
+				t.Fatalf("prior valid timer stops=%d", first.stops.Load())
+			}
+			if invalid != nil && invalid.stops.Load() != 1 {
+				t.Fatalf("invalid timer stops=%d", invalid.stops.Load())
+			}
+			if store.renewCalls != map[bool]int{false: 0, true: 1}[test.replacement] || store.globalFails != 1 {
+				t.Fatalf("renew=%d global failures=%d", store.renewCalls, store.globalFails)
+			}
+			for model, body := range upstream.bodies {
+				if body.closes.Load() != 1 {
+					t.Fatalf("model=%s closes=%d", model, body.closes.Load())
+				}
+			}
+			effects := runner.deps.registry.(*platformCompareTestRegistry).effects
+			if effects.admission != 1 || effects.admissionRelease != 1 || effects.register != 1 || effects.unregister != 1 || effects.runnerCancel != 1 || effects.persist != 0 || effects.receipt != 0 {
+				t.Fatalf("cleanup effects=%+v", effects)
+			}
+			frames := platformCompareDecodeFrames(t, writer.frames)
+			if len(frames) != 2 || frames[0].event != "meta" || frames[1].event != "error" || frames[1].data["code"] != "internal_error" {
+				t.Fatalf("invalid timer frames=%+v", frames)
+			}
+		})
 	}
 }
 
