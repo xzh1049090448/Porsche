@@ -25,6 +25,25 @@ func TestUpDoesNotVerifyExtendedAdminOperationShapeAtBaseMigration(t *testing.T)
 	}
 }
 
+func TestVerifyUsesOnlyCurrentAdminOperationSchemaContract(t *testing.T) {
+	source, err := os.ReadFile(filepath.Join("runner.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := strings.Index(string(source), "func Verify(ctx")
+	end := strings.Index(string(source), "func VerifyApplied(")
+	if start < 0 || end <= start {
+		t.Fatal("could not locate Verify implementation")
+	}
+	body := string(source)[start:end]
+	if strings.Contains(body, "VerifyAdminOperationSafetySchema") {
+		t.Fatal("final verification must not apply the obsolete 0012 contract after 0013 is active")
+	}
+	if !strings.Contains(body, "VerifyAdminOperationRolePermissionResultsSchema") {
+		t.Fatal("final verification must enforce the current 0013 admin operation contract")
+	}
+}
+
 func TestUpRerunUsesActiveAdminOperationSchemaVersionAndRejectsDrift(t *testing.T) {
 	runUp := func(gdb *gorm.DB) error {
 		nextGUID := int64(9_130_000_000_000_000)
