@@ -112,6 +112,21 @@ type platformCompareRun struct {
 	encoder                  *PlatformSSEV2Encoder
 }
 
+type platformCompareValidatedInput struct {
+	ctx              context.Context
+	write            func([]byte) error
+	user             models.User
+	generationID     string
+	requestID        string
+	models           []string
+	params           ChatParams
+	trimmedMessages  []map[string]interface{}
+	userMessage      string
+	upstreamBody     []byte
+	conversationGUID *int64
+	claimAt          int64
+}
+
 type platformCompareOutput struct {
 	write    func([]byte) error
 	detached bool
@@ -155,18 +170,23 @@ func (r *PlatformCompareGenerationRunner) Run(input PlatformCompareGenerationInp
 	if r == nil || !validPlatformCompareGenerationDeps(r.deps) {
 		return PlatformCompareGenerationRunResult{}, ErrPlatformCompareGenerationUnavailable
 	}
-	if _, _, err := r.prepare(input); err != nil {
+	validated, err := r.validateAndCopy(input)
+	if err != nil {
 		return PlatformCompareGenerationRunResult{}, err
 	}
-	return PlatformCompareGenerationRunResult{}, ErrPlatformCompareGenerationUnavailable
+	entry, result, err := r.enterValidated(validated)
+	if entry != nil {
+		entry.Close()
+		if err == nil {
+			err = ErrPlatformCompareGenerationUnavailable
+		}
+	}
+	return result, err
 }
 
-func (r *PlatformCompareGenerationRunner) enter(input PlatformCompareGenerationInput) (*platformCompareOwnedRun, PlatformCompareGenerationRunResult, error) {
+func (r *PlatformCompareGenerationRunner) enterValidated(input platformCompareValidatedInput) (*platformCompareOwnedRun, PlatformCompareGenerationRunResult, error) {
 	if r == nil || !validPlatformCompareGenerationDeps(r.deps) {
 		return nil, PlatformCompareGenerationRunResult{}, ErrPlatformCompareGenerationUnavailable
-	}
-	if input.Context == nil {
-		return nil, PlatformCompareGenerationRunResult{}, ErrPlatformCompareGenerationInvalid
 	}
 	releaseAdmission, err := r.deps.registry.BeginAdmission()
 	if err != nil || releaseAdmission == nil {
@@ -176,22 +196,22 @@ func (r *PlatformCompareGenerationRunner) enter(input PlatformCompareGenerationI
 	release := func() { releaseOnce.Do(releaseAdmission) }
 	defer release()
 
-	admissionCtx, cancelAdmission := context.WithCancel(input.Context)
+	admissionCtx, cancelAdmission := context.WithCancel(input.ctx)
 	stopRootCancellation := context.AfterFunc(r.deps.rootContext, cancelAdmission)
 	if r.deps.rootContext.Err() != nil {
 		cancelAdmission()
 	}
 	defer stopRootCancellation()
 	defer cancelAdmission()
-	input.Context = admissionCtx
+	input.ctx = admissionCtx
 
-	run, claimAt, err := r.prepare(input)
+	run, err := r.prepareValidated(input)
 	if err != nil {
 		return nil, PlatformCompareGenerationRunResult{}, err
 	}
-	claim, claimErr := r.deps.store.Claim(input.Context, PlatformGenerationClaimInput{
+	claim, claimErr := r.deps.store.Claim(input.ctx, PlatformGenerationClaimInput{
 		UserID: run.userID, GenerationID: run.generationID, Mode: PlatformGenerationModeCompare,
-		Models: append([]string(nil), run.models...), NowMillis: claimAt,
+		Models: append([]string(nil), run.models...), NowMillis: input.claimAt,
 	})
 	if claim.Duplicate {
 		if (claimErr != nil && !errors.Is(claimErr, ErrPlatformGenerationConflict)) || !validPlatformCompareDuplicate(claim.Snapshot, run) {
@@ -200,7 +220,7 @@ func (r *PlatformCompareGenerationRunner) enter(input PlatformCompareGenerationI
 		duplicate := clonePlatformGeneration(claim.Snapshot)
 		return nil, PlatformCompareGenerationRunResult{Duplicate: &duplicate}, nil
 	}
-	if claimErr != nil || !validPlatformCompareClaim(claim, run, claimAt) {
+	if claimErr != nil || !validPlatformCompareClaim(claim, run, input.claimAt) {
 		return nil, PlatformCompareGenerationRunResult{}, ErrPlatformCompareGenerationUnavailable
 	}
 	run.leaseToken = claim.LeaseToken
@@ -218,7 +238,7 @@ func (r *PlatformCompareGenerationRunner) enter(input PlatformCompareGenerationI
 
 	entry := &platformCompareOwnedRun{
 		runner: r, run: run, ctx: runnerCtx, cancel: cancelRunner, registrationToken: registrationToken,
-		output: platformCompareOutput{write: input.Write},
+		output: platformCompareOutput{write: input.write},
 	}
 	meta := run.encoder.Meta(strconv.FormatInt(run.conversationGUID, 10))
 	if meta == nil || run.encoder.Err() != nil {
@@ -275,36 +295,45 @@ func validPlatformCompareSnapshotIdentity(snapshot PlatformGenerationSnapshot, r
 }
 
 func (r *PlatformCompareGenerationRunner) prepare(input PlatformCompareGenerationInput) (platformCompareRun, int64, error) {
+	validated, err := r.validateAndCopy(input)
+	if err != nil {
+		return platformCompareRun{}, 0, err
+	}
+	run, err := r.prepareValidated(validated)
+	return run, validated.claimAt, err
+}
+
+func (r *PlatformCompareGenerationRunner) validateAndCopy(input PlatformCompareGenerationInput) (platformCompareValidatedInput, error) {
 	if r == nil || !validPlatformCompareGenerationDeps(r.deps) {
-		return platformCompareRun{}, 0, ErrPlatformCompareGenerationUnavailable
+		return platformCompareValidatedInput{}, ErrPlatformCompareGenerationUnavailable
 	}
 	if input.Context == nil || input.User == nil || input.Write == nil {
-		return platformCompareRun{}, 0, ErrPlatformCompareGenerationInvalid
+		return platformCompareValidatedInput{}, ErrPlatformCompareGenerationInvalid
 	}
 	if input.Context.Err() != nil {
-		return platformCompareRun{}, 0, ErrPlatformCompareGenerationUnavailable
+		return platformCompareValidatedInput{}, ErrPlatformCompareGenerationUnavailable
 	}
 	if !platformSSEV2CanonicalUUID(input.GenerationID) || len(input.Models) < 2 || len(input.Models) > platformSSEV2MaxModels {
-		return platformCompareRun{}, 0, ErrPlatformCompareGenerationInvalid
+		return platformCompareValidatedInput{}, ErrPlatformCompareGenerationInvalid
 	}
 	modelsCopy := append([]string(nil), input.Models...)
 	seenModels := make(map[string]struct{}, len(modelsCopy))
 	for _, model := range modelsCopy {
 		if !platformSSEV2ModelIdentifier(model) {
-			return platformCompareRun{}, 0, ErrPlatformCompareGenerationInvalid
+			return platformCompareValidatedInput{}, ErrPlatformCompareGenerationInvalid
 		}
 		if _, duplicate := seenModels[model]; duplicate {
-			return platformCompareRun{}, 0, ErrPlatformCompareGenerationInvalid
+			return platformCompareValidatedInput{}, ErrPlatformCompareGenerationInvalid
 		}
 		seenModels[model] = struct{}{}
 	}
 	params, err := clonePlatformSingleParams(input.Params)
 	if err != nil || params.MaxTokens == nil || *params.MaxTokens <= 0 || len(params.WhiteLabelBody) == 0 || len(params.WhiteLabelBody) > whitelabel.MaxRequestBodyBytes {
-		return platformCompareRun{}, 0, ErrPlatformCompareGenerationInvalid
+		return platformCompareValidatedInput{}, ErrPlatformCompareGenerationInvalid
 	}
 	claimAt := r.deps.now().UTC().UnixMilli()
 	if !platformSSEV2SafeInteger(claimAt) || claimAt <= 0 || claimAt > platformSSEV2MaxSafeInteger-platformGenerationLeaseDuration.Milliseconds() {
-		return platformCompareRun{}, 0, ErrPlatformCompareGenerationUnavailable
+		return platformCompareValidatedInput{}, ErrPlatformCompareGenerationUnavailable
 	}
 	user := models.User{
 		ID: input.User.ID, AuditFields: models.AuditFields{IsDeleted: input.User.IsDeleted}, Status: input.User.Status,
@@ -312,59 +341,78 @@ func (r *PlatformCompareGenerationRunner) prepare(input PlatformCompareGeneratio
 	}
 	user.DailyCallsResetAt = cloneInt64Pointer(input.User.DailyCallsResetAt)
 	if !platformCompareQuotaAvailable(&user, time.UnixMilli(claimAt).UTC(), len(modelsCopy)) {
-		return platformCompareRun{}, 0, ErrPlatformCompareGenerationQuota
+		return platformCompareValidatedInput{}, ErrPlatformCompareGenerationQuota
 	}
 	trimmed := trimPlatformSingleMessages(params.Messages, params.ContextWindow)
 	userMessage, ok := platformSingleFinalUserMessage(trimmed)
 	if !ok {
-		return platformCompareRun{}, 0, ErrPlatformCompareGenerationInvalid
+		return platformCompareValidatedInput{}, ErrPlatformCompareGenerationInvalid
 	}
 	upstreamBody, err := platformCompareUpstreamBody(params.WhiteLabelBody)
 	if err != nil || platformSingleExplicitUsageDisabled(upstreamBody) || whitelabel.ValidateRequest(upstreamBody, whitelabel.PlatformValidation) != nil {
-		return platformCompareRun{}, 0, ErrPlatformCompareGenerationInvalid
+		return platformCompareValidatedInput{}, ErrPlatformCompareGenerationInvalid
 	}
 	params.WhiteLabelBody = append([]byte(nil), upstreamBody...)
-	payloads := make(map[string][]byte, len(modelsCopy))
-	for _, model := range modelsCopy {
-		payload, payloadErr := platformSingleStreamingPayload(upstreamBody, model, trimmed, params.Temperature, params.MaxTokens)
-		if payloadErr != nil || whitelabel.ValidateRequest(payload, whitelabel.PlatformValidation) != nil {
-			return platformCompareRun{}, 0, ErrPlatformCompareGenerationInvalid
-		}
-		payloads[model] = append([]byte(nil), payload...)
-	}
-	encoder, err := NewPlatformSSEV2Encoder(input.GenerationID, modelsCopy)
-	if err != nil {
-		return platformCompareRun{}, 0, ErrPlatformCompareGenerationInvalid
-	}
-	run := platformCompareRun{
-		userID: input.User.ID, generationID: input.GenerationID, requestID: input.RequestID,
-		models: modelsCopy, params: params, userMessage: userMessage, payloads: payloads, encoder: encoder,
+	validated := platformCompareValidatedInput{
+		ctx: input.Context, write: input.Write, user: user, generationID: input.GenerationID, requestID: input.RequestID,
+		models: modelsCopy, params: params, trimmedMessages: trimmed, userMessage: userMessage,
+		upstreamBody: append([]byte(nil), upstreamBody...), claimAt: claimAt,
 	}
 	if params.ConversationGUID != nil {
 		guid, parseErr := parseConversationGUID(*params.ConversationGUID)
 		if parseErr != nil {
-			return platformCompareRun{}, 0, ErrPlatformCompareGenerationInvalid
+			return platformCompareValidatedInput{}, ErrPlatformCompareGenerationInvalid
 		}
-		if loadErr := r.deps.loadConversation(input.Context, r.deps.db, user.ID, guid); loadErr != nil {
+		validated.conversationGUID = &guid
+	}
+	if input.Context.Err() != nil {
+		return platformCompareValidatedInput{}, ErrPlatformCompareGenerationUnavailable
+	}
+	return validated, nil
+}
+
+func (r *PlatformCompareGenerationRunner) prepareValidated(input platformCompareValidatedInput) (platformCompareRun, error) {
+	if input.ctx.Err() != nil {
+		return platformCompareRun{}, ErrPlatformCompareGenerationUnavailable
+	}
+	payloads := make(map[string][]byte, len(input.models))
+	for _, model := range input.models {
+		payload, err := platformSingleStreamingPayload(input.upstreamBody, model, input.trimmedMessages, input.params.Temperature, input.params.MaxTokens)
+		if err != nil || whitelabel.ValidateRequest(payload, whitelabel.PlatformValidation) != nil {
+			return platformCompareRun{}, ErrPlatformCompareGenerationInvalid
+		}
+		payloads[model] = append([]byte(nil), payload...)
+	}
+	encoder, err := NewPlatformSSEV2Encoder(input.generationID, input.models)
+	if err != nil {
+		return platformCompareRun{}, ErrPlatformCompareGenerationInvalid
+	}
+	run := platformCompareRun{
+		userID: input.user.ID, generationID: input.generationID, requestID: input.requestID,
+		models: input.models, params: input.params, userMessage: input.userMessage, payloads: payloads, encoder: encoder,
+	}
+	if input.conversationGUID != nil {
+		guid := *input.conversationGUID
+		if loadErr := r.deps.loadConversation(input.ctx, r.deps.db, input.user.ID, guid); loadErr != nil {
 			if errors.Is(loadErr, gorm.ErrRecordNotFound) {
-				return platformCompareRun{}, 0, ErrPlatformCompareGenerationInvalid
+				return platformCompareRun{}, ErrPlatformCompareGenerationInvalid
 			}
-			return platformCompareRun{}, 0, ErrPlatformCompareGenerationUnavailable
+			return platformCompareRun{}, ErrPlatformCompareGenerationUnavailable
 		}
 		run.conversationGUID = guid
 		run.existingConversationGUID = &guid
 	} else {
 		guid := r.deps.newGUID()
 		if guid <= 0 {
-			return platformCompareRun{}, 0, ErrPlatformCompareGenerationUnavailable
+			return platformCompareRun{}, ErrPlatformCompareGenerationUnavailable
 		}
 		run.conversationGUID = guid
 		run.reservedConversationGUID = &guid
 	}
-	if input.Context.Err() != nil {
-		return platformCompareRun{}, 0, ErrPlatformCompareGenerationUnavailable
+	if input.ctx.Err() != nil {
+		return platformCompareRun{}, ErrPlatformCompareGenerationUnavailable
 	}
-	return run, claimAt, nil
+	return run, nil
 }
 
 func platformCompareUpstreamBody(validated []byte) ([]byte, error) {

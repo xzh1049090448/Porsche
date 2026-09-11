@@ -82,6 +82,7 @@ type platformCompareTestRegistry struct {
 	registeredUID   int64
 	registeredID    string
 	registered      context.CancelFunc
+	onRegister      func()
 	token           string
 	unregisterUID   int64
 	unregisterID    string
@@ -101,6 +102,9 @@ func (r *platformCompareTestRegistry) BeginAdmission() (func(), error) {
 func (r *platformCompareTestRegistry) Register(userID int64, generationID string, cancel context.CancelFunc) (string, error) {
 	r.effects.register++
 	r.registeredUID, r.registeredID, r.registered = userID, generationID, cancel
+	if r.onRegister != nil {
+		r.onRegister()
+	}
 	if r.registerErr != nil {
 		return "", r.registerErr
 	}
@@ -502,10 +506,18 @@ func TestPlatformCompareGenerationClaimsOrderedModelsOnce(t *testing.T) {
 		frame = append([]byte(nil), value...)
 		return errors.New("client left after meta")
 	}
+	registry.onBegin = func() {
+		input.Models[0] = "mutated-model"
+		input.Params.Messages[0]["nested"].(map[string]interface{})["items"].([]interface{})[0] = "mutated"
+		input.Params.Messages[1]["content"] = ""
+		input.Params.WhiteLabelBody[0] = '['
+		*input.Params.MaxTokens = -1
+		input.User.ID = 999
+	}
 
-	entry, result, err := runner.enter(input)
-	if err != nil || entry == nil || !result.Started || result.Duplicate != nil {
-		t.Fatalf("enter entry=%#v result=%+v error=%v", entry, result, err)
+	result, err := runner.Run(input)
+	if !errors.Is(err, ErrPlatformCompareGenerationUnavailable) || !result.Started || result.Duplicate != nil {
+		t.Fatalf("Run result=%+v error=%v", result, err)
 	}
 	if effects.claim != 1 || effects.admission != 1 || effects.admissionRelease != 1 || effects.guid != 1 || effects.register != 1 || effects.write != 1 {
 		t.Fatalf("entry effects=%+v", effects)
@@ -513,8 +525,8 @@ func TestPlatformCompareGenerationClaimsOrderedModelsOnce(t *testing.T) {
 	if store.claimInput.UserID != 17 || store.claimInput.GenerationID != platformCompareTestGenerationID || store.claimInput.Mode != PlatformGenerationModeCompare || !reflect.DeepEqual(store.claimInput.Models, []string{"model-b", "model-a"}) || store.claimInput.NowMillis != now.UnixMilli() {
 		t.Fatalf("claim input=%+v", store.claimInput)
 	}
-	if registry.registeredUID != 17 || registry.registeredID != platformCompareTestGenerationID || entry.run.reservedConversationGUID == nil || *entry.run.reservedConversationGUID != 8101 || entry.run.existingConversationGUID != nil || entry.run.leaseToken != store.claim.LeaseToken {
-		t.Fatalf("registration/run registry=%+v run=%+v", registry, entry.run)
+	if registry.registeredUID != 17 || registry.registeredID != platformCompareTestGenerationID {
+		t.Fatalf("registration registry=%+v", registry)
 	}
 	expectedEncoder, encoderErr := NewPlatformSSEV2Encoder(platformCompareTestGenerationID, []string{"model-b", "model-a"})
 	if encoderErr != nil || string(frame) != string(expectedEncoder.Meta(strconv.FormatInt(8101, 10))) {
@@ -524,8 +536,6 @@ func TestPlatformCompareGenerationClaimsOrderedModelsOnce(t *testing.T) {
 		t.Fatalf("unexpected post-entry work: %+v", effects)
 	}
 
-	entry.Close()
-	entry.Close()
 	if effects.unregister != 1 || effects.runnerCancel != 1 || effects.get != 1 || effects.fail != 1 || store.getUserID != 17 || store.getGeneration != platformCompareTestGenerationID || store.failUserID != 17 || store.failGeneration != platformCompareTestGenerationID || store.failLease != store.claim.LeaseToken || store.failCode != "internal_error" || store.failNowMillis != now.UnixMilli() || registry.unregisterUID != 17 || registry.unregisterID != platformCompareTestGenerationID || registry.unregisterToken != registry.token {
 		t.Fatalf("cleanup effects=%+v store=%+v", effects, store)
 	}
@@ -552,14 +562,14 @@ func TestPlatformCompareGenerationDuplicateHasNoPostClaimSideEffects(t *testing.
 				test.mutate(&claim.Snapshot)
 			}
 			store.claim, store.claimErr = claim, ErrPlatformGenerationConflict
-			entry, result, err := runner.enter(platformCompareTestInput())
+			result, err := runner.Run(platformCompareTestInput())
 			if test.wantError {
-				if entry != nil || !errors.Is(err, ErrPlatformCompareGenerationUnavailable) || result.Started || result.Duplicate != nil {
-					t.Fatalf("malformed duplicate entry=%#v result=%+v error=%v", entry, result, err)
+				if !errors.Is(err, ErrPlatformCompareGenerationUnavailable) || result.Started || result.Duplicate != nil {
+					t.Fatalf("malformed duplicate result=%+v error=%v", result, err)
 				}
 			} else {
-				if err != nil || entry != nil || result.Started || result.Duplicate == nil || !reflect.DeepEqual(*result.Duplicate, claim.Snapshot) {
-					t.Fatalf("duplicate entry=%#v result=%+v error=%v", entry, result, err)
+				if err != nil || result.Started || result.Duplicate == nil || !reflect.DeepEqual(*result.Duplicate, claim.Snapshot) {
+					t.Fatalf("duplicate result=%+v error=%v", result, err)
 				}
 				claim.Snapshot.Models[0] = "mutated"
 				claim.Snapshot.ModelStates["model-b"] = PlatformGenerationModel{State: PlatformGenerationStateFailed, ErrorCode: "internal_error"}
@@ -576,11 +586,12 @@ func TestPlatformCompareGenerationDuplicateHasNoPostClaimSideEffects(t *testing.
 
 func TestPlatformCompareGenerationAdmissionCancellationStopsBeforeClaim(t *testing.T) {
 	for _, test := range []struct {
-		name       string
-		cancelWhen string
+		name          string
+		cancelWhen    string
+		wantAdmission int
 	}{
-		{name: "request already cancelled", cancelWhen: "before"},
-		{name: "request cancelled after admission", cancelWhen: "during"},
+		{name: "request already cancelled", cancelWhen: "before", wantAdmission: 0},
+		{name: "request cancelled after admission", cancelWhen: "during", wantAdmission: 1},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			runner, effects := platformCompareTestRunner(time.UnixMilli(10_000).UTC())
@@ -593,15 +604,27 @@ func TestPlatformCompareGenerationAdmissionCancellationStopsBeforeClaim(t *testi
 			} else {
 				registry.onBegin = cancel
 			}
-			entry, result, err := runner.enter(input)
-			if entry != nil || !errors.Is(err, ErrPlatformCompareGenerationUnavailable) || result.Started || result.Duplicate != nil {
-				t.Fatalf("enter entry=%#v result=%+v error=%v", entry, result, err)
+			result, err := runner.Run(input)
+			if !errors.Is(err, ErrPlatformCompareGenerationUnavailable) || result.Started || result.Duplicate != nil {
+				t.Fatalf("Run result=%+v error=%v", result, err)
 			}
-			if effects.admission != 1 || effects.admissionRelease != 1 || effects.claim != 0 || effects.register != 0 || effects.write != 0 {
+			if effects.admission != test.wantAdmission || effects.admissionRelease != test.wantAdmission || effects.claim != 0 || effects.register != 0 || effects.write != 0 {
 				t.Fatalf("cancellation effects=%+v", effects)
 			}
 		})
 	}
+	t.Run("invalid input does not acquire admission", func(t *testing.T) {
+		runner, effects := platformCompareTestRunner(time.UnixMilli(10_000).UTC())
+		input := platformCompareTestInput()
+		input.Models = []string{"model-a", "model-a"}
+		result, err := runner.Run(input)
+		if !errors.Is(err, ErrPlatformCompareGenerationInvalid) || result.Started || result.Duplicate != nil {
+			t.Fatalf("Run result=%+v error=%v", result, err)
+		}
+		if effects.admission != 0 || effects.admissionRelease != 0 || effects.claim != 0 {
+			t.Fatalf("invalid input effects=%+v", effects)
+		}
+	})
 }
 
 func TestPlatformCompareGenerationRegistrationFailureSettlesOwnedRunningState(t *testing.T) {
@@ -640,9 +663,9 @@ func TestPlatformCompareGenerationRegistrationFailureSettlesOwnedRunningState(t 
 				test.mutate(&store.getSnapshot)
 			}
 			registry.registerErr = errors.New("registry draining")
-			entry, result, err := runner.enter(platformCompareTestInput())
-			if entry != nil || !errors.Is(err, ErrPlatformCompareGenerationUnavailable) || result.Started || result.Duplicate != nil {
-				t.Fatalf("entry=%#v result=%+v error=%v", entry, result, err)
+			result, err := runner.Run(platformCompareTestInput())
+			if !errors.Is(err, ErrPlatformCompareGenerationUnavailable) || result.Started || result.Duplicate != nil {
+				t.Fatalf("result=%+v error=%v", result, err)
 			}
 			if effects.claim != 1 || effects.register != 1 || effects.get != 1 || effects.fail != test.wantFail || effects.unregister != 0 || effects.write != 0 || effects.runnerCancel != 1 || effects.admissionRelease != 1 {
 				t.Fatalf("registration failure effects=%+v wantFail=%d", effects, test.wantFail)
@@ -670,22 +693,30 @@ func TestPlatformCompareGenerationRequestCancellationAfterClaimDoesNotStopRunner
 	root := context.WithValue(context.Background(), struct{ name string }{"root"}, "application")
 	runner.deps.rootContext = root
 	var runnerParent context.Context
+	var runnerContext context.Context
 	runner.deps.newRunnerContext = func(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
 		runnerParent = parent
 		if timeout != time.Minute {
 			t.Fatalf("runner timeout=%v", timeout)
 		}
-		ctx, cancel := context.WithCancel(parent)
-		return ctx, func() { effects.runnerCancel++; cancel() }
+		var cancel context.CancelFunc
+		runnerContext, cancel = context.WithCancel(parent)
+		return runnerContext, func() { effects.runnerCancel++; cancel() }
 	}
-	registry.onBegin = func() {}
+	registry.onRegister = func() {
+		if runnerContext == nil || runnerContext.Err() != nil {
+			t.Fatalf("application-rooted runner stopped before registration: %v", runnerContext)
+		}
+	}
 
-	entry, result, err := runner.enter(input)
-	if err != nil || entry == nil || !result.Started || runnerParent != root || entry.ctx.Err() != nil || requestCtx.Err() == nil {
-		t.Fatalf("entry=%#v result=%+v error=%v parentRoot=%v runnerErr=%v requestErr=%v", entry, result, err, runnerParent == root, entry.ctx.Err(), requestCtx.Err())
+	result, err := runner.Run(input)
+	var runnerErr error
+	if runnerContext != nil {
+		runnerErr = runnerContext.Err()
 	}
-	entry.Close()
-	entry.Close()
+	if !errors.Is(err, ErrPlatformCompareGenerationUnavailable) || !result.Started || runnerParent != root || runnerContext == nil || runnerErr == nil || requestCtx.Err() == nil {
+		t.Fatalf("result=%+v error=%v parentRoot=%v runnerErr=%v requestErr=%v", result, err, runnerParent == root, runnerErr, requestCtx.Err())
+	}
 	if effects.unregister != 1 || effects.runnerCancel != 1 || effects.get != 1 || effects.fail != 1 {
 		t.Fatalf("cleanup effects=%+v", effects)
 	}
