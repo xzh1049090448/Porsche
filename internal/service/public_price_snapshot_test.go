@@ -8,6 +8,22 @@ import (
 	"github.com/porsche/ai-gateway-go/internal/models"
 )
 
+func TestInitialPublicPublicationStateIsFailClosedAndVersioned(t *testing.T) {
+	state := newPublicPublicationState(7, 1_700_000_000_000, 99)
+	if state.StateKey != publicPublicationStateKey || state.Revision != 1 {
+		t.Fatalf("identity/revision = %#v", state)
+	}
+	if state.PriceVisibility != models.PublicPriceVisibilityAuthenticatedOnly {
+		t.Fatalf("initial visibility = %s, want authenticated_only", state.PriceVisibility.String())
+	}
+	if state.PriceSnapshotID != nil || state.ContentReleaseID != nil {
+		t.Fatalf("initial state exposed unpublished pointers: %#v", state)
+	}
+	if state.Guid != 99 || state.CreatedAt != 1_700_000_000_000 || state.UpdatedAt != 1_700_000_000_000 || state.CreatedBy == nil || *state.CreatedBy != 7 || state.UpdatedBy == nil || *state.UpdatedBy != 7 {
+		t.Fatalf("initial audit fields = %#v", state.AuditFields)
+	}
+}
+
 func TestPublicPriceSnapshotValidationRunsBeforePublication(t *testing.T) {
 	valid := snapshotModelFixture("alpha")
 	if _, err := preparePublicPriceSnapshot([]models.PublicModelConfig{valid}); err != nil {

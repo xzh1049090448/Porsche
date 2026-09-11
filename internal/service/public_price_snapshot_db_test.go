@@ -16,6 +16,82 @@ import (
 	"gorm.io/gorm"
 )
 
+func TestPublicPriceSnapshotDBFirstPublishInitializesFailClosedState(t *testing.T) {
+	if os.Getenv("TEST_DATABASE_URL") == "" {
+		t.Skip("BLOCKED_FIXTURE: requires explicit disposable TEST_DATABASE_URL; .env is never read")
+	}
+	f := openPublicModelDBFixture(t)
+	tx := f.db.Begin()
+	if tx.Error != nil {
+		t.Fatal(tx.Error)
+	}
+	f.db = tx
+	t.Cleanup(func() {
+		if err := tx.Rollback().Error; err != nil && err != gorm.ErrInvalidTransaction {
+			t.Error(err)
+		}
+	})
+	if err := tx.Where("state_key = ?", publicPublicationStateKey).Delete(&models.PublicPublicationState{}).Error; err != nil {
+		t.Fatal(err)
+	}
+	model := f.input("first-publish-" + fmt.Sprint(persistence.NextGUID()))
+	model.InputPriceUSDPerMillionTokens = nil
+	model.OutputPriceUSDPerMillionTokens = nil
+	f.observe(t, model.UpstreamModelID)
+	admin := NewPublicModelAdminService(tx)
+	created, err := admin.Create(context.Background(), f.actor.ID, model)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = admin.Activate(context.Background(), f.actor.ID, mustGUID(t, created.GUID), created.Revision); err != nil {
+		t.Fatal(err)
+	}
+	revision := publicPriceDraftRevision(t, tx)
+	request := PublicPriceSnapshotRequest{ActorID: f.actor.ID, ExpectedRevision: revision, IdempotencyKey: "fresh-install-first-price"}
+
+	broken := NewPublicPriceSnapshotService(tx)
+	broken.fail = func(point string) error {
+		if point == "snapshot" {
+			return fmt.Errorf("injected snapshot failure")
+		}
+		return nil
+	}
+	if _, err = broken.Publish(context.Background(), request); status(err) != 503 {
+		t.Fatalf("failed first publish = %v", err)
+	}
+	var count int64
+	if err = tx.Model(&models.PublicPublicationState{}).Where("state_key = ? AND is_deleted = 0", publicPublicationStateKey).Count(&count).Error; err != nil || count != 0 {
+		t.Fatalf("failed first publish retained state: count=%d err=%v", count, err)
+	}
+
+	service := NewPublicPriceSnapshotService(tx)
+	release, err := service.Publish(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replay, err := service.Publish(context.Background(), request)
+	if err != nil || replay.GUID != release.GUID {
+		t.Fatalf("first publish replay=%#v err=%v", replay, err)
+	}
+	var state models.PublicPublicationState
+	if err = tx.Where("state_key = ? AND is_deleted = 0", publicPublicationStateKey).First(&state).Error; err != nil {
+		t.Fatal(err)
+	}
+	if state.PriceVisibility != models.PublicPriceVisibilityAuthenticatedOnly || state.Revision != 2 || state.PriceSnapshotID == nil || state.ContentReleaseID != nil {
+		t.Fatalf("first publication state = %#v", state)
+	}
+	var releases, jobs int64
+	if err = tx.Model(&models.PublicContentRelease{}).Where("created_by = ?", f.actor.ID).Count(&releases).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err = tx.Model(&models.PublicRenderJob{}).Where("created_by = ?", f.actor.ID).Count(&jobs).Error; err != nil {
+		t.Fatal(err)
+	}
+	if releases != 0 || jobs != 0 {
+		t.Fatalf("first price publish fabricated public content: releases=%d jobs=%d", releases, jobs)
+	}
+}
+
 // The full transactional suite is deliberately opt-in and never reads .env.
 func TestPublicPriceSnapshotDBAtomicPublicationIdempotencyAndRestore(t *testing.T) {
 	if os.Getenv("TEST_DATABASE_URL") == "" {
