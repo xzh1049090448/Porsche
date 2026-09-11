@@ -8,8 +8,20 @@ import (
 	"github.com/porsche/ai-gateway-go/internal/actionsecurity"
 	"github.com/porsche/ai-gateway-go/internal/app"
 	"github.com/porsche/ai-gateway-go/internal/middleware"
+	"github.com/porsche/ai-gateway-go/internal/publiccontent"
 	"github.com/porsche/ai-gateway-go/internal/service"
 )
+
+type publicContentValidationResult struct {
+	Issues []publiccontent.ValidationIssue `json:"issues"`
+	Valid  bool                            `json:"valid"`
+}
+
+func publicContentValidationResponse(issues []publiccontent.ValidationIssue) publicContentValidationResult {
+	stable := make([]publiccontent.ValidationIssue, len(issues))
+	copy(stable, issues)
+	return publicContentValidationResult{Issues: stable, Valid: len(stable) == 0}
+}
 
 func RegisterPublicContentAdmin(r *gin.Engine, state *app.State) {
 	g := r.Group("/admin/v2/public-content", gatewayRequestID(), publicAdminNoStore, middleware.RequireRootWithError(state, publicAdminAuthError), publicAdminHeaderBoundary)
@@ -49,7 +61,7 @@ func RegisterPublicContentAdmin(r *gin.Engine, state *app.State) {
 			publicAdminError(c, err)
 			return
 		}
-		c.JSON(200, gin.H{"valid": len(issues) == 0, "issues": issues})
+		c.JSON(200, publicContentValidationResponse(issues))
 	})
 	g.GET("/preview", func(c *gin.Context) {
 		if !publicAdminRequestHasNoBody(c.Request) {

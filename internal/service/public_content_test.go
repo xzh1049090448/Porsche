@@ -20,7 +20,7 @@ func TestPublicContentPreparationSanitizesAndRequiresReviewedLegalAndExactModels
 	price := models.PublicPriceSnapshot{ID: 8, Guid: 80, Version: 4}
 	items := []models.PublicPriceSnapshotItem{{ModelKey: "alpha", UpstreamModelID: "org/alpha", InputPriceUSDPerMillionTokens: snapshotStringPointer("1.00000000"), OutputPriceUSDPerMillionTokens: snapshotStringPointer("2.00000000")}}
 	p, issues := preparePublicContent(d, price, items)
-	if len(issues) != 0 || p.Hash == "" || p.Payload["home"] != d.Home {
+	if issues == nil || len(issues) != 0 || p.Hash == "" || p.Payload["home"] != d.Home {
 		t.Fatalf("prepared=%#v issues=%#v", p, issues)
 	}
 	d.LegalReviewed = false

@@ -223,7 +223,7 @@ func preparePublicContent(d PublicContentDraft, price models.PublicPriceSnapshot
 	if e != nil {
 		return nil, []publiccontent.ValidationIssue{{Field: "content", Code: "serialization_failed"}}
 	}
-	return &preparedPublicContent{Payload: payload, Hash: hash, Documents: docs, PriceSnapshotID: price.ID, PriceSnapshotGUID: price.Guid, PriceSnapshotVersion: price.Version}, nil
+	return &preparedPublicContent{Payload: payload, Hash: hash, Documents: docs, PriceSnapshotID: price.ID, PriceSnapshotGUID: price.Guid, PriceSnapshotVersion: price.Version}, issues
 }
 
 type publicContentHTMLTag struct {
