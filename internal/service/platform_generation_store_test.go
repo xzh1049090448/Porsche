@@ -45,6 +45,41 @@ func TestPlatformGenerationStoreRejectsInvalidInputBeforeRedis(t *testing.T) {
 	}
 }
 
+func TestPlatformGenerationStoreMarkModelFailedOwnedRejectsInvalidInputBeforeRedis(t *testing.T) {
+	store, err := NewPlatformGenerationStore(redis.NewClient(&redis.Options{Addr: "127.0.0.1:1"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	validToken := base64.RawURLEncoding.EncodeToString(make([]byte, platformGenerationLeaseBytes))
+	tests := []struct {
+		name       string
+		ctx        context.Context
+		userID     int64
+		generation string
+		leaseToken string
+		model      string
+		code       string
+		nowMillis  int64
+	}{
+		{name: "nil context", userID: 1, generation: generationTestID, leaseToken: validToken, model: "a", code: "timeout", nowMillis: 1},
+		{name: "invalid user", ctx: context.Background(), generation: generationTestID, leaseToken: validToken, model: "a", code: "timeout", nowMillis: 1},
+		{name: "invalid generation", ctx: context.Background(), userID: 1, generation: "bad", leaseToken: validToken, model: "a", code: "timeout", nowMillis: 1},
+		{name: "invalid lease", ctx: context.Background(), userID: 1, generation: generationTestID, leaseToken: "bad", model: "a", code: "timeout", nowMillis: 1},
+		{name: "blank model", ctx: context.Background(), userID: 1, generation: generationTestID, leaseToken: validToken, code: "timeout", nowMillis: 1},
+		{name: "invalid model", ctx: context.Background(), userID: 1, generation: generationTestID, leaseToken: validToken, model: string([]byte{0xff}), code: "timeout", nowMillis: 1},
+		{name: "unsafe code", ctx: context.Background(), userID: 1, generation: generationTestID, leaseToken: validToken, model: "a", code: "secret upstream URL", nowMillis: 1},
+		{name: "unsafe time", ctx: context.Background(), userID: 1, generation: generationTestID, leaseToken: validToken, model: "a", code: "timeout", nowMillis: platformSSEV2MaxSafeInteger + 1},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := store.MarkModelFailedOwned(test.ctx, test.userID, test.generation, test.leaseToken, test.model, test.code, test.nowMillis)
+			if !errors.Is(err, ErrPlatformGenerationInvalid) {
+				t.Fatalf("MarkModelFailedOwned() error=%v, want invalid before Redis", err)
+			}
+		})
+	}
+}
+
 func TestPlatformGenerationStoreRejectsModelOverPersistenceLimitBeforeRedis(t *testing.T) {
 	store, err := NewPlatformGenerationStore(redis.NewClient(&redis.Options{Addr: "127.0.0.1:1"}))
 	if err != nil {

@@ -316,6 +316,22 @@ func (s *PlatformGenerationStore) MarkModelDoneOwned(ctx context.Context, userID
 	})
 }
 
+func (s *PlatformGenerationStore) MarkModelFailedOwned(ctx context.Context, userID int64, generationID, leaseToken, model, code string, nowMillis int64) (PlatformGenerationSnapshot, error) {
+	if !platformSSEV2ModelIdentifier(model) || !platformGenerationStableCode(code) {
+		return PlatformGenerationSnapshot{}, ErrPlatformGenerationInvalid
+	}
+	return s.mutateOwned(ctx, userID, generationID, leaseToken, nowMillis, func(snapshot *PlatformGenerationSnapshot) error {
+		modelState, found := snapshot.ModelStates[model]
+		if snapshot.State != PlatformGenerationStateRunning || !found || modelState.State != PlatformGenerationStateRunning {
+			return ErrPlatformGenerationConflict
+		}
+		modelState.State = PlatformGenerationStateFailed
+		modelState.ErrorCode = code
+		snapshot.ModelStates[model] = modelState
+		return nil
+	})
+}
+
 func (s *PlatformGenerationStore) MarkModelFailed(ctx context.Context, userID int64, generationID, model, code string, nowMillis int64) (PlatformGenerationSnapshot, error) {
 	if !platformSSEV2ModelIdentifier(model) || !platformGenerationStableCode(code) {
 		return PlatformGenerationSnapshot{}, ErrPlatformGenerationInvalid
