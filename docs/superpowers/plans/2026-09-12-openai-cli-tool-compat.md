@@ -1,6 +1,6 @@
 # OpenAI CLI Tool Compatibility Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Completed steps use checked boxes for tracking.
 
 **Goal:** Add secure OpenAI-compatible Chat Completions tool round-tripping and a stateless Responses API adapter for text and custom function tools.
 
@@ -35,7 +35,7 @@
 - Create: `internal/openaicompat/types.go`
 - Test: `internal/openaicompat/types_test.go`
 
-- [ ] **Step 1: Write the failing type and error contract test**
+- [x] **Step 1: Write the failing type and error contract test**
 
 ```go
 func TestPublicErrorClassifications(t *testing.T) {
@@ -56,13 +56,13 @@ func TestPublicErrorClassifications(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run the focused test and verify RED**
+- [x] **Step 2: Run the focused test and verify RED**
 
 Run: `GOCACHE=/private/tmp/porsche-openai-cli-go-cache go test ./internal/openaicompat -run TestPublicErrorClassifications -count=1`
 
 Expected: FAIL because package/type constructors do not exist.
 
-- [ ] **Step 3: Add the normalized types and constructors**
+- [x] **Step 3: Add the normalized types and constructors**
 
 ```go
 type Conversation struct {
@@ -104,13 +104,13 @@ type Error struct { Code string; Status int }
 
 Also define the constants from the design: 12 MiB body, 128 messages, 32 tools, 64 parallel calls, 256 KiB arguments, 1 MiB tool output, and 128-byte call IDs.
 
-- [ ] **Step 4: Run the package test and verify GREEN**
+- [x] **Step 4: Run the package test and verify GREEN**
 
 Run: `GOCACHE=/private/tmp/porsche-openai-cli-go-cache go test ./internal/openaicompat -count=1`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/openaicompat/types.go internal/openaicompat/types_test.go
@@ -126,7 +126,7 @@ git commit -m "feat: add normalized OpenAI protocol types"
 - Test: `internal/openaicompat/chat_request_test.go`
 - Test: `internal/openaicompat/validate_test.go`
 
-- [ ] **Step 1: Write failing Chat normalization tests**
+- [x] **Step 1: Write failing Chat normalization tests**
 
 ```go
 func TestDecodeChatNormalizesToolRoundTrip(t *testing.T) {
@@ -151,13 +151,13 @@ func TestDecodeChatRejectsBrokenCallSequences(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Run: `GOCACHE=/private/tmp/porsche-openai-cli-go-cache go test ./internal/openaicompat -run 'TestDecodeChat|TestValidateCall' -count=1`
 
 Expected: FAIL because `DecodeChat` and the validator are missing.
 
-- [ ] **Step 3: Implement strict decoding and validation**
+- [x] **Step 3: Implement strict decoding and validation**
 
 Implement:
 
@@ -170,13 +170,13 @@ func validCallID(id string) bool
 
 Use explicit DTOs with `json.Decoder.DisallowUnknownFields()` and `UseNumber()`. Preserve existing safe text/media content shapes, accept `developer`, `assistant.tool_calls`, and `tool.tool_call_id`, enforce mutually exclusive `max_tokens`/`max_completion_tokens`, and reject unclosed/duplicate/out-of-order call IDs. Tool arguments remain bounded raw UTF-8 strings without JSON parsing.
 
-- [ ] **Step 4: Run all new decoder/state-machine tests and verify GREEN**
+- [x] **Step 4: Run all new decoder/state-machine tests and verify GREEN**
 
 Run: `GOCACHE=/private/tmp/porsche-openai-cli-go-cache go test ./internal/openaicompat -count=1`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/openaicompat/decode.go internal/openaicompat/chat_request.go internal/openaicompat/validate.go internal/openaicompat/chat_request_test.go internal/openaicompat/validate_test.go
@@ -189,7 +189,7 @@ git commit -m "feat: decode OpenAI chat tool conversations"
 - Create: `internal/openaicompat/responses_request.go`
 - Test: `internal/openaicompat/responses_request_test.go`
 
-- [ ] **Step 1: Write failing Responses normalization tests**
+- [x] **Step 1: Write failing Responses normalization tests**
 
 ```go
 func TestDecodeResponsesMatchesChatConversation(t *testing.T) {
@@ -213,23 +213,23 @@ func TestDecodeResponsesRejectsStatefulOptionsBeforeExecution(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Run: `GOCACHE=/private/tmp/porsche-openai-cli-go-cache go test ./internal/openaicompat -run TestDecodeResponses -count=1`
 
 Expected: FAIL because `DecodeResponses` does not exist.
 
-- [ ] **Step 3: Implement Responses DTO normalization**
+- [x] **Step 3: Implement Responses DTO normalization**
 
 Implement `func DecodeResponses(body []byte) (Conversation, *Error)` for string input, text message items, `function_call`, `function_call_output`, flat function definitions, null/absent previous response ID, and false/absent store. Validate optional item `id` and `status`, discard them after validation, and set omitted `parallel_tool_calls` to true.
 
-- [ ] **Step 4: Verify GREEN and equivalence**
+- [x] **Step 4: Verify GREEN and equivalence**
 
 Run: `GOCACHE=/private/tmp/porsche-openai-cli-go-cache go test ./internal/openaicompat -run 'TestDecodeResponses|TestChatAndResponsesEquivalent' -count=1`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/openaicompat/responses_request.go internal/openaicompat/responses_request_test.go
@@ -242,7 +242,7 @@ git commit -m "feat: decode stateless Responses requests"
 - Create: `internal/openaicompat/upstream.go`
 - Test: `internal/openaicompat/upstream_test.go`
 
-- [ ] **Step 1: Write a failing exact-projection test**
+- [x] **Step 1: Write a failing exact-projection test**
 
 ```go
 func TestEncodeUpstreamProjectsOnlyNormalizedFields(t *testing.T) {
@@ -259,23 +259,23 @@ func TestEncodeUpstreamProjectsOnlyNormalizedFields(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Run: `GOCACHE=/private/tmp/porsche-openai-cli-go-cache go test ./internal/openaicompat -run TestEncodeUpstream -count=1`
 
 Expected: FAIL because `EncodeUpstream` is missing.
 
-- [ ] **Step 3: Implement fresh JSON encoding**
+- [x] **Step 3: Implement fresh JSON encoding**
 
 Implement `func EncodeUpstream(Conversation) ([]byte, error)` using private DTO structs. Convert developer to system, Responses calls to assistant tool calls, outputs to tool messages, flat tools to nested tools, and max output tokens to `max_tokens`. Never merge client raw JSON and never encode Gateway credentials, item IDs, store, or previous response ID.
 
-- [ ] **Step 4: Verify GREEN including sensitive sentinel absence**
+- [x] **Step 4: Verify GREEN including sensitive sentinel absence**
 
 Run: `GOCACHE=/private/tmp/porsche-openai-cli-go-cache go test ./internal/openaicompat -run 'TestEncodeUpstream' -count=1`
 
 Expected: PASS, including exact JSON comparison and absence checks.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/openaicompat/upstream.go internal/openaicompat/upstream_test.go
@@ -288,7 +288,7 @@ git commit -m "feat: encode normalized upstream chat requests"
 - Modify: `internal/whitelabel/types.go`
 - Modify: `internal/whitelabel/types_test.go`
 
-- [ ] **Step 1: Write the failing null-content tool-call test**
+- [x] **Step 1: Write the failing null-content tool-call test**
 
 ```go
 func TestProjectChatCompletionAllowsNullContentWithToolCalls(t *testing.T) {
@@ -302,23 +302,23 @@ func TestProjectChatCompletionAllowsNullContentWithToolCalls(t *testing.T) {
 
 Also add rejection cases for null content without calls, empty/duplicate IDs, non-function types, empty function names, oversized arguments, and unknown nested supplier fields being dropped rather than reflected.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Run: `GOCACHE=/private/tmp/porsche-openai-cli-go-cache go test ./internal/whitelabel -run TestProjectChatCompletionAllowsNullContentWithToolCalls -count=1`
 
 Expected: FAIL because current `projectCompletionContent` rejects null.
 
-- [ ] **Step 3: Implement the conditional null projection**
+- [x] **Step 3: Implement the conditional null projection**
 
 Decode and validate tool calls before deciding content validity. Accept JSON null only when at least one valid projected function call exists; retain the existing string/text-part behavior otherwise. Validate the public tool-call subset and discard all provider extensions.
 
-- [ ] **Step 4: Verify GREEN and existing projection regression**
+- [x] **Step 4: Verify GREEN and existing projection regression**
 
 Run: `GOCACHE=/private/tmp/porsche-openai-cli-go-cache go test ./internal/whitelabel -run 'TestProjectChatCompletion' -count=1`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/whitelabel/types.go internal/whitelabel/types_test.go
@@ -331,7 +331,7 @@ git commit -m "feat: project chat function calls safely"
 - Create: `internal/openaicompat/responses_response.go`
 - Test: `internal/openaicompat/responses_response_test.go`
 
-- [ ] **Step 1: Write failing text and parallel-function projection tests**
+- [x] **Step 1: Write failing text and parallel-function projection tests**
 
 ```go
 func TestProjectResponseIncludesTextAndParallelCalls(t *testing.T) {
@@ -343,13 +343,13 @@ func TestProjectResponseIncludesTextAndParallelCalls(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Run: `GOCACHE=/private/tmp/porsche-openai-cli-go-cache go test ./internal/openaicompat -run TestProjectResponse -count=1`
 
 Expected: FAIL because response types and projector are missing.
 
-- [ ] **Step 3: Implement safe Responses objects and random public IDs**
+- [x] **Step 3: Implement safe Responses objects and random public IDs**
 
 Implement:
 
@@ -360,13 +360,13 @@ type IDSource func(prefix string) (string, error)
 
 Emit `resp_*`, `msg_*`, and `fc_*` IDs from `crypto/rand`; preserve upstream call IDs only as `call_id`; convert usage to `input_tokens`, `output_tokens`, and `total_tokens`; always return `status:"completed"` and `store:false`.
 
-- [ ] **Step 4: Verify GREEN and malformed-output rejection**
+- [x] **Step 4: Verify GREEN and malformed-output rejection**
 
 Run: `GOCACHE=/private/tmp/porsche-openai-cli-go-cache go test ./internal/openaicompat -run TestProjectResponse -count=1`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/openaicompat/responses_response.go internal/openaicompat/responses_response_test.go
@@ -379,7 +379,7 @@ git commit -m "feat: project non-streaming Responses output"
 - Create: `internal/openaicompat/responses_stream.go`
 - Test: `internal/openaicompat/responses_stream_test.go`
 
-- [ ] **Step 1: Write failing deterministic event-order tests**
+- [x] **Step 1: Write failing deterministic event-order tests**
 
 ```go
 func TestResponsesStreamOrdersTextAndToolEvents(t *testing.T) {
@@ -399,23 +399,23 @@ func TestResponsesStreamOrdersTextAndToolEvents(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Run: `GOCACHE=/private/tmp/porsche-openai-cli-go-cache go test ./internal/openaicompat -run TestResponsesStream -count=1`
 
 Expected: FAIL because the stream converter does not exist.
 
-- [ ] **Step 3: Implement bounded per-index stream state**
+- [x] **Step 3: Implement bounded per-index stream state**
 
 Implement `NewResponsesStream`, `Accept`, `Complete`, and `Failed`. Buffer incomplete function identity by tool index, keep arguments separated by index, start sequence numbers at one, send no `[DONE]`, and return exactly one completed or failed terminal event. Do not emit `response.created` before the first validated projected chunk.
 
-- [ ] **Step 4: Verify GREEN across fragmentation and cancellation cases**
+- [x] **Step 4: Verify GREEN across fragmentation and cancellation cases**
 
 Run: `GOCACHE=/private/tmp/porsche-openai-cli-go-cache go test ./internal/openaicompat -run 'TestResponsesStream' -count=1`
 
 Expected: PASS for CRLF/multiline upstream fixtures, interleaved tool indices, malformed first frame, post-start failure, and canceled context.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/openaicompat/responses_stream.go internal/openaicompat/responses_stream_test.go
@@ -431,7 +431,7 @@ git commit -m "feat: translate chat streams to Responses SSE"
 - Create: `internal/handler/testdata/opencode-chat-request.json`
 - Create: `internal/handler/testdata/opencode-responses-request.json`
 
-- [ ] **Step 1: Add failing HTTP contract tests**
+- [x] **Step 1: Add failing HTTP contract tests**
 
 Add an executable zero-upstream test first:
 
@@ -462,13 +462,13 @@ func TestGatewayResponsesRejectsStateBeforeUpstream(t *testing.T) {
 
 Then add `TestGatewayChatToolRoundTrip` and `TestGatewayResponsesToolRoundTrip` using the existing authenticated `gatewayWhiteLabelState` fixture: first requests must return `call_1` and `call_2`, second requests must send matching outputs and return final text. Add `TestGatewayResponsesPostStartFailureEmitsFailed` asserting one terminal `response.failed` and no `[DONE]`, plus `TestGatewayResponsesCancellationStopsUpstream` asserting the upstream request context is canceled. Register `/v1/responses` in the expected public-route table. Load both sanitized JSON fixture files from `testdata` and assert their selected model IDs match the test catalog.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Run: `GOCACHE=/private/tmp/porsche-openai-cli-go-cache go test ./internal/handler ./internal/router -run 'Gateway(ChatTool|Responses)' -count=1`
 
 Expected: FAIL because `/v1/responses` is unregistered and Chat still rejects tool messages.
 
-- [ ] **Step 3: Integrate both decoders with one execution helper**
+- [x] **Step 3: Integrate both decoders with one execution helper**
 
 Refactor the route body around:
 
@@ -485,13 +485,13 @@ func decodeGatewayConversation(protocol gatewayProtocol, body []byte) (openaicom
 
 Both routes must authenticate before reading the body, enforce `application/json`, decode and validate before catalog/upstream access, authorize the normalized model, encode a fresh upstream body, and call `state.WhiteLabel.Chat`. Chat uses existing WhiteLabel projection/SSE; Responses uses the new response projectors. Map package errors into the existing fixed public error envelope without copying internal details.
 
-- [ ] **Step 4: Verify GREEN and regression behavior**
+- [x] **Step 4: Verify GREEN and regression behavior**
 
 Run: `GOCACHE=/private/tmp/porsche-openai-cli-go-cache go test ./internal/handler ./internal/router -count=1`
 
 Expected: PASS, including existing models, ACL, authentication-before-body, Chat error-frame, and `[DONE]` tests.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/handler/gateway_tokens.go internal/handler/gateway_whitelabel_test.go internal/handler/testdata internal/router/router_test.go
@@ -503,13 +503,13 @@ git commit -m "feat: expose stateless Responses gateway"
 **Files:**
 - Modify only files required to fix failures exposed by the commands below.
 
-- [ ] **Step 1: Run focused tests with race detection**
+- [x] **Step 1: Run focused tests with race detection**
 
 Run: `GOCACHE=/private/tmp/porsche-openai-cli-go-cache go test -race ./internal/openaicompat ./internal/whitelabel ./internal/handler ./internal/router -count=1`
 
 Expected: PASS with no race reports.
 
-- [ ] **Step 2: Run full test, vet, build, and diff gates**
+- [x] **Step 2: Run full test, vet, build, and diff gates**
 
 ```bash
 GOCACHE=/private/tmp/porsche-openai-cli-go-cache go test ./... -count=1
@@ -520,7 +520,7 @@ git diff --check
 
 Expected: all commands exit 0.
 
-- [ ] **Step 3: Run sensitive-data and protocol-boundary scans**
+- [x] **Step 3: Run sensitive-data and protocol-boundary scans**
 
 ```bash
 rg -n 'sk-gw-|top-secret|function-secret|tool-secret' internal/openaicompat internal/handler --glob='*.go' --glob='*.json'
@@ -529,11 +529,11 @@ rg -n 'response\.(created|in_progress|completed|failed)|\[DONE\]' internal/opena
 
 Expected: credentials occur only as deliberate test sentinels or documented prefixes; Responses terminal paths never emit `[DONE]`; Chat keeps `[DONE]`.
 
-- [ ] **Step 4: Review final diff against every completion criterion**
+- [x] **Step 4: Review final diff against every completion criterion**
 
 Confirm Chat and Responses two-round tool loops, parallel calls, zero-upstream invalid paths, cancel propagation, field projection, existing Platform Chat regression, no migration, and no persistence dependency.
 
-- [ ] **Step 5: Commit any verification-only corrections**
+- [x] **Step 5: Commit any verification-only corrections**
 
 ```bash
 git add internal/openaicompat internal/handler/gateway_tokens.go internal/handler/gateway_whitelabel_test.go internal/handler/testdata internal/router/router_test.go
