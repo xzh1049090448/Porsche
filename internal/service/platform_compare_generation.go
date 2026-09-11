@@ -614,7 +614,7 @@ func (r *PlatformCompareGenerationRunner) prepareValidated(input platformCompare
 	}
 	encoder, err := r.deps.newEncoder(input.generationID, input.models)
 	if err != nil || encoder == nil {
-		return platformCompareRun{}, ErrPlatformCompareGenerationInvalid
+		return platformCompareRun{}, ErrPlatformCompareGenerationUnavailable
 	}
 	run := platformCompareRun{
 		userID: input.user.ID, generationID: input.generationID, requestID: input.requestID,

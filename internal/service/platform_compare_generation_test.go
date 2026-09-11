@@ -1448,6 +1448,39 @@ func TestPlatformCompareGenerationSerializesMutationStateEncoderAndFrames(t *tes
 func TestPlatformCompareGenerationSerializesEncoderFailures(t *testing.T) {
 	testPlatformCompareEncoderFailures(t)
 }
+func TestPlatformCompareGenerationSerializesEncoderFactoryFailures(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		factory func(string, []string) (platformCompareEncoder, error)
+	}{
+		{
+			name: "factory error",
+			factory: func(string, []string) (platformCompareEncoder, error) {
+				return nil, errors.New("encoder factory unavailable")
+			},
+		},
+		{
+			name: "nil encoder",
+			factory: func(string, []string) (platformCompareEncoder, error) {
+				return nil, nil
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			runner, effects := platformCompareTestRunner(time.UnixMilli(10_000).UTC())
+			runner.deps.newEncoder = test.factory
+			input := platformCompareTestInput()
+			input.Write = func([]byte) error { effects.write++; return nil }
+			result, err := runner.Run(input)
+			if !errors.Is(err, ErrPlatformCompareGenerationUnavailable) || errors.Is(err, ErrPlatformCompareGenerationInvalid) || result.Started || result.Duplicate != nil {
+				t.Fatalf("Run result=%+v error=%v", result, err)
+			}
+			if effects.admission != 1 || effects.admissionRelease != 1 || effects.guid != 0 || effects.claim != 0 || effects.register != 0 || effects.unregister != 0 || effects.upstream != 0 || effects.write != 0 || effects.persist != 0 || effects.receipt != 0 {
+				t.Fatalf("factory failure effects=%+v", effects)
+			}
+		})
+	}
+}
 func TestPlatformCompareGenerationNeverCallsHTTPWriterConcurrently(t *testing.T) {
 	_, writer, _, result := platformCompareConcurrentFixture(t, false)
 	if !result.Started || writer.maximum.Load() != 1 {
