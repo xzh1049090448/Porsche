@@ -109,6 +109,15 @@ func TestPlatformGenerationStoreMarkModelFailedOwnedIsTerminalAndRejectsReplay(t
 	if err != nil {
 		t.Fatal(err)
 	}
+	assertPlatformGenerationOwnedModelFailure(t, claim.Snapshot, failed, "a", "timeout", 1001)
+	rawAuthoritative, err := client.Get(ctx, key).Result()
+	if err != nil {
+		t.Fatal(err)
+	}
+	authoritative, err := decodePlatformGeneration(rawAuthoritative)
+	if err != nil || !reflect.DeepEqual(authoritative, failed) {
+		t.Fatalf("Redis authority=%#v returned=%#v error=%v", authoritative, failed, err)
+	}
 	for _, replay := range []struct {
 		name string
 		code string
@@ -233,6 +242,120 @@ func TestPlatformGenerationStoreMarkModelFailedOwnedLosesToCancelOrCommit(t *tes
 	if rawAfter, readErr := clientA.Get(ctx, commitKey).Result(); readErr != nil || rawAfter != rawBefore {
 		t.Fatalf("failure after commit mutated encoded record: before=%q after=%q error=%v", rawBefore, rawAfter, readErr)
 	}
+}
+
+func TestPlatformGenerationStoreMarkModelFailedOwnedSuccessSnapshotContract(t *testing.T) {
+	ctx := context.Background()
+	leaseToken := base64.RawURLEncoding.EncodeToString([]byte("abcdefghijklmnopqrstuvwxyzABCDEF"))
+	before := PlatformGenerationSnapshot{
+		GenerationID: "92300000-0000-4000-8000-000000000001",
+		Mode:         PlatformGenerationModeCompare,
+		Models:       []string{"a", "b"},
+		State:        PlatformGenerationStateRunning,
+		ModelStates: map[string]PlatformGenerationModel{
+			"a": {Seq: 3, State: PlatformGenerationStateRunning},
+			"b": {Seq: 5, State: PlatformGenerationStateRunning},
+		},
+		CreatedAtMillis:  1000,
+		UpdatedAtMillis:  1003,
+		LeaseOwnerSHA256: platformGenerationLeaseDigest(leaseToken),
+		LeaseUntilMillis: 31_000,
+	}
+	raw, err := encodePlatformGeneration(before)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hook := &platformGenerationMemoryRedisHook{raw: raw}
+	client := redis.NewClient(&redis.Options{Addr: "127.0.0.1:1"})
+	client.AddHook(hook)
+	t.Cleanup(func() { _ = client.Close() })
+	store, err := NewPlatformGenerationStore(client)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	failed, err := store.MarkModelFailedOwned(ctx, 982301, before.GenerationID, leaseToken, "a", "timeout", 1004)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertPlatformGenerationOwnedModelFailure(t, before, failed, "a", "timeout", 1004)
+	authoritative, err := store.Get(ctx, 982301, before.GenerationID)
+	if err != nil || !reflect.DeepEqual(authoritative, failed) {
+		t.Fatalf("stored authority=%#v returned=%#v error=%v", authoritative, failed, err)
+	}
+}
+
+func assertPlatformGenerationOwnedModelFailure(t *testing.T, before, failed PlatformGenerationSnapshot, model, code string, nowMillis int64) {
+	t.Helper()
+	modelBefore, found := before.ModelStates[model]
+	modelAfter, stillPresent := failed.ModelStates[model]
+	if failed.State != PlatformGenerationStateRunning || !found || !stillPresent || modelAfter.State != PlatformGenerationStateFailed || modelAfter.ErrorCode != code || modelAfter.Seq != modelBefore.Seq {
+		t.Fatalf("failed model transition=%#v before=%#v", failed, before)
+	}
+	if failed.UpdatedAtMillis != nowMillis || failed.LeaseOwnerSHA256 != before.LeaseOwnerSHA256 || failed.LeaseUntilMillis != before.LeaseUntilMillis {
+		t.Fatalf("failure metadata=%#v before=%#v want updated_at=%d", failed, before, nowMillis)
+	}
+	if len(failed.Models) != len(before.Models) || len(failed.ModelStates) != len(before.ModelStates) {
+		t.Fatalf("failure changed model membership: failed=%#v before=%#v", failed, before)
+	}
+	for _, sibling := range before.Models {
+		if sibling != model && !reflect.DeepEqual(failed.ModelStates[sibling], before.ModelStates[sibling]) {
+			t.Fatalf("failure changed sibling %q: got=%#v want=%#v", sibling, failed.ModelStates[sibling], before.ModelStates[sibling])
+		}
+	}
+	expected := clonePlatformGeneration(before)
+	expectedModel := expected.ModelStates[model]
+	expectedModel.State = PlatformGenerationStateFailed
+	expectedModel.ErrorCode = code
+	expected.ModelStates[model] = expectedModel
+	expected.UpdatedAtMillis = nowMillis
+	if !reflect.DeepEqual(failed, expected) {
+		t.Fatalf("failure snapshot=%#v want=%#v", failed, expected)
+	}
+}
+
+type platformGenerationMemoryRedisHook struct {
+	mu  sync.Mutex
+	raw string
+}
+
+func (h *platformGenerationMemoryRedisHook) DialHook(next redis.DialHook) redis.DialHook {
+	return next
+}
+
+func (h *platformGenerationMemoryRedisHook) ProcessHook(redis.ProcessHook) redis.ProcessHook {
+	return func(_ context.Context, cmd redis.Cmder) error {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		switch cmd.Name() {
+		case "get":
+			stringCmd, ok := cmd.(*redis.StringCmd)
+			if !ok {
+				return errors.New("unexpected GET command type")
+			}
+			stringCmd.SetVal(h.raw)
+			return nil
+		case "eval":
+			args := cmd.Args()
+			if len(args) != 6 || fmt.Sprint(args[4]) != h.raw {
+				return errors.New("unexpected CAS arguments")
+			}
+			nextRaw := fmt.Sprint(args[5])
+			h.raw = nextRaw
+			genericCmd, ok := cmd.(*redis.Cmd)
+			if !ok {
+				return errors.New("unexpected EVAL command type")
+			}
+			genericCmd.SetVal([]interface{}{int64(1), nextRaw})
+			return nil
+		default:
+			return fmt.Errorf("unexpected Redis command %q", cmd.Name())
+		}
+	}
+}
+
+func (h *platformGenerationMemoryRedisHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+	return next
 }
 
 func openSecondTestPlatformGenerationStore(t *testing.T) (*PlatformGenerationStore, *redis.Client) {
