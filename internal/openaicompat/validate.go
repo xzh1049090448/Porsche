@@ -9,6 +9,21 @@ func validateConversation(c Conversation) *Error {
 	if strings.TrimSpace(c.Model) == "" || len(c.Messages) > MaxMessages || len(c.Tools) > MaxTools {
 		return InvalidRequest()
 	}
+	toolNames := make(map[string]struct{}, len(c.Tools))
+	for _, tool := range c.Tools {
+		if !validFunctionName(tool.Name) || !utf8.ValidString(tool.Description) || len(tool.Description) > MaxTextContentBytes || !validJSONObject(tool.Parameters) {
+			return InvalidRequest()
+		}
+		if _, duplicate := toolNames[tool.Name]; duplicate {
+			return InvalidRequest()
+		}
+		toolNames[tool.Name] = struct{}{}
+	}
+	if c.ToolChoice.Mode == "function" {
+		if _, exists := toolNames[c.ToolChoice.Name]; !exists {
+			return InvalidRequest()
+		}
+	}
 	declared := make(map[string]struct{})
 	open := make(map[string]struct{})
 	for _, message := range append(append([]Message(nil), c.Instructions...), c.Messages...) {

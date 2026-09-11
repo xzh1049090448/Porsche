@@ -34,6 +34,7 @@ type ResponsesStream struct {
 	output     []ResponseOutputItem
 	text       *streamTextState
 	tools      map[int]*streamToolState
+	callIDs    map[string]int
 	usage      *ResponseUsage
 }
 
@@ -56,7 +57,7 @@ func NewResponsesStream(model string, parallel bool, ids IDSource) *ResponsesStr
 	if ids == nil {
 		ids = randomID
 	}
-	return &ResponsesStream{model: model, parallel: parallel, ids: ids, tools: make(map[int]*streamToolState)}
+	return &ResponsesStream{model: model, parallel: parallel, ids: ids, tools: make(map[int]*streamToolState), callIDs: make(map[string]int)}
 }
 
 func (s *ResponsesStream) Accept(chunk whitelabel.ChatCompletionChunk, emit func(ResponseEvent) error) error {
@@ -191,7 +192,11 @@ func (s *ResponsesStream) acceptTool(call whitelabel.ChatCompletionChunkToolCall
 		if state.callID != "" && state.callID != *call.ID {
 			return errors.New("streamed tool call id changed")
 		}
+		if otherIndex, duplicate := s.callIDs[*call.ID]; duplicate && otherIndex != call.Index {
+			return errors.New("streamed tool call id reused")
+		}
 		state.callID = *call.ID
+		s.callIDs[*call.ID] = call.Index
 	}
 	if call.Type != nil && *call.Type != "function" {
 		return errors.New("unsupported streamed tool type")

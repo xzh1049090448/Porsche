@@ -22,3 +22,15 @@ func TestDecodeChatRejectsBrokenCallSequences(t *testing.T) {
 		}
 	}
 }
+
+func TestDecodeChatRejectsDuplicateOrUnknownSelectedTools(t *testing.T) {
+	inputs := []string{
+		`{"model":"m","messages":[{"role":"user","content":"x"}],"tools":[{"type":"function","function":{"name":"same"}},{"type":"function","function":{"name":"same"}}]}`,
+		`{"model":"m","messages":[{"role":"user","content":"x"}],"tools":[{"type":"function","function":{"name":"known"}}],"tool_choice":{"type":"function","function":{"name":"missing"}}}`,
+	}
+	for _, body := range inputs {
+		if _, err := DecodeChat([]byte(body)); err == nil || err.Code != "invalid_request" {
+			t.Fatalf("accepted %s", body)
+		}
+	}
+}

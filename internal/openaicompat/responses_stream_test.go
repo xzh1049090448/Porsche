@@ -99,3 +99,17 @@ func TestResponsesStreamValidatesFirstChunkBeforeEmitting(t *testing.T) {
 		t.Fatalf("emitted=%d started=%v", emitted, stream.Started())
 	}
 }
+
+func TestResponsesStreamRejectsCallIDReusedAcrossIndexes(t *testing.T) {
+	stream := NewResponsesStream("model-a", true, sequentialIDSource())
+	emit := func(ResponseEvent) error { return nil }
+	callID, callType, firstName, secondName := "call_1", "function", "first", "second"
+	first := whitelabel.ChatCompletionChunk{Model: "model-a", Created: 1, Choices: []whitelabel.ChatCompletionChunkChoice{{Index: 0, Delta: whitelabel.ChatCompletionChunkDelta{ToolCalls: []whitelabel.ChatCompletionChunkToolCall{{Index: 0, ID: &callID, Type: &callType, Function: &whitelabel.ChatCompletionChunkFunctionCall{Name: &firstName}}}}}}}
+	second := whitelabel.ChatCompletionChunk{Model: "model-a", Created: 1, Choices: []whitelabel.ChatCompletionChunkChoice{{Index: 0, Delta: whitelabel.ChatCompletionChunkDelta{ToolCalls: []whitelabel.ChatCompletionChunkToolCall{{Index: 1, ID: &callID, Type: &callType, Function: &whitelabel.ChatCompletionChunkFunctionCall{Name: &secondName}}}}}}}
+	if err := stream.Accept(first, emit); err != nil {
+		t.Fatal(err)
+	}
+	if err := stream.Accept(second, emit); err == nil {
+		t.Fatal("duplicate call ID accepted across tool indexes")
+	}
+}
