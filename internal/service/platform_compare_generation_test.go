@@ -22,7 +22,7 @@ import (
 const platformCompareTestGenerationID = "93000000-0000-4000-8000-000000000001"
 
 type platformCompareTestEffects struct {
-	claim, get, fail, record, modelDone, modelFailed, persist, admission, admissionRelease, register, unregister, upstream, receipt, write, guid, runnerCancel int
+	claim, get, fail, record, modelDone, modelFailed, beginCommit, complete, reconcile, persist, admission, admissionRelease, register, unregister, upstream, receipt, totalTokens, write, guid, runnerCancel int
 }
 
 type platformCompareTestStore struct {
@@ -81,6 +81,14 @@ func (s *platformCompareTestStore) MarkModelFailedOwned(context.Context, int64, 
 	s.effects.modelFailed++
 	return PlatformGenerationSnapshot{}, nil
 }
+func (s *platformCompareTestStore) BeginCommitOwned(context.Context, int64, string, string, int64) (PlatformGenerationSnapshot, error) {
+	s.effects.beginCommit++
+	return PlatformGenerationSnapshot{}, errors.New("unexpected begin commit")
+}
+func (s *platformCompareTestStore) Complete(context.Context, int64, string, map[string]string, int64) (PlatformGenerationSnapshot, error) {
+	s.effects.complete++
+	return PlatformGenerationSnapshot{}, errors.New("unexpected complete")
+}
 func (s *platformCompareTestStore) RenewLease(context.Context, int64, string, string, int64) (PlatformGenerationSnapshot, error) {
 	return PlatformGenerationSnapshot{}, errors.New("unexpected renewal")
 }
@@ -91,10 +99,18 @@ func (s *platformCompareTestStore) ReconcileComplete(context.Context, int64, str
 	return PlatformGenerationSnapshot{}, errors.New("unexpected completion reconciliation")
 }
 
-type platformCompareTestPersistence struct{ effects *platformCompareTestEffects }
+type platformCompareTestPersistence struct {
+	effects *platformCompareTestEffects
+	input   PlatformGenerationPersistenceInput
+	result  func(PlatformGenerationPersistenceInput) (PlatformGenerationReceiptSnapshot, error)
+}
 
-func (p *platformCompareTestPersistence) Finalize(context.Context, *gorm.DB, PlatformGenerationPersistenceInput) (PlatformGenerationReceiptSnapshot, error) {
+func (p *platformCompareTestPersistence) Finalize(_ context.Context, _ *gorm.DB, input PlatformGenerationPersistenceInput) (PlatformGenerationReceiptSnapshot, error) {
 	p.effects.persist++
+	p.input = input
+	if p.result != nil {
+		return p.result(input)
+	}
 	return PlatformGenerationReceiptSnapshot{}, errors.New("unexpected persistence")
 }
 
@@ -196,6 +212,10 @@ func platformCompareTestRunner(now time.Time) (*PlatformCompareGenerationRunner,
 		loadReceipt: func(context.Context, *gorm.DB, int64, string) (PlatformGenerationReceiptSnapshot, error) {
 			effects.receipt++
 			return PlatformGenerationReceiptSnapshot{}, errors.New("unexpected receipt")
+		},
+		loadTotalTokens: func(context.Context, *gorm.DB, int64) (int64, error) {
+			effects.totalTokens++
+			return 0, nil
 		},
 		upstreamTimeout: time.Minute,
 		newRunnerContext: func(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
@@ -963,6 +983,17 @@ type platformCompareStreamStore struct {
 	mutationEvent        func(string)
 	ackCalls             int
 	acknowledgedSnapshot PlatformGenerationSnapshot
+	beginCommitCalls     int
+	beginCommitErr       error
+	beginCommitSnapshot  PlatformGenerationSnapshot
+	completeCalls        int
+	completeErr          error
+	completeGUIDs        map[string]string
+	completeSnapshot     PlatformGenerationSnapshot
+	reconcileCalls       int
+	reconcileGUIDs       map[string]string
+	reconcileErr         error
+	reconcileSnapshot    PlatformGenerationSnapshot
 	mutationActive       atomic.Int32
 	mutationMax          atomic.Int32
 }
@@ -1076,6 +1107,53 @@ func (s *platformCompareStreamStore) MarkModelFailedOwned(_ context.Context, _ i
 	})
 	return PlatformGenerationSnapshot{}, nil
 }
+func (s *platformCompareStreamStore) BeginCommitOwned(_ context.Context, _ int64, _, _ string, now int64) (PlatformGenerationSnapshot, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.beginCommitCalls++
+	if s.beginCommitErr != nil {
+		return clonePlatformGeneration(s.beginCommitSnapshot), s.beginCommitErr
+	}
+	snapshot := clonePlatformGeneration(s.beginCommitSnapshot)
+	if snapshot.GenerationID == "" {
+		snapshot = clonePlatformGeneration(s.claim.Snapshot)
+		for model := range snapshot.ModelStates {
+			if seq, ok := s.done[model]; ok {
+				snapshot.ModelStates[model] = PlatformGenerationModel{State: PlatformGenerationStateCompleted, Seq: seq}
+			} else if code, ok := s.failed[model]; ok {
+				snapshot.ModelStates[model] = PlatformGenerationModel{State: PlatformGenerationStateFailed, ErrorCode: code}
+			}
+		}
+		snapshot.State, snapshot.UpdatedAtMillis = PlatformGenerationStateCommitting, now
+		snapshot.LeaseOwnerSHA256, snapshot.LeaseUntilMillis = "", 0
+	}
+	s.settleSnapshot = clonePlatformGeneration(snapshot)
+	return snapshot, nil
+}
+func (s *platformCompareStreamStore) Complete(_ context.Context, _ int64, _ string, guids map[string]string, now int64) (PlatformGenerationSnapshot, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.completeCalls++
+	s.completeGUIDs = cloneStringMap(guids)
+	if s.completeErr != nil {
+		return clonePlatformGeneration(s.completeSnapshot), s.completeErr
+	}
+	snapshot := clonePlatformGeneration(s.completeSnapshot)
+	if snapshot.GenerationID == "" {
+		snapshot = clonePlatformGeneration(s.claim.Snapshot)
+		for model := range snapshot.ModelStates {
+			if seq, ok := s.done[model]; ok {
+				snapshot.ModelStates[model] = PlatformGenerationModel{State: PlatformGenerationStateCompleted, Seq: seq, AssistantMessageGUID: guids[model]}
+			} else if code, ok := s.failed[model]; ok {
+				snapshot.ModelStates[model] = PlatformGenerationModel{State: PlatformGenerationStateFailed, ErrorCode: code}
+			}
+		}
+		snapshot.State, snapshot.UpdatedAtMillis = PlatformGenerationStateCompleted, now
+		snapshot.LeaseOwnerSHA256, snapshot.LeaseUntilMillis = "", 0
+	}
+	s.settleSnapshot = clonePlatformGeneration(snapshot)
+	return snapshot, nil
+}
 func (s *platformCompareStreamStore) RenewLease(_ context.Context, userID int64, generationID, lease string, now int64) (PlatformGenerationSnapshot, error) {
 	var snapshot PlatformGenerationSnapshot
 	var renewErr error
@@ -1115,8 +1193,16 @@ func (s *platformCompareStreamStore) AcknowledgeCancelledOwned(_ context.Context
 	s.acknowledgedSnapshot = clonePlatformGeneration(snapshot)
 	return snapshot, nil
 }
-func (*platformCompareStreamStore) ReconcileComplete(context.Context, int64, string, map[string]string, int64) (PlatformGenerationSnapshot, error) {
-	return PlatformGenerationSnapshot{}, ErrPlatformGenerationUnavailable
+func (s *platformCompareStreamStore) ReconcileComplete(ctx context.Context, userID int64, generationID string, guids map[string]string, now int64) (PlatformGenerationSnapshot, error) {
+	s.mu.Lock()
+	s.reconcileCalls++
+	s.reconcileGUIDs = cloneStringMap(guids)
+	err, snapshot := s.reconcileErr, clonePlatformGeneration(s.reconcileSnapshot)
+	s.mu.Unlock()
+	if err != nil || snapshot.GenerationID != "" {
+		return snapshot, err
+	}
+	return s.Complete(ctx, userID, generationID, guids, now)
 }
 
 type platformCompareStreamBody struct {
@@ -1228,6 +1314,9 @@ func (e *platformCompareFailingEncoder) ModelError(model, code, requestID string
 		return nil
 	}
 	return e.inner.ModelError(model, code, requestID)
+}
+func (e *platformCompareFailingEncoder) DoneCompare(conversationGUID string, totalTokens int64, modelTokens map[string]int64) []byte {
+	return e.inner.DoneCompare(conversationGUID, totalTokens, modelTokens)
 }
 func (e *platformCompareFailingEncoder) Error(code, requestID string) []byte {
 	return e.inner.Error(code, requestID)
@@ -1743,6 +1832,14 @@ func platformCompareEventIndex(events []string, target string) int {
 	return -1
 }
 
+func cloneStringMap(values map[string]string) map[string]string {
+	result := make(map[string]string, len(values))
+	for key, value := range values {
+		result[key] = value
+	}
+	return result
+}
+
 func (f *platformCompareHandshakeTimerFactory) New(duration time.Duration) platformSingleTimer {
 	if duration != 10*time.Second {
 		panic("unexpected compare renewal duration")
@@ -2209,5 +2306,227 @@ func TestPlatformCompareGenerationCancelAndTerminalRaceHasOneAuthority(t *testin
 	}
 	if globalErrors != 1 {
 		t.Fatalf("race global errors=%d frames=%+v", globalErrors, frames)
+	}
+}
+
+func platformCompareReceiptFromInput(input PlatformGenerationPersistenceInput, guids map[string]string) PlatformGenerationReceiptSnapshot {
+	receipt := PlatformGenerationReceiptSnapshot{
+		UserID: input.UserID, GenerationID: input.GenerationID, Mode: input.Mode, ConversationGUID: 8101,
+		RequestedExistingConversation: input.ConversationGUID != nil, UserMessage: input.UserMessage,
+		CommittedAtMillis: input.NowMillis, Results: make([]PlatformGenerationCommittedResult, len(input.Results)),
+	}
+	for index, result := range input.Results {
+		committed := PlatformGenerationCommittedResult{Model: result.Model, State: result.State, ErrorCode: result.ErrorCode}
+		if result.State == PlatformGenerationStateCompleted {
+			committed.AssistantMessageGUID, committed.Content, committed.Tokens = guids[result.Model], result.Content, result.Tokens
+			receipt.SuccessfulModelCount++
+			receipt.DailyCallsCharged++
+			receipt.TotalTokens += result.Tokens
+		}
+		receipt.Results[index] = committed
+	}
+	return receipt
+}
+
+func platformCompareTask6DirectRun(t *testing.T, partial bool) (*platformCompareStreamStore, *platformCompareTestPersistence, *platformCompareFrameWriter, PlatformCompareGenerationRunResult, error) {
+	t.Helper()
+	scripts := map[string]func(context.Context, func(whitelabel.ChatCompletionChunk) error) *whitelabel.Error{
+		"model-b": platformCompareSuccessfulScript("model-b", "bravo"),
+		"model-a": platformCompareSuccessfulScript("model-a", "alpha"),
+	}
+	if partial {
+		scripts["model-a"] = func(context.Context, func(whitelabel.ChatCompletionChunk) error) *whitelabel.Error {
+			return whitelabel.ErrUpstreamUnavailable("provider secret")
+		}
+	}
+	runner, store, _, writer := platformCompareStreamFixture(t, []string{"model-b", "model-a"}, scripts)
+	persistence := &platformCompareTestPersistence{effects: runner.deps.persistence.(*platformCompareTestPersistence).effects}
+	persistence.result = func(input PlatformGenerationPersistenceInput) (PlatformGenerationReceiptSnapshot, error) {
+		return platformCompareReceiptFromInput(input, map[string]string{"model-b": "9101", "model-a": "9102"}), nil
+	}
+	runner.deps.persistence = persistence
+	runner.deps.loadTotalTokens = func(context.Context, *gorm.DB, int64) (int64, error) {
+		persistence.effects.totalTokens++
+		return 777, nil
+	}
+	input := platformCompareTestInput()
+	input.Models, input.Write = []string{"model-b", "model-a"}, writer.Write
+	result, err := runner.Run(input)
+	return store, persistence, writer, result, err
+}
+
+func TestPlatformCompareGenerationPersistsAllSuccessesInRequestOrder(t *testing.T) {
+	store, persistence, _, result, err := platformCompareTask6DirectRun(t, false)
+	input := persistence.input
+	if err != nil || !result.Started || persistence.effects.persist != 1 || store.beginCommitCalls != 1 || store.completeCalls != 1 || store.reconcileCalls != 0 || !reflect.DeepEqual(input.Models, []string{"model-b", "model-a"}) || input.ConversationGUID != nil || input.ReservedConversationGUID == nil || *input.ReservedConversationGUID != 8101 || input.UserMessage != "hello" || len(input.Results) != 2 || input.Results[0].Model != "model-b" || input.Results[0].Content != "bravo" || input.Results[1].Model != "model-a" || input.Results[1].Content != "alpha" {
+		t.Fatalf("result=%+v err=%v input=%+v store=%+v", result, err, input, store)
+	}
+}
+
+func TestPlatformCompareGenerationPersistsPartialSuccessAndFailedReceiptResult(t *testing.T) {
+	store, persistence, _, result, err := platformCompareTask6DirectRun(t, true)
+	failed := persistence.input.Results[1]
+	if err != nil || !result.Started || len(persistence.input.Results) != 2 || failed.Model != "model-a" || failed.State != PlatformGenerationStateFailed || failed.Content != "" || failed.Tokens != 0 || failed.Seq != 0 || failed.ErrorCode != "gateway_upstream_error" || len(store.completeGUIDs) != 1 || store.completeGUIDs["model-b"] != "9101" {
+		t.Fatalf("result=%+v err=%v failed=%+v guids=%v", result, err, failed, store.completeGUIDs)
+	}
+}
+
+func TestPlatformCompareGenerationChargesOnlySuccessfulModels(t *testing.T) {
+	_, persistence, _, _, err := platformCompareTask6DirectRun(t, true)
+	receipt, receiptErr := persistence.result(persistence.input)
+	if err != nil || receiptErr != nil || receipt.SuccessfulModelCount != 1 || receipt.DailyCallsCharged != 1 || receipt.TotalTokens != 1 {
+		t.Fatalf("err=%v receipt=%+v receiptErr=%v", err, receipt, receiptErr)
+	}
+}
+
+func TestPlatformCompareGenerationDoneUsesAuthoritativeGUIDsAndTokenTotal(t *testing.T) {
+	store, _, writer, result, err := platformCompareTask6DirectRun(t, true)
+	frames := platformCompareDecodeFrames(t, writer.frames)
+	done := 0
+	for _, frame := range frames {
+		if frame.event == "done" {
+			done++
+			if frame.data["conversation_guid"] != "8101" || frame.data["total_tokens_used"] != float64(777) {
+				t.Fatalf("done=%+v", frame)
+			}
+			models, ok := frame.data["models"].(map[string]interface{})
+			completed, completedOK := models["model-b"].(map[string]interface{})
+			failed, failedOK := models["model-a"].(map[string]interface{})
+			if !ok || !completedOK || !failedOK || completed["status"] != "completed" || completed["tokens"] != float64(1) || failed["status"] != "failed" || failed["code"] != "gateway_upstream_error" {
+				t.Fatalf("done models=%+v", models)
+			}
+		}
+	}
+	if err != nil || !result.Started || done != 1 || store.completeGUIDs["model-b"] != "9101" {
+		t.Fatalf("result=%+v err=%v done=%d store=%+v", result, err, done, store)
+	}
+}
+
+func platformCompareTask6RecoveryRun(t *testing.T, beginErr error, receiptMutate func(*PlatformGenerationReceiptSnapshot)) (*platformCompareStreamStore, *platformCompareTestEffects, *platformCompareFrameWriter, PlatformCompareGenerationRunResult, error) {
+	t.Helper()
+	models := []string{"model-a", "model-b"}
+	scripts := map[string]func(context.Context, func(whitelabel.ChatCompletionChunk) error) *whitelabel.Error{
+		"model-a": platformCompareSuccessfulScript("model-a", "alpha"),
+		"model-b": platformCompareSuccessfulScript("model-b", "bravo"),
+	}
+	runner, store, _, writer := platformCompareStreamFixture(t, models, scripts)
+	effects := runner.deps.persistence.(*platformCompareTestPersistence).effects
+	store.beginCommitErr = beginErr
+	committing := clonePlatformGeneration(store.claim.Snapshot)
+	committing.State, committing.LeaseOwnerSHA256, committing.LeaseUntilMillis = PlatformGenerationStateCommitting, "", 0
+	committing.ModelStates["model-a"] = PlatformGenerationModel{State: PlatformGenerationStateCompleted, Seq: 1}
+	committing.ModelStates["model-b"] = PlatformGenerationModel{State: PlatformGenerationStateCompleted, Seq: 1}
+	store.settleSnapshot = committing
+	completed := clonePlatformGeneration(committing)
+	completed.State = PlatformGenerationStateCompleted
+	completed.ModelStates["model-a"] = PlatformGenerationModel{State: PlatformGenerationStateCompleted, Seq: 1, AssistantMessageGUID: "9201"}
+	completed.ModelStates["model-b"] = PlatformGenerationModel{State: PlatformGenerationStateCompleted, Seq: 1, AssistantMessageGUID: "9202"}
+	store.reconcileSnapshot = completed
+	expected := PlatformGenerationPersistenceInput{
+		UserID: 17, GenerationID: platformCompareTestGenerationID, Mode: PlatformGenerationModeCompare, Models: models,
+		ReservedConversationGUID: func() *int64 { value := int64(8101); return &value }(), UserMessage: "hello",
+		Results: []PlatformGenerationPersistenceResult{
+			{Model: "model-a", State: PlatformGenerationStateCompleted, Content: "alpha", Tokens: 1, Seq: 1},
+			{Model: "model-b", State: PlatformGenerationStateCompleted, Content: "bravo", Tokens: 1, Seq: 1},
+		}, NowMillis: 10_000,
+	}
+	receipt := platformCompareReceiptFromInput(expected, map[string]string{"model-a": "9201", "model-b": "9202"})
+	if receiptMutate != nil {
+		receiptMutate(&receipt)
+	}
+	runner.deps.loadReceipt = func(context.Context, *gorm.DB, int64, string) (PlatformGenerationReceiptSnapshot, error) {
+		effects.receipt++
+		return receipt, nil
+	}
+	runner.deps.loadTotalTokens = func(context.Context, *gorm.DB, int64) (int64, error) {
+		effects.totalTokens++
+		return 888, nil
+	}
+	input := platformCompareTestInput()
+	input.Models, input.Write = models, writer.Write
+	result, err := runner.Run(input)
+	return store, effects, writer, result, err
+}
+
+func TestPlatformCompareGenerationCommitUnknownReconcilesWithoutSQLReplay(t *testing.T) {
+	store, effects, _, result, err := platformCompareTask6RecoveryRun(t, ErrPlatformGenerationUnavailable, nil)
+	if err != nil || !result.Started || effects.persist != 0 || effects.receipt != 1 || store.beginCommitCalls != 1 || store.completeCalls != 0 || store.reconcileCalls != 1 || len(store.reconcileGUIDs) != 2 {
+		t.Fatalf("result=%+v err=%v effects=%+v store=%+v", result, err, effects, store)
+	}
+}
+
+func TestPlatformCompareGenerationObservedCommittingReadsReceiptAndNeverFinalizes(t *testing.T) {
+	store, effects, _, _, err := platformCompareTask6RecoveryRun(t, ErrPlatformGenerationConflict, nil)
+	if err != nil || effects.persist != 0 || effects.receipt != 1 || store.reconcileCalls != 1 {
+		t.Fatalf("err=%v effects=%+v store=%+v", err, effects, store)
+	}
+}
+
+func TestPlatformCompareGenerationReconcileRejectsIncompleteReceiptGraph(t *testing.T) {
+	store, effects, writer, _, err := platformCompareTask6RecoveryRun(t, ErrPlatformGenerationConflict, func(receipt *PlatformGenerationReceiptSnapshot) {
+		receipt.Results = receipt.Results[:1]
+	})
+	if !errors.Is(err, ErrPlatformCompareGenerationUnavailable) || effects.persist != 0 || effects.receipt != 1 || store.reconcileCalls != 0 {
+		t.Fatalf("err=%v effects=%+v store=%+v", err, effects, store)
+	}
+	for _, frame := range platformCompareDecodeFrames(t, writer.frames) {
+		if frame.event == "done" {
+			t.Fatal("incomplete recovery receipt emitted done")
+		}
+	}
+}
+
+func TestPlatformCompareGenerationRejectsInvalidReceiptBeforeComplete(t *testing.T) {
+	scripts := map[string]func(context.Context, func(whitelabel.ChatCompletionChunk) error) *whitelabel.Error{
+		"model-a": platformCompareSuccessfulScript("model-a", "alpha"),
+		"model-b": platformCompareSuccessfulScript("model-b", "bravo"),
+	}
+	runner, store, _, writer := platformCompareStreamFixture(t, []string{"model-a", "model-b"}, scripts)
+	effects := runner.deps.persistence.(*platformCompareTestPersistence).effects
+	persistence := &platformCompareTestPersistence{effects: effects, result: func(input PlatformGenerationPersistenceInput) (PlatformGenerationReceiptSnapshot, error) {
+		receipt := platformCompareReceiptFromInput(input, map[string]string{"model-a": "9301", "model-b": "9302"})
+		receipt.Results[0].Model = "wrong-model"
+		return receipt, nil
+	}}
+	runner.deps.persistence = persistence
+	runner.deps.loadReceipt = func(context.Context, *gorm.DB, int64, string) (PlatformGenerationReceiptSnapshot, error) {
+		effects.receipt++
+		return PlatformGenerationReceiptSnapshot{}, ErrPlatformGenerationPersistenceIntegrity
+	}
+	runner.deps.loadTotalTokens = func(context.Context, *gorm.DB, int64) (int64, error) { return 1, nil }
+	input := platformCompareTestInput()
+	input.Models, input.Write = []string{"model-a", "model-b"}, writer.Write
+	_, err := runner.Run(input)
+	if !errors.Is(err, ErrPlatformCompareGenerationUnavailable) || effects.persist != 1 || effects.receipt != 1 || store.completeCalls != 0 || store.reconcileCalls != 0 {
+		t.Fatalf("err=%v effects=%+v store=%+v", err, effects, store)
+	}
+}
+
+func TestPlatformCompareGenerationUnprovenCompletionNeverEmitsDone(t *testing.T) {
+	scripts := map[string]func(context.Context, func(whitelabel.ChatCompletionChunk) error) *whitelabel.Error{
+		"model-a": platformCompareSuccessfulScript("model-a", "alpha"),
+		"model-b": platformCompareSuccessfulScript("model-b", "bravo"),
+	}
+	runner, store, _, writer := platformCompareStreamFixture(t, []string{"model-a", "model-b"}, scripts)
+	effects := runner.deps.persistence.(*platformCompareTestPersistence).effects
+	runner.deps.persistence = &platformCompareTestPersistence{effects: effects, result: func(input PlatformGenerationPersistenceInput) (PlatformGenerationReceiptSnapshot, error) {
+		return platformCompareReceiptFromInput(input, map[string]string{"model-a": "9401", "model-b": "9402"}), nil
+	}}
+	store.completeErr = ErrPlatformGenerationUnavailable
+	runner.deps.loadReceipt = func(context.Context, *gorm.DB, int64, string) (PlatformGenerationReceiptSnapshot, error) {
+		effects.receipt++
+		return PlatformGenerationReceiptSnapshot{}, ErrPlatformGenerationPersistenceIntegrity
+	}
+	runner.deps.loadTotalTokens = func(context.Context, *gorm.DB, int64) (int64, error) { return 1, nil }
+	input := platformCompareTestInput()
+	input.Models, input.Write = []string{"model-a", "model-b"}, writer.Write
+	_, err := runner.Run(input)
+	if !errors.Is(err, ErrPlatformCompareGenerationUnavailable) || effects.persist != 1 || effects.receipt != 1 || store.completeCalls != 1 || store.reconcileCalls != 0 {
+		t.Fatalf("err=%v effects=%+v store=%+v", err, effects, store)
+	}
+	for _, frame := range platformCompareDecodeFrames(t, writer.frames) {
+		if frame.event == "done" {
+			t.Fatal("unproven completion emitted done")
+		}
 	}
 }

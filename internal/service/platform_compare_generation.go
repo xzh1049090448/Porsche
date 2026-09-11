@@ -30,6 +30,8 @@ type platformCompareGenerationStore interface {
 	RecordDeltaOwned(context.Context, int64, string, string, string, int64, int64) (PlatformGenerationSnapshot, error)
 	MarkModelDoneOwned(context.Context, int64, string, string, string, int64, int64) (PlatformGenerationSnapshot, error)
 	MarkModelFailedOwned(context.Context, int64, string, string, string, string, int64) (PlatformGenerationSnapshot, error)
+	BeginCommitOwned(context.Context, int64, string, string, int64) (PlatformGenerationSnapshot, error)
+	Complete(context.Context, int64, string, map[string]string, int64) (PlatformGenerationSnapshot, error)
 	RenewLease(context.Context, int64, string, string, int64) (PlatformGenerationSnapshot, error)
 	AcknowledgeCancelledOwned(context.Context, int64, string, string, int64) (PlatformGenerationSnapshot, error)
 	ReconcileComplete(context.Context, int64, string, map[string]string, int64) (PlatformGenerationSnapshot, error)
@@ -40,6 +42,7 @@ type platformCompareEncoder interface {
 	Delta(string, int64, string) []byte
 	ModelDone(string, int64) []byte
 	ModelError(string, string, string) []byte
+	DoneCompare(string, int64, map[string]int64) []byte
 	Error(string, string) []byte
 	Err() error
 }
@@ -74,6 +77,7 @@ type platformCompareGenerationDeps struct {
 	newGUID            func() int64
 	loadConversation   func(context.Context, *gorm.DB, int64, int64) error
 	loadReceipt        func(context.Context, *gorm.DB, int64, string) (PlatformGenerationReceiptSnapshot, error)
+	loadTotalTokens    func(context.Context, *gorm.DB, int64) (int64, error)
 	upstreamTimeout    time.Duration
 	newRunnerContext   func(context.Context, time.Duration) (context.Context, context.CancelFunc)
 	newEncoder         func(string, []string) (platformCompareEncoder, error)
@@ -107,6 +111,7 @@ func NewPlatformCompareGenerationRunner(
 		newGUID:          persistence.NextGUID,
 		loadConversation: loadPlatformSingleConversation,
 		loadReceipt:      LoadPlatformGenerationReceipt,
+		loadTotalTokens:  loadPlatformSingleTotalTokens,
 		upstreamTimeout:  upstreamTimeout,
 		newRunnerContext: context.WithTimeout,
 		newEncoder: func(generationID string, models []string) (platformCompareEncoder, error) {
@@ -123,7 +128,7 @@ func NewPlatformCompareGenerationRunner(
 func validPlatformCompareGenerationDeps(deps platformCompareGenerationDeps) bool {
 	return deps.db != nil && deps.store != nil && deps.persistence != nil && deps.registry != nil &&
 		deps.upstream != nil && deps.rootContext != nil && deps.now != nil && deps.newGUID != nil &&
-		deps.loadConversation != nil && deps.loadReceipt != nil && deps.upstreamTimeout > 0 && deps.newRunnerContext != nil && deps.newEncoder != nil && deps.newTimer != nil
+		deps.loadConversation != nil && deps.loadReceipt != nil && deps.loadTotalTokens != nil && deps.upstreamTimeout > 0 && deps.newRunnerContext != nil && deps.newEncoder != nil && deps.newTimer != nil
 }
 
 type platformCompareRun struct {
@@ -270,14 +275,21 @@ func (r *PlatformCompareGenerationRunner) Run(input PlatformCompareGenerationInp
 	entry, result, err := r.enterValidated(validated)
 	if entry != nil {
 		execution := r.runModels(entry)
+		execution.enterTerminalPhase()
 		var outcome platformCompareConvergenceOutcome
+		completed := false
 		if execution.fatal {
 			outcome = r.convergeCompareFailure(execution, "internal_error")
 		} else if platformCompareAllModelsFailed(execution.results) {
 			outcome = r.convergeCompareFailure(execution, platformCompareAllFailedCode(execution.results))
+		} else {
+			completed = r.persistCompareCompletion(execution)
 		}
 		r.emitCompareConvergence(execution, outcome)
 		entry.Release()
+		if completed {
+			return result, nil
+		}
 		if err == nil {
 			err = ErrPlatformCompareGenerationUnavailable
 		}
@@ -301,6 +313,10 @@ type platformCompareExecution struct {
 	results               []platformCompareModelResult
 	fatal                 bool
 	globalTerminalAttempt bool
+	terminalPhase         bool
+	renewalStop           chan struct{}
+	renewalDone           chan struct{}
+	renewalStopOnce       sync.Once
 }
 
 type platformCompareConvergenceOutcome struct {
@@ -310,12 +326,10 @@ type platformCompareConvergenceOutcome struct {
 }
 
 func (r *PlatformCompareGenerationRunner) runModels(entry *platformCompareOwnedRun) *platformCompareExecution {
-	execution := &platformCompareExecution{entry: entry, results: make([]platformCompareModelResult, len(entry.run.models))}
-	renewalDone := make(chan struct{})
-	renewalStop := make(chan struct{})
+	execution := &platformCompareExecution{entry: entry, results: make([]platformCompareModelResult, len(entry.run.models)), renewalStop: make(chan struct{}), renewalDone: make(chan struct{})}
 	go func() {
-		defer close(renewalDone)
-		r.renewCompareLease(execution, renewalStop)
+		defer close(execution.renewalDone)
+		r.renewCompareLease(execution, execution.renewalStop)
 	}()
 	var workers sync.WaitGroup
 	workers.Add(len(entry.run.models))
@@ -328,14 +342,20 @@ func (r *PlatformCompareGenerationRunner) runModels(entry *platformCompareOwnedR
 		}()
 	}
 	workers.Wait()
-	close(renewalStop)
-	<-renewalDone
+	return execution
+}
+
+func (execution *platformCompareExecution) enterTerminalPhase() {
 	execution.mu.Lock()
-	if entry.ctx.Err() != nil {
+	execution.terminalPhase = true
+	execution.renewalStopOnce.Do(func() { close(execution.renewalStop) })
+	execution.mu.Unlock()
+	<-execution.renewalDone
+	execution.mu.Lock()
+	if execution.entry.ctx.Err() != nil {
 		execution.fatal = true
 	}
 	execution.mu.Unlock()
-	return execution
 }
 
 func (r *PlatformCompareGenerationRunner) renewCompareLease(execution *platformCompareExecution, stop <-chan struct{}) {
@@ -376,7 +396,7 @@ func (r *PlatformCompareGenerationRunner) renewCompareLease(execution *platformC
 			if r.deps.renewalSerialEvent != nil {
 				r.deps.renewalSerialEvent("acquired")
 			}
-			if execution.fatal {
+			if execution.fatal || execution.terminalPhase {
 				execution.mu.Unlock()
 				return
 			}
@@ -508,11 +528,12 @@ func validPlatformCompareTerminalSnapshot(snapshot PlatformGenerationSnapshot, r
 
 func platformCompareReceiptGUIDs(receipt PlatformGenerationReceiptSnapshot, run platformCompareRun, results []platformCompareModelResult) (map[string]string, bool) {
 	if receipt.UserID != run.userID || receipt.GenerationID != run.generationID || receipt.Mode != PlatformGenerationModeCompare || receipt.ConversationGUID != run.conversationGUID ||
-		receipt.RequestedExistingConversation != (run.existingConversationGUID != nil) || receipt.UserMessage != run.userMessage || receipt.CommittedAtMillis <= 0 ||
+		receipt.RequestedExistingConversation != (run.existingConversationGUID != nil) || receipt.UserMessage != run.userMessage || receipt.CommittedAtMillis <= 0 || !platformSSEV2SafeInteger(receipt.CommittedAtMillis) || !platformSSEV2SafeInteger(receipt.TotalTokens) ||
 		len(receipt.Results) != len(run.models) || len(results) != len(run.models) {
 		return nil, false
 	}
 	guids := make(map[string]string)
+	seenGUIDs := make(map[string]struct{})
 	var successful int
 	var totalTokens int64
 	for index, model := range run.models {
@@ -522,11 +543,18 @@ func platformCompareReceiptGUIDs(receipt PlatformGenerationReceiptSnapshot, run 
 		}
 		switch local.state {
 		case PlatformGenerationStateCompleted:
-			if !platformGenerationMessageGUID(committed.AssistantMessageGUID) || committed.Content != local.content || committed.Tokens != local.tokens || committed.ErrorCode != "" {
+			if !platformGenerationMessageGUID(committed.AssistantMessageGUID) || committed.Content != local.content || committed.Tokens != local.tokens || !platformSSEV2SafeInteger(committed.Tokens) || committed.ErrorCode != "" {
 				return nil, false
 			}
+			if _, duplicate := seenGUIDs[committed.AssistantMessageGUID]; duplicate {
+				return nil, false
+			}
+			seenGUIDs[committed.AssistantMessageGUID] = struct{}{}
 			guids[model] = committed.AssistantMessageGUID
 			successful++
+			if local.tokens > platformSSEV2MaxSafeInteger-totalTokens {
+				return nil, false
+			}
 			totalTokens += local.tokens
 		case PlatformGenerationStateFailed:
 			if committed.AssistantMessageGUID != "" || committed.Content != "" || committed.Tokens != 0 || committed.ErrorCode != local.errorCode {
@@ -543,21 +571,156 @@ func validPlatformCompareCompleted(snapshot PlatformGenerationSnapshot, run plat
 	if !validPlatformCompareSnapshotIdentity(snapshot, run) || snapshot.State != PlatformGenerationStateCompleted || snapshot.LeaseOwnerSHA256 != "" || snapshot.LeaseUntilMillis != 0 || len(results) != len(run.models) {
 		return false
 	}
+	successes := 0
 	for index, model := range run.models {
-		state := snapshot.ModelStates[model]
-		switch results[index].state {
+		state, result := snapshot.ModelStates[model], results[index]
+		if state.Seq != result.lastSeq {
+			return false
+		}
+		switch result.state {
 		case PlatformGenerationStateCompleted:
 			if state.State != PlatformGenerationStateCompleted || state.AssistantMessageGUID != guids[model] {
 				return false
 			}
+			successes++
 		case PlatformGenerationStateFailed:
-			if state.State != PlatformGenerationStateFailed || state.ErrorCode != results[index].errorCode || state.AssistantMessageGUID != "" {
+			if state.State != PlatformGenerationStateFailed || state.ErrorCode != result.errorCode || state.AssistantMessageGUID != "" {
 				return false
 			}
 		default:
 			return false
 		}
 	}
+	return len(guids) == successes
+}
+
+func (r *PlatformCompareGenerationRunner) persistCompareCompletion(execution *platformCompareExecution) bool {
+	input, ok := platformComparePersistenceInput(execution.entry.run, execution.results, r.nowMillis())
+	if !ok {
+		return false
+	}
+	execution.mu.Lock()
+	committing, beginErr := r.deps.store.BeginCommitOwned(execution.entry.ctx, execution.entry.run.userID, execution.entry.run.generationID, execution.entry.run.leaseToken, input.NowMillis)
+	execution.mu.Unlock()
+	if beginErr != nil || !validPlatformCompareCommitting(committing, execution.entry.run, execution.results) {
+		return r.recoverCompareCompletion(execution)
+	}
+	receipt, finalizeErr := r.deps.persistence.Finalize(execution.entry.ctx, r.deps.db, input)
+	guids, receiptValid := platformCompareReceiptGUIDs(receipt, execution.entry.run, execution.results)
+	if finalizeErr != nil || !receiptValid {
+		return r.recoverCompareCompletion(execution)
+	}
+	execution.mu.Lock()
+	completed, completeErr := r.deps.store.Complete(execution.entry.ctx, execution.entry.run.userID, execution.entry.run.generationID, guids, r.nowMillis())
+	execution.mu.Unlock()
+	if completeErr != nil || !validPlatformCompareCompleted(completed, execution.entry.run, execution.results, guids) {
+		return r.recoverCompareCompletion(execution)
+	}
+	return r.emitCompareDone(execution.entry.ctx, execution, receipt)
+}
+
+func platformComparePersistenceInput(run platformCompareRun, results []platformCompareModelResult, nowMillis int64) (PlatformGenerationPersistenceInput, bool) {
+	if len(results) != len(run.models) || !platformSSEV2SafeInteger(nowMillis) || nowMillis <= 0 {
+		return PlatformGenerationPersistenceInput{}, false
+	}
+	input := PlatformGenerationPersistenceInput{
+		UserID: run.userID, GenerationID: run.generationID, Mode: PlatformGenerationModeCompare,
+		Models: append([]string(nil), run.models...), ConversationGUID: cloneInt64Pointer(run.existingConversationGUID),
+		ReservedConversationGUID: cloneInt64Pointer(run.reservedConversationGUID), UserMessage: run.userMessage,
+		Results: make([]PlatformGenerationPersistenceResult, len(results)), NowMillis: nowMillis,
+	}
+	successes := 0
+	for index, result := range results {
+		if !result.terminalSet || result.model != run.models[index] || !platformSSEV2SafeInteger(result.lastSeq) {
+			return PlatformGenerationPersistenceInput{}, false
+		}
+		persisted := PlatformGenerationPersistenceResult{Model: result.model, State: result.state, Seq: result.lastSeq}
+		switch result.state {
+		case PlatformGenerationStateCompleted:
+			if result.content == "" || !utf8.ValidString(result.content) || !platformSSEV2SafeInteger(result.tokens) {
+				return PlatformGenerationPersistenceInput{}, false
+			}
+			persisted.Content, persisted.Tokens = result.content, result.tokens
+			successes++
+		case PlatformGenerationStateFailed:
+			if !platformGenerationStableCode(result.errorCode) {
+				return PlatformGenerationPersistenceInput{}, false
+			}
+			persisted.ErrorCode = result.errorCode
+		default:
+			return PlatformGenerationPersistenceInput{}, false
+		}
+		input.Results[index] = persisted
+	}
+	return input, successes > 0
+}
+
+func validPlatformCompareCommitting(snapshot PlatformGenerationSnapshot, run platformCompareRun, results []platformCompareModelResult) bool {
+	if !validPlatformCompareSnapshotIdentity(snapshot, run) || snapshot.State != PlatformGenerationStateCommitting || snapshot.LeaseOwnerSHA256 != "" || snapshot.LeaseUntilMillis != 0 || len(results) != len(run.models) {
+		return false
+	}
+	for index, model := range run.models {
+		state, result := snapshot.ModelStates[model], results[index]
+		if state.State != result.state || state.Seq != result.lastSeq || state.AssistantMessageGUID != "" {
+			return false
+		}
+		if result.state == PlatformGenerationStateFailed {
+			if state.ErrorCode != result.errorCode {
+				return false
+			}
+		} else if state.ErrorCode != "" {
+			return false
+		}
+	}
+	return true
+}
+
+func (r *PlatformCompareGenerationRunner) recoverCompareCompletion(execution *platformCompareExecution) bool {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.deps.rootContext), 2*time.Second)
+	defer cancel()
+	execution.mu.Lock()
+	authority, getErr := r.deps.store.Get(ctx, execution.entry.run.userID, execution.entry.run.generationID)
+	execution.mu.Unlock()
+	if getErr != nil || !validPlatformCompareSnapshotIdentity(authority, execution.entry.run) {
+		return false
+	}
+	if authority.State != PlatformGenerationStateCommitting && authority.State != PlatformGenerationStateCompleted {
+		outcome := r.convergeCompareFailure(execution, "internal_error")
+		r.emitCompareConvergence(execution, outcome)
+		return false
+	}
+	receipt, receiptErr := r.deps.loadReceipt(ctx, r.deps.db, execution.entry.run.userID, execution.entry.run.generationID)
+	guids, valid := platformCompareReceiptGUIDs(receipt, execution.entry.run, execution.results)
+	if receiptErr != nil || !valid {
+		return false
+	}
+	execution.mu.Lock()
+	completed, reconcileErr := r.deps.store.ReconcileComplete(ctx, execution.entry.run.userID, execution.entry.run.generationID, guids, r.nowMillis())
+	execution.mu.Unlock()
+	if reconcileErr != nil || !validPlatformCompareCompleted(completed, execution.entry.run, execution.results, guids) {
+		return false
+	}
+	return r.emitCompareDone(ctx, execution, receipt)
+}
+
+func (r *PlatformCompareGenerationRunner) emitCompareDone(ctx context.Context, execution *platformCompareExecution, receipt PlatformGenerationReceiptSnapshot) bool {
+	totalTokens, err := r.deps.loadTotalTokens(ctx, r.deps.db, execution.entry.run.userID)
+	if err != nil || !platformSSEV2SafeInteger(totalTokens) {
+		return false
+	}
+	modelTokens := make(map[string]int64, receipt.SuccessfulModelCount)
+	for _, result := range receipt.Results {
+		if result.State == PlatformGenerationStateCompleted {
+			modelTokens[result.Model] = result.Tokens
+		}
+	}
+	execution.mu.Lock()
+	defer execution.mu.Unlock()
+	frame := execution.entry.run.encoder.DoneCompare(strconv.FormatInt(receipt.ConversationGUID, 10), totalTokens, modelTokens)
+	if frame == nil || execution.entry.run.encoder.Err() != nil {
+		return false
+	}
+	execution.entry.output.emit(frame)
 	return true
 }
 
@@ -569,7 +732,7 @@ func (r *PlatformCompareGenerationRunner) runModel(execution *platformCompareExe
 		defer execution.entry.bodies.Release(model)
 	}
 	if upstreamErr != nil || response == nil || response.Body == nil || response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		r.failModel(execution, index, model, platformCompareUpstreamCause(execution.entry.ctx))
+		r.failModel(execution, index, model, state.seq, platformCompareUpstreamCause(execution.entry.ctx))
 		return
 	}
 	var callbackCause error
@@ -627,11 +790,11 @@ func (r *PlatformCompareGenerationRunner) runModel(execution *platformCompareExe
 		return nil
 	})
 	if callbackCause != nil {
-		r.failModel(execution, index, model, callbackCause)
+		r.failModel(execution, index, model, state.seq, callbackCause)
 		return
 	}
 	if consumeErr != nil || !state.complete() {
-		r.failModel(execution, index, model, platformCompareUpstreamCause(execution.entry.ctx))
+		r.failModel(execution, index, model, state.seq, platformCompareUpstreamCause(execution.entry.ctx))
 		return
 	}
 	execution.mu.Lock()
@@ -682,7 +845,7 @@ func platformCompareStableCode(cause error) string {
 	}
 }
 
-func (r *PlatformCompareGenerationRunner) failModel(execution *platformCompareExecution, index int, model string, cause error) {
+func (r *PlatformCompareGenerationRunner) failModel(execution *platformCompareExecution, index int, model string, lastSeq int64, cause error) {
 	execution.mu.Lock()
 	if execution.fatal || execution.results[index].terminalSet {
 		execution.mu.Unlock()
@@ -711,7 +874,7 @@ func (r *PlatformCompareGenerationRunner) failModel(execution *platformCompareEx
 		execution.entry.cancelRunner()
 		return
 	}
-	execution.results[index] = platformCompareModelResult{model: model, state: PlatformGenerationStateFailed, errorCode: code, terminalSet: true}
+	execution.results[index] = platformCompareModelResult{model: model, lastSeq: lastSeq, state: PlatformGenerationStateFailed, errorCode: code, terminalSet: true}
 	execution.entry.output.emit(frame)
 	execution.mu.Unlock()
 }
