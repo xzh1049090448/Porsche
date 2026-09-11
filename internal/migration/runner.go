@@ -237,11 +237,6 @@ func Up(ctx context.Context, db *gorm.DB, nextGUID func() int64, nowMillis func(
 						return err
 					}
 				}
-				if migration.Version == "0005" {
-					if err := VerifyAdminOperationSafetySchema(ctx, conn); err != nil {
-						return err
-					}
-				}
 				if migration.Version == "0007" {
 					if err := VerifyBusinessGroupsSchema(ctx, conn); err != nil {
 						return err
@@ -368,11 +363,6 @@ func Up(ctx context.Context, db *gorm.DB, nextGUID func() int64, nowMillis func(
 			}
 			if migration.Version == "0004" {
 				if err := VerifyAdminUsersReadCountIndex(ctx, conn); err != nil {
-					return err
-				}
-			}
-			if migration.Version == "0005" {
-				if err := VerifyAdminOperationSafetySchema(ctx, conn); err != nil {
 					return err
 				}
 			}
