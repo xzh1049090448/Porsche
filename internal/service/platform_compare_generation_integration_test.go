@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -458,7 +459,7 @@ func requirePlatformCompareIntegrationDisconnect(t *testing.T) {
 	requirePlatformCompareIntegrationReceipt(t, f, generationID, platformCompareIntegrationExpected(modelIDs, nil), before)
 }
 
-func requirePlatformCompareIntegrationCancel(t *testing.T) {
+func requirePlatformCompareIntegrationCancelBeforeResponse(t *testing.T) {
 	release, started := make(chan struct{}), make(chan string, 3)
 	f := requirePlatformCompareIntegrationFixture(t, platformCompareIntegrationHandler(nil, release, started, nil))
 	modelIDs, generationID := []string{"model-a", "model-b", "model-c"}, platformCompareIntegrationGenerationID()
@@ -490,6 +491,58 @@ func requirePlatformCompareIntegrationCancel(t *testing.T) {
 	snapshot, err := f.store.Get(context.Background(), f.user.ID, generationID)
 	if err != nil || snapshot.State != PlatformGenerationStateCancelled {
 		t.Fatalf("cancel snapshot invalid")
+	}
+}
+
+func requirePlatformCompareIntegrationCancelDuringConsumption(t *testing.T) {
+	started := make(chan string, 2)
+	handler := func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			Model string `json:"model"`
+		}
+		if json.NewDecoder(r.Body).Decode(&request) != nil || request.Model == "" {
+			http.Error(w, "invalid", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprintf(w, "data: {\"id\":\"safe\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"fixture-provider\",\"choices\":[{\"index\":0,\"delta\":{\"content\":%q}}]}\n\n", "partial-"+request.Model)
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		started <- request.Model
+		<-r.Context().Done()
+	}
+	f := requirePlatformCompareIntegrationFixture(t, handler)
+	modelIDs, generationID := []string{"model-a", "model-b"}, platformCompareIntegrationGenerationID()
+	before := f.counts(t)
+	type runOutcome struct {
+		result PlatformCompareGenerationRunResult
+		err    error
+	}
+	done := make(chan runOutcome, 1)
+	go func() {
+		result, err := f.run(context.Background(), generationID, modelIDs, nil)
+		done <- runOutcome{result: result, err: err}
+	}()
+	<-started
+	<-started
+	waitPlatformCompareIntegrationSnapshot(t, f, generationID, func(snapshot PlatformGenerationSnapshot) bool {
+		return snapshot.State == PlatformGenerationStateRunning && snapshot.ModelStates["model-a"].Seq == 1 && snapshot.ModelStates["model-b"].Seq == 1
+	})
+	view, _, cancelErr := f.control.Cancel(context.Background(), f.user.ID, generationID)
+	if cancelErr != nil || view.Status != "cancelled" {
+		t.Fatalf("cancel owned-body compare view=%+v err=%v", view, cancelErr)
+	}
+	outcome := <-done
+	if !outcome.result.Started || !errors.Is(outcome.err, ErrPlatformCompareGenerationUnavailable) {
+		t.Fatalf("cancel owned-body run result=%+v err=%v", outcome.result, outcome.err)
+	}
+	if after := f.counts(t); after != before {
+		t.Fatalf("owned-body cancel durable mutation: before=%+v after=%+v", before, after)
+	}
+	snapshot, err := f.store.Get(context.Background(), f.user.ID, generationID)
+	if err != nil || snapshot.State != PlatformGenerationStateCancelled {
+		t.Fatalf("owned-body cancel snapshot invalid")
 	}
 }
 
@@ -537,22 +590,52 @@ func requirePlatformCompareIntegrationRenewal(t *testing.T) {
 	requirePlatformCompareIntegrationReceipt(t, f, generationID, platformCompareIntegrationExpected(modelIDs, nil), before)
 }
 
-func requirePlatformCompareIntegrationCommitUnknown(t *testing.T) {
+type platformCompareIntegrationCountingStore struct {
+	platformCompareGenerationStore
+	completeCalls  atomic.Int32
+	reconcileCalls atomic.Int32
+}
+
+type platformCompareIntegrationUnknownPersistence struct {
+	delegate platformSingleGenerationPersistence
+	calls    atomic.Int32
+}
+
+func (p *platformCompareIntegrationUnknownPersistence) Finalize(ctx context.Context, db *gorm.DB, input PlatformGenerationPersistenceInput) (PlatformGenerationReceiptSnapshot, error) {
+	p.calls.Add(1)
+	if _, err := p.delegate.Finalize(ctx, db, input); err != nil {
+		return PlatformGenerationReceiptSnapshot{}, err
+	}
+	return PlatformGenerationReceiptSnapshot{}, errors.New("fixture finalize acknowledgement lost")
+}
+
+func (s *platformCompareIntegrationCountingStore) Complete(ctx context.Context, userID int64, generationID string, guids map[string]string, nowMillis int64) (PlatformGenerationSnapshot, error) {
+	s.completeCalls.Add(1)
+	return s.platformCompareGenerationStore.Complete(ctx, userID, generationID, guids, nowMillis)
+}
+
+func (s *platformCompareIntegrationCountingStore) ReconcileComplete(ctx context.Context, userID int64, generationID string, guids map[string]string, nowMillis int64) (PlatformGenerationSnapshot, error) {
+	s.reconcileCalls.Add(1)
+	return s.platformCompareGenerationStore.ReconcileComplete(ctx, userID, generationID, guids, nowMillis)
+}
+
+func requirePlatformCompareIntegrationCommitUnknownWithRecoveryCounts(t *testing.T) {
 	f := requirePlatformCompareIntegrationFixture(t, platformCompareIntegrationHandler(nil, nil, nil, nil))
-	original := f.persistence.runLocked
-	attempts := atomic.Int32{}
-	f.persistence.runLocked = func(ctx context.Context, db *gorm.DB, lockName string, fn func(*gorm.DB) error) error {
-		attempts.Add(1)
-		if err := original(ctx, db, lockName, fn); err != nil {
-			return err
-		}
-		return errors.New("fixture commit acknowledgement lost")
+	countingStore := &platformCompareIntegrationCountingStore{platformCompareGenerationStore: f.runner.deps.store}
+	f.runner.deps.store = countingStore
+	unknownPersistence := &platformCompareIntegrationUnknownPersistence{delegate: f.runner.deps.persistence}
+	f.runner.deps.persistence = unknownPersistence
+	originalLoadReceipt := f.runner.deps.loadReceipt
+	loadReceiptCalls := atomic.Int32{}
+	f.runner.deps.loadReceipt = func(ctx context.Context, db *gorm.DB, userID int64, generationID string) (PlatformGenerationReceiptSnapshot, error) {
+		loadReceiptCalls.Add(1)
+		return originalLoadReceipt(ctx, db, userID, generationID)
 	}
 	modelIDs, generationID := []string{"model-c", "model-a"}, platformCompareIntegrationGenerationID()
 	before := f.counts(t)
 	result, err := f.run(context.Background(), generationID, modelIDs, nil)
-	if err != nil || !result.Started || attempts.Load() != 1 {
-		t.Fatalf("commit unknown result=%+v err=%v finalize attempts=%d", result, err, attempts.Load())
+	if err != nil || !result.Started || unknownPersistence.calls.Load() != 1 || loadReceiptCalls.Load() != 1 || countingStore.reconcileCalls.Load() != 1 || countingStore.completeCalls.Load() != 0 {
+		t.Fatalf("commit unknown result=%+v err=%v finalize=%d loadReceipt=%d reconcile=%d complete=%d", result, err, unknownPersistence.calls.Load(), loadReceiptCalls.Load(), countingStore.reconcileCalls.Load(), countingStore.completeCalls.Load())
 	}
 	requirePlatformCompareIntegrationReceipt(t, f, generationID, platformCompareIntegrationExpected(modelIDs, nil), before)
 }
@@ -581,11 +664,14 @@ func requirePlatformCompareIntegrationRaces(t *testing.T) {
 	})
 
 	t.Run("concurrent_quota", func(t *testing.T) {
+		release, started := make(chan struct{}), make(chan string, 5)
 		calls := atomic.Int32{}
-		f := requirePlatformCompareIntegrationFixture(t, platformCompareIntegrationHandler(nil, nil, nil, &calls))
+		f := requirePlatformCompareIntegrationFixture(t, platformCompareIntegrationHandler(nil, release, started, &calls))
+		var releaseOnce sync.Once
+		t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
 		now := time.Now().UTC().UnixMilli()
-		f.configureUser(t, models.PlanFree, 2, 0, now)
-		modelIDs := []string{"model-a", "model-b"}
+		f.configureUser(t, models.PlanFree, 3, 0, now)
+		modelSets := [][]string{{"model-a", "model-b"}, {"model-c", "model-a", "model-b"}}
 		generationIDs := []string{platformCompareIntegrationGenerationID(), platformCompareIntegrationGenerationID()}
 		before := f.counts(t)
 		type outcome struct {
@@ -599,11 +685,18 @@ func requirePlatformCompareIntegrationRaces(t *testing.T) {
 			index := index
 			go func() {
 				<-start
-				result, err := f.run(context.Background(), generationIDs[index], modelIDs, nil)
+				result, err := f.run(context.Background(), generationIDs[index], modelSets[index], nil)
 				outcomes <- outcome{index: index, result: result, err: err}
 			}()
 		}
 		close(start)
+		for totalWorkers := 0; totalWorkers < 5; totalWorkers++ {
+			<-started
+		}
+		if calls.Load() != 5 {
+			t.Fatalf("quota competitors did not both reach upstream: calls=%d", calls.Load())
+		}
+		releaseOnce.Do(func() { close(release) })
 		winner := -1
 		for range generationIDs {
 			got := <-outcomes
@@ -619,53 +712,91 @@ func requirePlatformCompareIntegrationRaces(t *testing.T) {
 		if winner == -1 {
 			t.Fatal("concurrent quota race had no winner")
 		}
-		requirePlatformCompareIntegrationReceipt(t, f, generationIDs[winner], platformCompareIntegrationExpected(modelIDs, nil), before)
-		if calls.Load() != 4 {
-			t.Fatalf("quota race upstream calls=%d want 4", calls.Load())
-		}
+		requirePlatformCompareIntegrationReceipt(t, f, generationIDs[winner], platformCompareIntegrationExpected(modelSets[winner], nil), before)
 	})
+}
 
+func requirePlatformCompareIntegrationQuotaCapacityMatrix(t *testing.T) {
+	for _, modelIDs := range [][]string{{"model-a", "model-b"}, {"model-c", "model-a", "model-b"}} {
+		for _, capacity := range []struct {
+			name  string
+			limit int
+			deny  bool
+		}{
+			{name: "models_minus_one", limit: len(modelIDs) - 1, deny: true},
+			{name: "exact", limit: len(modelIDs)},
+			{name: "more", limit: len(modelIDs) + 1},
+		} {
+			modelIDs, capacity := append([]string(nil), modelIDs...), capacity
+			t.Run(fmt.Sprintf("%d_models_%s", len(modelIDs), capacity.name), func(t *testing.T) {
+				calls := atomic.Int32{}
+				f := requirePlatformCompareIntegrationFixture(t, platformCompareIntegrationHandler(nil, nil, nil, &calls))
+				now := time.Now().UTC().UnixMilli()
+				f.configureUser(t, models.PlanFree, capacity.limit, 0, now)
+				before, generationID := f.counts(t), platformCompareIntegrationGenerationID()
+				result, err := f.run(context.Background(), generationID, modelIDs, nil)
+				if capacity.deny {
+					if !errors.Is(err, ErrPlatformCompareGenerationQuota) || result.Started || calls.Load() != 0 || f.counts(t) != before {
+						t.Fatalf("quota matrix reject result=%+v err=%v calls=%d", result, err, calls.Load())
+					}
+					return
+				}
+				if err != nil || !result.Started || calls.Load() != int32(len(modelIDs)) {
+					t.Fatalf("quota matrix accept result=%+v err=%v calls=%d", result, err, calls.Load())
+				}
+				requirePlatformCompareIntegrationReceipt(t, f, generationID, platformCompareIntegrationExpected(modelIDs, nil), before)
+			})
+		}
+	}
+	for _, plan := range []models.PlanType{models.PlanProfessional, models.PlanEnterprise} {
+		plan := plan
+		t.Run("unlimited_"+plan.String(), func(t *testing.T) {
+			f := requirePlatformCompareIntegrationFixture(t, platformCompareIntegrationHandler(nil, nil, nil, nil))
+			now := time.Now().UTC().UnixMilli()
+			f.configureUser(t, plan, 0, 9, now)
+			modelIDs, generationID := []string{"model-a", "model-b", "model-c"}, platformCompareIntegrationGenerationID()
+			before := f.counts(t)
+			result, err := f.run(context.Background(), generationID, modelIDs, nil)
+			if err != nil || !result.Started {
+				t.Fatalf("unlimited plan result=%+v err=%v", result, err)
+			}
+			requirePlatformCompareIntegrationReceipt(t, f, generationID, platformCompareIntegrationExpected(modelIDs, nil), before)
+		})
+	}
+}
+
+func requirePlatformCompareIntegrationDailyResetBoundary(t *testing.T) {
+	boundary := time.Date(2026, time.December, 2, 0, 0, 0, 0, time.UTC)
 	for _, test := range []struct {
-		name       string
-		plan       models.PlanType
-		limit      int
-		used       int
-		models     []string
-		resetAt    func() int64
-		resetDaily bool
+		name string
+		now  time.Time
+		deny bool
 	}{
-		{name: "limited_models_minus_one", plan: models.PlanFree, limit: 1, models: []string{"model-a", "model-b"}},
-		{name: "limited_exact", plan: models.PlanFree, limit: 2, models: []string{"model-a", "model-b"}},
-		{name: "limited_more", plan: models.PlanFree, limit: 3, models: []string{"model-a", "model-b"}},
-		{name: "daily_reset_boundary", plan: models.PlanFree, limit: 2, used: 2, models: []string{"model-a", "model-b"}, resetAt: func() int64 { return time.Now().UTC().Add(-24 * time.Hour).UnixMilli() }, resetDaily: true},
-		{name: "professional_unlimited", plan: models.PlanProfessional, limit: 0, used: 9, models: []string{"model-a", "model-b", "model-c"}},
-		{name: "enterprise_unlimited", plan: models.PlanEnterprise, limit: 0, used: 9, models: []string{"model-a", "model-b", "model-c"}},
+		{name: "immediate_before", now: boundary.Add(-time.Millisecond), deny: true},
+		{name: "immediate_after", now: boundary},
 	} {
 		test := test
 		t.Run(test.name, func(t *testing.T) {
 			calls := atomic.Int32{}
 			f := requirePlatformCompareIntegrationFixture(t, platformCompareIntegrationHandler(nil, nil, nil, &calls))
-			resetAt := time.Now().UTC().UnixMilli()
-			if test.resetAt != nil {
-				resetAt = test.resetAt()
-			}
-			f.configureUser(t, test.plan, test.limit, test.used, resetAt)
-			before, generationID := f.counts(t), platformCompareIntegrationGenerationID()
-			result, err := f.run(context.Background(), generationID, test.models, nil)
-			wantQuota := test.name == "limited_models_minus_one"
-			if wantQuota {
+			resetAt := boundary.Add(-time.Millisecond).UnixMilli()
+			f.configureUser(t, models.PlanFree, 2, 2, resetAt)
+			f.runner.deps.now = func() time.Time { return test.now }
+			f.control.now = func() time.Time { return test.now }
+			modelIDs, generationID := []string{"model-a", "model-b"}, platformCompareIntegrationGenerationID()
+			before := f.counts(t)
+			result, err := f.run(context.Background(), generationID, modelIDs, nil)
+			if test.deny {
 				if !errors.Is(err, ErrPlatformCompareGenerationQuota) || result.Started || calls.Load() != 0 || f.counts(t) != before {
-					t.Fatalf("quota preflight result=%+v err=%v calls=%d", result, err, calls.Load())
+					t.Fatalf("reset-before result=%+v err=%v calls=%d", result, err, calls.Load())
 				}
 				return
 			}
 			if err != nil || !result.Started {
-				t.Fatalf("quota capacity result=%+v err=%v", result, err)
+				t.Fatalf("reset-after result=%+v err=%v", result, err)
 			}
-			if test.resetDaily {
-				before.dailyCalls = 0
-			}
-			requirePlatformCompareIntegrationReceipt(t, f, generationID, platformCompareIntegrationExpected(test.models, nil), before)
+			before.dailyCalls = 0
+			requirePlatformCompareIntegrationReceipt(t, f, generationID, platformCompareIntegrationExpected(modelIDs, nil), before)
 		})
 	}
 }
@@ -687,7 +818,8 @@ func TestPlatformCompareGenerationIntegrationDisconnectThenGET(t *testing.T) {
 }
 
 func TestPlatformCompareGenerationIntegrationCancelNoPersistence(t *testing.T) {
-	requirePlatformCompareIntegrationCancel(t)
+	requirePlatformCompareIntegrationCancelBeforeResponse(t)
+	requirePlatformCompareIntegrationCancelDuringConsumption(t)
 }
 
 func TestPlatformCompareGenerationIntegrationRenewalBeatsConverger(t *testing.T) {
@@ -695,9 +827,11 @@ func TestPlatformCompareGenerationIntegrationRenewalBeatsConverger(t *testing.T)
 }
 
 func TestPlatformCompareGenerationIntegrationCommitUnknownReconciles(t *testing.T) {
-	requirePlatformCompareIntegrationCommitUnknown(t)
+	requirePlatformCompareIntegrationCommitUnknownWithRecoveryCounts(t)
 }
 
 func TestPlatformCompareGenerationIntegrationConcurrentQuotaAndDuplicateRaces(t *testing.T) {
 	requirePlatformCompareIntegrationRaces(t)
+	requirePlatformCompareIntegrationQuotaCapacityMatrix(t)
+	requirePlatformCompareIntegrationDailyResetBoundary(t)
 }
