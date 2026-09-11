@@ -7,7 +7,6 @@ import (
 	"io"
 	"net/http"
 	"reflect"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -936,10 +935,14 @@ type platformCompareStreamStore struct {
 	recordEntered        chan struct{}
 	recordEnteredOnce    sync.Once
 	recordRelease        <-chan struct{}
+	recordExited         chan struct{}
+	recordExitedOnce     sync.Once
 	doneErrModel         string
 	doneMutationEntered  chan struct{}
 	doneMutationOnce     sync.Once
 	doneMutationRelease  <-chan struct{}
+	doneMutationExited   chan struct{}
+	doneMutationExitOnce sync.Once
 	failedErrModel       string
 	gets                 int
 	globalFails          int
@@ -957,6 +960,7 @@ type platformCompareStreamStore struct {
 	renewed              chan struct{}
 	renewEntered         chan struct{}
 	renewEnteredOnce     sync.Once
+	mutationEvent        func(string)
 	ackCalls             int
 	acknowledgedSnapshot PlatformGenerationSnapshot
 	mutationActive       atomic.Int32
@@ -1011,6 +1015,9 @@ func (s *platformCompareStreamStore) RecordDeltaOwned(_ context.Context, _ int64
 		return PlatformGenerationSnapshot{}, ErrPlatformGenerationUnavailable
 	}
 	s.mutate(func() {
+		if s.mutationEvent != nil {
+			s.mutationEvent("delta-entered")
+		}
 		if s.recordEntered != nil {
 			s.recordEnteredOnce.Do(func() { close(s.recordEntered) })
 		}
@@ -1021,6 +1028,12 @@ func (s *platformCompareStreamStore) RecordDeltaOwned(_ context.Context, _ int64
 		s.records[model] = append(s.records[model], seq)
 		s.mu.Unlock()
 	})
+	if s.mutationEvent != nil {
+		s.mutationEvent("delta-exited")
+	}
+	if s.recordExited != nil {
+		s.recordExitedOnce.Do(func() { close(s.recordExited) })
+	}
 	return PlatformGenerationSnapshot{}, nil
 }
 func (s *platformCompareStreamStore) MarkModelDoneOwned(_ context.Context, _ int64, _, _, model string, lastSeq, _ int64) (PlatformGenerationSnapshot, error) {
@@ -1028,6 +1041,9 @@ func (s *platformCompareStreamStore) MarkModelDoneOwned(_ context.Context, _ int
 		return PlatformGenerationSnapshot{}, ErrPlatformGenerationUnavailable
 	}
 	s.mutate(func() {
+		if s.mutationEvent != nil {
+			s.mutationEvent("done-entered")
+		}
 		if s.doneMutationEntered != nil {
 			s.doneMutationOnce.Do(func() { close(s.doneMutationEntered) })
 		}
@@ -1038,6 +1054,12 @@ func (s *platformCompareStreamStore) MarkModelDoneOwned(_ context.Context, _ int
 		s.done[model] = lastSeq
 		s.mu.Unlock()
 	})
+	if s.mutationEvent != nil {
+		s.mutationEvent("done-exited")
+	}
+	if s.doneMutationExited != nil {
+		s.doneMutationExitOnce.Do(func() { close(s.doneMutationExited) })
+	}
 	if s.doneObserved != nil {
 		s.doneObservedOnce.Do(func() { close(s.doneObserved) })
 	}
@@ -1058,6 +1080,9 @@ func (s *platformCompareStreamStore) RenewLease(_ context.Context, userID int64,
 	var snapshot PlatformGenerationSnapshot
 	var renewErr error
 	s.mutate(func() {
+		if s.mutationEvent != nil {
+			s.mutationEvent("renew-store-entered")
+		}
 		if s.renewEntered != nil {
 			s.renewEnteredOnce.Do(func() { close(s.renewEntered) })
 		}
@@ -1692,6 +1717,32 @@ type platformCompareHandshakeTimerFactory struct {
 	created chan *platformCompareHandshakeTimer
 }
 
+type platformCompareEventOrder struct {
+	mu     sync.Mutex
+	events []string
+}
+
+func (o *platformCompareEventOrder) add(event string) {
+	o.mu.Lock()
+	o.events = append(o.events, event)
+	o.mu.Unlock()
+}
+
+func (o *platformCompareEventOrder) snapshot() []string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return append([]string(nil), o.events...)
+}
+
+func platformCompareEventIndex(events []string, target string) int {
+	for index, event := range events {
+		if event == target {
+			return index
+		}
+	}
+	return -1
+}
+
 func (f *platformCompareHandshakeTimerFactory) New(duration time.Duration) platformSingleTimer {
 	if duration != 10*time.Second {
 		panic("unexpected compare renewal duration")
@@ -1742,13 +1793,23 @@ func TestPlatformCompareGenerationRenewsSerializedWithModelMutations(t *testing.
 				},
 			}
 			runner, store, _, writer := platformCompareStreamFixture(t, []string{"model-a", "model-b"}, scripts)
-			mutationEntered, releaseMutation := make(chan struct{}), make(chan struct{})
+			mutationEntered, mutationExited, releaseMutation := make(chan struct{}), make(chan struct{}), make(chan struct{})
 			if mutation == "delta" {
-				store.recordEntered, store.recordRelease = mutationEntered, releaseMutation
+				store.recordEntered, store.recordExited, store.recordRelease = mutationEntered, mutationExited, releaseMutation
 			} else {
-				store.doneMutationEntered, store.doneMutationRelease = mutationEntered, releaseMutation
+				store.doneMutationEntered, store.doneMutationExited, store.doneMutationRelease = mutationEntered, mutationExited, releaseMutation
 			}
+			order := &platformCompareEventOrder{}
+			store.mutationEvent = order.add
 			store.renewEntered = make(chan struct{})
+			renewAttempted := make(chan struct{})
+			var renewAttemptOnce sync.Once
+			runner.deps.renewalSerialEvent = func(event string) {
+				order.add("renew-" + event)
+				if event == "attempt" {
+					renewAttemptOnce.Do(func() { close(renewAttempted) })
+				}
+			}
 			timers := &platformCompareHandshakeTimerFactory{created: make(chan *platformCompareHandshakeTimer, 2)}
 			runner.deps.newTimer = timers.New
 			input := platformCompareTestInput()
@@ -1764,14 +1825,21 @@ func TestPlatformCompareGenerationRenewsSerializedWithModelMutations(t *testing.
 				close(tickConsumed)
 			}()
 			<-tickConsumed
-			runtime.Gosched()
-			select {
-			case <-store.renewEntered:
-				t.Fatal("renewal entered while model mutation held the shared execution lock")
-			default:
-			}
+			<-renewAttempted
+			order.add("release-model-mutation")
 			close(releaseMutation)
+			<-mutationExited
 			<-store.renewEntered
+			events := order.snapshot()
+			entered := platformCompareEventIndex(events, mutation+"-entered")
+			release := platformCompareEventIndex(events, "release-model-mutation")
+			exited := platformCompareEventIndex(events, mutation+"-exited")
+			attempt := platformCompareEventIndex(events, "renew-attempt")
+			acquired := platformCompareEventIndex(events, "renew-acquired")
+			renewStore := platformCompareEventIndex(events, "renew-store-entered")
+			if entered < 0 || attempt <= entered || release <= attempt || exited <= release || acquired <= exited || renewStore <= acquired {
+				t.Fatalf("unexpected serialization order=%v", events)
+			}
 			second := <-timers.created
 			close(finishSibling)
 			<-finished

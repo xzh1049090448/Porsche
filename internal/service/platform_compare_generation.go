@@ -64,20 +64,21 @@ type PlatformCompareGenerationRunnerAPI interface {
 }
 
 type platformCompareGenerationDeps struct {
-	db               *gorm.DB
-	store            platformCompareGenerationStore
-	persistence      platformSingleGenerationPersistence
-	registry         platformSingleGenerationRegistry
-	upstream         platformSingleGenerationUpstream
-	rootContext      context.Context
-	now              func() time.Time
-	newGUID          func() int64
-	loadConversation func(context.Context, *gorm.DB, int64, int64) error
-	loadReceipt      func(context.Context, *gorm.DB, int64, string) (PlatformGenerationReceiptSnapshot, error)
-	upstreamTimeout  time.Duration
-	newRunnerContext func(context.Context, time.Duration) (context.Context, context.CancelFunc)
-	newEncoder       func(string, []string) (platformCompareEncoder, error)
-	newTimer         func(time.Duration) platformSingleTimer
+	db                 *gorm.DB
+	store              platformCompareGenerationStore
+	persistence        platformSingleGenerationPersistence
+	registry           platformSingleGenerationRegistry
+	upstream           platformSingleGenerationUpstream
+	rootContext        context.Context
+	now                func() time.Time
+	newGUID            func() int64
+	loadConversation   func(context.Context, *gorm.DB, int64, int64) error
+	loadReceipt        func(context.Context, *gorm.DB, int64, string) (PlatformGenerationReceiptSnapshot, error)
+	upstreamTimeout    time.Duration
+	newRunnerContext   func(context.Context, time.Duration) (context.Context, context.CancelFunc)
+	newEncoder         func(string, []string) (platformCompareEncoder, error)
+	newTimer           func(time.Duration) platformSingleTimer
+	renewalSerialEvent func(string)
 }
 
 type PlatformCompareGenerationRunner struct {
@@ -368,7 +369,13 @@ func (r *PlatformCompareGenerationRunner) renewCompareLease(execution *platformC
 			return
 		case <-timer.Chan():
 			nowMillis := r.nowMillis()
+			if r.deps.renewalSerialEvent != nil {
+				r.deps.renewalSerialEvent("attempt")
+			}
 			execution.mu.Lock()
+			if r.deps.renewalSerialEvent != nil {
+				r.deps.renewalSerialEvent("acquired")
+			}
 			if execution.fatal {
 				execution.mu.Unlock()
 				return
