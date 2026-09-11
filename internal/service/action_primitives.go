@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"math"
 
 	"github.com/porsche/ai-gateway-go/internal/actionsecurity"
 	"github.com/porsche/ai-gateway-go/internal/models"
@@ -13,10 +14,13 @@ import (
 // action callback. A non-nil Failure is a known business rejection; a returned
 // error is reserved for infrastructure failure and causes a full rollback.
 type TerminalOutcome struct {
-	Failure    *models.AdminOperationFailure
-	ResultKind models.AdminResultKind
-	ResultGUID *int64
-	HTTPStatus int
+	Failure                  *models.AdminOperationFailure
+	ResultKind               models.AdminResultKind
+	ResultGUID               *int64
+	ResultAuthVersion        *int
+	ResultPermissionsVersion *int64
+	ResultRole               *models.UserRole
+	HTTPStatus               int
 }
 
 type TransactionalActionConsumer interface {
@@ -85,8 +89,12 @@ func (e *CommitUnknownError) Is(target error) bool {
 }
 
 func validateTerminalOutcome(outcome TerminalOutcome) error {
+	return validateTerminalOutcomeForAction(0, outcome)
+}
+
+func validateTerminalOutcomeForAction(action actionsecurity.Action, outcome TerminalOutcome) error {
 	if outcome.Failure != nil {
-		if outcome.ResultKind != 0 || outcome.ResultGUID != nil || outcome.HTTPStatus < 400 || outcome.HTTPStatus > 499 {
+		if outcome.ResultKind != 0 || outcome.ResultGUID != nil || outcome.ResultAuthVersion != nil || outcome.ResultPermissionsVersion != nil || outcome.ResultRole != nil || outcome.HTTPStatus < 400 || outcome.HTTPStatus > 499 {
 			return errors.New("invalid terminal outcome")
 		}
 		switch *outcome.Failure {
@@ -112,5 +120,27 @@ func validateTerminalOutcome(outcome TerminalOutcome) error {
 	default:
 		return errors.New("invalid terminal outcome")
 	}
+	if outcome.ResultAuthVersion != nil && (*outcome.ResultAuthVersion <= 0 || int64(*outcome.ResultAuthVersion) > math.MaxInt32 || outcome.ResultKind != models.ResultUser) {
+		return errors.New("invalid terminal outcome")
+	}
+	if isA08RolePermissionAction(action) {
+		if outcome.ResultKind != models.ResultUser || outcome.ResultGUID == nil || outcome.ResultAuthVersion == nil ||
+			outcome.ResultPermissionsVersion == nil || *outcome.ResultPermissionsVersion <= 0 || outcome.ResultRole == nil ||
+			(*outcome.ResultRole != models.UserRoleUser && *outcome.ResultRole != models.UserRoleAdmin) {
+			return errors.New("invalid terminal outcome")
+		}
+		if (action == actionsecurity.ActionUsersPromote || action == actionsecurity.ActionUsersPermissionsWrite) && *outcome.ResultRole != models.UserRoleAdmin {
+			return errors.New("invalid terminal outcome")
+		}
+		if action == actionsecurity.ActionUsersDemote && *outcome.ResultRole != models.UserRoleUser {
+			return errors.New("invalid terminal outcome")
+		}
+	} else if outcome.ResultPermissionsVersion != nil || outcome.ResultRole != nil {
+		return errors.New("invalid terminal outcome")
+	}
 	return nil
+}
+
+func isA08RolePermissionAction(action actionsecurity.Action) bool {
+	return action == actionsecurity.ActionUsersPromote || action == actionsecurity.ActionUsersDemote || action == actionsecurity.ActionUsersPermissionsWrite
 }

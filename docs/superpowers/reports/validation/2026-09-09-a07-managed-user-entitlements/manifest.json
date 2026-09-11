@@ -1,0 +1,52 @@
+{
+  "slice": "A07 managed-user credentials and entitlements",
+  "status": "PASS_LIMITED_SCOPE",
+  "code_under_test": {
+    "backend": "a600a0815b5eab5203333755a2466788fe67d61a",
+    "frontend": "41648181ab42fb46fe7d45663e746121956b50b8"
+  },
+  "documentation_commits": {
+    "backend": "a600a0815b5eab5203333755a2466788fe67d61a",
+    "frontend": "1e184a3beefe8b3390c22280f15f1760936879e3"
+  },
+  "contract_sha256": "9e1969b238911b6eee5b6aa85ed364e795a6854f0a026daac5d15e2ab78851be",
+  "environment": {
+    "mysql": "8.0.46",
+    "redis": "7.4.11",
+    "migration_ledger": "0001-0011",
+    "production": "NOT_USED"
+  },
+  "verification": {
+    "backend_full_real_mysql_redis": "2188 leaf PASS / 1 opt-in performance SKIP / 0 FAIL",
+    "backend_new_real_race_login_token_quota_concurrency": "4 top-level tests PASS / 0 SKIP",
+    "backend_new_real_race_entitlement_rollback": "2 top-level tests, 6 fault subcases PASS / 0 SKIP",
+    "backend_focused_race": "PASS",
+    "backend_no_fixture_full": "PASS",
+    "backend_build_vet_gofmt_diff": "PASS",
+    "migration_0011_up_down_schema": "PASS",
+    "frontend_full_with_explicit_contract_paths": "395/395 PASS / 0 SKIP",
+    "frontend_production_build": "PASS",
+    "frontend_visible_chrome_375_390": "PASS",
+    "contract_byte_comparison": "PASS",
+    "fixture_cleanup": "temporary MySQL schemas 0; Redis DB 15 keys 0"
+  },
+  "reviews": {
+    "backend": "BACKEND_REVIEW_PASS",
+    "frontend": "FRONTEND_REVIEW_PASS",
+    "documents": "DOC_PASS"
+  },
+  "matrix_after_acceptance": {
+    "pass_limited_scope": 14,
+    "blocked_not_implemented": 10,
+    "blocked_product": 1,
+    "blocked_env": 1,
+    "blocked_total": 12,
+    "overall": "PARTIAL_ACCEPTANCE_14_LIMITED_12_BLOCKED"
+  },
+  "backend_project_manager_written_confirmation": "NOT_OBTAINED",
+  "residuals": [
+    "Gateway Key owner plan/quota atomic reload and consumption remains BLOCKED_NOT_IMPLEMENTED.",
+    "The opt-in 100k synthetic-user performance test was not authorized in this batch.",
+    "Production migration, deployment, production acceptance, and real business accounts are NOT_RUN."
+  ]
+}

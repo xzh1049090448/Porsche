@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -9,7 +10,42 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/porsche/ai-gateway-go/internal/models"
+	"github.com/porsche/ai-gateway-go/internal/security"
 )
+
+func TestDecodeAdminUserUpdateRetiresStatusBeforeLegacyMutation(t *testing.T) {
+	for _, body := range []string{
+		`{"status":"disabled"}`,
+		`{"status":null}`,
+		`{"plan_type":"professional","status":"active"}`,
+	} {
+		if _, err := decodeAdminUserUpdate(strings.NewReader(body)); !errors.Is(err, errAdminUserUpdateStatusRetired) {
+			t.Fatalf("body=%s error=%v", body, err)
+		}
+	}
+}
+
+func TestDecodeAdminUserUpdateRetiresEntitlementFieldsBeforeLegacyMutation(t *testing.T) {
+	for _, body := range []string{
+		`{"plan_type":"free"}`,
+		`{"allowed_models":[]}`,
+		`{"daily_call_limit":100}`,
+		`{"plan_type":null,"allowed_models":null,"daily_call_limit":null}`,
+	} {
+		if _, err := decodeAdminUserUpdate(strings.NewReader(body)); !errors.Is(err, errAdminUserUpdateStatusRetired) {
+			t.Fatalf("body=%s error=%v", body, err)
+		}
+	}
+}
+
+func TestDecodeAdminUserUpdateRetiresA08FieldsBeforeLegacyMutation(t *testing.T) {
+	for _, field := range []string{"role", "auth_version", "expected_auth_version", "expected_permissions_version", "permissions_version", "catalog_version", "overrides", "action", "reason"} {
+		body := `{"` + field + `":null}`
+		if _, err := decodeAdminUserUpdate(strings.NewReader(body)); !errors.Is(err, errAdminUserUpdateStatusRetired) {
+			t.Fatalf("field=%s error=%v", field, err)
+		}
+	}
+}
 
 // TestAdminUserUpdateRejectsMalformedOrOutOfContractJSON exercises the real
 // protected PUT route. Every rejected payload must leave the target's account
@@ -25,8 +61,24 @@ func TestAdminUserUpdateRejectsMalformedOrOutOfContractJSON(t *testing.T) {
 		{name: "top-level-null", body: "null", wantStatus: http.StatusBadRequest},
 		{name: "array", body: "[]", wantStatus: http.StatusBadRequest},
 		{name: "unknown-role", body: `{"role":"root"}`, wantStatus: http.StatusBadRequest},
+		{name: "retired-auth-version", body: `{"auth_version":1}`, wantStatus: http.StatusBadRequest},
+		{name: "retired-permissions-version", body: `{"permissions_version":1}`, wantStatus: http.StatusBadRequest},
+		{name: "retired-expected-permissions-version", body: `{"expected_permissions_version":1}`, wantStatus: http.StatusBadRequest},
+		{name: "retired-catalog-version", body: `{"catalog_version":1}`, wantStatus: http.StatusBadRequest},
+		{name: "retired-overrides", body: `{"overrides":[]}`, wantStatus: http.StatusBadRequest},
+		{name: "retired-action", body: `{"action":"promote"}`, wantStatus: http.StatusBadRequest},
 		{name: "unknown-permissions", body: `{"permissions":["users.promote"]}`, wantStatus: http.StatusBadRequest},
 		{name: "unknown-money", body: `{"amount":1}`, wantStatus: http.StatusBadRequest},
+		{name: "retired-status-only", body: `{"status":"disabled"}`, wantStatus: http.StatusBadRequest},
+		{name: "retired-status-null", body: `{"status":null}`, wantStatus: http.StatusBadRequest},
+		{name: "retired-status-mixed", body: `{"status":"active","plan_type":"professional"}`, wantStatus: http.StatusBadRequest},
+		{name: "retired-group", body: `{"group_guid":null}`, wantStatus: http.StatusBadRequest},
+		{name: "retired-password", body: `{"password":null}`, wantStatus: http.StatusBadRequest},
+		{name: "retired-new-password", body: `{"new_password":null}`, wantStatus: http.StatusBadRequest},
+		{name: "retired-current-password", body: `{"current_password":null}`, wantStatus: http.StatusBadRequest},
+		{name: "retired-reason", body: `{"reason":null}`, wantStatus: http.StatusBadRequest},
+		{name: "retired-version", body: `{"expected_auth_version":null}`, wantStatus: http.StatusBadRequest},
+		{name: "retired-mixed-entitlement", body: `{"group_guid":"1","reason":"x","expected_auth_version":1}`, wantStatus: http.StatusBadRequest},
 		{name: "duplicate-key", body: `{"status":"active","status":"disabled"}`, wantStatus: http.StatusBadRequest},
 		{name: "case-alias", body: `{"Status":"active"}`, wantStatus: http.StatusBadRequest},
 		{name: "trailing-json", body: `{"status":"active"} {}`, wantStatus: http.StatusBadRequest},
@@ -38,8 +90,8 @@ func TestAdminUserUpdateRejectsMalformedOrOutOfContractJSON(t *testing.T) {
 		{name: "daily-limit-wrong-type", body: `{"daily_call_limit":"1"}`, wantStatus: http.StatusBadRequest},
 		{name: "daily-limit-negative", body: `{"daily_call_limit":-1}`, wantStatus: http.StatusBadRequest},
 		{name: "daily-limit-over-int32", body: `{"daily_call_limit":2147483648}`, wantStatus: http.StatusBadRequest},
-		{name: "unknown-status-enum", body: `{"status":"paused"}`, wantStatus: http.StatusUnprocessableEntity},
-		{name: "unknown-plan-enum", body: `{"plan_type":"gold"}`, wantStatus: http.StatusUnprocessableEntity},
+		{name: "unknown-status-enum", body: `{"status":"paused"}`, wantStatus: http.StatusBadRequest},
+		{name: "unknown-plan-enum", body: `{"plan_type":"gold"}`, wantStatus: http.StatusBadRequest},
 		{name: "over-64-kib", body: `{"status":"active","padding":"` + strings.Repeat("x", 64*1024) + `"}`, wantStatus: http.StatusRequestEntityTooLarge},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -143,8 +195,6 @@ func TestAdminUserUpdateNoOpAndAuthenticationPreconditions(t *testing.T) {
 	access := platformJWT(t, state, &actor)
 	for _, body := range []string{
 		`{}`,
-		`{"status":null,"plan_type":null,"allowed_models":null,"daily_call_limit":null}`,
-		`{"status":"active","plan_type":"free","allowed_models":["model-a","model-a"],"daily_call_limit":17}`,
 	} {
 		req := httptest.NewRequest(http.MethodPut, "/admin/users/"+strconv.FormatInt(target.Guid, 10), strings.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
@@ -164,11 +214,9 @@ func TestAdminUserUpdateNoOpAndAuthenticationPreconditions(t *testing.T) {
 	}
 }
 
-// TestAdminUserUpdateAppliesPlanAndRevokesOnlyTheTargetSession proves that a
-// valid protected PUT reaches the managed-user service after strict decoding.
-// It checks the persisted enum, security invalidation, target audit event,
-// and actual authentication outcomes for both users.
-func TestAdminUserUpdateAppliesPlanAndRevokesOnlyTheTargetSession(t *testing.T) {
+// TestAdminUserUpdateCannotApplyPlanThroughLegacyPUT proves the retired route
+// cannot bypass the dedicated A07 contract or mutate security state.
+func TestAdminUserUpdateCannotApplyPlanThroughLegacyPUT(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	state := authHTTPTestState(t)
 	actor := platformTestUser(t, state, "update-actor", nil)
@@ -180,10 +228,25 @@ func TestAdminUserUpdateAppliesPlanAndRevokesOnlyTheTargetSession(t *testing.T) 
 	if err := state.DB.Create(&target).Error; err != nil {
 		t.Fatal(err)
 	}
+	targetSID, err := security.NewSessionSID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	targetSession := models.Session{
+		AuditFields:    models.AuditFields{Guid: platformTestSnowflake.Next(), CreatedAt: target.CreatedAt, UpdatedAt: target.UpdatedAt},
+		SID:            targetSID,
+		UserID:         target.ID,
+		LoginMethod:    models.LoginMethodPassword,
+		SessionVersion: 3,
+		RefreshHMAC:    strings.Repeat("a", 64),
+		LastActiveAt:   target.UpdatedAt,
+		ExpiresAt:      target.UpdatedAt + 86_400_000,
+	}
+	if err := state.DB.Create(&targetSession).Error; err != nil {
+		t.Fatal(err)
+	}
 	actorAccess := platformJWT(t, state, &actor)
-	targetAccess := platformJWT(t, state, &target)
 	engine := gin.New()
-	RegisterAuth(engine, state)
 	RegisterAdminUsers(engine, state)
 
 	request := httptest.NewRequest(http.MethodPut, "/admin/users/"+strconv.FormatInt(target.Guid, 10), strings.NewReader(`{"plan_type":"professional"}`))
@@ -191,42 +254,30 @@ func TestAdminUserUpdateAppliesPlanAndRevokesOnlyTheTargetSession(t *testing.T) 
 	request.Header.Set("Authorization", "Bearer "+actorAccess)
 	recorder := httptest.NewRecorder()
 	engine.ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"plan_type":"professional"`) {
-		t.Fatalf("plan update status=%d body=%s, want DTO plan_type professional", recorder.Code, recorder.Body.String())
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("legacy plan update status=%d body=%s, want 400", recorder.Code, recorder.Body.String())
 	}
 
 	var updated models.User
 	if err := state.DB.Where("id = ? AND is_deleted = 0", target.ID).First(&updated).Error; err != nil {
 		t.Fatal(err)
 	}
-	if updated.PlanType != models.PlanProfessional || updated.AuthVersion != target.AuthVersion+1 {
-		t.Fatalf("persisted plan/auth version = (%v, %d), want (%v, %d)", updated.PlanType, updated.AuthVersion, models.PlanProfessional, target.AuthVersion+1)
+	if updated.PlanType != target.PlanType || updated.AuthVersion != target.AuthVersion {
+		t.Fatalf("legacy route mutated plan/auth version = (%v, %d), want (%v, %d)", updated.PlanType, updated.AuthVersion, target.PlanType, target.AuthVersion)
 	}
-	var targetSession models.Session
-	if err := state.DB.Where("user_id = ? AND is_deleted = 0", target.ID).First(&targetSession).Error; err != nil || targetSession.RevokedAt == nil {
-		t.Fatalf("target session was not durably revoked: session=%+v err=%v", targetSession, err)
+	var storedSession models.Session
+	if err := state.DB.Where("id = ? AND user_id = ? AND is_deleted = 0", targetSession.ID, target.ID).First(&storedSession).Error; err != nil {
+		t.Fatalf("legacy rejection lost target session: err=%v", err)
+	}
+	if storedSession.SID != targetSession.SID || storedSession.SessionVersion != targetSession.SessionVersion ||
+		storedSession.RefreshHMAC != targetSession.RefreshHMAC || storedSession.PreviousRefreshHMAC != nil ||
+		storedSession.PreviousRefreshExpiresAt != nil || storedSession.RevokedAt != nil ||
+		storedSession.LastActiveAt != targetSession.LastActiveAt || storedSession.ExpiresAt != targetSession.ExpiresAt ||
+		storedSession.UpdatedAt != targetSession.UpdatedAt || storedSession.UpdatedBy != nil || storedSession.IsDeleted != 0 {
+		t.Fatalf("legacy rejection changed target session: before=%+v after=%+v", targetSession, storedSession)
 	}
 	var updateAudits int64
-	if err := state.DB.Model(&models.AuthAuditEvent{}).Where("user_id = ? AND event_type = ? AND is_deleted = 0", target.ID, models.AuthAuditEventManagedUserUpdated).Count(&updateAudits).Error; err != nil || updateAudits != 1 {
-		t.Fatalf("managed-user update audit count=%d err=%v, want 1", updateAudits, err)
-	}
-
-	for _, testCase := range []struct {
-		name   string
-		access string
-		want   int
-	}{
-		{name: "target-access-revoked", access: targetAccess, want: http.StatusUnauthorized},
-		{name: "actor-access-still-valid", access: actorAccess, want: http.StatusOK},
-	} {
-		t.Run(testCase.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodGet, "/api/v1/auth/self", nil)
-			req.Header.Set("Authorization", "Bearer "+testCase.access)
-			rec := httptest.NewRecorder()
-			engine.ServeHTTP(rec, req)
-			if rec.Code != testCase.want {
-				t.Fatalf("status=%d body=%s, want %d", rec.Code, rec.Body.String(), testCase.want)
-			}
-		})
+	if err := state.DB.Model(&models.AuthAuditEvent{}).Where("user_id = ? AND event_type = ? AND is_deleted = 0", target.ID, models.AuthAuditEventManagedUserUpdated).Count(&updateAudits).Error; err != nil || updateAudits != 0 {
+		t.Fatalf("managed-user update audit count=%d err=%v, want 0", updateAudits, err)
 	}
 }

@@ -2,8 +2,13 @@ package app
 
 import (
 	"context"
+	"errors"
+	"math"
 	"net/http"
+	"reflect"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/porsche/ai-gateway-go/internal/actionsecurity"
 	"github.com/porsche/ai-gateway-go/internal/config"
@@ -13,31 +18,54 @@ import (
 	"gorm.io/gorm"
 )
 
+const stateCloseTimeout = 5 * time.Second
+
+var (
+	errClosePlatformGenerationRunners = errors.New("close platform generation runners")
+	errClosePlatformGenerationWorker  = errors.New("close platform generation worker")
+	errClosePlatformGenerationStore   = errors.New("close platform generation store")
+	errCloseAuthRedis                 = errors.New("close authentication Redis")
+)
+
 type State struct {
-	Settings                      *config.Settings
-	DB                            *gorm.DB
-	Auth                          *service.AuthService
-	Billing                       *service.BillingService
-	SMS                           *service.SMSService
-	Platform                      *service.PlatformChatService
-	GatewayTokens                 *service.GatewayTokenService
-	WhiteLabel                    *whitelabel.WhiteLabelService
-	Audit                         *service.AuditService
-	AuthRedis                     *service.AuthRedis
-	PlatformGenerations           *service.PlatformGenerationStore
-	PlatformGenerationPersistence *service.PlatformGenerationPersistence
-	Sessions                      *service.SessionService
-	ActionSecurityCrypto          *actionsecurity.Crypto
-	UserManagementActions         *service.UserManagementActions
-	UserDeleteActions             *service.UserDeleteActions
-	ActionVerifications           *service.ActionVerificationService
-	RootAlerts                    *service.RootAlertService
-	PublicModels                  *service.PublicModelAdminService
-	PublicContent                 *service.PublicContentService
-	PublicPriceSnapshots          *service.PublicPriceSnapshotService
-	PublicCatalogReads            *service.PublicCatalogReadService
-	UpstreamPriceMonitor          *service.UpstreamPriceMonitor
-	HTTP                          *http.Client
+	Settings                        *config.Settings
+	DB                              *gorm.DB
+	Auth                            *service.AuthService
+	Billing                         *service.BillingService
+	SMS                             *service.SMSService
+	Platform                        *service.PlatformChatService
+	GatewayTokens                   *service.GatewayTokenService
+	WhiteLabel                      *whitelabel.WhiteLabelService
+	Audit                           *service.AuditService
+	AuthRedis                       *service.AuthRedis
+	PlatformGenerations             *service.PlatformGenerationStore
+	PlatformGenerationPersistence   *service.PlatformGenerationPersistence
+	PlatformGenerationControl       service.PlatformGenerationController
+	PlatformSingleGeneration        service.PlatformSingleGenerationRunnerAPI
+	PlatformGenerationCancellations *service.PlatformGenerationCancellationRegistry
+	PlatformGenerationConverger     *service.PlatformGenerationConverger
+	Sessions                        *service.SessionService
+	ActionSecurityCrypto            *actionsecurity.Crypto
+	UserManagementActions           *service.UserManagementActions
+	UserDeleteActions               *service.UserDeleteActions
+	ActionVerifications             *service.ActionVerificationService
+	RootAlerts                      *service.RootAlertService
+	PublicModels                    *service.PublicModelAdminService
+	PublicContent                   *service.PublicContentService
+	PublicPriceSnapshots            *service.PublicPriceSnapshotService
+	PublicCatalogReads              *service.PublicCatalogReadService
+	UpstreamPriceMonitor            *service.UpstreamPriceMonitor
+	HTTP                            *http.Client
+
+	closeOnce sync.Once
+	closeErr  error
+
+	closeTimeout                     time.Duration
+	platformGenerationRootCancel     context.CancelFunc
+	closePlatformGenerationRunners   func(context.Context, *service.PlatformGenerationCancellationRegistry) error
+	closePlatformGenerationConverger func(context.Context, *service.PlatformGenerationConverger) error
+	closePlatformGenerations         func(*service.PlatformGenerationStore) error
+	closeAuthRedis                   func(*service.AuthRedis) error
 }
 
 func NewState(settings *config.Settings, db *gorm.DB) (*State, error) {
@@ -47,6 +75,11 @@ func NewState(settings *config.Settings, db *gorm.DB) (*State, error) {
 type stateConstructors struct {
 	newAuthRedisFromURL               func(context.Context, string, string) (*service.AuthRedis, error)
 	newPlatformGenerationStoreFromURL func(context.Context, string) (*service.PlatformGenerationStore, error)
+	newPlatformGenerationControl      func(*gorm.DB, *service.PlatformGenerationStore, *service.PlatformGenerationCancellationRegistry) (*service.PlatformGenerationControl, error)
+	newPlatformGenerationConverger    func(*service.PlatformGenerationControl) (*service.PlatformGenerationConverger, error)
+	newPlatformSingleGeneration       func(*gorm.DB, *service.PlatformGenerationStore, *service.PlatformGenerationPersistence, *service.PlatformGenerationCancellationRegistry, *whitelabel.WhiteLabelService, context.Context, time.Duration) (service.PlatformSingleGenerationRunnerAPI, error)
+	startPlatformGenerationConverger  func(*service.PlatformGenerationConverger)
+	closePlatformGenerationConverger  func(context.Context, *service.PlatformGenerationConverger) error
 	newUserManagementActions          func(*gorm.DB, *service.AuthRedis, *actionsecurity.Crypto) (*service.UserManagementActions, error)
 }
 
@@ -54,7 +87,16 @@ func defaultStateConstructors() stateConstructors {
 	return stateConstructors{
 		newAuthRedisFromURL:               service.NewAuthRedisFromURL,
 		newPlatformGenerationStoreFromURL: service.NewPlatformGenerationStoreFromURL,
-		newUserManagementActions:          service.NewUserManagementActions,
+		newPlatformGenerationControl:      service.NewPlatformGenerationControl,
+		newPlatformGenerationConverger:    service.NewPlatformGenerationConverger,
+		newPlatformSingleGeneration: func(db *gorm.DB, store *service.PlatformGenerationStore, persistenceService *service.PlatformGenerationPersistence, registry *service.PlatformGenerationCancellationRegistry, upstream *whitelabel.WhiteLabelService, rootContext context.Context, timeout time.Duration) (service.PlatformSingleGenerationRunnerAPI, error) {
+			return service.NewPlatformSingleGenerationRunner(db, store, persistenceService, registry, upstream, rootContext, timeout)
+		},
+		startPlatformGenerationConverger: func(converger *service.PlatformGenerationConverger) { converger.Start() },
+		closePlatformGenerationConverger: func(ctx context.Context, converger *service.PlatformGenerationConverger) error {
+			return converger.Close(ctx)
+		},
+		newUserManagementActions: service.NewUserManagementActions,
 	}
 }
 
@@ -66,11 +108,40 @@ func newState(settings *config.Settings, db *gorm.DB, constructors stateConstruc
 		SMS:      service.NewSMSService(settings),
 		Audit:    service.NewAuditService(),
 		HTTP:     &http.Client{},
+
+		closeTimeout: stateCloseTimeout,
+		closePlatformGenerationRunners: func(ctx context.Context, registry *service.PlatformGenerationCancellationRegistry) error {
+			return registry.CloseAndWait(ctx)
+		},
+		closePlatformGenerationConverger: constructors.closePlatformGenerationConverger,
+		closePlatformGenerations: func(generations *service.PlatformGenerationStore) error {
+			return generations.Close()
+		},
+		closeAuthRedis: func(authRedis *service.AuthRedis) error {
+			return authRedis.Close()
+		},
 	}
+	var generationCancellations *service.PlatformGenerationCancellationRegistry
+	var generationControl *service.PlatformGenerationControl
+	var generationConverger *service.PlatformGenerationConverger
+	var generationRootCancel context.CancelFunc
 	dependenciesTransferred := false
 	defer func() {
 		if dependenciesTransferred {
 			return
+		}
+		if generationRootCancel != nil {
+			generationRootCancel()
+		}
+		if generationCancellations != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), stateCloseTimeout)
+			_ = s.closePlatformGenerationRunners(ctx, generationCancellations)
+			cancel()
+		}
+		if generationConverger != nil && constructors.closePlatformGenerationConverger != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), stateCloseTimeout)
+			_ = constructors.closePlatformGenerationConverger(ctx, generationConverger)
+			cancel()
 		}
 		if s.PlatformGenerations != nil {
 			_ = s.PlatformGenerations.Close()
@@ -120,6 +191,20 @@ func newState(settings *config.Settings, db *gorm.DB, constructors stateConstruc
 			return nil, err
 		}
 		s.PlatformGenerationPersistence = generationPersistence
+		if db != nil {
+			if constructors.newPlatformGenerationControl == nil || constructors.newPlatformGenerationConverger == nil || constructors.startPlatformGenerationConverger == nil || constructors.closePlatformGenerationConverger == nil {
+				return nil, service.ErrPlatformGenerationControlUnavailable
+			}
+			generationCancellations = service.NewPlatformGenerationCancellationRegistry()
+			generationControl, err = constructors.newPlatformGenerationControl(db, generations, generationCancellations)
+			if err != nil || generationControl == nil {
+				return nil, service.ErrPlatformGenerationControlUnavailable
+			}
+			generationConverger, err = constructors.newPlatformGenerationConverger(generationControl)
+			if err != nil || generationConverger == nil {
+				return nil, service.ErrPlatformGenerationControlUnavailable
+			}
+		}
 	}
 	s.Sessions = service.NewSessionService(db, s.AuthRedis, settings)
 	s.Auth.SetSessionService(s.Sessions)
@@ -129,8 +214,9 @@ func newState(settings *config.Settings, db *gorm.DB, constructors stateConstruc
 		}
 		userManagementActions, err := constructors.newUserManagementActions(db, s.AuthRedis, s.ActionSecurityCrypto)
 		if err != nil || userManagementActions == nil || userManagementActions.Verifications == nil ||
-			userManagementActions.Operations == nil || userManagementActions.DeleteOutbox == nil || userManagementActions.CreateOutbox == nil ||
-			userManagementActions.NewDeleteExecution == nil || userManagementActions.NewCreateExecution == nil {
+			userManagementActions.Operations == nil || userManagementActions.DeleteOutbox == nil || userManagementActions.CreateOutbox == nil || userManagementActions.ResetOutbox == nil || userManagementActions.RolePermissionOutbox == nil ||
+			userManagementActions.NewDeleteExecution == nil || userManagementActions.NewCreateExecution == nil || userManagementActions.NewResetExecution == nil ||
+			userManagementActions.NewPromoteExecution == nil || userManagementActions.NewDemoteExecution == nil || userManagementActions.NewPermissionsWriteExecution == nil {
 			return nil, service.ErrActionVerificationUnavailable
 		}
 		userDeleteActions := userManagementActions.DeleteActions()
@@ -147,6 +233,36 @@ func newState(settings *config.Settings, db *gorm.DB, constructors stateConstruc
 		Billing:    s.Billing,
 		WhiteLabel: s.WhiteLabel,
 	})
+	if generationControl != nil {
+		var generationRunner service.PlatformSingleGenerationRunnerAPI
+		if s.WhiteLabel != nil {
+			timeout, ok := platformSingleGenerationTimeout(settings.UpstreamTimeoutSeconds)
+			if !ok || constructors.newPlatformSingleGeneration == nil {
+				return nil, service.ErrPlatformSingleGenerationUnavailable
+			}
+			generationRootContext, cancel := context.WithCancel(context.Background())
+			generationRootCancel = cancel
+			var err error
+			generationRunner, err = constructors.newPlatformSingleGeneration(
+				db,
+				s.PlatformGenerations,
+				s.PlatformGenerationPersistence,
+				generationCancellations,
+				s.WhiteLabel,
+				generationRootContext,
+				timeout,
+			)
+			if err != nil || nilPlatformSingleGenerationRunner(generationRunner) {
+				return nil, service.ErrPlatformSingleGenerationUnavailable
+			}
+		}
+		s.PlatformGenerationCancellations = generationCancellations
+		s.PlatformGenerationControl = generationControl
+		s.PlatformGenerationConverger = generationConverger
+		s.PlatformSingleGeneration = generationRunner
+		s.platformGenerationRootCancel = generationRootCancel
+		constructors.startPlatformGenerationConverger(generationConverger)
+	}
 	if db != nil {
 		s.RootAlerts = service.NewRootAlertService(db)
 		s.PublicModels = service.NewPublicModelAdminService(db)
@@ -160,4 +276,90 @@ func newState(settings *config.Settings, db *gorm.DB, constructors stateConstruc
 
 	dependenciesTransferred = true
 	return s, nil
+}
+
+func nilPlatformSingleGenerationRunner(runner service.PlatformSingleGenerationRunnerAPI) bool {
+	if runner == nil {
+		return true
+	}
+	value := reflect.ValueOf(runner)
+	switch value.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Ptr, reflect.Slice:
+		return value.IsNil()
+	default:
+		return false
+	}
+}
+
+func platformSingleGenerationTimeout(seconds float64) (time.Duration, bool) {
+	if math.IsNaN(seconds) || math.IsInf(seconds, 0) || seconds <= 0 {
+		return 0, false
+	}
+	nanoseconds := seconds * float64(time.Second)
+	if math.IsNaN(nanoseconds) || math.IsInf(nanoseconds, 0) || nanoseconds >= float64(math.MaxInt64) {
+		return 0, false
+	}
+	timeout := time.Duration(nanoseconds)
+	return timeout, timeout > 0
+}
+
+// Close releases only resources owned by State. The database is supplied by
+// startup and deliberately remains externally owned.
+func (s *State) Close() error {
+	if s == nil {
+		return nil
+	}
+	s.closeOnce.Do(func() {
+		timeout := s.closeTimeout
+		if timeout <= 0 {
+			timeout = stateCloseTimeout
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		defer cancel()
+
+		if s.platformGenerationRootCancel != nil {
+			s.platformGenerationRootCancel()
+		}
+		if s.PlatformGenerationCancellations != nil {
+			closeRunners := s.closePlatformGenerationRunners
+			if closeRunners == nil {
+				closeRunners = func(ctx context.Context, registry *service.PlatformGenerationCancellationRegistry) error {
+					return registry.CloseAndWait(ctx)
+				}
+			}
+			if err := closeRunners(ctx, s.PlatformGenerationCancellations); err != nil {
+				s.closeErr = errors.Join(s.closeErr, errClosePlatformGenerationRunners)
+			}
+		}
+		if s.PlatformGenerationConverger != nil {
+			closeConverger := s.closePlatformGenerationConverger
+			if closeConverger == nil {
+				closeConverger = func(ctx context.Context, converger *service.PlatformGenerationConverger) error {
+					return converger.Close(ctx)
+				}
+			}
+			if err := closeConverger(ctx, s.PlatformGenerationConverger); err != nil {
+				s.closeErr = errors.Join(s.closeErr, errClosePlatformGenerationWorker)
+			}
+		}
+		if s.PlatformGenerations != nil {
+			closeGenerations := s.closePlatformGenerations
+			if closeGenerations == nil {
+				closeGenerations = func(generations *service.PlatformGenerationStore) error { return generations.Close() }
+			}
+			if err := closeGenerations(s.PlatformGenerations); err != nil {
+				s.closeErr = errors.Join(s.closeErr, errClosePlatformGenerationStore)
+			}
+		}
+		if s.AuthRedis != nil {
+			closeAuthRedis := s.closeAuthRedis
+			if closeAuthRedis == nil {
+				closeAuthRedis = func(authRedis *service.AuthRedis) error { return authRedis.Close() }
+			}
+			if err := closeAuthRedis(s.AuthRedis); err != nil {
+				s.closeErr = errors.Join(s.closeErr, errCloseAuthRedis)
+			}
+		}
+	})
+	return s.closeErr
 }

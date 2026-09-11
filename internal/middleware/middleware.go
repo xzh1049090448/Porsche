@@ -48,10 +48,31 @@ func RequireUser(state *app.State) gin.HandlerFunc {
 	}
 }
 
+// RequireUserWithErrorWriter runs the same authentication checks as
+// RequireUser while allowing a route family to keep its frozen public error
+// envelope. The writer receives the existing safe detail but must terminate
+// the request itself.
+func RequireUserWithErrorWriter(state *app.State, writeError func(*gin.Context, string)) gin.HandlerFunc {
+	if writeError == nil {
+		writeError = func(c *gin.Context, detail string) { httpx.AbortJSON(c, http.StatusUnauthorized, detail) }
+	}
+	return func(c *gin.Context) {
+		if !authenticateUserWithErrorWriter(c, state, writeError) {
+			return
+		}
+		c.Next()
+	}
+}
+
 // AuthenticateUserWithError authenticates an optional-session request while
 // allowing the owning API family to keep its error and cache contract.
 func AuthenticateUserWithError(c *gin.Context, state *app.State, abort func(*gin.Context, int, string)) bool {
-	return authenticateUserWithError(c, state, abort)
+	if abort == nil {
+		abort = func(c *gin.Context, status int, detail string) { httpx.AbortJSON(c, status, detail) }
+	}
+	return authenticateUserWithErrorWriter(c, state, func(c *gin.Context, detail string) {
+		abort(c, http.StatusUnauthorized, detail)
+	})
 }
 
 // RequireAdmin accepts only an authenticated server session whose persisted
@@ -87,7 +108,7 @@ func RequireRoot(state *app.State) gin.HandlerFunc {
 // allowing a scoped API family to own its error envelope.
 func RequireRootWithError(state *app.State, abort func(*gin.Context, int, string)) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if abort == nil || !authenticateUserWithError(c, state, abort) {
+		if abort == nil || !AuthenticateUserWithError(c, state, abort) {
 			return
 		}
 		if !hasMinimumRole(CurrentUser(c).Role, models.UserRoleRoot) {
@@ -126,32 +147,34 @@ func hasAnalyticsAccess(user *models.User) bool {
 func HasAnalyticsAccess(user *models.User) bool { return hasAnalyticsAccess(user) }
 
 func authenticateUser(c *gin.Context, state *app.State) bool {
-	return authenticateUserWithError(c, state, func(c *gin.Context, status int, message string) { httpx.AbortJSON(c, status, message) })
+	return authenticateUserWithErrorWriter(c, state, func(c *gin.Context, detail string) {
+		httpx.AbortJSON(c, http.StatusUnauthorized, detail)
+	})
 }
 
-func authenticateUserWithError(c *gin.Context, state *app.State, abort func(*gin.Context, int, string)) bool {
+func authenticateUserWithErrorWriter(c *gin.Context, state *app.State, writeError func(*gin.Context, string)) bool {
 	if state == nil || state.Settings == nil || state.DB == nil || state.Sessions == nil {
-		abort(c, http.StatusUnauthorized, "Token无效或已过期")
+		writeError(c, "Token无效或已过期")
 		return false
 	}
 	token := httpx.BearerToken(c)
 	if token == "" {
-		abort(c, http.StatusUnauthorized, "未登录")
+		writeError(c, "未登录")
 		return false
 	}
 	claims, err := security.DecodeAccessToken(token, state.Settings.JWTSecretKey)
 	sessionClaims, ok := parseSessionClaims(claims)
 	if err != nil || !ok {
-		abort(c, http.StatusUnauthorized, "Token无效或已过期")
+		writeError(c, "Token无效或已过期")
 		return false
 	}
 	var user models.User
 	if err := state.DB.Where("guid = ? AND is_deleted = 0", sessionClaims.UserGUID).First(&user).Error; err != nil || !user.Status.IsActive() || user.AuthVersion != sessionClaims.AuthVersion || user.Role != sessionClaims.Role {
-		abort(c, http.StatusUnauthorized, "Token无效或已过期")
+		writeError(c, "Token无效或已过期")
 		return false
 	}
 	if _, err := state.Sessions.Validate(c.Request.Context(), sessionClaims.SID, user.ID, sessionClaims.SessionVersion, sessionClaims.AuthVersion); err != nil {
-		abort(c, http.StatusUnauthorized, "Token无效或已过期")
+		writeError(c, "Token无效或已过期")
 		return false
 	}
 	c.Set(ContextUserID, user.ID)

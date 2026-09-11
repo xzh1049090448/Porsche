@@ -41,10 +41,18 @@ func completeRouterUserManagementActions() *service.UserManagementActions {
 	return &service.UserManagementActions{
 		Verifications: &service.ActionVerificationService{}, Operations: &service.ActionOperationService{},
 		DeleteOutbox: &service.AdminActionOutboxWriter{}, CreateOutbox: &service.CreateAccountOutboxWriter{},
-		NewDeleteExecution: func(actionsecurity.DeleteUserIntent) (*service.DeleteUserExecution, error) { return nil, nil },
+		ResetOutbox:          &service.ResetPasswordOutboxWriter{},
+		RolePermissionOutbox: &service.RolePermissionOutboxWriter{},
+		NewDeleteExecution:   func(actionsecurity.DeleteUserIntent) (*service.DeleteUserExecution, error) { return nil, nil },
 		NewCreateExecution: func(actionsecurity.Action, actionsecurity.CreateAccountIntent, []byte, service.CreateAccountRequestMetadata) (*service.CreateAccountExecution, error) {
 			return nil, nil
 		},
+		NewResetExecution: func(actionsecurity.ResetPasswordIntent, []byte, service.ResetPasswordRequestMetadata) (*service.ResetPasswordExecution, error) {
+			return nil, nil
+		},
+		NewPromoteExecution:          func(actionsecurity.PromoteIntent) (*service.RolePermissionExecution, error) { return nil, nil },
+		NewDemoteExecution:           func(actionsecurity.DemoteIntent) (*service.RolePermissionExecution, error) { return nil, nil },
+		NewPermissionsWriteExecution: func(actionsecurity.PermissionsWriteIntent) (*service.RolePermissionExecution, error) { return nil, nil },
 	}
 }
 
@@ -56,6 +64,7 @@ func TestUserManagementActionRouteInventoryIsExactAndBundleGated(t *testing.T) {
 		{http.MethodPost, "/admin/v2/action-verifications"},
 		{http.MethodPost, "/admin/v2/users"},
 		{http.MethodPost, "/admin/v2/users/:guid/actions"},
+		{http.MethodPatch, "/admin/v2/users/:guid/permissions"},
 		{http.MethodGet, "/admin/v2/operations"},
 	}
 	for _, expected := range want {
@@ -63,7 +72,7 @@ func TestUserManagementActionRouteInventoryIsExactAndBundleGated(t *testing.T) {
 			t.Fatalf("missing action route %s %s", expected.Method, expected.Path)
 		}
 	}
-	for _, forbidden := range []string{"/admin/v2/actions", "/admin/v2/actions/:action", "/admin/v2/users/:guid/actions/:action"} {
+	for _, forbidden := range []string{"/admin/v2/actions", "/admin/v2/actions/:action", "/admin/v2/users/:guid/actions/:action", "/admin/v2/users/:guid/permissions/actions"} {
 		if slices.ContainsFunc(engine.Routes(), func(route gin.RouteInfo) bool { return route.Path == forbidden }) {
 			t.Fatalf("generic action route registered: %s", forbidden)
 		}
@@ -92,6 +101,7 @@ func TestAdminUserCreateRouteInventoryUsesOneCompleteBundleWithoutDuplicateOwner
 		{http.MethodPost, "/admin/v2/action-verifications"},
 		{http.MethodPost, "/admin/v2/users"},
 		{http.MethodPost, "/admin/v2/users/:guid/actions"},
+		{http.MethodPatch, "/admin/v2/users/:guid/permissions"},
 		{http.MethodGet, "/admin/v2/operations"},
 	}
 	for _, expected := range want {
@@ -135,7 +145,7 @@ func TestAdminUserCreateRouteInventoryUsesOneCompleteBundleWithoutDuplicateOwner
 func TestUserDeleteActionRoutesKeepAuthenticationAndSecurityHeaders(t *testing.T) {
 	state := &app.State{Settings: &config.Settings{AppEnv: "test", AllowedHosts: "example.com"}, UserManagementActions: completeRouterUserManagementActions()}
 	engine := router.New(state)
-	for caseIndex, route := range []routeContract{{http.MethodPost, "/admin/v2/action-verifications"}, {http.MethodPost, "/admin/v2/users"}, {http.MethodPost, "/admin/v2/users/123/actions"}, {http.MethodGet, "/admin/v2/operations?scope=users.delete"}} {
+	for caseIndex, route := range []routeContract{{http.MethodPost, "/admin/v2/action-verifications"}, {http.MethodPost, "/admin/v2/users"}, {http.MethodPost, "/admin/v2/users/123/actions"}, {http.MethodPatch, "/admin/v2/users/123/permissions"}, {http.MethodGet, "/admin/v2/operations?scope=users.delete"}} {
 		req := httptest.NewRequest(route.Method, route.Path, strings.NewReader(`{}`))
 		rec := httptest.NewRecorder()
 		engine.ServeHTTP(rec, req)
@@ -151,6 +161,9 @@ func TestCompleteUserManagementBundleLeavesGenericAndOtherActionPaths404(t *test
 	for caseIndex, route := range []routeContract{
 		{http.MethodPost, "/admin/v2/actions"},
 		{http.MethodPost, "/admin/v2/actions/users.delete"},
+		{http.MethodPost, "/admin/v2/actions/users.quota.adjust"},
+		{http.MethodPost, "/admin/v2/users/123/balance-adjustments"},
+		{http.MethodPatch, "/admin/v2/users/123/balance"},
 		{http.MethodPost, "/admin/v2/users/123/actions/promote"},
 		{http.MethodPost, "/admin/v2/public-content/announcements/publish"},
 		{http.MethodPost, "/admin/v2/public-content/announcements/rollback"},

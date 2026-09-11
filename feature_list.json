@@ -24,15 +24,19 @@
         "前端 npm test 与 npm run build",
         "后端 focused race、go test ./...、go vet ./... 与 git diff --check",
         "显式隔离 TEST_REDIS_URL 下的 generation claim/CAS 竞态测试",
+        "BE04 显式隔离 MySQL 8.4.11 / Redis 7.4.11 下的 generation GET/cancel、receipt hydration、restart/multi-instance convergence、owner isolation、full 与 affected race",
+        "BE05 显式隔离 MySQL 8.4.11 / Redis 7.4.11 下的 single v2 stream 成功/失败持久化、断连 GET、取消、续租、reconcile 与并发竞争",
         "最终本地浏览器与 API 联合验收"
       ],
       "evidence": [
         "2026-09-07：前端 FE01-FE03 的字符簇播放、严格 SSE v2 parser 和 generation lifecycle 已提交；157 项测试与构建通过。",
         "2026-09-07：后端 BE01 协议原语、边界加固、race 修复和未激活 v2 的稳定 503 门禁已提交；完整 Go 回归、focused race、vet、diff 与独立安全复审通过。",
         "2026-09-08：BE02 Redis generation registry 在 loopback-only、tmpfs、无持久化 Redis 7 fixture 上完成真实 Lua/CAS race 与全量 Go 回归；typed duplicate conflict、24h KEEPTTL、cancel/commit winner-only、严格 seq/terminal、每模型唯一消息 GUID、稳定错误和记录脱敏通过独立规格与安全复审。报告 docs/superpowers/reports/2026-09-08-platform-generation-registry.md。",
-        "2026-09-08：BE03 新增 0011 generation receipt/result schema、原子 single/compare 持久化、每模型独立消息、成功项 quota/token/usage 一致性、精确会话来源约束的幂等与 commit-unknown 恢复锚点；隔离 MySQL/Redis race 在补足一次性本地 test-only HMAC 前置后无 fixture skip 通过，全量 Go、vet、diff 及独立规格/实现/安全复审通过，reconciliation 依赖错误保持稳定脱敏。报告 docs/superpowers/reports/2026-09-08-platform-generation-persistence.md。"
+        "2026-09-08：BE03 新增 0011 generation receipt/result schema、原子 single/compare 持久化、每模型独立消息、成功项 quota/token/usage 一致性、精确会话来源约束的幂等与 commit-unknown 恢复锚点；隔离 MySQL/Redis race 在补足一次性本地 test-only HMAC 前置后无 fixture skip 通过，全量 Go、vet、diff 及独立规格/实现/安全复审通过，reconciliation 依赖错误保持稳定脱敏。报告 docs/superpowers/reports/2026-09-08-platform-generation-persistence.md。",
+        "2026-09-09：BE04 production code HEAD 为 620dcd852222284e0d9c057d1e50ae6d3bb5e0cb，交付候选 c55ca7f52bc92ecfae08411cf0d0b9d50f5bdf10 仅追加 test-only uppercase scan fixture stabilization。最终生产修复链为 b114ef5 中间提交、9b7e925 最终逐记录损坏容忍与 caller cancellation、fee9ae4 receipt pre-CAS 精确匹配、620dcd8 cancel deadline 与锁清理。99594f5 post-doc full 的 FAIL_TEST_FIXTURE_FLAKE 未被掩盖；c55ca7f 的 focused -count=100、race -count=50 与两次 fresh 原始 full 均通过。全新 loopback-only tmpfs MySQL 8.4.11 / Redis 7.4.11、0001–0011 下 affected race、combined normal/race、vet/build/diff/security scans 通过；full 唯一 skip 为非 BE04 的 opt-in TestAdminUsersReadPerformance，BE04 0 skip。首次 Task9 BLOCKED_TEST_ISOLATION 已由 23820ac 修复。报告 docs/superpowers/reports/2026-09-09-platform-generation-control.md。",
+        "2026-09-11：BE05 single v2 stream 八个真实 MySQL/Redis integration 顶层测试全部 PASS、零 skip；focused normal/race 各 114 PASS，fresh full 3403 PASS，fresh affected race 2488 PASS，build/vet/diff/privacy PASS。唯一 skip 为非 BE05 的显式 opt-in TestAdminUsersReadPerformance。续租 activity timestamp 与已迁移库重跑 verifier 两个 FAIL_PRODUCT 分别由 0270735、d09d493 修复并通过独立 SPEC/SECURITY/真实 fixture TEST review。fixture 已精确清理。报告 docs/superpowers/reports/2026-09-10-platform-single-stream-v2.md。"
       ],
-      "notes": "BE01-BE03 已完成；generation GET/cancel、取消先到 tombstone、重启调度、真实 v2 single/compare stream 和联合验收仍待后续 BE04-BE06 tranche。未激活 v2 路由；未 push、merge、deploy、执行生产迁移或调用真实付费上游。"
+      "notes": "BE01-BE05 已在本地完成；single v2 stream 已通过真实隔离 fixture。BE06 compare v2 stream、前后端联合验收、生产迁移、部署、公开 HTTPS 验证和真实上游仍未完成；compare stream 继续稳定 503。未 push、创建 PR、merge、deploy、执行生产迁移或调用真实付费上游。"
     },
     {
       "id": "go-017",
@@ -41,9 +45,9 @@
       "title": "B1-E 管理动作安全底座内部原语",
       "status": "passing",
       "acceptance_status": "limited_subscope",
-      "a14_status": "BLOCKED_NOT_IMPLEMENTED",
-      "active_production_consumers": 3,
-      "joint_acceptance_blocker_count": 12,
+      "a14_status": "PASS_LIMITED_SCOPE",
+      "active_production_consumers": 7,
+      "joint_acceptance_blocker_count": 8,
       "joint_acceptance_blockers": [
         {
           "id": "A03",
@@ -55,39 +59,108 @@
         },
         {
           "id": "A05",
-          "status": "BLOCKED_NOT_IMPLEMENTED"
+          "status": "PASS_LIMITED_SCOPE",
+          "accepted_candidate": {
+            "backend": "6bb54007879adeb16a532d792ab471f16ee9100a",
+            "frontend": "5a41f5679c1c35e5c2850665db54ae83e58db436"
+          },
+          "canonical_evidence_commits": {
+            "backend": "76e0d2f650989ffecd7519b0d042ec2696cd60a8",
+            "frontend": "34b23fc8d00771cd03b9072e00ceda40b421c6bd"
+          },
+          "emergency_merge_heads": {
+            "backend": "bf53c6a98452f624a6061e9be7317f9f596ea908",
+            "frontend": "a93893bc4a8739ba158cf45c6f32779873d9b028"
+          },
+          "evidence": "backend:docs/superpowers/reports/validation/2026-09-08-a05-managed-user-edit/manifest.json"
         },
         {
           "id": "A06",
-          "status": "BLOCKED_NOT_IMPLEMENTED"
+          "status": "PASS_LIMITED_SCOPE",
+          "accepted_candidate": {
+            "backend": "08617d400228c224fa2312583fde14f54f7a7686",
+            "frontend": "07c7b9e3caa5fe18bd69be74e71f577577943840"
+          },
+          "canonical_evidence_commits": {
+            "backend": "1677bc5384aa5968a213d6cae2efe62198b92964",
+            "frontend": "b62055245e2dc6d954a545caab2c02ee45fa3d3a"
+          },
+          "evidence": "docs/superpowers/reports/validation/2026-09-08-a06-managed-user-status/manifest.json"
         },
         {
           "id": "A07",
-          "status": "BLOCKED_NOT_IMPLEMENTED"
+          "status": "PASS_LIMITED_SCOPE",
+          "accepted_candidate": {
+            "backend": "a600a0815b5eab5203333755a2466788fe67d61a",
+            "frontend": "41648181ab42fb46fe7d45663e746121956b50b8"
+          },
+          "canonical_evidence_commits": {
+            "backend": "5d5a1e9ee230bcc42fe9fde8d3f9f7badf34b658",
+            "frontend": "39b79582110347ae11b95e58217b3afe3236b4f7"
+          },
+          "contract_sha256": "9e1969b238911b6eee5b6aa85ed364e795a6854f0a026daac5d15e2ab78851be",
+          "evidence": "backend:docs/superpowers/reports/validation/2026-09-09-a07-managed-user-entitlements/manifest.json"
         },
         {
           "id": "A08",
-          "status": "BLOCKED_NOT_IMPLEMENTED"
+          "status": "PASS_LIMITED_SCOPE",
+          "code_candidate": {
+            "backend": "9fdc07b3bcf4cb06049e4af0f5adde28e36facab"
+          },
+          "contract_sha256": "dd202cb5019b10a891e10f03f77629b5f54e993110f148f417e05d089df35698",
+          "evidence": "backend:docs/superpowers/reports/validation/2026-09-09-a08-managed-user-roles-permissions/backend/manifest.json",
+          "accepted_candidate": {
+            "backend": "f2f976005c2331c0409c1b27da79e3a43d25bcb0",
+            "frontend": "25b073164dc3fccecbf3b74309f12dd7589c024b"
+          }
         },
         {
           "id": "A09",
-          "status": "BLOCKED_NOT_IMPLEMENTED"
+          "status": "PASS_LIMITED_SCOPE",
+          "accepted_candidate": {
+            "backend": "258abb42a9e1f018845b3175e7dbca0a013231f1",
+            "frontend": "86122422a8234db3d5ee486eda8a0def6646dcc6"
+          },
+          "evidence": "frontend:docs/agents/validation/a09-a12-balance-mock-20260910/manifest.json"
         },
         {
           "id": "A10",
-          "status": "BLOCKED_NOT_IMPLEMENTED"
+          "status": "PASS_LIMITED_SCOPE",
+          "accepted_candidate": {
+            "backend": "258abb42a9e1f018845b3175e7dbca0a013231f1",
+            "frontend": "86122422a8234db3d5ee486eda8a0def6646dcc6"
+          },
+          "evidence": "frontend:docs/agents/validation/a09-a12-balance-mock-20260910/manifest.json"
         },
         {
           "id": "A11",
-          "status": "BLOCKED_NOT_IMPLEMENTED"
+          "status": "PASS_LIMITED_SCOPE",
+          "accepted_candidate": {
+            "backend": "258abb42a9e1f018845b3175e7dbca0a013231f1",
+            "frontend": "86122422a8234db3d5ee486eda8a0def6646dcc6"
+          },
+          "evidence": "frontend:docs/agents/validation/a09-a12-balance-mock-20260910/manifest.json"
         },
         {
           "id": "A12",
-          "status": "BLOCKED_NOT_IMPLEMENTED"
+          "status": "PASS_LIMITED_SCOPE",
+          "accepted_candidate": {
+            "backend": "811213d557eea7b6b9523a584245252ba4dd7d80",
+            "frontend": "bace6d167b94b693abd6be4c720152dc0eb905bb"
+          },
+          "current_revalidation": {
+            "backend": "258abb42a9e1f018845b3175e7dbca0a013231f1",
+            "frontend": "86122422a8234db3d5ee486eda8a0def6646dcc6",
+            "result": "PASS"
+          }
         },
         {
           "id": "A14",
-          "status": "BLOCKED_NOT_IMPLEMENTED"
+          "status": "PASS_LIMITED_SCOPE",
+          "accepted_candidate": {
+            "backend": "811213d557eea7b6b9523a584245252ba4dd7d80",
+            "frontend": "bace6d167b94b693abd6be4c720152dc0eb905bb"
+          }
         },
         {
           "id": "P01",
@@ -96,27 +169,27 @@
         {
           "id": "P03",
           "status": "PASS_BACKEND_LOCAL",
-          "evidence": "Backend Task 12 isolated MySQL 8.0 / Redis 7 fixtures, migrations 0001-0015, focused integration and race gates passed; frontend, deployment, production migration, and production acceptance remain not run."
+          "evidence": "Backend Task 12 isolated MySQL 8.0 / Redis 7 fixtures, migrations 0001-0019, focused integration and race gates passed; frontend, deployment, production migration, and production acceptance remain not run."
         },
         {
           "id": "P04",
           "status": "PASS_BACKEND_LOCAL",
-          "evidence": "Backend Task 12 isolated MySQL 8.0 / Redis 7 fixtures, migrations 0001-0015, focused integration and race gates passed; frontend, deployment, production migration, and production acceptance remain not run."
+          "evidence": "Backend Task 12 isolated MySQL 8.0 / Redis 7 fixtures, migrations 0001-0019, focused integration and race gates passed; frontend, deployment, production migration, and production acceptance remain not run."
         },
         {
           "id": "P05",
           "status": "PASS_BACKEND_LOCAL",
-          "evidence": "Backend Task 12 isolated MySQL 8.0 / Redis 7 fixtures, migrations 0001-0015, focused integration and race gates passed; frontend, deployment, production migration, and production acceptance remain not run."
+          "evidence": "Backend Task 12 isolated MySQL 8.0 / Redis 7 fixtures, migrations 0001-0019, focused integration and race gates passed; frontend, deployment, production migration, and production acceptance remain not run."
         },
         {
           "id": "P06",
           "status": "PASS_BACKEND_LOCAL",
-          "evidence": "Backend Task 12 isolated MySQL 8.0 / Redis 7 fixtures, migrations 0001-0015, focused integration and race gates passed; frontend, deployment, production migration, and production acceptance remain not run."
+          "evidence": "Backend Task 12 isolated MySQL 8.0 / Redis 7 fixtures, migrations 0001-0019, focused integration and race gates passed; frontend, deployment, production migration, and production acceptance remain not run."
         },
         {
           "id": "P07",
           "status": "PASS_BACKEND_LOCAL",
-          "evidence": "Backend Task 12 isolated MySQL 8.0 / Redis 7 fixtures, migrations 0001-0015, focused integration and race gates passed; frontend, deployment, production migration, and production acceptance remain not run."
+          "evidence": "Backend Task 12 isolated MySQL 8.0 / Redis 7 fixtures, migrations 0001-0019, focused integration and race gates passed; frontend, deployment, production migration, and production acceptance remain not run."
         },
         {
           "id": "P08",
@@ -141,6 +214,10 @@
         "第三次独立 QA 对 HEAD 2408ee3ace6f1a2ff07645653aed354a0ca245fa 给出 QA_PASS；Task14 exact cleanup 已由 b18d22ef8d6683bdf6ef55a7369180b72cb75479 记录为 CLEANUP_PASS 和零残留",
         "Task15 clean-tree full/race/build/vet/diff/invariant gates通过；SPEC_PASS、IMPLEMENTATION_PASS、SECURITY_PASS由42d3487d018a174bbcb85aa1b71947d35e968a93归档",
         "A03 Task12：MySQL 8.4.11 / Redis 7.4 隔离夹具、0001–0010、focused/race/serial full/build/vet/diff、前端275/275及可见Chrome 13场景通过；唯一skip为显式opt-in 100k性能夹具",
+        "A05 Task8：BE/FE nickname-edit代码、r5 backend service/DTO/handler/router/HTTP及r10真实浏览器/adversarial/privacy/cleanup均通过",
+        "A06：真实MySQL/Redis状态迁移与旧Access/Refresh/Key失效、focused race、no-fixture full、前端364/364、真实挂载13/13、生产构建及375/390 Chrome布局均通过",
+        "A07：真实 MySQL/Redis 登录/令牌/三会话审计、Bearer 套餐额度、并发与故障回滚，focused race、no-fixture full、前端 395/395、生产构建、375/390 Chrome 及三项独立复审通过",
+        "A08 后端候选 9fdc07b：focused/focused-race/build/vet/diff 与 loopback-enabled full/full-race 通过；真实 MySQL 8/Redis 7、migration 0012、凭据生命周期、并发与回滚因 fixture 未配置为 BLOCKED_FIXTURE/NOT_RUN",
         "Public content/pricing Backend Task 12：隔离 MySQL 8.0 / Redis 7，迁移 0001–0016，0012–0015 与 0016 独立 down/reapply、focused integration/race、full/build/vet/diff 通过。",
         "2026-09-11：Root 后台 public-models 列表新增 complete/incomplete 服务端全局筛选，冻结精确完整性语义并在 COUNT/分页前组合过滤；一次性 MySQL 8.0 的 26 行跨页测试与 0001–0017 账本通过，focused/full/build/vet/diff 通过并已精确清理 fixture。"
       ],
@@ -152,9 +229,14 @@
         "Task14：exact cleanup提交b18d22ef8d6683bdf6ef55a7369180b72cb75479；容器ID/名称/label/端口/listener/进程/私有路径/任务卷残留均0，无关容器与卷不变，独立结论CLEANUP_PASS。",
         "Task15：无fixture全量780 pass events/695 leaf/285 skip events/0 fail，Action race232/204/26 skip/0 fail，build/vet/diff/invariant通过；三份最终评审与manifest由42d3487d018a174bbcb85aa1b71947d35e968a93归档。",
         "A03 users.create/users.create_admin：代码候选BE 3a50144e53268f6ef3ae704699ef9fa851e4a5ee / FE 9f660a9ca26f5738dd661652596a1e450ff34335；canonical证据 docs/superpowers/reports/validation/2026-09-06-a03-admin-user-create/canonical-3a50144-9f660a9-final/manifest.json，三项代码复审与三项证据复审均PASS，exact cleanup为CLEANUP_PASS。",
+        "A05 managed-user nickname edit：代码BE 6bb5400 / FE 5a41f56；canonical evidence commits BE 76e0d2f / FE 34b23fc；emergency merge heads BE bf53c6a / FE a93893b；本地联合切片PASS_LIMITED_SCOPE。",
+        "A06 managed-user status：代码BE 08617d4 / FE 07c7b9e；canonical evidence commits BE 1677bc5 / FE b620552；合同SHA-256 c3662b25500879d67c6811fa270d4a6a39a44db812c7c493d6f02e535940b415；双端独立复审PASS。",
+        "A07 managed-user credentials/entitlements：候选 BE a600a08 / FE 4164818；canonical evidence commits BE 5d5a1e9ee230bcc42fe9fde8d3f9f7badf34b658 / FE 39b79582110347ae11b95e58217b3afe3236b4f7；合同 SHA-256 9e1969b238911b6eee5b6aa85ed364e795a6854f0a026daac5d15e2ab78851be；本地联合切片 PASS_LIMITED_SCOPE。",
+        "A08 managed-user roles/permissions：后端候选 9fdc07b；合同 SHA-256 dd202cb5019b10a891e10f03f77629b5f54e993110f148f417e05d089df35698；代码评审 findings 已闭环，但真实 fixture 与独立 SECURITY_REVIEW 均未完成，状态 BLOCKED_FIXTURE。",
+        "2026-09-09：A08 本地联合切片 PASS_LIMITED_SCOPE。BE f2f9760 / FE 25b0731；真实 MySQL 8.0.46、Redis 7.4.11、0012 down/up、事务/并发/运行时、可见 Chromium 提升/权限修改/降级、375/390 与 exact cleanup 通过；生产和外部 PM 未运行。",
         "P03–P07 仅提升为 PASS_BACKEND_LOCAL；P08 继续 BLOCKED_PRODUCT。未执行前端联合、生产迁移、部署或生产验收。报告 docs/superpowers/reports/2026-09-09-public-content-pricing-backend.md。"
       ],
-      "notes": "PASS_LIMITED_SUBSCOPE：B1-E内部安全原语及A03 users.create/users.create_admin本地联合切片已验证；A03为PASS_LIMITED_SCOPE。ActiveActionRegistry当前3项（users.create、users.create_admin、users.delete）。当前 joint_acceptance_blockers 中有12个BLOCKED条目：10个BLOCKED_NOT_IMPLEMENTED、P08 BLOCKED_PRODUCT、R02 BLOCKED_ENV；A03为PASS_LIMITED_SCOPE，P03–P07仅为PASS_BACKEND_LOCAL，均不代表完整联合验收通过。生产迁移、部署、真实业务账号和完整PRD验收均未运行。ACTION_SECURITY_HMAC_KEY v1 lacks key ID/multi-key verification; rotation is prohibited while replayable post-0010 active snapshots exist unless a separately approved multi-key verifier or atomic full re-HMAC migration is delivered. Public content/pricing 后端本地 Task 12 已验证，P08 仍 BLOCKED_PRODUCT；生产边界不变。",
+      "notes": "当前权威本地矩阵为 18 PASS_LIMITED_SCOPE、6 BLOCKED_NOT_IMPLEMENTED、1 BLOCKED_PRODUCT、1 BLOCKED_ENV，合计 8 项阻塞。A09/A10 为前端开发专用 CNY Mock；A11 的后端职责仅为保持真实调额动作和代表性写路径 404；A12/A14 沿用 users.delete 限定切片并在当前候选复验。真实金额/账本/充值/退款/扣费、生产迁移、部署、生产验收和真实业务账号均 NOT_RUN。外部后端 project_manager 本轮书面确认未获得。ACTION_SECURITY_HMAC_KEY v1 lacks key ID/multi-key verification; rotation is prohibited while replayable post-0010 active snapshots exist unless a separately approved multi-key verifier or atomic full re-HMAC migration is delivered. PASS_LIMITED_SUBSCOPE：B1-E内部安全原语及A03 users.create/users.create_admin本地联合切片已验证；A03为PASS_LIMITED_SCOPE。ActiveActionRegistry当前3项（users.create、users.create_admin、users.delete）。当前 joint_acceptance_blockers 中有12个BLOCKED条目：10个BLOCKED_NOT_IMPLEMENTED、P08 BLOCKED_PRODUCT、R02 BLOCKED_ENV；A03为PASS_LIMITED_SCOPE，P03–P07仅为PASS_BACKEND_LOCAL，均不代表完整联合验收通过。生产迁移、部署、真实业务账号和完整PRD验收均未运行。ACTION_SECURITY_HMAC_KEY v1 lacks key ID/multi-key verification; rotation is prohibited while replayable post-0010 active snapshots exist unless a separately approved multi-key verifier or atomic full re-HMAC migration is delivered. Public content/pricing 后端本地 Task 12 已验证，P08 仍 BLOCKED_PRODUCT；生产边界不变。",
       "a03_joint_acceptance": {
         "status": "PASS_LIMITED_SCOPE",
         "code_under_test": {
@@ -198,6 +280,132 @@
           "business_accounts": "NOT_USED"
         },
         "evidence": "docs/superpowers/reports/validation/2026-09-06-a03-admin-user-create/canonical-3a50144-9f660a9-final/manifest.json"
+      },
+      "a05_joint_acceptance": {
+        "status": "PASS_LIMITED_SCOPE",
+        "code_under_test": {
+          "backend": "6bb54007879adeb16a532d792ab471f16ee9100a",
+          "frontend": "5a41f5679c1c35e5c2850665db54ae83e58db436"
+        },
+        "canonical_evidence_commits": {
+          "backend": "76e0d2f650989ffecd7519b0d042ec2696cd60a8",
+          "frontend": "34b23fc8d00771cd03b9072e00ceda40b421c6bd"
+        },
+        "emergency_merge_heads": {
+          "backend": "bf53c6a98452f624a6061e9be7317f9f596ea908",
+          "frontend": "a93893bc4a8739ba158cf45c6f32779873d9b028"
+        },
+        "tests": {
+          "r5_backend_service": "40 records / 0 fail / 0 skip",
+          "r5_backend_dto_handler_router": "71 records / 0 fail / 0 skip",
+          "r5_real_http_operations": "10/10 PASS",
+          "r10_visible_browser": "allowed UI, conflict/late ownership, visibility/denial PASS",
+          "r10_http_adversarial": "22/22 PASS",
+          "r10_privacy": "browser and database audit privacy PASS",
+          "r10_cleanup": "exact processes/containers/network/private files removed; residue 0"
+        },
+        "production": {
+          "migration": "NOT_RUN",
+          "deployment": "NOT_RUN",
+          "business_accounts": "NOT_RUN"
+        },
+        "scope_boundary": "仅本地A05 managed-user nickname PATCH切片；只允许nickname string/null且auth_version保持不变。金额余额仍为Mock边界，A14范围不变；生产migration、deploy、production acceptance及真实business accounts均NOT_RUN。",
+        "evidence": "docs/superpowers/reports/validation/2026-09-08-a05-managed-user-edit/manifest.json"
+      },
+      "a06_joint_acceptance": {
+        "status": "PASS_LIMITED_SCOPE",
+        "code_under_test": {
+          "backend": "08617d400228c224fa2312583fde14f54f7a7686",
+          "frontend": "07c7b9e3caa5fe18bd69be74e71f577577943840"
+        },
+        "canonical_evidence_commits": {
+          "backend": "1677bc5384aa5968a213d6cae2efe62198b92964",
+          "frontend": "b62055245e2dc6d954a545caab2c02ee45fa3d3a"
+        },
+        "contract_sha256": "c3662b25500879d67c6811fa270d4a6a39a44db812c7c493d6f02e535940b415",
+        "tests": {
+          "backend_real_mysql_redis": "PASS",
+          "backend_focused_race": "PASS",
+          "backend_no_fixture_full": "PASS",
+          "backend_build_vet_diff": "PASS",
+          "frontend_full": "364/364 PASS",
+          "frontend_mounted_status": "13/13 PASS",
+          "frontend_production_build": "PASS",
+          "chrome_375_390_overflow": "PASS"
+        },
+        "reviews": {
+          "backend": "PASS",
+          "frontend": "PASS"
+        },
+        "scope_boundary": "仅本地A06禁用/启用切片；生产migration、deploy、production acceptance及真实business accounts均NOT_RUN；拒绝管理动作审计仍为后续PRD残留。"
+      },
+      "current_joint_acceptance_blocker_count": 8,
+      "a07_joint_acceptance": {
+        "status": "PASS_LIMITED_SCOPE",
+        "code_under_test": {
+          "backend": "a600a0815b5eab5203333755a2466788fe67d61a",
+          "frontend": "41648181ab42fb46fe7d45663e746121956b50b8"
+        },
+        "canonical_evidence_commits": {
+          "backend": "5d5a1e9ee230bcc42fe9fde8d3f9f7badf34b658",
+          "frontend": "39b79582110347ae11b95e58217b3afe3236b4f7"
+        },
+        "contract_sha256": "9e1969b238911b6eee5b6aa85ed364e795a6854f0a026daac5d15e2ab78851be",
+        "environment": {
+          "mysql": "8.0.46",
+          "redis": "7.4.11",
+          "migration_ledger": "0001-0011"
+        },
+        "tests": {
+          "backend_real_mysql_redis": "PASS",
+          "backend_real_race_login_token_quota_concurrency": "PASS / 0 SKIP",
+          "backend_real_race_rollback": "PASS / 0 SKIP",
+          "backend_no_fixture_full": "PASS",
+          "backend_build_vet_gofmt_diff": "PASS",
+          "frontend_full": "395/395 PASS / 0 SKIP",
+          "frontend_production_build": "PASS",
+          "chrome_375_390": "PASS"
+        },
+        "reviews": {
+          "backend": "PASS",
+          "frontend": "PASS",
+          "documents": "PASS"
+        },
+        "scope_boundary": "仅本地 A07 password reset、group change、plan change 切片。Gateway Key owner plan/quota 原子重载与消费仍为 BLOCKED_NOT_IMPLEMENTED；生产 migration、deploy、production acceptance 与真实 business accounts 均 NOT_RUN。",
+        "evidence": "backend:docs/superpowers/reports/validation/2026-09-09-a07-managed-user-entitlements/manifest.json"
+      },
+      "a08_joint_acceptance": {
+        "status": "PASS_LIMITED_SCOPE",
+        "code_under_test": {
+          "backend": "f2f976005c2331c0409c1b27da79e3a43d25bcb0",
+          "frontend": "25b073164dc3fccecbf3b74309f12dd7589c024b"
+        },
+        "canonical_evidence_commits": {
+          "backend": "3f41ef2dc1f38fc363cbdcf1e2205b26f7a9da09",
+          "frontend": "1b47efeb6473e7f8e94452b3f833808f0942d413"
+        },
+        "contract_sha256": "dd202cb5019b10a891e10f03f77629b5f54e993110f148f417e05d089df35698",
+        "tests": {
+          "backend_real_mysql_redis_migration_runtime": "11/11 PASS",
+          "frontend_focused": "41/41 PASS",
+          "frontend_full": "446/446 PASS",
+          "frontend_production_build": "PASS_WITH_WARNINGS",
+          "visible_chromium_promote_permission_demote": "PASS",
+          "chrome_375_390": "PASS",
+          "fixture_cleanup": "PASS"
+        },
+        "scope_boundary": "仅本地 A08 角色与权限切片；可见 commit-unknown、disabled target 与 override-at-promotion 为自动化覆盖。外部 PM、生产 migration/deploy/acceptance 与真实 business accounts 均 NOT_RUN。",
+        "evidence": "docs/superpowers/reports/validation/2026-09-09-a08-managed-user-roles-permissions/backend/manifest.json"
+      },
+      "a09_a12_joint_acceptance": {
+        "status": "PASS_LIMITED_SCOPE",
+        "code_under_test": {
+          "backend": "258abb42a9e1f018845b3175e7dbca0a013231f1",
+          "frontend": "86122422a8234db3d5ee486eda8a0def6646dcc6"
+        },
+        "evidence": "frontend:docs/agents/validation/a09-a12-balance-mock-20260910/manifest.json",
+        "backend_project_manager_confirmation": "NOT_OBTAINED",
+        "scope_boundary": "A09/A10 only development CNY Mock; A11 proves production isolation; A12 is current-candidate revalidation of the existing soft-delete slice. No production or real money capability was run."
       }
     },
     {

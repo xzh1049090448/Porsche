@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/hex"
 	"errors"
 	"math"
@@ -44,14 +45,15 @@ type PlatformGenerationPersistenceResult struct {
 }
 
 type PlatformGenerationPersistenceInput struct {
-	UserID           int64
-	GenerationID     string
-	Mode             PlatformGenerationMode
-	Models           []string
-	ConversationGUID *int64
-	UserMessage      string
-	Results          []PlatformGenerationPersistenceResult
-	NowMillis        int64
+	UserID                   int64
+	GenerationID             string
+	Mode                     PlatformGenerationMode
+	Models                   []string
+	ConversationGUID         *int64
+	ReservedConversationGUID *int64
+	UserMessage              string
+	Results                  []PlatformGenerationPersistenceResult
+	NowMillis                int64
 }
 
 type PlatformGenerationCommittedResult struct {
@@ -111,7 +113,7 @@ func withPlatformGenerationAdvisoryLock(ctx context.Context, db *gorm.DB, lockNa
 		if err := platformGenerationPinnedSession(conn, ctx).Raw("SELECT GET_LOCK(?, 5)", lockName).Scan(&acquired).Error; err != nil || !acquired.Valid || acquired.Int64 != 1 {
 			return ErrPlatformGenerationPersistenceUnavailable
 		}
-		return runWithPlatformGenerationAdvisoryLockRelease(conn, lockName, fn)
+		return runWithPlatformGenerationAdvisoryLockRelease(ctx, conn, lockName, fn)
 	})
 }
 
@@ -123,13 +125,17 @@ func platformGenerationPinnedSession(conn *gorm.DB, ctx context.Context) *gorm.D
 	return conn.Session(&gorm.Session{NewDB: true, Context: ctx})
 }
 
-func runWithPlatformGenerationAdvisoryLockRelease(conn *gorm.DB, lockName string, fn func(*gorm.DB) error) (primaryErr error) {
+func runWithPlatformGenerationAdvisoryLockRelease(ctx context.Context, conn *gorm.DB, lockName string, fn func(*gorm.DB) error) (primaryErr error) {
 	defer func() {
-		cleanupCtx, cancel := context.WithTimeout(context.Background(), platformGenerationAdvisoryLockReleaseTimeout)
+		cleanupCtx, cancel := context.WithTimeout(ctx, platformGenerationAdvisoryLockReleaseTimeout)
 		defer cancel()
 		var released sql.NullInt64
 		releaseErr := platformGenerationPinnedSession(conn, cleanupCtx).Raw("SELECT RELEASE_LOCK(?)", lockName).Scan(&released).Error
-		if primaryErr == nil && (releaseErr != nil || !released.Valid || released.Int64 != 1) {
+		if releaseErr == nil && released.Valid && released.Int64 == 1 {
+			return
+		}
+		discardPlatformGenerationPinnedSession(conn)
+		if primaryErr == nil {
 			primaryErr = ErrPlatformGenerationPersistenceUnavailable
 		}
 	}()
@@ -137,9 +143,23 @@ func runWithPlatformGenerationAdvisoryLockRelease(conn *gorm.DB, lockName string
 	return primaryErr
 }
 
+func discardPlatformGenerationPinnedSession(conn *gorm.DB) {
+	if conn == nil || conn.Statement == nil {
+		return
+	}
+	sqlConn, ok := conn.Statement.ConnPool.(*sql.Conn)
+	if !ok {
+		return
+	}
+	// A failed RELEASE_LOCK must not return its session-scoped lock to the
+	// pool. ErrBadConn makes database/sql close this exact physical session.
+	_ = sqlConn.Raw(func(any) error { return driver.ErrBadConn })
+}
+
 func validatePlatformGenerationPersistenceInput(input PlatformGenerationPersistenceInput) error {
 	if validatePlatformGenerationIdentity(input.UserID, input.GenerationID) != nil ||
 		!platformSSEV2SafeInteger(input.NowMillis) || input.NowMillis <= 0 ||
+		!validPlatformGenerationConversationIdentity(input) ||
 		input.UserMessage == "" || !utf8.ValidString(input.UserMessage) ||
 		len([]byte(input.UserMessage)) > platformGenerationMessageTextMaxBytes ||
 		len(input.Models) != len(input.Results) {
@@ -177,10 +197,19 @@ func validatePlatformGenerationPersistenceInput(input PlatformGenerationPersiste
 	if successes == 0 || (input.Mode == PlatformGenerationModeSingle && successes != 1) {
 		return ErrPlatformGenerationPersistenceInvalid
 	}
-	if input.ConversationGUID != nil && *input.ConversationGUID <= 0 {
-		return ErrPlatformGenerationPersistenceInvalid
-	}
 	return nil
+}
+
+func validPlatformGenerationConversationIdentity(input PlatformGenerationPersistenceInput) bool {
+	existing := input.ConversationGUID != nil
+	reserved := input.ReservedConversationGUID != nil
+	if existing == reserved {
+		return false
+	}
+	if existing {
+		return *input.ConversationGUID > 0
+	}
+	return *input.ReservedConversationGUID > 0
 }
 
 func (p *PlatformGenerationPersistence) Finalize(ctx context.Context, db *gorm.DB, input PlatformGenerationPersistenceInput) (PlatformGenerationReceiptSnapshot, error) {
@@ -273,7 +302,13 @@ func platformReceiptMatchesInput(receipt PlatformGenerationReceiptSnapshot, inpu
 		receipt.UserMessage != input.UserMessage || len(receipt.Results) != len(input.Results) {
 		return false
 	}
-	if input.ConversationGUID != nil && receipt.ConversationGUID != *input.ConversationGUID {
+	var expectedConversationGUID int64
+	if input.ConversationGUID != nil {
+		expectedConversationGUID = *input.ConversationGUID
+	} else {
+		expectedConversationGUID = *input.ReservedConversationGUID
+	}
+	if receipt.ConversationGUID != expectedConversationGUID {
 		return false
 	}
 	successes := 0
@@ -361,8 +396,10 @@ func persistPlatformGeneration(tx *gorm.DB, input PlatformGenerationPersistenceI
 	} else {
 		model := input.Models[0]
 		conversationCreated = true
+		audit := platformPersistenceAudit(input.UserID, input.NowMillis)
+		audit.Guid = *input.ReservedConversationGUID
 		conversation = models.Conversation{
-			AuditFields: platformPersistenceAudit(input.UserID, input.NowMillis),
+			AuditFields: audit,
 			UserID:      input.UserID,
 			Title:       truncateTitle(input.UserMessage),
 			Model:       &model,

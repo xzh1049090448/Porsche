@@ -1,0 +1,124 @@
+{
+  "contract": "admin-user-entitlements-v1",
+  "revision": "2026-09-08-a07-v2",
+  "status": "AGREED_FOR_IMPLEMENTATION",
+  "design_source": {
+    "repository": "Porsche",
+    "path": "docs/superpowers/specs/2026-09-08-a07-managed-user-entitlements-design.md",
+    "review_base_commit": "0ad0748adb5e8de307173f99c87cef555d29226a",
+    "authority": "the backend worktree copy is authoritative; the frontend contract is a byte-identical mirror"
+  },
+  "common": {
+    "authentication": "existing Bearer authentication with fresh actor, logical session, Redis revocation, policy, target, and target-session checks at the stages where each fact is applicable",
+    "path_guid": "canonical positive decimal signed int64 string without sign, whitespace, or leading zero",
+    "body_limit_bytes": 4096,
+    "strict_json": "one exact object; no unknown, duplicate, case-folded duplicate, invalid UTF-8, or trailing fields",
+    "reason": "trimmed 1..200 Unicode code points",
+    "expected_auth_version": "integer 1..2147483647",
+    "response_headers": {"Cache-Control": "no-store", "X-Request-ID": "required non-empty"},
+    "user_dto_keys": ["guid", "username", "nickname", "email", "group", "plan_type", "role", "status", "auth_version", "created_at", "last_login_at"],
+    "direct_change_lock_order": ["actor user", "actor session", "target user", "destination business group only for group change", "target sessions", "policy head and rules"]
+  },
+  "password_reset": {
+    "action": "users.reset_password",
+    "capability": "users.reset_password",
+    "internal_action": 2,
+    "encoding_revision": "pre-activation v1 adds expected_auth_version; no valid historical Action=2 operation exists",
+    "issue": {
+      "method": "POST",
+      "path": "/admin/v2/action-verifications",
+      "forbidden_headers": ["Idempotency-Key", "X-Action-Ticket"],
+      "body_keys": ["action", "intent", "current_password"],
+      "intent_keys": ["target_guid", "expected_auth_version", "new_password", "reason"],
+      "response_status": 201,
+      "response_keys": ["ticket", "expires_at"],
+      "ticket_ttl_seconds": 300
+    },
+    "execute": {
+      "method": "POST",
+      "path": "/admin/v2/users/{guid}/actions",
+      "required_headers": ["Idempotency-Key", "X-Action-Ticket"],
+      "body": {"action": "reset_password", "required_keys": ["action", "expected_auth_version", "new_password", "reason"]},
+      "response_status": 200,
+      "response_keys": ["operation_ref", "target_guid", "resulting_auth_version"],
+      "response_schema": {"operation_ref": "valid op_ opaque value", "target_guid": "the canonical path GUID string", "resulting_auth_version": "positive INT32 equal to expected_auth_version +1"},
+      "stable_result": "the successful operation durably stores ResultUser, target GUID, resulting positive INT32 auth version, HTTP 200, and returns the same three values on every exact idempotent replay; it never projects the current user row",
+      "frontend_reconciliation": "after a trusted 200, perform one owned GET /admin/v2/users/{guid}; apply it only when route, identity epoch, permission revision, target GUID, dialog owner, and resulting auth version still match",
+      "auth_version_delta": 1
+    },
+    "query": {
+      "method": "GET",
+      "path": "/admin/v2/operations?scope=users.reset_password",
+      "required_headers": ["Idempotency-Key"],
+      "forbidden_headers": ["X-Action-Ticket"],
+      "response_keys": ["operation_ref", "scope", "status", "finished_at", "failure_code", "target_guid", "resulting_auth_version"],
+      "scope": "users.reset_password",
+      "statuses": ["processing", "succeeded", "failed", "pending_recovery"],
+      "state_rules": "processing has null finished_at/failure_code/target_guid/resulting_auth_version and Retry-After integer 1..30; succeeded has positive finished_at, null failure_code, canonical target_guid, and the stored positive INT32 resulting_auth_version; failed has positive finished_at, an allowlisted failure_code, and null result fields; pending_recovery has null finished_at/failure_code/result fields and no Retry-After",
+      "visibility": "only the originating actor, current originating logical session, exact scope, and original key can query; hidden or unverifiable combinations return 404; expired results return 410",
+      "mutation_replay": "never"
+    },
+    "password_rule": "exact owned UTF-8 bytes; 8..20 Unicode code points; existing weak-password denylist; never trim",
+    "secret_ownership": "Issue owns independent current-password and new-password buffers and clears both on every exit. Execute owns separate HMAC and execution buffers: the encoder clears only the HMAC buffer; the execution buffer is transferred for hashing only after ExecutionReady and is cleared after hashing or on every failure/panic-safe exit. Existing terminal operations never allocate, hash, or retain an execution password buffer",
+    "target_status": "active and disabled nondeleted targets are eligible. For active targets the old password fails and the new password can log in. For disabled targets both old- and new-password login remain denied by account status; after a later A06 enable only the new password can log in",
+    "credential_result": "all old Access and Refresh sessions fail; target is not auto-logged-in; Gateway Keys are not revoked and still require current owner and Key state",
+    "lock_order": ["Redis limiter", "actor user", "actor session", "operation", "verification", "target user", "target sessions", "gateway keys only when a consumer writes them", "policy head and rules", "authentication audit", "management audit", "outbox", "terminal operation result"],
+    "operation_result_storage": "forward migration 0011_admin_operation_result_auth_version adds nullable result_auth_version INT to admin_operations; only a succeeded users.reset_password ResultUser operation may expose it, and it must equal the committed target auth version. Expiry clears it with other optional result fields while the permanent key tombstone remains"
+  },
+  "group_change": {
+    "method": "PATCH",
+    "path": "/admin/v2/users/{guid}/group",
+    "capability": "users.group.change",
+    "required_body_keys": ["group_guid", "reason", "expected_auth_version"],
+    "group_guid": "canonical active nondeleted business-group signed int64 decimal GUID; persist only business_groups.id",
+    "same_value": {"status": 409, "code": "user_group_conflict"},
+    "response_status": 200,
+    "response": "exact UserReadDTO with auth_version +1",
+    "mutation_replay": "never"
+  },
+  "plan_change": {
+    "method": "PATCH",
+    "path": "/admin/v2/users/{guid}/plan",
+    "capability": "users.plan.change",
+    "required_body_keys": ["plan_type", "reason", "expected_auth_version"],
+    "plan_type": ["free", "professional", "enterprise"],
+    "daily_policy": "set daily_call_limit=100 and preserve daily_calls_used; professional/enterprise runtime remains unlimited; free applies the 100-call limit immediately",
+    "orders_and_payment": "no writes and no paid claim",
+    "same_value": {"status": 409, "code": "user_plan_conflict"},
+    "response_status": 200,
+    "response": "exact UserReadDTO with auth_version +1",
+    "mutation_replay": "never"
+  },
+  "errors": {
+    "authentication_401": "existing authentication middleware response remains unchanged and is not wrapped by either A07 envelope",
+    "action_envelope": {"exact_body_keys": ["error"], "exact_error_keys": ["code", "message", "type", "request_id"], "optional_error_key": "operation_ref only for operation_commit_unknown", "message": "请求无法完成", "type": "admin_action_error"},
+    "entitlement_envelope": {"exact_body_keys": ["error"], "exact_error_keys": ["code", "message", "kind", "request_id"], "message": "请求无法完成", "kind": "admin_user_entitlement_error", "operation_ref": "forbidden"},
+    "action_status_codes": {"400": ["invalid_admin_action_request"], "403": ["action_verification_rejected", "action_operation_rejected"], "404": ["action_target_not_found", "action_operation_not_found"], "409": ["action_verification_conflict", "idempotency_conflict", "idempotency_cross_session", "target_version_conflict", "target_state_conflict", "policy_version_conflict", "consumer_validation_failed"], "410": ["operation_expired"], "413": ["request_body_too_large"], "429": ["action_rate_limited"], "503": ["action_dependency_unavailable", "operation_commit_unknown"]},
+    "entitlement_status_codes": {"400": ["invalid_admin_user_entitlement_request"], "403": ["user_entitlement_forbidden"], "404": ["user_not_found", "group_not_found"], "409": ["auth_version_conflict", "user_group_conflict", "user_plan_conflict"], "413": ["request_body_too_large"], "503": ["user_entitlement_dependency_unavailable"]},
+    "header_rules": "Retry-After appears only for action_rate_limited or a processing query; operation_ref appears only for operation_commit_unknown; every matched response has no-store and the body request_id exactly equals X-Request-ID"
+  },
+  "audit": {
+    "password_reset_events": "N AuthAuditEventSessionRevoked rows plus one AuthAuditEventPasswordChanged row, one audit_logs row, one outbox row, and one terminal operation result in the same MySQL transaction",
+    "group_plan_events": "N AuthAuditEventSessionRevoked rows plus one AuthAuditEventManagedUserUpdated row and one audit_logs row in the same MySQL transaction",
+    "management_allowlist": "actor GUID, target GUID, exact action, request ID, normalized reason, allowlisted before/after group or plan; operation_ref only for reset",
+    "password_prohibitions": ["password", "password length", "password hash", "password digest", "password-present flag", "ticket", "idempotency key", "session SID", "Authorization"]
+  },
+  "redis_and_transaction": {
+    "rule": "target-session Redis denial barriers are established before consumer or business SQL mutation; any Redis failure returns 503 and the surrounding transaction rolls back, leaving zero committed SQL facts",
+    "sql_failure": "all SQL facts roll back and the endpoint returns 503; already-written Redis denial markers may remain as a safe extra denial and are never described as an atomic Redis/MySQL commit",
+    "consumer_boundary": "password consumer uses the supplied transaction, follows the frozen lock order, creates no nested transaction, and performs no HTTP or arbitrary network call; the sole network exception is the injected session revoker calling Redis MarkSessionRevoked after target sessions are locked and before consumer or business SQL mutation, with any Redis failure returning 503 and the surrounding transaction rolling back its verification update and all other SQL facts"
+  },
+  "legacy_put": {
+    "path": "/admin/users/{guid}",
+    "rejected_before_write_fields": ["status", "plan_type", "group_guid", "allowed_models", "daily_call_limit", "password", "new_password", "current_password", "reason", "expected_auth_version"]
+  },
+  "gateway_key_boundary": {
+    "guaranteed": "reset, group, and plan changes do not revoke or reactivate Gateway Keys; current owner status, owner model ACL, and Key status/expiry/ACL continue to be evaluated by existing Gateway authentication",
+    "limited_subscope": "A07 proves plan and daily-call-limit changes only for existing Bearer Access platform calls",
+    "blocked_not_implemented": "atomic owner plan/quota reload and consumption for Gateway Key calls is outside A07 and remains an explicit PRD acceptance blocker; A07 must not claim full API-Key entitlement consistency"
+  },
+  "scope": {
+    "included": ["password reset", "group change", "plan change", "forward migration definition and local verification", "backend", "frontend", "local MySQL 8", "local Redis 7", "visible browser"],
+    "excluded": ["role change", "permission overrides", "model ACL editing", "amount or balance", "quota adjustment", "session management UI", "Key CRUD", "Gateway Key plan/quota consumption", "orders or payment", "production migration execution", "deployment", "production acceptance", "real business accounts"]
+  }
+}

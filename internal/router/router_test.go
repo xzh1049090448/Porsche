@@ -27,6 +27,7 @@ import (
 	"github.com/porsche/ai-gateway-go/internal/security"
 	"github.com/porsche/ai-gateway-go/internal/service"
 	"github.com/porsche/ai-gateway-go/internal/whitelabel"
+	"gorm.io/gorm"
 )
 
 func TestPublicContentPricingAdminRoutesMatchFrozenContract(t *testing.T) {
@@ -174,12 +175,111 @@ func TestAdminUsersGroupDirectoryRouteIsRegistered(t *testing.T) {
 	}
 }
 
-func TestNewStateDoesNotRegisterGenerationRoutes(t *testing.T) {
+func TestAdminUserNicknameEditRouteIsRegisteredExactlyOnceBehindAuthentication(t *testing.T) {
+	settings := &config.Settings{AppEnv: "test", AllowedHosts: "example.com", JWTSecretKey: "test-secret"}
+	engine := router.New(&app.State{Settings: settings, DB: &gorm.DB{}, Sessions: &service.SessionService{}})
+	count := 0
+	for _, route := range engine.Routes() {
+		if route.Method == http.MethodPatch && route.Path == "/admin/v2/users/:guid" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("PATCH route count=%d, want 1", count)
+	}
+	for _, authorization := range []string{"", "Bearer malformed-token"} {
+		request := httptest.NewRequest(http.MethodPatch, "/admin/v2/users/123", strings.NewReader(`{"nickname":"x","expected_auth_version":1}`))
+		request.Host = "example.com"
+		request.Header.Set("X-Request-ID", "route-auth-first")
+		if authorization != "" {
+			request.Header.Set("Authorization", authorization)
+		}
+		recorder := httptest.NewRecorder()
+		engine.ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusUnauthorized || recorder.Header().Get("Cache-Control") != "no-store" || recorder.Header().Get("X-Request-ID") != "route-auth-first" {
+			t.Fatalf("authorization=%q status/headers=%d/%q/%q body=%s", authorization, recorder.Code, recorder.Header().Get("Cache-Control"), recorder.Header().Get("X-Request-ID"), recorder.Body.String())
+		}
+		var envelope struct {
+			Error struct {
+				Code      string `json:"code"`
+				Message   string `json:"message"`
+				Kind      string `json:"kind"`
+				RequestID string `json:"request_id"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal(recorder.Body.Bytes(), &envelope); err != nil {
+			t.Fatal(err)
+		}
+		if envelope.Error.Code != "authentication_invalid" || envelope.Error.Message != "请求无法完成" || envelope.Error.Kind != "admin_user_edit_error" || envelope.Error.RequestID != "route-auth-first" {
+			t.Fatalf("authorization=%q unexpected A05 authentication envelope: %#v body=%s", authorization, envelope, recorder.Body.String())
+		}
+	}
+}
+
+func TestAdminUserStatusRouteIsRegisteredExactlyOnceBehindAuthentication(t *testing.T) {
+	settings := &config.Settings{AppEnv: "test", AllowedHosts: "example.com", JWTSecretKey: "test-secret"}
+	engine := router.New(&app.State{Settings: settings, DB: &gorm.DB{}, Sessions: &service.SessionService{}})
+	count := 0
+	for _, route := range engine.Routes() {
+		if route.Method == http.MethodPatch && route.Path == "/admin/v2/users/:guid/status" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("PATCH status route count=%d, want 1", count)
+	}
+	request := httptest.NewRequest(http.MethodPatch, "/admin/v2/users/123/status", strings.NewReader(`{"status":"disabled","reason":"review","expected_auth_version":1}`))
+	request.Host = "example.com"
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-Request-ID", "route-a06-auth")
+	recorder := httptest.NewRecorder()
+	engine.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusUnauthorized || recorder.Header().Get("Cache-Control") != "no-store" || recorder.Header().Get("X-Request-ID") != "route-a06-auth" || !strings.Contains(recorder.Body.String(), `"kind":"admin_user_status_error"`) {
+		t.Fatalf("status/headers/body=%d/%q/%q/%s", recorder.Code, recorder.Header().Get("Cache-Control"), recorder.Header().Get("X-Request-ID"), recorder.Body.String())
+	}
+}
+
+func TestAdminUserEntitlementRoutesAreRegisteredExactlyOnce(t *testing.T) {
+	settings := &config.Settings{AppEnv: "test", AllowedHosts: "example.com", JWTSecretKey: "test-secret"}
+	engine := router.New(&app.State{Settings: settings, DB: &gorm.DB{}, Sessions: &service.SessionService{}})
+	want := map[string]int{
+		"/admin/v2/users/:guid/group": 0,
+		"/admin/v2/users/:guid/plan":  0,
+	}
+	for _, route := range engine.Routes() {
+		if route.Method == http.MethodPatch {
+			if _, ok := want[route.Path]; ok {
+				want[route.Path]++
+			}
+		}
+	}
+	for path, count := range want {
+		if count != 1 {
+			t.Fatalf("PATCH %s route count=%d, want 1", path, count)
+		}
+		request := httptest.NewRequest(http.MethodPatch, strings.Replace(path, ":guid", "123", 1), strings.NewReader(`{"plan_type":"professional","reason":"grant","expected_auth_version":1}`))
+		if strings.HasSuffix(path, "/group") {
+			request = httptest.NewRequest(http.MethodPatch, strings.Replace(path, ":guid", "123", 1), strings.NewReader(`{"group_guid":"456","reason":"move","expected_auth_version":1}`))
+		}
+		request.Host = "example.com"
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("X-Request-ID", "route-a07-auth")
+		recorder := httptest.NewRecorder()
+		engine.ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusUnauthorized || recorder.Header().Get("Cache-Control") != "no-store" || recorder.Header().Get("X-Request-ID") != "route-a07-auth" || !strings.Contains(recorder.Body.String(), `"detail"`) {
+			t.Fatalf("path=%s auth status/headers/body=%d/%v/%s", path, recorder.Code, recorder.Header(), recorder.Body.String())
+		}
+	}
+}
+
+func TestNewStateRegistersAuthenticatedGenerationRoutes(t *testing.T) {
 	settings := &config.Settings{AppEnv: "test", AllowedHosts: "example.com"}
 	engine := router.New(&app.State{Settings: settings})
 	wantExisting := []routeContract{
 		{http.MethodPost, "/api/v1/platform/chat/completions"},
 		{http.MethodPost, "/api/v1/platform/chat/compare"},
+		{http.MethodGet, "/api/v1/platform/chat/generations/:generation_id"},
+		{http.MethodPost, "/api/v1/platform/chat/generations/:generation_id/cancel"},
 	}
 	for _, want := range wantExisting {
 		count := 0
@@ -193,18 +293,41 @@ func TestNewStateDoesNotRegisterGenerationRoutes(t *testing.T) {
 		}
 	}
 
-	for _, unregistered := range []routeContract{
+	for _, authenticated := range []routeContract{
 		{http.MethodGet, "/api/v1/platform/chat/generations/550e8400-e29b-41d4-a716-446655440000"},
 		{http.MethodPost, "/api/v1/platform/chat/generations/550e8400-e29b-41d4-a716-446655440000/cancel"},
 	} {
-		request := httptest.NewRequest(unregistered.Method, unregistered.Path, nil)
+		request := httptest.NewRequest(authenticated.Method, authenticated.Path, nil)
 		request.Host = "example.com"
-		request.Header.Set("Authorization", "Bearer syntactically-valid-test-token")
 		recorder := httptest.NewRecorder()
 		engine.ServeHTTP(recorder, request)
-		if recorder.Code != http.StatusNotFound {
-			t.Fatalf("generation route %s %s status=%d body=%s, want 404", unregistered.Method, unregistered.Path, recorder.Code, recorder.Body.String())
+		if recorder.Code != http.StatusUnauthorized {
+			t.Fatalf("generation route %s %s status=%d body=%s, want authenticated 401", authenticated.Method, authenticated.Path, recorder.Code, recorder.Body.String())
 		}
+		if recorder.Header().Get("Cache-Control") != "no-store" {
+			t.Fatalf("generation auth failure %s %s cache-control=%q, want no-store", authenticated.Method, authenticated.Path, recorder.Header().Get("Cache-Control"))
+		}
+	}
+
+	modelsRequest := httptest.NewRequest(http.MethodGet, "/api/v1/platform/models", nil)
+	modelsRequest.Host = "example.com"
+	modelsRecorder := httptest.NewRecorder()
+	engine.ServeHTTP(modelsRecorder, modelsRequest)
+	if modelsRecorder.Code != http.StatusUnauthorized || modelsRecorder.Header().Get("Cache-Control") != "" {
+		t.Fatalf("non-generation platform auth response changed: status=%d cache-control=%q", modelsRecorder.Code, modelsRecorder.Header().Get("Cache-Control"))
+	}
+}
+
+func TestPlatformSingleV2RouteRemainsBehindAuthentication(t *testing.T) {
+	settings := &config.Settings{AppEnv: "test", AllowedHosts: "example.com"}
+	engine := router.New(&app.State{Settings: settings})
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/platform/chat/completions", strings.NewReader(`{"model":"model-a","messages":[{"role":"user","content":"hello"}],"max_tokens":8,"stream":true,"stream_version":"platform-chat-sse.v2","generation_id":"550e8400-e29b-41d4-a716-446655440000"}`))
+	request.Host = "example.com"
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	engine.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("single v2 route status=%d body=%s, want authenticated 401", recorder.Code, recorder.Body.String())
 	}
 }
 
@@ -634,6 +757,10 @@ var preB1ERouteInventory = []routeContract{
 	{http.MethodGet, "/admin/v2/groups"},
 	{http.MethodGet, "/admin/v2/users"},
 	{http.MethodGet, "/admin/v2/users/:guid"},
+	{http.MethodPatch, "/admin/v2/users/:guid"},
+	{http.MethodPatch, "/admin/v2/users/:guid/group"},
+	{http.MethodPatch, "/admin/v2/users/:guid/plan"},
+	{http.MethodPatch, "/admin/v2/users/:guid/status"},
 	{http.MethodGet, "/admin/v2/users/:guid/permissions"},
 	{http.MethodPost, "/api/v1/auth/login"},
 	{http.MethodPost, "/api/v1/auth/login/code"},
@@ -666,6 +793,8 @@ var preB1ERouteInventory = []routeContract{
 	{http.MethodGet, "/api/v1/conversations/:guid/export/markdown"},
 	{http.MethodPost, "/api/v1/platform/chat/compare"},
 	{http.MethodPost, "/api/v1/platform/chat/completions"},
+	{http.MethodGet, "/api/v1/platform/chat/generations/:generation_id"},
+	{http.MethodPost, "/api/v1/platform/chat/generations/:generation_id/cancel"},
 	{http.MethodGet, "/api/v1/platform/models"},
 	{http.MethodGet, "/api/v1/platform/models/:id"},
 	{http.MethodGet, "/api/v1/platform/models/detail"},

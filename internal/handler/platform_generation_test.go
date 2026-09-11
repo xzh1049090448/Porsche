@@ -1,0 +1,499 @@
+package handler
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/gin-gonic/gin"
+	"github.com/porsche/ai-gateway-go/internal/app"
+	"github.com/porsche/ai-gateway-go/internal/config"
+	"github.com/porsche/ai-gateway-go/internal/middleware"
+	"github.com/porsche/ai-gateway-go/internal/migration"
+	"github.com/porsche/ai-gateway-go/internal/models"
+	"github.com/porsche/ai-gateway-go/internal/service"
+	"github.com/redis/go-redis/v9"
+)
+
+const platformGenerationHandlerTestID = "550e8400-e29b-41d4-a716-446655440000"
+
+const platformGenerationHandlerRedisPrefix = "porsche:platform:generation:v2:"
+
+func platformGenerationHandlerRedisClient(t *testing.T) *redis.Client {
+	t.Helper()
+	options, err := redis.ParseURL(strings.TrimSpace(os.Getenv("TEST_REDIS_URL")))
+	if err != nil {
+		t.Fatalf("parse TEST_REDIS_URL: %v", err)
+	}
+	client := redis.NewClient(options)
+	if err := client.Ping(context.Background()).Err(); err != nil {
+		_ = client.Close()
+		t.Fatalf("ping TEST_REDIS_URL: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := client.Close(); err != nil {
+			t.Errorf("close generation cleanup client: %v", err)
+		}
+	})
+	return client
+}
+
+func platformGenerationHandlerOwnedKey(userID int64, generationID string) string {
+	return fmt.Sprintf("%s%d:%s", platformGenerationHandlerRedisPrefix, userID, generationID)
+}
+
+func registerPlatformGenerationHandlerKeyCleanup(t *testing.T, client *redis.Client, userID int64, generationID string) string {
+	t.Helper()
+	key := platformGenerationHandlerOwnedKey(userID, generationID)
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := client.Del(ctx, key).Err(); err != nil {
+			t.Errorf("delete owned generation key %q: %v", key, err)
+			return
+		}
+		exists, err := client.Exists(ctx, key).Result()
+		if err != nil {
+			t.Errorf("verify owned generation key %q cleanup: %v", key, err)
+		} else if exists != 0 {
+			t.Errorf("owned generation key %q remains after cleanup", key)
+		}
+	})
+	return key
+}
+
+func preparePlatformGenerationHandlerSentinel(t *testing.T, client *redis.Client) (string, string) {
+	t.Helper()
+	key := fmt.Sprintf("porsche:test:platform-generation-handler:%d", platformTestSnowflake.Next())
+	value := fmt.Sprintf("owned-sentinel-%d", platformTestSnowflake.Next())
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := client.Del(ctx, key).Err(); err != nil {
+			t.Errorf("delete owned handler sentinel %q: %v", key, err)
+			return
+		}
+		if exists, err := client.Exists(ctx, key).Result(); err != nil {
+			t.Errorf("verify owned handler sentinel %q cleanup: %v", key, err)
+		} else if exists != 0 {
+			t.Errorf("owned handler sentinel %q remains after cleanup", key)
+		}
+	})
+	created, err := client.SetNX(context.Background(), key, value, time.Minute).Result()
+	if err != nil || !created {
+		t.Fatalf("create owned handler sentinel %q: created=%t error=%v", key, created, err)
+	}
+	return key, value
+}
+
+func assertPlatformGenerationHandlerRedisIsolation(t *testing.T, client *redis.Client, generationID string, keys []string, sentinelKey, sentinelValue string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if len(keys) > 0 {
+		exists, err := client.Exists(ctx, keys...).Result()
+		if err != nil {
+			t.Fatalf("verify exact generation cleanup: %v", err)
+		}
+		if exists != 0 {
+			t.Fatalf("owned generation keys remain=%d keys=%v", exists, keys)
+		}
+	}
+	var cursor uint64
+	var matched []string
+	pattern := platformGenerationHandlerRedisPrefix + "*:" + generationID
+	for {
+		batch, next, err := client.Scan(ctx, cursor, pattern, 32).Result()
+		if err != nil {
+			t.Fatalf("scan owned generation pattern %q: %v", pattern, err)
+		}
+		matched = append(matched, batch...)
+		cursor = next
+		if cursor == 0 {
+			break
+		}
+	}
+	if len(matched) != 0 {
+		t.Fatalf("owned generation pattern %q remains=%v", pattern, matched)
+	}
+	if got, err := client.Get(ctx, sentinelKey).Result(); err != nil || got != sentinelValue {
+		t.Fatalf("owned handler sentinel changed: got=%q want=%q error=%v", got, sentinelValue, err)
+	}
+}
+
+type platformGenerationHandlerFake struct {
+	get         func(context.Context, int64, string) (service.PlatformGenerationView, error)
+	cancel      func(context.Context, int64, string) (service.PlatformGenerationView, bool, error)
+	getCalls    int
+	cancelCalls int
+}
+
+func (f *platformGenerationHandlerFake) Get(ctx context.Context, userID int64, generationID string) (service.PlatformGenerationView, error) {
+	f.getCalls++
+	if f.get == nil {
+		return service.PlatformGenerationView{}, service.ErrPlatformGenerationControlUnavailable
+	}
+	return f.get(ctx, userID, generationID)
+}
+
+func (f *platformGenerationHandlerFake) Cancel(ctx context.Context, userID int64, generationID string) (service.PlatformGenerationView, bool, error) {
+	f.cancelCalls++
+	if f.cancel == nil {
+		return service.PlatformGenerationView{}, false, service.ErrPlatformGenerationControlUnavailable
+	}
+	return f.cancel(ctx, userID, generationID)
+}
+
+func platformGenerationHandlerEngine(controller service.PlatformGenerationController) *gin.Engine {
+	return platformGenerationHandlerEngineForUser(controller, 47)
+}
+
+func platformGenerationHandlerEngineForUser(controller service.PlatformGenerationController, userID int64) *gin.Engine {
+	gin.SetMode(gin.TestMode)
+	engine := gin.New()
+	state := &app.State{Settings: &config.Settings{}, PlatformGenerationControl: controller}
+	registerPlatformWithAuthentication(engine, state, func(c *gin.Context) {
+		c.Set(middleware.ContextUser, &models.User{ID: userID})
+		c.Set(middleware.ContextUserID, userID)
+		c.Next()
+	})
+	return engine
+}
+
+func platformGenerationRequest(t *testing.T, controller service.PlatformGenerationController, method, path string) *httptest.ResponseRecorder {
+	return platformGenerationRequestForUser(t, controller, 47, method, path)
+}
+
+func platformGenerationRequestForUser(t *testing.T, controller service.PlatformGenerationController, userID int64, method, path string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(method, path, nil)
+	req.Header.Set("X-Request-ID", "generation-request-1")
+	rec := httptest.NewRecorder()
+	platformGenerationHandlerEngineForUser(controller, userID).ServeHTTP(rec, req)
+	return rec
+}
+
+func generationStringPointer(value string) *string { return &value }
+func generationInt64Pointer(value int64) *int64    { return &value }
+
+func TestPlatformGenerationGetProjectsEveryLifecycleState(t *testing.T) {
+	single := "single"
+	cases := []struct {
+		name string
+		view service.PlatformGenerationView
+		want string
+	}{
+		{"running", service.PlatformGenerationView{GenerationID: platformGenerationHandlerTestID, Status: "running", Mode: &single}, `{"generation_id":"550e8400-e29b-41d4-a716-446655440000","status":"running","mode":"single","conversation_guid":null}`},
+		{"cancelling", service.PlatformGenerationView{GenerationID: platformGenerationHandlerTestID, Status: "cancelling", Mode: &single}, `{"generation_id":"550e8400-e29b-41d4-a716-446655440000","status":"cancelling","mode":"single","conversation_guid":null}`},
+		{"committing", service.PlatformGenerationView{GenerationID: platformGenerationHandlerTestID, Status: "committing", Mode: &single}, `{"generation_id":"550e8400-e29b-41d4-a716-446655440000","status":"committing","mode":"single","conversation_guid":null}`},
+		{"cancelled", service.PlatformGenerationView{GenerationID: platformGenerationHandlerTestID, Status: "cancelled", Mode: &single}, `{"generation_id":"550e8400-e29b-41d4-a716-446655440000","status":"cancelled","mode":"single","conversation_guid":null}`},
+		{"failed", service.PlatformGenerationView{GenerationID: platformGenerationHandlerTestID, Status: "failed", Mode: &single, Code: "internal_error"}, `{"generation_id":"550e8400-e29b-41d4-a716-446655440000","status":"failed","mode":"single","conversation_guid":null,"code":"internal_error"}`},
+		{"pristine tombstone", service.PlatformGenerationView{GenerationID: platformGenerationHandlerTestID, Status: "cancelled"}, `{"generation_id":"550e8400-e29b-41d4-a716-446655440000","status":"cancelled","mode":null,"conversation_guid":null}`},
+		{"completed single", service.PlatformGenerationView{GenerationID: platformGenerationHandlerTestID, Status: "completed", Mode: &single, ConversationGUID: generationStringPointer("8001"), Result: &service.PlatformGenerationResultView{Model: "model-a", Status: "completed", AssistantMessageGUID: "9001", Content: "answer", Tokens: generationInt64Pointer(12)}, TotalTokensUsed: generationInt64Pointer(120)}, `{"generation_id":"550e8400-e29b-41d4-a716-446655440000","status":"completed","mode":"single","conversation_guid":"8001","result":{"model":"model-a","status":"completed","assistant_message_guid":"9001","content":"answer","tokens":12},"total_tokens_used":120}`},
+		{"completed compare", service.PlatformGenerationView{GenerationID: platformGenerationHandlerTestID, Status: "completed", Mode: generationStringPointer("compare"), ConversationGUID: generationStringPointer("8001"), Results: []service.PlatformGenerationResultView{{Model: "model-a", Status: "completed", AssistantMessageGUID: "9001", Content: "answer", Tokens: generationInt64Pointer(12)}, {Model: "model-b", Status: "failed", Code: "gateway_upstream_error"}}, TotalTokensUsed: generationInt64Pointer(120)}, `{"generation_id":"550e8400-e29b-41d4-a716-446655440000","status":"completed","mode":"compare","conversation_guid":"8001","results":[{"model":"model-a","status":"completed","assistant_message_guid":"9001","content":"answer","tokens":12},{"model":"model-b","status":"failed","code":"gateway_upstream_error"}],"total_tokens_used":120}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &platformGenerationHandlerFake{get: func(_ context.Context, userID int64, generationID string) (service.PlatformGenerationView, error) {
+				if userID != 47 || generationID != platformGenerationHandlerTestID {
+					t.Fatalf("identity=%d/%q", userID, generationID)
+				}
+				return tc.view, nil
+			}}
+			rec := platformGenerationRequest(t, fake, http.MethodGet, "/api/v1/platform/chat/generations/"+platformGenerationHandlerTestID)
+			if rec.Code != http.StatusOK || strings.TrimSpace(rec.Body.String()) != tc.want {
+				t.Fatalf("status/body=%d/%q want 200/%q", rec.Code, rec.Body.String(), tc.want)
+			}
+			if rec.Header().Get("Cache-Control") != "no-store" || rec.Header().Get("Retry-After") != "" {
+				t.Fatalf("headers cache=%q retry=%q", rec.Header().Get("Cache-Control"), rec.Header().Get("Retry-After"))
+			}
+		})
+	}
+}
+
+func TestPlatformGenerationCancelUsesTerminalAndPendingHTTPContracts(t *testing.T) {
+	single := "single"
+	cases := []struct {
+		name    string
+		view    service.PlatformGenerationView
+		pending bool
+		status  int
+		retry   string
+	}{
+		{"cancelled", service.PlatformGenerationView{GenerationID: platformGenerationHandlerTestID, Status: "cancelled", Mode: &single}, false, http.StatusOK, ""},
+		{"completed", service.PlatformGenerationView{GenerationID: platformGenerationHandlerTestID, Status: "completed", Mode: &single, ConversationGUID: generationStringPointer("8001"), Result: &service.PlatformGenerationResultView{Model: "model-a", Status: "completed", AssistantMessageGUID: "9001", Content: "answer", Tokens: generationInt64Pointer(1)}, TotalTokensUsed: generationInt64Pointer(9)}, false, http.StatusOK, ""},
+		{"failed", service.PlatformGenerationView{GenerationID: platformGenerationHandlerTestID, Status: "failed", Mode: &single, Code: "internal_error"}, false, http.StatusOK, ""},
+		{"cancelling", service.PlatformGenerationView{GenerationID: platformGenerationHandlerTestID, Status: "cancelling", Mode: &single}, true, http.StatusAccepted, "1"},
+		{"committing", service.PlatformGenerationView{GenerationID: platformGenerationHandlerTestID, Status: "committing", Mode: &single}, true, http.StatusAccepted, "1"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &platformGenerationHandlerFake{cancel: func(_ context.Context, userID int64, generationID string) (service.PlatformGenerationView, bool, error) {
+				if userID != 47 || generationID != platformGenerationHandlerTestID {
+					t.Fatalf("identity=%d/%q", userID, generationID)
+				}
+				return tc.view, tc.pending, nil
+			}}
+			rec := platformGenerationRequest(t, fake, http.MethodPost, "/api/v1/platform/chat/generations/"+platformGenerationHandlerTestID+"/cancel")
+			if rec.Code != tc.status || rec.Header().Get("Retry-After") != tc.retry || rec.Header().Get("Cache-Control") != "no-store" {
+				t.Fatalf("status=%d cache=%q retry=%q body=%s", rec.Code, rec.Header().Get("Cache-Control"), rec.Header().Get("Retry-After"), rec.Body.String())
+			}
+			if strings.Contains(rec.Body.String(), `"status":"running"`) {
+				t.Fatalf("cancel response exposed running: %s", rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestPlatformGenerationCancelRejectsImpossibleRunningProjection(t *testing.T) {
+	for _, pending := range []bool{false, true} {
+		fake := &platformGenerationHandlerFake{cancel: func(context.Context, int64, string) (service.PlatformGenerationView, bool, error) {
+			return service.PlatformGenerationView{GenerationID: platformGenerationHandlerTestID, Status: "running", Mode: generationStringPointer("single")}, pending, nil
+		}}
+		rec := platformGenerationRequest(t, fake, http.MethodPost, "/api/v1/platform/chat/generations/"+platformGenerationHandlerTestID+"/cancel")
+		assertPlatformGenerationError(t, rec, http.StatusServiceUnavailable, "generation_status_unavailable", "Generation status is temporarily unavailable.", "api_error")
+		if strings.Contains(rec.Body.String(), "running") || rec.Header().Get("Retry-After") != "" {
+			t.Fatalf("impossible running leaked: headers=%v body=%s", rec.Header(), rec.Body.String())
+		}
+	}
+}
+
+func TestPlatformGenerationValidatesCanonicalUUIDBeforeController(t *testing.T) {
+	fake := &platformGenerationHandlerFake{}
+	for _, methodPath := range []struct{ method, path string }{
+		{http.MethodGet, "/api/v1/platform/chat/generations/not-a-uuid"},
+		{http.MethodGet, "/api/v1/platform/chat/generations/550E8400-E29B-41D4-A716-446655440000"},
+		{http.MethodPost, "/api/v1/platform/chat/generations/not-a-uuid/cancel"},
+		{http.MethodPost, "/api/v1/platform/chat/generations/550E8400-E29B-41D4-A716-446655440000/cancel"},
+	} {
+		rec := platformGenerationRequest(t, fake, methodPath.method, methodPath.path)
+		assertPlatformGenerationError(t, rec, http.StatusBadRequest, "invalid_request", "Invalid request.", "invalid_request_error")
+	}
+	if fake.getCalls != 0 || fake.cancelCalls != 0 {
+		t.Fatalf("controller called before validation get=%d cancel=%d", fake.getCalls, fake.cancelCalls)
+	}
+}
+
+func TestPlatformGenerationMapsOnlyStableSanitizedErrors(t *testing.T) {
+	secret := errors.New("redis://private:password@db.internal generation raw json")
+	cases := []struct {
+		name       string
+		controller service.PlatformGenerationController
+		method     string
+		path       string
+		status     int
+		code       string
+		message    string
+		typeName   string
+	}{
+		{"nil controller", nil, http.MethodGet, "/api/v1/platform/chat/generations/" + platformGenerationHandlerTestID, 503, "generation_status_unavailable", "Generation status is temporarily unavailable.", "api_error"},
+		{"missing get", &platformGenerationHandlerFake{get: func(context.Context, int64, string) (service.PlatformGenerationView, error) {
+			return service.PlatformGenerationView{}, service.ErrPlatformGenerationControlNotFound
+		}}, http.MethodGet, "/api/v1/platform/chat/generations/" + platformGenerationHandlerTestID, 404, "generation_not_found", "Generation not found.", "invalid_request_error"},
+		{"unavailable get", &platformGenerationHandlerFake{get: func(context.Context, int64, string) (service.PlatformGenerationView, error) {
+			return service.PlatformGenerationView{}, secret
+		}}, http.MethodGet, "/api/v1/platform/chat/generations/" + platformGenerationHandlerTestID, 503, "generation_status_unavailable", "Generation status is temporarily unavailable.", "api_error"},
+		{"cancel not found fails closed", &platformGenerationHandlerFake{cancel: func(context.Context, int64, string) (service.PlatformGenerationView, bool, error) {
+			return service.PlatformGenerationView{}, false, service.ErrPlatformGenerationControlNotFound
+		}}, http.MethodPost, "/api/v1/platform/chat/generations/" + platformGenerationHandlerTestID + "/cancel", 503, "generation_status_unavailable", "Generation status is temporarily unavailable.", "api_error"},
+		{"unavailable cancel", &platformGenerationHandlerFake{cancel: func(context.Context, int64, string) (service.PlatformGenerationView, bool, error) {
+			return service.PlatformGenerationView{}, false, secret
+		}}, http.MethodPost, "/api/v1/platform/chat/generations/" + platformGenerationHandlerTestID + "/cancel", 503, "generation_status_unavailable", "Generation status is temporarily unavailable.", "api_error"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := platformGenerationRequest(t, tc.controller, tc.method, tc.path)
+			assertPlatformGenerationError(t, rec, tc.status, tc.code, tc.message, tc.typeName)
+			if strings.Contains(rec.Body.String(), "redis") || strings.Contains(rec.Body.String(), "password") || strings.Contains(rec.Body.String(), "raw json") {
+				t.Fatalf("dependency detail leaked: %s", rec.Body.String())
+			}
+		})
+	}
+}
+
+func assertPlatformGenerationError(t *testing.T, rec *httptest.ResponseRecorder, status int, code, message, typeName string) {
+	t.Helper()
+	want := `{"error":{"code":"` + code + `","message":"` + message + `","type":"` + typeName + `","request_id":"generation-request-1"}}`
+	if rec.Code != status || strings.TrimSpace(rec.Body.String()) != want {
+		t.Fatalf("status/body=%d/%q want %d/%q", rec.Code, rec.Body.String(), status, want)
+	}
+	if rec.Header().Get("Cache-Control") != "no-store" || rec.Header().Get("Retry-After") != "" {
+		t.Fatalf("error headers cache=%q retry=%q", rec.Header().Get("Cache-Control"), rec.Header().Get("Retry-After"))
+	}
+}
+
+func TestPlatformGenerationHandlerIntegrationReceiptAndOwnerIsolation(t *testing.T) {
+	if strings.TrimSpace(os.Getenv("TEST_DATABASE_URL")) == "" || strings.TrimSpace(os.Getenv("TEST_REDIS_URL")) == "" {
+		t.Skip("BLOCKED_FIXTURE: requires TEST_DATABASE_URL and TEST_REDIS_URL")
+	}
+	client := platformGenerationHandlerRedisClient(t)
+	sentinelKey, sentinelValue := preparePlatformGenerationHandlerSentinel(t, client)
+	var generationID string
+	var ownedKeys []string
+	if !t.Run("http", func(t *testing.T) {
+		state := ownedRealUserCreateHTTPState(t)
+		t.Cleanup(func() {
+			if err := state.Close(); err != nil {
+				t.Errorf("close generation integration state: %v", err)
+			}
+		})
+		if err := migration.Verify(context.Background(), state.DB); err != nil {
+			t.Fatalf("verify owned handler migration ledger: %v", err)
+		}
+		user := platformTestUser(t, state, "generation-owner", nil)
+		user.DailyCallLimit = 100
+		user.DailyCallsUsed = 2
+		user.TotalTokensUsed = 41
+		resetAt := time.Now().UTC().UnixMilli()
+		user.DailyCallsResetAt = &resetAt
+		if err := state.DB.Create(&user).Error; err != nil {
+			t.Fatal(err)
+		}
+		generationID = fmt.Sprintf("550e8400-e29b-41d4-a716-%012x", platformTestSnowflake.Next()&0xffffffffffff)
+		ownedKeys = append(ownedKeys, registerPlatformGenerationHandlerKeyCleanup(t, client, user.ID, generationID))
+		nowMillis := time.Now().UTC().UnixMilli()
+		claim, err := state.PlatformGenerations.Claim(context.Background(), service.PlatformGenerationClaimInput{
+			UserID: user.ID, GenerationID: generationID, Mode: service.PlatformGenerationModeSingle, Models: []string{"model-a"}, NowMillis: nowMillis,
+		})
+		if err != nil || claim.Duplicate || claim.LeaseToken == "" {
+			t.Fatalf("claim=%#v error=%v", claim, err)
+		}
+		if _, err := state.PlatformGenerations.MarkModelDone(context.Background(), user.ID, generationID, "model-a", 0, nowMillis+1); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := state.PlatformGenerations.BeginCommit(context.Background(), user.ID, generationID, nowMillis+2); err != nil {
+			t.Fatal(err)
+		}
+		reservedConversationGUID := platformTestSnowflake.Next()
+		receipt, err := state.PlatformGenerationPersistence.Finalize(context.Background(), state.DB, service.PlatformGenerationPersistenceInput{
+			UserID: user.ID, GenerationID: generationID, Mode: service.PlatformGenerationModeSingle,
+			Models: []string{"model-a"}, ReservedConversationGUID: &reservedConversationGUID, UserMessage: "private prompt bytes", NowMillis: nowMillis + 3,
+			Results: []service.PlatformGenerationPersistenceResult{{Model: "model-a", State: service.PlatformGenerationStateCompleted, Content: "real receipt answer", Tokens: 7, Seq: 0}},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		const currentTotal = int64(909)
+		if err := state.DB.Model(&models.User{}).Where("id = ?", user.ID).Update("total_tokens_used", currentTotal).Error; err != nil {
+			t.Fatal(err)
+		}
+
+		ownerPath := "/api/v1/platform/chat/generations/" + generationID
+		owner := platformGenerationRequestForUser(t, state.PlatformGenerationControl, user.ID, http.MethodGet, ownerPath)
+		if owner.Code != http.StatusOK || !strings.Contains(owner.Body.String(), `"status":"completed"`) ||
+			!strings.Contains(owner.Body.String(), `"content":"real receipt answer"`) ||
+			!strings.Contains(owner.Body.String(), `"assistant_message_guid":"`+receipt.Results[0].AssistantMessageGUID+`"`) ||
+			!strings.Contains(owner.Body.String(), `"total_tokens_used":909`) || strings.Contains(owner.Body.String(), "private prompt bytes") {
+			t.Fatalf("real owner HTTP status/body=%d/%s", owner.Code, owner.Body.String())
+		}
+
+		foreignUserID := user.ID + 1_000_000
+		foreignGet := platformGenerationRequestForUser(t, state.PlatformGenerationControl, foreignUserID, http.MethodGet, ownerPath)
+		assertPlatformGenerationError(t, foreignGet, http.StatusNotFound, "generation_not_found", "Generation not found.", "invalid_request_error")
+		ownedKeys = append(ownedKeys, registerPlatformGenerationHandlerKeyCleanup(t, client, foreignUserID, generationID))
+		foreignCancel := platformGenerationRequestForUser(t, state.PlatformGenerationControl, foreignUserID, http.MethodPost, ownerPath+"/cancel")
+		wantForeign := `{"generation_id":"` + generationID + `","status":"cancelled","mode":null,"conversation_guid":null}`
+		if foreignCancel.Code != http.StatusOK || strings.TrimSpace(foreignCancel.Body.String()) != wantForeign {
+			t.Fatalf("foreign cancel status/body=%d/%s", foreignCancel.Code, foreignCancel.Body.String())
+		}
+		ownerAfter := platformGenerationRequestForUser(t, state.PlatformGenerationControl, user.ID, http.MethodGet, ownerPath)
+		if ownerAfter.Code != http.StatusOK || !strings.Contains(ownerAfter.Body.String(), `"content":"real receipt answer"`) {
+			t.Fatalf("owner changed by foreign cancel status/body=%d/%s", ownerAfter.Code, ownerAfter.Body.String())
+		}
+	}) {
+		return
+	}
+	assertPlatformGenerationHandlerRedisIsolation(t, client, generationID, ownedKeys, sentinelKey, sentinelValue)
+}
+
+func TestPlatformGenerationHandlerIntegrationPartialCompareReceipt(t *testing.T) {
+	if strings.TrimSpace(os.Getenv("TEST_DATABASE_URL")) == "" || strings.TrimSpace(os.Getenv("TEST_REDIS_URL")) == "" {
+		t.Skip("BLOCKED_FIXTURE: requires TEST_DATABASE_URL and TEST_REDIS_URL")
+	}
+	client := platformGenerationHandlerRedisClient(t)
+	sentinelKey, sentinelValue := preparePlatformGenerationHandlerSentinel(t, client)
+	var generationID string
+	var ownedKeys []string
+	if !t.Run("http", func(t *testing.T) {
+		state := ownedRealUserCreateHTTPState(t)
+		t.Cleanup(func() {
+			if err := state.Close(); err != nil {
+				t.Errorf("close compare integration state: %v", err)
+			}
+		})
+		if err := migration.Verify(context.Background(), state.DB); err != nil {
+			t.Fatalf("verify owned compare migration ledger: %v", err)
+		}
+		user := platformTestUser(t, state, "generation-compare-owner", nil)
+		user.DailyCallLimit = 100
+		user.DailyCallsUsed = 1
+		user.TotalTokensUsed = 23
+		resetAt := time.Now().UTC().UnixMilli()
+		user.DailyCallsResetAt = &resetAt
+		if err := state.DB.Create(&user).Error; err != nil {
+			t.Fatal(err)
+		}
+		generationID = fmt.Sprintf("650e8400-e29b-41d4-a716-%012x", platformTestSnowflake.Next()&0xffffffffffff)
+		ownedKeys = append(ownedKeys, registerPlatformGenerationHandlerKeyCleanup(t, client, user.ID, generationID))
+		nowMillis := time.Now().UTC().UnixMilli()
+		modelsInOrder := []string{"Model-A", "model-b"}
+		claim, err := state.PlatformGenerations.Claim(context.Background(), service.PlatformGenerationClaimInput{
+			UserID: user.ID, GenerationID: generationID, Mode: service.PlatformGenerationModeCompare, Models: modelsInOrder, NowMillis: nowMillis,
+		})
+		if err != nil || claim.Duplicate || claim.LeaseToken == "" {
+			t.Fatalf("compare claim=%#v error=%v", claim, err)
+		}
+		if _, err := state.PlatformGenerations.MarkModelDone(context.Background(), user.ID, generationID, modelsInOrder[0], 0, nowMillis+1); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := state.PlatformGenerations.MarkModelFailed(context.Background(), user.ID, generationID, modelsInOrder[1], "timeout", nowMillis+2); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := state.PlatformGenerations.BeginCommit(context.Background(), user.ID, generationID, nowMillis+3); err != nil {
+			t.Fatal(err)
+		}
+		reservedConversationGUID := platformTestSnowflake.Next()
+		receipt, err := state.PlatformGenerationPersistence.Finalize(context.Background(), state.DB, service.PlatformGenerationPersistenceInput{
+			UserID: user.ID, GenerationID: generationID, Mode: service.PlatformGenerationModeCompare,
+			Models: modelsInOrder, ReservedConversationGUID: &reservedConversationGUID, UserMessage: "private compare prompt", NowMillis: nowMillis + 4,
+			Results: []service.PlatformGenerationPersistenceResult{
+				{Model: modelsInOrder[0], State: service.PlatformGenerationStateCompleted, Content: "compare receipt answer", Tokens: 7, Seq: 0},
+				{Model: modelsInOrder[1], State: service.PlatformGenerationStateFailed, ErrorCode: "timeout", Seq: 0},
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		const currentTotal = int64(919)
+		if receipt.TotalTokens == currentTotal {
+			t.Fatal("fixture current total must differ from generation-local tokens")
+		}
+		if err := state.DB.Model(&models.User{}).Where("id = ?", user.ID).Update("total_tokens_used", currentTotal).Error; err != nil {
+			t.Fatal(err)
+		}
+
+		path := "/api/v1/platform/chat/generations/" + generationID
+		rec := platformGenerationRequestForUser(t, state.PlatformGenerationControl, user.ID, http.MethodGet, path)
+		want := fmt.Sprintf(
+			`{"generation_id":"%s","status":"completed","mode":"compare","conversation_guid":"%d","results":[{"model":"Model-A","status":"completed","assistant_message_guid":"%s","content":"compare receipt answer","tokens":7},{"model":"model-b","status":"failed","code":"timeout"}],"total_tokens_used":919}`,
+			generationID, receipt.ConversationGUID, receipt.Results[0].AssistantMessageGUID,
+		)
+		if rec.Code != http.StatusOK || strings.TrimSpace(rec.Body.String()) != want {
+			t.Fatalf("compare HTTP status/body=%d/%q want 200/%q", rec.Code, rec.Body.String(), want)
+		}
+		if rec.Header().Get("Cache-Control") != "no-store" || rec.Header().Get("Retry-After") != "" ||
+			strings.Contains(rec.Body.String(), "private compare prompt") || strings.Contains(rec.Body.String(), `"model":"model-b","status":"failed","assistant_message_guid"`) ||
+			strings.Contains(rec.Body.String(), `"model":"model-b","status":"failed","content"`) || strings.Contains(rec.Body.String(), `"model":"model-b","status":"failed","tokens"`) {
+			t.Fatalf("compare HTTP metadata/content boundary violated: headers=%v body=%s", rec.Header(), rec.Body.String())
+		}
+	}) {
+		return
+	}
+	assertPlatformGenerationHandlerRedisIsolation(t, client, generationID, ownedKeys, sentinelKey, sentinelValue)
+}

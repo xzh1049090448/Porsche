@@ -3,11 +3,291 @@ package actionsecurity
 import (
 	"bytes"
 	"encoding/binary"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
 	"math"
 	"reflect"
 	"strings"
 	"testing"
 )
+
+func TestResetPasswordIntentRedactsSecretFormatting(t *testing.T) {
+	intent := ResetPasswordIntent{TargetGUID: 2, ExpectedAuthVersion: 3, NewPassword: []byte("Strong!Pass1"), Reason: "rotation"}
+	for _, got := range []string{fmt.Sprint(intent), fmt.Sprintf("%#v", intent), string(mustJSON(t, intent))} {
+		if strings.Contains(got, "Strong!Pass1") {
+			t.Fatalf("secret escaped formatting: %s", got)
+		}
+	}
+}
+
+func TestPromoteIntentCanonicalGoldenAndBinding(t *testing.T) {
+	overrides := []PermissionOverrideIntent{{Capability: "users.read", Effect: 2}, {Capability: "users.delete", Effect: 3}}
+	intent := PromoteIntent{TargetGUID: 42, ExpectedAuthVersion: 7, ExpectedPermissionsVersion: 0, CatalogVersion: 1, Overrides: overrides, Reason: "\tcase\n"}
+	got, err := descriptorFor(t, ActionUsersPromote).Encode(intent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := mustDecodeHex(t, "010300000008000000000000002a02040000000400000007030300000008000000000000000004040000000400000001050500000042000000020000001c01010000000c75736572732e64656c657465020400000004000000030000001a01010000000a75736572732e726561640204000000040000000206010000000463617365")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("promote canonical bytes = %x, want %x", got, want)
+	}
+	if !reflect.DeepEqual(overrides, []PermissionOverrideIntent{{Capability: "users.read", Effect: 2}, {Capability: "users.delete", Effect: 3}}) {
+		t.Fatalf("promote mutated caller overrides: %#v", overrides)
+	}
+	permuted := intent
+	permuted.Reason = "case"
+	permuted.Overrides = []PermissionOverrideIntent{{Capability: "users.delete", Effect: 3}, {Capability: "users.read", Effect: 2}}
+	assertSameCanonical(t, ActionUsersPromote, intent, permuted)
+	for _, tc := range []struct {
+		name   string
+		mutate func(*PromoteIntent)
+	}{
+		{"target guid", func(in *PromoteIntent) { in.TargetGUID++ }},
+		{"auth version", func(in *PromoteIntent) { in.ExpectedAuthVersion++ }},
+		{"permissions version", func(in *PromoteIntent) { in.ExpectedPermissionsVersion++ }},
+		{"catalog version", func(in *PromoteIntent) { in.CatalogVersion++ }},
+		{"overrides", func(in *PromoteIntent) {
+			in.Overrides = []PermissionOverrideIntent{{Capability: "users.read", Effect: 3}}
+		}},
+		{"reason", func(in *PromoteIntent) { in.Reason = "other" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			candidate := permuted
+			candidate.Overrides = append([]PermissionOverrideIntent(nil), permuted.Overrides...)
+			tc.mutate(&candidate)
+			assertDifferentCanonical(t, ActionUsersPromote, permuted, candidate)
+		})
+	}
+}
+
+func TestDemoteIntentCanonicalGoldenAndBinding(t *testing.T) {
+	if _, exists := reflect.TypeOf(DemoteIntent{}).FieldByName("Overrides"); exists {
+		t.Fatal("demote intent exposes overrides")
+	}
+	intent := DemoteIntent{TargetGUID: 42, ExpectedAuthVersion: 7, ExpectedPermissionsVersion: 3, CatalogVersion: 1, Reason: "\u2003case\u00a0"}
+	got, err := descriptorFor(t, ActionUsersDemote).Encode(intent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := mustDecodeHex(t, "010300000008000000000000002a0204000000040000000703030000000800000000000000030404000000040000000105010000000463617365")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("demote canonical bytes = %x, want %x", got, want)
+	}
+	for _, tc := range []struct {
+		name   string
+		mutate func(*DemoteIntent)
+	}{
+		{"target guid", func(in *DemoteIntent) { in.TargetGUID++ }},
+		{"auth version", func(in *DemoteIntent) { in.ExpectedAuthVersion++ }},
+		{"permissions version", func(in *DemoteIntent) { in.ExpectedPermissionsVersion++ }},
+		{"catalog version", func(in *DemoteIntent) { in.CatalogVersion++ }},
+		{"reason", func(in *DemoteIntent) { in.Reason = "other" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			candidate := intent
+			tc.mutate(&candidate)
+			assertDifferentCanonical(t, ActionUsersDemote, intent, candidate)
+		})
+	}
+}
+
+func TestPermissionsWriteIntentCanonicalGoldenAndBinding(t *testing.T) {
+	overrides := []PermissionOverrideIntent{{Capability: "users.read", Effect: 2}, {Capability: "users.delete", Effect: 3}}
+	intent := PermissionsWriteIntent{TargetGUID: 42, ExpectedAuthVersion: 7, ExpectedPermissionsVersion: 3, CatalogVersion: 1, Overrides: overrides, Reason: " case "}
+	got, err := descriptorFor(t, ActionUsersPermissionsWrite).Encode(intent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := mustDecodeHex(t, "010300000008000000000000002a02040000000400000007030300000008000000000000000304040000000400000001050500000042000000020000001c01010000000c75736572732e64656c657465020400000004000000030000001a01010000000a75736572732e726561640204000000040000000206010000000463617365")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("permissions.write canonical bytes = %x, want %x", got, want)
+	}
+	if !reflect.DeepEqual(overrides, []PermissionOverrideIntent{{Capability: "users.read", Effect: 2}, {Capability: "users.delete", Effect: 3}}) {
+		t.Fatalf("permissions.write mutated caller overrides: %#v", overrides)
+	}
+	permuted := intent
+	permuted.Reason = "case"
+	permuted.Overrides = []PermissionOverrideIntent{{Capability: "users.delete", Effect: 3}, {Capability: "users.read", Effect: 2}}
+	assertSameCanonical(t, ActionUsersPermissionsWrite, intent, permuted)
+	for _, tc := range []struct {
+		name   string
+		mutate func(*PermissionsWriteIntent)
+	}{
+		{"target guid", func(in *PermissionsWriteIntent) { in.TargetGUID++ }},
+		{"auth version", func(in *PermissionsWriteIntent) { in.ExpectedAuthVersion++ }},
+		{"permissions version", func(in *PermissionsWriteIntent) { in.ExpectedPermissionsVersion++ }},
+		{"catalog version", func(in *PermissionsWriteIntent) { in.CatalogVersion++ }},
+		{"overrides", func(in *PermissionsWriteIntent) {
+			in.Overrides = []PermissionOverrideIntent{{Capability: "users.read", Effect: 3}}
+		}},
+		{"reason", func(in *PermissionsWriteIntent) { in.Reason = "other" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			candidate := permuted
+			candidate.Overrides = append([]PermissionOverrideIntent(nil), permuted.Overrides...)
+			tc.mutate(&candidate)
+			assertDifferentCanonical(t, ActionUsersPermissionsWrite, permuted, candidate)
+		})
+	}
+}
+
+func TestPromoteDemotePermissionsWriteIntentValidation(t *testing.T) {
+	validPromote := PromoteIntent{TargetGUID: 1, ExpectedAuthVersion: 1, ExpectedPermissionsVersion: 0, CatalogVersion: 1, Reason: "case"}
+	validDemote := DemoteIntent{TargetGUID: 1, ExpectedAuthVersion: 1, ExpectedPermissionsVersion: 1, CatalogVersion: 1, Reason: "case"}
+	validWrite := PermissionsWriteIntent{TargetGUID: 1, ExpectedAuthVersion: 1, ExpectedPermissionsVersion: 1, CatalogVersion: 1, Reason: "case"}
+	invalid := []struct {
+		name   string
+		action Action
+		intent any
+	}{
+		{"promote target", ActionUsersPromote, func() PromoteIntent { in := validPromote; in.TargetGUID = 0; return in }()},
+		{"promote auth zero", ActionUsersPromote, func() PromoteIntent { in := validPromote; in.ExpectedAuthVersion = 0; return in }()},
+		{"promote auth overflow", ActionUsersPromote, func() PromoteIntent { in := validPromote; in.ExpectedAuthVersion = math.MaxInt32 + 1; return in }()},
+		{"promote permissions negative", ActionUsersPromote, func() PromoteIntent { in := validPromote; in.ExpectedPermissionsVersion = -1; return in }()},
+		{"promote catalog zero", ActionUsersPromote, func() PromoteIntent { in := validPromote; in.CatalogVersion = 0; return in }()},
+		{"promote catalog overflow", ActionUsersPromote, func() PromoteIntent { in := validPromote; in.CatalogVersion = math.MaxInt32 + 1; return in }()},
+		{"demote target", ActionUsersDemote, func() DemoteIntent { in := validDemote; in.TargetGUID = 0; return in }()},
+		{"demote auth zero", ActionUsersDemote, func() DemoteIntent { in := validDemote; in.ExpectedAuthVersion = 0; return in }()},
+		{"demote auth overflow", ActionUsersDemote, func() DemoteIntent { in := validDemote; in.ExpectedAuthVersion = math.MaxInt32 + 1; return in }()},
+		{"demote permissions zero", ActionUsersDemote, func() DemoteIntent { in := validDemote; in.ExpectedPermissionsVersion = 0; return in }()},
+		{"demote catalog zero", ActionUsersDemote, func() DemoteIntent { in := validDemote; in.CatalogVersion = 0; return in }()},
+		{"write target", ActionUsersPermissionsWrite, func() PermissionsWriteIntent { in := validWrite; in.TargetGUID = 0; return in }()},
+		{"write auth zero", ActionUsersPermissionsWrite, func() PermissionsWriteIntent { in := validWrite; in.ExpectedAuthVersion = 0; return in }()},
+		{"write auth overflow", ActionUsersPermissionsWrite, func() PermissionsWriteIntent { in := validWrite; in.ExpectedAuthVersion = math.MaxInt32 + 1; return in }()},
+		{"write permissions zero", ActionUsersPermissionsWrite, func() PermissionsWriteIntent { in := validWrite; in.ExpectedPermissionsVersion = 0; return in }()},
+		{"write catalog zero", ActionUsersPermissionsWrite, func() PermissionsWriteIntent { in := validWrite; in.CatalogVersion = 0; return in }()},
+	}
+	for _, action := range []Action{ActionUsersPromote, ActionUsersPermissionsWrite} {
+		for _, tc := range []struct {
+			name      string
+			overrides []PermissionOverrideIntent
+		}{
+			{"duplicate", []PermissionOverrideIntent{{Capability: "users.read", Effect: 2}, {Capability: "users.read", Effect: 3}}},
+			{"case folded duplicate", []PermissionOverrideIntent{{Capability: "users.read", Effect: 2}, {Capability: "USERS.READ", Effect: 3}}},
+			{"inherit", []PermissionOverrideIntent{{Capability: "users.read", Effect: 1}}},
+			{"unknown", []PermissionOverrideIntent{{Capability: "users.unknown", Effect: 3}}},
+			{"unavailable", []PermissionOverrideIntent{{Capability: "users.quota.adjust", Effect: 3}}},
+			{"promote grant", []PermissionOverrideIntent{{Capability: "users.promote", Effect: 2}}},
+			{"demote grant", []PermissionOverrideIntent{{Capability: "users.demote", Effect: 2}}},
+			{"permissions grant", []PermissionOverrideIntent{{Capability: "users.permissions.write", Effect: 2}}},
+			{"invalid effect", []PermissionOverrideIntent{{Capability: "users.read", Effect: 4}}},
+			{"invalid utf8 capability", []PermissionOverrideIntent{{Capability: "users.\xff", Effect: 3}}},
+		} {
+			if action == ActionUsersPromote {
+				in := validPromote
+				in.Overrides = tc.overrides
+				invalid = append(invalid, struct {
+					name   string
+					action Action
+					intent any
+				}{"promote " + tc.name, action, in})
+			} else {
+				in := validWrite
+				in.Overrides = tc.overrides
+				invalid = append(invalid, struct {
+					name   string
+					action Action
+					intent any
+				}{"write " + tc.name, action, in})
+			}
+		}
+	}
+	badReasons := []string{"", "\u2003\u00a0", strings.Repeat("界", 201), "bad\xff"}
+	for _, reason := range badReasons {
+		p := validPromote
+		p.Reason = reason
+		invalid = append(invalid, struct {
+			name   string
+			action Action
+			intent any
+		}{"promote reason", ActionUsersPromote, p})
+		d := validDemote
+		d.Reason = reason
+		invalid = append(invalid, struct {
+			name   string
+			action Action
+			intent any
+		}{"demote reason", ActionUsersDemote, d})
+		w := validWrite
+		w.Reason = reason
+		invalid = append(invalid, struct {
+			name   string
+			action Action
+			intent any
+		}{"write reason", ActionUsersPermissionsWrite, w})
+	}
+	for _, tc := range invalid {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := descriptorFor(t, tc.action).Encode(tc.intent); err == nil {
+				t.Fatal("invalid intent accepted")
+			}
+		})
+	}
+	for _, tc := range []struct {
+		name   string
+		action Action
+		intent any
+	}{
+		{"promote bounds", ActionUsersPromote, PromoteIntent{TargetGUID: math.MaxInt64, ExpectedAuthVersion: math.MaxInt32, ExpectedPermissionsVersion: math.MaxInt64, CatalogVersion: math.MaxInt32, Reason: strings.Repeat("界", 200)}},
+		{"demote bounds", ActionUsersDemote, DemoteIntent{TargetGUID: math.MaxInt64, ExpectedAuthVersion: math.MaxInt32, ExpectedPermissionsVersion: math.MaxInt64, CatalogVersion: math.MaxInt32, Reason: strings.Repeat("界", 200)}},
+		{"write bounds", ActionUsersPermissionsWrite, PermissionsWriteIntent{TargetGUID: math.MaxInt64, ExpectedAuthVersion: math.MaxInt32, ExpectedPermissionsVersion: math.MaxInt64, CatalogVersion: math.MaxInt32, Reason: strings.Repeat("界", 200)}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := descriptorFor(t, tc.action).Encode(tc.intent); err != nil {
+				t.Fatalf("valid boundary rejected: %v", err)
+			}
+		})
+	}
+}
+
+func mustDecodeHex(t *testing.T, raw string) []byte {
+	t.Helper()
+	decoded, err := hex.DecodeString(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return decoded
+}
+
+func assertSameCanonical(t *testing.T, action Action, first, second any) {
+	t.Helper()
+	firstEncoded, err := descriptorFor(t, action).Encode(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondEncoded, err := descriptorFor(t, action).Encode(second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(firstEncoded, secondEncoded) {
+		t.Fatalf("equivalent intents differ: %x vs %x", firstEncoded, secondEncoded)
+	}
+}
+
+func assertDifferentCanonical(t *testing.T, action Action, first, second any) {
+	t.Helper()
+	firstEncoded, err := descriptorFor(t, action).Encode(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondEncoded, err := descriptorFor(t, action).Encode(second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(firstEncoded, secondEncoded) {
+		t.Fatal("bound field did not change canonical HMAC input")
+	}
+}
+
+func mustJSON(t *testing.T, value any) []byte {
+	t.Helper()
+	out, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
 
 func decodeArrayItems(t *testing.T, encoded []byte) [][]byte {
 	t.Helper()
@@ -202,7 +482,7 @@ func TestPasswordZeroOnSuccessAndValidationError(t *testing.T) {
 	}{
 		{"create success", ActionUsersCreateAdmin, CreateAccountIntent{Username: "alice", Password: []byte{1, 2, 3}, Role: "admin", PlanType: 1}},
 		{"create error", ActionUsersCreateAdmin, CreateAccountIntent{Password: []byte{1, 2, 3}, Role: "admin", PlanType: 1}},
-		{"reset success", ActionUsersResetPassword, ResetPasswordIntent{TargetGUID: 1, NewPassword: []byte{4, 5, 6}, Reason: "requested"}},
+		{"reset success", ActionUsersResetPassword, ResetPasswordIntent{TargetGUID: 1, ExpectedAuthVersion: 1, NewPassword: []byte{4, 5, 6}, Reason: "requested"}},
 		{"reset error", ActionUsersResetPassword, ResetPasswordIntent{NewPassword: []byte{4, 5, 6}, Reason: "requested"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -218,6 +498,24 @@ func TestPasswordZeroOnSuccessAndValidationError(t *testing.T) {
 				t.Fatal("caller password was not zeroed")
 			}
 		})
+	}
+}
+
+func TestResetPasswordIntentBindsExpectedAuthVersion(t *testing.T) {
+	first, err := descriptorFor(t, ActionUsersResetPassword).Encode(ResetPasswordIntent{TargetGUID: 7, ExpectedAuthVersion: 3, NewPassword: []byte("Strong!Pass1"), Reason: "requested"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := descriptorFor(t, ActionUsersResetPassword).Encode(ResetPasswordIntent{TargetGUID: 7, ExpectedAuthVersion: 4, NewPassword: []byte("Strong!Pass1"), Reason: "requested"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(first, second) {
+		t.Fatal("expected_auth_version did not affect canonical encoding")
+	}
+	fields := decodeFields(t, first)
+	if len(fields) != 4 || fields[1].tag != 2 || fields[1].typ != typeInt32 || binary.BigEndian.Uint32(fields[1].value) != 3 {
+		t.Fatalf("reset password encoding fields = %#v", fields)
 	}
 }
 
@@ -279,11 +577,17 @@ func TestAllDescriptorsDeterministicAndDoNotMutateInputs(t *testing.T) {
 		{"create", ActionUsersCreateAdmin, func() any {
 			return CreateAccountIntent{Username: "alice", Nickname: &nickname, Password: []byte{1, 2, 3}, Role: "admin", GroupGUID: &group, PlanType: 2, AllowedModels: []string{"z", "a", "z"}, DailyCallLimit: 4, Overrides: []PermissionOverrideIntent{{Capability: "users.write", Effect: 3}, {Capability: "users.read", Effect: 2}}}
 		}},
-		{"reset", ActionUsersResetPassword, func() any { return ResetPasswordIntent{TargetGUID: 2, NewPassword: []byte{4, 5, 6}, Reason: "case"} }},
-		{"promote", ActionUsersPromote, func() any { return RoleIntent{TargetGUID: 2, ExpectedAuthVersion: 3, Reason: "case"} }},
-		{"demote", ActionUsersDemote, func() any { return RoleIntent{TargetGUID: 2, ExpectedAuthVersion: 3, Reason: "case"} }},
+		{"reset", ActionUsersResetPassword, func() any {
+			return ResetPasswordIntent{TargetGUID: 2, ExpectedAuthVersion: 3, NewPassword: []byte{4, 5, 6}, Reason: "case"}
+		}},
+		{"promote", ActionUsersPromote, func() any {
+			return PromoteIntent{TargetGUID: 2, ExpectedAuthVersion: 3, ExpectedPermissionsVersion: 0, CatalogVersion: 1, Overrides: []PermissionOverrideIntent{{Capability: "users.read", Effect: 2}}, Reason: "case"}
+		}},
+		{"demote", ActionUsersDemote, func() any {
+			return DemoteIntent{TargetGUID: 2, ExpectedAuthVersion: 3, ExpectedPermissionsVersion: 1, CatalogVersion: 1, Reason: "case"}
+		}},
 		{"permissions", ActionUsersPermissionsWrite, func() any {
-			return PermissionsWriteIntent{TargetGUID: 2, ExpectedPermissionsVersion: 3, CatalogVersion: 1, Overrides: []PermissionOverrideIntent{{Capability: "z", Effect: 3}, {Capability: "a", Effect: 2}}}
+			return PermissionsWriteIntent{TargetGUID: 2, ExpectedAuthVersion: 3, ExpectedPermissionsVersion: 3, CatalogVersion: 1, Overrides: []PermissionOverrideIntent{{Capability: "users.reset_password", Effect: 3}, {Capability: "users.read", Effect: 2}}, Reason: "case"}
 		}},
 		{"delete", ActionUsersDelete, func() any { return DeleteUserIntent{TargetGUID: 2, ExpectedAuthVersion: 3, Reason: "case"} }},
 		{"publish", ActionPublicContentPublish, func() any {
@@ -326,6 +630,9 @@ func cloneIntentForMutationCheck(value any) any {
 	case ResetPasswordIntent:
 		in.NewPassword = append([]byte(nil), in.NewPassword...)
 		return in
+	case PromoteIntent:
+		in.Overrides = append([]PermissionOverrideIntent(nil), in.Overrides...)
+		return in
 	case PermissionsWriteIntent:
 		in.Overrides = append([]PermissionOverrideIntent(nil), in.Overrides...)
 		return in
@@ -356,15 +663,14 @@ func assertIntentMutationContract(t *testing.T, after, before any) {
 	}
 }
 
-func TestUserIntentFixedRolesAndCanonicalValidation(t *testing.T) {
+func TestUserIntentDedicatedRoleTypesAndCanonicalValidation(t *testing.T) {
 	tests := []struct {
 		name   string
 		action Action
 		intent any
-		role   string
 	}{
-		{"promote", ActionUsersPromote, RoleIntent{TargetGUID: 1, ExpectedAuthVersion: 2, Reason: "case"}, "admin"},
-		{"demote", ActionUsersDemote, RoleIntent{TargetGUID: 1, ExpectedAuthVersion: 2, Reason: "case"}, "user"},
+		{"promote", ActionUsersPromote, PromoteIntent{TargetGUID: 1, ExpectedAuthVersion: 2, ExpectedPermissionsVersion: 0, CatalogVersion: 1, Reason: "case"}},
+		{"demote", ActionUsersDemote, DemoteIntent{TargetGUID: 1, ExpectedAuthVersion: 2, ExpectedPermissionsVersion: 1, CatalogVersion: 1, Reason: "case"}},
 	}
 	for _, tc := range tests {
 		encoded, err := descriptorFor(t, tc.action).Encode(tc.intent)
@@ -372,8 +678,8 @@ func TestUserIntentFixedRolesAndCanonicalValidation(t *testing.T) {
 			t.Fatalf("%s: %v", tc.name, err)
 		}
 		fields := decodeFields(t, encoded)
-		if len(fields) != 4 || string(fields[2].value) != tc.role {
-			t.Fatalf("%s fixed role fields=%#v", tc.name, fields)
+		if len(fields) < 5 {
+			t.Fatalf("%s canonical fields=%#v", tc.name, fields)
 		}
 	}
 
@@ -394,13 +700,13 @@ func TestUserIntentFixedRolesAndCanonicalValidation(t *testing.T) {
 		{ActionUsersCreateAdmin, CreateAccountIntent{Username: "alice", Password: []byte{1}, Role: "admin", PlanType: 1, AllowedModels: []string{"\xff"}}},
 		{ActionUsersCreateAdmin, CreateAccountIntent{Username: "\xff", Password: []byte{1}, Role: "admin", PlanType: 1}},
 		{ActionUsersResetPassword, ResetPasswordIntent{TargetGUID: 0, NewPassword: []byte{1}, Reason: "case"}},
-		{ActionUsersPromote, RoleIntent{TargetGUID: 1, ExpectedAuthVersion: 0, Reason: "case"}},
+		{ActionUsersPromote, PromoteIntent{TargetGUID: 1, ExpectedAuthVersion: 0, CatalogVersion: 1, Reason: "case"}},
 		{ActionUsersDelete, DeleteUserIntent{TargetGUID: 0, ExpectedAuthVersion: 1, Reason: "case"}},
 		{ActionUsersDelete, DeleteUserIntent{TargetGUID: 1, ExpectedAuthVersion: 0, Reason: "case"}},
 		{ActionUsersDelete, DeleteUserIntent{TargetGUID: 1, ExpectedAuthVersion: 2147483648, Reason: "case"}},
 		{ActionUsersDelete, DeleteUserIntent{TargetGUID: 1, ExpectedAuthVersion: 1, Reason: ""}},
-		{ActionUsersPermissionsWrite, PermissionsWriteIntent{TargetGUID: 1, ExpectedPermissionsVersion: 1, CatalogVersion: 1, Overrides: []PermissionOverrideIntent{{Capability: "users.read", Effect: 4}}}},
-		{ActionUsersPermissionsWrite, PermissionsWriteIntent{TargetGUID: 1, ExpectedPermissionsVersion: 1, CatalogVersion: 1, Overrides: []PermissionOverrideIntent{{Capability: "users.read", Effect: 2}, {Capability: "users.read", Effect: 3}}}},
+		{ActionUsersPermissionsWrite, PermissionsWriteIntent{TargetGUID: 1, ExpectedAuthVersion: 1, ExpectedPermissionsVersion: 1, CatalogVersion: 1, Overrides: []PermissionOverrideIntent{{Capability: "users.read", Effect: 4}}, Reason: "case"}},
+		{ActionUsersPermissionsWrite, PermissionsWriteIntent{TargetGUID: 1, ExpectedAuthVersion: 1, ExpectedPermissionsVersion: 1, CatalogVersion: 1, Overrides: []PermissionOverrideIntent{{Capability: "users.read", Effect: 2}, {Capability: "users.read", Effect: 3}}, Reason: "case"}},
 	}
 	for i, tc := range invalid {
 		if _, err := descriptorFor(t, tc.action).Encode(tc.intent); err == nil {
@@ -447,14 +753,14 @@ func TestDeleteUserIntentCanonicalEncodingIgnoresOnlyEdgeWhitespace(t *testing.T
 func TestPermissionsIntentSortsWithoutMutatingCaller(t *testing.T) {
 	overrides := []PermissionOverrideIntent{{Capability: "users.reset_password", Effect: 3}, {Capability: "users.read", Effect: 2}}
 	wantCaller := append([]PermissionOverrideIntent(nil), overrides...)
-	encoded, err := descriptorFor(t, ActionUsersPermissionsWrite).Encode(PermissionsWriteIntent{TargetGUID: 1, ExpectedPermissionsVersion: 2, CatalogVersion: 1, Overrides: overrides})
+	encoded, err := descriptorFor(t, ActionUsersPermissionsWrite).Encode(PermissionsWriteIntent{TargetGUID: 1, ExpectedAuthVersion: 1, ExpectedPermissionsVersion: 2, CatalogVersion: 1, Overrides: overrides, Reason: "case"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(overrides, wantCaller) {
 		t.Fatalf("caller overrides mutated: %#v", overrides)
 	}
-	array := decodeFields(t, encoded)[3].value
+	array := decodeFields(t, encoded)[4].value
 	if bytes.Index(array, []byte("users.read")) > bytes.Index(array, []byte("users.reset_password")) {
 		t.Fatalf("overrides not capability sorted: %x", array)
 	}

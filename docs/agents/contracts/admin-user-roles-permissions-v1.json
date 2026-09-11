@@ -1,0 +1,302 @@
+{
+  "contract": "admin-user-roles-permissions-v1",
+  "revision": "2026-09-09-a08-v1",
+  "status": "AGREED_FOR_IMPLEMENTATION",
+  "design_source": "docs/superpowers/specs/2026-09-09-a08-managed-user-roles-permissions-design.md",
+  "paired_frontend_contract": {
+    "path": "../Porsche-Web/docs/agents/contracts/admin-user-roles-permissions-v1.json",
+    "equality_rule": "frontend copy must be byte-identical to this authoritative backend contract",
+    "verification": "compare raw bytes before joint acceptance"
+  },
+  "common": {
+    "authentication": "existing Access Bearer authentication only; reject Refresh tokens as endpoint authentication; before every Issue, Execute, and Query authorization check require a fresh actor auth_version, current logical session and Redis revocation state, exact effective Root capability, target visibility, target state, target role, target auth version, policy version, and catalog version when applicable",
+    "path_guid": "canonical positive decimal signed int64 string without sign, whitespace, or leading zero",
+    "body_limit_bytes": 4096,
+    "strict_json": "one exact JSON object; reject unknown, duplicate, case-folded duplicate, invalid UTF-8, trailing fields, and oversized bodies before service invocation",
+    "reason": "Unicode-trimmed 1..200 code points",
+    "versions": {
+      "expected_auth_version": "integer 1..2147483647",
+      "expected_permissions_version": "integer 0..9223372036854775807; zero is allowed only for promote when no target policy head exists; demote and permissions.write require a positive current version",
+      "catalog_version": "integer 1..2147483647 matching the current capability catalog"
+    },
+    "overrides": "complete array of unique capabilities, each item an exact object with only capability and effect; wire effect is allow or deny only; UI inherit is represented by omitting the capability; reject explicit inherit, unknown, unavailable, duplicate, case-folded duplicate, and allow on Root-only or ungrantable capabilities; persistence stores allow or deny only",
+    "response_headers": {
+      "Cache-Control": "no-store",
+      "X-Request-ID": "required non-empty; error body request_id equals this header"
+    },
+    "mutation_replay": "never automatically replay Issue, POST execute, or PATCH execute; a 409 allows at most one owned refresh and requires a new user gesture",
+    "eligibility": {
+      "actor": "active Root with a current nonrevoked logical session and the exact effective capability; Admin overrides cannot obtain these capabilities",
+      "promote_target": "visible, nondeleted User in active or disabled state; never self or Root",
+      "demote_target": "visible, nondeleted Admin in active or disabled state; never self or Root",
+      "permissions_target": "visible, nondeleted Admin in active or disabled state; never self or Root",
+      "invisible_target": "404",
+      "visible_but_forbidden": "403",
+      "stale_or_same_state": "409 with no security-version, session, policy, audit, outbox, or operation-result mutation"
+    }
+  },
+  "actions": {
+    "users.promote": {
+      "scope": "users.promote",
+      "issue": {
+        "method": "POST",
+        "path": "/admin/v2/action-verifications",
+        "forbidden_headers": ["Idempotency-Key", "X-Action-Ticket"],
+        "body": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["action", "intent", "current_password"],
+          "allowed": ["action", "intent", "current_password"],
+          "action_literal": "users.promote",
+          "intent_additionalProperties": false,
+          "intent_required": ["target_guid", "expected_auth_version", "expected_permissions_version", "catalog_version", "overrides", "reason"],
+          "intent_allowed": ["target_guid", "expected_auth_version", "expected_permissions_version", "catalog_version", "overrides", "reason"],
+          "current_password": "required independent owned UTF-8 bytes, cleared on every exit"
+        },
+        "response_status": 201,
+        "response_keys": ["ticket", "expires_at"],
+        "ticket_ttl_seconds": 300
+      },
+      "execute": {
+        "method": "POST",
+        "path": "/admin/v2/users/{guid}/actions",
+        "required_headers": ["Idempotency-Key", "X-Action-Ticket"],
+        "header_rules": {
+          "Idempotency-Key": "exactly one unique original value",
+          "X-Action-Ticket": "exactly one valid users.promote ticket bound to the path target and complete canonical intent"
+        },
+        "body": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["action", "expected_auth_version", "expected_permissions_version", "catalog_version", "overrides", "reason"],
+          "allowed": ["action", "expected_auth_version", "expected_permissions_version", "catalog_version", "overrides", "reason"],
+          "action_literal": "promote",
+          "path_supplies_target_guid": true
+        },
+        "response_status": 200,
+        "response_keys": ["operation_ref", "target_guid", "resulting_auth_version", "resulting_permissions_version", "resulting_role"],
+        "success_rule": "committed terminal result only; operation_commit_unknown is an error carrying operation_ref",
+        "processing_success_response": false
+      },
+      "query": {
+        "method": "GET",
+        "path": "/admin/v2/operations",
+        "exact_scope": "users.promote",
+        "query_rule": "accept exactly scope=users.promote and no other query parameters",
+        "required_headers": ["Idempotency-Key"],
+        "forbidden_headers": ["X-Action-Ticket"],
+        "original_key_rule": "required exactly once using the original mutation key",
+        "response_status": 200
+      }
+    },
+    "users.demote": {
+      "scope": "users.demote",
+      "issue": {
+        "method": "POST",
+        "path": "/admin/v2/action-verifications",
+        "forbidden_headers": ["Idempotency-Key", "X-Action-Ticket"],
+        "body": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["action", "intent", "current_password"],
+          "allowed": ["action", "intent", "current_password"],
+          "action_literal": "users.demote",
+          "intent_additionalProperties": false,
+          "intent_required": ["target_guid", "expected_auth_version", "expected_permissions_version", "catalog_version", "reason"],
+          "intent_allowed": ["target_guid", "expected_auth_version", "expected_permissions_version", "catalog_version", "reason"],
+          "intent_forbidden": ["overrides"],
+          "current_password": "required independent owned UTF-8 bytes, cleared on every exit"
+        },
+        "response_status": 201,
+        "response_keys": ["ticket", "expires_at"],
+        "ticket_ttl_seconds": 300
+      },
+      "execute": {
+        "method": "POST",
+        "path": "/admin/v2/users/{guid}/actions",
+        "required_headers": ["Idempotency-Key", "X-Action-Ticket"],
+        "header_rules": {
+          "Idempotency-Key": "exactly one unique original value",
+          "X-Action-Ticket": "exactly one valid users.demote ticket bound to the path target and complete canonical intent"
+        },
+        "body": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["action", "expected_auth_version", "expected_permissions_version", "catalog_version", "reason"],
+          "allowed": ["action", "expected_auth_version", "expected_permissions_version", "catalog_version", "reason"],
+          "action_literal": "demote",
+          "path_supplies_target_guid": true,
+          "forbidden": ["overrides"]
+        },
+        "response_status": 200,
+        "response_keys": ["operation_ref", "target_guid", "resulting_auth_version", "resulting_permissions_version", "resulting_role"],
+        "success_rule": "committed terminal result only; operation_commit_unknown is an error carrying operation_ref",
+        "processing_success_response": false
+      },
+      "query": {
+        "method": "GET",
+        "path": "/admin/v2/operations",
+        "exact_scope": "users.demote",
+        "query_rule": "accept exactly scope=users.demote and no other query parameters",
+        "required_headers": ["Idempotency-Key"],
+        "forbidden_headers": ["X-Action-Ticket"],
+        "original_key_rule": "required exactly once using the original mutation key",
+        "response_status": 200
+      }
+    },
+    "users.permissions.write": {
+      "scope": "users.permissions.write",
+      "issue": {
+        "method": "POST",
+        "path": "/admin/v2/action-verifications",
+        "forbidden_headers": ["Idempotency-Key", "X-Action-Ticket"],
+        "body": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["action", "intent", "current_password"],
+          "allowed": ["action", "intent", "current_password"],
+          "action_literal": "users.permissions.write",
+          "intent_additionalProperties": false,
+          "intent_required": ["target_guid", "expected_auth_version", "expected_permissions_version", "catalog_version", "overrides", "reason"],
+          "intent_allowed": ["target_guid", "expected_auth_version", "expected_permissions_version", "catalog_version", "overrides", "reason"],
+          "current_password": "required independent owned UTF-8 bytes, cleared on every exit"
+        },
+        "response_status": 201,
+        "response_keys": ["ticket", "expires_at"],
+        "ticket_ttl_seconds": 300
+      },
+      "execute": {
+        "method": "PATCH",
+        "path": "/admin/v2/users/{guid}/permissions",
+        "required_headers": ["Idempotency-Key", "X-Action-Ticket"],
+        "header_rules": {
+          "Idempotency-Key": "exactly one unique original value",
+          "X-Action-Ticket": "exactly one valid users.permissions.write ticket bound to the path target and complete canonical intent"
+        },
+        "body": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["expected_auth_version", "expected_permissions_version", "catalog_version", "overrides", "reason"],
+          "allowed": ["expected_auth_version", "expected_permissions_version", "catalog_version", "overrides", "reason"],
+          "action_literal": "field absent; method and path select users.permissions.write",
+          "path_supplies_target_guid": true
+        },
+        "response_status": 200,
+        "response_keys": ["operation_ref", "target_guid", "resulting_auth_version", "resulting_permissions_version", "resulting_role"],
+        "success_rule": "committed terminal result only; operation_commit_unknown is an error carrying operation_ref",
+        "processing_success_response": false
+      },
+      "query": {
+        "method": "GET",
+        "path": "/admin/v2/operations",
+        "exact_scope": "users.permissions.write",
+        "query_rule": "accept exactly scope=users.permissions.write and no other query parameters",
+        "required_headers": ["Idempotency-Key"],
+        "forbidden_headers": ["X-Action-Ticket"],
+        "original_key_rule": "required exactly once using the original mutation key",
+        "response_status": 200
+      }
+    }
+  },
+  "stable_result": {
+    "exact_keys": ["operation_ref", "target_guid", "resulting_auth_version", "resulting_permissions_version", "resulting_role"],
+    "schema": {
+      "operation_ref": "valid opaque op_ value",
+      "target_guid": "canonical path target GUID string",
+      "resulting_auth_version": "positive INT32 equal to the single committed auth-version advance",
+      "resulting_permissions_version": "positive INT64 equal to the single committed policy-head advance",
+      "resulting_role": "user or admin as fixed by the exact scope"
+    },
+    "role_by_scope": {
+      "users.promote": "admin",
+      "users.demote": "user",
+      "users.permissions.write": "admin"
+    },
+    "storage_and_replay": "store all five fields on the terminal operation and replay those stored values; never project the current user row"
+  },
+  "operation_query": {
+    "statuses": ["processing", "succeeded", "failed", "pending_recovery"],
+    "response_keys": ["operation_ref", "scope", "status", "finished_at", "failure_code", "target_guid", "resulting_auth_version", "resulting_permissions_version", "resulting_role"],
+    "nullable_result_rule": "all four nullable result keys are always present; succeeded uses the stored stable result and processing, failed, and pending_recovery use null for every result key",
+    "state_rules": {
+      "processing": {
+        "finished_at": null,
+        "failure_code": null,
+        "result_keys": "all present and null",
+        "Retry-After": "required integer seconds 1..30"
+      },
+      "succeeded": {
+        "finished_at": "positive Unix milliseconds",
+        "failure_code": null,
+        "result_keys": "all present from stored stable result",
+        "Retry-After": "forbidden"
+      },
+      "failed": {
+        "finished_at": "positive Unix milliseconds",
+        "failure_code": "one operation_failure_codes value",
+        "result_keys": "all present and null",
+        "Retry-After": "forbidden"
+      },
+      "pending_recovery": {
+        "finished_at": null,
+        "failure_code": null,
+        "result_keys": "all present and null",
+        "Retry-After": "forbidden"
+      }
+    },
+    "retry_after": "processing only; integer seconds 1..30",
+    "visibility": "only the originating actor, current originating logical session, exact scope, and original key can query; hidden or unverifiable combinations return 404 and expired or tombstoned results return 410",
+    "refresh": "a succeeded query authorizes one owned target detail and permissions refresh; query never triggers mutation callbacks or consumes begin rate limit"
+  },
+  "errors": {
+    "authentication_401": {
+      "exact_body_keys": ["detail"],
+      "additionalProperties": false,
+      "details": ["未登录", "Token无效或已过期"]
+    },
+    "envelope": {
+      "exact_body_keys": ["error"],
+      "base_error": {
+        "exact_keys": ["code", "message", "type", "request_id"],
+        "additionalProperties": false,
+        "message": "请求无法完成",
+        "type": "admin_action_error"
+      },
+      "operation_commit_unknown_error": {
+        "exact_keys": ["code", "message", "type", "request_id", "operation_ref"],
+        "required": ["code", "message", "type", "request_id", "operation_ref"],
+        "additionalProperties": false,
+        "code": "operation_commit_unknown",
+        "message": "请求无法完成",
+        "type": "admin_action_error",
+        "operation_ref": "required valid opaque op_ value"
+      }
+    },
+    "status_code_allowlist": {
+      "400": ["invalid_admin_action_request"],
+      "403": ["action_verification_rejected", "action_operation_rejected"],
+      "404": ["action_target_not_found", "action_operation_not_found"],
+      "409": ["action_verification_conflict", "idempotency_conflict", "idempotency_cross_session", "action_rejected", "target_version_conflict", "policy_version_conflict", "target_state_conflict", "consumer_validation_failed"],
+      "410": ["operation_expired"],
+      "413": ["request_body_too_large"],
+      "422": ["action_inactive"],
+      "429": ["action_rate_limited"],
+      "503": ["action_dependency_unavailable", "operation_commit_unknown"]
+    },
+    "operation_failure_codes": ["action_rejected", "target_version_conflict", "policy_version_conflict", "target_state_conflict", "consumer_validation_failed"],
+    "header_rules": {
+      "matched": "Cache-Control no-store and nonempty X-Request-ID; admin_action_error request_id equals X-Request-ID",
+      "Retry-After": "required only for action_rate_limited and processing query; forbidden otherwise",
+      "operation_ref": "present only in operation_commit_unknown error"
+    },
+    "prohibited_fields": ["ticket", "idempotency_key", "current_password", "password_material", "HMAC_input", "digest", "dependency_raw_text"]
+  },
+  "frontend_security": {
+    "memory_only": ["current_password", "ticket", "idempotency_key", "unknown_state"],
+    "prohibited_values": ["current_password", "ticket", "idempotency_key", "password_material", "HMAC_input"],
+    "secret_prohibitions": ["responses", "audit_detail", "outbox_payload", "URL", "localStorage", "sessionStorage", "analytics", "ordinary_logs"],
+    "mutation_auto_replay_count": 0,
+    "ownership": "closing or superseding the dialog clears current password, ticket, key, and unknown-state ownership; failed requests retain only nonsecret editor values and normalized reason"
+  },
+  "implementation_boundary": "contract only; no route or consumer is claimed active and no implementation or acceptance is claimed complete"
+}

@@ -12,12 +12,12 @@ import (
 const adminUserUpdateBodyLimit = 64 << 10
 
 var (
-	errInvalidAdminUserUpdateJSON = errors.New("invalid admin user update JSON")
-	errAdminUserUpdateTooLarge    = errors.New("admin user update body too large")
+	errInvalidAdminUserUpdateJSON   = errors.New("invalid admin user update JSON")
+	errAdminUserUpdateTooLarge      = errors.New("admin user update body too large")
+	errAdminUserUpdateStatusRetired = errors.New("admin user update status field is retired")
 )
 
 type adminUserUpdateRequest struct {
-	Status         *string
 	PlanType       *string
 	AllowedModels  *[]string
 	DailyCallLimit *int
@@ -25,6 +25,9 @@ type adminUserUpdateRequest struct {
 
 var adminUserUpdateFields = map[string]struct{}{
 	"status": {}, "plan_type": {}, "allowed_models": {}, "daily_call_limit": {},
+	"role": {}, "auth_version": {}, "expected_auth_version": {},
+	"expected_permissions_version": {}, "permissions_version": {}, "catalog_version": {},
+	"overrides": {}, "action": {}, "reason": {},
 }
 
 // decodeAdminUserUpdate accepts exactly one small JSON object. It scans keys
@@ -77,14 +80,17 @@ func decodeAdminUserUpdate(body io.Reader) (adminUserUpdateRequest, error) {
 		return adminUserUpdateRequest{}, errInvalidAdminUserUpdateJSON
 	}
 
-	request := adminUserUpdateRequest{}
-	if value, ok := raw["status"]; ok && !bytes.Equal(value, []byte("null")) {
-		var parsed string
-		if err := json.Unmarshal(value, &parsed); err != nil {
-			return adminUserUpdateRequest{}, errInvalidAdminUserUpdateJSON
-		}
-		request.Status = &parsed
+	if _, hasStatus := raw["status"]; hasStatus {
+		return adminUserUpdateRequest{}, errAdminUserUpdateStatusRetired
 	}
+	// A07 owns these mutations through dedicated v2 endpoints. Reject even null
+	// or malformed values here, before legacy interpretation can reach storage.
+	for _, retired := range []string{"plan_type", "allowed_models", "daily_call_limit", "role", "auth_version", "expected_auth_version", "expected_permissions_version", "permissions_version", "catalog_version", "overrides", "action", "reason"} {
+		if _, present := raw[retired]; present {
+			return adminUserUpdateRequest{}, errAdminUserUpdateStatusRetired
+		}
+	}
+	request := adminUserUpdateRequest{}
 	if value, ok := raw["plan_type"]; ok && !bytes.Equal(value, []byte("null")) {
 		var parsed string
 		if err := json.Unmarshal(value, &parsed); err != nil {

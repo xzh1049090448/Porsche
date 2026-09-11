@@ -14,11 +14,11 @@ func TestPublicRenderJobTerminalMigrationContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(ms) != 17 || ms[14].Version != "0015" {
+	if len(ms) != 19 || ms[16].Version != "0017" {
 		t.Fatalf("migration tail=%#v", ms)
 	}
-	up := strings.ToLower(string(ms[14].UpSQL))
-	down := strings.ToLower(string(ms[14].DownSQL))
+	up := strings.ToLower(string(ms[16].UpSQL))
+	down := strings.ToLower(string(ms[16].DownSQL))
 	for _, fragment := range []string{"alter table public_render_jobs", "last_terminal_owner_hmac char(64)", "last_terminal_fence int", "last_terminal_operation int", "last_terminal_state int", "chk_public_render_jobs_terminal"} {
 		if !strings.Contains(up, fragment) {
 			t.Errorf("up missing %q", fragment)

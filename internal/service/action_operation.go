@@ -32,13 +32,18 @@ const (
 )
 
 var (
-	ErrActionOperationInactive     = &HTTPError{Status: 422, Message: "admin action unavailable"}
-	ErrActionOperationForbidden    = &HTTPError{Status: 403, Message: "admin action verification rejected"}
-	ErrActionOperationHidden       = &HTTPError{Status: 404, Message: "admin operation unavailable"}
-	ErrActionOperationConflict     = &HTTPError{Status: 409, Message: "idempotency_conflict"}
-	ErrActionOperationCrossSession = &HTTPError{Status: 409, Message: "idempotency_cross_session"}
-	ErrActionOperationExpired      = &HTTPError{Status: 410, Message: "admin operation expired"}
-	ErrActionOperationUnavailable  = &HTTPError{Status: 503, Message: "admin operation unavailable"}
+	ErrActionOperationInactive             = &HTTPError{Status: 422, Message: "admin action unavailable"}
+	ErrActionOperationForbidden            = &HTTPError{Status: 403, Message: "admin action verification rejected"}
+	ErrActionOperationHidden               = &HTTPError{Status: 404, Message: "admin operation unavailable"}
+	ErrActionOperationConflict             = &HTTPError{Status: 409, Message: "idempotency_conflict"}
+	ErrActionOperationCrossSession         = &HTTPError{Status: 409, Message: "idempotency_cross_session"}
+	ErrActionOperationExpired              = &HTTPError{Status: 410, Message: "admin operation expired"}
+	ErrActionOperationUnavailable          = &HTTPError{Status: 503, Message: "admin operation unavailable"}
+	ErrRolePermissionActionRejected        = &HTTPError{Status: 409, Message: "action_rejected"}
+	ErrRolePermissionTargetVersionConflict = &HTTPError{Status: 409, Message: "target_version_conflict"}
+	ErrRolePermissionPolicyVersionConflict = &HTTPError{Status: 409, Message: "policy_version_conflict"}
+	ErrRolePermissionTargetStateConflict   = &HTTPError{Status: 409, Message: "target_state_conflict"}
+	ErrRolePermissionConsumerValidation    = &HTTPError{Status: 409, Message: "consumer_validation_failed"}
 )
 
 type OperationBegin struct {
@@ -143,12 +148,16 @@ func (identity OperationIdentity) MarshalJSON() ([]byte, error) {
 }
 
 type OperationView struct {
-	PublicRef         string
-	Scope             string
-	Status            string
-	FinishedAt        *int64
-	FailureCode       *string
-	RetryAfterSeconds int
+	PublicRef                string
+	Scope                    string
+	Status                   string
+	FinishedAt               *int64
+	FailureCode              *string
+	RetryAfterSeconds        int
+	TargetGUID               *int64
+	ResultAuthVersion        *int
+	ResultPermissionsVersion *int64
+	ResultRole               *models.UserRole
 }
 
 type ActionOperationService struct {
@@ -871,6 +880,9 @@ func operationDescriptorAuthorizationDecision(evaluator *authz.Evaluator, descri
 	case actionsecurity.TargetNone:
 		return evaluator.Resource(descriptor.Capability)
 	case actionsecurity.TargetUser:
+		if isA08RolePermissionAction(descriptor.Action) {
+			return rolePermissionPreauthorizationDecision(evaluator, descriptor, target)
+		}
 		return evaluator.User(descriptor.Capability, actionAccount(target))
 	default:
 		return authz.Denied
@@ -885,7 +897,9 @@ func operationIntentTargetGUID(descriptor actionsecurity.Descriptor, intent any)
 	switch value := intent.(type) {
 	case actionsecurity.ResetPasswordIntent:
 		guid = value.TargetGUID
-	case actionsecurity.RoleIntent:
+	case actionsecurity.PromoteIntent:
+		guid = value.TargetGUID
+	case actionsecurity.DemoteIntent:
 		guid = value.TargetGUID
 	case actionsecurity.PermissionsWriteIntent:
 		guid = value.TargetGUID
@@ -920,7 +934,8 @@ func expireOperation(tx *gorm.DB, operation *models.AdminOperation, actorID, now
 		Where("id = ? AND state = ? AND is_deleted = 0 AND query_expires_at = ? AND query_expires_at <= ?", operation.ID, operation.State, operation.QueryExpiresAt, now).
 		Updates(map[string]any{
 			"state": models.OperationExpired, "is_deleted": 1, "lease_owner_hmac": nil, "lease_expires_at": nil,
-			"error_code": nil, "result_kind": nil, "result_guid": nil, "result_http_status": nil,
+			"error_code": nil, "result_kind": nil, "result_guid": nil, "result_auth_version": nil,
+			"result_permissions_version": nil, "result_role": nil, "result_http_status": nil,
 			"updated_at": now, "updated_by": updatedBy,
 		})
 	if result.Error != nil || result.RowsAffected != 1 {
@@ -936,6 +951,17 @@ func operationView(descriptor actionsecurity.Descriptor, operation models.AdminO
 	if operation.ErrorCode != nil {
 		code := operation.ErrorCode.String()
 		view.FailureCode = &code
+	}
+	if operation.State == models.OperationSucceeded && (descriptor.Action == actionsecurity.ActionUsersResetPassword || isA08RolePermissionAction(descriptor.Action)) {
+		view.TargetGUID = copyInt64(operation.ResultGUID)
+		if operation.ResultAuthVersion != nil {
+			value := *operation.ResultAuthVersion
+			view.ResultAuthVersion = &value
+		}
+		if isA08RolePermissionAction(descriptor.Action) {
+			view.ResultPermissionsVersion = copyInt64(operation.ResultPermissionsVersion)
+			view.ResultRole = copyUserRole(operation.ResultRole)
+		}
 	}
 	if operation.State == models.OperationProcessing {
 		seconds := 1
@@ -985,7 +1011,8 @@ func mapOperationError(err error) error {
 	if err == nil {
 		return nil
 	}
-	for _, known := range []error{ErrActionOperationInactive, ErrActionOperationForbidden, ErrActionOperationHidden, ErrActionOperationConflict, ErrActionOperationCrossSession, ErrActionOperationExpired, ErrActionOperationUnavailable} {
+	for _, known := range []error{ErrActionOperationInactive, ErrActionOperationForbidden, ErrActionOperationHidden, ErrActionOperationConflict, ErrActionOperationCrossSession, ErrActionOperationExpired, ErrActionOperationUnavailable,
+		ErrRolePermissionActionRejected, ErrRolePermissionTargetVersionConflict, ErrRolePermissionPolicyVersionConflict, ErrRolePermissionTargetStateConflict, ErrRolePermissionConsumerValidation} {
 		if errors.Is(err, known) {
 			return known
 		}

@@ -1,0 +1,68 @@
+{
+  "contract": "admin-user-status-v1",
+  "revision": "2026-09-08-a06-v1",
+  "status": "AGREED_FOR_IMPLEMENTATION",
+  "design_source": "docs/superpowers/specs/2026-09-08-a06-managed-user-status-design.md",
+  "endpoint": {
+    "method": "PATCH",
+    "path": "/admin/v2/users/{guid}/status",
+    "path_guid": "canonical positive decimal signed int64 string (1..9223372036854775807), no sign, whitespace, or leading zero",
+    "headers": {
+      "Authorization": "required Bearer authentication under the existing mechanism",
+      "Content-Type": "application/json"
+    },
+    "body_limit_bytes": 4096,
+    "strict_json": "one JSON object; reject duplicate keys, case-folded duplicate keys, invalid UTF-8, trailing values, unknown fields, and oversized bodies before service invocation",
+    "body": {
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["status", "reason", "expected_auth_version"],
+        "properties": {
+          "status": {"type": "string", "enum": ["active", "disabled"]},
+          "reason": {"type": ["string", "null"], "rule": "disabled requires a trimmed 1..200 Unicode code-point string; active requires null"},
+          "expected_auth_version": {"type": "integer", "rule": "positive INT32 (1..2147483647)"}
+        }
+      }
+    },
+    "transitions": {
+      "active_to_disabled": {"capability": "users.disable", "auth_version_delta": 1, "revoke_all_sessions": true},
+      "disabled_to_active": {"capability": "users.enable", "auth_version_delta": 1, "revoke_legacy_active_sessions": true, "restore_sessions": false},
+      "same_state": {"status": 409, "code": "user_status_conflict"}
+    },
+    "response": {
+      "status": 200,
+      "dto": "UserReadDTO",
+      "dto_keys": ["guid", "username", "nickname", "email", "group", "plan_type", "role", "status", "auth_version", "created_at", "last_login_at"],
+      "headers": {"Cache-Control": "no-store", "X-Request-ID": "required non-empty"}
+    },
+    "errors": {
+      "400": ["invalid_admin_user_status_request"],
+      "401": ["authentication_invalid"],
+      "403": ["user_status_forbidden"],
+      "404": ["user_not_found"],
+      "409": ["auth_version_conflict", "user_status_conflict"],
+      "413": ["request_body_too_large"],
+      "503": ["user_status_dependency_unavailable"]
+    },
+    "retry": {"patch": "never", "conflict_refresh_get_max": 1}
+  },
+  "credential_semantics": {
+    "disable": "old Access and Refresh sessions fail; Gateway rejects every Key while owner is disabled",
+    "enable": "any legacy active session is revoked before activation and old sessions remain revoked; independently revoked or expired Keys remain unusable; otherwise Gateway evaluates current owner state and current Key state"
+  },
+  "audit": {
+    "authentication": "credential-free security event",
+    "management": "one same-transaction audit_logs row containing normalized reason only for disable plus target_guid and before_status/after_status",
+    "forbidden": ["password", "token", "cookie", "session_sid", "authorization_header", "transport_error"]
+  },
+  "legacy_put": {
+    "path": "/admin/users/{guid}",
+    "status_field": "retired and rejected before every write, including mixed bodies",
+    "other_fields": "unchanged and outside A06"
+  },
+  "scope": {
+    "included": ["backend", "frontend", "local MySQL 8", "local Redis 7", "visible browser"],
+    "excluded": ["production migration", "deployment", "production acceptance", "real business accounts", "password reset", "role or permission change", "soft delete"]
+  }
+}

@@ -94,9 +94,9 @@ func lockActionIdentity(tx *gorm.DB, actor ActionActor, descriptor actionsecurit
 			return lockedActionIdentity{}, ErrActionVerificationUnavailable
 		}
 	case actionsecurity.TargetPublicContent:
-		if targetGUID != nil && *targetGUID <= 0 {
-			return lockedActionIdentity{}, ErrActionVerificationHidden
-		}
+		// B1-E has no public-content persistence consumer or lockable target
+		// model. Fail closed until that consumer adds its reviewed target lock.
+		return lockedActionIdentity{}, ErrActionVerificationUnavailable
 	default:
 		if targetGUID == nil || *targetGUID <= 0 {
 			return lockedActionIdentity{}, ErrActionVerificationHidden
@@ -124,7 +124,11 @@ func lockActionIdentity(tx *gorm.DB, actor ActionActor, descriptor actionsecurit
 			decision = evaluator.Resource(descriptor.Capability)
 		}
 	case actionsecurity.TargetUser:
-		decision = evaluator.User(descriptor.Capability, actionAccount(target))
+		if isA08RolePermissionAction(descriptor.Action) {
+			decision = rolePermissionPreauthorizationDecision(evaluator, descriptor, target)
+		} else {
+			decision = evaluator.User(descriptor.Capability, actionAccount(target))
+		}
 	case actionsecurity.TargetPublicContent:
 		decision = evaluator.Resource(descriptor.Capability)
 	default:

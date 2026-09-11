@@ -23,8 +23,9 @@ import (
 )
 
 const (
-	userCreateScopeQuery      = "scope=users.create"
-	userCreateAdminScopeQuery = "scope=users.create_admin"
+	userCreateScopeQuery        = "scope=users.create"
+	userCreateAdminScopeQuery   = "scope=users.create_admin"
+	userResetPasswordScopeQuery = "scope=users.reset_password"
 )
 
 var errInvalidAdminUserCreate = errors.New("invalid admin user create request")
@@ -47,6 +48,14 @@ type userManagementActionBundleBackend struct {
 	db     *gorm.DB
 }
 
+type userManagementResetBackend interface {
+	userManagementActionBackend
+	HashResetPassword([]byte) ([]byte, error)
+	NewResetPasswordExecution(actionsecurity.ResetPasswordIntent, []byte, service.ResetPasswordRequestMetadata) (*service.ResetPasswordExecution, error)
+	ExecuteResetPassword(context.Context, *service.OperationIdentity, *service.ResetPasswordExecution) (*service.OperationView, error)
+	ResetPasswordOutcome(context.Context, service.ActionActor, string) (*service.ResetPasswordResult, error)
+}
+
 func (backend userManagementActionBundleBackend) Issue(ctx context.Context, issue service.VerificationIssue) (*service.IssuedVerification, error) {
 	return backend.bundle.Verifications.Issue(ctx, issue)
 }
@@ -60,6 +69,10 @@ func (userManagementActionBundleBackend) ExecutionReady(identity *service.Operat
 }
 
 func (userManagementActionBundleBackend) HashCreatePassword(password []byte) ([]byte, error) {
+	return service.HashManagedCreationPasswordBytes(password)
+}
+
+func (userManagementActionBundleBackend) HashResetPassword(password []byte) ([]byte, error) {
 	return service.HashManagedCreationPasswordBytes(password)
 }
 
@@ -77,6 +90,34 @@ func (backend userManagementActionBundleBackend) NewCreateExecution(action actio
 
 func (backend userManagementActionBundleBackend) ExecuteCreate(ctx context.Context, identity *service.OperationIdentity, execution *service.CreateAccountExecution) (*service.OperationView, error) {
 	return backend.bundle.Operations.Execute(ctx, identity, execution, execution, backend.bundle.CreateOutbox)
+}
+
+func (backend userManagementActionBundleBackend) NewResetPasswordExecution(intent actionsecurity.ResetPasswordIntent, hash []byte, metadata service.ResetPasswordRequestMetadata) (*service.ResetPasswordExecution, error) {
+	return backend.bundle.NewResetExecution(intent, hash, metadata)
+}
+
+func (backend userManagementActionBundleBackend) ExecuteResetPassword(ctx context.Context, identity *service.OperationIdentity, execution *service.ResetPasswordExecution) (*service.OperationView, error) {
+	return backend.bundle.Operations.Execute(ctx, identity, execution, execution, backend.bundle.ResetOutbox)
+}
+
+func (backend userManagementActionBundleBackend) NewPromoteExecution(intent actionsecurity.PromoteIntent) (*service.RolePermissionExecution, error) {
+	return backend.bundle.NewPromoteExecution(intent)
+}
+
+func (backend userManagementActionBundleBackend) NewDemoteExecution(intent actionsecurity.DemoteIntent) (*service.RolePermissionExecution, error) {
+	return backend.bundle.NewDemoteExecution(intent)
+}
+
+func (backend userManagementActionBundleBackend) NewPermissionsWriteExecution(intent actionsecurity.PermissionsWriteIntent) (*service.RolePermissionExecution, error) {
+	return backend.bundle.NewPermissionsWriteExecution(intent)
+}
+
+func (backend userManagementActionBundleBackend) ExecuteRolePermission(ctx context.Context, identity *service.OperationIdentity, execution *service.RolePermissionExecution) (*service.OperationView, error) {
+	return backend.bundle.ExecuteRolePermission(ctx, identity, execution)
+}
+
+func (backend userManagementActionBundleBackend) ResetPasswordOutcome(ctx context.Context, actor service.ActionActor, ref string) (*service.ResetPasswordResult, error) {
+	return backend.bundle.Operations.ResetPasswordResponse(ctx, actor, ref)
 }
 
 func (backend userManagementActionBundleBackend) Query(ctx context.Context, action actionsecurity.Action, actor service.ActionActor, keys []string) (*service.OperationView, error) {
@@ -139,7 +180,7 @@ func (backend userManagementDeleteBackend) Query(ctx context.Context, action act
 }
 
 // RegisterAdminUserManagementActions publishes one route owner only when the
-// create, create-admin, and delete action bundle is complete.
+// complete user-management action bundle is available.
 func RegisterAdminUserManagementActions(r *gin.Engine, state *app.State) {
 	if r == nil || state == nil || state.Settings == nil || !completeUserManagementActionBundle(state.UserManagementActions) {
 		return
@@ -149,14 +190,16 @@ func RegisterAdminUserManagementActions(r *gin.Engine, state *app.State) {
 }
 
 func completeUserManagementActionBundle(bundle *service.UserManagementActions) bool {
-	return bundle != nil && bundle.Verifications != nil && bundle.Operations != nil && bundle.DeleteOutbox != nil && bundle.CreateOutbox != nil &&
-		bundle.NewDeleteExecution != nil && bundle.NewCreateExecution != nil
+	return bundle != nil && bundle.Verifications != nil && bundle.Operations != nil && bundle.DeleteOutbox != nil && bundle.CreateOutbox != nil && bundle.ResetOutbox != nil &&
+		bundle.RolePermissionOutbox != nil && bundle.NewDeleteExecution != nil && bundle.NewCreateExecution != nil && bundle.NewResetExecution != nil &&
+		bundle.NewPromoteExecution != nil && bundle.NewDemoteExecution != nil && bundle.NewPermissionsWriteExecution != nil
 }
 
 func registerAdminUserManagementActionRoutes(group *gin.RouterGroup, backend userManagementActionBackend, settings *config.Settings) {
 	group.POST("/action-verifications", func(c *gin.Context) { issueUserManagementVerification(c, backend, settings) })
 	group.POST("/users", func(c *gin.Context) { executeAdminUserCreate(c, backend, settings) })
-	group.POST("/users/:guid/actions", func(c *gin.Context) { executeUserDelete(c, userManagementDeleteBackend{backend: backend}) })
+	group.POST("/users/:guid/actions", func(c *gin.Context) { executeUserManagementAction(c, backend, settings) })
+	group.PATCH("/users/:guid/permissions", func(c *gin.Context) { executePermissionsWrite(c, backend) })
 	group.GET("/operations", func(c *gin.Context) { queryUserManagementOperation(c, backend) })
 }
 
@@ -167,6 +210,10 @@ func issueUserManagementVerification(c *gin.Context, backend userManagementActio
 	}
 	raw, err := readUserManagementVerificationBody(c.Request.Body)
 	if err != nil {
+		if errors.Is(err, dto.ErrRolePermissionBodyTooLarge) {
+			adminUserActionFixedError(c, http.StatusRequestEntityTooLarge, "request_body_too_large", "")
+			return
+		}
 		adminUserActionError(c, errInvalidAdminUserAction, "")
 		return
 	}
@@ -182,6 +229,10 @@ func issueUserManagementVerification(c *gin.Context, backend userManagementActio
 		issueUserDeleteVerification(c, userManagementDeleteBackend{backend: backend}, settings)
 	case "users.create_admin":
 		issueAdminUserCreateVerification(c, backend, settings, raw)
+	case "users.reset_password":
+		issueAdminUserPasswordResetVerification(c, backend, settings, raw)
+	case "users.promote", "users.demote", "users.permissions.write":
+		issueRolePermissionVerification(c, backend, settings, action, raw)
 	case "public_models.delete", "public_pricing.publish", "public_pricing.restore", "public_content.publish", "public_content.restore":
 		issuePublicAdminVerification(c, backend, settings, raw)
 	default:
@@ -196,15 +247,15 @@ func readUserManagementVerificationBody(body io.Reader) ([]byte, error) {
 	raw, err := io.ReadAll(io.LimitReader(body, dto.AdminUserCreateBodyLimit+1))
 	if err != nil || int64(len(raw)) > dto.AdminUserCreateBodyLimit {
 		clear(raw)
+		if err == nil {
+			return nil, dto.ErrRolePermissionBodyTooLarge
+		}
 		return nil, errInvalidAdminUserAction
 	}
 	return raw, nil
 }
 
 func userManagementVerificationAction(raw []byte) (string, error) {
-	if dto.ValidateNoDuplicateJSON(raw, 64) != nil {
-		return "", errInvalidAdminUserAction
-	}
 	var envelope struct {
 		Action json.RawMessage `json:"action"`
 	}
@@ -251,6 +302,185 @@ func issueAdminUserCreateVerification(c *gin.Context, backend userManagementActi
 		return
 	}
 	c.JSON(http.StatusCreated, dto.UserDeleteIssueResponse{Ticket: issued.Ticket, ExpiresAt: issued.ExpiresAt})
+}
+
+func issueAdminUserPasswordResetVerification(c *gin.Context, backend userManagementActionBackend, settings *config.Settings, raw []byte) {
+	request, err := dto.DecodeAdminUserPasswordResetIssue(bytes.NewReader(raw))
+	if err != nil {
+		adminUserActionDecodeError(c, err)
+		return
+	}
+	defer request.ClearSecrets()
+	intent := actionsecurity.ResetPasswordIntent{TargetGUID: request.TargetGUID, ExpectedAuthVersion: request.ExpectedAuthVersion, NewPassword: append([]byte(nil), request.NewPassword...), Reason: request.Reason}
+	defer clear(intent.NewPassword)
+	current := append([]byte(nil), request.CurrentPassword...)
+	defer clear(current)
+	request.ClearSecrets()
+	trustedIP := ""
+	if settings != nil {
+		trustedIP = httpx.ClientIP(c, settings.TrustProxyHeaders, settings.TrustedProxyCIDRs)
+	}
+	target := intent.TargetGUID
+	issued, err := backend.Issue(c.Request.Context(), service.VerificationIssue{Action: actionsecurity.ActionUsersResetPassword, Actor: adminUserActionActor(c), TargetGUID: &target, Intent: intent, CurrentPassword: current, TrustedIP: trustedIP})
+	if err != nil {
+		adminUserActionError(c, err, "")
+		return
+	}
+	if issued == nil || issued.ExpiresAt <= 0 {
+		adminUserActionError(c, service.ErrActionVerificationUnavailable, "")
+		return
+	}
+	if _, err := actionsecurity.ParseTicket([]string{issued.Ticket}); err != nil {
+		adminUserActionError(c, service.ErrActionVerificationUnavailable, "")
+		return
+	}
+	c.JSON(http.StatusCreated, dto.UserDeleteIssueResponse{Ticket: issued.Ticket, ExpiresAt: issued.ExpiresAt})
+}
+
+func executeUserManagementAction(c *gin.Context, backend userManagementActionBackend, settings *config.Settings) {
+	raw, err := readUserManagementVerificationBody(c.Request.Body)
+	if err != nil {
+		if errors.Is(err, dto.ErrRolePermissionBodyTooLarge) {
+			adminUserActionFixedError(c, http.StatusRequestEntityTooLarge, "request_body_too_large", "")
+			return
+		}
+		adminUserActionError(c, errInvalidAdminUserAction, "")
+		return
+	}
+	defer clear(raw)
+	action, err := userManagementVerificationAction(raw)
+	if err != nil {
+		adminUserActionError(c, errInvalidAdminUserAction, "")
+		return
+	}
+	c.Request.Body = io.NopCloser(bytes.NewReader(raw))
+	switch action {
+	case "delete":
+		executeUserDelete(c, userManagementDeleteBackend{backend: backend})
+	case "reset_password":
+		reset, ok := backend.(userManagementResetBackend)
+		if !ok {
+			adminUserActionError(c, service.ErrActionOperationUnavailable, "")
+			return
+		}
+		executeAdminUserPasswordReset(c, reset, settings)
+	case "promote", "demote":
+		executeRoleChange(c, backend, action)
+	default:
+		adminUserActionFixedError(c, http.StatusUnprocessableEntity, "action_inactive", "")
+	}
+}
+
+func executeAdminUserPasswordReset(c *gin.Context, backend userManagementResetBackend, settings *config.Settings) {
+	guidRaw := c.Param("guid")
+	guid, err := service.ParseAdminPermissionGUID(guidRaw)
+	if err != nil || c.Request.URL.RawQuery != "" || c.Request.URL.RawPath != "" {
+		adminUserActionError(c, errInvalidAdminUserAction, "")
+		return
+	}
+	keys, keyOK := exactHeaderValues(c, "Idempotency-Key")
+	tickets, ticketOK := exactHeaderValues(c, "X-Action-Ticket")
+	if !keyOK || !ticketOK {
+		adminUserActionError(c, errInvalidAdminUserAction, "")
+		return
+	}
+	if _, err := actionsecurity.ParseIdempotencyKey(keys); err != nil {
+		adminUserActionError(c, errInvalidAdminUserAction, "")
+		return
+	}
+	if _, err := actionsecurity.ParseTicket(tickets); err != nil {
+		adminUserActionError(c, errInvalidAdminUserAction, "")
+		return
+	}
+	request, err := dto.DecodeAdminUserPasswordResetExecute(c.Request.Body)
+	if err != nil {
+		adminUserActionDecodeError(c, err)
+		return
+	}
+	defer request.ClearSecrets()
+	intent := actionsecurity.ResetPasswordIntent{TargetGUID: guid, ExpectedAuthVersion: request.ExpectedAuthVersion, NewPassword: append([]byte(nil), request.NewPassword...), Reason: request.Reason}
+	defer clear(intent.NewPassword)
+	actor := adminUserActionActor(c)
+	identity, view, err := backend.Begin(c.Request.Context(), service.OperationBegin{Action: actionsecurity.ActionUsersResetPassword, Actor: actor, IdempotencyKeyValues: keys, TicketValues: tickets, Intent: intent})
+	if err != nil {
+		adminUserActionError(c, err, "")
+		return
+	}
+	if identity == nil || view == nil || identity.PublicRef != view.PublicRef || view.Scope != "users.reset_password" || !validUserDeleteOperationRef(view.PublicRef) {
+		adminUserActionError(c, service.ErrActionOperationUnavailable, "")
+		return
+	}
+	if !backend.ExecutionReady(identity) {
+		writeResetPasswordView(c, backend, actor, view)
+		return
+	}
+	hash, err := backend.HashResetPassword(request.NewPassword)
+	if err != nil || len(hash) == 0 {
+		clear(hash)
+		adminUserActionError(c, errInvalidAdminUserAction, "")
+		return
+	}
+	defer clear(hash)
+	trustedIP := ""
+	if settings != nil {
+		trustedIP = httpx.ClientIP(c, settings.TrustProxyHeaders, settings.TrustedProxyCIDRs)
+	}
+	// Rebuild the execution intent only after Begin returned a fresh lease. The
+	// constructor authenticates the complete plaintext-bearing intent and owns
+	// clearing this sole execution buffer.
+	executionPassword := request.NewPassword
+	intent.NewPassword = executionPassword
+	execution, err := backend.NewResetPasswordExecution(intent, hash, service.ResetPasswordRequestMetadata{RequestID: c.Writer.Header().Get("X-Request-ID"), TrustedIP: trustedIP})
+	clear(executionPassword)
+	request.NewPassword = nil
+	intent.NewPassword = nil
+	clear(hash)
+	if err != nil || execution == nil {
+		adminUserActionError(c, service.ErrActionOperationUnavailable, "")
+		return
+	}
+	defer execution.ClearSecrets()
+	view, err = backend.ExecuteResetPassword(c.Request.Context(), identity, execution)
+	if err != nil {
+		var unknown *service.CommitUnknownError
+		if errors.As(err, &unknown) && unknown != nil {
+			adminUserActionError(c, err, unknown.PublicRef)
+			return
+		}
+		adminUserActionError(c, err, "")
+		return
+	}
+	writeResetPasswordView(c, backend, actor, view)
+}
+
+func writeResetPasswordView(c *gin.Context, backend userManagementResetBackend, actor service.ActionActor, view *service.OperationView) {
+	if view == nil || view.Scope != "users.reset_password" || !validUserDeleteOperationRef(view.PublicRef) {
+		adminUserActionError(c, service.ErrActionOperationUnavailable, "")
+		return
+	}
+	switch view.Status {
+	case "succeeded":
+		if view.FinishedAt == nil || view.FailureCode != nil {
+			adminUserActionError(c, service.ErrActionOperationUnavailable, "")
+			return
+		}
+		result, err := backend.ResetPasswordOutcome(c.Request.Context(), actor, view.PublicRef)
+		if err != nil || result == nil {
+			adminUserActionError(c, service.ErrActionOperationUnavailable, "")
+			return
+		}
+		c.JSON(http.StatusOK, dto.AdminUserPasswordResetResponse{OperationRef: view.PublicRef, TargetGUID: strconv.FormatInt(result.TargetGUID, 10), ResultingAuthVersion: result.ResultingAuthVersion})
+	case "failed":
+		if view.FinishedAt != nil && view.FailureCode != nil {
+			writeAdminUserCreateFailure(c, *view.FailureCode, http.StatusConflict)
+			return
+		}
+		adminUserActionError(c, service.ErrActionOperationUnavailable, "")
+	case "processing", "pending_recovery":
+		adminUserActionFixedError(c, http.StatusServiceUnavailable, "operation_commit_unknown", view.PublicRef)
+	default:
+		adminUserActionError(c, service.ErrActionOperationUnavailable, "")
+	}
 }
 
 func executeAdminUserCreate(c *gin.Context, backend userManagementActionBackend, settings *config.Settings) {
@@ -439,6 +669,14 @@ func queryUserManagementOperation(c *gin.Context, backend userManagementActionBa
 		action = actionsecurity.ActionUsersCreate
 	case userCreateAdminScopeQuery:
 		action = actionsecurity.ActionUsersCreateAdmin
+	case userResetPasswordScopeQuery:
+		action = actionsecurity.ActionUsersResetPassword
+	case userPromoteScopeQuery:
+		action = actionsecurity.ActionUsersPromote
+	case userDemoteScopeQuery:
+		action = actionsecurity.ActionUsersDemote
+	case userPermissionsWriteScopeQuery:
+		action = actionsecurity.ActionUsersPermissionsWrite
 	default:
 		adminUserActionError(c, errInvalidAdminUserAction, "")
 		return
@@ -461,7 +699,12 @@ func queryUserManagementOperation(c *gin.Context, backend userManagementActionBa
 		adminUserActionError(c, err, "")
 		return
 	}
-	if !validManagedOperationQueryView(view, createActionOrDeleteScope(action)) {
+	if isRolePermissionAction(action) {
+		if !validRolePermissionView(view, action) {
+			adminUserActionError(c, service.ErrActionOperationUnavailable, "")
+			return
+		}
+	} else if !validManagedOperationQueryView(view, createActionOrDeleteScope(action)) {
 		adminUserActionError(c, service.ErrActionOperationUnavailable, "")
 		return
 	}
@@ -469,12 +712,37 @@ func queryUserManagementOperation(c *gin.Context, backend userManagementActionBa
 	if view.Status == "processing" {
 		c.Header("Retry-After", strconv.Itoa(view.RetryAfterSeconds))
 	}
+	if action == actionsecurity.ActionUsersResetPassword {
+		var target *string
+		if view.TargetGUID != nil {
+			value := strconv.FormatInt(*view.TargetGUID, 10)
+			target = &value
+		}
+		c.JSON(http.StatusOK, dto.AdminUserPasswordResetQueryResponse{OperationRef: view.PublicRef, Scope: view.Scope, Status: view.Status, FinishedAt: view.FinishedAt, FailureCode: view.FailureCode, TargetGUID: target, ResultingAuthVersion: view.ResultAuthVersion})
+		return
+	}
+	if isRolePermissionAction(action) {
+		writeRolePermissionQuery(c, view, action)
+		return
+	}
 	c.JSON(http.StatusOK, dto.UserDeleteQueryResponse{OperationRef: view.PublicRef, Scope: view.Scope, Status: view.Status, FinishedAt: view.FinishedAt, FailureCode: view.FailureCode})
 }
 
 func createActionOrDeleteScope(action actionsecurity.Action) string {
 	if action == actionsecurity.ActionUsersDelete {
 		return "users.delete"
+	}
+	if action == actionsecurity.ActionUsersResetPassword {
+		return "users.reset_password"
+	}
+	if action == actionsecurity.ActionUsersPromote {
+		return "users.promote"
+	}
+	if action == actionsecurity.ActionUsersDemote {
+		return "users.demote"
+	}
+	if action == actionsecurity.ActionUsersPermissionsWrite {
+		return "users.permissions.write"
 	}
 	return createActionScope(action)
 }
@@ -485,13 +753,16 @@ func validManagedOperationQueryView(view *service.OperationView, scope string) b
 	}
 	switch view.Status {
 	case "processing":
-		return view.RetryAfterSeconds >= 1 && view.RetryAfterSeconds <= 30 && view.FinishedAt == nil && view.FailureCode == nil
+		return view.RetryAfterSeconds >= 1 && view.RetryAfterSeconds <= 30 && view.FinishedAt == nil && view.FailureCode == nil && view.TargetGUID == nil && view.ResultAuthVersion == nil
 	case "succeeded":
-		return view.RetryAfterSeconds == 0 && view.FinishedAt != nil && view.FailureCode == nil
+		if scope == "users.reset_password" {
+			return view.RetryAfterSeconds == 0 && view.FinishedAt != nil && view.FailureCode == nil && view.TargetGUID != nil && *view.TargetGUID > 0 && view.ResultAuthVersion != nil && *view.ResultAuthVersion > 0
+		}
+		return view.RetryAfterSeconds == 0 && view.FinishedAt != nil && view.FailureCode == nil && view.TargetGUID == nil && view.ResultAuthVersion == nil
 	case "failed":
-		return view.RetryAfterSeconds == 0 && view.FinishedAt != nil && safeUserDeleteFailure(view.FailureCode) != ""
+		return view.RetryAfterSeconds == 0 && view.FinishedAt != nil && safeUserDeleteFailure(view.FailureCode) != "" && view.TargetGUID == nil && view.ResultAuthVersion == nil
 	case "pending_recovery":
-		return view.RetryAfterSeconds == 0 && view.FinishedAt == nil && view.FailureCode == nil
+		return view.RetryAfterSeconds == 0 && view.FinishedAt == nil && view.FailureCode == nil && view.TargetGUID == nil && view.ResultAuthVersion == nil
 	default:
 		return false
 	}

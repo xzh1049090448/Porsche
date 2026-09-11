@@ -326,6 +326,16 @@ func adminUserActionError(c *gin.Context, err error, operationRef string) {
 		status, code = http.StatusConflict, "idempotency_conflict"
 	case errors.Is(err, service.ErrActionOperationCrossSession):
 		status, code = http.StatusConflict, "idempotency_cross_session"
+	case errors.Is(err, service.ErrRolePermissionActionRejected):
+		status, code = http.StatusConflict, "action_rejected"
+	case errors.Is(err, service.ErrRolePermissionTargetVersionConflict):
+		status, code = http.StatusConflict, "target_version_conflict"
+	case errors.Is(err, service.ErrRolePermissionPolicyVersionConflict):
+		status, code = http.StatusConflict, "policy_version_conflict"
+	case errors.Is(err, service.ErrRolePermissionTargetStateConflict):
+		status, code = http.StatusConflict, "target_state_conflict"
+	case errors.Is(err, service.ErrRolePermissionConsumerValidation):
+		status, code = http.StatusConflict, "consumer_validation_failed"
 	case errors.Is(err, service.ErrActionOperationExpired):
 		status, code = http.StatusGone, "operation_expired"
 	default:

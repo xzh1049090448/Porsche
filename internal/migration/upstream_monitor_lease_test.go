@@ -14,16 +14,16 @@ func TestUpstreamMonitorLeaseMigrationContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(ms) != 17 || ms[13].Version != "0014" {
+	if len(ms) != 19 || ms[15].Version != "0016" {
 		t.Fatalf("migration tail=%d/%v", len(ms), ms)
 	}
-	up := strings.ToLower(string(ms[13].UpSQL))
+	up := strings.ToLower(string(ms[15].UpSQL))
 	for _, fragment := range []string{"create table if not exists upstream_monitor_leases", "lease_key varchar(64)", "owner_token char(64)", "lease_expires_at bigint", "revision bigint not null default 1", "unique key uk_upstream_monitor_leases_key (lease_key)", "check (lease_expires_at >= 0 and revision > 0 and is_deleted in (0, 1))", "-- porsche:seed-upstream-monitor-lease"} {
 		if !strings.Contains(up, fragment) {
 			t.Errorf("missing %q", fragment)
 		}
 	}
-	if down := strings.ToLower(string(ms[13].DownSQL)); strings.Count(down, "drop table if exists upstream_monitor_leases") != 1 {
+	if down := strings.ToLower(string(ms[15].DownSQL)); strings.Count(down, "drop table if exists upstream_monitor_leases") != 1 {
 		t.Fatal("unsafe/missing down")
 	}
 }

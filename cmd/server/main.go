@@ -36,6 +36,11 @@ func main() {
 	if err != nil {
 		log.Fatalf("init app: %v", err)
 	}
+	defer func() {
+		if err := state.Close(); err != nil {
+			log.Printf("close app state: %v", err)
+		}
+	}()
 	monitorCtx, cancelMonitor := context.WithCancel(processCtx)
 	var monitor monitorRunner
 	if state.UpstreamPriceMonitor != nil {

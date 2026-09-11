@@ -54,7 +54,8 @@ func TestAdminActionVerificationAndAdminOperationSchemaContract(t *testing.T) {
 			"lease_owner_hmac": {"char(64)", false}, "lease_expires_at": {"bigint", false},
 			"finished_at": {"bigint", false}, "query_expires_at": {"bigint", true},
 			"error_code": {"int", false}, "result_kind": {"int", false},
-			"result_guid": {"bigint", false}, "result_http_status": {"int", false},
+			"result_guid": {"bigint", false}, "result_auth_version": {"int", false},
+			"result_permissions_version": {"bigint", false}, "result_role": {"int", false}, "result_http_status": {"int", false},
 		}},
 	}
 
@@ -81,6 +82,18 @@ func TestAdminActionVerificationAndAdminOperationSchemaContract(t *testing.T) {
 				t.Errorf("%s violates persisted model contract: missing %s", parsed.Name, required)
 			}
 		}
+	}
+}
+
+func TestAdminOperationRolePermissionResultTypesAreStable(t *testing.T) {
+	typ := reflect.TypeOf(AdminOperation{})
+	permissions, ok := typ.FieldByName("ResultPermissionsVersion")
+	if !ok || permissions.Type != reflect.TypeOf((*int64)(nil)) {
+		t.Fatalf("ResultPermissionsVersion type = %v, want *int64", permissions.Type)
+	}
+	role, ok := typ.FieldByName("ResultRole")
+	if !ok || role.Type != reflect.TypeOf((*UserRole)(nil)) {
+		t.Fatalf("ResultRole type = %v, want *UserRole", role.Type)
 	}
 }
 

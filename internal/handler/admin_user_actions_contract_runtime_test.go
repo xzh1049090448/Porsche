@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"strconv"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -17,7 +18,37 @@ import (
 	"github.com/porsche/ai-gateway-go/internal/middleware"
 	"github.com/porsche/ai-gateway-go/internal/models"
 	"github.com/porsche/ai-gateway-go/internal/service"
+	"gorm.io/gorm"
 )
+
+func TestA08RuntimeBearerRequestReloadsPermissionDeny(t *testing.T) {
+	state := adminAuthzHTTPState(t)
+	engine := gin.New()
+	RegisterAdminUsersRead(engine, state)
+	actor := adminAuthzHTTPUser(t, state, models.UserRoleAdmin)
+	target := adminAuthzHTTPUser(t, state, models.UserRoleUser)
+	access := platformJWT(t, state, actor)
+	path := "/admin/v2/users/" + strconv.FormatInt(target.Guid, 10)
+	if recorder := adminAuthzRequest(engine, path, access); recorder.Code != http.StatusOK {
+		t.Fatalf("baseline admin request status=%d", recorder.Code)
+	}
+	head := models.PermissionPolicyHead{AuditFields: models.AuditFields{Guid: platformTestSnowflake.Next()}, UserID: actor.ID, PolicyVersion: 1, CatalogVersion: models.PermissionCatalogVersion, RuleCount: 1}
+	capability, ok := models.PermissionCapabilityCode("users.read")
+	if !ok {
+		t.Fatal("users.read missing from catalog")
+	}
+	rule := models.PermissionOverride{AuditFields: models.AuditFields{Guid: platformTestSnowflake.Next()}, UserID: actor.ID, PolicyVersion: 1, Capability: capability, Effect: 3}
+	if err := state.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(&head).Error; err != nil {
+			return err
+		}
+		return tx.Create(&rule).Error
+	}); err != nil {
+		t.Fatal(err)
+	}
+	recorder := adminAuthzRequest(engine, path, access)
+	adminAuthzAssertError(t, recorder, http.StatusForbidden, "无权限访问")
+}
 
 func readAdminActionContract(t *testing.T) map[string]any {
 	t.Helper()

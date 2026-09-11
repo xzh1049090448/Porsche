@@ -199,10 +199,10 @@ func publicContentPricingMigration(t *testing.T) Migration {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(migrations) != 17 || migrations[11].Version != "0012" || migrations[12].Version != "0013" {
+	if len(migrations) != 19 || migrations[13].Version != "0014" || migrations[14].Version != "0015" {
 		t.Fatalf("All() = %#v, want migration 0012 last", migrations)
 	}
-	return migrations[11]
+	return migrations[13]
 }
 
 func tableHasColumn(sql, table, column string) bool {

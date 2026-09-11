@@ -617,12 +617,12 @@ func assertPlatformGenerationReceiptMigrationContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(migrations) != 17 {
+	if len(migrations) != 19 {
 		t.Fatalf("All() returned %d migrations, want 13", len(migrations))
 	}
 	migration := migrations[10]
 	if migration.Version != "0011" {
-		t.Fatalf("All() migration 0011 = %q, want 0011", migration.Version)
+		t.Fatalf("All()[10] is %q, want platform generation migration 0011", migration.Version)
 	}
 	if len(migration.UpSQL) == 0 || len(migration.DownSQL) == 0 {
 		t.Fatalf("0011 has empty SQL: up=%d down=%d", len(migration.UpSQL), len(migration.DownSQL))

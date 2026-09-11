@@ -1,0 +1,28 @@
+{
+  "slice": "A06 managed-user status",
+  "status": "PASS_LIMITED_SCOPE",
+  "code_under_test": {
+    "backend": "08617d400228c224fa2312583fde14f54f7a7686",
+    "frontend": "07c7b9e3caa5fe18bd69be74e71f577577943840"
+  },
+  "contract_sha256": "c3662b25500879d67c6811fa270d4a6a39a44db812c7c493d6f02e535940b415",
+  "verification": {
+    "backend_real_mysql_redis": "PASS",
+    "backend_focused_race": "PASS",
+    "backend_no_fixture_full": "PASS",
+    "backend_build_vet_diff": "PASS",
+    "frontend_full": "364/364 PASS",
+    "frontend_mounted_status_subset": "13/13 PASS",
+    "frontend_production_build": "PASS",
+    "chrome_375_390_overflow": "PASS"
+  },
+  "reviews": {
+    "backend_contract_quality": "PASS",
+    "frontend_contract_quality": "PASS"
+  },
+  "backend_project_manager_written_confirmation": "NOT_OBTAINED",
+  "residuals": [
+    "Rejected management-action audit is outside the frozen A06 contract and remains open.",
+    "Production migration, deployment, production acceptance, and real business accounts are NOT_RUN."
+  ]
+}

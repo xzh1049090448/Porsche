@@ -1,26 +1,56 @@
 # Porsche 开发进度
 
-## 2026-09-11：后台模型配置完整性全局筛选
+## 2026-09-11：公共内容与定价分支同步主分支
 
-- `GET /admin/v2/public-models` 新增严格 `completeness=complete|incomplete`。完整配置要求输入价、输出价、非空价格来源、非空审核人及正数生效时间全部存在；生命周期状态、上游缺失次数和最近检查时间不参与完整性判断。
-- 筛选在数据库 `COUNT` 与分页前执行，组合搜索、状态及上游状态时仍使用同一查询范围；未知、大小写变体、前后空格和重复查询参数稳定返回 400。路由继续位于 Root 中间件后且响应保持 `no-store`。
-- frozen `public-content-pricing-v1` 契约、DTO 契约测试、handler 查询测试和真实 MySQL fixture 测试已同步；26 条模型覆盖五类不完整字段、跨页总数及生命周期/上游状态解耦。显式一次性 MySQL 8.0 完成 0001–0017 迁移与真实筛选测试并精确清理，无 fixture 的 focused/full Go、build、vet、JSON 与 diff 检查也通过。未新增迁移，未 push、部署或访问生产环境。
+- `feature/public-content-pricing` 已语义合并最新 `origin/main`，保留主分支的用户管理、平台生成控制与安全动作能力，同时接入公共内容、公开定价及 Root 管理动作。
+- 主分支已占用迁移 `0012`–`0013`，公共内容与定价迁移顺延为 `0014`–`0019`；迁移校验、动作注册、身份鉴权及应用状态初始化已完成兼容合并。
+- 后端 `go test ./... -count=1` 全量通过；配对前端 681/681 测试及生产构建通过。P08 仍为 `BLOCKED_PRODUCT`，本次未执行生产内容发布、数据库迁移或部署。
 
-## 2026-09-10：公共报价目录契约补全
+## 2026-09-11：BE05 platform single v2 stream 本地候选完成
 
-- 冻结公共报价合同新增 `endpoint_type`、公开展示组、定价类型筛选，以及默认/名称/输入价/输出价的服务端全局排序；分页在过滤和排序后执行。登录可见报价拒绝匿名价格排序，避免通过顺序推断隐藏报价。
-- 公共列表/详情 DTO 新增固定 `token` 定价类型、公开展示组、真实端点类型、公开限制、报价来源、审核人、生效时间和更新时间；价格仍为精确 decimal string，内部模型 ID、上游地址和凭据继续不公开。
-- 0016 将新增展示字段同时保存到可编辑模型配置和不可变价格快照，具备独立 schema verifier。隔离 MySQL 8 已完成 fresh up、0016 down（新增列归零）、reapply 和真实 service focused；全量 Go、build、vet、diff 通过。未执行 push、生产迁移、部署或生产验收。
+- 八个 BE05 真实 MySQL/Redis integration 顶层测试全部通过且零跳过，覆盖新/既有会话、断连后 GET、取消无持久化、续租与 converger、commit-unknown reconcile、duplicate/quota 竞争和失败矩阵；成功图的 receipt/result、精确消息、usage、daily/token、provenance 与 GET 水合均一致，失败图 durable snapshot 不变。
+- loopback-only、read-only、tmpfs、AutoRemove 的 MySQL 8.4.11 / Redis 7.4.11 fixture 在每个主要门禁前 fresh reset 并通过 `0001`–`0013` migration。focused normal/race 各 114 PASS；full 3403 PASS；affected race 2488 PASS；build/vet/diff/privacy 均通过。唯一 skip 是非 BE05 的显式 opt-in `TestAdminUsersReadPerformance`。
+- 两个真实产品失败均保留：续租 activity timestamp 修复为 `027073509225d7d9384d529d7222dbb32ea3772a`，已迁移数据库重跑 verifier 修复为 `d09d493532d1730745599bbc2d50377b6f6447ee`；两条修复链均已分别通过独立 SPEC、SECURITY 与真实 fixture TEST review。
+- 两只 disposable 容器已按完整 ID 精确停止并自动删除，任务标签资源、命名卷/网络及 loopback listener 均为零；私有凭据目录已删除。`go-018` 仍为 `in_progress`：BE01–BE05 本地完成，但 BE06、前后端联合验收、生产迁移/部署、公开 HTTPS、真实上游、push、PR 与 merge 均未运行。完整证据见 `docs/superpowers/reports/2026-09-10-platform-single-stream-v2.md`。
 
-## 2026-09-10：公共内容与定价后端 Task 12 本地集成
+## 2026-09-09：BE04 platform generation control 本地候选完成
 
-- 最终 machine-counted fixture 复跑从 `cbe92b98c03bfdbcf9674e35f60e8b0a88d5d442` 新建第三组唯一 label 的 MySQL 8.0 / Redis 7。保留并校验 `go test -json` 压缩事件流：migration 4 roots、service 85 roots（20个 DB/fixture roots）、handler/security/catalog/renderer 43 roots（1个 real-fixture root）、race 114 roots（21个 DB/fixture roots），四组均 test fail=0、skip=0，package fail=0。`internal/app` 的 no-match 仅单独记录，不计入 fixture pass。raw JSON gzip、机器汇总、迁移账本、SHA-256 与资源 cleanup/preservation 见 r3 manifest。
-- SPEC_FAIL 修复复跑：0012 独立 down 后现在明确要求 dedicated verifier 返回精确 schema error、global verifier 失败，并在 reapply 后要求 dedicated/global verifier 与 active checksum ledger 全部通过；0013–0015 的相同断言逐项复核。新建唯一标签的 disposable MySQL 8.0 / Redis 7 后，四迁移 case 0 skip、focused service/handler/action-security/catalog/renderer 与 focused race 均通过；全量 Go、build、vet、gofmt、diff、JSON 通过。初始 URL 格式、过窄 global-error 断言、未先迁移 parent fixture 以及 cleanup 后诊断复跑的失败均如实保存在 sanitized manifest，不计作通过证据。
-- 在独立工作树从 `3d01a6664d0c3c18176e1f227382c9c874c2a6d4` 开始，使用唯一名称和标签的 disposable MySQL 8.0 / Redis 7；显式测试 URL 仅传给测试命令，未读取 `.env` 或生产凭据。迁移账本为 `0001`–`0015`，0012–0015 均完成独立 down/reapply、精确 schema verifier 与 global verifier。
-- 真实 fixture 暴露并修复了 0015 MySQL CHECK 规范化、0012 对已知 0015 additive schema 的严格兼容、aggregate pricing publish ticket target、同一时钟续租 RowsAffected=0、不可变快照测试写法、fixture 初始化/清理及旧测试迁移总数假设。
-- focused handler/router/actionsecurity/whitelabel/renderer 通过；focused service 的业务组和独立 render-job 组通过且无 skip；`go test -race ./internal/service ./internal/handler -run '(Public|RootAlert|UpstreamPrice)' -count=1`、`go test ./... -count=1`、build、vet 与 diff 检查通过。沙箱内 full 首次仅因禁止监听 `[::1]` 失败，允许 loopback 后原命令通过。
-- P03–P07 仅记为 `PASS_BACKEND_LOCAL`。P08 的 safe-draft/truth gate 已实现并验证，但生产 claims、terms、privacy 与最终内容仍需产品/法务批准，保持 `BLOCKED_PRODUCT`。未执行前端联合、push、merge、生产迁移、部署或生产验收。
+- BE04 production code HEAD 为 `620dcd852222284e0d9c057d1e50ae6d3bb5e0cb`；交付候选为 `c55ca7f52bc92ecfae08411cf0d0b9d50f5bdf10`，其后只增加 test-only uppercase scan fixture stabilization，不改变生产代码。早期 `23820ac` 隔离修复后曾有 `40a195d`、`1f78b81`、`412d790` 三个证据提交；最终生产修复链为 `b114ef5` 中间修复、`9b7e925` 的逐记录损坏容忍与 caller cancellation、`fee9ae4` 的 receipt pre-CAS 精确匹配，以及 `620dcd8` 的 cancel deadline/锁清理。
+- 新候选夹具为 loopback-only、tmpfs MySQL 8.4.11 与 Redis 7.4.11，迁移账本 `0001`–`0011`；一次性 test-only `ACTION_SECURITY_HMAC_KEY` 只存在于测试 shell。原始无 `GOFLAGS` 的 `go test ./... -count=1` 通过（handler 21.606s、migration 50.417s、service 88.195s、router 7.040s）；fresh-reset 后 affected race 通过（service 183.393s、handler 21.594s、app 1.492s、router 4.020s）。三项最终修复的 focused normal/race 与 Task 8 combined normal/race 均通过且 zero skip。
+- full JSON 的唯一 opt-in skip 是 `TestAdminUsersReadPerformance`，原因为 `NOT_RUN: opt-in 100k synthetic-user performance fixture requires this batch authorization`；BE04 fixture 测试为 0 skip。`git diff --check`、`go vet ./...`、`go build ./...`、内容/租约/范围扫描均通过。
+- 历史首次 Task 9 full 曾因共享 Redis DB 的跨包/同包测试串扰成为 `BLOCKED_TEST_ISOLATION`；`23820ac` 将 handler cleanup 改为 owned-key 证明并让 scan 测试使用专属前缀。旧候选的 affected race 第一次尝试未在 full 后 fresh reset，触发 A03 action-security rate limit，分类为 `FAIL_ENV_FIXTURE_NOT_FRESH`；`620dcd8` 的每项主要门禁均使用 fresh reset，历史失败不作为产品失败或 PASS。
+- `99594f58ac6cef064e9e8cb34ef261d62ad330ef` 的 post-doc full 确实以 `FAIL_TEST_FIXTURE_FLAKE` 失败：随机 `%012x` 恰好全为数字，使 `strings.ToUpper` 无变化，合法 UUID 被误列入 uppercase 非法 fixture；该失败未以重跑掩盖。`c55ca7f` 固定加入小写十六进制字母并增加自证测试，相关 focused `-count=100`、race `-count=50` 及两次各自 fresh fixture 的原始 full 均通过。
+- `go-018` 仍为 `in_progress`：BE01–BE04 完成，但 BE05 single v2 stream、BE06 compare v2 stream、前后端联合验收、生产迁移、部署和真实上游调用均未执行；本批也未 push 或 merge。完整证据见 `docs/superpowers/reports/2026-09-09-platform-generation-control.md`。
 
+
+## 2026-09-09：A08 managed-user roles and permissions 本地联合切片限定通过
+
+- A08 从 `BLOCKED_FIXTURE` 提升为 `PASS_LIMITED_SCOPE`。后端代码候选 `f2f976005c2331c0409c1b27da79e3a43d25bcb0`，前端代码候选 `25b073164dc3fccecbf3b74309f12dd7589c024b`，合同 SHA-256 为 `dd202cb5019b10a891e10f03f77629b5f54e993110f148f417e05d089df35698`。
+- 真实 MySQL 8.0.46 / Redis 7.4.11、ledger 0001–0012、migration 0012 down/up、事务原子性、零写冲突、回滚、并发、权限历史、READ COMMITTED、旧 Access/Refresh、Gateway Key 即时策略与 HTTP 重载 11/11 通过。独立安全复审在 `d9896e9` 修复后 PASS。
+- 可见 Chromium 完成提升、权限替换、降级，最终目标为 User、`auth_version=7`、permission version 3、0 活动覆盖；375/390 布局、焦点和 Esc 通过。前端 focused 41/41、full 446/446、生产构建通过。
+- 两个精确命名的临时容器已删除，8000/4176 无监听。26 项现为 15 `PASS_LIMITED_SCOPE` 和 11 项阻塞：9 `BLOCKED_NOT_IMPLEMENTED`、1 `BLOCKED_PRODUCT`、1 `BLOCKED_ENV`；`web-012` 继续 `in_progress`。生产 migration/deploy/acceptance、真实业务账号和外部后端 project_manager 书面确认仍未运行。
+- 完整命令、真实退出码、镜像、数据库终态和 cleanup 见 `docs/superpowers/reports/validation/2026-09-09-a08-managed-user-roles-permissions/backend/manifest.json` 与同目录 `report.md`。
+
+## 2026-09-09：A07 managed-user credentials and entitlements 本地联合切片限定通过
+
+- A07 从 `BLOCKED_NOT_IMPLEMENTED` 提升为 `PASS_LIMITED_SCOPE`。代码候选后端 `a600a0815b5eab5203333755a2466788fe67d61a`、前端 `41648181ab42fb46fe7d45663e746121956b50b8`；canonical evidence commits 后端 `5d5a1e9ee230bcc42fe9fde8d3f9f7badf34b658`、前端 `39b79582110347ae11b95e58217b3afe3236b4f7`；合同 SHA-256 `9e1969b238911b6eee5b6aa85ed364e795a6854f0a026daac5d15e2ab78851be`。
+- 真实 MySQL 8.0.46 / Redis 7.4.11 的密码登录、旧 Access/Refresh、三会话审计、Key 保持、Bearer 套餐额度、并发及 Redis/SQL 回滚，后端全仓/build/vet，前端 395/395、生产构建、375/390 Chrome 与后端/前端/文档独立复审均通过。
+- 26 项当前为 14 `PASS_LIMITED_SCOPE`、10 `BLOCKED_NOT_IMPLEMENTED`、1 `BLOCKED_PRODUCT`、1 `BLOCKED_ENV`，共 12 项阻塞；`web-012` 继续 `in_progress`，phase 为 `joint_acceptance_partial_14_limited_12_blocked`。
+- `go-017` 历史 blocker count 保持 16，新增当前 blocker count 12；代码注册的 active consumer 为 4 项，不表示已部署生产。Gateway Key owner plan/quota 原子重载与消费仍为 `BLOCKED_NOT_IMPLEMENTED`。生产 migration、deploy、production acceptance、真实 business accounts 均 `NOT_RUN`；未获得外部后端 project_manager 书面确认。
+
+## 2026-09-08：A06 managed-user status 本地联合切片限定通过
+
+- A06 从 `BLOCKED_NOT_IMPLEMENTED` 提升为 `PASS_LIMITED_SCOPE`。代码候选后端 `08617d400228c224fa2312583fde14f54f7a7686`、前端 `07c7b9e3caa5fe18bd69be74e71f577577943840`；canonical evidence commits 后端 `1677bc5384aa5968a213d6cae2efe62198b92964`、前端 `b62055245e2dc6d954a545caab2c02ee45fa3d3a`；合同 SHA-256 `c3662b25500879d67c6811fa270d4a6a39a44db812c7c493d6f02e535940b415`。
+- 真实 MySQL/Redis 状态迁移与旧 Access/Refresh/Key 失效、启用不恢复旧会话、focused race、no-fixture full、前端 364/364、真实挂载 13/13、生产构建、375/390 Chrome 布局及双端独立复审均通过。
+- 26 项当前为 13 `PASS_LIMITED_SCOPE`、11 `BLOCKED_NOT_IMPLEMENTED`、1 `BLOCKED_PRODUCT`、1 `BLOCKED_ENV`，共 13 项阻塞；`go-017` 历史 blocker count 保持 16。仅 A06 本次更新。
+- 生产 migration、deploy、production acceptance、真实 business accounts 均 `NOT_RUN`；拒绝管理动作审计仍为后续 PRD 残留，未获得外部后端 project_manager 书面确认。
+
+## 2026-09-08：A05 managed-user nickname edit 本地联合切片限定通过
+
+- A05 从 `BLOCKED_NOT_IMPLEMENTED` 提升为 `PASS_LIMITED_SCOPE`。代码候选为后端 `6bb54007879adeb16a532d792ab471f16ee9100a`、前端 `5a41f5679c1c35e5c2850665db54ae83e58db436`；canonical evidence commits 为后端 `76e0d2f650989ffecd7519b0d042ec2696cd60a8`、前端 `34b23fc8d00771cd03b9072e00ceda40b421c6bd`；随后紧急合并头为后端 `bf53c6a98452f624a6061e9be7317f9f596ea908`、前端 `a93893bc4a8739ba158cf45c6f32779873d9b028`。
+- r5 后端 service 40、DTO/handler/router 71、真实 HTTP 10 项均通过；r10 可见浏览器允许路径、409/迟到 ownership、拒绝路径、22 项 adversarial HTTP、browser/database audit privacy 及 exact cleanup 均通过，残留为 0。
+- 本通过仅覆盖 managed-user nickname string/null PATCH；`auth_version` 不变化，不接入 generic action-ticket routes，不改变 legacy PUT。26 项当前为 12 `PASS_LIMITED_SCOPE`、12 `BLOCKED_NOT_IMPLEMENTED`、1 `BLOCKED_PRODUCT`、1 `BLOCKED_ENV`，共 14 项阻塞；`go-017` blocker count 为 16。
+- A14、金额 Mock 边界及密钥轮换限制保持不变。生产 migration、deploy、production acceptance 和真实 business accounts 均 `NOT_RUN`。
 
 ## 2026-09-08：Ubuntu GNU stat 环境合并兼容性修复候选
 
@@ -38,17 +68,6 @@
 - 本 hotfix 只形成隔离工作树候选并运行本地/fixture 验证；未读取生产 `.env`，未 push、部署、迁移、替换容器、发布静态文件或 reload Nginx。R02 真实生产验收仍为 `BLOCKED_ENV`，须在两端 hotfix 合并并实际部署后记录 revision/image、迁移账本、HTTPS 浏览器检查及回滚证据，才能更新状态。
 
 ## 2026-09-08：A03 创建用户/管理员本地联合切片限定通过
-
-`go-018` 平台聊天自适应逐字流式协议正在隔离工作树中实现。BE01 协议原语已完成本地提交、完整 Go 回归、race 与独立安全复审；BE02 Redis generation registry 按批准的重复请求、compare 消息、配额/成本和 Redis 503 决策进入测试先行开发。未激活 v2 路由，未推送、合并、部署、迁移或调用真实付费上游。`go-004` 仍待真实上游验收。
-
-## 平台聊天 SSE v2（2026-09-07，进行中）
-
-- 前端 FE01-FE03 已在独立 Porsche-Web 工作树完成字符簇播放、严格 SSE v2 解析和 generation 生命周期状态层；完整前端测试与构建通过。
-- 后端 BE01 增加严格 v2 请求投影和 SSE 编码原语；安全返工补齐输入/帧/整数边界、request ID 脱敏、编码器并发串行化，并在真实路由激活前以稳定 JSON 503 拒绝 v2，避免落入 legacy SSE。
-- 已批准：重复 generation 返回 409 + 权威状态且不重连/不二次调用上游；compare 每模型独立 assistant message GUID；取消/失败不扣 daily quota、上游成本另审计；Redis 不可用只影响 v2。
-- BE02 Redis generation registry 已完成：专用命名空间、24 小时 TTL、原子 claim/typed duplicate conflict、严格 seq/terminal、cancel/commit CAS、每模型唯一 assistant message GUID、稳定失败码与严格记录解码；AppState 独立装配且无 Redis 时仅保持 v2 不可用。真实 Redis race、全量 Go、vet、diff 及独立规格/安全复审通过，证据见 `docs/superpowers/reports/2026-09-08-platform-generation-registry.md`。
-- BE03 generation persistence 已完成：0011 仅新增 receipt/result 双表；single/compare 成功交换在一个 MySQL 事务内写入会话、每模型独立消息、usage、quota/token 计数与 durable receipt，精确记录新建/既有会话来源，receipt-aware Redis reconciliation 覆盖 commit-unknown 与 30 秒 stale committing，并将依赖错误稳定脱敏。隔离 MySQL/Redis race 在补足一次性本地 test-only HMAC 前置后无 fixture skip 通过，fresh 全量 Go、vet、diff 与独立规格/实现/安全复审通过，证据见 `docs/superpowers/reports/2026-09-08-platform-generation-persistence.md`。v2 路由仍未激活，生产迁移、部署、push、merge 与真实上游均未执行。
-- 下一阶段仍需单独计划并实现 BE04 generation GET/cancel 与重启调度、BE05 single v2 stream、BE06 compare v2 stream 和前后端联合验收；`go-018` 继续保持 `in_progress`。
 
 - A03 仅本地联合切片由 `BLOCKED_NOT_IMPLEMENTED` 提升为 `PASS_LIMITED_SCOPE`；代码候选为后端 `3a50144e53268f6ef3ae704699ef9fa851e4a5ee`、前端 `9f660a9ca26f5738dd661652596a1e450ff34335`。Admin 仅可按 immutable omitted default 创建普通用户；Root 可创建普通用户/管理员并保存 allow/deny 覆盖。删除后重放返回稳定 410 `created_user_deleted` 且无 PII，`operation_expired` 与之区分。
 - 隔离环境为 MySQL 8.4.11、Redis 7.4，迁移账本 `0001`–`0010`。focused 为 673 terminal/610 leaf、race 为 476 terminal/427 leaf；serial full 为 1912 terminal PASS/1 SKIP、1739 leaf PASS/1 SKIP。唯一 skip 是显式 opt-in 的 `TestAdminUsersReadPerformance` 100k 性能夹具。前端 275/275、可见 Chrome 13/13、build/vet/diff 和三项代码/证据复审均通过。
@@ -471,3 +490,11 @@
 - 初次编辑保留了本地旧 main 的既有修改。用户随后明确要求推送远端 main，因此从 `origin/main` 的 `90abbdc49513039fa9218a6ce72d3147fbf1721e` 创建隔离提交，只收录本次六个说明文件、实施计划和本节记录；不包含遗留文档提交、旧 PRD 或其他无关文件。
 - 最新 main 基线及修改后的 `GOCACHE=/private/tmp/porsche-go-build-cache bash ./init.sh`、`go test ./... -count=1`、`go build ./...`、`go vet ./...`（均使用该 GOCACHE）和 `git diff --check` 验证通过。TOML 校验器确认 5 个文件可解析、非说明设置与 Git 原件一致、34 个代码路径存在、文档链接有效；负向探针拒绝损坏 TOML 和 sandbox 模式变化。
 - 未修改业务代码、数据库规范或业务功能状态；未执行生产操作、读取生产凭据或启动 Agent。语法/静态检查不代表当前会话已重新加载角色，也不代表模型执行行为已验证。计划见 `docs/superpowers/plans/2026-09-02-agent-guidance-refresh.md`。
+
+## 2026-09-10：A09–A12 金额 Mock 隔离与软删除复验
+
+- 当前分支先合入后端 `origin/main@fd243c6`。主分支占用 `0011` 后，本地 A07/A08 迁移顺延为 `0012/0013`，runner、校验和、顺序与测试同步更新；合并提交为 `af6fe2d`。
+- A11 新增 404 路由边界，明确 `users.quota.adjust`、用户 `balance-adjustments` 与直接 `balance` PATCH 未进入生产路由；候选为 `258abb4`。A09/A10 的实现全部位于前端开发专用内存 Mock。
+- 当前后端 `go test ./... -count=1`、`GOCACHE=/tmp/porsche-a09-a12-go-cache go build ./...` 与 focused 路由测试通过；A12 的 authz/dto/handler/router/service 定向回归通过。
+- disposable MySQL 8/Redis 7 补验中，合并后的 `0011–0013` up 与 A08 `0013` down 兼容测试通过。后续完整 A08 service fixture 复跑因一次 host mapping 连接失败未闭环，原 A08 真实服务证据仍单独保留，不把本次结果扩写为完整 service PASS。三次本轮容器均由 trap 精确删除，label 检查零残留。
+- 权威矩阵更新为 18 项 `PASS_LIMITED_SCOPE`、8 项阻塞；A09/A10 只代表开发环境 CNY Mock，真实余额、账本、充值、退款与扣费仍未开发。外部后端 `project_manager` 对当前候选的书面确认、生产迁移、部署及生产验收均未执行。

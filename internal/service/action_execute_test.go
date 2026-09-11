@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"testing"
 
+	"github.com/porsche/ai-gateway-go/internal/actionsecurity"
 	"github.com/porsche/ai-gateway-go/internal/models"
 	"gorm.io/gorm"
 )
@@ -17,6 +19,78 @@ type actionExecuteStub struct {
 	outcome TerminalOutcome
 	err     error
 	calls   int
+}
+
+func TestActionExecuteA08OutcomeValidation(t *testing.T) {
+	guid := int64(44)
+	authVersion := math.MaxInt32
+	permissionsVersion := int64(9)
+	admin := models.UserRoleAdmin
+	user := models.UserRoleUser
+	failure := models.FailureActionRejected
+
+	valid := []struct {
+		name   string
+		action actionsecurity.Action
+		role   *models.UserRole
+	}{
+		{"promote", actionsecurity.ActionUsersPromote, &admin},
+		{"demote", actionsecurity.ActionUsersDemote, &user},
+		{"permissions", actionsecurity.ActionUsersPermissionsWrite, &admin},
+	}
+	for _, tc := range valid {
+		t.Run(tc.name, func(t *testing.T) {
+			outcome := TerminalOutcome{ResultKind: models.ResultUser, ResultGUID: &guid, ResultAuthVersion: &authVersion, ResultPermissionsVersion: &permissionsVersion, ResultRole: tc.role, HTTPStatus: 200}
+			if err := validateTerminalOutcomeForAction(tc.action, outcome); err != nil {
+				t.Fatalf("valid A08 outcome rejected: %v", err)
+			}
+		})
+	}
+
+	root := models.UserRoleRoot
+	zero64 := int64(0)
+	overflowAuth := math.MaxInt32 + 1
+	for _, tc := range []struct {
+		name    string
+		action  actionsecurity.Action
+		outcome TerminalOutcome
+	}{
+		{"partial permissions", actionsecurity.ActionUsersPromote, TerminalOutcome{ResultKind: models.ResultUser, ResultGUID: &guid, ResultAuthVersion: &authVersion, ResultPermissionsVersion: &permissionsVersion, HTTPStatus: 200}},
+		{"partial role", actionsecurity.ActionUsersPromote, TerminalOutcome{ResultKind: models.ResultUser, ResultGUID: &guid, ResultAuthVersion: &authVersion, ResultRole: &admin, HTTPStatus: 200}},
+		{"auth overflow", actionsecurity.ActionUsersPromote, TerminalOutcome{ResultKind: models.ResultUser, ResultGUID: &guid, ResultAuthVersion: &overflowAuth, ResultPermissionsVersion: &permissionsVersion, ResultRole: &admin, HTTPStatus: 200}},
+		{"permissions zero", actionsecurity.ActionUsersPromote, TerminalOutcome{ResultKind: models.ResultUser, ResultGUID: &guid, ResultAuthVersion: &authVersion, ResultPermissionsVersion: &zero64, ResultRole: &admin, HTTPStatus: 200}},
+		{"root role", actionsecurity.ActionUsersPromote, TerminalOutcome{ResultKind: models.ResultUser, ResultGUID: &guid, ResultAuthVersion: &authVersion, ResultPermissionsVersion: &permissionsVersion, ResultRole: &root, HTTPStatus: 200}},
+		{"legacy action", actionsecurity.ActionUsersResetPassword, TerminalOutcome{ResultKind: models.ResultUser, ResultGUID: &guid, ResultAuthVersion: &authVersion, ResultPermissionsVersion: &permissionsVersion, ResultRole: &admin, HTTPStatus: 200}},
+		{"result none", actionsecurity.ActionUsersPromote, TerminalOutcome{ResultKind: models.ResultNone, ResultAuthVersion: &authVersion, ResultPermissionsVersion: &permissionsVersion, ResultRole: &admin, HTTPStatus: 204}},
+		{"failure", actionsecurity.ActionUsersPromote, TerminalOutcome{Failure: &failure, ResultPermissionsVersion: &permissionsVersion, ResultRole: &admin, HTTPStatus: 409}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := validateTerminalOutcomeForAction(tc.action, tc.outcome); err == nil {
+				t.Fatal("invalid role/permission outcome accepted")
+			}
+		})
+	}
+}
+
+func TestActionExecuteRolePermissionResultPreservesLegacyOutcomeShapes(t *testing.T) {
+	guid := int64(44)
+	authVersion := 5
+	for _, tc := range []struct {
+		name    string
+		action  actionsecurity.Action
+		outcome TerminalOutcome
+	}{
+		{"reset user result", actionsecurity.ActionUsersResetPassword, TerminalOutcome{ResultKind: models.ResultUser, ResultGUID: &guid, ResultAuthVersion: &authVersion, HTTPStatus: 200}},
+		{"create user result", actionsecurity.ActionUsersCreate, TerminalOutcome{ResultKind: models.ResultUser, ResultGUID: &guid, HTTPStatus: 201}},
+		{"delete none result", actionsecurity.ActionUsersDelete, TerminalOutcome{ResultKind: models.ResultNone, HTTPStatus: 204}},
+		{"public content result", actionsecurity.ActionPublicContentPublish, TerminalOutcome{ResultKind: models.ResultPublicContent, ResultGUID: &guid, HTTPStatus: 201}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := validateTerminalOutcomeForAction(tc.action, tc.outcome); err != nil {
+				t.Fatalf("legacy outcome rejected: %v", err)
+			}
+		})
+	}
 }
 
 func (stub *actionExecuteStub) Execute(_ context.Context, _ *gorm.DB, _ models.AdminOperation) (TerminalOutcome, error) {

@@ -23,6 +23,16 @@
     "backend_route_exists": true,
     "frontend_client_exists": false
   },
+  "future_a05_user_nickname_edit": {
+    "contract_path": "docs/agents/contracts/admin-user-edit-v1.json",
+    "status": "AGREED_FOR_IMPLEMENTATION",
+    "implementation": "pending; this frozen contract does not register a route or activate a consumer",
+    "method": "PATCH",
+    "path": "/admin/v2/users/{guid}",
+    "capability": "users.edit",
+    "mutation_retry": "never",
+    "legacy_put": "excluded"
+  },
   "v2_user_read": {
     "locations": [
       "admin_users_list.items[].auth_version",

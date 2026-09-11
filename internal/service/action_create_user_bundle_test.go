@@ -30,28 +30,30 @@ func TestNewCreateAccountActionsBuildsOneCoherentUserManagementBundle(t *testing
 	if !completeUserManagementActions(bundle) {
 		t.Fatalf("incomplete user-management bundle: %#v", bundle)
 	}
+	if bundle.RolePermissionOutbox == nil || bundle.NewPromoteExecution == nil || bundle.NewDemoteExecution == nil || bundle.NewPermissionsWriteExecution == nil {
+		t.Fatal("A08 factories and writer are missing from complete bundle")
+	}
 	if bundle.Verifications.redis != bundle.Operations.limiter || bundle.Verifications.redis.client != client ||
 		bundle.Verifications.authRedis != authRedis || bundle.Operations.authRedis != authRedis ||
 		bundle.Verifications.crypto != crypto || bundle.Operations.crypto != crypto || bundle.Verifications.redis.crypto != crypto {
 		t.Fatal("verification and operation services do not share one Redis/client/crypto set")
 	}
-	if bundle.Verifications.clock != clock || bundle.Operations.clock != clock || bundle.DeleteOutbox.clock != clock || bundle.CreateOutbox.clock != clock ||
+	if bundle.Verifications.clock != clock || bundle.Operations.clock != clock || bundle.DeleteOutbox.clock != clock || bundle.CreateOutbox.clock != clock || bundle.ResetOutbox.clock != clock || bundle.RolePermissionOutbox.clock != clock ||
 		bundle.Verifications.random != random || bundle.Operations.random != random ||
 		reflect.ValueOf(bundle.Verifications.nextGUID).Pointer() != reflect.ValueOf(nextGUID).Pointer() ||
 		reflect.ValueOf(bundle.Operations.nextGUID).Pointer() != reflect.ValueOf(nextGUID).Pointer() ||
 		reflect.ValueOf(bundle.DeleteOutbox.nextGUID).Pointer() != reflect.ValueOf(nextGUID).Pointer() ||
-		reflect.ValueOf(bundle.CreateOutbox.nextGUID).Pointer() != reflect.ValueOf(nextGUID).Pointer() {
+		reflect.ValueOf(bundle.CreateOutbox.nextGUID).Pointer() != reflect.ValueOf(nextGUID).Pointer() ||
+		reflect.ValueOf(bundle.ResetOutbox.nextGUID).Pointer() != reflect.ValueOf(nextGUID).Pointer() ||
+		reflect.ValueOf(bundle.RolePermissionOutbox.nextGUID).Pointer() != reflect.ValueOf(nextGUID).Pointer() {
 		t.Fatal("bundle did not retain one reviewed persistence dependency set")
 	}
 	for _, resolver := range []func(actionsecurity.Action) (actionsecurity.Descriptor, bool){bundle.Verifications.resolve, bundle.Operations.resolve} {
-		for _, action := range []actionsecurity.Action{actionsecurity.ActionUsersCreate, actionsecurity.ActionUsersCreateAdmin, actionsecurity.ActionUsersDelete} {
+		for _, action := range []actionsecurity.Action{actionsecurity.ActionUsersCreate, actionsecurity.ActionUsersCreateAdmin, actionsecurity.ActionUsersDelete, actionsecurity.ActionUsersResetPassword, actionsecurity.ActionUsersPromote, actionsecurity.ActionUsersDemote, actionsecurity.ActionUsersPermissionsWrite} {
 			descriptor, ok := resolver(action)
 			if !ok || descriptor.Action != action || !descriptor.Active {
 				t.Fatalf("private resolver rejected action %d: %#v, %v", action, descriptor, ok)
 			}
-		}
-		if _, ok := resolver(actionsecurity.ActionUsersResetPassword); ok {
-			t.Fatal("private resolver exposed an action outside the complete user-management bundle")
 		}
 	}
 	deleteView := bundle.DeleteActions()
@@ -92,6 +94,26 @@ func TestCreateAccountActionsFactoriesStayBoundToReviewedDescriptors(t *testing.
 	}
 	if execution, err := bundle.NewCreateExecution(actionsecurity.ActionUsersDelete, actionsecurity.CreateAccountIntent{}, []byte(createAccountTestPasswordHash), CreateAccountRequestMetadata{}); execution != nil || !errors.Is(err, ErrActionOperationUnavailable) {
 		t.Fatalf("wrong create descriptor execution/error = %#v/%v", execution, err)
+	}
+	rolePermissionCases := []struct {
+		action actionsecurity.Action
+		new    func() (*RolePermissionExecution, error)
+	}{
+		{actionsecurity.ActionUsersPromote, func() (*RolePermissionExecution, error) {
+			return bundle.NewPromoteExecution(actionsecurity.PromoteIntent{TargetGUID: 91, ExpectedAuthVersion: 7, CatalogVersion: 1, Overrides: []actionsecurity.PermissionOverrideIntent{}, Reason: "promotion"})
+		}},
+		{actionsecurity.ActionUsersDemote, func() (*RolePermissionExecution, error) {
+			return bundle.NewDemoteExecution(actionsecurity.DemoteIntent{TargetGUID: 91, ExpectedAuthVersion: 7, ExpectedPermissionsVersion: 2, CatalogVersion: 1, Reason: "demotion"})
+		}},
+		{actionsecurity.ActionUsersPermissionsWrite, func() (*RolePermissionExecution, error) {
+			return bundle.NewPermissionsWriteExecution(actionsecurity.PermissionsWriteIntent{TargetGUID: 91, ExpectedAuthVersion: 7, ExpectedPermissionsVersion: 2, CatalogVersion: 1, Overrides: []actionsecurity.PermissionOverrideIntent{}, Reason: "replacement"})
+		}},
+	}
+	for _, test := range rolePermissionCases {
+		execution, err := test.new()
+		if err != nil || execution == nil || execution.descriptor.Action != test.action || !execution.descriptor.Active || execution.clock != clock {
+			t.Fatalf("role permission action %d execution/error = %#v/%v", test.action, execution, err)
+		}
 	}
 }
 
@@ -151,16 +173,13 @@ func TestNewCreateAccountActionsRejectsRegistryOrderMetadataAndEncoderDrift(t *t
 	}{
 		{name: "empty", registry: func() []actionsecurity.Descriptor { return nil }},
 		{name: "missing", registry: func() []actionsecurity.Descriptor { return append([]actionsecurity.Descriptor(nil), valid[:2]...) }},
-		{name: "extra", registry: func() []actionsecurity.Descriptor {
-			return append(append([]actionsecurity.Descriptor(nil), valid...), valid[2])
-		}},
 		{name: "order", registry: func() []actionsecurity.Descriptor { return []actionsecurity.Descriptor{valid[1], valid[0], valid[2]} }},
 	}
 	mutations := []struct {
 		name   string
 		mutate func(*actionsecurity.Descriptor)
 	}{
-		{name: "action", mutate: func(d *actionsecurity.Descriptor) { d.Action = actionsecurity.ActionUsersResetPassword }},
+		{name: "action", mutate: func(d *actionsecurity.Descriptor) { d.Action = actionsecurity.ActionPublicContentPublish }},
 		{name: "name", mutate: func(d *actionsecurity.Descriptor) { d.Name += ".changed" }},
 		{name: "capability", mutate: func(d *actionsecurity.Descriptor) { d.Capability = "users.edit" }},
 		{name: "root only", mutate: func(d *actionsecurity.Descriptor) { d.RootOnly = !d.RootOnly }},
@@ -178,7 +197,7 @@ func TestNewCreateAccountActionsRejectsRegistryOrderMetadataAndEncoderDrift(t *t
 			d.Encode = func(any) ([]byte, error) { return []byte("wrong"), nil }
 		}},
 	}
-	for descriptorIndex := range valid {
+	for descriptorIndex := range actionsecurity.FutureActionDescriptors() {
 		for _, mutation := range mutations {
 			descriptorIndex, mutation := descriptorIndex, mutation
 			tests = append(tests, struct {

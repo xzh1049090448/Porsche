@@ -2,6 +2,7 @@ package migration
 
 import (
 	"context"
+	"errors"
 	"net/url"
 	"os"
 	"strings"
@@ -12,6 +13,106 @@ import (
 	"github.com/porsche/ai-gateway-go/internal/persistence"
 	"gorm.io/gorm"
 )
+
+func TestUpRerunUsesActiveAdminOperationSchemaVersionAndRejectsDrift(t *testing.T) {
+	runUp := func(gdb *gorm.DB) error {
+		nextGUID := int64(9_130_000_000_000_000)
+		return Up(context.Background(), gdb, func() int64 {
+			nextGUID++
+			return nextGUID
+		}, func() int64 { return 1_900_000_000_000 })
+	}
+
+	t.Run("fully applied 0013 reruns", func(t *testing.T) {
+		gdb := permissionSchemaDB(t)
+		if err := runUp(gdb); err != nil {
+			t.Fatalf("first Up: %v", err)
+		}
+		if err := runUp(gdb); err != nil {
+			t.Fatalf("second Up on valid 0013 schema: %v", err)
+		}
+	})
+
+	t.Run("0013 drift fails with current schema verifier", func(t *testing.T) {
+		gdb := permissionSchemaDB(t)
+		if err := runUp(gdb); err != nil {
+			t.Fatalf("first Up: %v", err)
+		}
+		if err := gdb.Exec("ALTER TABLE admin_operations DROP CHECK chk_admin_operations_result_role_permission").Error; err != nil {
+			t.Fatalf("introduce owned 0013 drift: %v", err)
+		}
+		if err := runUp(gdb); !errors.Is(err, ErrAdminOperationRolePermissionResultsSchema) {
+			t.Fatalf("rerun error = %v, want %v", err, ErrAdminOperationRolePermissionResultsSchema)
+		}
+	})
+
+	t.Run("0012 drift still fails closed", func(t *testing.T) {
+		gdb := permissionSchemaDB(t)
+		if err := runUp(gdb); err != nil {
+			t.Fatalf("first Up: %v", err)
+		}
+		migrations, err := All()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := executeAdminOperationSafetyFixtureSQL(gdb, migrations[12].DownSQL); err != nil {
+			t.Fatalf("return owned fixture to valid 0012 schema: %v", err)
+		}
+		if err := gdb.Exec("UPDATE schema_migrations SET is_deleted=1 WHERE version='0013' AND is_deleted=0").Error; err != nil {
+			t.Fatalf("deactivate owned 0013 ledger: %v", err)
+		}
+		if err := gdb.Exec("ALTER TABLE admin_operations DROP CHECK chk_admin_operations_result_auth_version").Error; err != nil {
+			t.Fatalf("introduce owned 0012 drift: %v", err)
+		}
+		if err := runUp(gdb); !errors.Is(err, ErrAdminOperationSafetySchema) {
+			t.Fatalf("rerun error = %v, want %v", err, ErrAdminOperationSafetySchema)
+		}
+	})
+}
+
+func TestAdminOperationVerifierVersionUsesHighestActiveSchema(t *testing.T) {
+	tests := []struct {
+		name             string
+		migrationVersion string
+		applied          map[string]AppliedMigration
+		want             string
+	}{
+		{
+			name:             "0012 remains exact before 0013 is active",
+			migrationVersion: "0012",
+			applied:          map[string]AppliedMigration{"0012": {Version: "0012"}},
+			want:             "0012",
+		},
+		{
+			name:             "0012 uses exact 0013 shape after extension is active",
+			migrationVersion: "0012",
+			applied: map[string]AppliedMigration{
+				"0012": {Version: "0012"},
+				"0013": {Version: "0013"},
+			},
+			want: "0013",
+		},
+		{
+			name:             "0013 verifies its own exact shape",
+			migrationVersion: "0013",
+			applied:          map[string]AppliedMigration{"0013": {Version: "0013"}},
+			want:             "0013",
+		},
+		{
+			name:             "unrelated migration has no admin operation verifier",
+			migrationVersion: "0011",
+			applied:          map[string]AppliedMigration{"0013": {Version: "0013"}},
+			want:             "",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := adminOperationVerifierVersion(tt.migrationVersion, tt.applied); got != tt.want {
+				t.Fatalf("adminOperationVerifierVersion(%q) = %q, want %q", tt.migrationVersion, got, tt.want)
+			}
+		})
+	}
+}
 
 func TestEmbeddedMigrationsContainOneWayInitialSchema(t *testing.T) {
 	migrations, err := All()
@@ -156,7 +257,7 @@ func TestAdminUsersReadCountIndexMigrationContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(migrations) != 17 || migrations[3].Version != "0004" || migrations[5].Version != "0006" || migrations[6].Version != "0007" || migrations[7].Version != "0008" || migrations[8].Version != "0009" || migrations[9].Version != "0010" || migrations[10].Version != "0011" || migrations[11].Version != "0012" || migrations[12].Version != "0013" {
+	if len(migrations) != 19 || migrations[3].Version != "0004" || migrations[5].Version != "0006" || migrations[6].Version != "0007" || migrations[7].Version != "0008" || migrations[8].Version != "0009" || migrations[9].Version != "0010" {
 		t.Fatalf("admin users count migration 0004 is missing: %#v", migrations)
 	}
 	up := strings.ToLower(string(migrations[3].UpSQL))
@@ -181,7 +282,7 @@ func TestAuthCoreMigrationContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(migrations) != 17 || migrations[1].Version != "0002" || migrations[2].Version != "0003" || migrations[3].Version != "0004" || migrations[5].Version != "0006" || migrations[6].Version != "0007" || migrations[7].Version != "0008" || migrations[8].Version != "0009" || migrations[9].Version != "0010" || migrations[10].Version != "0011" || migrations[11].Version != "0012" || migrations[12].Version != "0013" {
+	if len(migrations) != 19 || migrations[1].Version != "0002" || migrations[2].Version != "0003" || migrations[3].Version != "0004" || migrations[5].Version != "0006" || migrations[6].Version != "0007" || migrations[7].Version != "0008" || migrations[8].Version != "0009" || migrations[9].Version != "0010" {
 		t.Fatalf("auth migration 0002 is missing: %#v", migrations)
 	}
 

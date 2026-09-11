@@ -36,17 +36,8 @@ var inactiveActionOrder = [...]Action{
 	ActionPublicContentRestore,
 }
 
-var futureActionOrder = [...]Action{ActionUsersCreate, ActionUsersCreateAdmin, ActionUsersDelete}
-var activeActionOrder = [...]Action{
-	ActionUsersCreate,
-	ActionUsersCreateAdmin,
-	ActionUsersDelete,
-	ActionPublicModelDelete,
-	ActionPublicPricingPublish,
-	ActionPublicPricingRestore,
-	ActionPublicContentPublish,
-	ActionPublicContentRestore,
-}
+var futureActionOrder = [...]Action{ActionUsersCreate, ActionUsersCreateAdmin, ActionUsersDelete, ActionUsersResetPassword, ActionUsersPromote, ActionUsersDemote, ActionUsersPermissionsWrite}
+var activeActionOrder = [...]Action{ActionUsersCreate, ActionUsersCreateAdmin, ActionUsersDelete, ActionUsersResetPassword, ActionUsersPromote, ActionUsersDemote, ActionUsersPermissionsWrite, ActionPublicModelDelete, ActionPublicPricingPublish, ActionPublicPricingRestore, ActionPublicContentPublish, ActionPublicContentRestore}
 
 func InactiveActionDescriptors() []Descriptor {
 	return projectActionDescriptors(inactiveActionOrder[:], nil)
@@ -125,18 +116,18 @@ func encodeResetPasswordAny(value any) ([]byte, error) {
 	return encodeResetPasswordIntent(intent)
 }
 func encodePromoteAny(value any) ([]byte, error) {
-	intent, ok := value.(RoleIntent)
+	intent, ok := value.(PromoteIntent)
 	if !ok {
 		return nil, errWrongIntentType
 	}
-	return encodeRoleIntent(intent, "admin")
+	return encodePromoteIntent(intent)
 }
 func encodeDemoteAny(value any) ([]byte, error) {
-	intent, ok := value.(RoleIntent)
+	intent, ok := value.(DemoteIntent)
 	if !ok {
 		return nil, errWrongIntentType
 	}
-	return encodeRoleIntent(intent, "user")
+	return encodeDemoteIntent(intent)
 }
 func encodePermissionsWriteAny(value any) ([]byte, error) {
 	intent, ok := value.(PermissionsWriteIntent)

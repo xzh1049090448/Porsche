@@ -8,9 +8,17 @@ import (
 	"errors"
 	"io"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/porsche/ai-gateway-go/internal/diagnostics"
 )
+
+const (
+	platformChatSSEMaxLineBytes  = 1 << 20
+	platformChatSSEMaxEventBytes = 1 << 20
+)
+
+var errPlatformChatSSELimit = errors.New("platform chat SSE size limit exceeded")
 
 // ProjectChatCompletionSSE consumes upstream SSE frames and invokes emit with
 // client-safe OpenAI data frames only. Upstream SSE fields are never retained.
@@ -20,18 +28,64 @@ func (s *WhiteLabelService) ProjectChatCompletionSSE(reader io.Reader, logicalMo
 
 // ProjectChatCompletionSSEContext retains the public projection contract and records fixed diagnostics when present.
 func (s *WhiteLabelService) ProjectChatCompletionSSEContext(ctx context.Context, reader io.Reader, logicalModelID string, emit func([]byte) error) *Error {
+	return s.consumeChatCompletionSSEContext(ctx, reader, logicalModelID, func(chunk ChatCompletionChunk) error {
+		encoded, err := json.Marshal(chunk)
+		if err != nil {
+			return err
+		}
+		frame := append([]byte("data: "), encoded...)
+		frame = append(frame, '\n', '\n')
+		return emit(frame)
+	}, func() error {
+		return emit([]byte("data: [DONE]\n\n"))
+	})
+}
+
+// ConsumeChatCompletionSSEContext consumes upstream SSE frames and invokes emit
+// with each client-safe projected chunk. The exact [DONE] frame terminates the
+// stream but is not exposed as a synthetic chunk.
+func (s *WhiteLabelService) ConsumeChatCompletionSSEContext(ctx context.Context, reader io.Reader, logicalModelID string, emit func(ChatCompletionChunk) error) *Error {
+	return s.consumeChatCompletionSSEContext(ctx, reader, logicalModelID, emit, nil)
+}
+
+func (s *WhiteLabelService) consumeChatCompletionSSEContext(
+	ctx context.Context,
+	reader io.Reader,
+	logicalModelID string,
+	emitChunk func(ChatCompletionChunk) error,
+	emitDone func() error,
+) *Error {
 	end := diagnostics.From(ctx).Begin(diagnostics.Stream)
 	fail := func(reason diagnostics.Reason, detail string) *Error {
 		end(reason)
 		return ErrUpstreamUnavailable(detail)
+	}
+	contextFailure := func() *Error {
+		if err := ctx.Err(); err != nil {
+			return fail(diagnostics.NetworkReason(err), "stream read failed")
+		}
+		return nil
 	}
 	if !validModelID(logicalModelID) {
 		return fail(diagnostics.Invalid, "invalid logical model")
 	}
 	buffered := bufio.NewReader(reader)
 	var dataLines []string
+	dataBytes := 0
 	for {
-		line, err := buffered.ReadString('\n')
+		if failure := contextFailure(); failure != nil {
+			return failure
+		}
+		line, err := readPlatformChatSSELine(buffered)
+		if failure := contextFailure(); failure != nil {
+			return failure
+		}
+		if errors.Is(err, errPlatformChatSSELimit) {
+			if trace := diagnostics.From(ctx); trace != nil {
+				trace.MalformedChunk(diagnostics.ChunkInvalidShape, diagnostics.ChunkRoot, nil)
+			}
+			return fail(diagnostics.Malformed, "malformed chat completion chunk")
+		}
 		if err != nil && err != io.EOF {
 			reason := diagnostics.NetworkReason(err)
 			if reason == diagnostics.Network {
@@ -42,39 +96,50 @@ func (s *WhiteLabelService) ProjectChatCompletionSSEContext(ctx context.Context,
 			}
 			return fail(reason, "stream read failed")
 		}
-		if len(line) > 0 {
+		if len(line) > 0 || err == nil {
 			line = strings.TrimSuffix(line, "\n")
 			line = strings.TrimSuffix(line, "\r")
 			if line == "" {
 				if len(dataLines) > 0 {
 					payload := strings.Join(dataLines, "\n")
 					dataLines = nil
+					dataBytes = 0
 					if payload == "[DONE]" {
-						if emitErr := emit([]byte("data: [DONE]\n\n")); emitErr != nil {
-							reason := diagnostics.Write
-							if ctx.Err() != nil {
-								reason = diagnostics.NetworkReason(ctx.Err())
+						if failure := contextFailure(); failure != nil {
+							return failure
+						}
+						if emitDone != nil {
+							if emitErr := emitDone(); emitErr != nil {
+								reason := diagnostics.Write
+								if ctx.Err() != nil {
+									reason = diagnostics.NetworkReason(ctx.Err())
+								}
+								return fail(reason, "stream write failed")
 							}
-							return fail(reason, "stream write failed")
 						}
 						end(diagnostics.OK)
 						return nil
 					} else {
-						projected, failure := projectChatCompletionChunkDetail([]byte(payload), logicalModelID)
+						payloadBytes := []byte(payload)
+						if !utf8.Valid(payloadBytes) {
+							failure := chunkFailure(diagnostics.ChunkJSONSyntax, diagnostics.ChunkRoot)
+							if trace := diagnostics.From(ctx); trace != nil {
+								trace.MalformedChunk(failure.Reason, failure.Field, nil)
+							}
+							return fail(diagnostics.Malformed, "malformed chat completion chunk")
+						}
+						projected, failure := projectChatCompletionChunkDetail(payloadBytes, logicalModelID)
 						if failure != nil {
 							if trace := diagnostics.From(ctx); trace != nil {
-								enrichObjectFailure([]byte(payload), failure)
+								enrichObjectFailure(payloadBytes, failure)
 								trace.MalformedChunk(failure.Reason, failure.Field, failure.Object)
 							}
 							return fail(diagnostics.Malformed, "malformed chat completion chunk")
 						}
-						encoded, marshalErr := json.Marshal(projected)
-						if marshalErr != nil {
-							return fail(diagnostics.Invalid, "chunk encoding failed")
+						if cancellation := contextFailure(); cancellation != nil {
+							return cancellation
 						}
-						frame := append([]byte("data: "), encoded...)
-						frame = append(frame, '\n', '\n')
-						if emitErr := emit(frame); emitErr != nil {
+						if emitErr := emitChunk(projected); emitErr != nil {
 							reason := diagnostics.Write
 							if ctx.Err() != nil {
 								reason = diagnostics.NetworkReason(ctx.Err())
@@ -85,7 +150,19 @@ func (s *WhiteLabelService) ProjectChatCompletionSSEContext(ctx context.Context,
 				}
 			} else if strings.HasPrefix(line, "data:") {
 				value := strings.TrimPrefix(line, "data:")
-				dataLines = append(dataLines, strings.TrimPrefix(value, " "))
+				value = strings.TrimPrefix(value, " ")
+				extra := len(value)
+				if len(dataLines) > 0 {
+					extra++
+				}
+				if extra > platformChatSSEMaxEventBytes-dataBytes {
+					if trace := diagnostics.From(ctx); trace != nil {
+						trace.MalformedChunk(diagnostics.ChunkInvalidShape, diagnostics.ChunkRoot, nil)
+					}
+					return fail(diagnostics.Malformed, "malformed chat completion chunk")
+				}
+				dataBytes += extra
+				dataLines = append(dataLines, value)
 			}
 		}
 		if err == io.EOF {
@@ -95,6 +172,29 @@ func (s *WhiteLabelService) ProjectChatCompletionSSEContext(ctx context.Context,
 			}
 			return fail(reason, "incomplete stream")
 		}
+	}
+}
+
+func readPlatformChatSSELine(reader *bufio.Reader) (string, error) {
+	if reader == nil {
+		return "", io.ErrUnexpectedEOF
+	}
+	line := make([]byte, 0, reader.Size())
+	for {
+		fragment, err := reader.ReadSlice('\n')
+		if len(fragment) > platformChatSSEMaxLineBytes+2-len(line) {
+			return "", errPlatformChatSSELimit
+		}
+		line = append(line, fragment...)
+		if errors.Is(err, bufio.ErrBufferFull) {
+			continue
+		}
+		line = bytes.TrimSuffix(line, []byte{'\n'})
+		line = bytes.TrimSuffix(line, []byte{'\r'})
+		if len(line) > platformChatSSEMaxLineBytes {
+			return "", errPlatformChatSSELimit
+		}
+		return string(line), err
 	}
 }
 

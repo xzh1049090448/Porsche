@@ -2,6 +2,7 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"mime"
 	"net/http"
@@ -22,7 +23,12 @@ func RegisterPlatform(r *gin.Engine, state *app.State) {
 }
 
 func registerPlatformWithAuthentication(r *gin.Engine, state *app.State, authenticate gin.HandlerFunc) {
-	g := r.Group("/api/v1/platform", gatewayRequestID(), platformDiagnostics(), authenticate, platformDiagnosticAuthenticated())
+	base := r.Group("/api/v1/platform", gatewayRequestID(), platformDiagnostics())
+	generations := base.Group("/chat/generations", platformGenerationNoStore(), authenticate, platformDiagnosticAuthenticated())
+	generations.GET("/:generation_id", platformGenerationGet(state))
+	generations.POST("/:generation_id/cancel", platformGenerationCancel(state))
+
+	g := base.Group("", authenticate, platformDiagnosticAuthenticated())
 
 	g.GET("/models", func(c *gin.Context) {
 		if state.WhiteLabel == nil {
@@ -56,7 +62,8 @@ func registerPlatformWithAuthentication(r *gin.Engine, state *app.State, authent
 			return
 		}
 		if body.StreamVersion == platformSSEV2Version {
-			platformSSEV2Unavailable(c)
+			validationEnd(diagnostics.OK)
+			platformSingleSSEV2(c, state, user, body)
 			return
 		}
 		params := body.toParams()
@@ -303,11 +310,75 @@ func validatePlatformSSEV2Request(raw []byte, fields map[string]json.RawMessage)
 		Stream        bool    `json:"stream"`
 		StreamVersion *string `json:"stream_version"`
 		GenerationID  *string `json:"generation_id"`
+		StreamOptions *struct {
+			IncludeUsage *bool `json:"include_usage"`
+		} `json:"stream_options"`
 	}
-	if err := json.Unmarshal(raw, &contract); err != nil || !contract.Stream || contract.StreamVersion == nil || *contract.StreamVersion != platformSSEV2Version || contract.GenerationID == nil || !isCanonicalUUID(*contract.GenerationID) {
+	if err := json.Unmarshal(raw, &contract); err != nil || !contract.Stream || contract.StreamVersion == nil || *contract.StreamVersion != platformSSEV2Version || contract.GenerationID == nil || !isCanonicalUUID(*contract.GenerationID) ||
+		(contract.StreamOptions != nil && contract.StreamOptions.IncludeUsage != nil && !*contract.StreamOptions.IncludeUsage) {
 		return &whitelabel.Error{Code: whitelabel.CodeInvalidRequest, Status: http.StatusBadRequest, Type: whitelabel.TypeInvalidRequest}
 	}
 	return nil
+}
+
+func platformSingleSSEV2(c *gin.Context, state *app.State, user *models.User, body platformChatBody) {
+	if state == nil {
+		platformSSEV2Unavailable(c)
+		return
+	}
+	if err := platformAuthorizeModels(c, state, user, []string{body.Model}); err != nil {
+		// Until Task 8 assembles the runner, retain BE01's stable v2 guard even
+		// when the legacy white-label service is also absent.
+		if state.PlatformSingleGeneration == nil && err.Code == whitelabel.CodeGatewayUpstreamUnavailable {
+			platformSSEV2Unavailable(c)
+			return
+		}
+		platformWhiteLabelError(c, err)
+		return
+	}
+	if state.PlatformSingleGeneration == nil {
+		platformSSEV2Unavailable(c)
+		return
+	}
+
+	streamStarted := false
+	write := func(frame []byte) error {
+		if !streamStarted {
+			service.SetPlatformSSEV2Headers(c.Writer.Header())
+			streamStarted = true
+		}
+		_, err := c.Writer.Write(frame)
+		if err == nil {
+			c.Writer.Flush()
+		}
+		return err
+	}
+	result, err := state.PlatformSingleGeneration.Run(service.PlatformSingleGenerationInput{
+		Context: c.Request.Context(), User: user, GenerationID: body.GenerationID,
+		RequestID: c.Writer.Header().Get("X-Request-ID"), Params: body.toParams(), Write: write,
+	})
+	if streamStarted || result.Started {
+		return
+	}
+	switch {
+	case errors.Is(err, service.ErrPlatformSingleGenerationInvalid):
+		platformWhiteLabelError(c, &whitelabel.Error{Code: whitelabel.CodeInvalidRequest, Status: http.StatusBadRequest, Type: whitelabel.TypeInvalidRequest})
+	case errors.Is(err, service.ErrPlatformSingleGenerationQuota):
+		platformWhiteLabelError(c, &whitelabel.Error{Code: whitelabel.Code("rate_limited"), Status: http.StatusTooManyRequests, Type: whitelabel.TypeAPI})
+	case result.Duplicate != nil:
+		if state.PlatformGenerationControl == nil {
+			platformSSEV2Unavailable(c)
+			return
+		}
+		view, getErr := state.PlatformGenerationControl.Get(c.Request.Context(), user.ID, body.GenerationID)
+		if getErr != nil {
+			platformSSEV2Unavailable(c)
+			return
+		}
+		c.JSON(http.StatusConflict, view)
+	default:
+		platformSSEV2Unavailable(c)
+	}
 }
 
 func isCanonicalUUID(value string) bool {

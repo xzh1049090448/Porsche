@@ -49,8 +49,8 @@ type scriptedUserManagementBackend struct {
 	queryCalls        int
 	outcomeCalls      int
 	issueAction       actionsecurity.Action
-	issueAny          any
 	issueIntent       actionsecurity.CreateAccountIntent
+	issueAny          any
 	issueInitial      []byte
 	issueCurrent      []byte
 	issueInitialHash  [sha256.Size]byte
@@ -450,10 +450,20 @@ func TestAdminUserCreateRealHTTPDeletedPre0010SnapshotReplaysStableGone(t *testi
 	}
 
 	migrations, err := migration.All()
-	if err != nil || len(migrations) != 15 || migrations[9].Version != "0010" || migrations[10].Version != "0011" || migrations[14].Version != "0015" {
+	if err != nil {
 		t.Fatalf("load 0010 for HTTP lifecycle = %d/%v", len(migrations), err)
 	}
-	for index, statement := range strings.Split(string(migrations[9].DownSQL), ";") {
+	var migration0010 *migration.Migration
+	for index := range migrations {
+		if migrations[index].Version == "0010" {
+			migration0010 = &migrations[index]
+			break
+		}
+	}
+	if migration0010 == nil {
+		t.Fatalf("load 0010 for HTTP lifecycle: absent from %d migrations", len(migrations))
+	}
+	for index, statement := range strings.Split(string(migration0010.DownSQL), ";") {
 		if statement = strings.TrimSpace(statement); statement != "" {
 			if err := state.DB.Exec(statement).Error; err != nil {
 				t.Fatalf("isolated HTTP 0010 down statement %d: %v", index+1, err)
@@ -522,7 +532,7 @@ func TestAdminUserCreateVerificationDispatchesDeleteAndRejectsEveryOtherAction(t
 	if deleted.Code != http.StatusCreated || backend.issueCalls != 1 || backend.issueAction != actionsecurity.ActionUsersDelete {
 		t.Fatalf("delete dispatch status/calls/action=%d/%d/%d", deleted.Code, backend.issueCalls, backend.issueAction)
 	}
-	for _, action := range []string{"users.create", "users.promote"} {
+	for _, action := range []string{"users.create"} {
 		before := backend.issueCalls
 		body := `{"action":"` + action + `","intent":{},"current_password":"Current!Pass9"}`
 		rec := performActionRequest(engine, http.MethodPost, "/admin/v2/action-verifications", body, nil)
@@ -721,7 +731,7 @@ func TestAdminUserCreateQueryDispatchesOnlyExactCreateScopes(t *testing.T) {
 	}
 	for _, path := range []string{
 		"/admin/v2/operations?scope=users.create&scope=users.create", "/admin/v2/operations?scope=users.create%5fadmin",
-		"/admin/v2/operations?scope=users.create_admin&x=1", "/admin/v2/operations?scope=users.promote",
+		"/admin/v2/operations?scope=users.create_admin&x=1", "/admin/v2/operations?scope=users%2Epromote",
 	} {
 		backend := adminUserCreateBackend("user")
 		engine := newScriptedUserManagementEngine(t, backend, models.UserRoleRoot)

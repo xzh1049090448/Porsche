@@ -724,6 +724,11 @@ func (conn *deleteWriterConn) QueryContext(_ context.Context, query string, args
 	switch {
 	case strings.Contains(query, "FROM `admin_operations`"):
 		op := conn.script.operation
+		if strings.Contains(query, "`request_hmac`") {
+			return deleteWriterRow([]string{"id", "actor_user_id", "actor_auth_version", "session_id", "action", "verification_id", "state", "public_ref", "request_hmac"},
+				[]driver.Value{op.ID, op.ActorUserID, int64(op.ActorAuthVersion), op.SessionID, int64(op.Action),
+					pointerDriverValue(op.VerificationID), int64(op.State), op.PublicRef, op.RequestHMAC}), nil
+		}
 		return deleteWriterRow([]string{"id", "actor_user_id", "actor_auth_version", "session_id", "action", "verification_id", "state", "public_ref"},
 			[]driver.Value{op.ID, op.ActorUserID, int64(op.ActorAuthVersion), op.SessionID, int64(op.Action),
 				pointerDriverValue(op.VerificationID), int64(op.State), op.PublicRef}), nil
@@ -735,6 +740,12 @@ func (conn *deleteWriterConn) QueryContext(_ context.Context, query string, args
 		return deleteWriterRow([]string{"id", "guid", "user_id"}, []driver.Value{session.ID, session.Guid, session.UserID}), nil
 	case strings.Contains(query, "FROM `admin_action_verifications`"):
 		verification := conn.script.verification
+		if strings.Contains(query, "`intent_hmac`") {
+			return deleteWriterRow([]string{"id", "actor_user_id", "actor_auth_version", "session_id", "action", "target_kind", "target_guid", "intent_hmac", "consumed_at", "is_deleted"},
+				[]driver.Value{verification.ID, verification.ActorUserID, int64(verification.ActorAuthVersion), verification.SessionID,
+					int64(verification.Action), int64(verification.TargetKind), pointerDriverValue(verification.TargetGUID), verification.IntentHMAC,
+					pointerDriverValue(verification.ConsumedAt), int64(verification.IsDeleted)}), nil
+		}
 		return deleteWriterRow([]string{"id", "actor_user_id", "actor_auth_version", "session_id", "action", "target_kind", "target_guid", "consumed_at", "is_deleted"},
 			[]driver.Value{verification.ID, verification.ActorUserID, int64(verification.ActorAuthVersion), verification.SessionID,
 				int64(verification.Action), int64(verification.TargetKind), pointerDriverValue(verification.TargetGUID),

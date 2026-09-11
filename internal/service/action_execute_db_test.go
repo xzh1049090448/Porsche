@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -20,6 +21,7 @@ import (
 	"github.com/redis/go-redis/v9"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 	"gorm.io/gorm/logger"
 )
 
@@ -158,24 +160,27 @@ type actionExecuteState struct {
 	officialOutbox int
 }
 type actionExecuteScript struct {
-	mu            sync.Mutex
-	now           int64
-	actor         models.User
-	session       models.Session
-	target        models.User
-	policy        models.PermissionPolicyHead
-	overrides     []models.PermissionOverride
-	state         actionExecuteState
-	queries       []string
-	execs         []string
-	beginCount    int
-	commitCount   int
-	rollbackCount int
-	failAt        string
-	commitUnknown bool
-	lastError     string
-	queryStep     int
-	ticketless    bool
+	mu              sync.Mutex
+	now             int64
+	actor           models.User
+	session         models.Session
+	target          models.User
+	policy          models.PermissionPolicyHead
+	overrides       []models.PermissionOverride
+	state           actionExecuteState
+	queries         []string
+	execs           []string
+	beginCount      int
+	commitCount     int
+	rollbackCount   int
+	failAt          string
+	commitUnknown   bool
+	lastError       string
+	queryStep       int
+	ticketless      bool
+	resetPrelock    bool
+	terminalOutcome *TerminalOutcome
+	targetSessions  []models.Session
 }
 type actionExecuteDriver struct{}
 type actionExecuteConn struct {
@@ -194,6 +199,28 @@ type actionExecuteRows struct {
 	index   int
 }
 type actionExecuteResult int64
+
+type fixtureA08LockedPreflightConsumer struct {
+	fixtureActionConsumer
+	failure             models.AdminOperationFailure
+	prelockCalls, calls int
+}
+
+func (consumer *fixtureA08LockedPreflightConsumer) prelockForAuthorization(_ context.Context, tx *gorm.DB, _ models.AdminOperation, verification models.AdminActionVerification) (*models.User, error) {
+	consumer.prelockCalls++
+	if verification.TargetGUID == nil {
+		return nil, ErrActionOperationUnavailable
+	}
+	var target models.User
+	err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Select("id", "guid", "role", "status", "is_deleted", "auth_version").Where("guid = ? AND is_deleted = 0", *verification.TargetGUID).First(&target).Error
+	return &target, err
+}
+
+func (consumer *fixtureA08LockedPreflightConsumer) preflightLocked(context.Context, *gorm.DB, models.AdminOperation) (*models.AdminOperationFailure, error) {
+	consumer.calls++
+	failure := consumer.failure
+	return &failure, nil
+}
 
 func (actionExecuteDriver) Open(name string) (driver.Conn, error) {
 	value, ok := actionExecuteScripts.Load(name)
@@ -252,6 +279,12 @@ func (c *actionExecuteConn) CheckNamedValue(value *driver.NamedValue) error {
 		} else {
 			value.Value = int64(*v)
 		}
+	case *models.UserRole:
+		if v == nil {
+			value.Value = nil
+		} else {
+			value.Value = int64(*v)
+		}
 	}
 	return nil
 }
@@ -272,6 +305,9 @@ func (c *actionExecuteConn) QueryContext(_ context.Context, query string, args [
 		sequenceKind += "_lock"
 	}
 	expected := []string{"actor", "session", "operation", "verification", "target", "policy_lock", "rules_lock", "policy", "rules"}
+	if c.script.resetPrelock {
+		expected = []string{"actor", "session", "operation", "verification", "target", "target_sessions", "policy_lock", "rules_lock", "policy", "rules"}
+	}
 	if c.script.ticketless {
 		expected = []string{"actor", "session", "operation", "policy_lock", "rules_lock", "policy", "rules"}
 	}
@@ -302,6 +338,12 @@ func (c *actionExecuteConn) QueryContext(_ context.Context, query string, args [
 	case "session":
 		s := c.script.session
 		return executeRows([]string{"id", "guid", "sid", "user_id", "session_version", "is_deleted", "revoked_at", "expires_at"}, [][]driver.Value{{s.ID, s.Guid, s.SID, s.UserID, int64(s.SessionVersion), int64(s.IsDeleted), nil, s.ExpiresAt}}), nil
+	case "target_sessions":
+		values := make([][]driver.Value, 0, len(c.script.targetSessions))
+		for _, s := range c.script.targetSessions {
+			values = append(values, []driver.Value{s.ID, s.Guid, s.SID, s.UserID, int64(s.LoginMethod), int64(s.SessionVersion), int64(s.IsDeleted), nil, s.ExpiresAt})
+		}
+		return executeRows([]string{"id", "guid", "sid", "user_id", "login_method", "session_version", "is_deleted", "revoked_at", "expires_at"}, values), nil
 	case "operation":
 		return executeRows(operationColumns(), [][]driver.Value{operationValues(state.operation)}), nil
 	case "verification":
@@ -411,6 +453,14 @@ func validateExecuteQuery(script *actionExecuteScript, tx *actionExecuteTx, kind
 		if err := exactArgs(script.actor.ID, script.now); err != nil {
 			return err
 		}
+	case "target_sessions":
+		locked = true
+		if err := exactSQL("SELECT `id`,`guid`,`sid`,`user_id`,`login_method`,`session_version`,`is_deleted`,`revoked_at`,`expires_at` FROM `user_sessions` WHERE user_id = ? AND is_deleted = 0 AND revoked_at IS NULL ORDER BY id ASC FOR UPDATE"); err != nil {
+			return err
+		}
+		if err := exactArgs(script.target.ID); err != nil {
+			return err
+		}
 	case "operation":
 		locked = true
 		if err := exactSQL("SELECT * FROM `admin_operations` WHERE id = ? ORDER BY `admin_operations`.`id` LIMIT ? FOR UPDATE"); err != nil {
@@ -498,6 +548,9 @@ func validateExecuteQuery(script *actionExecuteScript, tx *actionExecuteTx, kind
 			return fmt.Errorf("%s lock outside transaction", kind)
 		}
 		order := []string{"actor", "session", "operation", "verification", "target", "policy", "rules"}
+		if script.resetPrelock {
+			order = []string{"actor", "session", "operation", "verification", "target", "target_sessions", "policy", "rules"}
+		}
 		if script.ticketless {
 			order = []string{"actor", "session", "operation", "policy", "rules"}
 		}
@@ -522,8 +575,10 @@ func executeQueryKind(query string) string {
 		return "target"
 	case strings.Contains(query, "FROM `users`"):
 		return "actor"
-	case strings.Contains(query, "FROM `user_sessions`"):
+	case strings.Contains(query, "FROM `user_sessions`") && strings.Contains(query, "expires_at > ?"):
 		return "session"
+	case strings.Contains(query, "FROM `user_sessions`"):
+		return "target_sessions"
 	case strings.Contains(query, "FROM `admin_operations`"):
 		return "operation"
 	case strings.Contains(query, "FROM `admin_action_verifications`"):
@@ -599,6 +654,15 @@ func (c *actionExecuteConn) ExecContext(_ context.Context, query string, args []
 			resultKind, status := models.ResultNone, 204
 			c.tx.state.operation.State = models.OperationSucceeded
 			c.tx.state.operation.ResultKind, c.tx.state.operation.ResultHTTPStatus = &resultKind, &status
+			if c.script.terminalOutcome != nil {
+				outcome := c.script.terminalOutcome
+				kindCopy, statusCopy := outcome.ResultKind, outcome.HTTPStatus
+				c.tx.state.operation.ResultKind, c.tx.state.operation.ResultHTTPStatus = &kindCopy, &statusCopy
+				c.tx.state.operation.ResultGUID = copyInt64(outcome.ResultGUID)
+				c.tx.state.operation.ResultAuthVersion = copyInt(outcome.ResultAuthVersion)
+				c.tx.state.operation.ResultPermissionsVersion = copyInt64(outcome.ResultPermissionsVersion)
+				c.tx.state.operation.ResultRole = copyUserRole(outcome.ResultRole)
+			}
 		} else {
 			failure, status := models.FailureActionRejected, 409
 			c.tx.state.operation.State = models.OperationFailed
@@ -681,10 +745,10 @@ func validateExecuteExec(script *actionExecuteScript, tx *actionExecuteTx, kind,
 		}
 		return nil
 	case "terminal_success", "terminal_failed":
-		terminalSQL := "UPDATE `admin_operations` SET `error_code`=?,`finished_at`=?,`lease_expires_at`=?,`lease_owner_hmac`=?,`query_expires_at`=?,`result_guid`=?,`result_http_status`=?,`result_kind`=?,`state`=?,`updated_at`=?,`updated_by`=? WHERE id = ? AND state = ? AND is_deleted = 0 AND lease_owner_hmac = ? AND verification_id = ?"
+		terminalSQL := "UPDATE `admin_operations` SET `error_code`=?,`finished_at`=?,`lease_expires_at`=?,`lease_owner_hmac`=?,`query_expires_at`=?,`result_auth_version`=?,`result_guid`=?,`result_http_status`=?,`result_kind`=?,`result_permissions_version`=?,`result_role`=?,`state`=?,`updated_at`=?,`updated_by`=? WHERE id = ? AND state = ? AND is_deleted = 0 AND lease_owner_hmac = ? AND verification_id = ?"
 		selector := "id = ? AND state = ? AND is_deleted = 0 AND lease_owner_hmac = ? AND verification_id = ?"
 		if script.ticketless {
-			terminalSQL = "UPDATE `admin_operations` SET `error_code`=?,`finished_at`=?,`lease_expires_at`=?,`lease_owner_hmac`=?,`query_expires_at`=?,`result_guid`=?,`result_http_status`=?,`result_kind`=?,`state`=?,`updated_at`=?,`updated_by`=? WHERE id = ? AND state = ? AND is_deleted = 0 AND lease_owner_hmac = ? AND verification_id IS NULL"
+			terminalSQL = "UPDATE `admin_operations` SET `error_code`=?,`finished_at`=?,`lease_expires_at`=?,`lease_owner_hmac`=?,`query_expires_at`=?,`result_auth_version`=?,`result_guid`=?,`result_http_status`=?,`result_kind`=?,`result_permissions_version`=?,`result_role`=?,`state`=?,`updated_at`=?,`updated_by`=? WHERE id = ? AND state = ? AND is_deleted = 0 AND lease_owner_hmac = ? AND verification_id IS NULL"
 			selector = "id = ? AND state = ? AND is_deleted = 0 AND lease_owner_hmac = ? AND verification_id IS NULL"
 		}
 		if err := exactSQL(terminalSQL); err != nil {
@@ -697,21 +761,34 @@ func validateExecuteExec(script *actionExecuteScript, tx *actionExecuteTx, kind,
 		if err != nil {
 			return err
 		}
-		if len(values) != 11 {
+		if len(values) != 14 {
 			return fmt.Errorf("terminal assignments=%d", len(values))
 		}
-		for _, key := range []string{"state", "finished_at", "query_expires_at", "lease_owner_hmac", "lease_expires_at", "error_code", "result_kind", "result_guid", "result_http_status", "updated_at", "updated_by"} {
+		for _, key := range []string{"state", "finished_at", "query_expires_at", "lease_owner_hmac", "lease_expires_at", "error_code", "result_kind", "result_guid", "result_auth_version", "result_permissions_version", "result_role", "result_http_status", "updated_at", "updated_by"} {
 			if _, ok := values[key]; !ok {
 				return fmt.Errorf("terminal write missing assignment %s", key)
 			}
 		}
 		wantState := models.OperationSucceeded
 		wantFailure, wantKind, wantStatus := any(nil), any(int64(models.ResultNone)), any(int64(204))
+		wantGUID, wantAuthVersion, wantPermissionsVersion, wantRole := any(nil), any(nil), any(nil), any(nil)
+		if script.terminalOutcome != nil {
+			wantKind = int64(script.terminalOutcome.ResultKind)
+			wantStatus = int64(script.terminalOutcome.HTTPStatus)
+			wantGUID = ptrDriver(script.terminalOutcome.ResultGUID)
+			wantAuthVersion = ptrDriver(script.terminalOutcome.ResultAuthVersion)
+			wantPermissionsVersion = ptrDriver(script.terminalOutcome.ResultPermissionsVersion)
+			wantRole = ptrDriver(script.terminalOutcome.ResultRole)
+		}
 		if kind == "terminal_failed" {
 			wantState, wantFailure, wantKind, wantStatus = models.OperationFailed, int64(models.FailureActionRejected), nil, int64(409)
+			if script.resetPrelock {
+				wantFailure = int64(models.FailureTargetVersionConflict)
+			}
 		}
 		want := map[string]any{"state": int64(wantState), "finished_at": script.now, "query_expires_at": script.now + actionOperationQueryRetentionMS,
-			"lease_owner_hmac": nil, "lease_expires_at": nil, "error_code": wantFailure, "result_kind": wantKind, "result_guid": nil,
+			"lease_owner_hmac": nil, "lease_expires_at": nil, "error_code": wantFailure, "result_kind": wantKind, "result_guid": wantGUID, "result_auth_version": wantAuthVersion,
+			"result_permissions_version": wantPermissionsVersion, "result_role": wantRole,
 			"result_http_status": wantStatus, "updated_at": script.now, "updated_by": script.actor.ID}
 		for key, expected := range want {
 			if fmt.Sprint(values[key]) != fmt.Sprint(expected) {
@@ -811,6 +888,10 @@ func executeRows(columns []string, values [][]driver.Value) *actionExecuteRows {
 }
 
 func actionExecuteFixture(t *testing.T) (*ActionOperationService, *actionExecuteScript, *OperationIdentity) {
+	return actionExecuteFixtureForAction(t, testNoopAction)
+}
+
+func actionExecuteFixtureForAction(t *testing.T, action actionsecurity.Action) (*ActionOperationService, *actionExecuteScript, *OperationIdentity) {
 	t.Helper()
 	now := int64(1_800_000_000_000)
 	root := bytes.Repeat([]byte{0x73}, 32)
@@ -843,11 +924,11 @@ func actionExecuteFixture(t *testing.T) (*ActionOperationService, *actionExecute
 	publicRef := "op_" + base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{0x41}, 32))
 	requestHex := strings.Repeat("b", 64)
 	operation := models.AdminOperation{ID: 30, AuditFields: models.AuditFields{Guid: 3001}, ActorUserID: actor.ID, ActorAuthVersion: actor.AuthVersion,
-		SessionID: session.ID, Action: int(testNoopAction), IdempotencyKeyHMAC: strings.Repeat("a", 64), RequestHMAC: requestHex,
+		SessionID: session.ID, Action: int(action), IdempotencyKeyHMAC: strings.Repeat("a", 64), RequestHMAC: requestHex,
 		VerificationID: &verificationID, State: models.OperationProcessing, PublicRef: publicRef, LeaseOwnerHMAC: &leaseHex,
 		LeaseExpiresAt: &leaseExpires, QueryExpiresAt: now + actionOperationQueryRetentionMS}
 	verification := models.AdminActionVerification{ID: verificationID, AuditFields: models.AuditFields{Guid: 4001}, ActorUserID: actor.ID,
-		ActorAuthVersion: actor.AuthVersion, SessionID: session.ID, Action: int(testNoopAction), TargetKind: int(actionsecurity.TargetUser),
+		ActorAuthVersion: actor.AuthVersion, SessionID: session.ID, Action: int(action), TargetKind: int(actionsecurity.TargetUser),
 		TargetGUID: &target.Guid, IntentHMAC: requestHex, TicketHMAC: strings.Repeat("c", 64), ExpiresAt: now + 300_000}
 	script := &actionExecuteScript{now: now, actor: actor, session: session, target: target,
 		policy: models.PermissionPolicyHead{ID: 50, AuditFields: models.AuditFields{Guid: 5001}, UserID: actor.ID, PolicyVersion: 1, CatalogVersion: 1},
@@ -865,10 +946,20 @@ func actionExecuteFixture(t *testing.T) (*ActionOperationService, *actionExecute
 		t.Fatal(err)
 	}
 	resolver := func(action actionsecurity.Action) (actionsecurity.Descriptor, bool) {
-		if action != testNoopAction {
+		if action != actionsecurity.Action(operation.Action) {
 			return actionsecurity.Descriptor{}, false
 		}
-		return actionsecurity.Descriptor{Action: testNoopAction, Name: "test.noop", Capability: "users.delete", RequiresTicket: true,
+		if isA08RolePermissionAction(action) {
+			return actionsecurity.ResolveActiveAction(action)
+		}
+		name, capability := "test.noop", "users.delete"
+		for _, resolved := range actionsecurity.InactiveActionDescriptors() {
+			if resolved.Action == action {
+				name, capability = resolved.Name, resolved.Capability
+				break
+			}
+		}
+		return actionsecurity.Descriptor{Action: action, Name: name, Capability: capability, RequiresTicket: true,
 			TargetKind: actionsecurity.TargetUser, Active: true, Encode: func(any) ([]byte, error) { return []byte("unused"), nil }}, true
 	}
 	service, err := newActionOperationService(db, limiter, authRedis, crypto, resolver, &actionIssueClock{now: now}, bytes.NewReader(nil), func() int64 { return 1 })
@@ -882,6 +973,69 @@ func actionExecuteFixture(t *testing.T) (*ActionOperationService, *actionExecute
 		t.Fatal("fixture lease capability is nil")
 	}
 	return service, script, identity
+}
+
+func TestActionExecuteRolePermissionResultPersistsAtomicallyAndCopiesStableRole(t *testing.T) {
+	service, script, identity := actionExecuteFixtureForAction(t, actionsecurity.ActionUsersPromote)
+	guid, authVersion, permissionsVersion, role := int64(1101), 3, int64(8), models.UserRoleAdmin
+	outcome := TerminalOutcome{ResultKind: models.ResultUser, ResultGUID: &guid, ResultAuthVersion: &authVersion, ResultPermissionsVersion: &permissionsVersion, ResultRole: &role, HTTPStatus: 200}
+	script.terminalOutcome = &outcome
+	view, err := service.Execute(context.Background(), identity, &fixtureActionConsumer{outcome: outcome}, &fixtureActionAuditWriter{}, &fixtureActionOutboxWriter{})
+	if err != nil || view == nil || view.TargetGUID == nil || *view.TargetGUID != guid || view.ResultAuthVersion == nil || *view.ResultAuthVersion != authVersion ||
+		view.ResultPermissionsVersion == nil || *view.ResultPermissionsVersion != permissionsVersion || view.ResultRole == nil || *view.ResultRole != role {
+		t.Fatalf("A08 Execute view=%#v err=%v validation=%s", view, err, script.lastError)
+	}
+	guid, authVersion, permissionsVersion, role = 999, 99, 99, models.UserRoleUser
+	stored := script.state.operation
+	if stored.ResultGUID == nil || *stored.ResultGUID != 1101 || stored.ResultAuthVersion == nil || *stored.ResultAuthVersion != 3 ||
+		stored.ResultPermissionsVersion == nil || *stored.ResultPermissionsVersion != 8 || stored.ResultRole == nil || *stored.ResultRole != models.UserRoleAdmin {
+		t.Fatalf("stored stable result changed with consumer memory: %#v", stored)
+	}
+
+	service, script, identity = actionExecuteFixtureForAction(t, actionsecurity.ActionUsersPromote)
+	guid, authVersion, permissionsVersion, role = 1101, 3, 8, models.UserRoleAdmin
+	outcome = TerminalOutcome{ResultKind: models.ResultUser, ResultGUID: &guid, ResultAuthVersion: &authVersion, ResultPermissionsVersion: &permissionsVersion, ResultRole: &role, HTTPStatus: 200}
+	script.terminalOutcome = &outcome
+	script.failAt = "terminal_success"
+	if got, err := service.Execute(context.Background(), identity, &fixtureActionConsumer{outcome: outcome}, &fixtureActionAuditWriter{}, &fixtureActionOutboxWriter{}); got != nil || !errors.Is(err, ErrActionOperationUnavailable) || !executeStateIsPristine(script.state) {
+		t.Fatalf("A08 terminal SQL failure did not rollback: view=%#v err=%v state=%#v", got, err, script.state)
+	}
+}
+
+func TestActionExecuteA08LockedPreflightConflictRollsBackEveryFact(t *testing.T) {
+	for _, failure := range []models.AdminOperationFailure{
+		models.FailureTargetVersionConflict,
+		models.FailurePolicyVersionConflict,
+		models.FailureTargetStateConflict,
+	} {
+		t.Run(failure.String(), func(t *testing.T) {
+			service, script, identity := actionExecuteFixtureForAction(t, actionsecurity.ActionUsersPromote)
+			beforeOperation, beforeVerification := script.state.operation, script.state.verification
+			consumer := &fixtureA08LockedPreflightConsumer{fixtureActionConsumer: fixtureActionConsumer{outcome: TerminalOutcome{ResultKind: models.ResultNone, HTTPStatus: 204}}, failure: failure}
+			audit, outbox := &fixtureActionAuditWriter{}, &fixtureActionOutboxWriter{}
+
+			view, err := service.Execute(context.Background(), identity, consumer, audit, outbox)
+			if view != nil || err == nil || err.Error() != failure.String() {
+				t.Fatalf("preflight conflict = %#v/%v, want precise %s", view, err, failure.String())
+			}
+			if consumer.prelockCalls != 1 || consumer.calls != 1 || consumer.fixtureActionConsumer.calls != 0 || audit.calls != 0 || outbox.calls != 0 {
+				t.Fatalf("calls prelock/preflight/consumer/audit/outbox = %d/%d/%d/%d/%d", consumer.prelockCalls, consumer.calls, consumer.fixtureActionConsumer.calls, audit.calls, outbox.calls)
+			}
+			if !reflect.DeepEqual(script.state.operation, beforeOperation) || !reflect.DeepEqual(script.state.verification, beforeVerification) ||
+				!executeStateIsPristine(script.state) || len(script.execs) != 0 || script.commitCount != 0 || script.rollbackCount != 1 {
+				t.Fatalf("preflight committed mutation: state=%#v execs=%v commits=%d rollbacks=%d", script.state, script.execs, script.commitCount, script.rollbackCount)
+			}
+		})
+	}
+}
+
+func TestActionExecuteLockedPreflightHookDoesNotChangeOlderActions(t *testing.T) {
+	service, script, identity := actionExecuteFixture(t)
+	consumer := &fixtureA08LockedPreflightConsumer{fixtureActionConsumer: fixtureActionConsumer{outcome: TerminalOutcome{ResultKind: models.ResultNone, HTTPStatus: 204}}, failure: models.FailureTargetStateConflict}
+	view, err := service.Execute(context.Background(), identity, consumer, &fixtureActionAuditWriter{}, &fixtureActionOutboxWriter{})
+	if err != nil || view == nil || view.Status != "succeeded" || consumer.prelockCalls != 1 || consumer.calls != 0 || consumer.fixtureActionConsumer.calls != 1 || script.state.operation.State != models.OperationSucceeded {
+		t.Fatalf("older action = %#v/%v prelock=%d preflight=%d consumer=%d state=%s", view, err, consumer.prelockCalls, consumer.calls, consumer.fixtureActionConsumer.calls, script.state.operation.State.String())
+	}
 }
 
 func TestActionExecuteSucceededAtomicAndLockOrder(t *testing.T) {

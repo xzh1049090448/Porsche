@@ -30,15 +30,72 @@ import (
 
 func validPlatformGenerationPersistenceInput() PlatformGenerationPersistenceInput {
 	return PlatformGenerationPersistenceInput{
-		UserID:       1,
-		GenerationID: generationTestID,
-		Mode:         PlatformGenerationModeSingle,
-		Models:       []string{"model-a"},
-		UserMessage:  " keep whitespace byte-for-byte ",
+		UserID:                   1,
+		GenerationID:             generationTestID,
+		Mode:                     PlatformGenerationModeSingle,
+		Models:                   []string{"model-a"},
+		ReservedConversationGUID: reservedPlatformGenerationConversationGUID(),
+		UserMessage:              " keep whitespace byte-for-byte ",
 		Results: []PlatformGenerationPersistenceResult{{
 			Model: "model-a", State: PlatformGenerationStateCompleted, Content: "answer", Tokens: 1, Seq: 0,
 		}},
 		NowMillis: 1,
+	}
+}
+
+func reservedPlatformGenerationConversationGUID() *int64 {
+	reservedConversationGUID := testSnowflake.Next()
+	return &reservedConversationGUID
+}
+
+func setPlatformGenerationPersistenceExistingConversation(input *PlatformGenerationPersistenceInput, conversationGUID *int64) {
+	input.ConversationGUID = conversationGUID
+	input.ReservedConversationGUID = nil
+}
+
+func TestValidatePlatformGenerationPersistenceInputRequiresOneConversationIdentity(t *testing.T) {
+	valid := validPlatformGenerationPersistenceInput()
+	reserved := int64(8101)
+	existing := int64(8102)
+
+	valid.ReservedConversationGUID = &reserved
+	if err := validatePlatformGenerationPersistenceInput(valid); err != nil {
+		t.Fatalf("reserved new conversation rejected: %v", err)
+	}
+
+	existingOnly := valid
+	existingOnly.ConversationGUID = &existing
+	existingOnly.ReservedConversationGUID = nil
+	if err := validatePlatformGenerationPersistenceInput(existingOnly); err != nil {
+		t.Fatalf("existing conversation rejected: %v", err)
+	}
+
+	both := valid
+	both.ConversationGUID = &existing
+	if err := validatePlatformGenerationPersistenceInput(both); !errors.Is(err, ErrPlatformGenerationPersistenceInvalid) {
+		t.Fatalf("both conversation identities error = %v", err)
+	}
+
+	neither := valid
+	neither.ReservedConversationGUID = nil
+	if err := validatePlatformGenerationPersistenceInput(neither); !errors.Is(err, ErrPlatformGenerationPersistenceInvalid) {
+		t.Fatalf("missing conversation identity error = %v", err)
+	}
+
+	for _, test := range []struct {
+		name     string
+		reserved int64
+	}{
+		{"zero reserved conversation GUID", 0},
+		{"negative reserved conversation GUID", -1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			invalid := valid
+			invalid.ReservedConversationGUID = &test.reserved
+			if err := validatePlatformGenerationPersistenceInput(invalid); !errors.Is(err, ErrPlatformGenerationPersistenceInvalid) {
+				t.Fatalf("reserved conversation GUID %d error = %v", test.reserved, err)
+			}
+		})
 	}
 }
 
@@ -141,7 +198,9 @@ func TestValidatePlatformGenerationPersistenceInputRejectsInvalidBeforeDependenc
 		{"invalid UTF-8 user message", func(input *PlatformGenerationPersistenceInput) { input.UserMessage = string([]byte{0xff}) }},
 		{"oversized user message", func(input *PlatformGenerationPersistenceInput) { input.UserMessage = strings.Repeat("x", 65536) }},
 		{"invalid UTF-8 completed content", func(input *PlatformGenerationPersistenceInput) { input.Results[0].Content = string([]byte{0xff}) }},
-		{"invalid conversation GUID", func(input *PlatformGenerationPersistenceInput) { input.ConversationGUID = &invalidConversationGUID }},
+		{"invalid conversation GUID", func(input *PlatformGenerationPersistenceInput) {
+			setPlatformGenerationPersistenceExistingConversation(input, &invalidConversationGUID)
+		}},
 	}
 
 	for _, test := range tests {
@@ -283,6 +342,52 @@ func TestWithPlatformGenerationAdvisoryLockUsesPinnedConnectionAndAlwaysReleases
 			}
 			assertPlatformGenerationLockFree(t, db, lockName)
 		})
+	}
+}
+
+func TestWithPlatformGenerationAdvisoryLockReleaseFailureDiscardsPinnedSession(t *testing.T) {
+	lockedDB := openPlatformGenerationAdvisoryLockMySQL(t).Session(&gorm.Session{Logger: gormlogger.Discard})
+	observerDB := openPlatformGenerationAdvisoryLockMySQL(t)
+	lockedSQL, err := lockedDB.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	lockedSQL.SetMaxOpenConns(1)
+	lockedSQL.SetMaxIdleConns(1)
+	observerSQL, err := observerDB.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	observerSQL.SetMaxOpenConns(1)
+	if err := observerDB.Exec("SELECT 1").Error; err != nil {
+		t.Fatal(err)
+	}
+
+	releaseFailure := errors.New("simulated release failure")
+	var releaseAttempts atomic.Int32
+	callbackName := fmt.Sprintf("platform_generation_release_failure_%d", testSnowflake.Next())
+	if err := lockedDB.Callback().Row().Before("gorm:row").Register(callbackName, func(tx *gorm.DB) {
+		if strings.Contains(tx.Statement.SQL.String(), "RELEASE_LOCK") {
+			releaseAttempts.Add(1)
+			tx.AddError(releaseFailure)
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = lockedDB.Callback().Row().Remove(callbackName) })
+
+	lockName := platformGenerationAdvisoryLockName(testSnowflake.Next(), generationTestID)
+	err = withPlatformGenerationAdvisoryLock(context.Background(), lockedDB, lockName, func(*gorm.DB) error { return nil })
+	if !errors.Is(err, ErrPlatformGenerationPersistenceUnavailable) {
+		t.Fatalf("release failure error=%v, want unavailable", err)
+	}
+	if releaseAttempts.Load() != 1 {
+		t.Fatalf("release attempts=%d, want 1", releaseAttempts.Load())
+	}
+	assertPlatformGenerationLockFree(t, observerDB, lockName)
+	stats := lockedSQL.Stats()
+	if stats.InUse != 0 || stats.Idle != 0 {
+		t.Fatalf("locked pool in-use/idle=%d/%d, want discarded session", stats.InUse, stats.Idle)
 	}
 }
 
@@ -984,7 +1089,7 @@ func (f platformGenerationFinalizationFixture) committingSingle(t *testing.T) Pl
 func (f platformGenerationFinalizationFixture) singleInput() PlatformGenerationPersistenceInput {
 	return PlatformGenerationPersistenceInput{
 		UserID: f.user.ID, GenerationID: generationTestID, Mode: PlatformGenerationModeSingle,
-		Models: []string{"model-a"}, UserMessage: "  exact user bytes  ", NowMillis: f.now + 3,
+		Models: []string{"model-a"}, ReservedConversationGUID: reservedPlatformGenerationConversationGUID(), UserMessage: "  exact user bytes  ", NowMillis: f.now + 3,
 		Results: []PlatformGenerationPersistenceResult{{Model: "model-a", State: PlatformGenerationStateCompleted, Content: "exact answer bytes", Tokens: 7, Seq: 0}},
 	}
 }
@@ -1052,11 +1157,58 @@ func TestPlatformGenerationPersistenceFinalizesSingleAtomically(t *testing.T) {
 	}
 }
 
+func TestPlatformGenerationPersistenceCreatesReservedConversationGUID(t *testing.T) {
+	f := openPlatformGenerationFinalizationFixture(t)
+	input := f.committingSingle(t)
+	reservedGUID := *input.ReservedConversationGUID
+	p, err := NewPlatformGenerationPersistence(f.store)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	receipt, err := p.Finalize(context.Background(), f.db, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if receipt.ConversationGUID != reservedGUID || receipt.RequestedExistingConversation {
+		t.Fatalf("receipt conversation GUID/provenance=%d/%v, want %d/false", receipt.ConversationGUID, receipt.RequestedExistingConversation, reservedGUID)
+	}
+	var conversation models.Conversation
+	if err := f.db.Where("guid = ? AND user_id = ? AND is_deleted = 0", reservedGUID, f.user.ID).First(&conversation).Error; err != nil {
+		t.Fatalf("query active owned reserved conversation: %v", err)
+	}
+	if conversation.Guid != reservedGUID {
+		t.Fatalf("conversation GUID=%d, want reserved %d", conversation.Guid, reservedGUID)
+	}
+}
+
+func TestPlatformGenerationPersistenceReservedConversationGUIDCollisionRollsBack(t *testing.T) {
+	f := openPlatformGenerationFinalizationFixture(t)
+	input := f.committingSingle(t)
+	reservedGUID := *input.ReservedConversationGUID
+	collision := models.Conversation{
+		AuditFields: models.AuditFields{Guid: reservedGUID, CreatedAt: f.now, CreatedBy: &f.user.ID, UpdatedAt: f.now, UpdatedBy: &f.user.ID},
+		UserID:      f.user.ID,
+		Title:       "unrelated conversation",
+	}
+	if err := f.db.Create(&collision).Error; err != nil {
+		t.Fatal(err)
+	}
+	p, err := NewPlatformGenerationPersistence(f.store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Finalize(context.Background(), f.db, input); !errors.Is(err, ErrPlatformGenerationPersistenceUnavailable) {
+		t.Fatalf("Finalize() error=%v, want unavailable after reserved GUID collision", err)
+	}
+	assertPlatformGenerationFinalizationEffects(t, f, 1, 0, 0, 0, 0, 2, 10)
+}
+
 func TestPlatformGenerationPersistenceRejectsRedisIdentityMismatchBeforeMySQL(t *testing.T) {
 	t.Run("pure ordered models", func(t *testing.T) {
 		input := PlatformGenerationPersistenceInput{
 			UserID: 1, GenerationID: generationTestID, Mode: PlatformGenerationModeCompare,
-			Models: []string{"model-a", "model-b"}, UserMessage: "prompt", NowMillis: 1,
+			Models: []string{"model-a", "model-b"}, ReservedConversationGUID: reservedPlatformGenerationConversationGUID(), UserMessage: "prompt", NowMillis: 1,
 			Results: []PlatformGenerationPersistenceResult{
 				{Model: "model-a", State: PlatformGenerationStateCompleted, Content: "a", Tokens: 1, Seq: 0},
 				{Model: "model-b", State: PlatformGenerationStateCompleted, Content: "b", Tokens: 1, Seq: 0},
@@ -1091,7 +1243,7 @@ func TestPlatformGenerationPersistenceRejectsRedisIdentityMismatchBeforeMySQL(t 
 	t.Run("pure terminal state", func(t *testing.T) {
 		input := PlatformGenerationPersistenceInput{
 			UserID: 1, GenerationID: generationTestID, Mode: PlatformGenerationModeCompare,
-			Models: []string{"model-a", "model-b"}, UserMessage: "prompt", NowMillis: 1,
+			Models: []string{"model-a", "model-b"}, ReservedConversationGUID: reservedPlatformGenerationConversationGUID(), UserMessage: "prompt", NowMillis: 1,
 			Results: []PlatformGenerationPersistenceResult{
 				{Model: "model-a", State: PlatformGenerationStateCompleted, Content: "a", Tokens: 1, Seq: 0},
 				{Model: "model-b", State: PlatformGenerationStateCompleted, Content: "b", Tokens: 1, Seq: 0},
@@ -1112,7 +1264,7 @@ func TestPlatformGenerationPersistenceRejectsRedisIdentityMismatchBeforeMySQL(t 
 	t.Run("pure terminal error", func(t *testing.T) {
 		input := PlatformGenerationPersistenceInput{
 			UserID: 1, GenerationID: generationTestID, Mode: PlatformGenerationModeCompare,
-			Models: []string{"model-a", "model-b"}, UserMessage: "prompt", NowMillis: 1,
+			Models: []string{"model-a", "model-b"}, ReservedConversationGUID: reservedPlatformGenerationConversationGUID(), UserMessage: "prompt", NowMillis: 1,
 			Results: []PlatformGenerationPersistenceResult{
 				{Model: "model-a", State: PlatformGenerationStateFailed, Seq: 0, ErrorCode: "upstream_error"},
 				{Model: "model-b", State: PlatformGenerationStateCompleted, Content: "b", Tokens: 1, Seq: 0},
@@ -1352,7 +1504,7 @@ func TestPlatformGenerationPersistenceSingleWriteFailuresRollbackEveryEffect(t *
 				if err := f.db.Create(&existing).Error; err != nil {
 					t.Fatal(err)
 				}
-				input.ConversationGUID = &existing.Guid
+				setPlatformGenerationPersistenceExistingConversation(&input, &existing.Guid)
 			}
 			hook := fmt.Sprintf("platform_single_fault_%d", testSnowflake.Next())
 			matches := 0
@@ -1470,7 +1622,7 @@ func TestPlatformGenerationPersistenceSingleRejectsStaleLockedRowsBeforeWrites(t
 				if err := f.db.Create(&conversation).Error; err != nil {
 					t.Fatal(err)
 				}
-				input.ConversationGUID = &conversation.Guid
+				setPlatformGenerationPersistenceExistingConversation(&input, &conversation.Guid)
 			}
 			test.makeStale(t, f, input, &conversation)
 			p, err := NewPlatformGenerationPersistence(f.store)
@@ -1505,7 +1657,7 @@ func TestPlatformGenerationPersistenceSingleAllowsEqualLockedTimestamps(t *testi
 	}).Error; err != nil {
 		t.Fatal(err)
 	}
-	input.ConversationGUID = &conversation.Guid
+	setPlatformGenerationPersistenceExistingConversation(&input, &conversation.Guid)
 	p, err := NewPlatformGenerationPersistence(f.store)
 	if err != nil {
 		t.Fatal(err)
@@ -1555,7 +1707,7 @@ func TestPlatformGenerationPersistenceSingleAllowsNoOpConversationWrites(t *test
 				if err := f.db.Create(&conversation).Error; err != nil {
 					t.Fatal(err)
 				}
-				input.ConversationGUID = &conversation.Guid
+				setPlatformGenerationPersistenceExistingConversation(&input, &conversation.Guid)
 			}
 
 			p, err := NewPlatformGenerationPersistence(f.store)
@@ -1638,6 +1790,8 @@ func TestPlatformGenerationPersistenceCommitUnknownUsesBoundedIndependentContext
 			Model: "model-a", State: PlatformGenerationStateCompleted, AssistantMessageGUID: "3", Content: "answer", Tokens: 1,
 		}},
 	}
+	reservedConversationGUID := matching.ConversationGUID
+	input.ReservedConversationGUID = &reservedConversationGUID
 	run := func(t *testing.T, snapshot PlatformGenerationReceiptSnapshot, readErr, runErr, wantErr error) PlatformGenerationReceiptSnapshot {
 		t.Helper()
 		called := false
@@ -1717,7 +1871,8 @@ func (f platformGenerationFinalizationFixture) committingResults(t *testing.T, g
 	t.Cleanup(func() { _ = f.store.client.Del(context.Background(), f.store.key(f.user.ID, generationID)).Err() })
 	return PlatformGenerationPersistenceInput{
 		UserID: f.user.ID, GenerationID: generationID, Mode: mode, Models: modelsInOrder,
-		UserMessage: " compare prompt bytes ", Results: results, NowMillis: f.now + int64(len(results)) + 2,
+		ReservedConversationGUID: reservedPlatformGenerationConversationGUID(),
+		UserMessage:              " compare prompt bytes ", Results: results, NowMillis: f.now + int64(len(results)) + 2,
 	}
 }
 
@@ -1749,7 +1904,7 @@ func TestPlatformGenerationPersistenceFinalizesCompareWithIndependentMessages(t 
 		}
 		input := PlatformGenerationPersistenceInput{
 			UserID: 1, GenerationID: platformCompareGenerationID, Mode: PlatformGenerationModeCompare,
-			Models: []string{"model-a", "model-b"}, UserMessage: "prompt", NowMillis: 1,
+			Models: []string{"model-a", "model-b"}, ReservedConversationGUID: reservedPlatformGenerationConversationGUID(), UserMessage: "prompt", NowMillis: 1,
 			Results: []PlatformGenerationPersistenceResult{
 				{Model: "model-a", State: PlatformGenerationStateCompleted, Content: "one", Tokens: 1},
 				{Model: "model-b", State: PlatformGenerationStateCompleted, Content: "two", Tokens: 2},
@@ -1872,7 +2027,7 @@ func TestPlatformGenerationPersistenceAllModelFailureWritesNothing(t *testing.T)
 	}
 	input := PlatformGenerationPersistenceInput{
 		UserID: 1, GenerationID: platformCompareGenerationID, Mode: PlatformGenerationModeCompare,
-		Models: []string{"model-a", "model-b"}, UserMessage: "prompt", NowMillis: 1,
+		Models: []string{"model-a", "model-b"}, ReservedConversationGUID: reservedPlatformGenerationConversationGUID(), UserMessage: "prompt", NowMillis: 1,
 		Results: []PlatformGenerationPersistenceResult{
 			{Model: "model-a", State: PlatformGenerationStateFailed, ErrorCode: "timeout"},
 			{Model: "model-b", State: PlatformGenerationStateFailed, ErrorCode: "upstream_error"},
@@ -1985,13 +2140,21 @@ func TestPlatformGenerationPersistenceDuplicateIgnoresRetryTimestamp(t *testing.
 			UserMessage:                   input.UserMessage, SuccessfulModelCount: 1, DailyCallsCharged: 1, TotalTokens: 1, CommittedAtMillis: 7,
 			Results: []PlatformGenerationCommittedResult{{Model: "model-a", State: PlatformGenerationStateCompleted, AssistantMessageGUID: "3", Content: "answer", Tokens: 1}},
 		}
+		reservedConversationGUID := receipt.ConversationGUID
+		input.ReservedConversationGUID = &reservedConversationGUID
 		input.NowMillis = 99
 		input.Results[0].Seq = 42
 		if !platformReceiptMatchesInput(receipt, input) {
 			t.Fatal("receipt match incorrectly compared retry timestamp or Redis-only sequence")
 		}
+		differentReservedConversationGUID := receipt.ConversationGUID + 1
+		input.ReservedConversationGUID = &differentReservedConversationGUID
+		if platformReceiptMatchesInput(receipt, input) {
+			t.Fatal("new-conversation receipt accepted a retry with a different reserved conversation GUID")
+		}
+		input.ReservedConversationGUID = &reservedConversationGUID
 		conversationGUID := receipt.ConversationGUID
-		input.ConversationGUID = &conversationGUID
+		setPlatformGenerationPersistenceExistingConversation(&input, &conversationGUID)
 		if platformReceiptMatchesInput(receipt, input) {
 			t.Fatal("new-conversation receipt accepted an explicit retry of its resulting conversation")
 		}
@@ -2000,6 +2163,7 @@ func TestPlatformGenerationPersistenceDuplicateIgnoresRetryTimestamp(t *testing.
 			t.Fatal("same existing-conversation request was not idempotent")
 		}
 		input.ConversationGUID = nil
+		input.ReservedConversationGUID = &reservedConversationGUID
 		if platformReceiptMatchesInput(receipt, input) {
 			t.Fatal("existing-conversation receipt accepted a retry requesting a new conversation")
 		}
@@ -2068,7 +2232,8 @@ func TestPlatformGenerationPersistenceDuplicateRequiresExactConversationProvenan
 			t.Fatal(err)
 		}
 		input := f.committingSingle(t)
-		input.ConversationGUID = &conversation.Guid
+		reservedConversationGUID := *input.ReservedConversationGUID
+		setPlatformGenerationPersistenceExistingConversation(&input, &conversation.Guid)
 		p, err := NewPlatformGenerationPersistence(f.store)
 		if err != nil {
 			t.Fatal(err)
@@ -2081,12 +2246,13 @@ func TestPlatformGenerationPersistenceDuplicateRequiresExactConversationProvenan
 		if err != nil || !reflect.DeepEqual(first, retry) {
 			t.Fatalf("same existing-conversation retry=%#v error=%v, want %#v", retry, err, first)
 		}
-		input.ConversationGUID = &otherConversation.Guid
+		setPlatformGenerationPersistenceExistingConversation(&input, &otherConversation.Guid)
 		if _, err := p.Finalize(context.Background(), f.db, input); !errors.Is(err, ErrPlatformGenerationPersistenceConflict) {
 			t.Fatalf("existing-to-different-existing retry error=%v, want conflict", err)
 		}
 		assertPlatformGenerationFinalizationEffects(t, f, 2, 2, 1, 1, 1, 3, 17)
 		input.ConversationGUID = nil
+		input.ReservedConversationGUID = &reservedConversationGUID
 		if _, err := p.Finalize(context.Background(), f.db, input); !errors.Is(err, ErrPlatformGenerationPersistenceConflict) {
 			t.Fatalf("existing-to-new retry error=%v, want conflict", err)
 		}
@@ -2108,10 +2274,28 @@ func TestPlatformGenerationPersistenceDuplicateRequiresExactConversationProvenan
 		if err != nil || !reflect.DeepEqual(first, retry) {
 			t.Fatalf("same new-conversation retry=%#v error=%v, want %#v", retry, err, first)
 		}
-		input.ConversationGUID = &first.ConversationGUID
+		setPlatformGenerationPersistenceExistingConversation(&input, &first.ConversationGUID)
 		if _, err := p.Finalize(context.Background(), f.db, input); !errors.Is(err, ErrPlatformGenerationPersistenceConflict) {
 			t.Fatalf("new-to-explicit-result retry error=%v, want conflict", err)
 		}
+	})
+
+	t.Run("new conversation requires exact reserved request guid", func(t *testing.T) {
+		f := openPlatformGenerationFinalizationFixture(t)
+		input := f.committingSingle(t)
+		p, err := NewPlatformGenerationPersistence(f.store)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := p.Finalize(context.Background(), f.db, input); err != nil {
+			t.Fatal(err)
+		}
+		differentReservedConversationGUID := testSnowflake.Next()
+		input.ReservedConversationGUID = &differentReservedConversationGUID
+		if _, err := p.Finalize(context.Background(), f.db, input); !errors.Is(err, ErrPlatformGenerationPersistenceConflict) {
+			t.Fatalf("different reserved GUID retry error=%v, want conflict", err)
+		}
+		assertPlatformGenerationFinalizationEffects(t, f, 1, 2, 1, 1, 1, 3, 17)
 	})
 }
 
