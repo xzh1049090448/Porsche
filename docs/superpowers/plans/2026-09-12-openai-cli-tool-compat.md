@@ -8,6 +8,8 @@
 
 **Tech Stack:** Go 1.24, Gin, `encoding/json`, existing `internal/whitelabel`, `httptest`, table-driven Go tests.
 
+**Execution status (2026-09-12):** Tasks 1-7 and Task 8 implementation are complete. Focused race, full test, vet, build, diff, sensitive-data scan, and adversarial protocol probes pass. Task 8's real handler acceptance and Task 9's final acceptance remain blocked because the isolated `TEST_DATABASE_URL` fixture is unavailable; independent spec/security review and real OpenCode/Codex acceptance are also not run. See `docs/superpowers/reports/2026-09-12-openai-cli-tool-compat.md`.
+
 ---
 
 ## File map

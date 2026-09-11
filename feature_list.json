@@ -1,6 +1,6 @@
 {
   "project": "Porsche Go AI Gateway",
-  "last_updated": "2026-09-11",
+  "last_updated": "2026-09-12",
   "rules": {
     "single_active_feature": true,
     "passing_requires_evidence": true,
@@ -34,9 +34,10 @@
         "2026-09-08：BE02 Redis generation registry 在 loopback-only、tmpfs、无持久化 Redis 7 fixture 上完成真实 Lua/CAS race 与全量 Go 回归；typed duplicate conflict、24h KEEPTTL、cancel/commit winner-only、严格 seq/terminal、每模型唯一消息 GUID、稳定错误和记录脱敏通过独立规格与安全复审。报告 docs/superpowers/reports/2026-09-08-platform-generation-registry.md。",
         "2026-09-08：BE03 新增 0011 generation receipt/result schema、原子 single/compare 持久化、每模型独立消息、成功项 quota/token/usage 一致性、精确会话来源约束的幂等与 commit-unknown 恢复锚点；隔离 MySQL/Redis race 在补足一次性本地 test-only HMAC 前置后无 fixture skip 通过，全量 Go、vet、diff 及独立规格/实现/安全复审通过，reconciliation 依赖错误保持稳定脱敏。报告 docs/superpowers/reports/2026-09-08-platform-generation-persistence.md。",
         "2026-09-09：BE04 production code HEAD 为 620dcd852222284e0d9c057d1e50ae6d3bb5e0cb，交付候选 c55ca7f52bc92ecfae08411cf0d0b9d50f5bdf10 仅追加 test-only uppercase scan fixture stabilization。最终生产修复链为 b114ef5 中间提交、9b7e925 最终逐记录损坏容忍与 caller cancellation、fee9ae4 receipt pre-CAS 精确匹配、620dcd8 cancel deadline 与锁清理。99594f5 post-doc full 的 FAIL_TEST_FIXTURE_FLAKE 未被掩盖；c55ca7f 的 focused -count=100、race -count=50 与两次 fresh 原始 full 均通过。全新 loopback-only tmpfs MySQL 8.4.11 / Redis 7.4.11、0001–0011 下 affected race、combined normal/race、vet/build/diff/security scans 通过；full 唯一 skip 为非 BE04 的 opt-in TestAdminUsersReadPerformance，BE04 0 skip。首次 Task9 BLOCKED_TEST_ISOLATION 已由 23820ac 修复。报告 docs/superpowers/reports/2026-09-09-platform-generation-control.md。",
-        "2026-09-11：BE05 single v2 stream 八个真实 MySQL/Redis integration 顶层测试全部 PASS、零 skip；focused normal/race 各 114 PASS，fresh full 3403 PASS，fresh affected race 2488 PASS，build/vet/diff/privacy PASS。唯一 skip 为非 BE05 的显式 opt-in TestAdminUsersReadPerformance。续租 activity timestamp 与已迁移库重跑 verifier 两个 FAIL_PRODUCT 分别由 0270735、d09d493 修复并通过独立 SPEC/SECURITY/真实 fixture TEST review。fixture 已精确清理。报告 docs/superpowers/reports/2026-09-10-platform-single-stream-v2.md。"
+        "2026-09-11：BE05 single v2 stream 八个真实 MySQL/Redis integration 顶层测试全部 PASS、零 skip；focused normal/race 各 114 PASS，fresh full 3403 PASS，fresh affected race 2488 PASS，build/vet/diff/privacy PASS。唯一 skip 为非 BE05 的显式 opt-in TestAdminUsersReadPerformance。续租 activity timestamp 与已迁移库重跑 verifier 两个 FAIL_PRODUCT 分别由 0270735、d09d493 修复并通过独立 SPEC/SECURITY/真实 fixture TEST review。fixture 已精确清理。报告 docs/superpowers/reports/2026-09-10-platform-single-stream-v2.md。",
+        "2026-09-12：Gateway/CLI 兼容子项目已实现 Chat Completions 工具消息往返、无状态 Responses 文本/函数工具、并行调用及 Responses SSE；focused race、全仓 test、vet、build、diff 和协议对抗探针通过。5 个真实 handler 闭环测试因未配置 TEST_DATABASE_URL 全部 SKIP，独立规格/安全复审、真实 OpenCode/Codex、真实上游和生产均 NOT_RUN，状态 BLOCKED_FIXTURE。报告 docs/superpowers/reports/2026-09-12-openai-cli-tool-compat.md。"
       ],
-      "notes": "BE01-BE05 已在本地完成；single v2 stream 已通过真实隔离 fixture。BE06 compare v2 stream、前后端联合验收、生产迁移、部署、公开 HTTPS 验证和真实上游仍未完成；compare stream 继续稳定 503。未 push、创建 PR、merge、deploy、执行生产迁移或调用真实付费上游。"
+      "notes": "BE01-BE05 已在本地完成；single v2 stream 已通过真实隔离 fixture。Gateway/CLI 兼容代码已完成本地无数据库回归，但真实 handler 闭环仍为 BLOCKED_FIXTURE；独立规格/安全复审、真实 OpenCode/Codex 与真实上游验收均 NOT_RUN。BE06 compare v2 stream、前后端联合验收、生产迁移、部署和公开 HTTPS 验证仍未完成；compare stream 继续稳定 503。未 push、创建 PR、merge、deploy、执行生产迁移或调用真实付费上游。"
     },
     {
       "id": "go-017",
