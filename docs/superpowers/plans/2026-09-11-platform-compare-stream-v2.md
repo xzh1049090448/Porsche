@@ -4,7 +4,7 @@
 
 **Goal:** Activate the authenticated `platform-chat-sse.v2` compare path for two or three models with one shared generation lease, independent model outcomes, durable partial success, detached HTTP output, and authoritative GET/cancel recovery.
 
-**Architecture:** Add a dedicated `PlatformCompareGenerationRunner` beside the existing single runner. The coordinator owns one compare claim, registry entry, renewal loop, mutation lock, encoder, persistence transaction, and terminal decision; per-model workers own only their upstream body, sequence/content/token state, and local terminal result. Reuse the existing BE02–BE05 store, persistence, control, cancellation, SSE, and single-runner package helpers without generalizing the single runner or changing the schema.
+**Architecture:** Add a dedicated `PlatformCompareGenerationRunner` beside the existing single runner. The coordinator owns one compare claim, registry entry, renewal loop, receipt reader, persistence transaction, terminal decision, and a shared serial critical section spanning owner-bound Redis mutation, worker state, encoder state, and complete frame write/detach; per-model workers own only their upstream body and local inputs/results. Reuse the existing BE02–BE05 store, persistence, control, cancellation, and SSE helpers without generalizing the single runner, reusing its non-thread-safe `platformSingleOutput`, or changing the schema.
 
 **Tech Stack:** Go, Gin, GORM/MySQL 8.4, Redis 7, `httptest`, `go test -race`, Docker disposable fixtures.
 
@@ -16,6 +16,7 @@
 - Do not edit Porsche-Web, migrations, deployment files, production configuration, or the legacy compare implementation.
 - Do not call real or paid upstreams. Unit tests use controlled fakes; integration tests use disposable MySQL and Redis plus local deterministic upstream doubles.
 - Keep `go-018` as `in_progress`. BE06 completion does not imply frontend/backend joint acceptance, production migration/deployment, public HTTPS acceptance, or real-upstream acceptance.
+- Treat the current Porsche-Web contract only as an unresolved handoff: `interface-contract.json` SHA-256 `0891e452f122922f576745db89c96c853a9a7cf4ff00078c30ae3b3f0769e970`, version `v1.0.0`, status `draft`, with `interfaces/sse_events` empty. The frontend's existing compare behavior, parser, cancel flow, and GET hydration differences remain for later coordinated joint acceptance and are not BE06 implementation scope.
 - Use the repository's full review sequence because this change crosses SSE, Redis, persistence, handler, and lifecycle boundaries: Explorer before implementation; original Worker for all implementation tasks; then snapshot-bound Spec, Security, and Test reviews. Any reviewed-file change invalidates downstream reviews and restarts at Spec.
 - Use `GOCACHE=/private/tmp/porsche-be06-go-cache` for all Go commands. A sandbox loopback denial is an environment result, not a product result; rerun the same command in an approved environment and record both outcomes.
 - Commit after every green task. Never combine a red test and its implementation in the same unverified step.
@@ -131,14 +132,17 @@ func TestPlatformCompareGenerationPreflightRejectsBeforeClaim(t *testing.T)
 func TestPlatformCompareGenerationRequiresTwoOrThreeDistinctModels(t *testing.T)
 func TestPlatformCompareGenerationCopiesRequestBeforeClaim(t *testing.T)
 func TestPlatformCompareGenerationValidatesConversationOwnershipAndQuota(t *testing.T)
+func TestPlatformCompareGenerationQuotaRequiresCapacityForEveryRequestedModel(t *testing.T)
+func TestPlatformCompareGenerationQuotaAppliesDailyReset(t *testing.T)
+func TestPlatformCompareGenerationProfessionalAndEnterpriseQuotaRemainUnlimited(t *testing.T)
 ```
 
-Assert canonical lowercase UUID, exact request-order model preservation, distinct two-or-three models, message and context limits, conversation ownership, quota availability, and removal of v2-only controls before any claim/upstream/persistence/output call.
+Assert canonical lowercase UUID, exact request-order model preservation, distinct two-or-three models, message and context limits, conversation ownership, quota availability, and removal of v2-only controls before any claim/upstream/persistence/output call. For Free or another daily-call-limited user, compute effective current-day usage with the existing reset rule and require remaining capacity to be at least the requested model count. Cover both two- and three-model requests and both sides of the daily reset boundary. Professional and Enterprise preserve the existing unlimited rule. Do not add quota reservation, schema, or persistence state.
 
 **Step 2: Run the tests and observe the missing symbols**
 
 ```bash
-GOCACHE=/private/tmp/porsche-be06-go-cache go test ./internal/service -run 'TestPlatformCompareGeneration(Rejects|Preflight|Requires|Copies|Validates)' -count=1
+GOCACHE=/private/tmp/porsche-be06-go-cache go test ./internal/service -run 'TestPlatformCompareGeneration(Rejects|Preflight|Requires|Copies|Validates|Quota|Professional)' -count=1
 ```
 
 Expected: compile failure for the absent compare runner types.
@@ -174,7 +178,13 @@ type PlatformCompareGenerationRunnerAPI interface {
 }
 ```
 
-Add `NewPlatformCompareGenerationRunner` with the same dependency classes as the single runner. Implement only dependency validation and `prepare`. Reuse package-local single-runner helpers for cloning messages, trimming context, selecting the final user message, quota checks, and loading an existing conversation; do not move or rename the helpers.
+Add `NewPlatformCompareGenerationRunner` with the same dependency classes as the single runner plus an explicit receipt-reader dependency in its internal deps:
+
+```go
+loadReceipt func(context.Context, *gorm.DB, int64, string) (PlatformGenerationReceiptSnapshot, error)
+```
+
+Production construction binds it to `LoadPlatformGenerationReceipt`. Tests inject a spy/fake and prove a nil reader fails closed. Implement only dependency validation and `prepare`. Reuse package-local single-runner helpers for cloning messages, trimming context, selecting the final user message, and loading an existing conversation; extend compare quota preflight rather than applying the single-model boolean unchanged. Do not move or rename the existing helpers.
 
 The prepared state must own copied slices/maps and construct `NewPlatformSSEV2Encoder(generationID, orderedModels)` before claim.
 
@@ -182,7 +192,7 @@ The prepared state must own copied slices/maps and construct `NewPlatformSSEV2En
 
 ```bash
 gofmt -w internal/service/platform_compare_generation.go internal/service/platform_compare_generation_test.go
-GOCACHE=/private/tmp/porsche-be06-go-cache go test ./internal/service -run 'TestPlatformCompareGeneration(Rejects|Preflight|Requires|Copies|Validates)' -count=1
+GOCACHE=/private/tmp/porsche-be06-go-cache go test ./internal/service -run 'TestPlatformCompareGeneration(Rejects|Preflight|Requires|Copies|Validates|Quota|Professional)' -count=1
 ```
 
 Expected: PASS with no claim or upstream call in rejection cases.
@@ -265,17 +275,18 @@ Add:
 func TestPlatformCompareGenerationFansOutTwoAndThreeModels(t *testing.T)
 func TestPlatformCompareGenerationAllowsCrossModelInterleavingWithStrictPerModelSequence(t *testing.T)
 func TestPlatformCompareGenerationModelFailureDoesNotCancelSiblings(t *testing.T)
-func TestPlatformCompareGenerationSerializesStoreMutationsAndFrames(t *testing.T)
+func TestPlatformCompareGenerationSerializesMutationStateEncoderAndFrames(t *testing.T)
+func TestPlatformCompareGenerationNeverCallsHTTPWriterConcurrently(t *testing.T)
 func TestPlatformCompareGenerationClosesEveryResponseBodyExactlyOnce(t *testing.T)
 func TestPlatformCompareGenerationDetachedWriterStillRunsAllModels(t *testing.T)
 ```
 
-Use barriers rather than sleeps to force a slow model, a fast model, concurrent deltas, a malformed upstream event, and first-write failure. Parse complete SSE frames and assert per-model sequence monotonicity, permitted cross-model interleaving, exactly one local terminal event, and no torn frame.
+Use barriers rather than sleeps to force a slow model, a fast model, concurrent deltas, a malformed upstream event, and first-write failure. Parse complete SSE frames and assert per-model sequence monotonicity, permitted cross-model interleaving, exactly one local terminal event, no torn frame, and a maximum HTTP-writer concurrency of one.
 
 **Step 2: Run and observe failures**
 
 ```bash
-GOCACHE=/private/tmp/porsche-be06-go-cache go test ./internal/service -run 'TestPlatformCompareGeneration(FansOut|Allows|ModelFailure|Serializes|Closes|Detached)' -count=1
+GOCACHE=/private/tmp/porsche-be06-go-cache go test ./internal/service -run 'TestPlatformCompareGeneration(FansOut|Allows|ModelFailure|Serializes|NeverCallsHTTPWriter|Closes|Detached)' -count=1
 ```
 
 Expected: failures because model workers and local terminal handling are absent.
@@ -286,20 +297,20 @@ Give every worker an immutable upstream request, response-body owner, builder, t
 
 ```text
 validate typed chunk and model -> check content/token bounds ->
-lock shared mutation boundary -> RecordDeltaOwned -> update worker state -> unlock ->
-encode and attempt output
+lock the one shared serial section -> RecordDeltaOwned -> update worker state ->
+advance encoder -> write the complete frame or detach -> unlock
 ```
 
-On a valid terminal, call `MarkModelDoneOwned` then emit `model_done`. On timeout, malformed stream, upstream error, or content overflow, call `MarkModelFailedOwned` then emit one `model_error`. Convert provider details only to the stable v2 code vocabulary. A local failure must not cancel sibling contexts.
+On a valid terminal, keep `MarkModelDoneOwned`, the worker terminal-slot update, encoder transition, and complete `model_done` write/detach in that same serial section. On timeout, malformed stream, upstream error, or content overflow, do the corresponding `MarkModelFailedOwned`, worker terminal-slot update, encoder transition, and one complete `model_error` write/detach in the same section. Convert provider details only to the stable v2 code vocabulary. A local failure must not cancel sibling contexts.
 
-Use the existing thread-safe `PlatformSSEV2Encoder`, plus an atomic detach-on-first-write-error output wrapper. Once detached, all later output calls are no-ops while model work and persistence continue.
+The shared encoder is protected by the same serial section; do not assume it is independently thread-safe. Add compare-specific detach state under that section and do not reuse `platformSingleOutput`, which is not safe for concurrent workers. Once detached, later frame transitions remain serialized no-ops at the writer boundary while model work and persistence continue. No code path may call the HTTP writer outside the serial section.
 
 **Step 4: Run focused normal and race tests**
 
 ```bash
 gofmt -w internal/service/platform_compare_generation.go internal/service/platform_compare_generation_test.go
-GOCACHE=/private/tmp/porsche-be06-go-cache go test ./internal/service -run 'TestPlatformCompareGeneration(FansOut|Allows|ModelFailure|Serializes|Closes|Detached)' -count=1
-GOCACHE=/private/tmp/porsche-be06-go-cache go test -race ./internal/service -run 'TestPlatformCompareGeneration(FansOut|Allows|Serializes|Detached)' -count=1
+GOCACHE=/private/tmp/porsche-be06-go-cache go test ./internal/service -run 'TestPlatformCompareGeneration(FansOut|Allows|ModelFailure|Serializes|NeverCallsHTTPWriter|Closes|Detached)' -count=1
+GOCACHE=/private/tmp/porsche-be06-go-cache go test -race ./internal/service -run 'TestPlatformCompareGeneration(FansOut|Allows|Serializes|NeverCallsHTTPWriter|Detached)' -count=1
 ```
 
 Expected: PASS; each response body closes exactly once and no race is reported.
@@ -331,7 +342,7 @@ func TestPlatformCompareGenerationShutdownDrainsAdmissionAndRegistration(t *test
 func TestPlatformCompareGenerationCancelAndTerminalRaceHasOneAuthority(t *testing.T)
 ```
 
-Inject the clock/ticker. Use channels to prove renewal shares the mutation lock with deltas and terminal operations. Capture before/after persistence and quota counters for all-failed and cancel cases.
+Inject the clock/ticker. Use channels to prove renewal shares the same serial section with deltas and terminal operations, so its owner-bound Redis mutation cannot interleave with them. Also prove renewal does not advance the encoder or write a frame. Capture before/after persistence and quota counters for all-failed and cancel cases.
 
 **Step 2: Run and observe failures**
 
@@ -345,7 +356,7 @@ Expected: failures because shared renewal and terminal authority convergence are
 
 Start one ten-second renewal loop only after registration. Explicit cancel and application shutdown cancel every model context and close each owned body. Join workers and renewal without dropping an in-flight unknown result.
 
-When all workers report failed, call `FailRunningOwned` directly; do not call `BeginCommitOwned` or `Finalize`. Emit one sanitized global `error` and no `done`. If authority is `cancelling`, call `AcknowledgeCancelledOwned`; if `committing`, enter receipt-backed reconciliation; if the snapshot cannot be trusted, fail closed without inventing a terminal success.
+When all workers report failed, call `FailRunningOwned` directly; do not call `BeginCommitOwned` or `Finalize`. Emit one sanitized global `error` and no `done`. If authority is `cancelling`, call `AcknowledgeCancelledOwned`; if `committing`, load and strictly validate the full receipt graph through the injected receipt reader and call `ReconcileComplete`, never `Finalize`; if the snapshot cannot be trusted, fail closed without inventing a terminal success.
 
 Every goroutine, timer, body, registration, and cancel function must have one idempotent cleanup owner.
 
@@ -382,16 +393,18 @@ func TestPlatformCompareGenerationPersistsPartialSuccessAndFailedReceiptResult(t
 func TestPlatformCompareGenerationChargesOnlySuccessfulModels(t *testing.T)
 func TestPlatformCompareGenerationRejectsInvalidReceiptBeforeComplete(t *testing.T)
 func TestPlatformCompareGenerationCommitUnknownReconcilesWithoutSQLReplay(t *testing.T)
+func TestPlatformCompareGenerationObservedCommittingReadsReceiptAndNeverFinalizes(t *testing.T)
+func TestPlatformCompareGenerationReconcileRejectsIncompleteReceiptGraph(t *testing.T)
 func TestPlatformCompareGenerationDoneUsesAuthoritativeGUIDsAndTokenTotal(t *testing.T)
 func TestPlatformCompareGenerationUnprovenCompletionNeverEmitsDone(t *testing.T)
 ```
 
-Assert exact request order, one user message, one assistant/usage row per success, failed receipt entries with empty content and zero tokens, successful GUIDs only in Redis, one `Finalize` call, and one global `done` only after both MySQL and Redis authority.
+Assert exact request order, one user message, one assistant/usage row per success, failed receipt entries with empty content and zero tokens, successful GUIDs only in Redis, at most one `Finalize` call on the direct commit path, and one global `done` only after both MySQL and Redis authority. Every path that observes `committing` or commit/`Complete` uncertainty must call the injected receipt reader, strictly validate the complete graph, and call `ReconcileComplete`; those paths must make zero additional `Finalize` calls.
 
 **Step 2: Run and observe failures**
 
 ```bash
-GOCACHE=/private/tmp/porsche-be06-go-cache go test ./internal/service -run 'TestPlatformCompareGeneration(Persists|Charges|RejectsInvalidReceipt|CommitUnknown|DoneUses|Unproven)' -count=1
+GOCACHE=/private/tmp/porsche-be06-go-cache go test ./internal/service -run 'TestPlatformCompareGeneration(Persists|Charges|RejectsInvalidReceipt|CommitUnknown|ObservedCommitting|ReconcileRejects|DoneUses|Unproven)' -count=1
 ```
 
 Expected: failures because successful terminal aggregation is not persisted/completed.
@@ -402,13 +415,13 @@ If at least one worker succeeded:
 
 1. Build one ordered `PlatformGenerationPersistenceInput` containing every model result.
 2. Call `BeginCommitOwned` once.
-3. Call `Finalize` once.
-4. Validate the receipt/result graph against the exact user, generation, conversation provenance, ordered models, contents, failures, sequences, and tokens.
+3. Call `Finalize` once only on this direct authority-proven commit path.
+4. Validate the returned receipt/result graph against the exact user, generation, conversation provenance, ordered models, contents, failures, sequences, tokens, charges, assistant GUID presence/absence, and committed metadata.
 5. Build `assistantMessageGUIDs` for successful models only and call `Complete`.
-6. If completion outcome is unknown, call `ReconcileComplete` from the receipt graph without calling `Finalize` again.
+6. If `Complete` is unknown, or any convergence path observes `committing`, call the injected `loadReceipt` dependency with the existing `LoadPlatformGenerationReceipt` shape, strictly validate the same complete graph, derive GUIDs only from that validated receipt, and call `ReconcileComplete`. Never call `Finalize` in a reconciliation path.
 7. Load authoritative total tokens and emit `DoneCompare` once.
 
-Treat receipt mismatch, total-token load failure, or impossible completion snapshot as generation-level failure. Never emit `done` speculatively.
+Treat a missing/incomplete/mismatched receipt, total-token load failure, or impossible completion snapshot as generation-level failure. Never emit `done` speculatively and never replay SQL to resolve uncertain commit authority.
 
 **Step 4: Run the entire compare unit suite with race detection**
 
@@ -451,7 +464,7 @@ func TestPlatformCompareV2NeverWritesJSONAfterStreamStarts(t *testing.T)
 func TestPlatformCompareV2PreservesLegacyAndNonStreamingBehavior(t *testing.T)
 ```
 
-Update the former “compare remains guarded” single-v2 assertion so it now proves single v2 remains unchanged while explicit compare v2 is delegated. Assert exact content type/cache/connection headers, exactly one `meta`, allowed event names, no bare `[DONE]`, authenticated `409` projection, `400 invalid_request`, `429 rate_limited`, stable `503`, and no JSON appended after `Started=true`.
+Update the former “compare remains guarded” single-v2 assertion so it now proves single v2 remains unchanged while explicit compare v2 is delegated. Require the compare branch to call `service.SetPlatformSSEV2Headers` and assert exactly `Content-Type: text/event-stream; charset=utf-8`, `Cache-Control: no-cache, no-transform`, and `X-Accel-Buffering: no`; do not add or require `Connection`, and do not change single-v2 headers. Also assert exactly one `meta`, allowed event names, no bare `[DONE]`, authenticated `409` projection, `400 invalid_request`, `429 rate_limited`, stable `503`, and no JSON appended after `Started=true`.
 
 **Step 2: Run and observe the stable unavailable response**
 
@@ -568,7 +581,7 @@ func TestPlatformCompareGenerationIntegrationCommitUnknownReconciles(t *testing.
 func TestPlatformCompareGenerationIntegrationConcurrentQuotaAndDuplicateRaces(t *testing.T)
 ```
 
-Successful cases must assert the exact receipt graph, ordered model results, one user message, one assistant message/usage row per success, failed result rows without assistant messages, successful-model call/token charges only, assistant GUIDs for successes only, GET order, and aggregate token-total equality. All-failed and cancelled cases must compare complete durable snapshots before and after and prove zero changes to conversations, messages, usage, receipts/results, quota, and token totals.
+Successful cases must include both two- and three-model requests and assert the exact receipt graph, ordered model results, one user message, one assistant message/usage row per success, failed result rows without assistant messages, successful-model call/token charges only, assistant GUIDs for successes only, GET order, and aggregate token-total equality. Limited-plan cases cover remaining capacity of `models-1`, exactly `models`, and more than `models`, plus usage immediately before and after the existing daily reset boundary; claim/upstream must be untouched when capacity is insufficient. Professional and Enterprise remain unlimited. The concurrent quota case must force multiple two/three-model `Finalize` competitors and prove only transactions with capacity for all of their possible successes commit, without reservation or schema. All-failed and cancelled cases must compare complete durable snapshots before and after and prove zero changes to conversations, messages, usage, receipts/results, quota, and token totals.
 
 **Step 2: Start fresh isolated fixtures**
 
@@ -609,18 +622,29 @@ Keep fixtures running until Task 10 finishes so final verification uses the same
 - Modify: `progress.md`
 - Modify: `feature_list.json`
 
-**Step 1: Freeze the implementation snapshot**
+**Step 1: Generate the canonical implementation snapshot**
 
-Record:
+The `project_manager` prepares one exact repository-relative scope JSON and an external baseline JSON under a dynamically allocated private directory. Use `<private-task-dir>` below only as the concrete path parameter supplied in the implementation task package; it is not an unresolved implementation decision. The authorized writer must run this exact helper from the repository root, with no backend `--contract` argument:
 
 ```bash
-git status --short
-git rev-parse HEAD
-git diff --binary HEAD
-git ls-files -s
+python3 docs/agents/review_snapshot.py snapshot \
+  --scope <private-task-dir>/scope.json \
+  --baseline <private-task-dir>/baseline.json \
+  --output -
 ```
 
-Compute a review snapshot identity from the HEAD revision, dirty diff hash, approved design hash, plan hash, and hashes of every reviewed file. Give this exact identity to Spec, then Security, then Test review. The original Worker applies all requested changes. After any change, compute a new identity and restart at Spec.
+The authorized writer saves canonical stdout byte-for-byte into `<private-task-dir>/snapshot.json` as a brand-new exclusive file outside the worktree. The target must not already exist and must not be overwritten, symlinked, hardlinked, edited, normalized, or reconstructed. Do not compute, describe, or accept any manual snapshot identity algorithm.
+
+Spec, Security, and Test each independently run the following command against the same scope, baseline, and writer-saved snapshot before reviewing or testing:
+
+```bash
+python3 docs/agents/review_snapshot.py verify \
+  --scope <private-task-dir>/scope.json \
+  --baseline <private-task-dir>/baseline.json \
+  --snapshot <private-task-dir>/snapshot.json
+```
+
+Security starts only after `SPEC_PASS` binds that verified snapshot; Test starts only after Spec and Security pass the same verified snapshot. Any change to reviewed content requires a new canonical snapshot saved to a new exclusive file and restarts the chain from Spec.
 
 **Step 2: Run the full verification matrix**
 
@@ -663,7 +687,7 @@ Expected: no migration path and no secret-bearing evidence. Benign vocabulary ma
 
 **Step 4: Write the delivery report and update trackers**
 
-The report must include baseline and final revisions, review snapshot identity, approved scope, changed files, exact test commands/results, eight real-fixture cases with zero skips, durable row/counter evidence, SSE examples containing only sanitized synthetic content, review verdicts, skip census, privacy audit, fixture IDs/ports, and cleanup proof.
+The report must include baseline and final revisions, canonical review snapshot ID, external scope/baseline/snapshot evidence references and hashes, approved scope, changed files, exact test commands/results, eight real-fixture cases with zero skips, durable row/counter evidence, SSE examples containing only sanitized synthetic content, review verdicts and each role's successful verify command, skip census, privacy audit, fixture IDs/ports, and cleanup proof.
 
 Update `progress.md` and `feature_list.json` to say BE06 is locally complete only if every gate passed. Preserve `go-018: in_progress` and explicitly list remaining frontend/backend contract alignment, joint acceptance, production migration/deployment, public HTTPS, and real-upstream evidence. Do not say push, PR, merge, deploy, or production migration occurred.
 
