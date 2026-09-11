@@ -1195,14 +1195,29 @@ func (s *platformCompareStreamStore) AcknowledgeCancelledOwned(_ context.Context
 }
 func (s *platformCompareStreamStore) ReconcileComplete(ctx context.Context, userID int64, generationID string, guids map[string]string, now int64) (PlatformGenerationSnapshot, error) {
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.reconcileCalls++
 	s.reconcileGUIDs = cloneStringMap(guids)
 	err, snapshot := s.reconcileErr, clonePlatformGeneration(s.reconcileSnapshot)
-	s.mu.Unlock()
 	if err != nil || snapshot.GenerationID != "" {
 		return snapshot, err
 	}
-	return s.Complete(ctx, userID, generationID, guids, now)
+	snapshot = clonePlatformGeneration(s.settleSnapshot)
+	if snapshot.GenerationID == "" {
+		snapshot = clonePlatformGeneration(s.claim.Snapshot)
+	}
+	for model, state := range snapshot.ModelStates {
+		if seq, ok := s.done[model]; ok {
+			state.State, state.Seq, state.ErrorCode, state.AssistantMessageGUID = PlatformGenerationStateCompleted, seq, "", guids[model]
+		} else if code, ok := s.failed[model]; ok {
+			state.State, state.ErrorCode, state.AssistantMessageGUID = PlatformGenerationStateFailed, code, ""
+		}
+		snapshot.ModelStates[model] = state
+	}
+	snapshot.State, snapshot.UpdatedAtMillis = PlatformGenerationStateCompleted, now
+	snapshot.LeaseOwnerSHA256, snapshot.LeaseUntilMillis = "", 0
+	s.settleSnapshot = clonePlatformGeneration(snapshot)
+	return snapshot, nil
 }
 
 type platformCompareStreamBody struct {
@@ -2528,5 +2543,331 @@ func TestPlatformCompareGenerationUnprovenCompletionNeverEmitsDone(t *testing.T)
 		if frame.event == "done" {
 			t.Fatal("unproven completion emitted done")
 		}
+	}
+}
+
+func TestPlatformCompareGenerationDoneUsesAuthoritativeGUIDsAndTokenTotalFailures(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		total    int64
+		totalErr error
+		detached bool
+	}{
+		{name: "load error", totalErr: errors.New("total unavailable")},
+		{name: "negative", total: -1},
+		{name: "unsafe", total: platformSSEV2MaxSafeInteger + 1},
+		{name: "detached", totalErr: errors.New("total unavailable"), detached: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			scripts := map[string]func(context.Context, func(whitelabel.ChatCompletionChunk) error) *whitelabel.Error{
+				"model-a": platformCompareSuccessfulScript("model-a", "alpha"),
+				"model-b": platformCompareSuccessfulScript("model-b", "bravo"),
+			}
+			runner, store, _, writer := platformCompareStreamFixture(t, []string{"model-a", "model-b"}, scripts)
+			writer.failFirst = test.detached
+			effects := runner.deps.persistence.(*platformCompareTestPersistence).effects
+			runner.deps.persistence = &platformCompareTestPersistence{effects: effects, result: func(input PlatformGenerationPersistenceInput) (PlatformGenerationReceiptSnapshot, error) {
+				return platformCompareReceiptFromInput(input, map[string]string{"model-a": "9501", "model-b": "9502"}), nil
+			}}
+			runner.deps.loadTotalTokens = func(context.Context, *gorm.DB, int64) (int64, error) { return test.total, test.totalErr }
+			input := platformCompareTestInput()
+			input.Models, input.Write = []string{"model-a", "model-b"}, writer.Write
+			result, err := runner.Run(input)
+			frames := platformCompareDecodeFrames(t, writer.frames)
+			if !result.Started || !errors.Is(err, ErrPlatformCompareGenerationUnavailable) || store.completeCalls != 1 {
+				t.Fatalf("result=%+v err=%v store=%+v", result, err, store)
+			}
+			if test.detached {
+				if len(frames) != 1 || frames[0].event != "meta" {
+					t.Fatalf("detached frames=%+v", frames)
+				}
+				return
+			}
+			globalErrors := 0
+			for _, frame := range frames {
+				if frame.event == "done" {
+					t.Fatalf("invalid total emitted done=%+v", frames)
+				}
+				if frame.event == "error" {
+					globalErrors++
+					if frame.data["code"] != "internal_error" {
+						t.Fatalf("error frame=%+v", frame)
+					}
+				}
+			}
+			if globalErrors != 1 {
+				t.Fatalf("global errors=%d frames=%+v", globalErrors, frames)
+			}
+		})
+	}
+}
+
+func TestPlatformCompareGenerationCommitUnknownRejectsErrorBearingValues(t *testing.T) {
+	sentinel := errors.New("sentinel uncertainty")
+	for _, stage := range []string{"begin", "finalize", "complete", "reconcile"} {
+		t.Run(stage, func(t *testing.T) {
+			models := []string{"model-a", "model-b"}
+			scripts := map[string]func(context.Context, func(whitelabel.ChatCompletionChunk) error) *whitelabel.Error{
+				"model-a": platformCompareSuccessfulScript("model-a", "alpha"),
+				"model-b": platformCompareSuccessfulScript("model-b", "bravo"),
+			}
+			runner, store, _, writer := platformCompareStreamFixture(t, models, scripts)
+			effects := runner.deps.persistence.(*platformCompareTestPersistence).effects
+			committing := clonePlatformGeneration(store.claim.Snapshot)
+			committing.State, committing.LeaseOwnerSHA256, committing.LeaseUntilMillis = PlatformGenerationStateCommitting, "", 0
+			committing.ModelStates["model-a"] = PlatformGenerationModel{State: PlatformGenerationStateCompleted, Seq: 1}
+			committing.ModelStates["model-b"] = PlatformGenerationModel{State: PlatformGenerationStateCompleted, Seq: 1}
+			completed := clonePlatformGeneration(committing)
+			completed.State = PlatformGenerationStateCompleted
+			completed.ModelStates["model-a"] = PlatformGenerationModel{State: PlatformGenerationStateCompleted, Seq: 1, AssistantMessageGUID: "9601"}
+			completed.ModelStates["model-b"] = PlatformGenerationModel{State: PlatformGenerationStateCompleted, Seq: 1, AssistantMessageGUID: "9602"}
+			expected := PlatformGenerationPersistenceInput{
+				UserID: 17, GenerationID: platformCompareTestGenerationID, Mode: PlatformGenerationModeCompare, Models: models,
+				ReservedConversationGUID: func() *int64 { value := int64(8101); return &value }(), UserMessage: "hello",
+				Results: []PlatformGenerationPersistenceResult{
+					{Model: "model-a", State: PlatformGenerationStateCompleted, Content: "alpha", Tokens: 1, Seq: 1},
+					{Model: "model-b", State: PlatformGenerationStateCompleted, Content: "bravo", Tokens: 1, Seq: 1},
+				},
+				NowMillis: 10_000,
+			}
+			receipt := platformCompareReceiptFromInput(expected, map[string]string{"model-a": "9601", "model-b": "9602"})
+			persistenceErr := error(nil)
+			switch stage {
+			case "begin":
+				store.beginCommitSnapshot, store.beginCommitErr, store.settleSnapshot = committing, sentinel, committing
+			case "finalize":
+				persistenceErr = sentinel
+			case "complete":
+				store.completeSnapshot, store.completeErr = completed, sentinel
+			case "reconcile":
+				store.beginCommitSnapshot, store.beginCommitErr, store.settleSnapshot = committing, sentinel, committing
+				store.reconcileSnapshot, store.reconcileErr = completed, sentinel
+			}
+			runner.deps.persistence = &platformCompareTestPersistence{effects: effects, result: func(PlatformGenerationPersistenceInput) (PlatformGenerationReceiptSnapshot, error) {
+				return receipt, persistenceErr
+			}}
+			runner.deps.loadReceipt = func(context.Context, *gorm.DB, int64, string) (PlatformGenerationReceiptSnapshot, error) {
+				effects.receipt++
+				return receipt, nil
+			}
+			runner.deps.loadTotalTokens = func(context.Context, *gorm.DB, int64) (int64, error) { return 10, nil }
+			input := platformCompareTestInput()
+			input.Models, input.Write = models, writer.Write
+			result, err := runner.Run(input)
+			wantFinalize, wantComplete, wantDone := 0, 0, 1
+			if stage == "finalize" || stage == "complete" {
+				wantFinalize = 1
+			}
+			if stage == "complete" {
+				wantComplete = 1
+			}
+			if stage == "reconcile" {
+				wantDone = 0
+			}
+			doneFrames := 0
+			for _, frame := range platformCompareDecodeFrames(t, writer.frames) {
+				if frame.event == "done" {
+					doneFrames++
+				}
+			}
+			if !result.Started || effects.persist != wantFinalize || effects.receipt != 1 || store.beginCommitCalls != 1 || store.completeCalls != wantComplete || store.gets != 1 || store.reconcileCalls != 1 || doneFrames != wantDone {
+				t.Fatalf("stage=%s result=%+v err=%v effects=%+v store=%+v done=%d", stage, result, err, effects, store, doneFrames)
+			}
+			if wantDone == 1 && err != nil {
+				t.Fatalf("stage=%s proven recovery error=%v", stage, err)
+			}
+			if wantDone == 0 && !errors.Is(err, ErrPlatformCompareGenerationUnavailable) {
+				t.Fatalf("stage=%s error=%v", stage, err)
+			}
+		})
+	}
+}
+
+type platformCompareReceiptMutation struct {
+	name    string
+	partial bool
+	mutate  func(*PlatformGenerationReceiptSnapshot)
+}
+
+func platformCompareReceiptRejectionCases() []platformCompareReceiptMutation {
+	return []platformCompareReceiptMutation{
+		{name: "committed zero", mutate: func(r *PlatformGenerationReceiptSnapshot) { r.CommittedAtMillis = 0 }},
+		{name: "committed unsafe", mutate: func(r *PlatformGenerationReceiptSnapshot) { r.CommittedAtMillis = platformSSEV2MaxSafeInteger + 1 }},
+		{name: "tokens negative", mutate: func(r *PlatformGenerationReceiptSnapshot) { r.TotalTokens = -1 }},
+		{name: "tokens unsafe", mutate: func(r *PlatformGenerationReceiptSnapshot) { r.TotalTokens = platformSSEV2MaxSafeInteger + 1 }},
+		{name: "tokens sum", mutate: func(r *PlatformGenerationReceiptSnapshot) { r.TotalTokens++ }},
+		{name: "success count", mutate: func(r *PlatformGenerationReceiptSnapshot) { r.SuccessfulModelCount-- }},
+		{name: "daily charge", mutate: func(r *PlatformGenerationReceiptSnapshot) { r.DailyCallsCharged-- }},
+		{name: "duplicate guid", mutate: func(r *PlatformGenerationReceiptSnapshot) {
+			r.Results[1].AssistantMessageGUID = r.Results[0].AssistantMessageGUID
+		}},
+		{name: "missing guid", mutate: func(r *PlatformGenerationReceiptSnapshot) { r.Results[0].AssistantMessageGUID = "" }},
+		{name: "bad guid", mutate: func(r *PlatformGenerationReceiptSnapshot) { r.Results[0].AssistantMessageGUID = "01" }},
+		{name: "success content", mutate: func(r *PlatformGenerationReceiptSnapshot) { r.Results[0].Content = "wrong" }},
+		{name: "success tokens", mutate: func(r *PlatformGenerationReceiptSnapshot) { r.Results[0].Tokens++ }},
+		{name: "success error", mutate: func(r *PlatformGenerationReceiptSnapshot) { r.Results[0].ErrorCode = "internal_error" }},
+		{name: "failed guid", partial: true, mutate: func(r *PlatformGenerationReceiptSnapshot) { r.Results[1].AssistantMessageGUID = "9901" }},
+		{name: "failed content", partial: true, mutate: func(r *PlatformGenerationReceiptSnapshot) { r.Results[1].Content = "invented" }},
+		{name: "failed tokens", partial: true, mutate: func(r *PlatformGenerationReceiptSnapshot) { r.Results[1].Tokens = 1 }},
+		{name: "failed error mismatch", partial: true, mutate: func(r *PlatformGenerationReceiptSnapshot) { r.Results[1].ErrorCode = "timeout" }},
+		{name: "failed error unstable", partial: true, mutate: func(r *PlatformGenerationReceiptSnapshot) { r.Results[1].ErrorCode = "provider_secret" }},
+		{name: "result order", mutate: func(r *PlatformGenerationReceiptSnapshot) { r.Results[0], r.Results[1] = r.Results[1], r.Results[0] }},
+		{name: "result model", mutate: func(r *PlatformGenerationReceiptSnapshot) { r.Results[0].Model = "wrong-model" }},
+		{name: "result cardinality", mutate: func(r *PlatformGenerationReceiptSnapshot) { r.Results = r.Results[:1] }},
+		{name: "user", mutate: func(r *PlatformGenerationReceiptSnapshot) { r.UserID++ }},
+		{name: "generation", mutate: func(r *PlatformGenerationReceiptSnapshot) { r.GenerationID = "93000000-0000-4000-8000-000000000002" }},
+		{name: "mode", mutate: func(r *PlatformGenerationReceiptSnapshot) { r.Mode = PlatformGenerationModeSingle }},
+		{name: "conversation", mutate: func(r *PlatformGenerationReceiptSnapshot) { r.ConversationGUID++ }},
+		{name: "provenance", mutate: func(r *PlatformGenerationReceiptSnapshot) {
+			r.RequestedExistingConversation = !r.RequestedExistingConversation
+		}},
+		{name: "user message", mutate: func(r *PlatformGenerationReceiptSnapshot) { r.UserMessage = "wrong" }},
+	}
+}
+
+func platformCompareReceiptRejectionFixture(t *testing.T, test platformCompareReceiptMutation, recovery bool) (*platformCompareStreamStore, *platformCompareTestEffects, *platformCompareFrameWriter, error) {
+	t.Helper()
+	models := []string{"model-b", "model-a"}
+	scripts := map[string]func(context.Context, func(whitelabel.ChatCompletionChunk) error) *whitelabel.Error{
+		"model-b": platformCompareSuccessfulScript("model-b", "bravo"),
+		"model-a": platformCompareSuccessfulScript("model-a", "alpha"),
+	}
+	if test.partial {
+		scripts["model-a"] = func(context.Context, func(whitelabel.ChatCompletionChunk) error) *whitelabel.Error {
+			return whitelabel.ErrUpstreamUnavailable("provider")
+		}
+	}
+	runner, store, _, writer := platformCompareStreamFixture(t, models, scripts)
+	effects := runner.deps.persistence.(*platformCompareTestPersistence).effects
+	guids := map[string]string{"model-b": "9801", "model-a": "9802"}
+	var badReceipt PlatformGenerationReceiptSnapshot
+	runner.deps.persistence = &platformCompareTestPersistence{effects: effects, result: func(input PlatformGenerationPersistenceInput) (PlatformGenerationReceiptSnapshot, error) {
+		badReceipt = platformCompareReceiptFromInput(input, guids)
+		test.mutate(&badReceipt)
+		return badReceipt, nil
+	}}
+	if recovery {
+		committing := clonePlatformGeneration(store.claim.Snapshot)
+		committing.State, committing.LeaseOwnerSHA256, committing.LeaseUntilMillis = PlatformGenerationStateCommitting, "", 0
+		committing.ModelStates["model-b"] = PlatformGenerationModel{State: PlatformGenerationStateCompleted, Seq: 1}
+		if test.partial {
+			committing.ModelStates["model-a"] = PlatformGenerationModel{State: PlatformGenerationStateFailed, ErrorCode: "gateway_upstream_error"}
+		} else {
+			committing.ModelStates["model-a"] = PlatformGenerationModel{State: PlatformGenerationStateCompleted, Seq: 1}
+		}
+		store.beginCommitSnapshot, store.beginCommitErr, store.settleSnapshot = committing, ErrPlatformGenerationConflict, committing
+		expected := PlatformGenerationPersistenceInput{
+			UserID: 17, GenerationID: platformCompareTestGenerationID, Mode: PlatformGenerationModeCompare, Models: models,
+			ReservedConversationGUID: func() *int64 { value := int64(8101); return &value }(), UserMessage: "hello", NowMillis: 10_000,
+			Results: []PlatformGenerationPersistenceResult{{Model: "model-b", State: PlatformGenerationStateCompleted, Content: "bravo", Tokens: 1, Seq: 1}},
+		}
+		if test.partial {
+			expected.Results = append(expected.Results, PlatformGenerationPersistenceResult{Model: "model-a", State: PlatformGenerationStateFailed, ErrorCode: "gateway_upstream_error"})
+		} else {
+			expected.Results = append(expected.Results, PlatformGenerationPersistenceResult{Model: "model-a", State: PlatformGenerationStateCompleted, Content: "alpha", Tokens: 1, Seq: 1})
+		}
+		badReceipt = platformCompareReceiptFromInput(expected, guids)
+		test.mutate(&badReceipt)
+	}
+	runner.deps.loadReceipt = func(context.Context, *gorm.DB, int64, string) (PlatformGenerationReceiptSnapshot, error) {
+		effects.receipt++
+		return badReceipt, nil
+	}
+	runner.deps.loadTotalTokens = func(context.Context, *gorm.DB, int64) (int64, error) { return 1, nil }
+	input := platformCompareTestInput()
+	input.Models, input.Write = models, writer.Write
+	_, err := runner.Run(input)
+	return store, effects, writer, err
+}
+
+func TestPlatformCompareGenerationRejectsInvalidReceiptTableBeforeComplete(t *testing.T) {
+	for _, test := range platformCompareReceiptRejectionCases() {
+		t.Run(test.name, func(t *testing.T) {
+			store, effects, writer, err := platformCompareReceiptRejectionFixture(t, test, false)
+			if !errors.Is(err, ErrPlatformCompareGenerationUnavailable) || effects.persist != 1 || effects.receipt != 1 || store.completeCalls != 0 || store.reconcileCalls != 0 {
+				t.Fatalf("err=%v effects=%+v store=%+v", err, effects, store)
+			}
+			for _, frame := range platformCompareDecodeFrames(t, writer.frames) {
+				if frame.event == "done" {
+					t.Fatal("invalid direct receipt emitted done")
+				}
+			}
+		})
+	}
+}
+
+func TestPlatformCompareGenerationReconcileRejectsInvalidReceiptTable(t *testing.T) {
+	for _, test := range platformCompareReceiptRejectionCases() {
+		t.Run(test.name, func(t *testing.T) {
+			store, effects, writer, err := platformCompareReceiptRejectionFixture(t, test, true)
+			if !errors.Is(err, ErrPlatformCompareGenerationUnavailable) || effects.persist != 0 || effects.receipt != 1 || store.reconcileCalls != 0 {
+				t.Fatalf("err=%v effects=%+v store=%+v", err, effects, store)
+			}
+			for _, frame := range platformCompareDecodeFrames(t, writer.frames) {
+				if frame.event == "done" {
+					t.Fatal("invalid recovery receipt emitted done")
+				}
+			}
+		})
+	}
+}
+
+func TestPlatformCompareGenerationUnprovenCompletionRejectsCompletedSnapshotTable(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		mutate func(*PlatformGenerationSnapshot)
+	}{
+		{name: "sequence", mutate: func(s *PlatformGenerationSnapshot) {
+			state := s.ModelStates["model-a"]
+			state.Seq++
+			s.ModelStates["model-a"] = state
+		}},
+		{name: "guid", mutate: func(s *PlatformGenerationSnapshot) {
+			state := s.ModelStates["model-a"]
+			state.AssistantMessageGUID = "9999"
+			s.ModelStates["model-a"] = state
+		}},
+		{name: "error", mutate: func(s *PlatformGenerationSnapshot) {
+			state := s.ModelStates["model-a"]
+			state.ErrorCode = "internal_error"
+			s.ModelStates["model-a"] = state
+		}},
+		{name: "model map", mutate: func(s *PlatformGenerationSnapshot) { delete(s.ModelStates, "model-b") }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			scripts := map[string]func(context.Context, func(whitelabel.ChatCompletionChunk) error) *whitelabel.Error{
+				"model-a": platformCompareSuccessfulScript("model-a", "alpha"),
+				"model-b": platformCompareSuccessfulScript("model-b", "bravo"),
+			}
+			runner, store, _, writer := platformCompareStreamFixture(t, []string{"model-a", "model-b"}, scripts)
+			effects := runner.deps.persistence.(*platformCompareTestPersistence).effects
+			var receipt PlatformGenerationReceiptSnapshot
+			runner.deps.persistence = &platformCompareTestPersistence{effects: effects, result: func(input PlatformGenerationPersistenceInput) (PlatformGenerationReceiptSnapshot, error) {
+				receipt = platformCompareReceiptFromInput(input, map[string]string{"model-a": "9701", "model-b": "9702"})
+				return receipt, nil
+			}}
+			completed := clonePlatformGeneration(store.claim.Snapshot)
+			completed.State, completed.LeaseOwnerSHA256, completed.LeaseUntilMillis = PlatformGenerationStateCompleted, "", 0
+			completed.ModelStates["model-a"] = PlatformGenerationModel{State: PlatformGenerationStateCompleted, Seq: 1, AssistantMessageGUID: "9701"}
+			completed.ModelStates["model-b"] = PlatformGenerationModel{State: PlatformGenerationStateCompleted, Seq: 1, AssistantMessageGUID: "9702"}
+			test.mutate(&completed)
+			store.completeSnapshot, store.reconcileSnapshot = completed, completed
+			runner.deps.loadReceipt = func(context.Context, *gorm.DB, int64, string) (PlatformGenerationReceiptSnapshot, error) {
+				effects.receipt++
+				return receipt, nil
+			}
+			runner.deps.loadTotalTokens = func(context.Context, *gorm.DB, int64) (int64, error) { return 1, nil }
+			input := platformCompareTestInput()
+			input.Models, input.Write = []string{"model-a", "model-b"}, writer.Write
+			_, err := runner.Run(input)
+			if !errors.Is(err, ErrPlatformCompareGenerationUnavailable) || store.completeCalls != 1 {
+				t.Fatalf("err=%v store=%+v", err, store)
+			}
+			for _, frame := range platformCompareDecodeFrames(t, writer.frames) {
+				if frame.event == "done" {
+					t.Fatal("invalid completed snapshot emitted done")
+				}
+			}
+		})
 	}
 }

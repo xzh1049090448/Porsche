@@ -510,13 +510,17 @@ func (r *PlatformCompareGenerationRunner) emitCompareConvergence(execution *plat
 	if !outcome.authoritative || (outcome.state != PlatformGenerationStateCancelled && outcome.state != PlatformGenerationStateFailed) {
 		return
 	}
+	r.emitCompareGlobalError(execution, outcome.code)
+}
+
+func (r *PlatformCompareGenerationRunner) emitCompareGlobalError(execution *platformCompareExecution, code string) {
 	execution.mu.Lock()
 	defer execution.mu.Unlock()
 	if execution.globalTerminalAttempt {
 		return
 	}
 	execution.globalTerminalAttempt = true
-	frame := execution.entry.run.encoder.Error(outcome.code, execution.entry.run.requestID)
+	frame := execution.entry.run.encoder.Error(code, execution.entry.run.requestID)
 	if frame != nil && execution.entry.run.encoder.Err() == nil {
 		execution.entry.output.emit(frame)
 	}
@@ -706,6 +710,7 @@ func (r *PlatformCompareGenerationRunner) recoverCompareCompletion(execution *pl
 func (r *PlatformCompareGenerationRunner) emitCompareDone(ctx context.Context, execution *platformCompareExecution, receipt PlatformGenerationReceiptSnapshot) bool {
 	totalTokens, err := r.deps.loadTotalTokens(ctx, r.deps.db, execution.entry.run.userID)
 	if err != nil || !platformSSEV2SafeInteger(totalTokens) {
+		r.emitCompareGlobalError(execution, "internal_error")
 		return false
 	}
 	modelTokens := make(map[string]int64, receipt.SuccessfulModelCount)
