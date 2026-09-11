@@ -63,6 +63,9 @@ func DecodeChat(body []byte) (Conversation, *Error) {
 	if len(body) > MaxRequestBodyBytes {
 		return Conversation{}, RequestTooLarge()
 	}
+	if hasUnknownFields(body, chatRequestFields) {
+		return Conversation{}, UnsupportedParameter()
+	}
 	var request chatRequestDTO
 	if decodeStrict(body, &request) != nil || request.Messages == nil || len(request.Messages) > MaxMessages || strings.TrimSpace(request.Model) == "" {
 		return Conversation{}, InvalidRequest()
@@ -126,6 +129,13 @@ func DecodeChat(body []byte) (Conversation, *Error) {
 		return Conversation{}, err
 	}
 	return conversation, nil
+}
+
+var chatRequestFields = map[string]struct{}{
+	"model": {}, "messages": {}, "max_tokens": {}, "max_completion_tokens": {},
+	"temperature": {}, "top_p": {}, "frequency_penalty": {}, "presence_penalty": {},
+	"stop": {}, "seed": {}, "n": {}, "tools": {}, "tool_choice": {},
+	"parallel_tool_calls": {}, "response_format": {}, "stream": {}, "stream_options": {},
 }
 
 func decodeChatMessage(raw json.RawMessage) (Message, *Error) {

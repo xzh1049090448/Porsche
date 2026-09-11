@@ -28,6 +28,19 @@ func decodeStrict(raw []byte, dst any) error {
 	return nil
 }
 
+func hasUnknownFields(raw []byte, allowed map[string]struct{}) bool {
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(raw, &fields) != nil {
+		return false
+	}
+	for field := range fields {
+		if _, ok := allowed[field]; !ok {
+			return true
+		}
+	}
+	return false
+}
+
 func numberInt(value *json.Number, min, max int64) (*int64, bool) {
 	if value == nil {
 		return nil, true
