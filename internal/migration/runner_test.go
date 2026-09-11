@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -13,6 +14,16 @@ import (
 	"github.com/porsche/ai-gateway-go/internal/persistence"
 	"gorm.io/gorm"
 )
+
+func TestUpDoesNotVerifyExtendedAdminOperationShapeAtBaseMigration(t *testing.T) {
+	source, err := os.ReadFile(filepath.Join("runner.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(source), `migration.Version == "0005"`) {
+		t.Fatal("migration 0005 must not use the extended admin operation verifier before 0012 can be applied")
+	}
+}
 
 func TestUpRerunUsesActiveAdminOperationSchemaVersionAndRejectsDrift(t *testing.T) {
 	runUp := func(gdb *gorm.DB) error {
