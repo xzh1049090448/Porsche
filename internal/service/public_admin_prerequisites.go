@@ -305,7 +305,7 @@ func projectPublicPriceReleaseDetail(snap models.PublicPriceSnapshot, rows []mod
 	v := &PublicPriceReleaseView{Release: projectRelease(snap.Guid, snap.Version, snap.Reason.String(), snap.SourceRevision, snap.PublishedAt), Items: make([]PublicModelVisible, len(rows))}
 	for i, r := range rows {
 		item := projectPublicCatalogItem(r, snap)
-		v.Items[i] = PublicModelVisible{ModelKey: r.ModelKey, DisplayName: r.DisplayName, Provider: r.Provider, Capabilities: append([]string(nil), r.Capabilities...), ContextWindow: r.ContextWindow, InputPriceUSDPerMillionTokens: r.InputPriceUSDPerMillionTokens, OutputPriceUSDPerMillionTokens: r.OutputPriceUSDPerMillionTokens, PriceVisibility: "visible", ReleaseVersion: snap.Version, PricingType: item.PricingType, PublicDisplayGroup: item.PublicDisplayGroup, EndpointTypes: item.EndpointTypes, PublicRestrictions: item.PublicRestrictions, PriceSource: item.PriceSource, PriceReviewer: item.PriceReviewer, EffectiveAt: item.EffectiveAt, UpdatedAt: item.UpdatedAt}
+		v.Items[i] = PublicModelVisible{ModelKey: r.ModelKey, DisplayName: r.DisplayName, Provider: r.Provider, Capabilities: clonePublicStrings(r.Capabilities), ContextWindow: r.ContextWindow, InputPriceUSDPerMillionTokens: r.InputPriceUSDPerMillionTokens, OutputPriceUSDPerMillionTokens: r.OutputPriceUSDPerMillionTokens, PriceVisibility: "visible", ReleaseVersion: snap.Version, PricingType: item.PricingType, PublicDisplayGroup: item.PublicDisplayGroup, EndpointTypes: clonePublicStrings(item.EndpointTypes), PublicRestrictions: clonePublicStrings(item.PublicRestrictions), PriceSource: item.PriceSource, PriceReviewer: item.PriceReviewer, EffectiveAt: item.EffectiveAt, UpdatedAt: item.UpdatedAt}
 	}
 	return v
 }

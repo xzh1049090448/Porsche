@@ -136,7 +136,7 @@ func preparePublicPriceSnapshot(rows []models.PublicModelConfig) (*preparedPubli
 			return nil, errUnprocessable("public price snapshot validation failed")
 		}
 		modelIDs[m.ID], modelKeys[m.ModelKey], upstreamIDs[m.UpstreamModelID] = true, true, true
-		items = append(items, models.PublicPriceSnapshotItem{ModelConfigID: m.ID, ModelKey: m.ModelKey, UpstreamModelID: m.UpstreamModelID, DisplayName: m.DisplayName, Provider: m.Provider, Capabilities: append(models.JSONSlice(nil), m.Capabilities...), ContextWindow: m.ContextWindow, InputPriceUSDPerMillionTokens: m.InputPriceUSDPerMillionTokens, OutputPriceUSDPerMillionTokens: m.OutputPriceUSDPerMillionTokens, UpstreamCheckedAt: m.LastUpstreamCheckAt, PricingType: "token", PublicDisplayGroup: m.PublicDisplayGroup, EndpointTypes: append(models.JSONSlice(nil), m.EndpointTypes...), PublicRestrictions: append(models.JSONSlice(nil), m.PublicRestrictions...), PriceSource: m.PriceSource, PriceReviewer: m.PriceReviewer, EffectiveAt: m.PriceEffectiveAt})
+		items = append(items, models.PublicPriceSnapshotItem{ModelConfigID: m.ID, ModelKey: m.ModelKey, UpstreamModelID: m.UpstreamModelID, DisplayName: m.DisplayName, Provider: m.Provider, Capabilities: clonePublicJSONSlice(m.Capabilities), ContextWindow: m.ContextWindow, InputPriceUSDPerMillionTokens: m.InputPriceUSDPerMillionTokens, OutputPriceUSDPerMillionTokens: m.OutputPriceUSDPerMillionTokens, UpstreamCheckedAt: m.LastUpstreamCheckAt, PricingType: "token", PublicDisplayGroup: m.PublicDisplayGroup, EndpointTypes: clonePublicJSONSlice(m.EndpointTypes), PublicRestrictions: clonePublicJSONSlice(m.PublicRestrictions), PriceSource: m.PriceSource, PriceReviewer: m.PriceReviewer, EffectiveAt: m.PriceEffectiveAt})
 	}
 	if len(items) == 0 {
 		return nil, errUnprocessable("public price snapshot requires an active priced model")
@@ -163,7 +163,7 @@ func prepareRestoredPublicPriceSnapshot(items []models.PublicPriceSnapshotItem, 
 	}
 	rows := make([]models.PublicModelConfig, len(items))
 	for i, item := range items {
-		rows[i] = models.PublicModelConfig{ID: item.ModelConfigID, ModelKey: item.ModelKey, UpstreamModelID: item.UpstreamModelID, DisplayName: item.DisplayName, Provider: item.Provider, Capabilities: append(models.JSONSlice(nil), item.Capabilities...), ContextWindow: item.ContextWindow, InputPriceUSDPerMillionTokens: item.InputPriceUSDPerMillionTokens, OutputPriceUSDPerMillionTokens: item.OutputPriceUSDPerMillionTokens, Status: models.PublicModelConfigStatusActive, LastUpstreamCheckAt: item.UpstreamCheckedAt, PublicDisplayGroup: item.PublicDisplayGroup, EndpointTypes: append(models.JSONSlice(nil), item.EndpointTypes...), PublicRestrictions: append(models.JSONSlice(nil), item.PublicRestrictions...), PriceSource: item.PriceSource, PriceReviewer: item.PriceReviewer, PriceEffectiveAt: item.EffectiveAt}
+		rows[i] = models.PublicModelConfig{ID: item.ModelConfigID, ModelKey: item.ModelKey, UpstreamModelID: item.UpstreamModelID, DisplayName: item.DisplayName, Provider: item.Provider, Capabilities: clonePublicJSONSlice(item.Capabilities), ContextWindow: item.ContextWindow, InputPriceUSDPerMillionTokens: item.InputPriceUSDPerMillionTokens, OutputPriceUSDPerMillionTokens: item.OutputPriceUSDPerMillionTokens, Status: models.PublicModelConfigStatusActive, LastUpstreamCheckAt: item.UpstreamCheckedAt, PublicDisplayGroup: item.PublicDisplayGroup, EndpointTypes: clonePublicJSONSlice(item.EndpointTypes), PublicRestrictions: clonePublicJSONSlice(item.PublicRestrictions), PriceSource: item.PriceSource, PriceReviewer: item.PriceReviewer, PriceEffectiveAt: item.EffectiveAt}
 	}
 	prepared, err := preparePublicPriceSnapshot(rows)
 	if err != nil {
@@ -189,6 +189,10 @@ func verifyPublicPriceSnapshotHash(items []models.PublicPriceSnapshotItem, store
 	current, err := hashPublicPriceSnapshotItems(items)
 	if err == nil && current == storedHash {
 		return false, true
+	}
+	preNormalization, err := hashPublicPriceSnapshotItemsWithCollectionMode(items, false)
+	if err == nil && preNormalization == storedHash {
+		return true, true
 	}
 	for _, item := range items {
 		if item.PricingType != "token" || item.PublicDisplayGroup != "" || len(item.EndpointTypes) != 0 || len(item.PublicRestrictions) != 0 || item.PriceSource != "" || item.PriceReviewer != "" || item.EffectiveAt != nil {
@@ -228,6 +232,10 @@ func hashLegacyPublicPriceSnapshotItems(items []models.PublicPriceSnapshotItem) 
 }
 
 func hashPublicPriceSnapshotItems(items []models.PublicPriceSnapshotItem) (string, error) {
+	return hashPublicPriceSnapshotItemsWithCollectionMode(items, true)
+}
+
+func hashPublicPriceSnapshotItemsWithCollectionMode(items []models.PublicPriceSnapshotItem, emptyArrays bool) (string, error) {
 	type canonical struct {
 		ModelKey           string   `json:"model_key"`
 		UpstreamModelID    string   `json:"upstream_model_id"`
@@ -248,7 +256,15 @@ func hashPublicPriceSnapshotItems(items []models.PublicPriceSnapshotItem) (strin
 	}
 	values := make([]canonical, len(items))
 	for i, v := range items {
-		values[i] = canonical{v.ModelKey, v.UpstreamModelID, v.DisplayName, v.Provider, append([]string(nil), v.Capabilities...), v.ContextWindow, v.InputPriceUSDPerMillionTokens, v.OutputPriceUSDPerMillionTokens, v.UpstreamCheckedAt, v.PricingType, v.PublicDisplayGroup, append([]string(nil), v.EndpointTypes...), append([]string(nil), v.PublicRestrictions...), v.PriceSource, v.PriceReviewer, v.EffectiveAt}
+		capabilities := append([]string(nil), v.Capabilities...)
+		endpointTypes := append([]string(nil), v.EndpointTypes...)
+		publicRestrictions := append([]string(nil), v.PublicRestrictions...)
+		if emptyArrays {
+			capabilities = clonePublicStrings(v.Capabilities)
+			endpointTypes = clonePublicStrings(v.EndpointTypes)
+			publicRestrictions = clonePublicStrings(v.PublicRestrictions)
+		}
+		values[i] = canonical{v.ModelKey, v.UpstreamModelID, v.DisplayName, v.Provider, capabilities, v.ContextWindow, v.InputPriceUSDPerMillionTokens, v.OutputPriceUSDPerMillionTokens, v.UpstreamCheckedAt, v.PricingType, v.PublicDisplayGroup, endpointTypes, publicRestrictions, v.PriceSource, v.PriceReviewer, v.EffectiveAt}
 	}
 	sort.Slice(values, func(i, j int) bool { return values[i].ModelKey < values[j].ModelKey })
 	b, err := json.Marshal(values)
@@ -257,6 +273,13 @@ func hashPublicPriceSnapshotItems(items []models.PublicPriceSnapshotItem) (strin
 	}
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:]), nil
+}
+
+func clonePublicJSONSlice(values models.JSONSlice) models.JSONSlice {
+	if len(values) == 0 {
+		return models.JSONSlice{}
+	}
+	return append(models.JSONSlice(nil), values...)
 }
 
 func publicPriceIdempotencyBinding(actor int64, operation, key, payload string) string {

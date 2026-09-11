@@ -79,6 +79,53 @@ func TestPublicPriceSnapshotCanonicalHashStableAndDecimalExact(t *testing.T) {
 	}
 }
 
+func TestPublicPriceSnapshotHashNormalizesNilAndEmptyCollections(t *testing.T) {
+	base := models.PublicPriceSnapshotItem{
+		ModelConfigID: 1, ModelKey: "alpha", UpstreamModelID: "org/alpha", DisplayName: "Alpha", Provider: "acme",
+		ContextWindow: 8192, PricingType: "token",
+	}
+	nilHash, err := hashPublicPriceSnapshotItems([]models.PublicPriceSnapshotItem{base})
+	if err != nil {
+		t.Fatal(err)
+	}
+	empty := base
+	empty.Capabilities = models.JSONSlice{}
+	empty.EndpointTypes = models.JSONSlice{}
+	empty.PublicRestrictions = models.JSONSlice{}
+	emptyHash, err := hashPublicPriceSnapshotItems([]models.PublicPriceSnapshotItem{empty})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if nilHash != emptyHash {
+		t.Fatalf("nil/empty collection hashes differ: %s != %s", nilHash, emptyHash)
+	}
+	const canonicalEmptyArrayHash = "7c370d8bbcfbfcd330419ec360feaff789cf35903ecc6f2b73cd77f9522a4312"
+	if nilHash != canonicalEmptyArrayHash {
+		t.Fatalf("empty collections were not encoded canonically as arrays: %s", nilHash)
+	}
+	if legacy, valid := verifyPublicPriceSnapshotHash([]models.PublicPriceSnapshotItem{empty}, nilHash); legacy || !valid {
+		t.Fatalf("round-trip hash rejected: legacy=%v valid=%v", legacy, valid)
+	}
+	nonEmpty := empty
+	nonEmpty.Capabilities = models.JSONSlice{"chat"}
+	nonEmptyHash, err := hashPublicPriceSnapshotItems([]models.PublicPriceSnapshotItem{nonEmpty})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if nonEmptyHash == emptyHash {
+		t.Fatal("non-empty collection change did not affect hash")
+	}
+	const preNormalizationHash = "50a79e230e5a768be766b69b82593540f4351fe05f4471018f21c2d140fd63a0"
+	if legacy, valid := verifyPublicPriceSnapshotHash([]models.PublicPriceSnapshotItem{empty}, preNormalizationHash); !legacy || !valid {
+		t.Fatalf("exact pre-normalization hash rejected: legacy=%v valid=%v", legacy, valid)
+	}
+	tampered := empty
+	tampered.DisplayName = "Tampered"
+	if _, valid := verifyPublicPriceSnapshotHash([]models.PublicPriceSnapshotItem{tampered}, preNormalizationHash); valid {
+		t.Fatal("pre-normalization compatibility accepted tampered content")
+	}
+}
+
 func TestPublicPriceSnapshotExcludesInactiveAndDeletedModels(t *testing.T) {
 	active := snapshotModelFixture("active")
 	inactive := snapshotModelFixture("inactive")

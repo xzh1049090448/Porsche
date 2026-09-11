@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -31,8 +32,16 @@ func TestPublicPriceSnapshotDBFirstPublishInitializesFailClosedState(t *testing.
 			t.Error(err)
 		}
 	})
-	if err := tx.Where("state_key = ?", publicPublicationStateKey).Delete(&models.PublicPublicationState{}).Error; err != nil {
-		t.Fatal(err)
+	for _, statement := range []string{
+		"DELETE FROM public_render_jobs",
+		"DELETE FROM public_publication_state",
+		"DELETE FROM public_price_snapshot_items",
+		"UPDATE public_price_snapshots SET restored_from_snapshot_id = NULL",
+		"DELETE FROM public_price_snapshots",
+	} {
+		if err := tx.Exec(statement).Error; err != nil {
+			t.Fatal(err)
+		}
 	}
 	model := f.input("first-publish-" + fmt.Sprint(persistence.NextGUID()))
 	model.InputPriceUSDPerMillionTokens = nil
@@ -72,6 +81,38 @@ func TestPublicPriceSnapshotDBFirstPublishInitializesFailClosedState(t *testing.
 	replay, err := service.Publish(context.Background(), request)
 	if err != nil || replay.GUID != release.GUID {
 		t.Fatalf("first publish replay=%#v err=%v", replay, err)
+	}
+	releaseGUID, err := strconv.ParseInt(release.GUID, 10, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var persistedSnapshot models.PublicPriceSnapshot
+	var persistedItems []models.PublicPriceSnapshotItem
+	if err = tx.Where("guid = ?", releaseGUID).First(&persistedSnapshot).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err = tx.Where("snapshot_id = ?", persistedSnapshot.ID).Order("model_key").Find(&persistedItems).Error; err != nil {
+		t.Fatal(err)
+	}
+	roundTripHash, hashErr := hashPublicPriceSnapshotItems(persistedItems)
+	if hashErr != nil || roundTripHash != persistedSnapshot.ContentHash {
+		t.Fatalf("snapshot hash changed after DB round trip: stored=%s recalculated=%s err=%v items=%#v", persistedSnapshot.ContentHash, roundTripHash, hashErr, persistedItems)
+	}
+	view, err := service.GetRelease(context.Background(), releaseGUID)
+	if err != nil {
+		t.Fatalf("first release round trip=%#v err=%v", view, err)
+	}
+	foundCreated := false
+	for _, item := range view.Items {
+		if item.Capabilities == nil || item.EndpointTypes == nil || item.PublicRestrictions == nil {
+			t.Fatalf("release returned null collection: %#v", item)
+		}
+		if item.ModelKey == model.ModelKey {
+			foundCreated = true
+		}
+	}
+	if !foundCreated {
+		t.Fatalf("first release omitted created model: %#v", view.Items)
 	}
 	var state models.PublicPublicationState
 	if err = tx.Where("state_key = ? AND is_deleted = 0", publicPublicationStateKey).First(&state).Error; err != nil {
