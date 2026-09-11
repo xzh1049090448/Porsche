@@ -42,6 +42,7 @@ type State struct {
 	PlatformGenerationPersistence   *service.PlatformGenerationPersistence
 	PlatformGenerationControl       service.PlatformGenerationController
 	PlatformSingleGeneration        service.PlatformSingleGenerationRunnerAPI
+	PlatformCompareGeneration       service.PlatformCompareGenerationRunnerAPI
 	PlatformGenerationCancellations *service.PlatformGenerationCancellationRegistry
 	PlatformGenerationConverger     *service.PlatformGenerationConverger
 	Sessions                        *service.SessionService
@@ -72,6 +73,7 @@ type stateConstructors struct {
 	newPlatformGenerationControl      func(*gorm.DB, *service.PlatformGenerationStore, *service.PlatformGenerationCancellationRegistry) (*service.PlatformGenerationControl, error)
 	newPlatformGenerationConverger    func(*service.PlatformGenerationControl) (*service.PlatformGenerationConverger, error)
 	newPlatformSingleGeneration       func(*gorm.DB, *service.PlatformGenerationStore, *service.PlatformGenerationPersistence, *service.PlatformGenerationCancellationRegistry, *whitelabel.WhiteLabelService, context.Context, time.Duration) (service.PlatformSingleGenerationRunnerAPI, error)
+	newPlatformCompareGeneration      func(*gorm.DB, *service.PlatformGenerationStore, *service.PlatformGenerationPersistence, *service.PlatformGenerationCancellationRegistry, *whitelabel.WhiteLabelService, context.Context, time.Duration) (service.PlatformCompareGenerationRunnerAPI, error)
 	startPlatformGenerationConverger  func(*service.PlatformGenerationConverger)
 	closePlatformGenerationConverger  func(context.Context, *service.PlatformGenerationConverger) error
 	newUserManagementActions          func(*gorm.DB, *service.AuthRedis, *actionsecurity.Crypto) (*service.UserManagementActions, error)
@@ -85,6 +87,9 @@ func defaultStateConstructors() stateConstructors {
 		newPlatformGenerationConverger:    service.NewPlatformGenerationConverger,
 		newPlatformSingleGeneration: func(db *gorm.DB, store *service.PlatformGenerationStore, persistenceService *service.PlatformGenerationPersistence, registry *service.PlatformGenerationCancellationRegistry, upstream *whitelabel.WhiteLabelService, rootContext context.Context, timeout time.Duration) (service.PlatformSingleGenerationRunnerAPI, error) {
 			return service.NewPlatformSingleGenerationRunner(db, store, persistenceService, registry, upstream, rootContext, timeout)
+		},
+		newPlatformCompareGeneration: func(db *gorm.DB, store *service.PlatformGenerationStore, persistenceService *service.PlatformGenerationPersistence, registry *service.PlatformGenerationCancellationRegistry, upstream *whitelabel.WhiteLabelService, rootContext context.Context, timeout time.Duration) (service.PlatformCompareGenerationRunnerAPI, error) {
+			return service.NewPlatformCompareGenerationRunner(db, store, persistenceService, registry, upstream, rootContext, timeout)
 		},
 		startPlatformGenerationConverger: func(converger *service.PlatformGenerationConverger) { converger.Start() },
 		closePlatformGenerationConverger: func(ctx context.Context, converger *service.PlatformGenerationConverger) error {
@@ -229,6 +234,7 @@ func newState(settings *config.Settings, db *gorm.DB, constructors stateConstruc
 	})
 	if generationControl != nil {
 		var generationRunner service.PlatformSingleGenerationRunnerAPI
+		var compareGenerationRunner service.PlatformCompareGenerationRunnerAPI
 		if s.WhiteLabel != nil {
 			timeout, ok := platformSingleGenerationTimeout(settings.UpstreamTimeoutSeconds)
 			if !ok || constructors.newPlatformSingleGeneration == nil {
@@ -249,11 +255,27 @@ func newState(settings *config.Settings, db *gorm.DB, constructors stateConstruc
 			if err != nil || nilPlatformSingleGenerationRunner(generationRunner) {
 				return nil, service.ErrPlatformSingleGenerationUnavailable
 			}
+			if constructors.newPlatformCompareGeneration == nil {
+				return nil, service.ErrPlatformCompareGenerationUnavailable
+			}
+			compareGenerationRunner, err = constructors.newPlatformCompareGeneration(
+				db,
+				s.PlatformGenerations,
+				s.PlatformGenerationPersistence,
+				generationCancellations,
+				s.WhiteLabel,
+				generationRootContext,
+				timeout,
+			)
+			if err != nil || nilPlatformCompareGenerationRunner(compareGenerationRunner) {
+				return nil, service.ErrPlatformCompareGenerationUnavailable
+			}
 		}
 		s.PlatformGenerationCancellations = generationCancellations
 		s.PlatformGenerationControl = generationControl
 		s.PlatformGenerationConverger = generationConverger
 		s.PlatformSingleGeneration = generationRunner
+		s.PlatformCompareGeneration = compareGenerationRunner
 		s.platformGenerationRootCancel = generationRootCancel
 		constructors.startPlatformGenerationConverger(generationConverger)
 	}
@@ -263,6 +285,19 @@ func newState(settings *config.Settings, db *gorm.DB, constructors stateConstruc
 }
 
 func nilPlatformSingleGenerationRunner(runner service.PlatformSingleGenerationRunnerAPI) bool {
+	if runner == nil {
+		return true
+	}
+	value := reflect.ValueOf(runner)
+	switch value.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Ptr, reflect.Slice:
+		return value.IsNil()
+	default:
+		return false
+	}
+}
+
+func nilPlatformCompareGenerationRunner(runner service.PlatformCompareGenerationRunnerAPI) bool {
 	if runner == nil {
 		return true
 	}

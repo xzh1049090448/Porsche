@@ -141,6 +141,12 @@ func (*statePlatformSingleRunner) Run(service.PlatformSingleGenerationInput) (se
 	return service.PlatformSingleGenerationRunResult{}, nil
 }
 
+type statePlatformCompareRunner struct{}
+
+func (*statePlatformCompareRunner) Run(service.PlatformCompareGenerationInput) (service.PlatformCompareGenerationRunResult, error) {
+	return service.PlatformCompareGenerationRunResult{}, nil
+}
+
 func statePlatformSingleSettings(timeout float64) *config.Settings {
 	return &config.Settings{
 		RedisURL:               "redis://configured",
@@ -191,6 +197,9 @@ func statePlatformSingleConstructors(t *testing.T, events *[]string) stateConstr
 			*events = append(*events, "converger")
 		}
 		return nil
+	}
+	constructors.newPlatformCompareGeneration = func(*gorm.DB, *service.PlatformGenerationStore, *service.PlatformGenerationPersistence, *service.PlatformGenerationCancellationRegistry, *whitelabel.WhiteLabelService, context.Context, time.Duration) (service.PlatformCompareGenerationRunnerAPI, error) {
+		return &statePlatformCompareRunner{}, nil
 	}
 	return constructors
 }
@@ -246,6 +255,164 @@ func TestNewStateWiresPlatformSingleGenerationWithExactDependencies(t *testing.T
 	case <-root.Done():
 	default:
 		t.Fatal("runner root context remains active after State.Close")
+	}
+}
+
+func TestNewStateWiresPlatformCompareGenerationWithExactDependencies(t *testing.T) {
+	constructors := statePlatformSingleConstructors(t, nil)
+	db := &gorm.DB{Config: &gorm.Config{}}
+	wantRunner := &statePlatformCompareRunner{}
+	var root context.Context
+	var gotStore *service.PlatformGenerationStore
+	var gotPersistence *service.PlatformGenerationPersistence
+	var gotRegistry *service.PlatformGenerationCancellationRegistry
+	var gotUpstream *whitelabel.WhiteLabelService
+	constructors.newPlatformCompareGeneration = func(
+		gotDB *gorm.DB,
+		store *service.PlatformGenerationStore,
+		persistence *service.PlatformGenerationPersistence,
+		registry *service.PlatformGenerationCancellationRegistry,
+		upstream *whitelabel.WhiteLabelService,
+		gotRoot context.Context,
+		timeout time.Duration,
+	) (service.PlatformCompareGenerationRunnerAPI, error) {
+		if gotDB != db || store == nil || persistence == nil || registry == nil || upstream == nil || gotRoot == nil {
+			t.Fatalf("compare constructor dependencies = db:%p store:%p persistence:%p registry:%p upstream:%p root:%v", gotDB, store, persistence, registry, upstream, gotRoot)
+		}
+		if timeout != 1250*time.Millisecond {
+			t.Fatalf("compare timeout = %v, want 1.25s", timeout)
+		}
+		gotStore, gotPersistence, gotRegistry, gotUpstream, root = store, persistence, registry, upstream, gotRoot
+		return wantRunner, nil
+	}
+
+	state, err := newState(statePlatformSingleSettings(1.25), db, constructors)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.PlatformCompareGeneration != wantRunner {
+		t.Fatalf("state compare runner = %#v, want injected runner", state.PlatformCompareGeneration)
+	}
+	if gotStore != state.PlatformGenerations || gotPersistence != state.PlatformGenerationPersistence || gotRegistry != state.PlatformGenerationCancellations || gotUpstream != state.WhiteLabel {
+		t.Fatal("compare runner dependencies differ from State-owned dependencies")
+	}
+	select {
+	case <-root.Done():
+		t.Fatal("compare runner root cancelled before State.Close")
+	default:
+	}
+	if err := state.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-root.Done():
+	default:
+		t.Fatal("compare runner root remains active after State.Close")
+	}
+}
+
+func TestNewStatePlatformCompareGenerationDependencyMatrix(t *testing.T) {
+	tests := []struct {
+		name     string
+		settings *config.Settings
+		db       *gorm.DB
+	}{
+		{name: "no redis", settings: &config.Settings{UpstreamTimeoutSeconds: 1, WhiteLabel: statePlatformSingleSettings(1).WhiteLabel}, db: &gorm.DB{Config: &gorm.Config{}}},
+		{name: "no database", settings: statePlatformSingleSettings(1)},
+		{name: "no upstream", settings: &config.Settings{RedisURL: "redis://configured", AuthHMACKey: "configured", UpstreamTimeoutSeconds: 1}, db: &gorm.DB{Config: &gorm.Config{}}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			constructors := statePlatformSingleConstructors(t, nil)
+			calls := 0
+			constructors.newPlatformCompareGeneration = func(*gorm.DB, *service.PlatformGenerationStore, *service.PlatformGenerationPersistence, *service.PlatformGenerationCancellationRegistry, *whitelabel.WhiteLabelService, context.Context, time.Duration) (service.PlatformCompareGenerationRunnerAPI, error) {
+				calls++
+				return &statePlatformCompareRunner{}, nil
+			}
+			state, err := newState(test.settings, test.db, constructors)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = state.Close() }()
+			if calls != 0 || state.PlatformCompareGeneration != nil || state.platformGenerationRootCancel != nil {
+				t.Fatalf("partial dependencies constructed compare runner: calls=%d state=%#v", calls, state)
+			}
+		})
+	}
+}
+
+func TestNewStatePlatformCompareGenerationFailsClosed(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		configure func(*stateConstructors)
+	}{
+		{name: "missing constructor", configure: func(c *stateConstructors) { c.newPlatformCompareGeneration = nil }},
+		{name: "constructor error", configure: func(c *stateConstructors) {
+			c.newPlatformCompareGeneration = func(*gorm.DB, *service.PlatformGenerationStore, *service.PlatformGenerationPersistence, *service.PlatformGenerationCancellationRegistry, *whitelabel.WhiteLabelService, context.Context, time.Duration) (service.PlatformCompareGenerationRunnerAPI, error) {
+				return nil, errors.New("https://secret.example/compare-runner")
+			}
+		}},
+		{name: "nil result", configure: func(c *stateConstructors) {
+			c.newPlatformCompareGeneration = func(*gorm.DB, *service.PlatformGenerationStore, *service.PlatformGenerationPersistence, *service.PlatformGenerationCancellationRegistry, *whitelabel.WhiteLabelService, context.Context, time.Duration) (service.PlatformCompareGenerationRunnerAPI, error) {
+				return nil, nil
+			}
+		}},
+		{name: "typed nil result", configure: func(c *stateConstructors) {
+			c.newPlatformCompareGeneration = func(*gorm.DB, *service.PlatformGenerationStore, *service.PlatformGenerationPersistence, *service.PlatformGenerationCancellationRegistry, *whitelabel.WhiteLabelService, context.Context, time.Duration) (service.PlatformCompareGenerationRunnerAPI, error) {
+				var runner *statePlatformCompareRunner
+				return runner, nil
+			}
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var events []string
+			constructors := statePlatformSingleConstructors(t, &events)
+			var root context.Context
+			var capturedRegistry *service.PlatformGenerationCancellationRegistry
+			configuredSingle := constructors.newPlatformSingleGeneration
+			constructors.newPlatformSingleGeneration = func(db *gorm.DB, store *service.PlatformGenerationStore, persistence *service.PlatformGenerationPersistence, registry *service.PlatformGenerationCancellationRegistry, upstream *whitelabel.WhiteLabelService, gotRoot context.Context, timeout time.Duration) (service.PlatformSingleGenerationRunnerAPI, error) {
+				root, capturedRegistry = gotRoot, registry
+				return configuredSingle(db, store, persistence, registry, upstream, gotRoot, timeout)
+			}
+			test.configure(&constructors)
+			state, err := newState(statePlatformSingleSettings(1), &gorm.DB{Config: &gorm.Config{}}, constructors)
+			if state != nil || !errors.Is(err, service.ErrPlatformCompareGenerationUnavailable) || err.Error() != service.ErrPlatformCompareGenerationUnavailable.Error() {
+				t.Fatalf("state/error = %#v/%v, want nil/fixed compare unavailable", state, err)
+			}
+			select {
+			case <-root.Done():
+			default:
+				t.Fatal("shared runner root not cancelled after compare constructor failure")
+			}
+			if _, registerErr := capturedRegistry.Register(42, "123e4567-e89b-42d3-a456-426614174002", func() {}); !errors.Is(registerErr, service.ErrPlatformGenerationUnavailable) {
+				t.Fatalf("partial cleanup left shared registry open: %v", registerErr)
+			}
+			if got := events; len(got) != 3 || got[0] != "converger" || got[1] != "generation" || got[2] != "auth" {
+				t.Fatalf("partial cleanup order = %v, want [converger generation auth]", got)
+			}
+		})
+	}
+}
+
+func TestNewStateUsesOneRootAndRegistryForSingleAndCompareRunners(t *testing.T) {
+	constructors := statePlatformSingleConstructors(t, nil)
+	var singleRoot, compareRoot context.Context
+	var singleRegistry, compareRegistry *service.PlatformGenerationCancellationRegistry
+	constructors.newPlatformSingleGeneration = func(_ *gorm.DB, _ *service.PlatformGenerationStore, _ *service.PlatformGenerationPersistence, registry *service.PlatformGenerationCancellationRegistry, _ *whitelabel.WhiteLabelService, root context.Context, _ time.Duration) (service.PlatformSingleGenerationRunnerAPI, error) {
+		singleRoot, singleRegistry = root, registry
+		return &statePlatformSingleRunner{}, nil
+	}
+	constructors.newPlatformCompareGeneration = func(_ *gorm.DB, _ *service.PlatformGenerationStore, _ *service.PlatformGenerationPersistence, registry *service.PlatformGenerationCancellationRegistry, _ *whitelabel.WhiteLabelService, root context.Context, _ time.Duration) (service.PlatformCompareGenerationRunnerAPI, error) {
+		compareRoot, compareRegistry = root, registry
+		return &statePlatformCompareRunner{}, nil
+	}
+	state, err := newState(statePlatformSingleSettings(1), &gorm.DB{Config: &gorm.Config{}}, constructors)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = state.Close() }()
+	if singleRoot == nil || singleRoot != compareRoot || singleRegistry == nil || singleRegistry != compareRegistry || singleRegistry != state.PlatformGenerationCancellations {
+		t.Fatalf("single/compare lifecycle differs: roots %p/%p registries %p/%p state %p", singleRoot, compareRoot, singleRegistry, compareRegistry, state.PlatformGenerationCancellations)
 	}
 }
 
@@ -667,6 +834,160 @@ func TestStateCloseWaitsForPlatformSingleGenerationAdmissionBeforeRedis(t *testi
 	case <-generationClosed:
 	default:
 		t.Fatal("generation Redis was not closed after admission drained")
+	}
+}
+
+func TestStateCloseWaitsForCompareAdmissionAndRegistrationBeforeRedis(t *testing.T) {
+	registry := service.NewPlatformGenerationCancellationRegistry()
+	releaseAdmission, err := registry.BeginAdmission()
+	if err != nil {
+		t.Fatal(err)
+	}
+	registrationCancelled := make(chan struct{})
+	releaseRegistration := make(chan struct{})
+	generationID := "123e4567-e89b-42d3-a456-426614174010"
+	var token string
+	token, err = registry.Register(42, generationID, func() {
+		close(registrationCancelled)
+		<-releaseRegistration
+		registry.Unregister(42, generationID, token)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rootCancelled := make(chan struct{})
+	generationClosed := make(chan struct{})
+	state := &State{
+		PlatformGenerationCancellations: registry,
+		PlatformGenerations:             mustStateGenerationStore(t, newStateCloseTrackingRedisClient()),
+		platformGenerationRootCancel:    func() { close(rootCancelled) },
+		closeTimeout:                    time.Second,
+		closePlatformGenerations: func(*service.PlatformGenerationStore) error {
+			close(generationClosed)
+			return nil
+		},
+	}
+	done := make(chan error, 1)
+	go func() { done <- state.Close() }()
+	select {
+	case <-rootCancelled:
+	case <-time.After(time.Second):
+		t.Fatal("State.Close did not cancel the shared runner root")
+	}
+	select {
+	case <-registrationCancelled:
+	case <-time.After(time.Second):
+		t.Fatal("State.Close did not cancel the compare registration")
+	}
+	select {
+	case <-generationClosed:
+		t.Fatal("generation Redis closed while compare admission and registration remained active")
+	default:
+	}
+	releaseAdmission()
+	select {
+	case <-generationClosed:
+		t.Fatal("generation Redis closed while compare registration remained active")
+	default:
+	}
+	close(releaseRegistration)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("State.Close did not finish after compare lifecycle drained")
+	}
+	select {
+	case <-generationClosed:
+	default:
+		t.Fatal("generation Redis was not closed after compare admission and registration drained")
+	}
+}
+
+func TestStateCloseCancelsBothGenerationRunnersBeforeSharedResources(t *testing.T) {
+	var mu sync.Mutex
+	var events []string
+	record := func(event string) {
+		mu.Lock()
+		events = append(events, event)
+		mu.Unlock()
+	}
+	constructors := statePlatformSingleConstructors(t, nil)
+	var singleRoot, compareRoot context.Context
+	registerRunner := func(kind string, userID int64, generationID string, registry *service.PlatformGenerationCancellationRegistry, root context.Context) {
+		var token string
+		var err error
+		token, err = registry.Register(userID, generationID, func() {
+			select {
+			case <-root.Done():
+			default:
+				t.Errorf("%s registry cancellation preceded shared root cancellation", kind)
+			}
+			record(kind + "-cancel")
+			registry.Unregister(userID, generationID, token)
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	constructors.newPlatformSingleGeneration = func(_ *gorm.DB, _ *service.PlatformGenerationStore, _ *service.PlatformGenerationPersistence, registry *service.PlatformGenerationCancellationRegistry, _ *whitelabel.WhiteLabelService, root context.Context, _ time.Duration) (service.PlatformSingleGenerationRunnerAPI, error) {
+		singleRoot = root
+		registerRunner("single", 41, "123e4567-e89b-42d3-a456-426614174011", registry, root)
+		return &statePlatformSingleRunner{}, nil
+	}
+	constructors.newPlatformCompareGeneration = func(_ *gorm.DB, _ *service.PlatformGenerationStore, _ *service.PlatformGenerationPersistence, registry *service.PlatformGenerationCancellationRegistry, _ *whitelabel.WhiteLabelService, root context.Context, _ time.Duration) (service.PlatformCompareGenerationRunnerAPI, error) {
+		compareRoot = root
+		registerRunner("compare", 42, "123e4567-e89b-42d3-a456-426614174012", registry, root)
+		return &statePlatformCompareRunner{}, nil
+	}
+	state, err := newState(statePlatformSingleSettings(1), &gorm.DB{Config: &gorm.Config{}}, constructors)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.closePlatformGenerationRunners = func(ctx context.Context, registry *service.PlatformGenerationCancellationRegistry) error {
+		record("close-runners")
+		return registry.CloseAndWait(ctx)
+	}
+	state.closePlatformGenerationConverger = func(context.Context, *service.PlatformGenerationConverger) error {
+		record("converger")
+		return nil
+	}
+	state.closePlatformGenerations = func(*service.PlatformGenerationStore) error {
+		record("generation")
+		return nil
+	}
+	state.closeAuthRedis = func(*service.AuthRedis) error {
+		record("auth")
+		return nil
+	}
+	if err := state.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if singleRoot == nil || singleRoot != compareRoot {
+		t.Fatalf("runner roots differ: %p/%p", singleRoot, compareRoot)
+	}
+	select {
+	case <-singleRoot.Done():
+	default:
+		t.Fatal("shared runner root remains active after close")
+	}
+	mu.Lock()
+	got := append([]string(nil), events...)
+	mu.Unlock()
+	index := func(target string) int {
+		for i, event := range got {
+			if event == target {
+				return i
+			}
+		}
+		return -1
+	}
+	closeRunners, singleCancel, compareCancel := index("close-runners"), index("single-cancel"), index("compare-cancel")
+	converger, generation, auth := index("converger"), index("generation"), index("auth")
+	if closeRunners != 0 || singleCancel < 1 || compareCancel < 1 || converger <= singleCancel || converger <= compareCancel || generation <= converger || auth <= generation || len(got) != 6 {
+		t.Fatalf("shutdown order=%v", got)
 	}
 }
 
