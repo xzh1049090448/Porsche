@@ -3,6 +3,7 @@ package openaicompat
 import (
 	"errors"
 	"sort"
+	"unicode/utf8"
 
 	"github.com/porsche/ai-gateway-go/internal/whitelabel"
 )
@@ -59,7 +60,7 @@ func NewResponsesStream(model string, parallel bool, ids IDSource) *ResponsesStr
 }
 
 func (s *ResponsesStream) Accept(chunk whitelabel.ChatCompletionChunk, emit func(ResponseEvent) error) error {
-	if s.terminal || emit == nil || chunk.Model != s.model || len(chunk.Choices) > 1 {
+	if s.terminal || emit == nil || validateResponseChunk(chunk, s.model) != nil {
 		return errors.New("invalid Responses stream chunk")
 	}
 	if !s.started {
@@ -74,9 +75,6 @@ func (s *ResponsesStream) Accept(chunk whitelabel.ChatCompletionChunk, emit func
 		return nil
 	}
 	choice := chunk.Choices[0]
-	if choice.Index != 0 {
-		return errors.New("unsupported Responses choice index")
-	}
 	if choice.Delta.Content != nil {
 		if err := s.acceptText(*choice.Delta.Content, emit); err != nil {
 			return err
@@ -226,13 +224,39 @@ func (s *ResponsesStream) acceptTool(call whitelabel.ChatCompletionChunkToolCall
 		if err := s.emit(ResponseEvent{Type: "response.output_item.added", OutputIndex: &index, Item: &item}, emit); err != nil {
 			return err
 		}
-		if argumentDelta == "" && state.arguments != "" {
-			argumentDelta = state.arguments
-		}
+		argumentDelta = state.arguments
 	}
 	if state.started && argumentDelta != "" {
 		index := state.outputIndex
 		return s.emit(ResponseEvent{Type: "response.function_call_arguments.delta", OutputIndex: &index, ItemID: state.itemID, Delta: argumentDelta}, emit)
+	}
+	return nil
+}
+
+func validateResponseChunk(chunk whitelabel.ChatCompletionChunk, model string) error {
+	if chunk.Model != model || chunk.Created < 0 || len(chunk.Choices) > 1 {
+		return errors.New("invalid chunk envelope")
+	}
+	if len(chunk.Choices) == 0 {
+		return nil
+	}
+	choice := chunk.Choices[0]
+	if choice.Index != 0 {
+		return errors.New("unsupported choice index")
+	}
+	for _, call := range choice.Delta.ToolCalls {
+		if call.Index < 0 || call.Type != nil && *call.Type != "function" || call.ID != nil && !validCallID(*call.ID) {
+			return errors.New("invalid tool delta")
+		}
+		if call.Function == nil {
+			continue
+		}
+		if call.Function.Name != nil && !validFunctionName(*call.Function.Name) {
+			return errors.New("invalid function name delta")
+		}
+		if call.Function.Arguments != nil && (!utf8.ValidString(*call.Function.Arguments) || len(*call.Function.Arguments) > MaxArgumentsBytes) {
+			return errors.New("invalid function arguments delta")
+		}
 	}
 	return nil
 }

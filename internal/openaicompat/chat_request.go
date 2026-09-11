@@ -121,10 +121,11 @@ func DecodeChat(body []byte) (Conversation, *Error) {
 	if err != nil {
 		return Conversation{}, err
 	}
-	if !validStop(request.Stop) || !validResponseFormat(request.ResponseFormat) || request.StreamOptions != nil && request.StreamOptions.IncludeUsage == nil {
+	responseFormat, responseFormatOK := decodeResponseFormat(request.ResponseFormat)
+	if !validStop(request.Stop) || !responseFormatOK || request.StreamOptions != nil && request.StreamOptions.IncludeUsage == nil {
 		return Conversation{}, InvalidRequest()
 	}
-	conversation := Conversation{Model: request.Model, Messages: messages, Tools: tools, ToolChoice: choice, ParallelToolCalls: request.ParallelToolCalls, MaxOutputTokens: maxOutput, Temperature: temperature, TopP: topP, FrequencyPenalty: frequency, PresencePenalty: presence, Stop: cloneRaw(request.Stop), Seed: seed, N: n, ResponseFormat: cloneRaw(request.ResponseFormat), Stream: request.Stream != nil && *request.Stream, IncludeUsage: request.StreamOptions != nil && request.StreamOptions.IncludeUsage != nil && *request.StreamOptions.IncludeUsage}
+	conversation := Conversation{Model: request.Model, Messages: messages, Tools: tools, ToolChoice: choice, ParallelToolCalls: request.ParallelToolCalls, MaxOutputTokens: maxOutput, Temperature: temperature, TopP: topP, FrequencyPenalty: frequency, PresencePenalty: presence, Stop: cloneRaw(request.Stop), Seed: seed, N: n, ResponseFormat: responseFormat, Stream: request.Stream != nil && *request.Stream, IncludeUsage: request.StreamOptions != nil && request.StreamOptions.IncludeUsage != nil && *request.StreamOptions.IncludeUsage}
 	if err := validateConversation(conversation); err != nil {
 		return Conversation{}, err
 	}
@@ -245,24 +246,46 @@ func validStop(raw json.RawMessage) bool {
 	return true
 }
 
-func validResponseFormat(raw json.RawMessage) bool {
+func decodeResponseFormat(raw json.RawMessage) (json.RawMessage, bool) {
 	if len(raw) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
-		return true
+		return nil, true
 	}
 	var dto struct {
 		Type       string          `json:"type"`
 		JSONSchema json.RawMessage `json:"json_schema"`
 	}
 	if decodeStrict(raw, &dto) != nil {
-		return false
+		return nil, false
 	}
 	switch dto.Type {
 	case "text", "json_object":
-		return len(dto.JSONSchema) == 0
+		if len(dto.JSONSchema) != 0 {
+			return nil, false
+		}
+		encoded, err := json.Marshal(struct {
+			Type string `json:"type"`
+		}{Type: dto.Type})
+		return encoded, err == nil
 	case "json_schema":
-		return validJSONObject(dto.JSONSchema)
+		var schema struct {
+			Name        string          `json:"name"`
+			Description *string         `json:"description"`
+			Schema      json.RawMessage `json:"schema"`
+			Strict      *bool           `json:"strict"`
+		}
+		if decodeStrict(dto.JSONSchema, &schema) != nil || strings.TrimSpace(schema.Name) == "" || !validJSONObject(schema.Schema) {
+			return nil, false
+		}
+		if schema.Description != nil && (!utf8.ValidString(*schema.Description) || len(*schema.Description) > MaxTextContentBytes) {
+			return nil, false
+		}
+		encoded, err := json.Marshal(struct {
+			Type       string `json:"type"`
+			JSONSchema any    `json:"json_schema"`
+		}{Type: "json_schema", JSONSchema: schema})
+		return encoded, err == nil
 	default:
-		return false
+		return nil, false
 	}
 }
 

@@ -1,6 +1,8 @@
 package openaicompat
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"testing"
 
@@ -15,6 +17,21 @@ func TestProjectResponseIncludesTextAndParallelCalls(t *testing.T) {
 	}
 	if got.Output[1].CallID != "call_1" || got.Output[2].CallID != "call_2" {
 		t.Fatalf("tool outputs=%#v", got.Output)
+	}
+}
+
+func TestProjectResponseKeepsEmptyFunctionArguments(t *testing.T) {
+	completion := whitelabel.ChatCompletion{Created: 1, Model: "model-a", Choices: []whitelabel.ChatCompletionChoice{{Index: 0, Message: whitelabel.ChatCompletionMessage{Role: "assistant", ToolCalls: []whitelabel.ChatCompletionToolCall{{ID: "call_1", Type: "function", Function: whitelabel.ChatCompletionFunctionCall{Name: "lookup", Arguments: ""}}}}}}}
+	got, err := ProjectResponse(completion, true, sequentialIDSource())
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(body, []byte(`"arguments":""`)) {
+		t.Fatalf("response omitted required arguments: %s", body)
 	}
 }
 

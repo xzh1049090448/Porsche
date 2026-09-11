@@ -60,3 +60,42 @@ func TestResponsesStreamFailureIsTerminal(t *testing.T) {
 		t.Fatal("Complete succeeded after failure")
 	}
 }
+
+func TestResponsesStreamFlushesArgumentsBufferedBeforeIdentity(t *testing.T) {
+	stream := NewResponsesStream("model-a", true, sequentialIDSource())
+	var events []ResponseEvent
+	emit := func(event ResponseEvent) error { events = append(events, event); return nil }
+	first, second := "A", "B"
+	callID, callType, name := "call_1", "function", "lookup"
+	chunks := []whitelabel.ChatCompletionChunk{
+		{Model: "model-a", Created: 1, Choices: []whitelabel.ChatCompletionChunkChoice{{Index: 0, Delta: whitelabel.ChatCompletionChunkDelta{ToolCalls: []whitelabel.ChatCompletionChunkToolCall{{Index: 0, Function: &whitelabel.ChatCompletionChunkFunctionCall{Arguments: &first}}}}}}},
+		{Model: "model-a", Created: 1, Choices: []whitelabel.ChatCompletionChunkChoice{{Index: 0, Delta: whitelabel.ChatCompletionChunkDelta{ToolCalls: []whitelabel.ChatCompletionChunkToolCall{{Index: 0, ID: &callID, Type: &callType, Function: &whitelabel.ChatCompletionChunkFunctionCall{Name: &name, Arguments: &second}}}}}}},
+	}
+	for _, chunk := range chunks {
+		if err := stream.Accept(chunk, emit); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := ""
+	for _, event := range events {
+		if event.Type == "response.function_call_arguments.delta" {
+			got += event.Delta
+		}
+	}
+	if got != "AB" {
+		t.Fatalf("argument deltas=%q, want AB", got)
+	}
+}
+
+func TestResponsesStreamValidatesFirstChunkBeforeEmitting(t *testing.T) {
+	stream := NewResponsesStream("model-a", true, sequentialIDSource())
+	emitted := 0
+	badType := "custom"
+	chunk := whitelabel.ChatCompletionChunk{Model: "model-a", Created: 1, Choices: []whitelabel.ChatCompletionChunkChoice{{Index: 0, Delta: whitelabel.ChatCompletionChunkDelta{ToolCalls: []whitelabel.ChatCompletionChunkToolCall{{Index: 0, Type: &badType}}}}}}
+	if err := stream.Accept(chunk, func(ResponseEvent) error { emitted++; return nil }); err == nil {
+		t.Fatal("invalid first chunk accepted")
+	}
+	if emitted != 0 || stream.Started() {
+		t.Fatalf("emitted=%d started=%v", emitted, stream.Started())
+	}
+}

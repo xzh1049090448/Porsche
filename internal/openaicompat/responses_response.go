@@ -3,6 +3,7 @@ package openaicompat
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"strings"
 
@@ -35,6 +36,24 @@ type ResponseOutputItem struct {
 	CallID    string            `json:"call_id,omitempty"`
 	Name      string            `json:"name,omitempty"`
 	Arguments string            `json:"arguments,omitempty"`
+}
+
+func (item ResponseOutputItem) MarshalJSON() ([]byte, error) {
+	type wireItem struct {
+		ID        string            `json:"id"`
+		Type      string            `json:"type"`
+		Status    string            `json:"status"`
+		Role      string            `json:"role,omitempty"`
+		Content   []ResponseContent `json:"content,omitempty"`
+		CallID    string            `json:"call_id,omitempty"`
+		Name      string            `json:"name,omitempty"`
+		Arguments *string           `json:"arguments,omitempty"`
+	}
+	var arguments *string
+	if item.Type == "function_call" {
+		arguments = &item.Arguments
+	}
+	return json.Marshal(wireItem{ID: item.ID, Type: item.Type, Status: item.Status, Role: item.Role, Content: item.Content, CallID: item.CallID, Name: item.Name, Arguments: arguments})
 }
 
 type ResponseContent struct {
