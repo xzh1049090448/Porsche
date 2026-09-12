@@ -2,11 +2,11 @@
 
 ## 结论
 
-状态：`PASS_LIMITED_SCOPE`
+状态：`PENDING_REVIEW`
 
-当前代码完成了既定首期范围，并通过单元测试、回归、竞态、构建、静态检查、协议对抗探针以及隔离 MySQL 上的真实 handler 闭环。由于独立规格/安全复审和真实 OpenCode/Codex/上游验收尚未执行，本结论保持限定范围，不代表生产或所有客户端兼容性通过。
+当前代码完成了既定首期范围，并通过单元测试、回归、竞态、构建、静态检查、协议对抗探针以及隔离 MySQL 上的真实 handler 闭环。首轮独立规格复审发现四项缺口，修复后全部本地门禁通过；新快照的规格、安全和测试复审尚未完成，因此当前不声明最终通过。
 
-实现代码头为 `6ce54bb`；本报告和进度记录属于后续文档收尾提交。
+初始集成提交为 `28d8f1f`，规格修复代码头为 `1df776d`；本报告和进度记录属于后续文档收尾提交。
 
 ## 已实现范围
 
@@ -54,9 +54,20 @@ invalid_first_chunk err=invalid Responses stream chunk events_before_error=0
 
 测试后精确停止 `porsche-openai-cli-260912-mysql`；容器因 `--rm` 自动删除，未创建命名卷。包含随机 MySQL 密码、测试 HMAC key 和运行脚本的 0700 私有目录已删除。
 
+## 独立规格复审与修复
+
+首轮独立规格复审绑定 final revision `28d8f1f` 和 snapshot `c3ddad2ccb3ee37d87d11597061b4aa99f79dd6e2de923097430307b6dc72b00`，结论为 `SPEC_FAIL`：
+
+- 历史 tool arguments 或 tool output 超限错误地返回 400，而合同要求 413 `request_too_large`。
+- assistant 同时包含工具调用时会静默吞掉非法 content shape。
+- Responses 嵌套未知字段返回 `invalid_request`，而合同要求 `unsupported_parameter`。
+- 缺少完整 Gin 到 WhiteLabel 的取消传播测试。
+
+修复提交 `1df776d` 对四项均完成 RED→GREEN。隔离 MySQL 8.0.46 完成 0001–0019 迁移后，原 5 个真实 Handler 用例加 `TestGatewayToolPayloadLimitsRejectBeforeUpstream`、`TestGatewayResponsesCancellationStopsUpstream` 共 7 项在 race 下全部 PASS、零 skip；413 四个 decoder/四个认证 Gateway 子用例均通过并确认零上游，取消用例确认客户端 context 传播到伪上游。精确测试容器与私有凭据目录已清理。
+
 ## 未闭环门禁
 
-还未执行独立规格复审、独立安全复审、真实 OpenCode/Codex 会话、真实付费上游调用、push、PR、merge、部署或生产验收。
+修复后的新快照尚未完成规格复审、安全复审和独立测试复审。初始实现已进入远端 main；修复提交尚未 push/merge。真实 OpenCode/Codex 会话、真实付费上游调用、部署和生产验收均未执行。
 
 ## 后续兼容 TODO
 

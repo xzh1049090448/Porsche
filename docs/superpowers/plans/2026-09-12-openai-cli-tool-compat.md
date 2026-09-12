@@ -8,7 +8,7 @@
 
 **Tech Stack:** Go 1.24, Gin, `encoding/json`, existing `internal/whitelabel`, `httptest`, table-driven Go tests.
 
-**Execution status (2026-09-12):** Tasks 1-8 and the local Task 9 gates are complete. Focused race, full test, vet, build, diff, sensitive-data scan, adversarial protocol probes, and five real handler tests on isolated MySQL 8.0.46 pass with zero fixture skips. The current result is `PASS_LIMITED_SCOPE`; independent spec/security review and real OpenCode/Codex/upstream acceptance are not run. See `docs/superpowers/reports/2026-09-12-openai-cli-tool-compat.md`.
+**Execution status (2026-09-12):** Tasks 1-8 and the local Task 9 gates are complete. The first independent spec review of integrated revision `28d8f1f` returned `SPEC_FAIL` for four request-boundary and cancellation-test gaps. Fix `1df776d` closes those findings; focused/full/race/vet/build/diff pass, and seven real handler tests on isolated MySQL 8.0.46 pass under race with zero skips. A new review snapshot and ordered spec/security/test re-review are pending. Real OpenCode/Codex/upstream acceptance is not run. See `docs/superpowers/reports/2026-09-12-openai-cli-tool-compat.md`.
 
 ---
 
