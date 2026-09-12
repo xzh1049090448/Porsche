@@ -65,9 +65,13 @@ invalid_first_chunk err=invalid Responses stream chunk events_before_error=0
 
 修复提交 `1df776d` 对四项均完成 RED→GREEN。隔离 MySQL 8.0.46 完成 0001–0019 迁移后，原 5 个真实 Handler 用例加 `TestGatewayToolPayloadLimitsRejectBeforeUpstream`、`TestGatewayResponsesCancellationStopsUpstream` 共 7 项在 race 下全部 PASS、零 skip；413 四个 decoder/四个认证 Gateway 子用例均通过并确认零上游，取消用例确认客户端 context 传播到伪上游。精确测试容器与私有凭据目录已清理。
 
+修复后 snapshot `b9215d00b3ee7faf09d403de895267051d18dcaf9b28634587afa1df20d4aa06` 在 final `503f9d8` 上取得 `SPEC_PASS`。同一快照的安全复审返回 `SECURITY_FAIL`：Responses SSE 只限制单帧和单工具 arguments，未限制累计文本、工具 state 数量和稀疏大索引，异常上游可让单请求持续增长内存。
+
+安全修复 `bb1bc88` 在写入缓冲前强制累计文本不超过 `MaxTextContentBytes`、工具索引位于 `[0, MaxParallelCalls)`、工具 state 不超过 `MaxParallelCalls`，并在拼接前检查累计 arguments 剩余额度。五个新增测试覆盖累计文本、超过 64 个工具、稀疏大索引、累计 arguments 及单一 `response.failed` 终态，均经历 RED→GREEN；affected race、全仓 test、vet、build 和 diff 通过。该提交改变快照，必须重新开始规格、安全和测试复审。
+
 ## 未闭环门禁
 
-修复后的新快照尚未完成规格复审、安全复审和独立测试复审。初始实现已进入远端 main；修复提交尚未 push/merge。真实 OpenCode/Codex 会话、真实付费上游调用、部署和生产验收均未执行。
+安全修复后的新快照尚未完成规格复审、安全复审和独立测试复审。初始实现已进入远端 main；两轮修复提交尚未 push/merge。真实 OpenCode/Codex 会话、真实付费上游调用、部署和生产验收均未执行。
 
 ## 后续兼容 TODO
 
