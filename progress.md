@@ -1,10 +1,16 @@
 # Porsche 开发进度
 
+## 2026-09-12：BE06 合并进入 main
+
+- BE06 后端与 Porsche-Web 前端在各自最新 `origin/main` 上完成无业务冲突合并；后端同时保留 OpenAI CLI 工具调用兼容分支的全部新增能力。
+- 合并后前端六合同全量 `926/926`、production build 通过；后端全仓测试、build、vet 与 affected `race -p 1` 通过。
+- `go-018` 继续保持 `in_progress`：代码集成不等于发布验收，production migration/deployment、公开 HTTPS、真实账号及付费或真实上游仍未执行。
+
 ## 2026-09-12：BE06 本地跨仓库联合验收通过，发布边界待执行
 
 - 后端候选 `4680c549bd28f8be57a438061cf9161914c046a0` 绑定前端代码候选 `db5e25f27e879d5697fe758e5f40048105312b6d` 与前端证据提交 `19dff079e5525ef6bc159a61bc4500073dbaa834`。冻结合同为 `v1.0.0-p0` / `agreed_for_implementation`，`platform-chat-sse.v2` 为 `closed`，SHA-256 为 `47cfbc485c4df0f5d2c12539f389f466c97bb8318adf04966757420287d10a2f`。
 - 后端 fresh `go test ./...`、build、vet、affected race PASS；隔离 loopback-only MySQL 8.4 / Redis 7.4 的八个 BE06 compare integration 在 normal 与 `race -p 1` 均为 `8/8` PASS、0 skip。前端六合同全量 `926/926`、0 skip，production build/init PASS；真实本地浏览器完整矩阵中 standard 实际 RAF 每帧一字符簇、25ms 目标约 33ms且标点无额外停顿，reduced-motion send/recovery 观测 29 次增长、单次最多 8 字符簇并核对 modeReason，手动上滚不被抢且 Back to latest 可键盘恢复；其余生命周期、恢复、取消、三模型部分失败、重复/敏感值、IME、焦点、375/390 与 unmount 均 PASS。独立最终 verdict PASS。
-- fixture 已精确清理 2 个容器、2 个卷、1 个网络及 loopback listener。`go-018` 仍为 `in_progress`，现在仅保留 production migration/deployment、公开 HTTPS、真实账号及付费或真实上游验收和 push/PR/合入 main；这些均未执行。
+- fixture 已精确清理 2 个容器、2 个卷、1 个网络及 loopback listener。`go-018` 仍为 `in_progress`，现在仅保留 production migration/deployment、公开 HTTPS、真实账号及付费或真实上游验收。
 
 ## 2026-09-11：BE06 platform compare v2 stream 后端本地候选完成
 
@@ -12,7 +18,12 @@
 - 八个真实 MySQL 8.4.11 / Redis 7.4.11 integration 顶层测试在 normal/race 中分别全部 PASS、零 skip；覆盖精确 graph/order、成功模型计费、GET、all-failed/cancel 零持久化、续租、commit-unknown 精确 reconcile、额度/reset/unlimited 和 duplicate/quota races。full normal 为 3688 PASS event、0 FAIL；canonical serialized race 无 race；build/vet/diff/JSON 均通过。
 - fixture 已按两个完整容器 ID 精确 stop/remove，命名 network/volumes、私有凭据目录与 label-filter 残留均清理，两个 loopback 端口无 listener。固定基线 `944309003ce47bbaf949f6c0f28d9bd302016d0f`，pre-report 候选 `20e51fe90a08f0581d3fdf261a3564deaf392b6b`；未 fetch/rebase/push。
 - `go-018` 仍为 `in_progress`：BE01–BE06 仅后端本地完成，前后端合同对齐、Porsche-Web 实现、联合验收、生产迁移/部署、公开 HTTPS 与真实上游仍未完成；未 push、PR 或 merge。完整证据见 `docs/superpowers/reports/2026-09-11-platform-compare-stream-v2.md`。
+## 2026-09-12：OpenAI CLI 工具调用兼容首期本地限定通过
 
+- Gateway 新增统一的 OpenAI 协议规范化层：`/v1/chat/completions` 支持 assistant `tool_calls` 与 tool result 往返；`/v1/responses` 支持无状态文本、自定义函数工具、并行调用、非流式输出和 Responses SSE。未知字段、托管工具、`store:true`、非空 `previous_response_id`、重复或悬空调用 ID 在访问上游前拒绝。
+- 设计文档新增长期 TODO：建立 Codex、OpenCode 及其他 CLI 的版本/协议兼容矩阵，逐步支持 reasoning 和各客户端可选字段，并使用冻结 fixture 与真实客户端回归防止漂移。
+- 候选实现代码头 `6ce54bb`。受影响包 race、全仓 `go test ./... -count=1`、`go vet ./...`、`go build ./...`、`git diff --check` 和三项额外协议对抗探针全部退出 0；敏感字段扫描仅命中测试哨兵和设计中的公开 token 前缀。
+- 使用独立、tmpfs、无命名卷的 MySQL 8.0.46 完成 0001–0019 迁移；Chat/Responses 两轮工具闭环、Responses SSE、启动后失败终态与有状态请求零上游拒绝共 5 个真实 handler 用例在 normal 与 race 下均 PASS、零 skip。精确命名容器自动删除，私有测试凭据目录已删除。本子项目为 `PASS_LIMITED_SCOPE`；独立规格/安全复审、真实 OpenCode/Codex、真实上游、push、PR、merge、部署和生产验收均 `NOT_RUN`。完整证据见 `docs/superpowers/reports/2026-09-12-openai-cli-tool-compat.md`。
 ## 2026-09-11：公共内容与定价分支同步主分支
 
 - `feature/public-content-pricing` 已语义合并最新 `origin/main`，保留主分支的用户管理、平台生成控制与安全动作能力，同时接入公共内容、公开定价及 Root 管理动作。

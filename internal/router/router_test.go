@@ -815,4 +815,5 @@ var preB1ERouteInventory = []routeContract{
 	{http.MethodGet, "/v1/models"},
 	{http.MethodGet, "/v1/models/:id"},
 	{http.MethodGet, "/v1/models/detail"},
+	{http.MethodPost, "/v1/responses"},
 }

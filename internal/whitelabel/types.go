@@ -1,6 +1,7 @@
 package whitelabel
 
 import (
+	"bytes"
 	"encoding/json"
 	"math"
 	"sort"
@@ -150,18 +151,24 @@ func projectCompletionMessage(raw json.RawMessage) (ChatCompletionMessage, error
 	if json.Unmarshal(raw, &upstream) != nil || strings.TrimSpace(upstream.Role) == "" {
 		return ChatCompletionMessage{}, errMalformedCompletion
 	}
-	content, err := projectCompletionContent(upstream.Content)
+	toolCalls, err := projectToolCalls(upstream.ToolCalls)
 	if err != nil {
 		return ChatCompletionMessage{}, errMalformedCompletion
 	}
-	toolCalls, err := projectToolCalls(upstream.ToolCalls)
+	content, err := projectCompletionContent(upstream.Content, len(toolCalls) > 0)
 	if err != nil {
 		return ChatCompletionMessage{}, errMalformedCompletion
 	}
 	return ChatCompletionMessage{Role: upstream.Role, Content: content, Refusal: upstream.Refusal, ToolCalls: toolCalls}, nil
 }
 
-func projectCompletionContent(raw json.RawMessage) (any, error) {
+func projectCompletionContent(raw json.RawMessage, allowNull bool) (any, error) {
+	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		if allowNull {
+			return nil, nil
+		}
+		return nil, errMalformedCompletion
+	}
 	var text string
 	if json.Unmarshal(raw, &text) == nil {
 		return text, nil
@@ -183,15 +190,32 @@ func projectToolCalls(raw json.RawMessage) ([]ChatCompletionToolCall, error) {
 		return nil, nil
 	}
 	var calls []ChatCompletionToolCall
-	if json.Unmarshal(raw, &calls) != nil {
+	if json.Unmarshal(raw, &calls) != nil || len(calls) == 0 || len(calls) > 64 {
 		return nil, errMalformedCompletion
 	}
+	seen := make(map[string]struct{}, len(calls))
 	for _, call := range calls {
-		if call.ID == "" || call.Type != "function" || call.Function.Name == "" {
+		if !validProjectedCallID(call.ID) || call.Type != "function" || !validFunctionName(call.Function.Name) || !utf8.ValidString(call.Function.Arguments) || len(call.Function.Arguments) > 256*1024 {
 			return nil, errMalformedCompletion
 		}
+		if _, duplicate := seen[call.ID]; duplicate {
+			return nil, errMalformedCompletion
+		}
+		seen[call.ID] = struct{}{}
 	}
 	return calls, nil
+}
+
+func validProjectedCallID(id string) bool {
+	if id == "" || len(id) > 128 || !utf8.ValidString(id) {
+		return false
+	}
+	for _, char := range id {
+		if char < 0x21 || char > 0x7e {
+			return false
+		}
+	}
+	return true
 }
 
 func validCompletionUsage(usage *ChatCompletionUsage) bool {

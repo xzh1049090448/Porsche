@@ -16,6 +16,7 @@ import (
 	"github.com/porsche/ai-gateway-go/internal/httpx"
 	"github.com/porsche/ai-gateway-go/internal/middleware"
 	"github.com/porsche/ai-gateway-go/internal/models"
+	"github.com/porsche/ai-gateway-go/internal/openaicompat"
 	"github.com/porsche/ai-gateway-go/internal/service"
 	"github.com/porsche/ai-gateway-go/internal/whitelabel"
 	"gorm.io/gorm"
@@ -46,90 +47,191 @@ func registerGatewayRoutes(r *gin.Engine, state *app.State) {
 	g.GET("/models/:id", func(c *gin.Context) {
 		gatewayModelDetail(c, state, c.Param("id"))
 	})
-	g.POST("/chat/completions", func(c *gin.Context) {
-		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, whitelabel.MaxRequestBodyBytes)
-		token, ok := authenticateGatewayToken(c, state, "")
-		if !ok {
-			return
-		}
-		mediaType, _, contentTypeErr := mime.ParseMediaType(c.GetHeader("Content-Type"))
-		if contentTypeErr != nil || mediaType != "application/json" {
-			gatewayWhiteLabelError(c, &whitelabel.Error{Code: whitelabel.CodeInvalidRequest, Status: http.StatusUnsupportedMediaType, Type: whitelabel.TypeInvalidRequest})
-			return
-		}
-		body, readErr := io.ReadAll(c.Request.Body)
-		if readErr != nil {
-			gatewayWhiteLabelError(c, &whitelabel.Error{Code: whitelabel.CodeRequestTooLarge, Status: http.StatusRequestEntityTooLarge, Type: whitelabel.TypeInvalidRequest})
-			return
-		}
-		if validationErr := whitelabel.ValidateRequest(body, whitelabel.GatewayValidation); validationErr != nil {
-			gatewayWhiteLabelError(c, validationErr)
-			return
-		}
-		modelID, stream := whitelabel.RequestModelAndStream(body)
-		if !token.AllowsModel(modelID) {
-			gatewayAuthenticationError(c, http.StatusForbidden, service.GatewayTokenModelDenied)
-			return
-		}
-		if state.WhiteLabel == nil {
-			gatewayWhiteLabelError(c, whitelabel.ErrUpstreamUnavailable("white-label service unavailable"))
-			return
-		}
-		catalog, catalogErr := state.WhiteLabel.ListModels(c.Request.Context(), token.KeyAllowedModels())
-		if catalogErr != nil {
-			gatewayWhiteLabelError(c, catalogErr)
-			return
-		}
-		if !catalogContains(catalog, modelID) {
-			gatewayWhiteLabelError(c, &whitelabel.Error{Code: whitelabel.CodeModelUnavailable, Status: http.StatusNotFound, Type: whitelabel.TypeInvalidRequest})
-			return
-		}
-		if authErr := state.WhiteLabel.AuthorizeModel(modelID, token.KeyAllowedModels()); authErr != nil {
-			gatewayWhiteLabelError(c, authErr)
-			return
-		}
-		response, upstreamErr := state.WhiteLabel.Chat(c.Request.Context(), body)
-		if upstreamErr != nil {
-			gatewayWhiteLabelError(c, upstreamErr)
-			return
-		}
-		defer response.Body.Close()
-		if !stream {
-			data, err := io.ReadAll(io.LimitReader(response.Body, whitelabel.MaxRequestBodyBytes))
-			if err != nil {
-				gatewayWhiteLabelError(c, whitelabel.ErrUpstreamUnavailable("chat body read failed"))
-				return
-			}
-			completion, completionErr := state.WhiteLabel.ProjectChatCompletion(data, modelID)
-			if completionErr != nil {
-				gatewayWhiteLabelError(c, completionErr)
-				return
-			}
-			c.JSON(http.StatusOK, completion)
-			return
-		}
-		started := false
-		streamErr := state.WhiteLabel.ProjectChatCompletionSSE(response.Body, modelID, func(frame []byte) error {
-			if !started {
-				c.Header("Content-Type", "text/event-stream")
-				c.Header("Cache-Control", "no-cache")
-				c.Header("Connection", "keep-alive")
-				started = true
-			}
-			_, writeErr := c.Writer.Write(frame)
-			c.Writer.Flush()
-			return writeErr
-		})
-		if streamErr == nil {
-			return
-		}
+	g.POST("/chat/completions", func(c *gin.Context) { gatewayCompletion(c, state, gatewayChat) })
+	g.POST("/responses", func(c *gin.Context) { gatewayCompletion(c, state, gatewayResponses) })
+}
+
+type gatewayProtocol int
+
+const (
+	gatewayChat gatewayProtocol = iota
+	gatewayResponses
+)
+
+func gatewayCompletion(c *gin.Context, state *app.State, protocol gatewayProtocol) {
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, openaicompat.MaxRequestBodyBytes)
+	token, ok := authenticateGatewayToken(c, state, "")
+	if !ok {
+		return
+	}
+	mediaType, _, contentTypeErr := mime.ParseMediaType(c.GetHeader("Content-Type"))
+	if contentTypeErr != nil || mediaType != "application/json" {
+		gatewayWhiteLabelError(c, &whitelabel.Error{Code: whitelabel.CodeInvalidRequest, Status: http.StatusUnsupportedMediaType, Type: whitelabel.TypeInvalidRequest})
+		return
+	}
+	body, readErr := io.ReadAll(c.Request.Body)
+	if readErr != nil {
+		gatewayWhiteLabelError(c, &whitelabel.Error{Code: whitelabel.CodeRequestTooLarge, Status: http.StatusRequestEntityTooLarge, Type: whitelabel.TypeInvalidRequest})
+		return
+	}
+	conversation, decodeErr := decodeGatewayConversation(protocol, body)
+	if decodeErr != nil {
+		gatewayCompatError(c, decodeErr)
+		return
+	}
+	modelID := conversation.Model
+	if !token.AllowsModel(modelID) {
+		gatewayAuthenticationError(c, http.StatusForbidden, service.GatewayTokenModelDenied)
+		return
+	}
+	if state.WhiteLabel == nil {
+		gatewayWhiteLabelError(c, whitelabel.ErrUpstreamUnavailable("white-label service unavailable"))
+		return
+	}
+	catalog, catalogErr := state.WhiteLabel.ListModels(c.Request.Context(), token.KeyAllowedModels())
+	if catalogErr != nil {
+		gatewayWhiteLabelError(c, catalogErr)
+		return
+	}
+	if !catalogContains(catalog, modelID) {
+		gatewayWhiteLabelError(c, &whitelabel.Error{Code: whitelabel.CodeModelUnavailable, Status: http.StatusNotFound, Type: whitelabel.TypeInvalidRequest})
+		return
+	}
+	if authErr := state.WhiteLabel.AuthorizeModel(modelID, token.KeyAllowedModels()); authErr != nil {
+		gatewayWhiteLabelError(c, authErr)
+		return
+	}
+	upstreamBody, encodeErr := openaicompat.EncodeUpstream(conversation)
+	if encodeErr != nil {
+		gatewayWhiteLabelError(c, whitelabel.ErrUpstreamUnavailable("gateway request encoding failed"))
+		return
+	}
+	response, upstreamErr := state.WhiteLabel.Chat(c.Request.Context(), upstreamBody)
+	if upstreamErr != nil {
+		gatewayWhiteLabelError(c, upstreamErr)
+		return
+	}
+	defer response.Body.Close()
+	if !conversation.Stream {
+		gatewayNonStreamingCompletion(c, state, protocol, conversation, response.Body)
+		return
+	}
+	if protocol == gatewayChat {
+		gatewayChatStream(c, state, modelID, response.Body)
+		return
+	}
+	gatewayResponsesStream(c, state, conversation, response.Body)
+}
+
+func decodeGatewayConversation(protocol gatewayProtocol, body []byte) (openaicompat.Conversation, *openaicompat.Error) {
+	if protocol == gatewayResponses {
+		return openaicompat.DecodeResponses(body)
+	}
+	return openaicompat.DecodeChat(body)
+}
+
+func gatewayNonStreamingCompletion(c *gin.Context, state *app.State, protocol gatewayProtocol, conversation openaicompat.Conversation, body io.Reader) {
+	data, err := io.ReadAll(io.LimitReader(body, openaicompat.MaxRequestBodyBytes))
+	if err != nil {
+		gatewayWhiteLabelError(c, whitelabel.ErrUpstreamUnavailable("chat body read failed"))
+		return
+	}
+	completion, completionErr := state.WhiteLabel.ProjectChatCompletion(data, conversation.Model)
+	if completionErr != nil {
+		gatewayWhiteLabelError(c, completionErr)
+		return
+	}
+	if protocol == gatewayChat {
+		c.JSON(http.StatusOK, completion)
+		return
+	}
+	parallel := conversation.ParallelToolCalls != nil && *conversation.ParallelToolCalls
+	projected, projectErr := openaicompat.ProjectResponse(completion, parallel, nil)
+	if projectErr != nil {
+		gatewayWhiteLabelError(c, whitelabel.ErrUpstreamUnavailable("Responses projection failed"))
+		return
+	}
+	c.Header("Cache-Control", "no-store")
+	c.JSON(http.StatusOK, projected)
+}
+
+func gatewayChatStream(c *gin.Context, state *app.State, modelID string, body io.Reader) {
+	started := false
+	streamErr := state.WhiteLabel.ProjectChatCompletionSSEContext(c.Request.Context(), body, modelID, func(frame []byte) error {
 		if !started {
+			setGatewaySSEHeaders(c)
+			started = true
+		}
+		_, writeErr := c.Writer.Write(frame)
+		c.Writer.Flush()
+		return writeErr
+	})
+	if streamErr == nil {
+		return
+	}
+	if !started {
+		gatewayWhiteLabelError(c, streamErr)
+		return
+	}
+	gatewaySSEError(c)
+}
+
+func gatewayResponsesStream(c *gin.Context, state *app.State, conversation openaicompat.Conversation, body io.Reader) {
+	parallel := conversation.ParallelToolCalls != nil && *conversation.ParallelToolCalls
+	stream := openaicompat.NewResponsesStream(conversation.Model, parallel, nil)
+	emit := func(event openaicompat.ResponseEvent) error {
+		encoded, err := json.Marshal(event)
+		if err != nil {
+			return err
+		}
+		setGatewaySSEHeaders(c)
+		if _, err = c.Writer.Write([]byte("event: " + event.Type + "\n")); err != nil {
+			return err
+		}
+		if _, err = c.Writer.Write([]byte("data: ")); err != nil {
+			return err
+		}
+		if _, err = c.Writer.Write(encoded); err != nil {
+			return err
+		}
+		if _, err = c.Writer.Write([]byte("\n\n")); err != nil {
+			return err
+		}
+		c.Writer.Flush()
+		return nil
+	}
+	streamErr := state.WhiteLabel.ConsumeChatCompletionSSEContext(c.Request.Context(), body, conversation.Model, func(chunk whitelabel.ChatCompletionChunk) error {
+		return stream.Accept(chunk, emit)
+	})
+	if streamErr != nil {
+		if !stream.Started() {
 			gatewayWhiteLabelError(c, streamErr)
 			return
 		}
-		gatewaySSEError(c)
+		_ = stream.Failed(string(whitelabel.CodeGatewayUpstreamUnavailable), emit)
 		return
-	})
+	}
+	if err := stream.Complete(emit); err != nil {
+		if !stream.Started() {
+			gatewayWhiteLabelError(c, whitelabel.ErrUpstreamUnavailable("Responses stream projection failed"))
+			return
+		}
+		_ = stream.Failed(string(whitelabel.CodeGatewayUpstreamUnavailable), emit)
+	}
+}
+
+func setGatewaySSEHeaders(c *gin.Context) {
+	c.Header("Content-Type", "text/event-stream")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("Connection", "keep-alive")
+}
+
+func gatewayCompatError(c *gin.Context, err *openaicompat.Error) {
+	if err == nil {
+		gatewayWhiteLabelError(c, &whitelabel.Error{Code: whitelabel.CodeInvalidRequest, Status: http.StatusBadRequest, Type: whitelabel.TypeInvalidRequest})
+		return
+	}
+	gatewayWhiteLabelError(c, &whitelabel.Error{Code: whitelabel.Code(err.Code), Status: err.Status, Type: whitelabel.TypeInvalidRequest})
 }
 
 func gatewayModelDetail(c *gin.Context, state *app.State, modelID string) {
@@ -286,6 +388,10 @@ func validRequestID(id string) bool {
 	return true
 }
 func gatewayAuthenticationError(c *gin.Context, status int, code service.GatewayTokenError) {
+	if status == http.StatusForbidden {
+		gatewayWhiteLabelError(c, &whitelabel.Error{Code: whitelabel.Code(code), Status: status, Type: whitelabel.TypePermission})
+		return
+	}
 	gatewayWhiteLabelError(c, whitelabel.ErrGatewayAuthentication(whitelabel.Code(code), status))
 }
 

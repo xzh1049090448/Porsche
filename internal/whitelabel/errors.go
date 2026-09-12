@@ -19,6 +19,7 @@ const (
 	TypeInvalidRequest ErrorType = "invalid_request_error"
 	TypeAPI            ErrorType = "api_error"
 	TypeAuthentication ErrorType = "authentication_error"
+	TypePermission     ErrorType = "permission_error"
 )
 
 // Error is an internal classification. Detail is intentionally never included
@@ -92,6 +93,9 @@ func PublicError(err *Error, requestID string) PublicErrorResponse {
 	errorType := err.Type
 	if errorType == "" {
 		errorType = TypeInvalidRequest
+	}
+	if message == "Invalid request." && errorType == TypePermission {
+		message = "Permission denied."
 	}
 	return PublicErrorResponse{
 		Status: status,

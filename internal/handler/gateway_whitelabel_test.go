@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -170,7 +171,7 @@ func TestGatewayChatRejectsBeforeWhiteLabelUpstream(t *testing.T) {
 	}
 	for _, body := range []string{
 		`{"model":"model-b","messages":[{"role":"user","content":"hello"}],"max_tokens":1}`,
-		`{"model":"model-a","messages":[{"role":"user","content":"hello"}]}`,
+		`{"model":"model-a","messages":[{"role":"tool","tool_call_id":"missing","content":"hello"}]}`,
 		string(bytes.Repeat([]byte("x"), whitelabel.MaxRequestBodyBytes+1)),
 	} {
 		req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(body))
@@ -185,6 +186,126 @@ func TestGatewayChatRejectsBeforeWhiteLabelUpstream(t *testing.T) {
 	if got := calls.Load(); got != 0 {
 		t.Fatalf("upstream calls=%d, want 0", got)
 	}
+}
+
+func TestGatewayResponsesRejectsStateBeforeUpstream(t *testing.T) {
+	state, _, calls := gatewayWhiteLabelState(t, `{"data":[{"id":"model-a"}]}`)
+	user := gatewayWhiteLabelUser(t, state, "13900200021")
+	if err := state.DB.Create(user).Error; err != nil {
+		t.Fatal(err)
+	}
+	_, secret, err := state.GatewayTokens.Create(user, service.GatewayTokenCreateInput{Name: "responses", AllowedModels: models.JSONSlice{"model-a"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, body := range []string{
+		`{"model":"model-a","input":"hello","store":true}`,
+		`{"model":"model-a","input":"hello","previous_response_id":"resp_1"}`,
+	} {
+		req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+secret)
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		router.New(state).ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), `"code":"unsupported_parameter"`) {
+			t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+		}
+	}
+	if got := calls.Load(); got != 0 {
+		t.Fatalf("upstream calls=%d", got)
+	}
+}
+
+func TestGatewayChatToolRoundTrip(t *testing.T) {
+	first := mustFixture(t, "opencode-chat-request.json")
+	second := `{"model":"model-a","messages":[{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"read_file","arguments":"not-json"}},{"id":"call_2","type":"function","function":{"name":"read_file","arguments":"{}"}}]},{"role":"tool","tool_call_id":"call_2","content":"two"},{"role":"tool","tool_call_id":"call_1","content":"one"}]}`
+	runGatewayToolRoundTrip(t, "/v1/chat/completions", first, second, `"tool_calls"`, `"content":"hello"`)
+}
+
+func TestGatewayResponsesToolRoundTrip(t *testing.T) {
+	first := mustFixture(t, "opencode-responses-request.json")
+	second := `{"model":"model-a","input":[{"type":"function_call","call_id":"call_1","name":"read_file","arguments":"not-json"},{"type":"function_call","call_id":"call_2","name":"read_file","arguments":"{}"},{"type":"function_call_output","call_id":"call_2","output":"two"},{"type":"function_call_output","call_id":"call_1","output":"one"}],"store":false}`
+	runGatewayToolRoundTrip(t, "/v1/responses", first, second, `"type":"function_call"`, `"type":"output_text"`)
+}
+
+func TestGatewayResponsesStreamUsesResponsesEventsWithoutDoneSentinel(t *testing.T) {
+	state, _, _ := gatewayWhiteLabelState(t, `{"data":[{"id":"model-a"}]}`)
+	user := gatewayWhiteLabelUser(t, state, "13900200023")
+	if err := state.DB.Create(user).Error; err != nil {
+		t.Fatal(err)
+	}
+	_, secret, err := state.GatewayTokens.Create(user, service.GatewayTokenCreateInput{Name: "responses-stream", AllowedModels: models.JSONSlice{"model-a"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"model-a","input":"responses-stream-ok","stream":true,"store":false}`))
+	req.Header.Set("Authorization", "Bearer "+secret)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	router.New(state).ServeHTTP(rec, req)
+	got := rec.Body.String()
+	if rec.Code != http.StatusOK || !strings.Contains(got, "event: response.created\n") || !strings.Contains(got, "event: response.completed\n") || strings.Contains(got, "[DONE]") {
+		t.Fatalf("status=%d body=%s", rec.Code, got)
+	}
+}
+
+func TestGatewayResponsesPostStartFailureEmitsFailed(t *testing.T) {
+	state, _, _ := gatewayWhiteLabelState(t, `{"data":[{"id":"model-a"}]}`)
+	user := gatewayWhiteLabelUser(t, state, "13900200024")
+	if err := state.DB.Create(user).Error; err != nil {
+		t.Fatal(err)
+	}
+	_, secret, err := state.GatewayTokens.Create(user, service.GatewayTokenCreateInput{Name: "responses-fail", AllowedModels: models.JSONSlice{"model-a"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"model-a","input":"responses-stream-fail","stream":true,"store":false}`))
+	req.Header.Set("Authorization", "Bearer "+secret)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	router.New(state).ServeHTTP(rec, req)
+	got := rec.Body.String()
+	if rec.Code != http.StatusOK || strings.Count(got, "event: response.failed\n") != 1 || strings.Contains(got, "event: response.completed\n") || strings.Contains(got, "[DONE]") {
+		t.Fatalf("status=%d body=%s", rec.Code, got)
+	}
+}
+
+func runGatewayToolRoundTrip(t *testing.T, path, first, second, firstWant, secondWant string) {
+	t.Helper()
+	state, _, _ := gatewayWhiteLabelState(t, `{"data":[{"id":"model-a"}]}`)
+	user := gatewayWhiteLabelUser(t, state, "13900200022")
+	if err := state.DB.Create(user).Error; err != nil {
+		t.Fatal(err)
+	}
+	_, secret, err := state.GatewayTokens.Create(user, service.GatewayTokenCreateInput{Name: "tools", AllowedModels: models.JSONSlice{"model-a"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := func(body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+secret)
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		router.New(state).ServeHTTP(rec, req)
+		return rec
+	}
+	firstResponse := request(first)
+	if firstResponse.Code != http.StatusOK || !strings.Contains(firstResponse.Body.String(), firstWant) {
+		t.Fatalf("first status=%d body=%s", firstResponse.Code, firstResponse.Body.String())
+	}
+	secondResponse := request(second)
+	if secondResponse.Code != http.StatusOK || !strings.Contains(secondResponse.Body.String(), secondWant) {
+		t.Fatalf("second status=%d body=%s", secondResponse.Code, secondResponse.Body.String())
+	}
+}
+
+func mustFixture(t *testing.T, name string) string {
+	t.Helper()
+	body, err := os.ReadFile(filepath.Join("testdata", name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(body)
 }
 
 func TestGatewaySSEPostFirstChunkEmitsErrorAndDone(t *testing.T) {
@@ -333,7 +454,11 @@ func TestGatewayChatAuthenticatesBeforeReadingOrValidatingBody(t *testing.T) {
 		if rec.Code != http.StatusUnauthorized && rec.Code != http.StatusForbidden {
 			t.Fatalf("secret=%q status=%d body=%s", secret, rec.Code, rec.Body.String())
 		}
-		assertGatewayError(t, rec, "authentication_error")
+		wantType := "authentication_error"
+		if rec.Code == http.StatusForbidden {
+			wantType = "permission_error"
+		}
+		assertGatewayError(t, rec, wantType)
 	}
 	if got := calls.Load(); got != 0 {
 		t.Fatalf("upstream calls=%d, want 0", got)
@@ -539,6 +664,14 @@ func gatewayWhiteLabelState(t *testing.T, catalog string) (*app.State, *httptest
 			body := mustRead(t, r)
 			if bytes.Contains(body, []byte(`"stream":true`)) {
 				w.Header().Set("Content-Type", "text/event-stream")
+				if bytes.Contains(body, []byte(`responses-stream-ok`)) {
+					_, _ = w.Write([]byte("data: {\"id\":\"safe\",\"object\":\"chat.completion.chunk\",\"created\":1,\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello\"},\"finish_reason\":null}]}\n\ndata: [DONE]\n\n"))
+					return
+				}
+				if bytes.Contains(body, []byte(`responses-stream-fail`)) {
+					_, _ = w.Write([]byte("data: {\"id\":\"safe\",\"object\":\"chat.completion.chunk\",\"created\":1,\"choices\":[{\"index\":0,\"delta\":{\"content\":\"first\"},\"finish_reason\":null}]}\n\ndata: not-json\n\n"))
+					return
+				}
 				if bytes.Contains(body, []byte(`"seed":0`)) {
 					return
 				}
@@ -565,6 +698,10 @@ func gatewayWhiteLabelState(t *testing.T, catalog string) (*app.State, *httptest
 			w.Header().Set("Content-Type", "application/json")
 			if bytes.Contains(body, []byte(`"seed":2`)) {
 				_, _ = w.Write([]byte(`{"id":"malformed"}`))
+				return
+			}
+			if bytes.Contains(body, []byte(`tools-please`)) {
+				_, _ = w.Write([]byte(`{"id":"safe","object":"chat.completion","created":1,"model":"upstream-model","choices":[{"index":0,"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"read_file","arguments":"not-json"}},{"id":"call_2","type":"function","function":{"name":"read_file","arguments":"{}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}}`))
 				return
 			}
 			_, _ = w.Write([]byte(`{"id":"safe","object":"chat.completion","created":1,"model":"upstream-model","choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3},"internal":"upstream-secret"}`))
