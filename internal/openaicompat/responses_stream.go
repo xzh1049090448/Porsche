@@ -3,6 +3,7 @@ package openaicompat
 import (
 	"errors"
 	"sort"
+	"strings"
 	"unicode/utf8"
 
 	"github.com/porsche/ai-gateway-go/internal/whitelabel"
@@ -41,7 +42,7 @@ type ResponsesStream struct {
 type streamTextState struct {
 	itemID      string
 	outputIndex int
-	text        string
+	text        strings.Builder
 }
 
 type streamToolState struct {
@@ -49,7 +50,7 @@ type streamToolState struct {
 	outputIndex int
 	callID      string
 	name        string
-	arguments   string
+	arguments   strings.Builder
 	started     bool
 }
 
@@ -95,10 +96,11 @@ func (s *ResponsesStream) Complete(emit func(ResponseEvent) error) error {
 	}
 	if s.text != nil {
 		index, contentIndex := s.text.outputIndex, 0
-		if err := s.emit(ResponseEvent{Type: "response.output_text.done", OutputIndex: &index, ContentIndex: &contentIndex, ItemID: s.text.itemID, Text: s.text.text}, emit); err != nil {
+		text := s.text.text.String()
+		if err := s.emit(ResponseEvent{Type: "response.output_text.done", OutputIndex: &index, ContentIndex: &contentIndex, ItemID: s.text.itemID, Text: text}, emit); err != nil {
 			return err
 		}
-		part := ResponseContent{Type: "output_text", Text: s.text.text, Annotations: []any{}}
+		part := ResponseContent{Type: "output_text", Text: text, Annotations: []any{}}
 		if err := s.emit(ResponseEvent{Type: "response.content_part.done", OutputIndex: &index, ContentIndex: &contentIndex, ItemID: s.text.itemID, Part: &part}, emit); err != nil {
 			return err
 		}
@@ -118,10 +120,11 @@ func (s *ResponsesStream) Complete(emit func(ResponseEvent) error) error {
 	sort.Slice(tools, func(i, j int) bool { return tools[i].outputIndex < tools[j].outputIndex })
 	for _, tool := range tools {
 		index := tool.outputIndex
-		if err := s.emit(ResponseEvent{Type: "response.function_call_arguments.done", OutputIndex: &index, ItemID: tool.itemID, Arguments: tool.arguments}, emit); err != nil {
+		arguments := tool.arguments.String()
+		if err := s.emit(ResponseEvent{Type: "response.function_call_arguments.done", OutputIndex: &index, ItemID: tool.itemID, Arguments: arguments}, emit); err != nil {
 			return err
 		}
-		item := ResponseOutputItem{ID: tool.itemID, Type: "function_call", Status: "completed", CallID: tool.callID, Name: tool.name, Arguments: tool.arguments}
+		item := ResponseOutputItem{ID: tool.itemID, Type: "function_call", Status: "completed", CallID: tool.callID, Name: tool.name, Arguments: arguments}
 		s.output[index] = item
 		if err := s.emit(ResponseEvent{Type: "response.output_item.done", OutputIndex: &index, Item: &item}, emit); err != nil {
 			return err
@@ -161,7 +164,7 @@ func (s *ResponsesStream) start(createdAt int64, emit func(ResponseEvent) error)
 func (s *ResponsesStream) acceptText(delta string, emit func(ResponseEvent) error) error {
 	buffered := 0
 	if s.text != nil {
-		buffered = len(s.text.text)
+		buffered = s.text.text.Len()
 	}
 	if len(delta) > MaxTextContentBytes-buffered {
 		return errors.New("streamed text too large")
@@ -184,7 +187,7 @@ func (s *ResponsesStream) acceptText(delta string, emit func(ResponseEvent) erro
 			return err
 		}
 	}
-	s.text.text += delta
+	_, _ = s.text.text.WriteString(delta)
 	index, contentIndex := s.text.outputIndex, 0
 	return s.emit(ResponseEvent{Type: "response.output_text.delta", OutputIndex: &index, ContentIndex: &contentIndex, ItemID: s.text.itemID, Delta: delta}, emit)
 }
@@ -221,10 +224,10 @@ func (s *ResponsesStream) acceptTool(call whitelabel.ChatCompletionChunkToolCall
 		}
 		if call.Function.Arguments != nil {
 			argumentDelta = *call.Function.Arguments
-			if len(argumentDelta) > MaxArgumentsBytes-len(state.arguments) {
+			if len(argumentDelta) > MaxArgumentsBytes-state.arguments.Len() {
 				return errors.New("streamed function arguments too large")
 			}
-			state.arguments += argumentDelta
+			_, _ = state.arguments.WriteString(argumentDelta)
 		}
 	}
 	if !state.started && state.callID != "" && state.name != "" {
@@ -239,7 +242,7 @@ func (s *ResponsesStream) acceptTool(call whitelabel.ChatCompletionChunkToolCall
 		if err := s.emit(ResponseEvent{Type: "response.output_item.added", OutputIndex: &index, Item: &item}, emit); err != nil {
 			return err
 		}
-		argumentDelta = state.arguments
+		argumentDelta = state.arguments.String()
 	}
 	if state.started && argumentDelta != "" {
 		index := state.outputIndex

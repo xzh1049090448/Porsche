@@ -117,7 +117,8 @@ func TestResponsesStreamRejectsCallIDReusedAcrossIndexes(t *testing.T) {
 
 func TestResponsesStreamRejectsCumulativeTextOverLimit(t *testing.T) {
 	stream := NewResponsesStream("model-a", true, sequentialIDSource())
-	emit := func(ResponseEvent) error { return nil }
+	var events []ResponseEvent
+	emit := func(event ResponseEvent) error { events = append(events, event); return nil }
 	first, second := strings.Repeat("a", MaxTextContentBytes), "b"
 	if err := stream.Accept(responseTextChunk(&first), emit); err != nil {
 		t.Fatal(err)
@@ -125,8 +126,14 @@ func TestResponsesStreamRejectsCumulativeTextOverLimit(t *testing.T) {
 	if err := stream.Accept(responseTextChunk(&second), emit); err == nil {
 		t.Fatal("cumulative text over limit was accepted")
 	}
-	if got := len(stream.text.text); got != MaxTextContentBytes {
+	if got := stream.text.text.Len(); got != MaxTextContentBytes {
 		t.Fatalf("buffered text bytes=%d, want %d", got, MaxTextContentBytes)
+	}
+	if err := stream.Complete(emit); err != nil {
+		t.Fatal(err)
+	}
+	if got := responseEventText(events, "response.output_text.done"); got != first {
+		t.Fatalf("completed text bytes=%d, want %d", len(got), len(first))
 	}
 }
 
@@ -158,16 +165,63 @@ func TestResponsesStreamRejectsSparseHugeToolIndexBeforeState(t *testing.T) {
 
 func TestResponsesStreamKeepsCumulativeArgumentsBounded(t *testing.T) {
 	stream := NewResponsesStream("model-a", true, sequentialIDSource())
-	emit := func(ResponseEvent) error { return nil }
+	var events []ResponseEvent
+	emit := func(event ResponseEvent) error { events = append(events, event); return nil }
 	first, second := strings.Repeat("a", MaxArgumentsBytes), "b"
-	if err := stream.Accept(responseToolChunk(0, &first), emit); err != nil {
+	callID, callType, name := "call_1", "function", "lookup"
+	chunk := responseToolChunk(0, &first)
+	chunk.Choices[0].Delta.ToolCalls[0].ID = &callID
+	chunk.Choices[0].Delta.ToolCalls[0].Type = &callType
+	chunk.Choices[0].Delta.ToolCalls[0].Function.Name = &name
+	if err := stream.Accept(chunk, emit); err != nil {
 		t.Fatal(err)
 	}
 	if err := stream.Accept(responseToolChunk(0, &second), emit); err == nil {
 		t.Fatal("cumulative arguments over limit were accepted")
 	}
-	if got := len(stream.tools[0].arguments); got != MaxArgumentsBytes {
+	if got := stream.tools[0].arguments.Len(); got != MaxArgumentsBytes {
 		t.Fatalf("buffered argument bytes=%d, want %d", got, MaxArgumentsBytes)
+	}
+	if err := stream.Complete(emit); err != nil {
+		t.Fatal(err)
+	}
+	if got := responseEventArguments(events, "response.function_call_arguments.done"); got != first {
+		t.Fatalf("completed argument bytes=%d, want %d", len(got), len(first))
+	}
+}
+
+func TestResponsesStreamManySmallTextDeltasDoNotAllocatePerFrame(t *testing.T) {
+	one := "x"
+	allocations := testing.AllocsPerRun(3, func() {
+		stream := NewResponsesStream("model-a", true, sequentialIDSource())
+		emit := func(ResponseEvent) error { return nil }
+		for i := 0; i < 4096; i++ {
+			if err := stream.acceptText(one, emit); err != nil {
+				panic(err)
+			}
+		}
+	})
+	t.Logf("allocations for 4096 text deltas: %.0f", allocations)
+	if allocations > 10000 {
+		t.Fatalf("allocations=%0.0f, want <=10000 for 4096 text deltas", allocations)
+	}
+}
+
+func TestResponsesStreamManySmallArgumentDeltasDoNotAllocatePerFrame(t *testing.T) {
+	one := "x"
+	call := responseToolChunk(0, &one).Choices[0].Delta.ToolCalls[0]
+	allocations := testing.AllocsPerRun(3, func() {
+		stream := NewResponsesStream("model-a", true, sequentialIDSource())
+		emit := func(ResponseEvent) error { return nil }
+		for i := 0; i < 4096; i++ {
+			if err := stream.acceptTool(call, emit); err != nil {
+				panic(err)
+			}
+		}
+	})
+	t.Logf("allocations for 4096 argument deltas: %.0f", allocations)
+	if allocations > 128 {
+		t.Fatalf("allocations=%0.0f, want <=128 for 4096 argument deltas", allocations)
 	}
 }
 
@@ -209,4 +263,22 @@ func responseTextChunk(content *string) whitelabel.ChatCompletionChunk {
 
 func responseToolChunk(index int, arguments *string) whitelabel.ChatCompletionChunk {
 	return whitelabel.ChatCompletionChunk{Model: "model-a", Created: 1, Choices: []whitelabel.ChatCompletionChunkChoice{{Index: 0, Delta: whitelabel.ChatCompletionChunkDelta{ToolCalls: []whitelabel.ChatCompletionChunkToolCall{{Index: index, Function: &whitelabel.ChatCompletionChunkFunctionCall{Arguments: arguments}}}}}}}
+}
+
+func responseEventText(events []ResponseEvent, eventType string) string {
+	for _, event := range events {
+		if event.Type == eventType {
+			return event.Text
+		}
+	}
+	return ""
+}
+
+func responseEventArguments(events []ResponseEvent, eventType string) string {
+	for _, event := range events {
+		if event.Type == eventType {
+			return event.Arguments
+		}
+	}
+	return ""
 }
