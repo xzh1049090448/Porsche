@@ -159,6 +159,13 @@ func (s *ResponsesStream) start(createdAt int64, emit func(ResponseEvent) error)
 }
 
 func (s *ResponsesStream) acceptText(delta string, emit func(ResponseEvent) error) error {
+	buffered := 0
+	if s.text != nil {
+		buffered = len(s.text.text)
+	}
+	if len(delta) > MaxTextContentBytes-buffered {
+		return errors.New("streamed text too large")
+	}
 	if s.text == nil {
 		id, err := s.ids("msg")
 		if err != nil {
@@ -185,6 +192,9 @@ func (s *ResponsesStream) acceptText(delta string, emit func(ResponseEvent) erro
 func (s *ResponsesStream) acceptTool(call whitelabel.ChatCompletionChunkToolCall, emit func(ResponseEvent) error) error {
 	state := s.tools[call.Index]
 	if state == nil {
+		if len(s.tools) >= MaxParallelCalls {
+			return errors.New("too many streamed tool calls")
+		}
 		state = &streamToolState{outputIndex: -1}
 		s.tools[call.Index] = state
 	}
@@ -211,10 +221,10 @@ func (s *ResponsesStream) acceptTool(call whitelabel.ChatCompletionChunkToolCall
 		}
 		if call.Function.Arguments != nil {
 			argumentDelta = *call.Function.Arguments
-			state.arguments += argumentDelta
-			if len(state.arguments) > MaxArgumentsBytes {
+			if len(argumentDelta) > MaxArgumentsBytes-len(state.arguments) {
 				return errors.New("streamed function arguments too large")
 			}
+			state.arguments += argumentDelta
 		}
 	}
 	if !state.started && state.callID != "" && state.name != "" {
@@ -250,7 +260,7 @@ func validateResponseChunk(chunk whitelabel.ChatCompletionChunk, model string) e
 		return errors.New("unsupported choice index")
 	}
 	for _, call := range choice.Delta.ToolCalls {
-		if call.Index < 0 || call.Type != nil && *call.Type != "function" || call.ID != nil && !validCallID(*call.ID) {
+		if call.Index < 0 || call.Index >= MaxParallelCalls || call.Type != nil && *call.Type != "function" || call.ID != nil && !validCallID(*call.ID) {
 			return errors.New("invalid tool delta")
 		}
 		if call.Function == nil {
