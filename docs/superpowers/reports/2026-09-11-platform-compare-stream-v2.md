@@ -2,6 +2,13 @@
 
 ## 结论与边界
 
+### 2026-09-12 本地跨仓库验收增补
+
+- 后端候选 `4680c549bd28f8be57a438061cf9161914c046a0` 已绑定前端代码候选 `0c8db0eb80d77d0c827c03f0f6111b8511724055` 与前端证据提交 `015c6a4a0215649589acef18f5ee15e218875e4c`。前端冻结合同为 `v1.0.0-p0` / `agreed_for_implementation`，`platform-chat-sse.v2` 为 `closed`，SHA-256 为 `47cfbc485c4df0f5d2c12539f389f466c97bb8318adf04966757420287d10a2f`。
+- fresh 后端全量、build、vet、affected race 均 PASS；全新 loopback-only MySQL 8.4 / Redis 7.4 下八个 BE06 compare integration 在 normal 与 `race -p 1` 各 `8/8` PASS、0 skip。前端六合同全量 `922/922`、0 skip，production build/init PASS；本地 production synthetic 浏览器矩阵覆盖生命周期、增量字符簇、断流 GET 恢复、权威取消、三模型部分失败、重复抑制、畸形敏感值不渲染、IME、焦点/滚动、reduced motion、375/390 与 unmount，全部 PASS；独立最终 verdict PASS。
+- 新 fixture 已精确清理 2 个容器、2 个卷、1 个网络及 loopback listener。本地前后端合同、实现和 synthetic 联合验收现为 PASS；下方 2026-09-11 的“前端尚未实现/合同为空”仅是当时历史快照，已由本增补取代。
+- `go-018` 继续 `in_progress`，仅保留 production migration/deployment、公开 HTTPS、真实账号及付费或真实上游验收，以及 push/PR/合入 main。上述发布动作均未执行，也未在本轮生成最终 review snapshot。
+
 - BE06 compare v2 stream 的后端本地实现与真实 fixture 验证完成。固定基线为 `944309003ce47bbaf949f6c0f28d9bd302016d0f`，pre-report 实现候选为 `20e51fe90a08f0581d3fdf261a3564deaf392b6b`，分支为 `feature/platform-compare-stream-v2`。evidence commit 由本提交生成，最终提交后用 `git rev-parse` 确认。
 - Task 1–9 的 implementer、spec 与 quality 修复链最终均通过。实现快照结论为 Spec `SPEC_PASS`、Security `SECURITY_PASS`、Test `PASS_LIMITED_SCOPE`；限定原因仅为生成快照时本报告与 tracker 尚不存在，以及前端和生产尚未验收。后端实现门禁本身为 PASS。
 - `go-018` 保持 `in_progress`。BE01–BE06 仅表示后端本地完成；仍需前后端合同对齐、Porsche-Web 实现、联合验收、生产迁移与部署、公开 HTTPS 和真实上游验证。本批未 push、创建 PR、merge、部署、迁移生产或访问真实上游。
@@ -106,8 +113,8 @@ Task 9 的精确 fixture 门禁：
 
 该 inventory 仅含两份 BE06 plan/design、service/store/compare runner 代码与测试、handler 代码与测试、app state 代码与测试；没有 migration、dependency、deploy 或 frontend 文件。本文所在提交随后只新增本报告并更新 `progress.md`、`feature_list.json`。
 
-配对仓库合同文件 `Porsche-Web/interface-contract.json` 的 SHA-256 为 `0891e452f122922f576745db89c96c853a9a7cf4ff00078c30ae3b3f0769e970`；当前仍为 `v1.0.0` draft，`interfaces` 与 `events` 为空。frontend coordinator 状态为 `DONE_WITH_CONCERNS`，尚无 compare v2、cancel 或 GET recovery integration。本批没有修改 Porsche-Web，也不宣称前后端联合验收通过。
+历史快照（2026-09-11）：当时配对仓库合同 SHA-256 为 `0891e452f122922f576745db89c96c853a9a7cf4ff00078c30ae3b3f0769e970`，仍为 `v1.0.0` draft，且前端尚无 compare v2、cancel 或 GET recovery integration。该历史状态已由本文顶部的 2026-09-12 增补取代；不得将本段解释为当前状态。
 
 ## 未执行事项
 
-前后端合同对齐、Porsche-Web 实现、联合验收、生产迁移与部署、公开 HTTPS、真实上游、push、PR 和 merge 均未执行。BE06 后端本地通过不能外推为整体 `go-018` 或生产发布通过。
+本地前后端合同对齐、Porsche-Web 实现和 synthetic 联合验收已经通过。生产迁移与部署、公开 HTTPS、真实账号、付费或真实上游、push、PR 和合入 main 均未执行；因此 `go-018` 继续 `in_progress`，本地 PASS 不能外推为生产发布通过。
