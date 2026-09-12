@@ -69,9 +69,13 @@ invalid_first_chunk err=invalid Responses stream chunk events_before_error=0
 
 安全修复 `bb1bc88` 在写入缓冲前强制累计文本不超过 `MaxTextContentBytes`、工具索引位于 `[0, MaxParallelCalls)`、工具 state 不超过 `MaxParallelCalls`，并在拼接前检查累计 arguments 剩余额度。五个新增测试覆盖累计文本、超过 64 个工具、稀疏大索引、累计 arguments 及单一 `response.failed` 终态，均经历 RED→GREEN；affected race、全仓 test、vet、build 和 diff 通过。最终代码再次在独立 MySQL 8.0.46、0001–0019 下运行 7 个真实 Handler race 用例，全部 PASS、零 skip；容器和私有凭据已精确清理。该提交改变快照，必须重新开始规格、安全和测试复审。
 
+第三快照 `d53bc599e72db0b11821235960701b0dc487b3a6aaf7e674f682b9a4bd535bbc` 在 final `b33b0f8` 上取得 `SPEC_PASS`。同一快照的安全复审确认硬上限有效，但发现文本和 arguments 的逐帧字符串拼接导致 O(n²) 复制与 GC 压力，再次返回 `SECURITY_FAIL`。
+
+修复 `9fd6e57` 将累计文本和每个工具 arguments 改为指针 state 内的有界 `strings.Builder`，继续在 Write 前检查剩余额度，仅在完成事件生成最终字符串，delta 事件仍只发送当前片段。4096 个单字节文本/arguments 的分配门禁、精确上限完成内容和超限后缓冲不增长均经历 RED→GREEN；affected race 通过。该提交再次改变快照，必须从规格复审重新开始。
+
 ## 未闭环门禁
 
-安全修复后的新快照尚未完成规格复审、安全复审和独立测试复审。初始实现已进入远端 main；两轮修复提交尚未 push/merge。真实 OpenCode/Codex 会话、真实付费上游调用、部署和生产验收均未执行。
+builder 安全修复后的新快照尚未完成规格复审、安全复审和独立测试复审。初始实现已进入远端 main；三轮修复提交尚未 push/merge。真实 OpenCode/Codex 会话、真实付费上游调用、部署和生产验收均未执行。
 
 ## 后续兼容 TODO
 
