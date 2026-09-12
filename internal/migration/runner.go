@@ -480,9 +480,6 @@ func Verify(ctx context.Context, db *gorm.DB) error {
 	if err := VerifyAdminUsersReadCountIndex(ctx, db); err != nil {
 		return err
 	}
-	if err := VerifyAdminOperationSafetySchema(ctx, db); err != nil {
-		return err
-	}
 	if err := VerifyAdminActionOutboxSchema(ctx, db); err != nil {
 		return err
 	}
