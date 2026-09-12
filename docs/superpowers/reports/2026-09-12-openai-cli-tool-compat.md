@@ -67,7 +67,7 @@ invalid_first_chunk err=invalid Responses stream chunk events_before_error=0
 
 修复后 snapshot `b9215d00b3ee7faf09d403de895267051d18dcaf9b28634587afa1df20d4aa06` 在 final `503f9d8` 上取得 `SPEC_PASS`。同一快照的安全复审返回 `SECURITY_FAIL`：Responses SSE 只限制单帧和单工具 arguments，未限制累计文本、工具 state 数量和稀疏大索引，异常上游可让单请求持续增长内存。
 
-安全修复 `bb1bc88` 在写入缓冲前强制累计文本不超过 `MaxTextContentBytes`、工具索引位于 `[0, MaxParallelCalls)`、工具 state 不超过 `MaxParallelCalls`，并在拼接前检查累计 arguments 剩余额度。五个新增测试覆盖累计文本、超过 64 个工具、稀疏大索引、累计 arguments 及单一 `response.failed` 终态，均经历 RED→GREEN；affected race、全仓 test、vet、build 和 diff 通过。该提交改变快照，必须重新开始规格、安全和测试复审。
+安全修复 `bb1bc88` 在写入缓冲前强制累计文本不超过 `MaxTextContentBytes`、工具索引位于 `[0, MaxParallelCalls)`、工具 state 不超过 `MaxParallelCalls`，并在拼接前检查累计 arguments 剩余额度。五个新增测试覆盖累计文本、超过 64 个工具、稀疏大索引、累计 arguments 及单一 `response.failed` 终态，均经历 RED→GREEN；affected race、全仓 test、vet、build 和 diff 通过。最终代码再次在独立 MySQL 8.0.46、0001–0019 下运行 7 个真实 Handler race 用例，全部 PASS、零 skip；容器和私有凭据已精确清理。该提交改变快照，必须重新开始规格、安全和测试复审。
 
 ## 未闭环门禁
 
