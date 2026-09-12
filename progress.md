@@ -2,8 +2,8 @@
 
 ## 2026-09-12：BE06 本地跨仓库联合验收通过，发布边界待执行
 
-- 后端候选 `4680c549bd28f8be57a438061cf9161914c046a0` 绑定前端代码候选 `0c8db0eb80d77d0c827c03f0f6111b8511724055` 与前端证据提交 `015c6a4a0215649589acef18f5ee15e218875e4c`。冻结合同为 `v1.0.0-p0` / `agreed_for_implementation`，`platform-chat-sse.v2` 为 `closed`，SHA-256 为 `47cfbc485c4df0f5d2c12539f389f466c97bb8318adf04966757420287d10a2f`。
-- 后端 fresh `go test ./...`、build、vet、affected race PASS；隔离 loopback-only MySQL 8.4 / Redis 7.4 的八个 BE06 compare integration 在 normal 与 `race -p 1` 均为 `8/8` PASS、0 skip。前端六合同全量 `922/922`、0 skip，production build/init 及本地 production synthetic 浏览器生命周期、恢复、取消、三模型部分失败、重复/敏感值、IME、可访问性和 375/390 矩阵均 PASS；独立最终 verdict PASS。
+- 后端候选 `4680c549bd28f8be57a438061cf9161914c046a0` 绑定前端代码候选 `db5e25f27e879d5697fe758e5f40048105312b6d` 与前端证据提交 `19dff079e5525ef6bc159a61bc4500073dbaa834`。冻结合同为 `v1.0.0-p0` / `agreed_for_implementation`，`platform-chat-sse.v2` 为 `closed`，SHA-256 为 `47cfbc485c4df0f5d2c12539f389f466c97bb8318adf04966757420287d10a2f`。
+- 后端 fresh `go test ./...`、build、vet、affected race PASS；隔离 loopback-only MySQL 8.4 / Redis 7.4 的八个 BE06 compare integration 在 normal 与 `race -p 1` 均为 `8/8` PASS、0 skip。前端六合同全量 `926/926`、0 skip，production build/init PASS；真实本地浏览器完整矩阵中 standard 实际 RAF 每帧一字符簇、25ms 目标约 33ms且标点无额外停顿，reduced-motion send/recovery 观测 29 次增长、单次最多 8 字符簇并核对 modeReason，手动上滚不被抢且 Back to latest 可键盘恢复；其余生命周期、恢复、取消、三模型部分失败、重复/敏感值、IME、焦点、375/390 与 unmount 均 PASS。独立最终 verdict PASS。
 - fixture 已精确清理 2 个容器、2 个卷、1 个网络及 loopback listener。`go-018` 仍为 `in_progress`，现在仅保留 production migration/deployment、公开 HTTPS、真实账号及付费或真实上游验收和 push/PR/合入 main；这些均未执行。
 
 ## 2026-09-11：BE06 platform compare v2 stream 后端本地候选完成
