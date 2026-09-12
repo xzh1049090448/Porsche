@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -18,11 +19,16 @@ import (
 	"github.com/porsche/ai-gateway-go/internal/config"
 	"github.com/porsche/ai-gateway-go/internal/db"
 	"github.com/porsche/ai-gateway-go/internal/models"
+	"github.com/porsche/ai-gateway-go/internal/openaicompat"
 	"github.com/porsche/ai-gateway-go/internal/persistence"
 	"github.com/porsche/ai-gateway-go/internal/router"
 	"github.com/porsche/ai-gateway-go/internal/service"
 	"github.com/porsche/ai-gateway-go/internal/whitelabel"
 )
+
+type gatewayRoundTripper func(*http.Request) (*http.Response, error)
+
+func (f gatewayRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
 
 func TestGatewayModelsUseTokenACLAndDynamicCatalog(t *testing.T) {
 	state, upstream, calls := gatewayWhiteLabelState(t, `{"data":[{"id":"model-a","owned_by":"white"},{"id":"model-b"}]}`)
@@ -213,6 +219,214 @@ func TestGatewayResponsesRejectsStateBeforeUpstream(t *testing.T) {
 	}
 	if got := calls.Load(); got != 0 {
 		t.Fatalf("upstream calls=%d", got)
+	}
+}
+
+func TestGatewayToolPayloadLimitsRejectBeforeUpstream(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+		body map[string]any
+	}{
+		{
+			name: "chat arguments", path: "/v1/chat/completions",
+			body: map[string]any{"model": "model-a", "messages": []any{
+				map[string]any{"role": "assistant", "content": nil, "tool_calls": []any{
+					map[string]any{"id": "call_1", "type": "function", "function": map[string]any{"name": "lookup", "arguments": strings.Repeat("a", openaicompat.MaxArgumentsBytes+1)}},
+				}},
+			}},
+		},
+		{
+			name: "chat output", path: "/v1/chat/completions",
+			body: map[string]any{"model": "model-a", "messages": []any{
+				map[string]any{"role": "tool", "tool_call_id": "call_1", "content": strings.Repeat("o", openaicompat.MaxToolOutputBytes+1)},
+			}},
+		},
+		{
+			name: "responses arguments", path: "/v1/responses",
+			body: map[string]any{"model": "model-a", "input": []any{
+				map[string]any{"type": "function_call", "call_id": "call_1", "name": "lookup", "arguments": strings.Repeat("a", openaicompat.MaxArgumentsBytes+1)},
+			}},
+		},
+		{
+			name: "responses output", path: "/v1/responses",
+			body: map[string]any{"model": "model-a", "input": []any{
+				map[string]any{"type": "function_call_output", "call_id": "call_1", "output": strings.Repeat("o", openaicompat.MaxToolOutputBytes+1)},
+			}},
+		},
+	}
+	encoded := make([][]byte, len(tests))
+	for _, tt := range tests {
+		t.Run("decoder "+tt.name, func(t *testing.T) {
+			body, err := json.Marshal(tt.body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(body) >= openaicompat.MaxRequestBodyBytes {
+				t.Fatalf("test body=%d exceeds request body boundary", len(body))
+			}
+			var decodeErr *openaicompat.Error
+			if tt.path == "/v1/responses" {
+				_, decodeErr = openaicompat.DecodeResponses(body)
+			} else {
+				_, decodeErr = openaicompat.DecodeChat(body)
+			}
+			if decodeErr == nil || decodeErr.Status != http.StatusRequestEntityTooLarge || decodeErr.Code != "request_too_large" {
+				t.Fatalf("decoder error=%#v", decodeErr)
+			}
+		})
+	}
+	for i, tt := range tests {
+		body, err := json.Marshal(tt.body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		encoded[i] = body
+	}
+	if os.Getenv("TEST_DATABASE_URL") == "" {
+		t.Log("TEST_DATABASE_URL unset: decoder boundary evidence passed; authenticated Gin zero-upstream chain not run")
+		return
+	}
+
+	state, _, calls := gatewayWhiteLabelState(t, `{"data":[{"id":"model-a"}]}`)
+	user := gatewayWhiteLabelUser(t, state, "13900200025")
+	if err := state.DB.Create(user).Error; err != nil {
+		t.Fatal(err)
+	}
+	_, secret, err := state.GatewayTokens.Create(user, service.GatewayTokenCreateInput{Name: "tool-size", AllowedModels: models.JSONSlice{"model-a"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, tt := range tests {
+		t.Run("gateway "+tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, tt.path, bytes.NewReader(encoded[i]))
+			req.Header.Set("Authorization", "Bearer "+secret)
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			router.New(state).ServeHTTP(rec, req)
+			if rec.Code != http.StatusRequestEntityTooLarge || !strings.Contains(rec.Body.String(), `"code":"request_too_large"`) {
+				t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+			}
+		})
+	}
+	if got := calls.Load(); got != 0 {
+		t.Fatalf("upstream calls=%d, want 0", got)
+	}
+}
+
+func TestGatewayResponsesCancellationStopsUpstream(t *testing.T) {
+	assertWhiteLabelCancellation := func(t *testing.T) {
+		t.Helper()
+		started := make(chan struct{})
+		canceled := make(chan struct{})
+		client := &http.Client{Transport: gatewayRoundTripper(func(req *http.Request) (*http.Response, error) {
+			close(started)
+			<-req.Context().Done()
+			close(canceled)
+			return nil, req.Context().Err()
+		})}
+		whiteLabel, err := whitelabel.NewWhiteLabelService(config.WhiteLabelSettings{BaseURL: "https://white-label.test/v1", APIKey: "test-key", AllowedModels: map[string]struct{}{"model-a": {}}}, client, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			response, _ := whiteLabel.Chat(ctx, []byte(`{"model":"model-a","messages":[{"role":"user","content":"x"}]}`))
+			if response != nil {
+				response.Body.Close()
+			}
+		}()
+		select {
+		case <-started:
+		case <-time.After(2 * time.Second):
+			t.Fatal("low-level upstream request did not start")
+		}
+		cancel()
+		select {
+		case <-canceled:
+		case <-time.After(2 * time.Second):
+			t.Fatal("low-level upstream context was not canceled")
+		}
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatal("low-level WhiteLabel.Chat did not return after cancellation")
+		}
+	}
+
+	// This evidence is independent of the optional MySQL fixture.
+	assertWhiteLabelCancellation(t)
+	if os.Getenv("TEST_DATABASE_URL") == "" {
+		t.Log("TEST_DATABASE_URL unset: lower-level WhiteLabel cancellation evidence passed; Gin chain not run")
+		return
+	}
+
+	started := make(chan struct{})
+	canceled := make(chan struct{})
+	client := &http.Client{Transport: gatewayRoundTripper(func(req *http.Request) (*http.Response, error) {
+		switch req.URL.Path {
+		case "/v1/models":
+			return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"data":[{"id":"model-a"}]}`)), Request: req}, nil
+		case "/v1/chat/completions":
+			close(started)
+			<-req.Context().Done()
+			close(canceled)
+			return nil, req.Context().Err()
+		default:
+			return &http.Response{StatusCode: http.StatusNotFound, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("not found")), Request: req}, nil
+		}
+	})}
+	settings := &config.Settings{AppEnv: "test", DatabaseURL: os.Getenv("TEST_DATABASE_URL"), AllowedHosts: "example.com", JWTSecretKey: "test"}
+	gdb, err := db.Open(settings.DatabaseURL, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := app.NewState(settings, gdb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.WhiteLabel, err = whitelabel.NewWhiteLabelService(config.WhiteLabelSettings{BaseURL: "https://white-label.test/v1", APIKey: "test-key", AllowedModels: map[string]struct{}{"model-a": {}}}, client, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	user := gatewayWhiteLabelUser(t, state, "13900200026")
+	if err := state.DB.Create(user).Error; err != nil {
+		t.Fatal(err)
+	}
+	_, secret, err := state.GatewayTokens.Create(user, service.GatewayTokenCreateInput{Name: "cancel-responses", AllowedModels: models.JSONSlice{"model-a"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := state.WhiteLabel.ListModels(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"model-a","input":"wait","stream":true}`)).WithContext(ctx)
+	req.Header.Set("Authorization", "Bearer "+secret)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		router.New(state).ServeHTTP(rec, req)
+	}()
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Gin gateway did not reach upstream")
+	}
+	cancel()
+	select {
+	case <-canceled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Gin cancellation did not cancel upstream request context")
+	}
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Gin gateway did not return after cancellation")
 	}
 }
 

@@ -65,6 +65,13 @@ type responseToolDTO struct {
 	Strict      *bool           `json:"strict"`
 }
 
+var responseMessageItemFields = map[string]struct{}{"type": {}, "role": {}, "content": {}}
+var responseFunctionCallFields = map[string]struct{}{"type": {}, "id": {}, "status": {}, "call_id": {}, "name": {}, "arguments": {}}
+var responseFunctionOutputFields = map[string]struct{}{"type": {}, "id": {}, "status": {}, "call_id": {}, "output": {}}
+var responseTextPartFields = map[string]struct{}{"type": {}, "text": {}}
+var responseToolFields = map[string]struct{}{"type": {}, "name": {}, "description": {}, "parameters": {}, "strict": {}}
+var responseToolChoiceFields = map[string]struct{}{"type": {}, "name": {}}
+
 func DecodeResponses(body []byte) (Conversation, *Error) {
 	if len(body) > MaxRequestBodyBytes {
 		return Conversation{}, RequestTooLarge()
@@ -142,9 +149,15 @@ func decodeResponseInput(raw json.RawMessage) ([]Message, *Error) {
 		}
 		switch kind.Type {
 		case "message":
+			if hasUnknownFields(item, responseMessageItemFields) {
+				return nil, UnsupportedParameter()
+			}
 			var dto responseMessageItemDTO
 			if decodeStrict(item, &dto) != nil {
 				return nil, InvalidRequest()
+			}
+			if responseTextHasUnknownFields(dto.Content) {
+				return nil, UnsupportedParameter()
 			}
 			content, ok := decodeResponseText(dto.Content)
 			if !ok {
@@ -152,9 +165,18 @@ func decodeResponseInput(raw json.RawMessage) ([]Message, *Error) {
 			}
 			messages = append(messages, Message{Role: Role(dto.Role), Content: content})
 		case "function_call":
+			if hasUnknownFields(item, responseFunctionCallFields) {
+				return nil, UnsupportedParameter()
+			}
 			var dto responseFunctionCallDTO
 			if decodeStrict(item, &dto) != nil || !validOptionalItemMetadata(dto.ID, dto.Status) {
 				return nil, InvalidRequest()
+			}
+			if !utf8.ValidString(dto.Arguments) {
+				return nil, InvalidRequest()
+			}
+			if len(dto.Arguments) > MaxArgumentsBytes {
+				return nil, RequestTooLarge()
 			}
 			call := ToolCall{ID: dto.CallID, Name: dto.Name, Arguments: dto.Arguments}
 			if len(messages) > 0 && messages[len(messages)-1].Role == RoleAssistant && messages[len(messages)-1].Content == nil && len(messages[len(messages)-1].ToolCalls) > 0 {
@@ -163,9 +185,15 @@ func decodeResponseInput(raw json.RawMessage) ([]Message, *Error) {
 				messages = append(messages, Message{Role: RoleAssistant, ToolCalls: []ToolCall{call}})
 			}
 		case "function_call_output":
+			if hasUnknownFields(item, responseFunctionOutputFields) {
+				return nil, UnsupportedParameter()
+			}
 			var dto responseFunctionOutputDTO
-			if decodeStrict(item, &dto) != nil || !validOptionalItemMetadata(dto.ID, dto.Status) || !utf8.ValidString(dto.Output) || len(dto.Output) > MaxToolOutputBytes {
+			if decodeStrict(item, &dto) != nil || !validOptionalItemMetadata(dto.ID, dto.Status) || !utf8.ValidString(dto.Output) {
 				return nil, InvalidRequest()
+			}
+			if len(dto.Output) > MaxToolOutputBytes {
+				return nil, RequestTooLarge()
 			}
 			messages = append(messages, Message{Role: RoleTool, ToolCallID: dto.CallID, Content: dto.Output})
 		default:
@@ -186,6 +214,9 @@ func decodeResponseText(raw json.RawMessage) (string, bool) {
 	}
 	var builder strings.Builder
 	for _, part := range parts {
+		if hasUnknownFields(part, responseTextPartFields) {
+			return "", false
+		}
 		var dto responseTextPartDTO
 		if decodeStrict(part, &dto) != nil || dto.Type != "input_text" && dto.Type != "output_text" || !utf8.ValidString(dto.Text) || builder.Len()+len(dto.Text) > MaxTextContentBytes {
 			return "", false
@@ -193,6 +224,19 @@ func decodeResponseText(raw json.RawMessage) (string, bool) {
 		builder.WriteString(dto.Text)
 	}
 	return builder.String(), true
+}
+
+func responseTextHasUnknownFields(raw json.RawMessage) bool {
+	var parts []json.RawMessage
+	if json.Unmarshal(raw, &parts) != nil {
+		return false
+	}
+	for _, part := range parts {
+		if hasUnknownFields(part, responseTextPartFields) {
+			return true
+		}
+	}
+	return false
 }
 
 func decodeResponseTools(raw []json.RawMessage) ([]ToolDefinition, *Error) {
@@ -208,6 +252,9 @@ func decodeResponseTools(raw []json.RawMessage) ([]ToolDefinition, *Error) {
 			return nil, InvalidRequest()
 		}
 		if kind.Type != "function" {
+			return nil, UnsupportedParameter()
+		}
+		if hasUnknownFields(item, responseToolFields) {
 			return nil, UnsupportedParameter()
 		}
 		var dto responseToolDTO
@@ -240,6 +287,9 @@ func decodeResponseToolChoice(raw json.RawMessage) (ToolChoice, *Error) {
 	var dto struct {
 		Type string `json:"type"`
 		Name string `json:"name"`
+	}
+	if hasUnknownFields(raw, responseToolChoiceFields) {
+		return ToolChoice{}, UnsupportedParameter()
 	}
 	if decodeStrict(raw, &dto) != nil || dto.Type != "function" || !validFunctionName(dto.Name) {
 		return ToolChoice{}, InvalidRequest()

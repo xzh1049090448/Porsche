@@ -160,7 +160,7 @@ func decodeChatMessage(raw json.RawMessage) (Message, *Error) {
 		message.Content = content
 	case RoleAssistant:
 		content, ok := decodeContent(dto.Content, true, false, MaxTextContentBytes)
-		if !ok && len(dto.ToolCalls) == 0 {
+		if !ok {
 			return Message{}, InvalidRequest()
 		}
 		message.Content = content
@@ -168,11 +168,18 @@ func decodeChatMessage(raw json.RawMessage) (Message, *Error) {
 			if call.Type != "function" || !utf8.ValidString(call.Function.Arguments) {
 				return Message{}, InvalidRequest()
 			}
+			if len(call.Function.Arguments) > MaxArgumentsBytes {
+				return Message{}, RequestTooLarge()
+			}
 			message.ToolCalls = append(message.ToolCalls, ToolCall{ID: call.ID, Name: call.Function.Name, Arguments: call.Function.Arguments})
 		}
 	case RoleTool:
 		content, ok := decodeContent(dto.Content, false, false, MaxToolOutputBytes)
 		if !ok {
+			var oversized string
+			if json.Unmarshal(dto.Content, &oversized) == nil && utf8.ValidString(oversized) && len(oversized) > MaxToolOutputBytes {
+				return Message{}, RequestTooLarge()
+			}
 			return Message{}, InvalidRequest()
 		}
 		message.Content = content
