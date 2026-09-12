@@ -1,12 +1,14 @@
 # Porsche 开发进度
 
-## 2026-09-12：OpenAI CLI 首轮规格复审缺口已修复，等待新快照复审
+## 2026-09-12：OpenAI CLI 首期取得限定通过，文档闭环后需重建快照
 
 - 首轮独立规格复审绑定 `28d8f1f` / snapshot `c3ddad2ccb3ee37d87d11597061b4aa99f79dd6e2de923097430307b6dc72b00`，结论 `SPEC_FAIL`：超限工具参数/输出错误码、assistant 非法 content、Responses 嵌套未知字段分类和完整取消传播测试共四项未满足设计。
 - 修复提交 `1df776d` 按 RED→GREEN 闭环四项；focused、affected race、全仓 test、init、vet、build 与 diff 通过。独立 MySQL 8.0.46 完成 0001–0019 后，7 个真实 Handler 用例在 race 下全部 PASS、零 skip，含四个 decoder/四个认证 Gateway 413 子用例、零上游和 Gin→WhiteLabel 取消传播。
-- 临时 MySQL 容器按精确名称自动删除，私有测试凭据目录已删除。旧复审结论不复用；当前状态为 `PENDING_REVIEW`，必须重建 snapshot 并依次取得 `SPEC_PASS`、`SECURITY_PASS` 和独立测试结论。修复尚未 push/merge/deploy，真实 Codex/OpenCode 与真实付费上游仍 `NOT_RUN`。
+- 临时 MySQL 容器按精确名称自动删除，私有测试凭据目录已删除。旧复审结论不复用；该阶段状态为 `PENDING_REVIEW`，要求重建 snapshot 并依次取得 `SPEC_PASS`、`SECURITY_PASS` 和独立测试结论。修复尚未 push/merge/deploy，真实 Codex/OpenCode 与真实付费上游仍 `NOT_RUN`。
 - 第二快照 `b9215d00b3ee7faf09d403de895267051d18dcaf9b28634587afa1df20d4aa06` 在 `503f9d8` 取得 `SPEC_PASS`，随后安全复审因 Responses SSE 累计文本、工具 state/索引和 arguments 资源上限不足返回 `SECURITY_FAIL`。修复 `bb1bc88` 增加硬上限与五项 RED→GREEN 测试，affected race/full/vet/build/diff 通过；最终代码在独立 MySQL 8.0.46 下复跑 7 个真实 Handler race 用例全部 PASS、零 skip并精确清理。快照已失效，仍需从 Spec 开始重审。
-- 第三快照 `d53bc599e72db0b11821235960701b0dc487b3a6aaf7e674f682b9a4bd535bbc` 在 `b33b0f8` 取得 `SPEC_PASS`，安全复审确认硬上限后仍因小 delta 的 O(n²) 字符串复制返回 `SECURITY_FAIL`。修复 `9fd6e57` 改用有界 `strings.Builder` 并加入 4096 小片段分配门禁和边界完成内容测试；affected race 通过，仍需新快照从 Spec 重审。
+- 第三快照 `d53bc599e72db0b11821235960701b0dc487b3a6aaf7e674f682b9a4bd535bbc` 在 `b33b0f8` 取得 `SPEC_PASS`，安全复审确认硬上限后仍因小 delta 的 O(n²) 字符串复制返回 `SECURITY_FAIL`。修复 `9fd6e57` 改用有界 `strings.Builder` 并加入 4096 小片段分配门禁和边界完成内容测试；affected race 通过，该阶段要求新快照从 Spec 重审。
+- 最终受审 snapshot `2137813b2ab958e4f4c5ba7c3d655bfe87373601ac8d53a3550265510fdef320` 已依次取得 `SPEC_PASS`、`SECURITY_PASS` 和独立测试 `PASS_LIMITED_SCOPE`；本轮复检 focused/full/race/vet/build/diff 通过。独立测试当前环境中 5 个数据库 Handler 用例因无 `TEST_DATABASE_URL` 为 `SKIP`，2 个非数据库用例为 `PASS`；Controller 更早在隔离 MySQL 8.0.46 下完成 7 个 Handler race 用例全部 PASS、0 skip并清理 fixture。
+- Gateway/CLI 首期总体状态恢复为 `PASS_LIMITED_SCOPE`。真实 Codex/OpenCode、真实付费上游、部署和生产均 `NOT_RUN`。本次 tracker/report 文档闭环会使上述旧快照失效，Controller 必须针对新 HEAD 重建 snapshot 并从 Spec 开始重走有序审查链。
 
 ## 2026-09-12：BE06 合并进入 main
 

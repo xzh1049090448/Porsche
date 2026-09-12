@@ -2,9 +2,9 @@
 
 ## 结论
 
-状态：`PENDING_REVIEW`
+状态：`PASS_LIMITED_SCOPE`
 
-当前代码完成了既定首期范围，并通过单元测试、回归、竞态、构建、静态检查、协议对抗探针以及隔离 MySQL 上的真实 handler 闭环。首轮独立规格复审发现四项缺口，修复后全部本地门禁通过；新快照的规格、安全和测试复审尚未完成，因此当前不声明最终通过。
+当前代码完成了既定首期范围，并通过单元测试、回归、竞态、构建、静态检查、协议对抗探针以及隔离 MySQL 上的真实 handler 闭环。首轮 `SPEC_FAIL` 与两轮 `SECURITY_FAIL` 均保留在下文；最终受审代码快照已依次取得 `SPEC_PASS`、`SECURITY_PASS` 和独立测试 `PASS_LIMITED_SCOPE`。限定项为真实 Codex/OpenCode、真实付费上游、部署与生产验收均未执行。
 
 初始集成提交为 `28d8f1f`，规格修复代码头为 `1df776d`；本报告和进度记录属于后续文档收尾提交。
 
@@ -73,9 +73,17 @@ invalid_first_chunk err=invalid Responses stream chunk events_before_error=0
 
 修复 `9fd6e57` 将累计文本和每个工具 arguments 改为指针 state 内的有界 `strings.Builder`，继续在 Write 前检查剩余额度，仅在完成事件生成最终字符串，delta 事件仍只发送当前片段。4096 个单字节文本/arguments 的分配门禁、精确上限完成内容和超限后缓冲不增长均经历 RED→GREEN；affected race 通过。该提交再次改变快照，必须从规格复审重新开始。
 
-## 未闭环门禁
+## 最终独立复审与限定结论
 
-builder 安全修复后的新快照尚未完成规格复审、安全复审和独立测试复审。初始实现已进入远端 main；三轮修复提交尚未 push/merge。真实 OpenCode/Codex 会话、真实付费上游调用、部署和生产验收均未执行。
+受审代码与当时文档组成的 snapshot `2137813b2ab958e4f4c5ba7c3d655bfe87373601ac8d53a3550265510fdef320` 已按顺序取得 `SPEC_PASS`、`SECURITY_PASS` 和独立测试 `PASS_LIMITED_SCOPE`。独立复检中的 focused、affected race、全仓 test、vet、build 与 diff 命令均通过。
+
+独立测试环境未提供 `TEST_DATABASE_URL`，因此当前复审的 5 个数据库 Handler 用例为 `SKIP`；2 个不依赖数据库的边界与取消传播用例为 `PASS`。该环境限制没有替代数据库证据：Controller 更早已在隔离 MySQL 8.0.46、0001–0019 迁移环境中运行修复后的 7 个 Handler race 用例，结果为 7 项全部 `PASS`、0 skip，并完成精确清理。
+
+由此，本首期子项目结论为 `PASS_LIMITED_SCOPE`。该结论只覆盖本地协议转换、严格校验、资源边界、伪上游及隔离数据库证据；真实 Codex/OpenCode 会话、真实付费上游调用、部署和生产验收均为 `NOT_RUN`。
+
+## 文档闭环与快照边界
+
+初始实现已进入远端 main；三轮修复提交尚未 push/merge。本次报告、计划和 tracker 更新是文档闭环提交，不改变已受审 Go 行为，但会改变 review snapshot 的组成，因此 snapshot `2137813b2ab958e4f4c5ba7c3d655bfe87373601ac8d53a3550265510fdef320` 在本提交后失效。Controller 必须为文档闭环后的新 HEAD 重建 snapshot，并从规格复审开始按顺序重新走安全和独立测试门禁，不得复用旧快照结论。
 
 ## 后续兼容 TODO
 
