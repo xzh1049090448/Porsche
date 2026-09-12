@@ -1,5 +1,18 @@
 # Porsche 开发进度
 
+## 2026-09-12：BE06 本地跨仓库联合验收通过，发布边界待执行
+
+- 后端候选 `4680c549bd28f8be57a438061cf9161914c046a0` 绑定前端代码候选 `db5e25f27e879d5697fe758e5f40048105312b6d` 与前端证据提交 `19dff079e5525ef6bc159a61bc4500073dbaa834`。冻结合同为 `v1.0.0-p0` / `agreed_for_implementation`，`platform-chat-sse.v2` 为 `closed`，SHA-256 为 `47cfbc485c4df0f5d2c12539f389f466c97bb8318adf04966757420287d10a2f`。
+- 后端 fresh `go test ./...`、build、vet、affected race PASS；隔离 loopback-only MySQL 8.4 / Redis 7.4 的八个 BE06 compare integration 在 normal 与 `race -p 1` 均为 `8/8` PASS、0 skip。前端六合同全量 `926/926`、0 skip，production build/init PASS；真实本地浏览器完整矩阵中 standard 实际 RAF 每帧一字符簇、25ms 目标约 33ms且标点无额外停顿，reduced-motion send/recovery 观测 29 次增长、单次最多 8 字符簇并核对 modeReason，手动上滚不被抢且 Back to latest 可键盘恢复；其余生命周期、恢复、取消、三模型部分失败、重复/敏感值、IME、焦点、375/390 与 unmount 均 PASS。独立最终 verdict PASS。
+- fixture 已精确清理 2 个容器、2 个卷、1 个网络及 loopback listener。`go-018` 仍为 `in_progress`，现在仅保留 production migration/deployment、公开 HTTPS、真实账号及付费或真实上游验收和 push/PR/合入 main；这些均未执行。
+
+## 2026-09-11：BE06 platform compare v2 stream 后端本地候选完成
+
+- BE06 compare v2 后端的 owner-bound 单模型失败、专用 runner、2/3 模型并发 fan-out、共享续租与取消收敛、部分成功持久化、commit-unknown reconcile、app wiring 和 handler 已完成。Task 1–9 implementer/spec/quality 链最终通过；冻结实现快照为 `SPEC_PASS`、`SECURITY_PASS`、`PASS_LIMITED_SCOPE`，限定仅因报告/tracker 当时尚未加入且前端/生产未验收。
+- 八个真实 MySQL 8.4.11 / Redis 7.4.11 integration 顶层测试在 normal/race 中分别全部 PASS、零 skip；覆盖精确 graph/order、成功模型计费、GET、all-failed/cancel 零持久化、续租、commit-unknown 精确 reconcile、额度/reset/unlimited 和 duplicate/quota races。full normal 为 3688 PASS event、0 FAIL；canonical serialized race 无 race；build/vet/diff/JSON 均通过。
+- fixture 已按两个完整容器 ID 精确 stop/remove，命名 network/volumes、私有凭据目录与 label-filter 残留均清理，两个 loopback 端口无 listener。固定基线 `944309003ce47bbaf949f6c0f28d9bd302016d0f`，pre-report 候选 `20e51fe90a08f0581d3fdf261a3564deaf392b6b`；未 fetch/rebase/push。
+- `go-018` 仍为 `in_progress`：BE01–BE06 仅后端本地完成，前后端合同对齐、Porsche-Web 实现、联合验收、生产迁移/部署、公开 HTTPS 与真实上游仍未完成；未 push、PR 或 merge。完整证据见 `docs/superpowers/reports/2026-09-11-platform-compare-stream-v2.md`。
+
 ## 2026-09-11：公共内容与定价分支同步主分支
 
 - `feature/public-content-pricing` 已语义合并最新 `origin/main`，保留主分支的用户管理、平台生成控制与安全动作能力，同时接入公共内容、公开定价及 Root 管理动作。

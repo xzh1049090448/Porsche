@@ -5,9 +5,417 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"os"
 	"reflect"
+	"strings"
+	"sync"
 	"testing"
+
+	"github.com/redis/go-redis/v9"
 )
+
+func TestPlatformGenerationStoreMarkModelFailedOwnedRequiresCurrentLease(t *testing.T) {
+	store, client := openTestPlatformGenerationStore(t)
+	storeB, _ := openSecondTestPlatformGenerationStore(t)
+	ctx := context.Background()
+	input := PlatformGenerationClaimInput{UserID: 982001, GenerationID: "92000000-0000-4000-8000-000000000001", Mode: PlatformGenerationModeCompare, Models: []string{"a", "b"}, NowMillis: 1000}
+	key := store.key(input.UserID, input.GenerationID)
+	preparePlatformGenerationTestKey(t, client, key)
+	claim := claimTestGeneration(t, store, input)
+	wrongToken := base64.RawURLEncoding.EncodeToString([]byte("01234567890123456789012345678901"))
+
+	assertRejectedWithoutMutation := func(name string, want PlatformGenerationSnapshot, run func() (PlatformGenerationSnapshot, error)) {
+		t.Helper()
+		rawBefore, err := client.Get(ctx, key).Result()
+		if err != nil {
+			t.Fatal(err)
+		}
+		authoritative, err := run()
+		if !errors.Is(err, ErrPlatformGenerationConflict) || !reflect.DeepEqual(authoritative, want) {
+			t.Fatalf("%s authority=%#v want=%#v error=%v", name, authoritative, want, err)
+		}
+		rawAfter, readErr := client.Get(ctx, key).Result()
+		if readErr != nil || rawAfter != rawBefore {
+			t.Fatalf("%s mutated encoded record: before=%q after=%q error=%v", name, rawBefore, rawAfter, readErr)
+		}
+	}
+
+	assertRejectedWithoutMutation("model outside claim", claim.Snapshot, func() (PlatformGenerationSnapshot, error) {
+		return store.MarkModelFailedOwned(ctx, input.UserID, input.GenerationID, claim.LeaseToken, "c", "timeout", 1001)
+	})
+	assertRejectedWithoutMutation("wrong lease", claim.Snapshot, func() (PlatformGenerationSnapshot, error) {
+		return storeB.MarkModelFailedOwned(ctx, input.UserID, input.GenerationID, wrongToken, "a", "timeout", 1001)
+	})
+	assertRejectedWithoutMutation("expired lease boundary", claim.Snapshot, func() (PlatformGenerationSnapshot, error) {
+		return storeB.MarkModelFailedOwned(ctx, input.UserID, input.GenerationID, claim.LeaseToken, "a", "timeout", 31_000)
+	})
+
+	cancelling, err := store.RequestCancel(ctx, input.UserID, input.GenerationID, 1002)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertRejectedWithoutMutation("non-running global", cancelling, func() (PlatformGenerationSnapshot, error) {
+		return store.MarkModelFailedOwned(ctx, input.UserID, input.GenerationID, claim.LeaseToken, "a", "timeout", 1003)
+	})
+}
+
+func TestPlatformGenerationStoreMarkModelFailedOwnedIsTerminalAndRejectsReplay(t *testing.T) {
+	store, client := openTestPlatformGenerationStore(t)
+	ctx := context.Background()
+	nextCase := 0
+	newClaim := func(models []string) (PlatformGenerationClaimInput, PlatformGenerationClaimResult, string) {
+		t.Helper()
+		nextCase++
+		input := PlatformGenerationClaimInput{
+			UserID:       int64(982100 + nextCase),
+			GenerationID: fmt.Sprintf("92100000-0000-4000-8000-%012x", nextCase),
+			Mode:         PlatformGenerationModeSingle,
+			Models:       models,
+			NowMillis:    1000,
+		}
+		if len(models) > 1 {
+			input.Mode = PlatformGenerationModeCompare
+		}
+		key := store.key(input.UserID, input.GenerationID)
+		preparePlatformGenerationTestKey(t, client, key)
+		return input, claimTestGeneration(t, store, input), key
+	}
+	assertConflictUnchanged := func(name, key string, want PlatformGenerationSnapshot, run func() (PlatformGenerationSnapshot, error)) {
+		t.Helper()
+		rawBefore, err := client.Get(ctx, key).Result()
+		if err != nil {
+			t.Fatal(err)
+		}
+		authoritative, err := run()
+		if !errors.Is(err, ErrPlatformGenerationConflict) || !reflect.DeepEqual(authoritative, want) {
+			t.Fatalf("%s authority=%#v want=%#v error=%v", name, authoritative, want, err)
+		}
+		if rawAfter, readErr := client.Get(ctx, key).Result(); readErr != nil || rawAfter != rawBefore {
+			t.Fatalf("%s mutated encoded record: before=%q after=%q error=%v", name, rawBefore, rawAfter, readErr)
+		}
+	}
+
+	input, claim, key := newClaim([]string{"a"})
+	done, err := store.MarkModelDoneOwned(ctx, input.UserID, input.GenerationID, claim.LeaseToken, "a", 0, 1001)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertConflictUnchanged("done to failed", key, done, func() (PlatformGenerationSnapshot, error) {
+		return store.MarkModelFailedOwned(ctx, input.UserID, input.GenerationID, claim.LeaseToken, "a", "timeout", 1002)
+	})
+
+	input, claim, key = newClaim([]string{"a", "b"})
+	failed, err := store.MarkModelFailedOwned(ctx, input.UserID, input.GenerationID, claim.LeaseToken, "a", "timeout", 1001)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertPlatformGenerationOwnedModelFailure(t, claim.Snapshot, failed, "a", "timeout", 1001)
+	rawAuthoritative, err := client.Get(ctx, key).Result()
+	if err != nil {
+		t.Fatal(err)
+	}
+	authoritative, err := decodePlatformGeneration(rawAuthoritative)
+	if err != nil || !reflect.DeepEqual(authoritative, failed) {
+		t.Fatalf("Redis authority=%#v returned=%#v error=%v", authoritative, failed, err)
+	}
+	for _, replay := range []struct {
+		name string
+		code string
+	}{{"same code replay", "timeout"}, {"different code replay", "upstream_error"}} {
+		assertConflictUnchanged(replay.name, key, failed, func() (PlatformGenerationSnapshot, error) {
+			return store.MarkModelFailedOwned(ctx, input.UserID, input.GenerationID, claim.LeaseToken, "a", replay.code, 1002)
+		})
+	}
+
+	tests := []struct {
+		name  string
+		setup func(PlatformGenerationClaimInput, PlatformGenerationClaimResult) (PlatformGenerationSnapshot, error)
+	}{
+		{"cancelling", func(input PlatformGenerationClaimInput, _ PlatformGenerationClaimResult) (PlatformGenerationSnapshot, error) {
+			return store.RequestCancel(ctx, input.UserID, input.GenerationID, 1001)
+		}},
+		{"cancelled", func(input PlatformGenerationClaimInput, claim PlatformGenerationClaimResult) (PlatformGenerationSnapshot, error) {
+			if _, err := store.RequestCancel(ctx, input.UserID, input.GenerationID, 1001); err != nil {
+				return PlatformGenerationSnapshot{}, err
+			}
+			return store.AcknowledgeCancelledOwned(ctx, input.UserID, input.GenerationID, claim.LeaseToken, 1002)
+		}},
+		{"committing", func(input PlatformGenerationClaimInput, claim PlatformGenerationClaimResult) (PlatformGenerationSnapshot, error) {
+			if _, err := store.MarkModelDoneOwned(ctx, input.UserID, input.GenerationID, claim.LeaseToken, "a", 0, 1001); err != nil {
+				return PlatformGenerationSnapshot{}, err
+			}
+			return store.BeginCommitOwned(ctx, input.UserID, input.GenerationID, claim.LeaseToken, 1002)
+		}},
+		{"completed", func(input PlatformGenerationClaimInput, claim PlatformGenerationClaimResult) (PlatformGenerationSnapshot, error) {
+			if _, err := store.MarkModelDoneOwned(ctx, input.UserID, input.GenerationID, claim.LeaseToken, "a", 0, 1001); err != nil {
+				return PlatformGenerationSnapshot{}, err
+			}
+			if _, err := store.BeginCommitOwned(ctx, input.UserID, input.GenerationID, claim.LeaseToken, 1002); err != nil {
+				return PlatformGenerationSnapshot{}, err
+			}
+			return store.Complete(ctx, input.UserID, input.GenerationID, map[string]string{"a": "900000000000000201"}, 1003)
+		}},
+		{"failed", func(input PlatformGenerationClaimInput, claim PlatformGenerationClaimResult) (PlatformGenerationSnapshot, error) {
+			return store.FailRunningOwned(ctx, input.UserID, input.GenerationID, claim.LeaseToken, "internal_error", 1001)
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			input, claim, key := newClaim([]string{"a"})
+			terminal, err := test.setup(input, claim)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertConflictUnchanged(test.name, key, terminal, func() (PlatformGenerationSnapshot, error) {
+				return store.MarkModelFailedOwned(ctx, input.UserID, input.GenerationID, claim.LeaseToken, "a", "timeout", terminal.UpdatedAtMillis+1)
+			})
+		})
+	}
+}
+
+func TestPlatformGenerationStoreMarkModelFailedOwnedLosesToCancelOrCommit(t *testing.T) {
+	storeA, clientA := openTestPlatformGenerationStore(t)
+	ctx := context.Background()
+
+	input := PlatformGenerationClaimInput{UserID: 982201, GenerationID: "92200000-0000-4000-8000-000000000001", Mode: PlatformGenerationModeCompare, Models: []string{"a", "b"}, NowMillis: 1000}
+	key := storeA.key(input.UserID, input.GenerationID)
+	preparePlatformGenerationTestKey(t, clientA, key)
+	claim := claimTestGeneration(t, storeA, input)
+
+	storeB, clientB := openSecondTestPlatformGenerationStore(t)
+
+	barrier := newPlatformGenerationGETBarrier()
+	clientA.AddHook(&platformGenerationGETBarrierHook{key: key, barrier: barrier})
+	clientB.AddHook(&platformGenerationGETBarrierHook{key: key, barrier: barrier})
+	type outcome struct {
+		snapshot PlatformGenerationSnapshot
+		err      error
+	}
+	results := make(chan outcome, 2)
+	go func() {
+		snapshot, err := storeA.MarkModelFailedOwned(ctx, input.UserID, input.GenerationID, claim.LeaseToken, "b", "timeout", 1001)
+		results <- outcome{snapshot: snapshot, err: err}
+	}()
+	go func() {
+		snapshot, err := storeB.RequestCancel(ctx, input.UserID, input.GenerationID, 1001)
+		results <- outcome{snapshot: snapshot, err: err}
+	}()
+	first, second := <-results, <-results
+	winners := 0
+	for _, result := range []outcome{first, second} {
+		if result.err == nil {
+			winners++
+		} else if !errors.Is(result.err, ErrPlatformGenerationConflict) {
+			t.Fatalf("unexpected race result=%#v", result)
+		}
+	}
+	if winners != 1 || !reflect.DeepEqual(first.snapshot, second.snapshot) {
+		t.Fatalf("cancel/failure winners=%d first=%#v second=%#v", winners, first, second)
+	}
+	authoritative, err := storeA.Get(ctx, input.UserID, input.GenerationID)
+	if err != nil || !reflect.DeepEqual(authoritative, first.snapshot) || (authoritative.State != PlatformGenerationStateRunning && authoritative.State != PlatformGenerationStateCancelling) {
+		t.Fatalf("authoritative=%#v first=%#v error=%v", authoritative, first, err)
+	}
+
+	commitInput := PlatformGenerationClaimInput{UserID: 982202, GenerationID: "92200000-0000-4000-8000-000000000002", Mode: PlatformGenerationModeCompare, Models: []string{"a", "b"}, NowMillis: 2000}
+	commitKey := storeA.key(commitInput.UserID, commitInput.GenerationID)
+	preparePlatformGenerationTestKey(t, clientA, commitKey)
+	commitClaim := claimTestGeneration(t, storeA, commitInput)
+	if _, err := storeA.MarkModelDoneOwned(ctx, commitInput.UserID, commitInput.GenerationID, commitClaim.LeaseToken, "a", 0, 2001); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := storeA.MarkModelFailedOwned(ctx, commitInput.UserID, commitInput.GenerationID, commitClaim.LeaseToken, "b", "timeout", 2002); err != nil {
+		t.Fatal(err)
+	}
+	committing, err := storeA.BeginCommitOwned(ctx, commitInput.UserID, commitInput.GenerationID, commitClaim.LeaseToken, 2003)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rawBefore, err := clientA.Get(ctx, commitKey).Result()
+	if err != nil {
+		t.Fatal(err)
+	}
+	loser, err := storeB.MarkModelFailedOwned(ctx, commitInput.UserID, commitInput.GenerationID, commitClaim.LeaseToken, "b", "upstream_error", 2004)
+	if !errors.Is(err, ErrPlatformGenerationConflict) || !reflect.DeepEqual(loser, committing) {
+		t.Fatalf("failure after commit authority=%#v want=%#v error=%v", loser, committing, err)
+	}
+	if rawAfter, readErr := clientA.Get(ctx, commitKey).Result(); readErr != nil || rawAfter != rawBefore {
+		t.Fatalf("failure after commit mutated encoded record: before=%q after=%q error=%v", rawBefore, rawAfter, readErr)
+	}
+}
+
+func TestPlatformGenerationStoreMarkModelFailedOwnedSuccessSnapshotContract(t *testing.T) {
+	ctx := context.Background()
+	leaseToken := base64.RawURLEncoding.EncodeToString([]byte("abcdefghijklmnopqrstuvwxyzABCDEF"))
+	before := PlatformGenerationSnapshot{
+		GenerationID: "92300000-0000-4000-8000-000000000001",
+		Mode:         PlatformGenerationModeCompare,
+		Models:       []string{"a", "b"},
+		State:        PlatformGenerationStateRunning,
+		ModelStates: map[string]PlatformGenerationModel{
+			"a": {Seq: 3, State: PlatformGenerationStateRunning},
+			"b": {Seq: 5, State: PlatformGenerationStateRunning},
+		},
+		CreatedAtMillis:  1000,
+		UpdatedAtMillis:  1003,
+		LeaseOwnerSHA256: platformGenerationLeaseDigest(leaseToken),
+		LeaseUntilMillis: 31_000,
+	}
+	raw, err := encodePlatformGeneration(before)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hook := &platformGenerationMemoryRedisHook{raw: raw}
+	client := redis.NewClient(&redis.Options{Addr: "127.0.0.1:1"})
+	client.AddHook(hook)
+	t.Cleanup(func() { _ = client.Close() })
+	store, err := NewPlatformGenerationStore(client)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	failed, err := store.MarkModelFailedOwned(ctx, 982301, before.GenerationID, leaseToken, "a", "timeout", 1004)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertPlatformGenerationOwnedModelFailure(t, before, failed, "a", "timeout", 1004)
+	authoritative, err := store.Get(ctx, 982301, before.GenerationID)
+	if err != nil || !reflect.DeepEqual(authoritative, failed) {
+		t.Fatalf("stored authority=%#v returned=%#v error=%v", authoritative, failed, err)
+	}
+}
+
+func assertPlatformGenerationOwnedModelFailure(t *testing.T, before, failed PlatformGenerationSnapshot, model, code string, nowMillis int64) {
+	t.Helper()
+	modelBefore, found := before.ModelStates[model]
+	modelAfter, stillPresent := failed.ModelStates[model]
+	if failed.State != PlatformGenerationStateRunning || !found || !stillPresent || modelAfter.State != PlatformGenerationStateFailed || modelAfter.ErrorCode != code || modelAfter.Seq != modelBefore.Seq {
+		t.Fatalf("failed model transition=%#v before=%#v", failed, before)
+	}
+	if failed.UpdatedAtMillis != nowMillis || failed.LeaseOwnerSHA256 != before.LeaseOwnerSHA256 || failed.LeaseUntilMillis != before.LeaseUntilMillis {
+		t.Fatalf("failure metadata=%#v before=%#v want updated_at=%d", failed, before, nowMillis)
+	}
+	if len(failed.Models) != len(before.Models) || len(failed.ModelStates) != len(before.ModelStates) {
+		t.Fatalf("failure changed model membership: failed=%#v before=%#v", failed, before)
+	}
+	for _, sibling := range before.Models {
+		if sibling != model && !reflect.DeepEqual(failed.ModelStates[sibling], before.ModelStates[sibling]) {
+			t.Fatalf("failure changed sibling %q: got=%#v want=%#v", sibling, failed.ModelStates[sibling], before.ModelStates[sibling])
+		}
+	}
+	expected := clonePlatformGeneration(before)
+	expectedModel := expected.ModelStates[model]
+	expectedModel.State = PlatformGenerationStateFailed
+	expectedModel.ErrorCode = code
+	expected.ModelStates[model] = expectedModel
+	expected.UpdatedAtMillis = nowMillis
+	if !reflect.DeepEqual(failed, expected) {
+		t.Fatalf("failure snapshot=%#v want=%#v", failed, expected)
+	}
+}
+
+type platformGenerationMemoryRedisHook struct {
+	mu  sync.Mutex
+	raw string
+}
+
+func (h *platformGenerationMemoryRedisHook) DialHook(next redis.DialHook) redis.DialHook {
+	return next
+}
+
+func (h *platformGenerationMemoryRedisHook) ProcessHook(redis.ProcessHook) redis.ProcessHook {
+	return func(_ context.Context, cmd redis.Cmder) error {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		switch cmd.Name() {
+		case "get":
+			stringCmd, ok := cmd.(*redis.StringCmd)
+			if !ok {
+				return errors.New("unexpected GET command type")
+			}
+			stringCmd.SetVal(h.raw)
+			return nil
+		case "eval":
+			args := cmd.Args()
+			if len(args) != 6 || fmt.Sprint(args[4]) != h.raw {
+				return errors.New("unexpected CAS arguments")
+			}
+			nextRaw := fmt.Sprint(args[5])
+			h.raw = nextRaw
+			genericCmd, ok := cmd.(*redis.Cmd)
+			if !ok {
+				return errors.New("unexpected EVAL command type")
+			}
+			genericCmd.SetVal([]interface{}{int64(1), nextRaw})
+			return nil
+		default:
+			return fmt.Errorf("unexpected Redis command %q", cmd.Name())
+		}
+	}
+}
+
+func (h *platformGenerationMemoryRedisHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+	return next
+}
+
+func openSecondTestPlatformGenerationStore(t *testing.T) (*PlatformGenerationStore, *redis.Client) {
+	t.Helper()
+	options, err := redis.ParseURL(strings.TrimSpace(os.Getenv("TEST_REDIS_URL")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := redis.NewClient(options)
+	t.Cleanup(func() { _ = client.Close() })
+	store, err := NewPlatformGenerationStore(client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return store, client
+}
+
+type platformGenerationGETBarrier struct {
+	mu      sync.Mutex
+	arrived int
+	release chan struct{}
+}
+
+func newPlatformGenerationGETBarrier() *platformGenerationGETBarrier {
+	return &platformGenerationGETBarrier{release: make(chan struct{})}
+}
+
+func (b *platformGenerationGETBarrier) wait() {
+	b.mu.Lock()
+	b.arrived++
+	if b.arrived == 2 {
+		close(b.release)
+	}
+	b.mu.Unlock()
+	<-b.release
+}
+
+type platformGenerationGETBarrierHook struct {
+	key     string
+	barrier *platformGenerationGETBarrier
+	once    sync.Once
+}
+
+func (h *platformGenerationGETBarrierHook) DialHook(next redis.DialHook) redis.DialHook {
+	return next
+}
+
+func (h *platformGenerationGETBarrierHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
+	return func(ctx context.Context, cmd redis.Cmder) error {
+		err := next(ctx, cmd)
+		if err == nil && cmd.Name() == "get" && len(cmd.Args()) == 2 && fmt.Sprint(cmd.Args()[1]) == h.key {
+			h.once.Do(h.barrier.wait)
+		}
+		return err
+	}
+}
+
+func (h *platformGenerationGETBarrierHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+	return next
+}
 
 func TestPlatformGenerationOwnedMutationsRequireCapabilityAndKeepTTL(t *testing.T) {
 	store, client := openTestPlatformGenerationStore(t)

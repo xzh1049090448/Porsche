@@ -27,6 +27,21 @@ func decodePlatformV2Body(t *testing.T, payload string) (*platformChatBody, erro
 	return body, nil
 }
 
+func decodePlatformCompareV2Body(t *testing.T, payload string) (*platformCompareBody, error) {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/platform/chat/compare", strings.NewReader(payload))
+	request.Header.Set("Content-Type", "application/json")
+	context, _ := gin.CreateTestContext(recorder)
+	context.Request = request
+	body := new(platformCompareBody)
+	if err := decodePlatformRequest(context, body, true); err != nil {
+		return nil, err
+	}
+	return body, nil
+}
+
 func TestDecodePlatformRequestProjectsV2FieldsOutOfUpstreamPayload(t *testing.T) {
 	body, err := decodePlatformV2Body(t, `{"model":"model-a","messages":[{"role":"user","content":"hello"}],"max_tokens":1,"stream":true,"stream_version":"platform-chat-sse.v2","generation_id":"`+platformV2GenerationID+`"}`)
 	if err != nil {
@@ -42,6 +57,25 @@ func TestDecodePlatformRequestProjectsV2FieldsOutOfUpstreamPayload(t *testing.T)
 	for _, forbidden := range []string{"stream_version", "generation_id"} {
 		if _, found := upstream[forbidden]; found {
 			t.Fatalf("projected upstream body retained %q: %s", forbidden, body.WhiteLabelBody)
+		}
+	}
+}
+
+func TestPlatformV2CompareDecodeKeepsOrderedModelsOnlyLocally(t *testing.T) {
+	body, err := decodePlatformCompareV2Body(t, `{"model":"model-a","models":["model-b","model-a"],"messages":[{"role":"user","content":"hello"}],"max_tokens":1,"stream":true,"stream_version":"platform-chat-sse.v2","generation_id":"`+platformV2GenerationID+`"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Models) != 2 || body.Models[0] != "model-b" || body.Models[1] != "model-a" || body.GenerationID != platformV2GenerationID {
+		t.Fatalf("local compare controls=%+v", body)
+	}
+	var upstream map[string]json.RawMessage
+	if err := json.Unmarshal(body.WhiteLabelBody, &upstream); err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"models", "stream_version", "generation_id"} {
+		if _, found := upstream[forbidden]; found {
+			t.Fatalf("upstream payload retained %q: %s", forbidden, body.WhiteLabelBody)
 		}
 	}
 }

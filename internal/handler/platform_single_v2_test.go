@@ -3,7 +3,6 @@ package handler
 import (
 	"context"
 	"errors"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -81,24 +80,7 @@ func (f *platformSingleV2ControllerFake) Cancel(context.Context, int64, string) 
 }
 
 func platformSingleV2Engine(t *testing.T, runner service.PlatformSingleGenerationRunnerAPI, control service.PlatformGenerationController, allowed models.JSONSlice) *gin.Engine {
-	t.Helper()
-	whiteLabel, err := whitelabel.NewWhiteLabelService(config.WhiteLabelSettings{
-		BaseURL: "https://white-label.test/v1", APIKey: "provider-secret",
-		AllowedModels: map[string]struct{}{"model-a": {}, "model-b": {}},
-	}, &http.Client{Transport: platformRoundTripper(func(req *http.Request) (*http.Response, error) {
-		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"data":[{"id":"model-a"},{"id":"model-b"}]}`)), Request: req}, nil
-	})}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	state := &app.State{Settings: &config.Settings{}, WhiteLabel: whiteLabel, PlatformGenerationControl: control, PlatformSingleGeneration: runner}
-	engine := gin.New()
-	registerPlatformWithAuthentication(engine, state, func(c *gin.Context) {
-		c.Set(middleware.ContextUser, &models.User{ID: 47, Status: models.UserStatusActive, DailyCallLimit: 10, AllowedModels: allowed})
-		c.Set(middleware.ContextUserID, int64(47))
-		c.Next()
-	})
-	return engine
+	return platformGenerationV2Engine(t, runner, nil, control, allowed)
 }
 
 func platformSingleV2Request(engine *gin.Engine, payload string) *httptest.ResponseRecorder {
@@ -337,15 +319,21 @@ func TestPlatformSingleV2MarksStartedBeforeFirstWriterFailure(t *testing.T) {
 	}
 }
 
-func TestPlatformSingleV2LeavesCompareAndLegacyRoutingGuarded(t *testing.T) {
+func TestPlatformSingleV2PreservesSingleAndDelegatesExplicitCompare(t *testing.T) {
 	runner := &platformSingleV2RunnerFake{}
-	engine := platformSingleV2Engine(t, runner, nil, models.JSONSlice{"model-a"})
+	compareRunner := &platformCompareV2RunnerFake{run: func(input service.PlatformCompareGenerationInput) (service.PlatformCompareGenerationRunResult, error) {
+		if err := input.Write([]byte("event: meta\ndata: {}\n\n")); err != nil {
+			return service.PlatformCompareGenerationRunResult{Started: true}, err
+		}
+		return service.PlatformCompareGenerationRunResult{Started: true}, nil
+	}}
+	engine := platformGenerationV2Engine(t, runner, compareRunner, nil, models.JSONSlice{"model-a", "model-b"})
 	compare := httptest.NewRequest(http.MethodPost, "/api/v1/platform/chat/compare", strings.NewReader(`{"model":"model-a","models":["model-a","model-b"],"messages":[{"role":"user","content":"hello"}],"max_tokens":8,"stream":true,"stream_version":"platform-chat-sse.v2","generation_id":"`+platformV2GenerationID+`"}`))
 	compare.Header.Set("Content-Type", "application/json")
 	compareRec := httptest.NewRecorder()
 	engine.ServeHTTP(compareRec, compare)
-	if compareRec.Code != http.StatusServiceUnavailable || !strings.Contains(compareRec.Body.String(), `"code":"platform_stream_v2_unavailable"`) || runner.calls != 0 {
-		t.Fatalf("compare status=%d calls=%d body=%s", compareRec.Code, runner.calls, compareRec.Body.String())
+	if compareRec.Code != http.StatusOK || compareRec.Body.String() != "event: meta\ndata: {}\n\n" || compareRunner.calls != 1 || runner.calls != 0 {
+		t.Fatalf("compare status=%d singleCalls=%d compareCalls=%d body=%s", compareRec.Code, runner.calls, compareRunner.calls, compareRec.Body.String())
 	}
 
 	legacy := platformSingleV2Request(engine, `{"model":"model-a","messages":[{"role":"user","content":"hello"}],"stream":false}`)
