@@ -285,6 +285,61 @@ func platformSingleTestParams(message string) ChatParams {
 	return ChatParams{Model: "model-a", Messages: []map[string]interface{}{{"role": "user", "content": message}}, WhiteLabelBody: []byte(`{"model":"model-a","messages":[{"role":"user","content":"hello"}],"stream":true}`)}
 }
 
+func TestPlatformSingleChunkStateAcceptsCombinedTerminalUsage(t *testing.T) {
+	content := "answer"
+	finish := "stop"
+	state := platformSingleChunkState{}
+
+	delta, err := state.accept(whitelabel.ChatCompletionChunk{
+		Choices: []whitelabel.ChatCompletionChunkChoice{{
+			Index:        0,
+			Delta:        whitelabel.ChatCompletionChunkDelta{Content: &content},
+			FinishReason: &finish,
+		}},
+		Usage: &whitelabel.ChatCompletionUsage{TotalTokens: 3},
+	})
+	if err != nil {
+		t.Fatalf("accept combined terminal chunk: %v", err)
+	}
+	state.content.WriteString(delta)
+	if delta != content || state.content.String() != content || !state.modelEnded || !state.usageSeen || state.totalTokens != 3 {
+		t.Fatalf("state=%q modelEnded=%v usageSeen=%v totalTokens=%d", state.content.String(), state.modelEnded, state.usageSeen, state.totalTokens)
+	}
+}
+
+func TestPlatformSingleChunkStateRejectsInvalidCombinedTerminalUsage(t *testing.T) {
+	content := "answer"
+	finish := "stop"
+	combined := func(choices []whitelabel.ChatCompletionChunkChoice) whitelabel.ChatCompletionChunk {
+		return whitelabel.ChatCompletionChunk{Choices: choices, Usage: &whitelabel.ChatCompletionUsage{TotalTokens: 3}}
+	}
+	choice := whitelabel.ChatCompletionChunkChoice{Index: 0, Delta: whitelabel.ChatCompletionChunkDelta{Content: &content}, FinishReason: &finish}
+	tests := []struct {
+		name           string
+		state          platformSingleChunkState
+		chunk          whitelabel.ChatCompletionChunk
+		wantUsageSeen  bool
+		wantTotalToken int64
+	}{
+		{name: "nil finish reason", chunk: combined([]whitelabel.ChatCompletionChunkChoice{{Index: 0, Delta: whitelabel.ChatCompletionChunkDelta{Content: &content}}})},
+		{name: "duplicate usage", state: platformSingleChunkState{usageSeen: true, totalTokens: 2}, chunk: combined([]whitelabel.ChatCompletionChunkChoice{choice}), wantUsageSeen: true, wantTotalToken: 2},
+		{name: "multiple choices", chunk: combined([]whitelabel.ChatCompletionChunkChoice{choice, choice})},
+		{name: "non-zero choice index", chunk: combined([]whitelabel.ChatCompletionChunkChoice{{Index: 1, Delta: choice.Delta, FinishReason: &finish}})},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			state := tc.state
+			_, err := state.accept(tc.chunk)
+			if !errors.Is(err, ErrPlatformSingleGenerationUpstream) {
+				t.Fatalf("err=%v", err)
+			}
+			if state.usageSeen != tc.wantUsageSeen || state.modelEnded || state.totalTokens != tc.wantTotalToken || state.content.Len() != 0 {
+				t.Fatalf("state mutated: usageSeen=%v modelEnded=%v totalTokens=%d", state.usageSeen, state.modelEnded, state.totalTokens)
+			}
+		})
+	}
+}
+
 func platformSingleTestRunner(calls *[]string) (*PlatformSingleGenerationRunner, *platformSingleTestStore, *platformSingleTestPersistence, *platformSingleTestUpstream) {
 	now := time.UnixMilli(1_000).UTC()
 	store := &platformSingleTestStore{calls: calls, claim: platformSingleTestClaim(now.UnixMilli(), "model-a")}
