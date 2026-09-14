@@ -854,8 +854,12 @@ type platformSingleChunkState struct {
 }
 
 func (s *platformSingleChunkState) accept(chunk whitelabel.ChatCompletionChunk) (string, error) {
-	if chunk.Usage != nil {
-		if s.usageSeen || len(chunk.Choices) != 0 || chunk.Usage.TotalTokens < 0 || chunk.Usage.TotalTokens > math.MaxInt32 {
+	hasUsage := chunk.Usage != nil
+	if hasUsage && (s.usageSeen || chunk.Usage.TotalTokens < 0 || chunk.Usage.TotalTokens > math.MaxInt32) {
+		return "", ErrPlatformSingleGenerationUpstream
+	}
+	if len(chunk.Choices) == 0 {
+		if !hasUsage {
 			return "", ErrPlatformSingleGenerationUpstream
 		}
 		s.usageSeen = true
@@ -866,16 +870,19 @@ func (s *platformSingleChunkState) accept(chunk whitelabel.ChatCompletionChunk) 
 		return "", ErrPlatformSingleGenerationUpstream
 	}
 	choice := chunk.Choices[0]
-	if choice.Delta.Refusal != nil || len(choice.Delta.ToolCalls) != 0 {
+	if choice.Delta.Refusal != nil || len(choice.Delta.ToolCalls) != 0 || (hasUsage && choice.FinishReason == nil) {
 		return "", ErrPlatformSingleGenerationUpstream
 	}
 	delta := ""
 	if choice.Delta.Content != nil {
 		delta = *choice.Delta.Content
 	}
-	if choice.FinishReason != nil {
-		s.modelEnded = true
+	modelEnded := choice.FinishReason != nil
+	if hasUsage {
+		s.usageSeen = true
+		s.totalTokens = int64(chunk.Usage.TotalTokens)
 	}
+	s.modelEnded = modelEnded
 	return delta, nil
 }
 func (s *platformSingleChunkState) complete() bool {
