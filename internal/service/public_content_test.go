@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/porsche/ai-gateway-go/internal/models"
 )
@@ -123,6 +124,71 @@ func TestPreparePublicContentBindsStructuredHomeToPriceSnapshot(t *testing.T) {
 	again, againIssues := preparePublicContent(draft, reordered, price, items)
 	if len(againIssues) != 0 || again.Hash != prepared.Hash {
 		t.Fatalf("nondeterministic hash first=%s second=%#v issues=%+v", prepared.Hash, again, againIssues)
+	}
+}
+
+func TestProjectPublicHomeConfigFiltersFutureAnnouncementsAndKeepsLegacyArrays(t *testing.T) {
+	now := time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC)
+	past := now.Add(-time.Second).Format(time.RFC3339)
+	future := now.Add(time.Second).Format(time.RFC3339)
+	draft := PublicContentDraft{Revision: 4, Home: "home", About: "about", Terms: "terms", Privacy: "privacy", LegalReviewed: true}
+	home := PublicHomeDraft{
+		Revision: 4,
+		Announcements: []PublicHomeAnnouncementDraft{
+			{GUID: "10", Title: "now", BodyMarkdown: "visible", IsVisible: true, SortOrder: 1},
+			{GUID: "11", Title: "past", BodyMarkdown: "visible", EffectiveAt: &past, IsVisible: true, SortOrder: 2},
+			{GUID: "12", Title: "future", BodyMarkdown: "must wait", EffectiveAt: &future, IsVisible: true, SortOrder: 3},
+		},
+		FAQs: []PublicHomeFAQDraft{{GUID: "20", Question: "q", AnswerMarkdown: "a", IsVisible: true, SortOrder: 1}},
+	}
+	prepared, issues := preparePublicContent(draft, home, models.PublicPriceSnapshot{ID: 8, Guid: 80, Version: 9}, nil)
+	if len(issues) != 0 {
+		t.Fatalf("issues=%+v", issues)
+	}
+	got, err := projectPublicHomeConfig(prepared.Payload, 7, 9, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Announcements) != 2 || got.Announcements[0].GUID != "10" || got.Announcements[1].GUID != "11" || len(got.FAQs) != 1 || got.ContentReleaseVersion != 7 || got.PriceReleaseVersion != 9 {
+		t.Fatalf("projection=%#v", got)
+	}
+
+	legacy, err := projectPublicHomeConfig(models.JSONMap{"model_keys": []string{}}, 3, 4, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if legacy.Announcements == nil || legacy.FAQs == nil || legacy.FeaturedModelKeys == nil || len(legacy.Announcements)+len(legacy.FAQs)+len(legacy.FeaturedModelKeys) != 0 {
+		t.Fatalf("legacy projection must use empty non-nil arrays: %#v", legacy)
+	}
+}
+
+func TestProjectPublicHomeConfigReleaseChecksIntegrityAndSupportsLegacy(t *testing.T) {
+	now := time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC)
+	future := now.Add(time.Hour).Format(time.RFC3339)
+	draft := PublicContentDraft{Revision: 4, Home: "home", About: "about", Terms: "terms", Privacy: "privacy", LegalReviewed: true}
+	prepared, issues := preparePublicContent(draft, PublicHomeDraft{Revision: 4, Announcements: []PublicHomeAnnouncementDraft{{GUID: "10", Title: "scheduled", BodyMarkdown: "later", EffectiveAt: &future, IsVisible: true}}}, models.PublicPriceSnapshot{ID: 8, Guid: 80, Version: 9}, nil)
+	if len(issues) != 0 {
+		t.Fatalf("issues=%+v", issues)
+	}
+	release := models.PublicContentRelease{Payload: prepared.Payload, ContentHash: prepared.Hash, Version: 7}
+	got, err := projectPublicHomeConfigRelease(release)
+	if err != nil || got.ContentReleaseVersion != 7 || got.PriceReleaseVersion != 9 || len(got.Announcements) != 1 || got.FAQs == nil || got.FeaturedModelKeys == nil {
+		t.Fatalf("projection=%#v err=%v", got, err)
+	}
+	tampered := release
+	tampered.ContentHash = strings.Repeat("0", 64)
+	if _, err = projectPublicHomeConfigRelease(tampered); status(err) != 503 {
+		t.Fatalf("tampered release status=%d err=%v", status(err), err)
+	}
+
+	legacyPayload := models.JSONMap{"home": "home", "about": "about", "terms": "terms", "privacy": "privacy", "legal_reviewed": true, "model_keys": []string{}, "price_snapshot_guid": "80", "price_snapshot_version": int64(4)}
+	legacyHash, err := hashPublicContentPayload(legacyPayload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy, err := projectPublicHomeConfigRelease(models.PublicContentRelease{Payload: legacyPayload, ContentHash: legacyHash, Version: 3})
+	if err != nil || legacy.ContentReleaseVersion != 3 || legacy.PriceReleaseVersion != 4 || legacy.Announcements == nil || legacy.FAQs == nil || legacy.FeaturedModelKeys == nil {
+		t.Fatalf("legacy=%#v err=%v", legacy, err)
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"math/big"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/porsche/ai-gateway-go/internal/models"
 	"gorm.io/gorm"
@@ -74,6 +75,7 @@ type PublicModelDetailRead struct {
 }
 type PublicCatalogProjection struct {
 	Content               PublicContentDraft
+	HomeConfig            PublicHomeConfig
 	ContentReleaseVersion int64
 	PriceReleaseVersion   int64
 	PriceVisibility       models.PublicPriceVisibility
@@ -144,7 +146,11 @@ func (s *PublicCatalogReadService) Projection(ctx context.Context) (*PublicCatal
 			return errUnavailable("committed publication generation pending")
 		}
 		sum := sha256.Sum256([]byte(content.ContentHash + ":" + price.ContentHash + ":" + state.PriceVisibility.String()))
-		out = &PublicCatalogProjection{Content: projectContentPayload(content.Payload, content.SourceRevision), ContentReleaseVersion: content.Version, PriceReleaseVersion: price.Version, PriceVisibility: state.PriceVisibility, ETag: `"` + hex.EncodeToString(sum[:]) + `"`, Items: items, GoneKeys: gone}
+		homeConfig, e := projectPublicHomeConfig(content.Payload, content.Version, price.Version, time.Now().UTC())
+		if e != nil {
+			return errUnavailable("committed content integrity unavailable")
+		}
+		out = &PublicCatalogProjection{Content: projectContentPayload(content.Payload, content.SourceRevision), HomeConfig: homeConfig, ContentReleaseVersion: content.Version, PriceReleaseVersion: price.Version, PriceVisibility: state.PriceVisibility, ETag: `"` + hex.EncodeToString(sum[:]) + `"`, Items: items, GoneKeys: gone}
 		return nil
 	})
 	return out, err

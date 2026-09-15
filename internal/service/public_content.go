@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/porsche/ai-gateway-go/internal/models"
 	"github.com/porsche/ai-gateway-go/internal/persistence"
@@ -816,6 +817,63 @@ func decodePublishedContentPayloadV2(payload models.JSONMap) (*publishedContentP
 		}
 	}
 	return &decoded, nil
+}
+
+func projectPublicHomeConfig(payload models.JSONMap, contentVersion, priceVersion int64, now time.Time) (PublicHomeConfig, error) {
+	return projectPublicHomeConfigAt(payload, contentVersion, priceVersion, now, true)
+}
+
+func projectPublicHomeConfigAt(payload models.JSONMap, contentVersion, priceVersion int64, now time.Time, effectiveOnly bool) (PublicHomeConfig, error) {
+	structured, err := publicContentPayloadUsesStructuredSchema(payload)
+	if err != nil {
+		return PublicHomeConfig{}, err
+	}
+	config := PublicHomeConfig{
+		Announcements:         []PublicHomeConfigAnnouncement{},
+		FAQs:                  []PublicHomeConfigFAQ{},
+		FeaturedModelKeys:     []string{},
+		ContentReleaseVersion: contentVersion,
+		PriceReleaseVersion:   priceVersion,
+	}
+	if !structured {
+		return NormalizePublicHomeConfig(config)
+	}
+	decoded, err := decodePublishedContentPayloadV2(payload)
+	if err != nil {
+		return PublicHomeConfig{}, err
+	}
+	for _, announcement := range decoded.HomeConfig.Announcements {
+		if effectiveOnly && announcement.EffectiveAt != nil {
+			effective, parseErr := time.Parse(time.RFC3339, *announcement.EffectiveAt)
+			if parseErr != nil {
+				return PublicHomeConfig{}, parseErr
+			}
+			if effective.After(now.UTC()) {
+				continue
+			}
+		}
+		config.Announcements = append(config.Announcements, PublicHomeConfigAnnouncement{GUID: announcement.GUID, Title: announcement.Title, BodyHTML: announcement.BodyHTML, EffectiveAt: clonePublicHomeStringPointer(announcement.EffectiveAt), SortOrder: announcement.SortOrder})
+	}
+	for _, faq := range decoded.HomeConfig.FAQs {
+		config.FAQs = append(config.FAQs, PublicHomeConfigFAQ{GUID: faq.GUID, Question: faq.Question, AnswerHTML: faq.AnswerHTML, SortOrder: faq.SortOrder})
+	}
+	config.FeaturedModelKeys = clonePublicHomeStrings(decoded.HomeConfig.FeaturedModelKeys)
+	return NormalizePublicHomeConfig(config)
+}
+
+func projectPublicHomeConfigRelease(release models.PublicContentRelease) (PublicHomeConfig, error) {
+	if err := verifyPublicContentRelease(release); err != nil {
+		return PublicHomeConfig{}, err
+	}
+	priceVersion, ok := jsonNumberInt64(release.Payload["price_snapshot_version"])
+	if !ok || priceVersion < 1 {
+		return PublicHomeConfig{}, errUnavailable("committed content integrity unavailable")
+	}
+	config, err := projectPublicHomeConfigAt(release.Payload, release.Version, priceVersion, time.Time{}, false)
+	if err != nil {
+		return PublicHomeConfig{}, errUnavailable("committed content integrity unavailable")
+	}
+	return config, nil
 }
 
 func validCanonicalPositiveGUID(value string) bool {

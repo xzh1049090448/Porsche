@@ -61,6 +61,46 @@ func testPublicProjection() *service.PublicCatalogProjection {
 	}
 }
 
+func TestPublicHomeConfigReturnsPublishedProjectionOnly(t *testing.T) {
+	projection := testPublicProjection()
+	effective := "2026-09-15T00:00:00Z"
+	projection.HomeConfig = service.PublicHomeConfig{
+		Announcements:     []service.PublicHomeConfigAnnouncement{{GUID: "353589505447432192", Title: "Maintenance", BodyHTML: "<p>Published only</p>\n", EffectiveAt: &effective, SortOrder: 10}},
+		FAQs:              []service.PublicHomeConfigFAQ{{GUID: "353589501827747840", Question: "How?", AnswerHTML: "<p>Safely.</p>\n", SortOrder: 20}},
+		FeaturedModelKeys: []string{"alpha-chat"}, ContentReleaseVersion: 7, PriceReleaseVersion: 9,
+	}
+	r := gin.New()
+	registerPublicContentWithReader(r, publicReadStub{projection: projection}, func(*gin.Context) bool { return false })
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/public/home-config", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if rec.Header().Get("Cache-Control") != publicCacheControl || rec.Header().Get("ETag") == "" || rec.Header().Get("X-Public-Release-Version") != "7" {
+		t.Fatalf("headers=%#v", rec.Header())
+	}
+	for _, forbidden := range []string{"body_markdown", "answer_markdown", "draft", "database", "snapshot_id"} {
+		if strings.Contains(rec.Body.String(), forbidden) {
+			t.Fatalf("published projection leaked %q: %s", forbidden, rec.Body.String())
+		}
+	}
+	var body service.PublicHomeConfig
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.ContentReleaseVersion != 7 || body.PriceReleaseVersion != 9 || len(body.Announcements) != 1 || len(body.FAQs) != 1 || len(body.FeaturedModelKeys) != 1 {
+		t.Fatalf("body=%#v", body)
+	}
+
+	conditional := httptest.NewRequest(http.MethodGet, "/api/v1/public/home-config", nil)
+	conditional.Header.Set("If-None-Match", rec.Header().Get("ETag"))
+	notModified := httptest.NewRecorder()
+	r.ServeHTTP(notModified, conditional)
+	if notModified.Code != http.StatusNotModified || notModified.Body.Len() != 0 {
+		t.Fatalf("conditional status=%d body=%q", notModified.Code, notModified.Body.String())
+	}
+}
+
 func TestPublicReadSuccessfulHTTPBoundaryAllRoutes(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
@@ -220,7 +260,7 @@ func TestPublicReadNotFoundGoneUnavailableAndChunkedBodyAreNoStore(t *testing.T)
 		path   string
 		reader publicProjectionReader
 		want   int
-	}{{"/api/v1/public/models/unknown", publicReadStub{projection: testPublicProjection()}, 404}, {"/api/v1/public/models/retired", publicReadStub{projection: testPublicProjection()}, 410}, {"/api/v1/public/site", publicReadStub{err: &service.HTTPError{Status: 503, Message: "unsafe"}}, 503}} {
+	}{{"/api/v1/public/models/unknown", publicReadStub{projection: testPublicProjection()}, 404}, {"/api/v1/public/models/retired", publicReadStub{projection: testPublicProjection()}, 410}, {"/api/v1/public/site", publicReadStub{err: &service.HTTPError{Status: 503, Message: "unsafe"}}, 503}, {"/api/v1/public/home-config", publicReadStub{err: &service.HTTPError{Status: 503, Message: "unsafe"}}, 503}} {
 		r := gin.New()
 		registerPublicContentWithReader(r, tc.reader, func(*gin.Context) bool { return false })
 		rec := httptest.NewRecorder()
@@ -365,7 +405,7 @@ func TestPublicSiteRoutesAreRegisteredWithoutAuthentication(t *testing.T) {
 	r := gin.New()
 	RegisterPublicContent(r, &app.State{Settings: &config.Settings{}})
 	want := map[string]bool{
-		"GET /api/v1/public/site": true, "GET /api/v1/public/home": true, "GET /api/v1/public/models": true,
+		"GET /api/v1/public/site": true, "GET /api/v1/public/home-config": true, "GET /api/v1/public/home": true, "GET /api/v1/public/models": true,
 		"GET /api/v1/public/models/:modelKey": true, "GET /api/v1/public/pages/about": true,
 		"GET /api/v1/public/pages/terms": true, "GET /api/v1/public/pages/privacy": true,
 	}
@@ -386,7 +426,7 @@ func TestPublicReadRejectsMalformedQueriesBeforeReading(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	RegisterPublicContent(r, &app.State{Settings: &config.Settings{}})
-	for _, path := range []string{"/api/v1/public/site?x=1", "/api/v1/public/models?page=01", "/api/v1/public/models?page_size=21", "/api/v1/public/models?search=a&search=b", "/api/v1/public/models/%2F"} {
+	for _, path := range []string{"/api/v1/public/site?x=1", "/api/v1/public/home-config?x=1", "/api/v1/public/models?page=01", "/api/v1/public/models?page_size=21", "/api/v1/public/models?search=a&search=b", "/api/v1/public/models/%2F"} {
 		rec := httptest.NewRecorder()
 		r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
 		if rec.Code != http.StatusBadRequest {

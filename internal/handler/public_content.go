@@ -100,6 +100,18 @@ func registerPublicContentWithReader(r *gin.Engine, reader publicProjectionReade
 		c.Header("X-Public-Release-Version", strconv.FormatInt(p.ContentReleaseVersion, 10))
 		publicWriteJSON(c, p, c.FullPath(), gin.H{"content_release_version": p.ContentReleaseVersion, "price_release_version": p.PriceReleaseVersion, "price_visibility": p.PriceVisibility.String()})
 	})
+	g.GET("/home-config", func(c *gin.Context) {
+		if !publicReadNoQuery(c) {
+			publicReadError(c, &service.HTTPError{Status: 400, Message: "invalid request"})
+			return
+		}
+		p, _ := read(c)
+		if p == nil {
+			return
+		}
+		c.Header("X-Public-Release-Version", strconv.FormatInt(p.ContentReleaseVersion, 10))
+		publicWriteJSON(c, p, c.FullPath(), p.HomeConfig)
+	})
 	g.GET("/home", plain(func(p *service.PublicCatalogProjection) string { return p.Content.Home }))
 	g.GET("/pages/about", plain(func(p *service.PublicCatalogProjection) string { return p.Content.About }))
 	g.GET("/pages/terms", plain(func(p *service.PublicCatalogProjection) string { return p.Content.Terms }))

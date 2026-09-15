@@ -362,3 +362,21 @@ func (s *PublicContentService) GetRelease(ctx context.Context, guid int64) (*Pub
 	}
 	return &PublicContentReleaseAdminView{Release: projectRelease(r.Guid, r.Version, reason, r.SourceRevision, r.PublishedAt), Content: projectContentPayload(r.Payload, r.SourceRevision)}, nil
 }
+
+func (s *PublicContentService) GetReleaseHomeConfig(ctx context.Context, guid int64) (*PublicHomeConfig, error) {
+	if guid <= 0 {
+		return nil, errBadRequest("invalid content release guid")
+	}
+	var release models.PublicContentRelease
+	if err := s.db.WithContext(ctx).Where("guid=? AND is_deleted=0 AND document_kind=?", guid, models.PublicContentDocumentSite).First(&release).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return nil, errNotFound("content release not found")
+		}
+		return nil, errUnavailable("content release persistence unavailable")
+	}
+	config, err := projectPublicHomeConfigRelease(release)
+	if err != nil {
+		return nil, err
+	}
+	return &config, nil
+}

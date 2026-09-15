@@ -32,6 +32,7 @@ func publicContentValidationResponse(issues []publiccontent.ValidationIssue) pub
 
 func RegisterPublicContentAdmin(r *gin.Engine, state *app.State) {
 	g := r.Group("/admin/v2/public-content", gatewayRequestID(), publicAdminNoStore, middleware.RequireRootWithError(state, publicAdminAuthError), publicAdminHeaderBoundary)
+	registerPublicHomeContentAdminRoutes(g, state.PublicContent)
 	g.GET("/draft", func(c *gin.Context) {
 		if c.Request.URL.RawQuery != "" || !publicAdminRequestHasNoBody(c.Request) {
 			publicAdminError(c, &service.HTTPError{Status: 400, Message: "invalid request"})

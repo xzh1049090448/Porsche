@@ -77,6 +77,7 @@ func TestPublicContentPricingAdminRoutesMatchFrozenContract(t *testing.T) {
 		t.Fatalf("pending implementation route count=%d want=%d", len(contract.PendingImplementationRoutes), len(expectedPending))
 	}
 	pendingImplementation := map[string]bool{}
+	pendingRegistered := map[string]bool{}
 	for _, route := range contract.PendingImplementationRoutes {
 		if _, ok := expectedPending[route]; !ok {
 			t.Fatalf("unexpected pending implementation route %s", route)
@@ -86,8 +87,18 @@ func TestPublicContentPricingAdminRoutesMatchFrozenContract(t *testing.T) {
 		}
 		pendingImplementation[route] = true
 		ginRoute := strings.ReplaceAll(route, "{guid}", ":guid")
-		if count := registered[ginRoute]; count != 0 {
-			t.Fatalf("route %s registered %d time(s) while still declared pending", ginRoute, count)
+		pendingRegistered[ginRoute] = true
+		if count := registered[ginRoute]; count != 1 {
+			t.Fatalf("implemented route %s registered %d time(s)", ginRoute, count)
+		}
+		parts := strings.SplitN(ginRoute, " ", 2)
+		if len(parts) == 2 && strings.HasPrefix(parts[1], "/admin/") {
+			requestPath := strings.ReplaceAll(parts[1], ":guid", "1")
+			recorder := httptest.NewRecorder()
+			engine.ServeHTTP(recorder, httptest.NewRequest(parts[0], requestPath, nil))
+			if recorder.Code != http.StatusUnauthorized || recorder.Header().Get("Cache-Control") != "no-store" || recorder.Header().Get("X-Request-ID") == "" {
+				t.Fatalf("%s auth boundary status=%d headers=%#v", ginRoute, recorder.Code, recorder.Header())
+			}
 		}
 	}
 	want := map[string]bool{}
@@ -142,11 +153,11 @@ func TestPublicContentPricingAdminRoutesMatchFrozenContract(t *testing.T) {
 			t.Errorf("pending contract route %s count=%d", route, pendingContractRoutes[route])
 		}
 	}
-	if len(want) != 28 || len(got) != len(want) {
+	if len(want) != 28 || len(got) != len(want)+len(pendingImplementation)-1 {
 		t.Fatalf("route count got=%d want=%d", len(got), len(want))
 	}
 	for route, count := range got {
-		if !want[route] || count != 1 {
+		if (!want[route] && !pendingRegistered[route]) || count != 1 {
 			t.Errorf("extra or duplicate route %s count=%d", route, count)
 		}
 	}
