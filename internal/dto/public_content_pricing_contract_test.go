@@ -205,7 +205,7 @@ func TestPublicContentPricingContract(t *testing.T) {
 	preview := publicContentPricingRoute{"GET", "/admin/v2/public-content/preview", "root"}
 	publicContentPricingRequireRouteValue(t, contract, preview, "admin_preview_response_headers", "response_headers")
 	publicContentPricingRequire(t, contract, "no-store", "admin_preview_response_headers", "Cache-Control")
-	publicContentPricingRequire(t, contract, "noindex_nofollow", "admin_preview_response_headers", "X-Robots-Tag")
+	publicContentPricingRequire(t, contract, "noindex, nofollow", "admin_preview_response_headers", "X-Robots-Tag")
 	lifecycleStatuses := []any{"draft", "active", "inactive"}
 	priceVisibilities := []any{"visible", "authenticated_only"}
 	notificationTypes := []any{
@@ -685,6 +685,14 @@ func publicContentPricingAssertSchemas(t *testing.T, contract map[string]any) {
 	}
 	publicContentPricingRequire(t, contract, []any{"model_key", "display_name", "provider", "capabilities", "context_window", "price_visibility", "release_version", "pricing_type", "endpoint_types", "updated_at"}, "schemas", "PublicModelVisible", "required")
 	publicContentPricingRequire(t, contract, []any{"model_key", "display_name", "provider", "capabilities", "context_window", "price_visibility", "release_version", "pricing_type", "endpoint_types", "updated_at"}, "schemas", "PublicModelRedacted", "required")
+	for _, schemaName := range []string{"PublicModelVisible", "PublicModelRedacted", "PublicModelAdmin", "CreatePublicModelRequest"} {
+		publicContentPricingRequireStableModelKey(t, contract, schemaName, "model_key")
+	}
+	publicContentPricingRequireStableModelKey(t, contract, "PublicModelDetailRequest", "modelKey")
+	for _, schemaName := range []string{"HomeDraftResponse", "FeaturedModelsSaveRequest", "HomeConfigPublicResponse"} {
+		publicContentPricingRequire(t, contract, json.Number("128"), "schemas", schemaName, "properties", "featured_model_keys", "items", "maxLength")
+		publicContentPricingRequire(t, contract, "^[a-z](?:[a-z0-9]|-[a-z0-9])*$", "schemas", schemaName, "properties", "featured_model_keys", "items", "pattern")
+	}
 	for _, field := range []string{"input_price_usd_per_million_tokens", "output_price_usd_per_million_tokens"} {
 		if _, exists := publicContentPricingSchemaProperties(t, contract, "PublicModelRedacted")[field]; exists {
 			t.Fatalf("redacted model schema must omit %s", field)
@@ -698,6 +706,14 @@ func publicContentPricingAssertSchemas(t *testing.T, contract map[string]any) {
 	publicContentPricingRequireSchemaKeys(t, contract, "ValidationIssue", "field", "code")
 	publicContentPricingRequireSchemaKeys(t, contract, "ImmutablePriceReleaseResponse", "release", "items")
 	publicContentPricingRequireSchemaKeys(t, contract, "ImmutableContentReleaseResponse", "release", "content")
+}
+
+func publicContentPricingRequireStableModelKey(t *testing.T, contract map[string]any, schemaName, field string) {
+	t.Helper()
+	publicContentPricingRequire(t, contract, "string", "schemas", schemaName, "properties", field, "type")
+	publicContentPricingRequire(t, contract, json.Number("1"), "schemas", schemaName, "properties", field, "minLength")
+	publicContentPricingRequire(t, contract, json.Number("128"), "schemas", schemaName, "properties", field, "maxLength")
+	publicContentPricingRequire(t, contract, "^[a-z](?:[a-z0-9]|-[a-z0-9])*$", "schemas", schemaName, "properties", field, "pattern")
 }
 
 func publicContentPricingRequireSchemaKeys(t *testing.T, contract map[string]any, name string, want ...string) {

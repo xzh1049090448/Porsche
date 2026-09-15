@@ -75,7 +75,7 @@
   "admin_preview_response_headers": {
     "Cache-Control": "no-store",
     "X-Request-ID": "required_non_empty",
-    "X-Robots-Tag": "noindex_nofollow"
+    "X-Robots-Tag": "noindex, nofollow"
   },
   "body_rules": {
     "object_mutation": {
@@ -214,7 +214,10 @@
       ],
       "properties": {
         "model_key": {
-          "type": "string"
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-z](?:[a-z0-9]|-[a-z0-9])*$"
         },
         "display_name": {
           "type": "string"
@@ -305,7 +308,10 @@
       ],
       "properties": {
         "model_key": {
-          "type": "string"
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-z](?:[a-z0-9]|-[a-z0-9])*$"
         },
         "display_name": {
           "type": "string"
@@ -389,7 +395,10 @@
           "type": "string"
         },
         "model_key": {
-          "type": "string"
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-z](?:[a-z0-9]|-[a-z0-9])*$"
         },
         "upstream_model_id": {
           "type": "string"
@@ -564,7 +573,10 @@
       ],
       "properties": {
         "modelKey": {
-          "type": "string"
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-z](?:[a-z0-9]|-[a-z0-9])*$"
         }
       }
     },
@@ -706,7 +718,10 @@
           "type": "string"
         },
         "model_key": {
-          "type": "string"
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-z](?:[a-z0-9]|-[a-z0-9])*$"
         },
         "display_name": {
           "type": "string"
@@ -1487,7 +1502,9 @@
           "uniqueItems": true,
           "items": {
             "type": "string",
-            "minLength": 1
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[a-z](?:[a-z0-9]|-[a-z0-9])*$"
           }
         }
       }
@@ -1698,7 +1715,9 @@
           "uniqueItems": true,
           "items": {
             "type": "string",
-            "minLength": 1
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[a-z](?:[a-z0-9]|-[a-z0-9])*$"
           }
         }
       }
@@ -1826,7 +1845,9 @@
           "uniqueItems": true,
           "items": {
             "type": "string",
-            "minLength": 1
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[a-z](?:[a-z0-9]|-[a-z0-9])*$"
           }
         },
         "content_release_version": {
