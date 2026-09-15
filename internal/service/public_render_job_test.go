@@ -5,6 +5,7 @@ import (
 	"errors"
 	"math"
 	"os"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -93,8 +94,28 @@ func TestPublicRenderFenceAdvancesAcrossBoundaryAndResetsRetryCycle(t *testing.T
 			t.Fatalf("fence=%d ordinal/delay=%d/%s want=%d/%s", tc.fence, ordinal, publicRenderRetryDelay(ordinal), tc.ordinal, tc.delay)
 		}
 	}
-	if _, ok := publicRenderNextCycleBase(publicRenderMaxFence); ok {
-		t.Fatal("overflowing next cycle accepted")
+	highestAccepted := publicRenderMaxFence - publicRenderMaxAttempts - (publicRenderMaxFence-publicRenderMaxAttempts)%publicRenderMaxAttempts
+	for _, tc := range []struct {
+		fence int
+		base  int
+		ok    bool
+	}{
+		{highestAccepted, highestAccepted, true},
+		{publicRenderMaxFence - 3, 0, false},
+		{publicRenderMaxFence - 2, 0, false},
+		{publicRenderMaxFence - 1, 0, false},
+		{publicRenderMaxFence, 0, false},
+	} {
+		base, ok := publicRenderNextCycleBase(tc.fence)
+		if base != tc.base || ok != tc.ok {
+			t.Fatalf("near-limit fence=%d base/ok=%d/%v want=%d/%v", tc.fence, base, ok, tc.base, tc.ok)
+		}
+	}
+	for ordinal := 1; ordinal <= publicRenderMaxAttempts; ordinal++ {
+		fence := highestAccepted + ordinal
+		if fence > publicRenderMaxFence || publicRenderAttemptOrdinal(fence) != ordinal {
+			t.Fatalf("reserved fence=%d ordinal=%d want <=%d and ordinal=%d", fence, publicRenderAttemptOrdinal(fence), publicRenderMaxFence, ordinal)
+		}
 	}
 }
 
@@ -190,6 +211,104 @@ func assertBoundaryRequeueRejectsDelayedFirstAttempt(t *testing.T, operation str
 	}
 	if releasesAfter != releasesBefore || jobsAfter != jobsBefore {
 		t.Fatalf("boundary tick created rows releases=%d/%d jobs=%d/%d", releasesBefore, releasesAfter, jobsBefore, jobsAfter)
+	}
+}
+
+func TestPublicRenderJobFixtureCompleteRejectsUnsafeFenceCycleWithoutMutation(t *testing.T) {
+	db := openTestMySQL(t)
+	ctx := context.Background()
+	effective := time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC)
+	job := seedStructuredPublicRenderJobFixture(t, db, effective)
+	clock := &fakePublicRenderClock{millis: effective.Add(100 * time.Millisecond).UnixMilli()}
+	svc := NewPublicRenderJobServiceWithClock(db, []byte("fixture-render-job-purpose-key-32"), clock)
+	owner := "near-limit-cross-boundary-owner"
+	startedAt := effective.Add(-100 * time.Millisecond).UnixMilli()
+	expiresAt := effective.Add(time.Minute).UnixMilli()
+	terminalFence, terminalOperation := 77, 2
+	terminalOwner := "preserved-terminal-owner"
+	terminalState := models.PublicRenderJobQueued
+	lastFailure := "validation_failed"
+	updatedAt := startedAt - 1
+	if err := db.Model(&models.PublicRenderJob{}).Where("id=?", job.ID).Updates(map[string]any{
+		"state":                    models.PublicRenderJobLeased,
+		"attempt_count":            publicRenderMaxFence - 3,
+		"lease_owner_hmac":         svc.ownerHMAC(owner),
+		"lease_expires_at":         expiresAt,
+		"last_failure":             lastFailure,
+		"completed_at":             startedAt,
+		"last_terminal_owner_hmac": terminalOwner,
+		"last_terminal_fence":      terminalFence,
+		"last_terminal_operation":  terminalOperation,
+		"last_terminal_state":      terminalState,
+		"updated_at":               updatedAt,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	var before models.PublicRenderJob
+	if err := db.Where("id=?", job.ID).First(&before).Error; err != nil {
+		t.Fatal(err)
+	}
+	err := svc.Complete(ctx, PublicRenderTransitionInput{JobGUID: job.Guid, OwnerToken: owner, Fence: publicRenderMaxFence - 3})
+	if err != ErrPublicRenderUnavailable {
+		t.Fatalf("unsafe crossing complete=%v want unavailable", err)
+	}
+	var after models.PublicRenderJob
+	if err := db.Where("id=?", job.ID).First(&after).Error; err != nil {
+		t.Fatal(err)
+	}
+	assertPublicRenderSchedulingFieldsEqual(t, before, after)
+}
+
+func TestPublicRenderJobFixtureDueAnnouncementRejectsUnsafeFenceCycleWithoutMutation(t *testing.T) {
+	db := openTestMySQL(t)
+	ctx := context.Background()
+	effective := time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC)
+	job := seedStructuredPublicRenderJobFixture(t, db, effective)
+	completedAt := effective.Add(-time.Second).UnixMilli()
+	terminalFence, terminalOperation := publicRenderMaxFence-3, 1
+	terminalOwner := "preserved-terminal-owner"
+	terminalState := models.PublicRenderJobSucceeded
+	updatedAt := completedAt
+	if err := db.Model(&models.PublicRenderJob{}).Where("id=?", job.ID).Updates(map[string]any{
+		"state":                    models.PublicRenderJobSucceeded,
+		"attempt_count":            publicRenderMaxFence - 3,
+		"lease_owner_hmac":         nil,
+		"lease_expires_at":         nil,
+		"last_failure":             nil,
+		"completed_at":             completedAt,
+		"last_terminal_owner_hmac": terminalOwner,
+		"last_terminal_fence":      terminalFence,
+		"last_terminal_operation":  terminalOperation,
+		"last_terminal_state":      terminalState,
+		"updated_at":               updatedAt,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	var before models.PublicRenderJob
+	if err := db.Where("id=?", job.ID).First(&before).Error; err != nil {
+		t.Fatal(err)
+	}
+	clock := &fakePublicRenderClock{millis: effective.UnixMilli()}
+	svc := NewPublicRenderJobServiceWithClock(db, []byte("fixture-render-job-purpose-key-32"), clock)
+	lease, err := svc.Lease(ctx, PublicRenderLeaseInput{OwnerToken: "near-limit-due-announcement-owner", LeaseMillis: 30_000})
+	if err != ErrPublicRenderUnavailable || lease != nil {
+		t.Fatalf("unsafe due announcement lease=%#v err=%v want nil/unavailable", lease, err)
+	}
+	var after models.PublicRenderJob
+	if err := db.Where("id=?", job.ID).First(&after).Error; err != nil {
+		t.Fatal(err)
+	}
+	assertPublicRenderSchedulingFieldsEqual(t, before, after)
+}
+
+func assertPublicRenderSchedulingFieldsEqual(t *testing.T, before, after models.PublicRenderJob) {
+	t.Helper()
+	if before.State != after.State || before.AttemptCount != after.AttemptCount || before.UpdatedAt != after.UpdatedAt ||
+		!reflect.DeepEqual(before.LeaseOwnerHMAC, after.LeaseOwnerHMAC) || !reflect.DeepEqual(before.LeaseExpiresAt, after.LeaseExpiresAt) ||
+		!reflect.DeepEqual(before.LastFailure, after.LastFailure) || !reflect.DeepEqual(before.CompletedAt, after.CompletedAt) ||
+		!reflect.DeepEqual(before.LastTerminalOwnerHMAC, after.LastTerminalOwnerHMAC) || !reflect.DeepEqual(before.LastTerminalFence, after.LastTerminalFence) ||
+		!reflect.DeepEqual(before.LastTerminalOperation, after.LastTerminalOperation) || !reflect.DeepEqual(before.LastTerminalState, after.LastTerminalState) {
+		t.Fatalf("render scheduling fields mutated\nbefore=%#v\nafter=%#v", before, after)
 	}
 }
 

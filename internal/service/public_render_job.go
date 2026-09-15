@@ -19,9 +19,12 @@ const (
 	publicRenderMaxAttempts = 3
 	// attempt_count is also the lease fence. It therefore advances across
 	// announcement-triggered render cycles instead of resetting per cycle.
-	publicRenderMaxFence   = 1<<31 - 1
-	publicRenderHealthyLag = int64(60_000)
-	publicRenderFailedLag  = int64(300_000)
+	publicRenderMaxFence = 1<<31 - 1
+	// A requeue reserves an entire next retry cycle. The final partial cycle is
+	// intentionally unused because it cannot provide all three attempts.
+	publicRenderMaxRequeueFence = (publicRenderMaxFence/publicRenderMaxAttempts - 1) * publicRenderMaxAttempts
+	publicRenderHealthyLag      = int64(60_000)
+	publicRenderFailedLag       = int64(300_000)
 )
 
 var (
@@ -554,7 +557,7 @@ func publicRenderAttemptOrdinal(fence int) int {
 // Lease increments this value, yielding a unique fence at ordinal one of the
 // next cycle while retaining three attempts for the newly required render.
 func publicRenderNextCycleBase(fence int) (int, bool) {
-	if fence < 0 || fence > publicRenderMaxFence {
+	if fence < 0 || fence > publicRenderMaxRequeueFence {
 		return 0, false
 	}
 	if fence == 0 {
