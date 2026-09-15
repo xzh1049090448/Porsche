@@ -65,7 +65,49 @@ func TestRenderAttemptCrossingEffectiveBoundaryRequiresFollowup(t *testing.T) {
 	}
 }
 
-func TestPublicRenderJobFixtureCompletionAcrossAnnouncementBoundaryRequeuesOnce(t *testing.T) {
+func TestPublicRenderFenceAdvancesAcrossBoundaryAndResetsRetryCycle(t *testing.T) {
+	for _, tc := range []struct {
+		fence int
+		base  int
+	}{{0, 0}, {1, 3}, {2, 3}, {3, 3}, {4, 6}, {5, 6}, {6, 6}} {
+		base, ok := publicRenderNextCycleBase(tc.fence)
+		if !ok || base != tc.base {
+			t.Fatalf("fence=%d next cycle base=%d/%v want=%d/true", tc.fence, base, ok, tc.base)
+		}
+	}
+	base, _ := publicRenderNextCycleBase(1)
+	nextFence := base + 1
+	if nextFence <= 1 {
+		t.Fatalf("next fence=%d must advance", nextFence)
+	}
+	if ordinal := publicRenderAttemptOrdinal(nextFence); ordinal != 1 {
+		t.Fatalf("next attempt ordinal=%d want=1", ordinal)
+	}
+	for _, tc := range []struct {
+		fence   int
+		ordinal int
+		delay   time.Duration
+	}{{1, 1, 5 * time.Second}, {4, 1, 5 * time.Second}, {5, 2, 10 * time.Second}, {6, 3, 0}} {
+		ordinal := publicRenderAttemptOrdinal(tc.fence)
+		if ordinal != tc.ordinal || publicRenderRetryDelay(ordinal) != tc.delay {
+			t.Fatalf("fence=%d ordinal/delay=%d/%s want=%d/%s", tc.fence, ordinal, publicRenderRetryDelay(ordinal), tc.ordinal, tc.delay)
+		}
+	}
+	if _, ok := publicRenderNextCycleBase(publicRenderMaxFence); ok {
+		t.Fatal("overflowing next cycle accepted")
+	}
+}
+
+func TestPublicRenderJobFixtureBoundaryRequeueRejectsDelayedFirstAttempt(t *testing.T) {
+	for _, operation := range []string{"complete", "fail"} {
+		t.Run(operation, func(t *testing.T) {
+			assertBoundaryRequeueRejectsDelayedFirstAttempt(t, operation)
+		})
+	}
+}
+
+func assertBoundaryRequeueRejectsDelayedFirstAttempt(t *testing.T, operation string) {
+	t.Helper()
 	db := openTestMySQL(t)
 	ctx := context.Background()
 	effective := time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC)
@@ -108,12 +150,28 @@ func TestPublicRenderJobFixtureCompletionAcrossAnnouncementBoundaryRequeuesOnce(
 		t.Fatalf("crossed completion=%#v input_at=%d completed_at=%d err=%v", crossed, attemptInputAt, clock.millis, err)
 	}
 	second, err := svc.Lease(ctx, PublicRenderLeaseInput{OwnerToken: "cross-boundary-render-owner", LeaseMillis: 30_000})
-	if err != nil || second == nil || second.JobGUID != job.Guid || second.Fence != 1 {
+	if err != nil || second == nil || second.JobGUID != job.Guid || second.Fence <= first.Fence {
 		t.Fatalf("due-boundary lease=%#v err=%v", second, err)
 	}
 	projection, err = reader.Projection(ctx)
 	if err != nil || len(projection.HomeConfig.Announcements) != 1 {
 		t.Fatalf("post-boundary projection=%#v err=%v", projection, err)
+	}
+	var delayedErr error
+	switch operation {
+	case "complete":
+		delayedErr = svc.Complete(ctx, PublicRenderTransitionInput{JobGUID: first.JobGUID, OwnerToken: first.OwnerToken, Fence: first.Fence})
+	case "fail":
+		delayedErr = svc.Fail(ctx, PublicRenderTransitionInput{JobGUID: first.JobGUID, OwnerToken: first.OwnerToken, Fence: first.Fence, Failure: "render_failed"})
+	default:
+		t.Fatalf("unknown operation %q", operation)
+	}
+	if delayedErr != ErrPublicRenderLeaseLost {
+		t.Fatalf("delayed first %s=%v want lease lost", operation, delayedErr)
+	}
+	var active models.PublicRenderJob
+	if err = db.Where("guid=?", second.JobGUID).First(&active).Error; err != nil || active.State != models.PublicRenderJobLeased || active.AttemptCount != second.Fence || active.LeaseOwnerHMAC == nil || *active.LeaseOwnerHMAC != svc.ownerHMAC(second.OwnerToken) {
+		t.Fatalf("delayed first %s mutated active second attempt=%#v err=%v", operation, active, err)
 	}
 	if err = svc.Complete(ctx, PublicRenderTransitionInput{JobGUID: second.JobGUID, OwnerToken: second.OwnerToken, Fence: second.Fence}); err != nil {
 		t.Fatal(err)

@@ -17,8 +17,11 @@ import (
 
 const (
 	publicRenderMaxAttempts = 3
-	publicRenderHealthyLag  = int64(60_000)
-	publicRenderFailedLag   = int64(300_000)
+	// attempt_count is also the lease fence. It therefore advances across
+	// announcement-triggered render cycles instead of resetting per cycle.
+	publicRenderMaxFence   = 1<<31 - 1
+	publicRenderHealthyLag = int64(60_000)
+	publicRenderFailedLag  = int64(300_000)
 )
 
 var (
@@ -169,7 +172,7 @@ func (s *PublicRenderJobService) Lease(ctx context.Context, in PublicRenderLease
 		for scan := 0; scan < 8; scan++ {
 			var job models.PublicRenderJob
 			err := tx.Clauses(clause.Locking{Strength: "UPDATE", Options: "SKIP LOCKED"}).
-				Where("is_deleted=0 AND attempt_count < ? AND ((state=? AND (lease_expires_at IS NULL OR lease_expires_at <= ?)) OR (state=? AND lease_expires_at <= ?))", publicRenderMaxAttempts, models.PublicRenderJobQueued, now, models.PublicRenderJobLeased, now).
+				Where("is_deleted=0 AND ((state=? AND (lease_expires_at IS NULL OR lease_expires_at <= ?)) OR (state=? AND lease_expires_at <= ? AND MOD(attempt_count, ?) <> 0))", models.PublicRenderJobQueued, now, models.PublicRenderJobLeased, now, publicRenderMaxAttempts).
 				Order("id ASC").First(&job).Error
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return nil
@@ -187,6 +190,9 @@ func (s *PublicRenderJobService) Lease(ctx context.Context, in PublicRenderLease
 					return ErrPublicRenderUnavailable
 				}
 				continue
+			}
+			if job.AttemptCount < 0 || job.AttemptCount >= publicRenderMaxFence {
+				return ErrPublicRenderUnavailable
 			}
 			attempt := job.AttemptCount + 1
 			expires, ok := publicRenderAddMillis(now, in.LeaseMillis)
@@ -233,9 +239,13 @@ func (s *PublicRenderJobService) queueEffectiveAnnouncements(tx *gorm.DB, state 
 	if !shouldQueueEffectiveAnnouncement(job, watermark) {
 		return nil
 	}
+	cycleBase, ok := publicRenderNextCycleBase(job.AttemptCount)
+	if !ok {
+		return ErrPublicRenderUnavailable
+	}
 	updates := map[string]any{
 		"state":                    models.PublicRenderJobQueued,
-		"attempt_count":            0,
+		"attempt_count":            cycleBase,
 		"lease_owner_hmac":         nil,
 		"lease_expires_at":         nil,
 		"last_failure":             nil,
@@ -398,9 +408,13 @@ func (s *PublicRenderJobService) Complete(ctx context.Context, in PublicRenderTr
 		op := 1
 		updates := map[string]any{"state": terminalState, "completed_at": now, "lease_owner_hmac": nil, "lease_expires_at": nil, "last_failure": nil, "last_terminal_owner_hmac": s.ownerHMAC(in.OwnerToken), "last_terminal_fence": in.Fence, "last_terminal_operation": op, "last_terminal_state": terminalState, "updated_at": now}
 		if renderAttemptCrossedEffectiveBoundary(job.CompletedAt, watermark) {
+			cycleBase, ok := publicRenderNextCycleBase(in.Fence)
+			if !ok {
+				return ErrPublicRenderUnavailable
+			}
 			terminalState = models.PublicRenderJobQueued
 			updates["state"] = terminalState
-			updates["attempt_count"] = 0
+			updates["attempt_count"] = cycleBase
 			updates["completed_at"] = nil
 			updates["last_terminal_state"] = terminalState
 		}
@@ -425,11 +439,15 @@ func (s *PublicRenderJobService) Fail(ctx context.Context, in PublicRenderTransi
 	code := sanitizePublicRenderFailure(in.Failure)
 	state := models.PublicRenderJobQueued
 	next := int64(0)
-	if in.Fence >= publicRenderMaxAttempts {
+	attemptOrdinal := publicRenderAttemptOrdinal(in.Fence)
+	if attemptOrdinal == 0 {
+		return ErrPublicRenderInvalid
+	}
+	if attemptOrdinal >= publicRenderMaxAttempts {
 		state = models.PublicRenderJobFailed
 	} else {
 		var ok bool
-		next, ok = publicRenderAddMillis(now, publicRenderRetryDelay(in.Fence).Milliseconds())
+		next, ok = publicRenderAddMillis(now, publicRenderRetryDelay(attemptOrdinal).Milliseconds())
 		if !ok {
 			return ErrPublicRenderInvalid
 		}
@@ -524,6 +542,31 @@ func publicRenderRetryDelay(attempt int) time.Duration {
 	}
 	return time.Duration(5*(1<<(attempt-1))) * time.Second
 }
+
+func publicRenderAttemptOrdinal(fence int) int {
+	if fence <= 0 {
+		return 0
+	}
+	return (fence-1)%publicRenderMaxAttempts + 1
+}
+
+// publicRenderNextCycleBase advances to the end of the current retry cycle.
+// Lease increments this value, yielding a unique fence at ordinal one of the
+// next cycle while retaining three attempts for the newly required render.
+func publicRenderNextCycleBase(fence int) (int, bool) {
+	if fence < 0 || fence > publicRenderMaxFence {
+		return 0, false
+	}
+	if fence == 0 {
+		return 0, true
+	}
+	delta := publicRenderMaxAttempts - publicRenderAttemptOrdinal(fence)
+	if fence > publicRenderMaxFence-delta {
+		return 0, false
+	}
+	return fence + delta, true
+}
+
 func publicRenderAddMillis(now, delta int64) (int64, bool) {
 	if now <= 0 || delta < 0 || delta > 0 && now > int64(^uint64(0)>>1)-delta {
 		return 0, false
