@@ -2,7 +2,7 @@
 
 日期：2026-09-16
 后端实现候选：`77c4e003310f3194f3e7a90cdadb7d650cbd3ba1`（包含 `f6ed4e1` exact action target locks 与 `8303a28` atomic structured artifact renderer）
-配对前端实现候选：`61c1ccb6512198539ae13b3d98e4043ef77a1dca`
+配对前端实现候选：`ab18718f89b55ea7106d0ac52ff9972576e4e9e4`
 跨仓库总合同：`interface-contract.json`，`v1.0.0-p0 / agreed_for_implementation`，SHA-256 `9bc9c70e70bb45b63185b3b619ae49e5e6a251ba3c4a30f64539774cb272a3ce`
 后端公共内容子合同：`docs/agents/contracts/public-content-pricing-v1.json`，`v2 / implemented_locally_pending_acceptance`，SHA-256 `4db4380dcef26f0098443f591d9fe098f9faefd32a367f02ce2a14ba62d8309d`
 当前结论：`PASS_LIMITED_SCOPE`
@@ -48,6 +48,12 @@ Task 13 在 disposable、loopback-only 的 MySQL 8.4.11 和 Redis 7-alpine 上�
 - RED 证据：后端合同测试因缺失 `minLength/maxLength/pattern` 失败；前端定向 55 项中合同、公开详情键与真实预览头三项失败。
 - 后端 `77c4e00` 将既有规则冻结为 `^[a-z](?:[a-z0-9]|-[a-z0-9])*$`、长度 1–128，并把预览头合同写为字面量 `noindex, nofollow`。前端 `61c1ccb` 同步合同、严格公开详情输入与预览响应校验。
 - GREEN 证据：后端 dto/router/publiccontent 定向通过；前端定向 61/61、跨仓库公共内容子合同字节一致；后端 `go test ./... -count=1` 通过，前端完整 `npm test` 1138/1138、0 fail/skip/cancel/todo，48.734s；production build 与公共 chunk 9/9、171428 JS bytes/20362 CSS bytes 通过。
+
+## 前端质量复审缺陷与修复
+
+- 第二个前端快照 `ec31d2ef…` 在 `SPEC_PASS` 后被独立质量审查判定为 `QUALITY_FAIL`：Root 预览未在身份变化时同步清空，首页草稿 GET 绕过统一认证读取与身份 fence。该前端快照及本后端配对快照均失效；本后端快照已取得 `SPEC_PASS`、`SECURITY_PASS`，但测试审查在前端变更后中止，未形成 verdict。
+- 前端 `ab18718` 将管理 GET 接入安全刷新与身份核对，保留写请求单次发送，并在退出、降权或账号切换时同步清空预览及拒绝在途旧响应。
+- GREEN 证据：前端 API/预览 22/22、相关定向 99/99、全量 1140/1140、0 fail/skip/cancel/todo、47.689s；production build 与公共 chunk 9/9、171428 JS bytes/20362 CSS bytes 通过。后端业务代码及合同未变。
 
 ## 尚未运行与状态边界
 

@@ -1,6 +1,6 @@
 Fixed Home Structured Content Task13 backend record — 2026-09-16
 backend implementation HEAD: 77c4e003310f3194f3e7a90cdadb7d650cbd3ba1 (includes f6ed4e1 target locks and 8303a28 artifact renderer)
-frontend implementation HEAD: 61c1ccb6512198539ae13b3d98e4043ef77a1dca
+frontend implementation HEAD: ab18718f89b55ea7106d0ac52ff9972576e4e9e4
 cross-repo contract: interface-contract.json v1.0.0-p0 / agreed_for_implementation / 9bc9c70e70bb45b63185b3b619ae49e5e6a251ba3c4a30f64539774cb272a3ce
 backend subsystem contract: public-content-pricing-v1.json v2 / implemented_locally_pending_acceptance / 4db4380dcef26f0098443f591d9fe098f9faefd32a367f02ce2a14ba62d8309d
 overall: PASS_LIMITED_SCOPE
@@ -35,6 +35,11 @@ PASS  fixes backend=77c4e003310f3194f3e7a90cdadb7d650cbd3ba1 frontend=61c1ccb651
 PASS exit=0  backend dto/router/publiccontent focused and full go test ./...
 PASS exit=0  frontend focused 61/61 and full 1138/1138, 0 fail/skip/cancel/todo, 48.734s
 PASS exit=0  cross-repo public content contracts byte-equal
+PASS exit=0  production build and public chunk checker: 9 chunks, 171428 JS bytes, 20362 CSS bytes
+
+QUALITY_FAIL_INVALIDATED  paired frontend snapshot ec31d2ef3279bee6d08a902fe264fc6289be7cd80cab1076b92ab3669a29daf4 and this backend snapshot: preview identity revocation and authenticated GET fencing
+PASS  prior backend snapshot verdicts SPEC_PASS and SECURITY_PASS; TEST review interrupted after frontend change with no verdict
+PASS  frontend fix=ab18718f89b55ea7106d0ac52ff9972576e4e9e4; API/preview 22/22; related 99/99; full 1140/1140 in 47.689s
 PASS exit=0  production build and public chunk checker: 9 chunks, 171428 JS bytes, 20362 CSS bytes
 
 Task12 browser evidence remains synthetic page.route: 12/12 scenarios, 234/234 assertions, 32 sanitized requests, 0 unexpected console/page errors.

@@ -11,7 +11,7 @@
       "cf9243b",
       "77c4e00"
     ],
-    "frontend": "61c1ccb6512198539ae13b3d98e4043ef77a1dca"
+    "frontend": "ab18718f89b55ea7106d0ac52ff9972576e4e9e4"
   },
   "fixture": {
     "mysql": {
@@ -193,8 +193,8 @@
     "gofmt": "PASS",
     "git_diff_check": "PASS",
     "sandbox_only_deviation": "loopback listeners returned operation not permitted before permitted rerun",
-    "frontend_full_npm_test": "PASS: 1138/1138, 0 skip",
-    "frontend_focused": "PASS: 61/61",
+    "frontend_full_npm_test": "PASS: 1140/1140, 0 skip, 47.689s",
+    "frontend_focused": "PASS: API/preview 22/22; related auth/public 99/99",
     "frontend_production_build": "PASS",
     "frontend_public_chunks": "PASS: 9 chunks, 171428 JS bytes, 20362 CSS bytes"
   },
@@ -211,5 +211,21 @@
       "frontend": "61c1ccb6512198539ae13b3d98e4043ef77a1dca"
     },
     "green": "backend focused/full and frontend 61/61 plus 1138/1138"
+  },
+  "quality_remediation": {
+    "invalidated_backend_snapshot": "c1c8ce21e70399dda2782546031efa7a9504a454589986456d8bbeaac25927d6",
+    "invalidated_frontend_snapshot": "ec31d2ef3279bee6d08a902fe264fc6289be7cd80cab1076b92ab3669a29daf4",
+    "frontend_verdict": "QUALITY_FAIL",
+    "prior_backend_verdicts": [
+      "SPEC_PASS",
+      "SECURITY_PASS"
+    ],
+    "backend_test_review": "INTERRUPTED_NO_VERDICT_AFTER_FRONTEND_CHANGE",
+    "findings": [
+      "preview identity revocation",
+      "authenticated GET refresh and response fencing"
+    ],
+    "frontend_fix_commit": "ab18718f89b55ea7106d0ac52ff9972576e4e9e4",
+    "green": "frontend API/preview 22/22, related 99/99, full 1140/1140, build/chunks PASS; backend business code unchanged"
   }
 }
