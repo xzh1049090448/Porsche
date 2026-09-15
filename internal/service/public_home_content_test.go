@@ -214,3 +214,73 @@ func TestPublicHomeConfigNormalizationEnforcesCollectionLimits(t *testing.T) {
 		}
 	}
 }
+
+func TestPublicHomeDraftNormalizationRejectsDuplicateItemGUIDs(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		draft PublicHomeDraft
+	}{
+		{
+			name: "announcements",
+			draft: PublicHomeDraft{
+				Revision: 1,
+				Announcements: []PublicHomeAnnouncementDraft{
+					{GUID: "7", Title: "first"},
+					{GUID: "7", Title: "second"},
+				},
+			},
+		},
+		{
+			name: "FAQs",
+			draft: PublicHomeDraft{
+				Revision: 1,
+				FAQs: []PublicHomeFAQDraft{
+					{GUID: "7", Question: "first"},
+					{GUID: "7", Question: "second"},
+				},
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := NormalizePublicHomeDraft(test.draft); err == nil {
+				t.Fatal("accepted duplicate item GUID")
+			}
+		})
+	}
+}
+
+func TestPublicHomeConfigNormalizationRejectsDuplicateItemGUIDs(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		config PublicHomeConfig
+	}{
+		{
+			name: "announcements",
+			config: PublicHomeConfig{
+				ContentReleaseVersion: 1,
+				PriceReleaseVersion:   1,
+				Announcements: []PublicHomeConfigAnnouncement{
+					{GUID: "7", Title: "first"},
+					{GUID: "7", Title: "second"},
+				},
+			},
+		},
+		{
+			name: "FAQs",
+			config: PublicHomeConfig{
+				ContentReleaseVersion: 1,
+				PriceReleaseVersion:   1,
+				FAQs: []PublicHomeConfigFAQ{
+					{GUID: "7", Question: "first"},
+					{GUID: "7", Question: "second"},
+				},
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := NormalizePublicHomeConfig(test.config); err == nil {
+				t.Fatal("accepted duplicate item GUID")
+			}
+		})
+	}
+}

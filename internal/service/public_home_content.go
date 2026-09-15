@@ -138,9 +138,10 @@ func NormalizePublicHomeDraft(input PublicHomeDraft) (PublicHomeDraft, error) {
 		return PublicHomeDraft{}, err
 	}
 	announcements := append(make([]PublicHomeAnnouncementDraft, 0, len(input.Announcements)), input.Announcements...)
+	announcementGUIDs := make(map[string]struct{}, len(announcements))
 	for i := range announcements {
 		announcement := &announcements[i]
-		if !validPublicHomeGUID(announcement.GUID) || !validPublicHomeText(announcement.Title, 120) || len(announcement.BodyMarkdown) > PublicHomeMarkdownLimit || !validPublicHomeSortOrder(announcement.SortOrder) {
+		if !addUniquePublicHomeGUID(announcementGUIDs, announcement.GUID) || !validPublicHomeText(announcement.Title, 120) || len(announcement.BodyMarkdown) > PublicHomeMarkdownLimit || !validPublicHomeSortOrder(announcement.SortOrder) {
 			return PublicHomeDraft{}, fmt.Errorf("invalid announcement")
 		}
 		if announcement.EffectiveAt != nil {
@@ -152,8 +153,9 @@ func NormalizePublicHomeDraft(input PublicHomeDraft) (PublicHomeDraft, error) {
 		}
 	}
 	faqs := append(make([]PublicHomeFAQDraft, 0, len(input.FAQs)), input.FAQs...)
+	faqGUIDs := make(map[string]struct{}, len(faqs))
 	for i := range faqs {
-		if !validPublicHomeGUID(faqs[i].GUID) || !validPublicHomeText(faqs[i].Question, 200) || len(faqs[i].AnswerMarkdown) > PublicHomeMarkdownLimit || !validPublicHomeSortOrder(faqs[i].SortOrder) {
+		if !addUniquePublicHomeGUID(faqGUIDs, faqs[i].GUID) || !validPublicHomeText(faqs[i].Question, 200) || len(faqs[i].AnswerMarkdown) > PublicHomeMarkdownLimit || !validPublicHomeSortOrder(faqs[i].SortOrder) {
 			return PublicHomeDraft{}, fmt.Errorf("invalid FAQ")
 		}
 	}
@@ -171,9 +173,10 @@ func NormalizePublicHomeConfig(input PublicHomeConfig) (PublicHomeConfig, error)
 		return PublicHomeConfig{}, err
 	}
 	announcements := append(make([]PublicHomeConfigAnnouncement, 0, len(input.Announcements)), input.Announcements...)
+	announcementGUIDs := make(map[string]struct{}, len(announcements))
 	for i := range announcements {
 		announcement := &announcements[i]
-		if !validPublicHomeGUID(announcement.GUID) || !validPublicHomeText(announcement.Title, 120) || !validPublicHomeSortOrder(announcement.SortOrder) {
+		if !addUniquePublicHomeGUID(announcementGUIDs, announcement.GUID) || !validPublicHomeText(announcement.Title, 120) || !validPublicHomeSortOrder(announcement.SortOrder) {
 			return PublicHomeConfig{}, fmt.Errorf("invalid public announcement")
 		}
 		if announcement.EffectiveAt != nil {
@@ -185,8 +188,9 @@ func NormalizePublicHomeConfig(input PublicHomeConfig) (PublicHomeConfig, error)
 		}
 	}
 	faqs := append(make([]PublicHomeConfigFAQ, 0, len(input.FAQs)), input.FAQs...)
+	faqGUIDs := make(map[string]struct{}, len(faqs))
 	for i := range faqs {
-		if !validPublicHomeGUID(faqs[i].GUID) || !validPublicHomeText(faqs[i].Question, 200) || !validPublicHomeSortOrder(faqs[i].SortOrder) {
+		if !addUniquePublicHomeGUID(faqGUIDs, faqs[i].GUID) || !validPublicHomeText(faqs[i].Question, 200) || !validPublicHomeSortOrder(faqs[i].SortOrder) {
 			return PublicHomeConfig{}, fmt.Errorf("invalid public FAQ")
 		}
 	}
@@ -247,6 +251,17 @@ func validPublicHomeSortOrder(value int) bool {
 func validPublicHomeGUID(value string) bool {
 	parsed, err := strconv.ParseInt(value, 10, 64)
 	return err == nil && parsed > 0 && strconv.FormatInt(parsed, 10) == value
+}
+
+func addUniquePublicHomeGUID(seen map[string]struct{}, value string) bool {
+	if !validPublicHomeGUID(value) {
+		return false
+	}
+	if _, duplicate := seen[value]; duplicate {
+		return false
+	}
+	seen[value] = struct{}{}
+	return true
 }
 
 func validCanonicalPublicHomeTime(value string) bool {
