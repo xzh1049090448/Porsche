@@ -18,6 +18,121 @@ type fakePublicRenderClock struct{ millis int64 }
 
 func (c *fakePublicRenderClock) Now() time.Time { return time.UnixMilli(c.millis).UTC() }
 
+func TestEffectiveAnnouncementWatermarkQueuesOncePerReachedBoundary(t *testing.T) {
+	now := time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC)
+	past := now.Add(-time.Hour).Format(time.RFC3339)
+	at := now.Format(time.RFC3339)
+	future := now.Add(time.Hour).Format(time.RFC3339)
+	home := PublicHomeConfig{Announcements: []PublicHomeConfigAnnouncement{{GUID: "1", EffectiveAt: &past}, {GUID: "2", EffectiveAt: &at}, {GUID: "3", EffectiveAt: &future}}}
+	watermark, err := effectiveAnnouncementWatermark(home, now.UnixMilli())
+	if err != nil || watermark != now.UnixMilli() {
+		t.Fatalf("watermark=%d err=%v", watermark, err)
+	}
+	queued := models.PublicRenderJob{AuditFields: models.AuditFields{UpdatedAt: now.Add(-2 * time.Hour).UnixMilli()}, State: models.PublicRenderJobQueued}
+	succeededBefore := models.PublicRenderJob{AuditFields: models.AuditFields{UpdatedAt: now.Add(-time.Second).UnixMilli()}, State: models.PublicRenderJobSucceeded, CompletedAt: pointerInt64(now.Add(-time.Second).UnixMilli())}
+	succeededAt := models.PublicRenderJob{AuditFields: models.AuditFields{UpdatedAt: now.UnixMilli()}, State: models.PublicRenderJobSucceeded, CompletedAt: pointerInt64(now.UnixMilli())}
+	failedBefore := models.PublicRenderJob{AuditFields: models.AuditFields{UpdatedAt: now.Add(-time.Second).UnixMilli()}, State: models.PublicRenderJobFailed}
+	failedAfter := models.PublicRenderJob{AuditFields: models.AuditFields{UpdatedAt: now.Add(time.Second).UnixMilli()}, State: models.PublicRenderJobFailed}
+	for name, tc := range map[string]struct {
+		job  models.PublicRenderJob
+		want bool
+	}{"queued": {queued, false}, "succeeded before": {succeededBefore, true}, "succeeded at": {succeededAt, false}, "failed before": {failedBefore, true}, "failed after": {failedAfter, false}} {
+		if got := shouldQueueEffectiveAnnouncement(tc.job, watermark); got != tc.want {
+			t.Fatalf("%s=%v want=%v", name, got, tc.want)
+		}
+	}
+}
+
+func pointerInt64(value int64) *int64 { return &value }
+
+func TestPublicRenderJobFixtureEffectiveAnnouncementRequeuesExistingGenerationOnce(t *testing.T) {
+	db := openTestMySQL(t)
+	ctx := context.Background()
+	effective := time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC)
+	job := seedStructuredPublicRenderJobFixture(t, db, effective)
+	completedBefore := effective.Add(-time.Second).UnixMilli()
+	if err := db.Model(&models.PublicRenderJob{}).Where("id=?", job.ID).Updates(map[string]any{"state": models.PublicRenderJobSucceeded, "completed_at": completedBefore, "updated_at": completedBefore}).Error; err != nil {
+		t.Fatal(err)
+	}
+	var releasesBefore, jobsBefore int64
+	if err := db.Model(&models.PublicContentRelease{}).Count(&releasesBefore).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&models.PublicRenderJob{}).Count(&jobsBefore).Error; err != nil {
+		t.Fatal(err)
+	}
+	clock := &fakePublicRenderClock{millis: effective.UnixMilli()}
+	svc := NewPublicRenderJobServiceWithClock(db, []byte("fixture-render-job-purpose-key-32"), clock)
+	lease, err := svc.Lease(ctx, PublicRenderLeaseInput{OwnerToken: "effective-announcement-render-owner", LeaseMillis: 30_000})
+	if err != nil || lease == nil || lease.JobGUID != job.Guid || lease.Fence != 1 {
+		t.Fatalf("lease=%#v err=%v", lease, err)
+	}
+	if err = svc.Complete(ctx, PublicRenderTransitionInput{JobGUID: lease.JobGUID, OwnerToken: lease.OwnerToken, Fence: lease.Fence}); err != nil {
+		t.Fatal(err)
+	}
+	clock.millis++
+	again, err := svc.Lease(ctx, PublicRenderLeaseInput{OwnerToken: "effective-announcement-render-owner", LeaseMillis: 30_000})
+	if err != nil || again != nil {
+		t.Fatalf("duplicate due render=%#v err=%v", again, err)
+	}
+	var releasesAfter, jobsAfter int64
+	if err = db.Model(&models.PublicContentRelease{}).Count(&releasesAfter).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err = db.Model(&models.PublicRenderJob{}).Count(&jobsAfter).Error; err != nil {
+		t.Fatal(err)
+	}
+	if releasesAfter != releasesBefore || jobsAfter != jobsBefore {
+		t.Fatalf("due tick created rows releases=%d/%d jobs=%d/%d", releasesBefore, releasesAfter, jobsBefore, jobsAfter)
+	}
+}
+
+func TestPublicRenderJobFixtureFailureDeduplicatesAlertAndCompleteResolves(t *testing.T) {
+	db := openTestMySQL(t)
+	ctx := context.Background()
+	fixture := seedPublicRenderJobFixture(t, db)
+	now := int64(1_900_000_400_000)
+	clock := &fakePublicRenderClock{millis: now}
+	svc := NewPublicRenderJobServiceWithClock(db, []byte("fixture-render-job-purpose-key-32"), clock)
+	lease, err := svc.Lease(ctx, PublicRenderLeaseInput{OwnerToken: "renderer-alert-owner-token", LeaseMillis: 30_000})
+	if err != nil || lease == nil {
+		t.Fatalf("lease=%#v err=%v", lease, err)
+	}
+	if err = svc.Fail(ctx, PublicRenderTransitionInput{JobGUID: lease.JobGUID, OwnerToken: lease.OwnerToken, Fence: lease.Fence, Failure: "validation_failed"}); err != nil {
+		t.Fatal(err)
+	}
+	fingerprint := rootAlertFingerprint(models.RootAlertTypeRendererFailure, "", publicRenderAlertIdentity(lease.JobGUID))
+	var first models.RootAlert
+	if err = db.Where("fingerprint=? AND is_deleted=0", fingerprint).First(&first).Error; err != nil || first.State != models.RootAlertStateActive || first.OccurrenceCount != 1 {
+		t.Fatalf("first alert=%#v err=%v", first, err)
+	}
+	clock.millis = now + 5_001
+	second, err := svc.Lease(ctx, PublicRenderLeaseInput{OwnerToken: "renderer-alert-owner-token", LeaseMillis: 30_000})
+	if err != nil || second == nil || second.Fence != 2 {
+		t.Fatalf("second=%#v err=%v", second, err)
+	}
+	if err = svc.Fail(ctx, PublicRenderTransitionInput{JobGUID: second.JobGUID, OwnerToken: second.OwnerToken, Fence: second.Fence, Failure: "render_failed"}); err != nil {
+		t.Fatal(err)
+	}
+	var repeated models.RootAlert
+	if err = db.Where("fingerprint=? AND is_deleted=0", fingerprint).First(&repeated).Error; err != nil || repeated.ID != first.ID || repeated.OccurrenceCount != 2 {
+		t.Fatalf("repeated alert=%#v first=%#v err=%v", repeated, first, err)
+	}
+	clock.millis = now + 15_002
+	third, err := svc.Lease(ctx, PublicRenderLeaseInput{OwnerToken: "renderer-alert-owner-token", LeaseMillis: 30_000})
+	if err != nil || third == nil || third.Fence != 3 {
+		t.Fatalf("third=%#v err=%v", third, err)
+	}
+	if err = svc.Complete(ctx, PublicRenderTransitionInput{JobGUID: third.JobGUID, OwnerToken: third.OwnerToken, Fence: third.Fence}); err != nil {
+		t.Fatal(err)
+	}
+	var resolved models.RootAlert
+	if err = db.Where("id=?", first.ID).First(&resolved).Error; err != nil || resolved.State != models.RootAlertStateResolved || resolved.ResolvedAt == nil {
+		t.Fatalf("resolved alert=%#v err=%v", resolved, err)
+	}
+	_ = fixture
+}
+
 func TestPublicRenderFailureSanitizationAndBackoff(t *testing.T) {
 	got := sanitizePublicRenderFailure("render failed at /var/www/private: Authorization: Bearer super-secret\nraw stderr")
 	if got != "render_failed" {
@@ -346,6 +461,7 @@ func seedPublicRenderJobFixture(t *testing.T, db *gorm.DB) publicRenderFixture {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
+		db.Exec("DELETE FROM root_alerts WHERE fingerprint=?", rootAlertFingerprint(models.RootAlertTypeRendererFailure, "", publicRenderAlertIdentity(job.Guid)))
 		db.Exec("DELETE FROM public_render_jobs WHERE id=?", job.ID)
 		if createdState {
 			db.Exec("DELETE FROM public_publication_state WHERE id=?", state.ID)
@@ -356,4 +472,59 @@ func seedPublicRenderJobFixture(t *testing.T, db *gorm.DB) publicRenderFixture {
 		db.Exec("DELETE FROM public_price_snapshots WHERE id=?", price.ID)
 	})
 	return publicRenderFixture{generation: job.Guid}
+}
+
+func seedStructuredPublicRenderJobFixture(t *testing.T, db *gorm.DB, effective time.Time) models.PublicRenderJob {
+	t.Helper()
+	now := effective.Add(-time.Hour).UnixMilli()
+	price := models.PublicPriceSnapshot{Guid: persistence.NextGUID(), CreatedAt: now, UpdatedAt: now, Version: 911, Reason: models.PublicPriceSnapshotReasonRootPublish, SourceRevision: 1, ContentHash: strings.Repeat("e", 64), PublishedAt: now}
+	if err := db.Create(&price).Error; err != nil {
+		t.Fatal(err)
+	}
+	effectiveText := effective.UTC().Format(time.RFC3339)
+	prepared, issues := preparePublicContent(
+		PublicContentDraft{Revision: 1, Home: "legacy", About: "about", Terms: "terms", Privacy: "privacy", LegalReviewed: true},
+		PublicHomeDraft{Revision: 1, Announcements: []PublicHomeAnnouncementDraft{{GUID: "101", Title: "scheduled", BodyMarkdown: "ready", EffectiveAt: &effectiveText, IsVisible: true}}},
+		price,
+		nil,
+	)
+	if len(issues) != 0 {
+		t.Fatalf("structured fixture issues=%+v", issues)
+	}
+	content := models.PublicContentRelease{Guid: persistence.NextGUID(), CreatedAt: now, UpdatedAt: now, DocumentKind: models.PublicContentDocumentSite, Version: 912, SourceRevision: 1, Payload: prepared.Payload, ContentHash: prepared.Hash, PublishedAt: now}
+	if err := db.Create(&content).Error; err != nil {
+		t.Fatal(err)
+	}
+	var state models.PublicPublicationState
+	createdState := false
+	if err := db.Where("state_key=?", publicPublicationStateKey).First(&state).Error; err != nil {
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			t.Fatal(err)
+		}
+		state = models.PublicPublicationState{AuditFields: models.AuditFields{Guid: persistence.NextGUID(), CreatedAt: now, UpdatedAt: now}, StateKey: publicPublicationStateKey, PriceVisibility: models.PublicPriceVisibilityVisible, Revision: 913}
+		if err := db.Create(&state).Error; err != nil {
+			t.Fatal(err)
+		}
+		createdState = true
+	}
+	previousState := state
+	if err := db.Model(&state).Updates(map[string]any{"price_snapshot_id": price.ID, "content_release_id": content.ID, "revision": int64(913), "is_deleted": 0, "updated_at": now}).Error; err != nil {
+		t.Fatal(err)
+	}
+	job := models.PublicRenderJob{AuditFields: models.AuditFields{Guid: persistence.NextGUID(), CreatedAt: now, UpdatedAt: now}, PriceSnapshotID: price.ID, ContentReleaseID: content.ID, State: models.PublicRenderJobQueued}
+	if err := db.Create(&job).Error; err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		db.Exec("DELETE FROM root_alerts WHERE fingerprint=?", rootAlertFingerprint(models.RootAlertTypeRendererFailure, "", publicRenderAlertIdentity(job.Guid)))
+		db.Exec("DELETE FROM public_render_jobs WHERE id=?", job.ID)
+		if createdState {
+			db.Exec("DELETE FROM public_publication_state WHERE id=?", state.ID)
+		} else {
+			db.Model(&models.PublicPublicationState{}).Where("id=?", state.ID).Updates(map[string]any{"price_snapshot_id": previousState.PriceSnapshotID, "content_release_id": previousState.ContentReleaseID, "revision": previousState.Revision, "is_deleted": previousState.IsDeleted, "updated_at": previousState.UpdatedAt})
+		}
+		db.Exec("DELETE FROM public_content_releases WHERE id=?", content.ID)
+		db.Exec("DELETE FROM public_price_snapshots WHERE id=?", price.ID)
+	})
+	return job
 }

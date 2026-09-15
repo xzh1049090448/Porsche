@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"math/big"
 	"sort"
@@ -85,14 +86,21 @@ type PublicCatalogProjection struct {
 	GoneKeys              map[string]struct{}
 }
 
-type PublicCatalogReadService struct{ db *gorm.DB }
+type PublicCatalogReadService struct {
+	db  *gorm.DB
+	now func() time.Time
+}
 
 func NewPublicCatalogReadService(db *gorm.DB) *PublicCatalogReadService {
-	return &PublicCatalogReadService{db: db}
+	return newPublicCatalogReadServiceWithClock(db, func() time.Time { return time.Now().UTC() })
+}
+
+func newPublicCatalogReadServiceWithClock(db *gorm.DB, now func() time.Time) *PublicCatalogReadService {
+	return &PublicCatalogReadService{db: db, now: now}
 }
 
 func (s *PublicCatalogReadService) Projection(ctx context.Context) (*PublicCatalogProjection, error) {
-	if s == nil || s.db == nil {
+	if s == nil || s.db == nil || s.now == nil {
 		return nil, errUnavailable("public catalog unavailable")
 	}
 	var out *PublicCatalogProjection
@@ -120,9 +128,6 @@ func (s *PublicCatalogReadService) Projection(ctx context.Context) (*PublicCatal
 		if e := tx.Where("snapshot_id=? AND is_deleted=0", price.ID).Order("model_key").Find(&rows).Error; e != nil {
 			return errUnavailable("committed price snapshot unavailable")
 		}
-		if _, ok := verifyPublicPriceSnapshotHash(rows, price.ContentHash); !ok {
-			return errUnavailable("committed price snapshot integrity unavailable")
-		}
 		var configs []models.PublicModelConfig
 		if e := tx.Find(&configs).Error; e != nil {
 			return errUnavailable("public model state unavailable")
@@ -143,18 +148,53 @@ func (s *PublicCatalogReadService) Projection(ctx context.Context) (*PublicCatal
 			}
 			items = append(items, projectPublicCatalogItem(row, price))
 		}
-		if e := validateContentReleaseForPriceItems(content, rows); e != nil {
-			return errUnavailable("committed publication generation pending")
-		}
-		sum := sha256.Sum256([]byte(content.ContentHash + ":" + price.ContentHash + ":" + state.PriceVisibility.String()))
-		homeConfig, homeConfigAvailable, e := projectPublicCatalogHomeConfig(content.Payload, content.Version, price.Version, time.Now().UTC())
+		homeConfig, homeConfigAvailable, etag, e := projectPublicCatalogGeneration(content, price, state.PriceVisibility, rows, s.now().UTC())
 		if e != nil {
-			return errUnavailable("committed content integrity unavailable")
+			return e
 		}
-		out = &PublicCatalogProjection{Content: projectContentPayload(content.Payload, content.SourceRevision), HomeConfig: homeConfig, HomeConfigAvailable: homeConfigAvailable, ContentReleaseVersion: content.Version, PriceReleaseVersion: price.Version, PriceVisibility: state.PriceVisibility, ETag: `"` + hex.EncodeToString(sum[:]) + `"`, Items: items, GoneKeys: gone}
+		out = &PublicCatalogProjection{Content: projectContentPayload(content.Payload, content.SourceRevision), HomeConfig: homeConfig, HomeConfigAvailable: homeConfigAvailable, ContentReleaseVersion: content.Version, PriceReleaseVersion: price.Version, PriceVisibility: state.PriceVisibility, ETag: etag, Items: items, GoneKeys: gone}
 		return nil
 	})
 	return out, err
+}
+
+func projectPublicCatalogGeneration(content models.PublicContentRelease, price models.PublicPriceSnapshot, visibility models.PublicPriceVisibility, rows []models.PublicPriceSnapshotItem, now time.Time) (PublicHomeConfig, bool, string, error) {
+	if err := verifyPublicContentRelease(content); err != nil {
+		return PublicHomeConfig{}, false, "", errUnavailable("committed content integrity unavailable")
+	}
+	if _, ok := verifyPublicPriceSnapshotHash(rows, price.ContentHash); !ok {
+		return PublicHomeConfig{}, false, "", errUnavailable("committed price snapshot integrity unavailable")
+	}
+	boundVersion, ok := jsonNumberInt64(content.Payload["price_snapshot_version"])
+	if fmt.Sprint(content.Payload["price_snapshot_guid"]) != fmt.Sprint(price.Guid) || !ok || boundVersion != price.Version {
+		return PublicHomeConfig{}, false, "", errUnavailable("committed publication binding unavailable")
+	}
+	if err := validateContentReleaseForPriceItems(content, rows); err != nil {
+		return PublicHomeConfig{}, false, "", errUnavailable("committed publication generation pending")
+	}
+	homeConfig, available, err := projectPublicCatalogHomeConfig(content.Payload, content.Version, price.Version, now.UTC())
+	if err != nil {
+		return PublicHomeConfig{}, false, "", errUnavailable("committed content integrity unavailable")
+	}
+	representation, err := json.Marshal(homeConfig)
+	if err != nil {
+		return PublicHomeConfig{}, false, "", errUnavailable("committed content integrity unavailable")
+	}
+	sum := sha256.Sum256([]byte(content.ContentHash + ":" + price.ContentHash + ":" + visibility.String() + ":" + string(representation)))
+	return cloneProjectedPublicHomeConfig(homeConfig), available, `"` + hex.EncodeToString(sum[:]) + `"`, nil
+}
+
+func cloneProjectedPublicHomeConfig(value PublicHomeConfig) PublicHomeConfig {
+	out := value
+	out.Announcements = make([]PublicHomeConfigAnnouncement, len(value.Announcements))
+	copy(out.Announcements, value.Announcements)
+	for index := range out.Announcements {
+		out.Announcements[index].EffectiveAt = clonePublicHomeStringPointer(out.Announcements[index].EffectiveAt)
+	}
+	out.FAQs = make([]PublicHomeConfigFAQ, len(value.FAQs))
+	copy(out.FAQs, value.FAQs)
+	out.FeaturedModelKeys = clonePublicHomeStrings(value.FeaturedModelKeys)
+	return out
 }
 
 func (p *PublicCatalogProjection) model(item PublicCatalogItem, authenticated bool) PublicModelRead {

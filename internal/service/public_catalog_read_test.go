@@ -5,13 +5,126 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/porsche/ai-gateway-go/internal/models"
 )
+
+func TestProjectionHomeConfigETagTracksEffectiveBoundaryAndGeneration(t *testing.T) {
+	now := time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC)
+	effective := now.Format(time.RFC3339)
+	price := models.PublicPriceSnapshot{Guid: 80, Version: 9, ContentHash: strings.Repeat("b", 64)}
+	input, output := "1.00000000", "2.00000000"
+	items := []models.PublicPriceSnapshotItem{{ModelKey: "alpha", UpstreamModelID: "provider/alpha", PricingType: "token", InputPriceUSDPerMillionTokens: &input, OutputPriceUSDPerMillionTokens: &output}}
+	price.ContentHash, _ = hashPublicPriceSnapshotItems(items)
+	draft := PublicContentDraft{Revision: 4, Home: "legacy", About: "about", Terms: "terms", Privacy: "privacy", LegalReviewed: true}
+	home := PublicHomeDraft{Revision: 4, Announcements: []PublicHomeAnnouncementDraft{{GUID: "10", Title: "scheduled", BodyMarkdown: "ready", EffectiveAt: &effective, IsVisible: true}}, FeaturedModelKeys: []string{"alpha"}}
+	prepared, issues := preparePublicContent(draft, home, models.PublicPriceSnapshot{ID: 8, Guid: price.Guid, Version: price.Version}, items)
+	if len(issues) != 0 {
+		t.Fatalf("issues=%+v", issues)
+	}
+	release := models.PublicContentRelease{Payload: prepared.Payload, ContentHash: prepared.Hash, Version: 7}
+
+	before, beforeAvailable, beforeTag, err := projectPublicCatalogGeneration(release, price, models.PublicPriceVisibilityVisible, items, now.Add(-time.Second))
+	if err != nil || !beforeAvailable || len(before.Announcements) != 0 {
+		t.Fatalf("before=%#v available=%v tag=%q err=%v", before, beforeAvailable, beforeTag, err)
+	}
+	at, atAvailable, atTag, err := projectPublicCatalogGeneration(release, price, models.PublicPriceVisibilityVisible, items, now)
+	if err != nil || !atAvailable || len(at.Announcements) != 1 || at.ContentReleaseVersion != 7 || at.PriceReleaseVersion != 9 {
+		t.Fatalf("at=%#v available=%v tag=%q err=%v", at, atAvailable, atTag, err)
+	}
+	if beforeTag == atTag || len(atTag) != 66 || atTag[0] != '"' || atTag[len(atTag)-1] != '"' {
+		t.Fatalf("effective boundary tags before=%q at=%q", beforeTag, atTag)
+	}
+	again, _, againTag, err := projectPublicCatalogGeneration(release, price, models.PublicPriceVisibilityVisible, items, now)
+	if err != nil || againTag != atTag || !reflect.DeepEqual(again, at) {
+		t.Fatalf("same representation not stable: first=%q second=%q err=%v", atTag, againTag, err)
+	}
+	newGeneration := release
+	newGeneration.Version++
+	newHome, _, newTag, err := projectPublicCatalogGeneration(newGeneration, price, models.PublicPriceVisibilityVisible, items, now)
+	if err != nil || newHome.ContentReleaseVersion != 8 || newTag == atTag {
+		t.Fatalf("generation tag=%q old=%q home=%#v err=%v", newTag, atTag, newHome, err)
+	}
+}
+
+func TestProjectionLegacyHomeRemainsSanitizedAndStructuredConfigUnavailable(t *testing.T) {
+	draft := PublicContentDraft{Revision: 2, Home: "[safe](/about)", About: "about", Terms: "terms", Privacy: "privacy", LegalReviewed: true}
+	price := models.PublicPriceSnapshot{Guid: 80, Version: 4, ContentHash: strings.Repeat("c", 64)}
+	price.ContentHash, _ = hashPublicPriceSnapshotItems(nil)
+	prepared, issues := preparePublicContent(draft, PublicHomeDraft{Revision: draft.Revision}, models.PublicPriceSnapshot{ID: 8, Guid: price.Guid, Version: price.Version}, nil)
+	if len(issues) != 0 || prepared == nil {
+		t.Fatalf("prepared=%#v issues=%+v", prepared, issues)
+	}
+	// Use the server-produced safe document while keeping a legacy release shape.
+	legacyPayload := models.JSONMap{"home": prepared.Documents["home"], "about": prepared.Documents["about"], "terms": prepared.Documents["terms"], "privacy": prepared.Documents["privacy"], "legal_reviewed": true, "model_keys": []string{}, "price_snapshot_guid": "80", "price_snapshot_version": int64(4)}
+	hash, err := hashPublicContentPayload(legacyPayload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	release := models.PublicContentRelease{Payload: legacyPayload, ContentHash: hash, Version: 3}
+	home, available, _, err := projectPublicCatalogGeneration(release, price, models.PublicPriceVisibilityVisible, nil, time.Now().UTC())
+	if err != nil || available || home.Announcements == nil || projectContentPayload(release.Payload, 1).Home != "<p><a href=\"/about\">safe</a></p>\n" {
+		t.Fatalf("legacy home=%#v available=%v document=%q err=%v", home, available, projectContentPayload(release.Payload, 1).Home, err)
+	}
+}
+
+func TestProjectionDBRejectsCorrectHashFeaturedModelOutsideBoundSnapshot(t *testing.T) {
+	if os.Getenv("TEST_DATABASE_URL") == "" {
+		t.Skip("BLOCKED_FIXTURE: requires explicit disposable TEST_DATABASE_URL; .env is never read")
+	}
+	f := openPublicModelDBFixture(t)
+	cleanPublicContentDBFixture(t, f.db)
+	tx := f.db.Begin()
+	if tx.Error != nil {
+		t.Fatal(tx.Error)
+	}
+	t.Cleanup(func() { _ = tx.Rollback().Error })
+	seed, err := seedContentPublicationFixture(tx, f.actor.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var price models.PublicPriceSnapshot
+	if err = tx.Where("guid=?", seed.priceGUID).First(&price).Error; err != nil {
+		t.Fatal(err)
+	}
+	var items []models.PublicPriceSnapshotItem
+	if err = tx.Where("snapshot_id=? AND is_deleted=0", price.ID).Find(&items).Error; err != nil {
+		t.Fatal(err)
+	}
+	price.ContentHash, err = hashPublicPriceSnapshotItems(items)
+	if err != nil || tx.Model(&price).Update("content_hash", price.ContentHash).Error != nil {
+		t.Fatalf("price hash=%q err=%v", price.ContentHash, err)
+	}
+	draft := PublicContentDraft{Revision: 2, Home: "legacy", About: "about", Terms: "terms", Privacy: "privacy", LegalReviewed: true}
+	prepared, issues := preparePublicContent(draft, PublicHomeDraft{Revision: 2, FeaturedModelKeys: []string{seed.modelKey}}, price, items)
+	if len(issues) != 0 {
+		t.Fatalf("issues=%+v", issues)
+	}
+	homeConfig := prepared.Payload["home_config"].(models.JSONMap)
+	homeConfig["featured_model_keys"] = []string{"outside-bound-snapshot"}
+	prepared.Hash, err = hashPublicContentPayload(prepared.Payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().UnixMilli()
+	release := models.PublicContentRelease{Guid: f.actor.Guid + 7001, CreatedAt: now, CreatedBy: &f.actor.ID, UpdatedAt: now, UpdatedBy: &f.actor.ID, DocumentKind: models.PublicContentDocumentSite, Version: 2, SourceRevision: 2, Payload: prepared.Payload, ContentHash: prepared.Hash, PublishedAt: now}
+	if err = tx.Create(&release).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err = tx.Model(&models.PublicPublicationState{}).Where("state_key=?", publicPublicationStateKey).Updates(map[string]any{"content_release_id": release.ID, "price_snapshot_id": price.ID}).Error; err != nil {
+		t.Fatal(err)
+	}
+	got, readErr := NewPublicCatalogReadService(tx).Projection(context.Background())
+	if got != nil || status(readErr) != 503 {
+		t.Fatalf("projection=%#v status=%d err=%v", got, status(readErr), readErr)
+	}
+}
 
 func TestPublicCatalogReadDBCommittedIntegrityAndDynamicInactivation(t *testing.T) {
 	if os.Getenv("TEST_DATABASE_URL") == "" {
