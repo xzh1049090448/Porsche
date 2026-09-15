@@ -175,7 +175,7 @@ func (s *PublicRenderJobService) Lease(ctx context.Context, in PublicRenderLease
 		for scan := 0; scan < 8; scan++ {
 			var job models.PublicRenderJob
 			err := tx.Clauses(clause.Locking{Strength: "UPDATE", Options: "SKIP LOCKED"}).
-				Where("is_deleted=0 AND ((state=? AND (lease_expires_at IS NULL OR lease_expires_at <= ?)) OR (state=? AND lease_expires_at <= ? AND MOD(attempt_count, ?) <> 0))", models.PublicRenderJobQueued, now, models.PublicRenderJobLeased, now, publicRenderMaxAttempts).
+				Where("is_deleted=0 AND ((state=? AND (lease_expires_at IS NULL OR lease_expires_at <= ?)) OR (state=? AND lease_expires_at <= ?))", models.PublicRenderJobQueued, now, models.PublicRenderJobLeased, now).
 				Order("id ASC").First(&job).Error
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return nil
@@ -191,6 +191,18 @@ func (s *PublicRenderJobService) Lease(ctx context.Context, in PublicRenderLease
 			if !current {
 				if err := tx.Model(&models.PublicRenderJob{}).Where("id=? AND state IN ?", job.ID, []models.PublicRenderJobState{models.PublicRenderJobQueued, models.PublicRenderJobLeased}).Updates(map[string]any{"state": models.PublicRenderJobFailed, "last_failure": "obsolete_generation", "lease_owner_hmac": nil, "lease_expires_at": nil, "completed_at": nil, "updated_at": now}).Error; err != nil {
 					return ErrPublicRenderUnavailable
+				}
+				continue
+			}
+			if job.State == models.PublicRenderJobLeased && publicRenderAttemptExhausted(job.AttemptCount) {
+				res := tx.Model(&models.PublicRenderJob{}).
+					Where("id=? AND state=? AND attempt_count=? AND lease_expires_at<=?", job.ID, models.PublicRenderJobLeased, job.AttemptCount, now).
+					Updates(map[string]any{"state": models.PublicRenderJobFailed, "lease_owner_hmac": nil, "lease_expires_at": nil, "last_failure": "render_failed", "completed_at": job.CompletedAt, "last_terminal_owner_hmac": nil, "last_terminal_fence": nil, "last_terminal_operation": nil, "last_terminal_state": nil, "updated_at": now, "updated_by": nil})
+				if res.Error != nil || res.RowsAffected != 1 {
+					return ErrPublicRenderUnavailable
+				}
+				if err := occurPublicRendererFailureInTx(ctx, tx, content.version, job.Guid, "render_failed", now); err != nil {
+					return err
 				}
 				continue
 			}
@@ -318,6 +330,9 @@ func shouldQueueEffectiveAnnouncement(job models.PublicRenderJob, watermark int6
 	case models.PublicRenderJobSucceeded:
 		return job.CompletedAt == nil || *job.CompletedAt < watermark
 	case models.PublicRenderJobFailed:
+		if job.CompletedAt != nil {
+			return *job.CompletedAt < watermark
+		}
 		return job.UpdatedAt < watermark
 	default:
 		return false
@@ -502,11 +517,8 @@ func (s *PublicRenderJobService) transitionCurrent(ctx context.Context, in Publi
 			return ErrPublicRenderUnavailable
 		}
 		if len(rendererFailure) == 1 {
-			alerts := NewRootAlertService(tx)
-			alerts.now = func() int64 { return now }
-			_, err = alerts.OccurInTx(ctx, tx, RootAlertOccurrence{Type: models.RootAlertTypeRendererFailure, Identity: publicRenderAlertIdentity(job.Guid), Payload: models.JSONMap{"release_version": content.version, "render_job_guid": strconv.FormatInt(job.Guid, 10), "error_code": rendererFailure[0], "observed_at": now}})
-			if err != nil {
-				return ErrPublicRenderUnavailable
+			if err := occurPublicRendererFailureInTx(ctx, tx, content.version, job.Guid, rendererFailure[0], now); err != nil {
+				return err
 			}
 		}
 		return nil
@@ -514,6 +526,16 @@ func (s *PublicRenderJobService) transitionCurrent(ctx context.Context, in Publi
 }
 
 func publicRenderAlertIdentity(guid int64) string { return "render/" + strconv.FormatInt(guid, 10) }
+
+func occurPublicRendererFailureInTx(ctx context.Context, tx *gorm.DB, releaseVersion, jobGUID int64, failure string, now int64) error {
+	alerts := NewRootAlertService(tx)
+	alerts.now = func() int64 { return now }
+	_, err := alerts.OccurInTx(ctx, tx, RootAlertOccurrence{Type: models.RootAlertTypeRendererFailure, Identity: publicRenderAlertIdentity(jobGUID), Payload: models.JSONMap{"release_version": releaseVersion, "render_job_guid": strconv.FormatInt(jobGUID, 10), "error_code": sanitizePublicRenderFailure(failure), "observed_at": now}})
+	if err != nil {
+		return ErrPublicRenderUnavailable
+	}
+	return nil
+}
 
 func terminalReplay(job models.PublicRenderJob, owner string, fence, operation int) bool {
 	return job.LastTerminalOwnerHMAC != nil && hmac.Equal([]byte(*job.LastTerminalOwnerHMAC), []byte(owner)) && job.LastTerminalFence != nil && *job.LastTerminalFence == fence && job.LastTerminalOperation != nil && *job.LastTerminalOperation == operation && job.LastTerminalState != nil && *job.LastTerminalState == job.State
@@ -551,6 +573,10 @@ func publicRenderAttemptOrdinal(fence int) int {
 		return 0
 	}
 	return (fence-1)%publicRenderMaxAttempts + 1
+}
+
+func publicRenderAttemptExhausted(fence int) bool {
+	return fence > 0 && publicRenderAttemptOrdinal(fence) == publicRenderMaxAttempts
 }
 
 // publicRenderNextCycleBase advances to the end of the current retry cycle.

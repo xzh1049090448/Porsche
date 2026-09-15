@@ -6,6 +6,7 @@ import (
 	"math"
 	"os"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -35,10 +36,11 @@ func TestEffectiveAnnouncementWatermarkQueuesOncePerReachedBoundary(t *testing.T
 	succeededAt := models.PublicRenderJob{AuditFields: models.AuditFields{UpdatedAt: now.UnixMilli()}, State: models.PublicRenderJobSucceeded, CompletedAt: pointerInt64(now.UnixMilli())}
 	failedBefore := models.PublicRenderJob{AuditFields: models.AuditFields{UpdatedAt: now.Add(-time.Second).UnixMilli()}, State: models.PublicRenderJobFailed}
 	failedAfter := models.PublicRenderJob{AuditFields: models.AuditFields{UpdatedAt: now.Add(time.Second).UnixMilli()}, State: models.PublicRenderJobFailed}
+	crashedAfterWithOldInput := models.PublicRenderJob{AuditFields: models.AuditFields{UpdatedAt: now.Add(time.Second).UnixMilli()}, State: models.PublicRenderJobFailed, CompletedAt: pointerInt64(now.Add(-time.Second).UnixMilli())}
 	for name, tc := range map[string]struct {
 		job  models.PublicRenderJob
 		want bool
-	}{"queued": {queued, false}, "succeeded before": {succeededBefore, true}, "succeeded at": {succeededAt, false}, "failed before": {failedBefore, true}, "failed after": {failedAfter, false}} {
+	}{"queued": {queued, false}, "succeeded before": {succeededBefore, true}, "succeeded at": {succeededAt, false}, "failed before": {failedBefore, true}, "failed after": {failedAfter, false}, "crashed after with old input": {crashedAfterWithOldInput, true}} {
 		if got := shouldQueueEffectiveAnnouncement(tc.job, watermark); got != tc.want {
 			t.Fatalf("%s=%v want=%v", name, got, tc.want)
 		}
@@ -115,6 +117,17 @@ func TestPublicRenderFenceAdvancesAcrossBoundaryAndResetsRetryCycle(t *testing.T
 		fence := highestAccepted + ordinal
 		if fence > publicRenderMaxFence || publicRenderAttemptOrdinal(fence) != ordinal {
 			t.Fatalf("reserved fence=%d ordinal=%d want <=%d and ordinal=%d", fence, publicRenderAttemptOrdinal(fence), publicRenderMaxFence, ordinal)
+		}
+	}
+}
+
+func TestPublicRenderExpiredFenceExhaustionUsesCycleOrdinal(t *testing.T) {
+	for _, tc := range []struct {
+		fence     int
+		exhausted bool
+	}{{0, false}, {1, false}, {2, false}, {3, true}, {4, false}, {5, false}, {6, true}, {8, false}, {9, true}} {
+		if got := publicRenderAttemptExhausted(tc.fence); got != tc.exhausted {
+			t.Fatalf("fence=%d exhausted=%v want=%v", tc.fence, got, tc.exhausted)
 		}
 	}
 }
@@ -479,6 +492,27 @@ func TestPublicRenderTransitionsLockPublicationStateBeforeRenderJob(t *testing.T
 	}
 }
 
+func TestPublicRenderLeaseCrashRecoveryKeepsStateJobAlertLockOrder(t *testing.T) {
+	source, err := os.ReadFile("public_render_job.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(source)
+	start := strings.Index(text, "func (s *PublicRenderJobService) Lease")
+	end := strings.Index(text, "func (s *PublicRenderJobService) queueEffectiveAnnouncements")
+	if start < 0 || end <= start {
+		t.Fatal("cannot locate Lease transaction")
+	}
+	body := text[start:end]
+	stateLock := strings.Index(body, "lockPublicRenderState(tx)")
+	jobLock := strings.Index(body, "Clauses(clause.Locking{Strength: \"UPDATE\", Options: \"SKIP LOCKED\"})")
+	terminalUpdate := strings.Index(body, "job.State == models.PublicRenderJobLeased && publicRenderAttemptExhausted")
+	alert := strings.Index(body, "occurPublicRendererFailureInTx")
+	if stateLock < 0 || jobLock < 0 || terminalUpdate < 0 || alert < 0 || stateLock > jobLock || jobLock > terminalUpdate || terminalUpdate > alert {
+		t.Fatalf("Lease crash recovery lock/order invalid state=%d job=%d update=%d alert=%d", stateLock, jobLock, terminalUpdate, alert)
+	}
+}
+
 func TestPublicRenderCheckedDeadlineAndHealthClockSkew(t *testing.T) {
 	if _, ok := publicRenderAddMillis(math.MaxInt64-1, 2); ok {
 		t.Fatal("overflow accepted")
@@ -633,6 +667,154 @@ func TestPublicRenderJobFixtureExpiryRetryAndTerminalFailure(t *testing.T) {
 	if err := db.Where("guid=?", third.JobGUID).First(&job).Error; err != nil || job.State != models.PublicRenderJobFailed || job.LastFailure == nil || *job.LastFailure != "validation_failed" {
 		t.Fatalf("terminal job=%#v %v", job, err)
 	}
+}
+
+func TestPublicRenderJobFixtureExpiredFinalAttemptTerminalizesAndContinuesScan(t *testing.T) {
+	db := openTestMySQL(t)
+	ctx := context.Background()
+	fixture := seedPublicRenderJobFixture(t, db)
+	var job models.PublicRenderJob
+	if err := db.Where("guid=?", fixture.generation).First(&job).Error; err != nil {
+		t.Fatal(err)
+	}
+	obsolete := seedObsoletePublicRenderJobAfter(t, db, job)
+	now := int64(1_900_000_180_000)
+	clock := &fakePublicRenderClock{millis: now}
+	svc := NewPublicRenderJobServiceWithClock(db, []byte("fixture-render-job-purpose-key-32"), clock)
+	first, err := svc.Lease(ctx, PublicRenderLeaseInput{OwnerToken: "crashed-render-owner-one", LeaseMillis: 5_000})
+	if err != nil || first == nil || first.Fence != 1 {
+		t.Fatalf("first=%#v err=%v", first, err)
+	}
+	clock.millis = now + 5_001
+	second, err := svc.Lease(ctx, PublicRenderLeaseInput{OwnerToken: "crashed-render-owner-two", LeaseMillis: 5_000})
+	if err != nil || second == nil || second.Fence != 2 {
+		t.Fatalf("second=%#v err=%v", second, err)
+	}
+	clock.millis = now + 10_002
+	third, err := svc.Lease(ctx, PublicRenderLeaseInput{OwnerToken: "crashed-render-owner-three", LeaseMillis: 5_000})
+	if err != nil || third == nil || third.Fence != 3 {
+		t.Fatalf("third=%#v err=%v", third, err)
+	}
+	clock.millis = now + 15_003
+	fourth, err := svc.Lease(ctx, PublicRenderLeaseInput{OwnerToken: "crashed-render-owner-four", LeaseMillis: 5_000})
+	if err != nil || fourth != nil {
+		t.Fatalf("exhausted cycle issued fourth lease=%#v err=%v", fourth, err)
+	}
+	var failed models.PublicRenderJob
+	if err = db.Where("id=?", job.ID).First(&failed).Error; err != nil {
+		t.Fatal(err)
+	}
+	if failed.State != models.PublicRenderJobFailed || failed.AttemptCount != 3 || failed.LastFailure == nil || *failed.LastFailure != "render_failed" || failed.LeaseOwnerHMAC != nil || failed.LeaseExpiresAt != nil || failed.CompletedAt == nil || *failed.CompletedAt != now+10_002 || failed.UpdatedAt != clock.millis {
+		t.Fatalf("expired final attempt=%#v", failed)
+	}
+	if failed.LastTerminalOwnerHMAC != nil || failed.LastTerminalFence != nil || failed.LastTerminalOperation != nil || failed.LastTerminalState != nil {
+		t.Fatalf("crash recovery invented terminal replay metadata=%#v", failed)
+	}
+	var scanned models.PublicRenderJob
+	if err = db.Where("id=?", obsolete.ID).First(&scanned).Error; err != nil || scanned.State != models.PublicRenderJobFailed || scanned.LastFailure == nil || *scanned.LastFailure != "obsolete_generation" {
+		t.Fatalf("bounded scan did not continue to next job=%#v err=%v", scanned, err)
+	}
+	fingerprint := rootAlertFingerprint(models.RootAlertTypeRendererFailure, "", publicRenderAlertIdentity(job.Guid))
+	var alert models.RootAlert
+	if err = db.Where("fingerprint=? AND is_deleted=0", fingerprint).First(&alert).Error; err != nil || alert.State != models.RootAlertStateActive || alert.OccurrenceCount != 1 || alert.Payload["error_code"] != "render_failed" {
+		t.Fatalf("crash alert=%#v err=%v", alert, err)
+	}
+	clock.millis++
+	again, err := svc.Lease(ctx, PublicRenderLeaseInput{OwnerToken: "crashed-render-owner-four", LeaseMillis: 5_000})
+	if err != nil || again != nil {
+		t.Fatalf("repeated recovery=%#v err=%v", again, err)
+	}
+	var alertCount int64
+	if err = db.Model(&models.RootAlert{}).Where("fingerprint=? AND is_deleted=0", fingerprint).Count(&alertCount).Error; err != nil || alertCount != 1 {
+		t.Fatalf("deduplicated crash alerts=%d err=%v", alertCount, err)
+	}
+	if err = db.Where("fingerprint=? AND is_deleted=0", fingerprint).First(&alert).Error; err != nil || alert.OccurrenceCount != 1 {
+		t.Fatalf("repeated lease changed crash alert=%#v err=%v", alert, err)
+	}
+}
+
+func TestPublicRenderJobFixtureExpiredLaterCycleFinalFencesTerminalize(t *testing.T) {
+	for _, fence := range []int{6, 9} {
+		t.Run(strconv.Itoa(fence), func(t *testing.T) {
+			db := openTestMySQL(t)
+			ctx := context.Background()
+			fixture := seedPublicRenderJobFixture(t, db)
+			var job models.PublicRenderJob
+			if err := db.Where("guid=?", fixture.generation).First(&job).Error; err != nil {
+				t.Fatal(err)
+			}
+			now := int64(1_900_000_190_000 + fence)
+			clock := &fakePublicRenderClock{millis: now}
+			svc := NewPublicRenderJobServiceWithClock(db, []byte("fixture-render-job-purpose-key-32"), clock)
+			owner := "later-cycle-crashed-owner"
+			expiredAt := now - 1
+			startedAt := now - 5_001
+			if err := db.Model(&models.PublicRenderJob{}).Where("id=?", job.ID).Updates(map[string]any{"state": models.PublicRenderJobLeased, "attempt_count": fence, "lease_owner_hmac": svc.ownerHMAC(owner), "lease_expires_at": expiredAt, "completed_at": startedAt, "last_failure": nil, "last_terminal_owner_hmac": nil, "last_terminal_fence": nil, "last_terminal_operation": nil, "last_terminal_state": nil}).Error; err != nil {
+				t.Fatal(err)
+			}
+			lease, err := svc.Lease(ctx, PublicRenderLeaseInput{OwnerToken: "later-cycle-recovery-owner", LeaseMillis: 5_000})
+			if err != nil || lease != nil {
+				t.Fatalf("fence=%d recovery lease=%#v err=%v", fence, lease, err)
+			}
+			var failed models.PublicRenderJob
+			if err = db.Where("id=?", job.ID).First(&failed).Error; err != nil || failed.State != models.PublicRenderJobFailed || failed.AttemptCount != fence || failed.LastFailure == nil || *failed.LastFailure != "render_failed" || failed.LeaseOwnerHMAC != nil || failed.LeaseExpiresAt != nil || failed.CompletedAt == nil || *failed.CompletedAt != startedAt {
+				t.Fatalf("fence=%d failed=%#v err=%v", fence, failed, err)
+			}
+		})
+	}
+}
+
+func TestPublicRenderJobFixtureExpiredFinalAttemptPreservesDueAnnouncementRecovery(t *testing.T) {
+	db := openTestMySQL(t)
+	ctx := context.Background()
+	effective := time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC)
+	job := seedStructuredPublicRenderJobFixture(t, db, effective)
+	startedAt := effective.Add(-100 * time.Millisecond).UnixMilli()
+	now := effective.Add(100 * time.Millisecond).UnixMilli()
+	clock := &fakePublicRenderClock{millis: now}
+	svc := NewPublicRenderJobServiceWithClock(db, []byte("fixture-render-job-purpose-key-32"), clock)
+	if err := db.Model(&models.PublicRenderJob{}).Where("id=?", job.ID).Updates(map[string]any{"state": models.PublicRenderJobLeased, "attempt_count": 3, "lease_owner_hmac": svc.ownerHMAC("boundary-crashed-render-owner"), "lease_expires_at": now - 1, "completed_at": startedAt, "last_failure": nil, "last_terminal_owner_hmac": nil, "last_terminal_fence": nil, "last_terminal_operation": nil, "last_terminal_state": nil}).Error; err != nil {
+		t.Fatal(err)
+	}
+	lease, err := svc.Lease(ctx, PublicRenderLeaseInput{OwnerToken: "boundary-crash-recovery-owner", LeaseMillis: 5_000})
+	if err != nil || lease != nil {
+		t.Fatalf("terminalization lease=%#v err=%v", lease, err)
+	}
+	var failed models.PublicRenderJob
+	if err = db.Where("id=?", job.ID).First(&failed).Error; err != nil || failed.State != models.PublicRenderJobFailed || failed.CompletedAt == nil || *failed.CompletedAt != startedAt {
+		t.Fatalf("failed coverage marker=%#v err=%v", failed, err)
+	}
+	clock.millis++
+	lease, err = svc.Lease(ctx, PublicRenderLeaseInput{OwnerToken: "boundary-crash-recovery-owner", LeaseMillis: 5_000})
+	if err != nil || lease == nil || lease.Fence != 4 || lease.JobGUID != job.Guid {
+		t.Fatalf("due announcement recovery lease=%#v err=%v", lease, err)
+	}
+	if err = svc.Complete(ctx, PublicRenderTransitionInput{JobGUID: lease.JobGUID, OwnerToken: lease.OwnerToken, Fence: lease.Fence}); err != nil {
+		t.Fatal(err)
+	}
+	fingerprint := rootAlertFingerprint(models.RootAlertTypeRendererFailure, "", publicRenderAlertIdentity(job.Guid))
+	var alert models.RootAlert
+	if err = db.Where("fingerprint=? AND is_deleted=0", fingerprint).First(&alert).Error; err != nil || alert.OccurrenceCount != 1 || alert.State != models.RootAlertStateResolved {
+		t.Fatalf("recovered crash alert=%#v err=%v", alert, err)
+	}
+}
+
+func seedObsoletePublicRenderJobAfter(t *testing.T, db *gorm.DB, current models.PublicRenderJob) models.PublicRenderJob {
+	t.Helper()
+	now := current.CreatedAt + 1
+	content := models.PublicContentRelease{Guid: persistence.NextGUID(), CreatedAt: now, UpdatedAt: now, DocumentKind: models.PublicContentDocumentSite, Version: 990, SourceRevision: 1, Payload: models.JSONMap{"site": "obsolete"}, ContentHash: strings.Repeat("e", 64), PublishedAt: now}
+	if err := db.Create(&content).Error; err != nil {
+		t.Fatal(err)
+	}
+	job := models.PublicRenderJob{AuditFields: models.AuditFields{Guid: persistence.NextGUID(), CreatedAt: now, UpdatedAt: now}, PriceSnapshotID: current.PriceSnapshotID, ContentReleaseID: content.ID, State: models.PublicRenderJobQueued}
+	if err := db.Create(&job).Error; err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		db.Exec("DELETE FROM public_render_jobs WHERE id=?", job.ID)
+		db.Exec("DELETE FROM public_content_releases WHERE id=?", content.ID)
+	})
+	return job
 }
 
 func TestPublicRenderJobFixtureLeaseRaceHasOneOwner(t *testing.T) {
