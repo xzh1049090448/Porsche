@@ -566,7 +566,10 @@ func validateContentReleaseForPriceItems(release models.PublicContentRelease, it
 	if err != nil {
 		return errUnavailable("committed content integrity unavailable")
 	}
-	_, structured := jsonNumberInt64(release.Payload["schema_version"])
+	structured, err := publicContentPayloadUsesStructuredSchema(release.Payload)
+	if err != nil {
+		return errUnavailable("committed content integrity unavailable")
+	}
 	issues := validatePublishedFeaturedModels(keys, items, structured)
 	if len(issues) != 0 {
 		return errConflict("published content is incompatible with candidate price snapshot")
@@ -582,7 +585,10 @@ func prepareContentReleaseRebinding(release models.PublicContentRelease, snapsho
 	if err != nil {
 		return nil, errUnavailable("committed content integrity unavailable")
 	}
-	_, structured := jsonNumberInt64(release.Payload["schema_version"])
+	structured, err := publicContentPayloadUsesStructuredSchema(release.Payload)
+	if err != nil {
+		return nil, errUnavailable("committed content integrity unavailable")
+	}
 	issues := validatePublishedFeaturedModels(keys, items, structured)
 	if len(issues) != 0 {
 		return nil, errConflict("published content is incompatible with candidate price snapshot")
@@ -642,10 +648,11 @@ func validatePublishedFeaturedModels(keys []string, items []models.PublicPriceSn
 }
 
 func publishedContentModelKeys(payload models.JSONMap) ([]string, error) {
-	if version, ok := jsonNumberInt64(payload["schema_version"]); ok {
-		if version != 2 {
-			return nil, fmt.Errorf("unsupported schema")
-		}
+	structured, err := publicContentPayloadUsesStructuredSchema(payload)
+	if err != nil {
+		return nil, err
+	}
+	if structured {
 		decoded, err := decodePublishedContentPayloadV2(payload)
 		if err != nil {
 			return nil, err
@@ -653,6 +660,21 @@ func publishedContentModelKeys(payload models.JSONMap) ([]string, error) {
 		return clonePublicHomeStrings(decoded.HomeConfig.FeaturedModelKeys), nil
 	}
 	return decodeLegacyContentModelKeys(payload["model_keys"])
+}
+
+func publicContentPayloadUsesStructuredSchema(payload models.JSONMap) (bool, error) {
+	rawVersion, hasVersion := payload["schema_version"]
+	if !hasVersion {
+		if _, hasHomeConfig := payload["home_config"]; hasHomeConfig {
+			return false, fmt.Errorf("mixed content schema")
+		}
+		return false, nil
+	}
+	version, ok := jsonNumberInt64(rawVersion)
+	if !ok || version != 2 {
+		return false, fmt.Errorf("unsupported content schema")
+	}
+	return true, nil
 }
 
 func decodeLegacyContentModelKeys(value any) ([]string, error) {
@@ -720,10 +742,11 @@ func verifyPublicContentRelease(release models.PublicContentRelease) error {
 	if !ok || version <= 0 {
 		return errUnavailable("committed content integrity unavailable")
 	}
-	if version, hasVersion := jsonNumberInt64(release.Payload["schema_version"]); hasVersion {
-		if version != 2 {
-			return errUnavailable("committed content integrity unavailable")
-		}
+	structured, schemaErr := publicContentPayloadUsesStructuredSchema(release.Payload)
+	if schemaErr != nil {
+		return errUnavailable("committed content integrity unavailable")
+	}
+	if structured {
 		if _, decodeErr := decodePublishedContentPayloadV2(release.Payload); decodeErr != nil {
 			return errUnavailable("committed content integrity unavailable")
 		}
@@ -972,16 +995,16 @@ func (s *PublicContentService) transact(ctx context.Context, actorID, expected i
 }
 
 func prepareRestoredContentReleaseTx(tx *gorm.DB, draft *models.PublicContentDraft, source models.PublicContentRelease, price models.PublicPriceSnapshot, items []models.PublicPriceSnapshotItem) (*preparedPublicContent, error) {
-	version, hasVersion := jsonNumberInt64(source.Payload["schema_version"])
-	if !hasVersion {
+	structured, schemaErr := publicContentPayloadUsesStructuredSchema(source.Payload)
+	if schemaErr != nil {
+		return nil, errUnprocessable("historical content release invalid")
+	}
+	if !structured {
 		prepared, err := prepareContentReleaseRebinding(source, price, items)
 		if err != nil {
 			return nil, errUnprocessable("historical content release validation failed")
 		}
 		return prepared, nil
-	}
-	if version != 2 {
-		return nil, errUnprocessable("historical content release invalid")
 	}
 	decoded, err := decodePublishedContentPayloadV2(source.Payload)
 	if err != nil {

@@ -412,6 +412,55 @@ func TestStructuredHomeReleaseIntegrityRequiresCanonicalPublishedHTML(t *testing
 	}
 }
 
+func TestStructuredHomeReleaseRejectsMixedSchemaDispatch(t *testing.T) {
+	draft := PublicContentDraft{Revision: 4, Home: "home", About: "about", Terms: "terms", Privacy: "privacy", LegalReviewed: true}
+	prepared, issues := preparePublicContent(draft, PublicHomeDraft{Revision: 4}, models.PublicPriceSnapshot{ID: 8, Guid: 80, Version: 4}, nil)
+	if len(issues) != 0 {
+		t.Fatalf("issues=%+v", issues)
+	}
+	legacy := models.JSONMap{
+		"home": "home", "about": "about", "terms": "terms", "privacy": "privacy", "legal_reviewed": true,
+		"model_keys": []string{}, "price_snapshot_guid": "80", "price_snapshot_version": int64(4),
+	}
+	cases := []struct {
+		name    string
+		payload models.JSONMap
+	}{
+		{"string schema version with legacy keys", func() models.JSONMap {
+			payload := clonePublicContentPayload(prepared.Payload)
+			payload["schema_version"] = "2"
+			payload["model_keys"] = []string{}
+			return payload
+		}()},
+		{"legacy with home config", func() models.JSONMap {
+			payload := clonePublicContentPayload(legacy)
+			payload["home_config"] = publishedHomeConfigPayload(publishedHomeConfig{Announcements: []publishedAnnouncement{}, FAQs: []publishedFAQ{}, FeaturedModelKeys: []string{}})
+			return payload
+		}()},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			hash, err := hashPublicContentPayload(tc.payload)
+			if err != nil {
+				t.Fatal(err)
+			}
+			release := models.PublicContentRelease{Payload: tc.payload, ContentHash: hash}
+			if err = verifyPublicContentRelease(release); status(err) != 503 {
+				t.Fatalf("mixed payload passed release verification: %v", err)
+			}
+			if _, err = publishedContentModelKeys(tc.payload); err == nil {
+				t.Fatal("mixed payload passed model-key extraction")
+			}
+			if _, err = prepareContentReleaseRebinding(release, models.PublicPriceSnapshot{ID: 9, Guid: 90, Version: 5}, nil); status(err) != 503 {
+				t.Fatalf("mixed payload passed price rebind: %v", err)
+			}
+			if _, err = prepareRestoredContentReleaseTx(nil, nil, release, models.PublicPriceSnapshot{ID: 9, Guid: 90, Version: 5}, nil); status(err) != 422 {
+				t.Fatalf("mixed payload passed restore dispatch: %v", err)
+			}
+		})
+	}
+}
+
 func TestPublicContentModelReferencesSuppressHTMLAndMarkdownCode(t *testing.T) {
 	raw := "prefix <CoDe class='sample'>\n<a href='/pricing/code-a'>code</a>\n<strong><a href='/pricing/code-b'>nested</a></strong>\n</cOdE> after\ninside <PRE data-x='1'>\n<a href='/pricing/pre-a'>pre</a>\n</pre> after\n\n`[span](/pricing/span)`\n```md\n[fence](/pricing/fence)\n```\n[real][m] <a title='ok' HREF='/pricing/html'>html</a>\n\n[m]: /pricing/reference"
 	got := extractPublicContentModelReferences(raw)
