@@ -99,6 +99,9 @@ func TestPreparePublicContentBindsStructuredHomeToPriceSnapshot(t *testing.T) {
 	if err != nil || roundTripHash != prepared.Hash {
 		t.Fatalf("hash changed after JSON database round trip: prepared=%s round_trip=%s err=%v", prepared.Hash, roundTripHash, err)
 	}
+	if err = verifyPublicContentRelease(models.PublicContentRelease{Payload: databaseRoundTrip, ContentHash: prepared.Hash}); err != nil {
+		t.Fatalf("database JSON round trip failed release verification: %v", err)
+	}
 	for _, forbidden := range []string{"body_markdown", "answer_markdown", "is_visible", "is_deleted", "must not publish", "\"id\""} {
 		if strings.Contains(text, forbidden) {
 			t.Fatalf("payload leaked %q: %s", forbidden, text)
@@ -222,6 +225,189 @@ func TestStructuredHomeReleaseIntegrityRejectsUnknownOrDraftFields(t *testing.T)
 		copy[field] = "forbidden"
 		if err := verifyPublicContentRelease(makeRelease(copy)); status(err) != 503 {
 			t.Fatalf("unknown field %q accepted: %v", field, err)
+		}
+	}
+}
+
+func TestStructuredHomeReleaseIntegrityRequiresEveryCanonicalField(t *testing.T) {
+	draft := PublicContentDraft{Revision: 4, Home: "", About: "", Terms: "", Privacy: "", LegalReviewed: true}
+	home := PublicHomeDraft{
+		Revision:      4,
+		Announcements: []PublicHomeAnnouncementDraft{{GUID: "10", Title: "notice", BodyMarkdown: "body", EffectiveAt: nil, IsVisible: true, SortOrder: 0}},
+		FAQs:          []PublicHomeFAQDraft{{GUID: "20", Question: "question", AnswerMarkdown: "answer", IsVisible: true, SortOrder: 0}},
+	}
+	prepared, issues := preparePublicContent(draft, home, models.PublicPriceSnapshot{ID: 8, Guid: 80, Version: 4}, nil)
+	if len(issues) != 0 {
+		t.Fatalf("issues=%+v", issues)
+	}
+	makeRelease := func(payload models.JSONMap) models.PublicContentRelease {
+		hash, err := hashPublicContentPayload(payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return models.PublicContentRelease{Payload: payload, ContentHash: hash}
+	}
+	if err := verifyPublicContentRelease(makeRelease(prepared.Payload)); err != nil {
+		t.Fatalf("explicit null and zero rejected: %v", err)
+	}
+	for _, field := range []string{"schema_version", "home_config", "home", "about", "terms", "privacy", "legal_reviewed", "price_snapshot_guid", "price_snapshot_version"} {
+		candidate := clonePublicContentPayload(prepared.Payload)
+		delete(candidate, field)
+		if err := verifyPublicContentRelease(makeRelease(candidate)); status(err) != 503 {
+			t.Fatalf("missing top-level field %q accepted: %v", field, err)
+		}
+	}
+	for _, field := range []string{"announcements", "faqs", "featured_model_keys"} {
+		candidate := clonePublicContentPayload(prepared.Payload)
+		config := candidate["home_config"].(models.JSONMap)
+		delete(config, field)
+		if err := verifyPublicContentRelease(makeRelease(candidate)); status(err) != 503 {
+			t.Fatalf("missing home_config field %q accepted: %v", field, err)
+		}
+	}
+	for _, tc := range []struct {
+		collection string
+		field      string
+	}{
+		{"announcements", "guid"},
+		{"announcements", "title"},
+		{"announcements", "body_html"},
+		{"announcements", "effective_at"},
+		{"announcements", "sort_order"},
+		{"faqs", "guid"},
+		{"faqs", "question"},
+		{"faqs", "answer_html"},
+		{"faqs", "sort_order"},
+	} {
+		candidate := clonePublicContentPayload(prepared.Payload)
+		config := candidate["home_config"].(models.JSONMap)
+		rows := config[tc.collection].([]models.JSONMap)
+		delete(rows[0], tc.field)
+		if err := verifyPublicContentRelease(makeRelease(candidate)); status(err) != 503 {
+			t.Fatalf("missing %s.%s accepted: %v", tc.collection, tc.field, err)
+		}
+	}
+	for _, tc := range []struct {
+		object     string
+		collection string
+	}{
+		{"home_config", ""},
+		{"announcement", "announcements"},
+		{"faq", "faqs"},
+	} {
+		candidate := clonePublicContentPayload(prepared.Payload)
+		config := candidate["home_config"].(models.JSONMap)
+		if tc.collection == "" {
+			config["unknown"] = true
+		} else {
+			config[tc.collection].([]models.JSONMap)[0]["unknown"] = true
+		}
+		if err := verifyPublicContentRelease(makeRelease(candidate)); status(err) != 503 {
+			t.Fatalf("unknown %s field accepted: %v", tc.object, err)
+		}
+	}
+	wrongTypes := []struct {
+		name   string
+		mutate func(models.JSONMap)
+	}{
+		{"schema_version", func(payload models.JSONMap) { payload["schema_version"] = "2" }},
+		{"home_config", func(payload models.JSONMap) { payload["home_config"] = []any{} }},
+		{"home", func(payload models.JSONMap) { payload["home"] = 1 }},
+		{"about", func(payload models.JSONMap) { payload["about"] = true }},
+		{"terms", func(payload models.JSONMap) { payload["terms"] = []any{} }},
+		{"privacy", func(payload models.JSONMap) { payload["privacy"] = models.JSONMap{} }},
+		{"legal_reviewed", func(payload models.JSONMap) { payload["legal_reviewed"] = "true" }},
+		{"price_snapshot_guid", func(payload models.JSONMap) { payload["price_snapshot_guid"] = 80 }},
+		{"price_snapshot_version", func(payload models.JSONMap) { payload["price_snapshot_version"] = "4" }},
+		{"announcements", func(payload models.JSONMap) { payload["home_config"].(models.JSONMap)["announcements"] = "invalid" }},
+		{"faqs", func(payload models.JSONMap) { payload["home_config"].(models.JSONMap)["faqs"] = "invalid" }},
+		{"featured_model_keys", func(payload models.JSONMap) {
+			payload["home_config"].(models.JSONMap)["featured_model_keys"] = "invalid"
+		}},
+		{"announcement.guid", func(payload models.JSONMap) {
+			payload["home_config"].(models.JSONMap)["announcements"].([]models.JSONMap)[0]["guid"] = 10
+		}},
+		{"announcement.title", func(payload models.JSONMap) {
+			payload["home_config"].(models.JSONMap)["announcements"].([]models.JSONMap)[0]["title"] = true
+		}},
+		{"announcement.body_html", func(payload models.JSONMap) {
+			payload["home_config"].(models.JSONMap)["announcements"].([]models.JSONMap)[0]["body_html"] = []any{}
+		}},
+		{"announcement.effective_at", func(payload models.JSONMap) {
+			payload["home_config"].(models.JSONMap)["announcements"].([]models.JSONMap)[0]["effective_at"] = 1
+		}},
+		{"announcement.sort_order", func(payload models.JSONMap) {
+			payload["home_config"].(models.JSONMap)["announcements"].([]models.JSONMap)[0]["sort_order"] = nil
+		}},
+		{"faq.guid", func(payload models.JSONMap) {
+			payload["home_config"].(models.JSONMap)["faqs"].([]models.JSONMap)[0]["guid"] = 20
+		}},
+		{"faq.question", func(payload models.JSONMap) {
+			payload["home_config"].(models.JSONMap)["faqs"].([]models.JSONMap)[0]["question"] = true
+		}},
+		{"faq.answer_html", func(payload models.JSONMap) {
+			payload["home_config"].(models.JSONMap)["faqs"].([]models.JSONMap)[0]["answer_html"] = []any{}
+		}},
+		{"faq.sort_order", func(payload models.JSONMap) {
+			payload["home_config"].(models.JSONMap)["faqs"].([]models.JSONMap)[0]["sort_order"] = nil
+		}},
+	}
+	for _, tc := range wrongTypes {
+		candidate := clonePublicContentPayload(prepared.Payload)
+		tc.mutate(candidate)
+		if err := verifyPublicContentRelease(makeRelease(candidate)); status(err) != 503 {
+			t.Fatalf("wrong type for %s accepted: %v", tc.name, err)
+		}
+	}
+}
+
+func TestStructuredHomeReleaseIntegrityRequiresCanonicalPublishedHTML(t *testing.T) {
+	draft := PublicContentDraft{Revision: 4, Home: "", About: "", Terms: "", Privacy: "", LegalReviewed: true}
+	home := PublicHomeDraft{
+		Revision:      4,
+		Announcements: []PublicHomeAnnouncementDraft{{GUID: "10", Title: "notice", BodyMarkdown: "paragraph\n\n- item\n\n[link](/about)\n\n`code`", IsVisible: true}},
+		FAQs:          []PublicHomeFAQDraft{{GUID: "20", Question: "question", AnswerMarkdown: "answer", IsVisible: true}},
+	}
+	prepared, issues := preparePublicContent(draft, home, models.PublicPriceSnapshot{ID: 8, Guid: 80, Version: 4}, nil)
+	if len(issues) != 0 {
+		t.Fatalf("issues=%+v", issues)
+	}
+	makeRelease := func(payload models.JSONMap) models.PublicContentRelease {
+		hash, err := hashPublicContentPayload(payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return models.PublicContentRelease{Payload: payload, ContentHash: hash}
+	}
+	if err := verifyPublicContentRelease(makeRelease(prepared.Payload)); err != nil {
+		t.Fatalf("renderer output or empty legacy documents rejected: %v", err)
+	}
+	mutations := []struct {
+		name   string
+		mutate func(models.JSONMap)
+	}{
+		{"legacy document", func(payload models.JSONMap) { payload["home"] = "**raw markdown**" }},
+		{"announcement", func(payload models.JSONMap) {
+			payload["home_config"].(models.JSONMap)["announcements"].([]models.JSONMap)[0]["body_html"] = "**raw markdown**"
+		}},
+		{"faq", func(payload models.JSONMap) {
+			payload["home_config"].(models.JSONMap)["faqs"].([]models.JSONMap)[0]["answer_html"] = "**raw markdown**"
+		}},
+	}
+	cloned := clonePublicContentPayload(prepared.Payload)
+	if _, err := decodePublishedContentPayloadV2(cloned); err != nil {
+		originalJSON, _ := json.Marshal(prepared.Payload["home_config"])
+		clonedJSON, _ := json.Marshal(cloned["home_config"])
+		t.Fatalf("unmodified payload clone failed decode: %v original=%s cloned=%s", err, originalJSON, clonedJSON)
+	}
+	for _, tc := range mutations {
+		candidate := clonePublicContentPayload(prepared.Payload)
+		tc.mutate(candidate)
+		if _, err := decodePublishedContentPayloadV2(candidate); err == nil {
+			t.Fatalf("raw Markdown in %s passed typed decode", tc.name)
+		}
+		if err := verifyPublicContentRelease(makeRelease(candidate)); status(err) != 503 {
+			t.Fatalf("raw Markdown in %s accepted: %v", tc.name, err)
 		}
 	}
 }

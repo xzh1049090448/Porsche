@@ -337,7 +337,7 @@ func clonePublicHomeStringPointer(value *string) *string {
 }
 
 func sanitizeContentHTML(field, raw string, requireVisible bool) (string, []publiccontent.ValidationIssue) {
-	_, issues := publiccontent.SanitizeMarkdown(raw)
+	sanitized, issues := publiccontent.SanitizeMarkdown(raw)
 	if len(issues) != 0 {
 		mapped := make([]publiccontent.ValidationIssue, 0, len(issues))
 		for _, issue := range issues {
@@ -346,7 +346,7 @@ func sanitizeContentHTML(field, raw string, requireVisible bool) (string, []publ
 		return "", mapped
 	}
 	var rendered bytes.Buffer
-	if err := goldmark.New(goldmark.WithRendererOptions(goldmarkhtml.WithUnsafe())).Convert([]byte(raw), &rendered); err != nil {
+	if err := goldmark.New(goldmark.WithRendererOptions(goldmarkhtml.WithUnsafe())).Convert([]byte(sanitized), &rendered); err != nil {
 		return "", []publiccontent.ValidationIssue{{Field: field, Code: "serialization_failed"}}
 	}
 	html := rendered.String()
@@ -354,6 +354,17 @@ func sanitizeContentHTML(field, raw string, requireVisible bool) (string, []publ
 		return "", []publiccontent.ValidationIssue{{Field: field, Code: "empty_sanitized_content"}}
 	}
 	return html, nil
+}
+
+func validateCanonicalPublishedHTML(raw string, allowEmpty bool) error {
+	rendered, issues := sanitizeContentHTML("content", raw, false)
+	if len(issues) != 0 || rendered != raw {
+		return fmt.Errorf("noncanonical published HTML")
+	}
+	if !allowEmpty && !publicContentHTMLHasVisibleContent(raw) {
+		return fmt.Errorf("empty published HTML")
+	}
+	return nil
 }
 
 func publicContentHTMLHasVisibleContent(raw string) bool {
@@ -751,23 +762,33 @@ func decodePublishedContentPayloadV2(payload models.JSONMap) (*publishedContentP
 	if err != nil {
 		return nil, err
 	}
-	originalHome, _ := json.Marshal(decoded.HomeConfig)
-	normalizedHome, _ := json.Marshal(normalized)
-	if !bytes.Equal(originalHome, normalizedHome) {
-		return nil, fmt.Errorf("noncanonical home config")
+	canonical := models.JSONMap{
+		"schema_version":         int64(2),
+		"home_config":            publishedHomeConfigPayload(normalized),
+		"home":                   decoded.Home,
+		"about":                  decoded.About,
+		"terms":                  decoded.Terms,
+		"privacy":                decoded.Privacy,
+		"legal_reviewed":         true,
+		"price_snapshot_guid":    decoded.PriceSnapshotGUID,
+		"price_snapshot_version": decoded.PriceSnapshotVersion,
+	}
+	canonicalJSON, marshalErr := json.Marshal(canonical)
+	if marshalErr != nil || !bytes.Equal(encoded, canonicalJSON) {
+		return nil, fmt.Errorf("noncanonical published payload")
 	}
 	for _, document := range []string{decoded.Home, decoded.About, decoded.Terms, decoded.Privacy} {
-		if _, issues := publiccontent.SanitizeMarkdown(document); len(issues) != 0 {
+		if validateErr := validateCanonicalPublishedHTML(document, true); validateErr != nil {
 			return nil, fmt.Errorf("unsafe published document")
 		}
 	}
 	for _, announcement := range decoded.HomeConfig.Announcements {
-		if _, issues := publiccontent.SanitizeMarkdown(announcement.BodyHTML); len(issues) != 0 || !publicContentHTMLHasVisibleContent(announcement.BodyHTML) {
+		if validateErr := validateCanonicalPublishedHTML(announcement.BodyHTML, false); validateErr != nil {
 			return nil, fmt.Errorf("unsafe published announcement")
 		}
 	}
 	for _, faq := range decoded.HomeConfig.FAQs {
-		if _, issues := publiccontent.SanitizeMarkdown(faq.AnswerHTML); len(issues) != 0 || !publicContentHTMLHasVisibleContent(faq.AnswerHTML) {
+		if validateErr := validateCanonicalPublishedHTML(faq.AnswerHTML, false); validateErr != nil {
 			return nil, fmt.Errorf("unsafe published FAQ")
 		}
 	}
@@ -1139,9 +1160,9 @@ func clonePublicContentJSONValue(value any) any {
 		}
 		return copy
 	case models.JSONSlice:
-		return append(models.JSONSlice(nil), typed...)
+		return append(make(models.JSONSlice, 0, len(typed)), typed...)
 	case []string:
-		return append([]string(nil), typed...)
+		return append(make([]string, 0, len(typed)), typed...)
 	case []any:
 		copy := make([]any, len(typed))
 		for index, item := range typed {
