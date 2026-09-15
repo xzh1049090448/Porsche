@@ -72,16 +72,64 @@ func TestPublicHomeMutationValidationUsesTask3Boundaries(t *testing.T) {
 }
 
 func TestPublicHomeAuditDetailContainsTargetRevisionAndResultOnly(t *testing.T) {
-	got := publicHomeAuditDetail(123, 7)
-	want := models.JSONMap{"target_guid": "123", "previous_revision": int64(7), "revision": int64(8), "result": "success"}
+	got := publicHomeAuditDetail(123, 7, models.JSONSlice{"is_visible", "sort_order", "body_markdown"})
+	want := models.JSONMap{"target_guid": "123", "previous_revision": int64(7), "revision": int64(8), "result": "success", "changed_fields": models.JSONSlice{"is_visible", "sort_order", "body_markdown"}}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("detail=%#v", got)
 	}
 	encoded, _ := json.Marshal(got)
-	for _, forbidden := range []string{"body", "answer", "password", "secret"} {
+	for _, forbidden := range []string{"sensitive body value", "sensitive answer value", "password", "secret"} {
 		if strings.Contains(strings.ToLower(string(encoded)), forbidden) {
 			t.Fatalf("audit detail contains %q: %s", forbidden, encoded)
 		}
+	}
+	title, body, visible, order := "sensitive title value", "sensitive body value", false, 9
+	if fields := announcementChangedFields(AnnouncementUpdateRequest{Title: &title, BodyMarkdown: &body, IsVisible: &visible, SortOrder: &order}); !reflect.DeepEqual(fields, models.JSONSlice{"title", "body_markdown", "is_visible", "sort_order"}) {
+		t.Fatalf("announcement changed fields=%v", fields)
+	}
+	question, answer := "sensitive question value", "sensitive answer value"
+	if fields := faqChangedFields(FAQUpdateRequest{Question: &question, AnswerMarkdown: &answer, IsVisible: &visible, SortOrder: &order}); !reflect.DeepEqual(fields, models.JSONSlice{"question", "answer_markdown", "is_visible", "sort_order"}) {
+		t.Fatalf("FAQ changed fields=%v", fields)
+	}
+}
+
+func TestPublicHomeAggregateDraftNormalizedSizeAllowsExactLimitAndRejectsOneMore(t *testing.T) {
+	payload := models.JSONMap{
+		"home": "", "about": "", "terms": "", "privacy": "", "legal_reviewed": false,
+		"featured_model_keys": []string{}, "padding": "",
+	}
+	baseSize, err := publicHomeAggregateDraftSize(payload, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if baseSize >= PublicContentDraftAggregateLimit {
+		t.Fatalf("base size=%d", baseSize)
+	}
+	payload["padding"] = strings.Repeat("x", PublicContentDraftAggregateLimit-baseSize)
+	if size, err := publicHomeAggregateDraftSize(payload, nil, nil); err != nil || size != PublicContentDraftAggregateLimit {
+		t.Fatalf("exact size=%d err=%v", size, err)
+	}
+	if err := validatePublicHomeAggregateDraftSize(payload, nil, nil); err != nil {
+		t.Fatalf("exact limit rejected: %v", err)
+	}
+	payload["padding"] = payload["padding"].(string) + "x"
+	if err := validatePublicHomeAggregateDraftSize(payload, nil, nil); status(err) != 400 {
+		t.Fatalf("over limit status=%d err=%v", status(err), err)
+	}
+
+	deleted := models.PublicHomeAnnouncement{AuditFields: models.AuditFields{Guid: 1, IsDeleted: 1}, Title: "deleted", BodyMarkdown: strings.Repeat("x", PublicHomeMarkdownLimit)}
+	withoutDeleted, err := publicHomeAggregateDraftSize(models.JSONMap{}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	withDeleted, err := publicHomeAggregateDraftSize(models.JSONMap{}, []models.PublicHomeAnnouncement{deleted}, nil)
+	if err != nil || withDeleted != withoutDeleted {
+		t.Fatalf("soft deleted item counted: without=%d with=%d err=%v", withoutDeleted, withDeleted, err)
+	}
+	activeFAQ := models.PublicHomeFAQ{AuditFields: models.AuditFields{Guid: 2}, Question: "active", AnswerMarkdown: "answer"}
+	withActiveFAQ, err := publicHomeAggregateDraftSize(models.JSONMap{}, nil, []models.PublicHomeFAQ{activeFAQ})
+	if err != nil || withActiveFAQ <= withoutDeleted {
+		t.Fatalf("active FAQ not counted: without=%d with=%d err=%v", withoutDeleted, withActiveFAQ, err)
 	}
 }
 

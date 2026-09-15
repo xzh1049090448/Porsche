@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strconv"
@@ -17,11 +18,12 @@ import (
 )
 
 const (
-	PublicHomeAnnouncementLimit  = 20
-	PublicHomeFAQLimit           = 50
-	PublicHomeFeaturedModelLimit = 12
-	PublicHomeMarkdownLimit      = 16 << 10
-	PublicHomeSortOrderMaximum   = 1_000_000
+	PublicHomeAnnouncementLimit      = 20
+	PublicHomeFAQLimit               = 50
+	PublicHomeFeaturedModelLimit     = 12
+	PublicHomeMarkdownLimit          = 16 << 10
+	PublicHomeSortOrderMaximum       = 1_000_000
+	PublicContentDraftAggregateLimit = 256 << 10
 )
 
 type PublicHomeAnnouncementDraft struct {
@@ -218,7 +220,10 @@ func (s *PublicContentService) SaveDocumentsDraft(ctx context.Context, actorID i
 		if in.LegalReviewed {
 			review = models.PublicContentReviewApproved
 		}
-		if e = s.writePublicHomeAudit(tx, actor.ID, draft.Guid, now, "public_content.home.documents.save", draft.Revision); e != nil {
+		if e = validatePublicHomeAggregateDraftTx(tx, draft, payload); e != nil {
+			return e
+		}
+		if e = s.writePublicHomeAudit(tx, actor.ID, draft.Guid, now, "public_content.home.documents.save", draft.Revision, models.JSONSlice{"about", "terms", "privacy", "legal_reviewed"}); e != nil {
 			return e
 		}
 		if e = s.advancePublicContentDraft(tx, draft, actor.ID, now, payload, &review); e != nil {
@@ -243,7 +248,7 @@ func (s *PublicContentService) CreateAnnouncement(ctx context.Context, actorID i
 	if err := validateAnnouncementCreate(in); err != nil {
 		return nil, err
 	}
-	return s.mutatePublicHome(ctx, actorID, in.ExpectedRevision, "public_content.home.announcement.create", func(tx *gorm.DB, draft *models.PublicContentDraft, actorID, now int64) (int64, models.JSONMap, error) {
+	return s.mutatePublicHome(ctx, actorID, in.ExpectedRevision, "public_content.home.announcement.create", models.JSONSlice{"title", "body_markdown", "effective_at", "is_visible", "sort_order"}, func(tx *gorm.DB, draft *models.PublicContentDraft, actorID, now int64) (int64, models.JSONMap, error) {
 		var count int64
 		if e := tx.Model(&models.PublicHomeAnnouncement{}).Where("content_draft_id=? AND is_deleted=0", draft.ID).Count(&count).Error; e != nil {
 			return 0, nil, errUnavailable("public home announcement persistence unavailable")
@@ -271,7 +276,7 @@ func (s *PublicContentService) UpdateAnnouncement(ctx context.Context, actorID i
 	if err = validateAnnouncementUpdate(in); err != nil {
 		return nil, err
 	}
-	return s.mutatePublicHome(ctx, actorID, in.ExpectedRevision, "public_content.home.announcement.update", func(tx *gorm.DB, draft *models.PublicContentDraft, actorID, now int64) (int64, models.JSONMap, error) {
+	return s.mutatePublicHome(ctx, actorID, in.ExpectedRevision, "public_content.home.announcement.update", announcementChangedFields(in), func(tx *gorm.DB, draft *models.PublicContentDraft, actorID, now int64) (int64, models.JSONMap, error) {
 		var row models.PublicHomeAnnouncement
 		if e := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("content_draft_id=? AND guid=? AND is_deleted=0", draft.ID, target).First(&row).Error; e != nil {
 			return 0, nil, publicHomeTargetError(e, "public home announcement not found")
@@ -308,7 +313,7 @@ func (s *PublicContentService) DeleteAnnouncement(ctx context.Context, actorID i
 	if err != nil || in.ExpectedRevision < 1 {
 		return 0, errBadRequest("invalid public home announcement request")
 	}
-	draft, err := s.mutatePublicHome(ctx, actorID, in.ExpectedRevision, "public_content.home.announcement.delete", func(tx *gorm.DB, aggregate *models.PublicContentDraft, actorID, now int64) (int64, models.JSONMap, error) {
+	draft, err := s.mutatePublicHome(ctx, actorID, in.ExpectedRevision, "public_content.home.announcement.delete", models.JSONSlice{"is_deleted"}, func(tx *gorm.DB, aggregate *models.PublicContentDraft, actorID, now int64) (int64, models.JSONMap, error) {
 		var row models.PublicHomeAnnouncement
 		if e := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("content_draft_id=? AND guid=? AND is_deleted=0", aggregate.ID, target).First(&row).Error; e != nil {
 			return 0, nil, publicHomeTargetError(e, "public home announcement not found")
@@ -332,7 +337,7 @@ func (s *PublicContentService) CreateFAQ(ctx context.Context, actorID int64, in 
 	if err := validateFAQCreate(in); err != nil {
 		return nil, err
 	}
-	return s.mutatePublicHome(ctx, actorID, in.ExpectedRevision, "public_content.home.faq.create", func(tx *gorm.DB, draft *models.PublicContentDraft, actorID, now int64) (int64, models.JSONMap, error) {
+	return s.mutatePublicHome(ctx, actorID, in.ExpectedRevision, "public_content.home.faq.create", models.JSONSlice{"question", "answer_markdown", "is_visible", "sort_order"}, func(tx *gorm.DB, draft *models.PublicContentDraft, actorID, now int64) (int64, models.JSONMap, error) {
 		var count int64
 		if e := tx.Model(&models.PublicHomeFAQ{}).Where("content_draft_id=? AND is_deleted=0", draft.ID).Count(&count).Error; e != nil {
 			return 0, nil, errUnavailable("public home FAQ persistence unavailable")
@@ -360,7 +365,7 @@ func (s *PublicContentService) UpdateFAQ(ctx context.Context, actorID int64, gui
 	if err = validateFAQUpdate(in); err != nil {
 		return nil, err
 	}
-	return s.mutatePublicHome(ctx, actorID, in.ExpectedRevision, "public_content.home.faq.update", func(tx *gorm.DB, draft *models.PublicContentDraft, actorID, now int64) (int64, models.JSONMap, error) {
+	return s.mutatePublicHome(ctx, actorID, in.ExpectedRevision, "public_content.home.faq.update", faqChangedFields(in), func(tx *gorm.DB, draft *models.PublicContentDraft, actorID, now int64) (int64, models.JSONMap, error) {
 		var row models.PublicHomeFAQ
 		if e := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("content_draft_id=? AND guid=? AND is_deleted=0", draft.ID, target).First(&row).Error; e != nil {
 			return 0, nil, publicHomeTargetError(e, "public home FAQ not found")
@@ -394,7 +399,7 @@ func (s *PublicContentService) DeleteFAQ(ctx context.Context, actorID int64, gui
 	if err != nil || in.ExpectedRevision < 1 {
 		return 0, errBadRequest("invalid public home FAQ request")
 	}
-	draft, err := s.mutatePublicHome(ctx, actorID, in.ExpectedRevision, "public_content.home.faq.delete", func(tx *gorm.DB, aggregate *models.PublicContentDraft, actorID, now int64) (int64, models.JSONMap, error) {
+	draft, err := s.mutatePublicHome(ctx, actorID, in.ExpectedRevision, "public_content.home.faq.delete", models.JSONSlice{"is_deleted"}, func(tx *gorm.DB, aggregate *models.PublicContentDraft, actorID, now int64) (int64, models.JSONMap, error) {
 		var row models.PublicHomeFAQ
 		if e := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("content_draft_id=? AND guid=? AND is_deleted=0", aggregate.ID, target).First(&row).Error; e != nil {
 			return 0, nil, publicHomeTargetError(e, "public home FAQ not found")
@@ -419,7 +424,7 @@ func (s *PublicContentService) ReplaceFeaturedModels(ctx context.Context, actorI
 	if actorID <= 0 || in.ExpectedRevision < 1 || err != nil {
 		return nil, errBadRequest("invalid featured models request")
 	}
-	return s.mutatePublicHome(ctx, actorID, in.ExpectedRevision, "public_content.home.featured_models.replace", func(tx *gorm.DB, draft *models.PublicContentDraft, actorID, now int64) (int64, models.JSONMap, error) {
+	return s.mutatePublicHome(ctx, actorID, in.ExpectedRevision, "public_content.home.featured_models.replace", models.JSONSlice{"featured_model_keys"}, func(tx *gorm.DB, draft *models.PublicContentDraft, actorID, now int64) (int64, models.JSONMap, error) {
 		if len(keys) > 0 {
 			var count int64
 			if e := tx.Model(&models.PublicModelConfig{}).Where("model_key IN ? AND status=? AND is_deleted=0", keys, models.PublicModelConfigStatusActive).Count(&count).Error; e != nil {
@@ -437,7 +442,7 @@ func (s *PublicContentService) ReplaceFeaturedModels(ctx context.Context, actorI
 
 type publicHomeMutation func(*gorm.DB, *models.PublicContentDraft, int64, int64) (int64, models.JSONMap, error)
 
-func (s *PublicContentService) mutatePublicHome(ctx context.Context, actorID, expectedRevision int64, action string, mutation publicHomeMutation) (*PublicHomeDraft, error) {
+func (s *PublicContentService) mutatePublicHome(ctx context.Context, actorID, expectedRevision int64, action string, changedFields models.JSONSlice, mutation publicHomeMutation) (*PublicHomeDraft, error) {
 	if actorID <= 0 || expectedRevision < 1 || mutation == nil {
 		return nil, errBadRequest("invalid public home mutation")
 	}
@@ -462,10 +467,13 @@ func (s *PublicContentService) mutatePublicHome(ctx context.Context, actorID, ex
 		if e != nil {
 			return e
 		}
+		if e = validatePublicHomeAggregateDraftTx(tx, draft, payload); e != nil {
+			return e
+		}
 		if e = s.fail("public_home_after_row"); e != nil {
 			return e
 		}
-		if e = s.writePublicHomeAudit(tx, actor.ID, targetGUID, now, action, draft.Revision); e != nil {
+		if e = s.writePublicHomeAudit(tx, actor.ID, targetGUID, now, action, draft.Revision, changedFields); e != nil {
 			return e
 		}
 		if e = s.fail("public_home_before_cas"); e != nil {
@@ -512,7 +520,7 @@ func publicHomeCASResult(result *gorm.DB) error {
 	return nil
 }
 
-func (s *PublicContentService) writePublicHomeAudit(tx *gorm.DB, actorID, targetGUID, now int64, action string, previousRevision int64) error {
+func (s *PublicContentService) writePublicHomeAudit(tx *gorm.DB, actorID, targetGUID, now int64, action string, previousRevision int64, changedFields models.JSONSlice) error {
 	if e := s.fail("public_home_audit"); e != nil {
 		return e
 	}
@@ -521,7 +529,7 @@ func (s *PublicContentService) writePublicHomeAudit(tx *gorm.DB, actorID, target
 		return errUnavailable("public home audit unavailable")
 	}
 	resource := "public-content/home-draft/" + strconv.FormatInt(targetGUID, 10)
-	detail := publicHomeAuditDetail(targetGUID, previousRevision)
+	detail := publicHomeAuditDetail(targetGUID, previousRevision, changedFields)
 	row := models.AuditLog{AuditFields: publicHomeAuditFields(auditGUID, now, actorID), UserID: &actorID, Action: action, Resource: &resource, Detail: detail}
 	if e := tx.Create(&row).Error; e != nil {
 		return errUnavailable("public home audit unavailable")
@@ -529,8 +537,8 @@ func (s *PublicContentService) writePublicHomeAudit(tx *gorm.DB, actorID, target
 	return nil
 }
 
-func publicHomeAuditDetail(targetGUID, previousRevision int64) models.JSONMap {
-	return models.JSONMap{"target_guid": strconv.FormatInt(targetGUID, 10), "previous_revision": previousRevision, "revision": previousRevision + 1, "result": "success"}
+func publicHomeAuditDetail(targetGUID, previousRevision int64, changedFields models.JSONSlice) models.JSONMap {
+	return models.JSONMap{"target_guid": strconv.FormatInt(targetGUID, 10), "previous_revision": previousRevision, "revision": previousRevision + 1, "result": "success", "changed_fields": append(models.JSONSlice(nil), changedFields...)}
 }
 
 func loadPublicHomeDraft(tx *gorm.DB, draft *models.PublicContentDraft) (PublicHomeDraft, error) {
@@ -551,6 +559,54 @@ func loadPublicHomeDraft(tx *gorm.DB, draft *models.PublicContentDraft) (PublicH
 		return PublicHomeDraft{}, errUnavailable("public content draft persistence unavailable")
 	}
 	return out, nil
+}
+
+func validatePublicHomeAggregateDraftTx(tx *gorm.DB, draft *models.PublicContentDraft, candidatePayload models.JSONMap) error {
+	var announcements []models.PublicHomeAnnouncement
+	if err := tx.Where("content_draft_id=? AND is_deleted=0", draft.ID).Find(&announcements).Error; err != nil {
+		return errUnavailable("public home announcement persistence unavailable")
+	}
+	var faqs []models.PublicHomeFAQ
+	if err := tx.Where("content_draft_id=? AND is_deleted=0", draft.ID).Find(&faqs).Error; err != nil {
+		return errUnavailable("public home FAQ persistence unavailable")
+	}
+	payload := candidatePayload
+	if payload == nil {
+		payload = draft.Payload
+	}
+	return validatePublicHomeAggregateDraftSize(payload, announcements, faqs)
+}
+
+func validatePublicHomeAggregateDraftSize(payload models.JSONMap, announcements []models.PublicHomeAnnouncement, faqs []models.PublicHomeFAQ) error {
+	size, err := publicHomeAggregateDraftSize(payload, announcements, faqs)
+	if err != nil {
+		return errUnavailable("public content draft persistence unavailable")
+	}
+	if size > PublicContentDraftAggregateLimit {
+		return errBadRequest("public content draft too large")
+	}
+	return nil
+}
+
+func publicHomeAggregateDraftSize(payload models.JSONMap, announcements []models.PublicHomeAnnouncement, faqs []models.PublicHomeFAQ) (int, error) {
+	draft, err := ProjectPublicHomeDraft(1, announcements, faqs, nil)
+	if err != nil {
+		return 0, err
+	}
+	normalized := struct {
+		Payload       models.JSONMap                `json:"payload"`
+		Announcements []PublicHomeAnnouncementDraft `json:"announcements"`
+		FAQs          []PublicHomeFAQDraft          `json:"faqs"`
+	}{
+		Payload:       payload,
+		Announcements: draft.Announcements,
+		FAQs:          draft.FAQs,
+	}
+	encoded, err := json.Marshal(normalized)
+	if err != nil {
+		return 0, err
+	}
+	return len(encoded), nil
 }
 
 func projectPublicHomeDocumentsDraft(draft models.PublicContentDraft) PublicHomeDocumentsDraft {
@@ -615,6 +671,26 @@ func validateAnnouncementUpdate(in AnnouncementUpdateRequest) error {
 	return nil
 }
 
+func announcementChangedFields(in AnnouncementUpdateRequest) models.JSONSlice {
+	fields := make(models.JSONSlice, 0, 5)
+	if in.Title != nil {
+		fields = append(fields, "title")
+	}
+	if in.BodyMarkdown != nil {
+		fields = append(fields, "body_markdown")
+	}
+	if in.EffectiveAt.Set {
+		fields = append(fields, "effective_at")
+	}
+	if in.IsVisible != nil {
+		fields = append(fields, "is_visible")
+	}
+	if in.SortOrder != nil {
+		fields = append(fields, "sort_order")
+	}
+	return fields
+}
+
 func validateFAQCreate(in FAQCreateRequest) error {
 	if in.ExpectedRevision < 1 || !validPublicHomeText(in.Question, 200) || len(in.AnswerMarkdown) > PublicHomeMarkdownLimit || !validPublicHomeSortOrder(in.SortOrder) {
 		return errBadRequest("invalid public home FAQ request")
@@ -630,6 +706,23 @@ func validateFAQUpdate(in FAQUpdateRequest) error {
 		return errBadRequest("invalid public home FAQ request")
 	}
 	return nil
+}
+
+func faqChangedFields(in FAQUpdateRequest) models.JSONSlice {
+	fields := make(models.JSONSlice, 0, 4)
+	if in.Question != nil {
+		fields = append(fields, "question")
+	}
+	if in.AnswerMarkdown != nil {
+		fields = append(fields, "answer_markdown")
+	}
+	if in.IsVisible != nil {
+		fields = append(fields, "is_visible")
+	}
+	if in.SortOrder != nil {
+		fields = append(fields, "sort_order")
+	}
+	return fields
 }
 
 func parsePublicHomeTargetGUID(value string) (int64, error) {

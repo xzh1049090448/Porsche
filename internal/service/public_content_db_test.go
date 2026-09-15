@@ -254,6 +254,182 @@ func TestPublicHomeSoftDeleteMissingAndRollbackAreOpaqueAndAtomic(t *testing.T) 
 	}
 }
 
+func TestPublicHomeDraftAggregateLimitRollsBackEveryWritePath(t *testing.T) {
+	if os.Getenv("TEST_DATABASE_URL") == "" {
+		t.Skip("BLOCKED_FIXTURE: requires explicit disposable TEST_DATABASE_URL; .env is never read")
+	}
+	f := openPublicModelDBFixture(t)
+	cleanPublicContentDBFixture(t, f.db)
+	tx := f.db.Begin()
+	if tx.Error != nil {
+		t.Fatal(tx.Error)
+	}
+	t.Cleanup(func() { _ = tx.Rollback().Error })
+	ctx := context.Background()
+	s := NewPublicContentService(tx)
+	draft, err := s.GetHomeDraft(ctx, f.actor.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var aggregate models.PublicContentDraft
+	if err = tx.Where("document_kind=? AND is_deleted=0", models.PublicContentDocumentSite).First(&aggregate).Error; err != nil {
+		t.Fatal(err)
+	}
+	payload := clonePublicContentPayload(aggregate.Payload)
+	payload["padding"] = ""
+	baseSize, err := publicHomeAggregateDraftSize(payload, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload["padding"] = strings.Repeat("x", PublicContentDraftAggregateLimit-baseSize)
+	if err = tx.Model(&aggregate).Update("payload", payload).Error; err != nil {
+		t.Fatal(err)
+	}
+	config := models.PublicModelConfig{AuditFields: auditFields(&f.actor.ID), ModelKey: "aggregate-featured", UpstreamModelID: "org/aggregate", DisplayName: "Aggregate", Provider: "p", Capabilities: models.JSONSlice{"chat"}, ContextWindow: 1, Status: models.PublicModelConfigStatusActive, Revision: 1}
+	if err = tx.Create(&config).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	assertRejectedWithoutPartialState := func(name string, write func() error) {
+		t.Helper()
+		if writeErr := write(); status(writeErr) != 400 {
+			t.Fatalf("%s status=%d err=%v", name, status(writeErr), writeErr)
+		}
+		var current models.PublicContentDraft
+		if loadErr := tx.Where("id=?", aggregate.ID).First(&current).Error; loadErr != nil || current.Revision != draft.Revision || current.Payload["padding"] != payload["padding"] {
+			t.Fatalf("%s aggregate=%#v err=%v", name, current, loadErr)
+		}
+		var announcements, faqs, audits int64
+		if countErr := tx.Model(&models.PublicHomeAnnouncement{}).Where("content_draft_id=?", aggregate.ID).Count(&announcements).Error; countErr != nil {
+			t.Fatal(countErr)
+		}
+		if countErr := tx.Model(&models.PublicHomeFAQ{}).Where("content_draft_id=?", aggregate.ID).Count(&faqs).Error; countErr != nil {
+			t.Fatal(countErr)
+		}
+		if countErr := tx.Model(&models.AuditLog{}).Where("user_id=? AND action LIKE 'public_content.home.%'", f.actor.ID).Count(&audits).Error; countErr != nil {
+			t.Fatal(countErr)
+		}
+		if announcements != 0 || faqs != 0 || audits != 0 {
+			t.Fatalf("%s left rows announcements=%d faqs=%d audits=%d", name, announcements, faqs, audits)
+		}
+	}
+	assertRejectedWithoutPartialState("announcement", func() error {
+		_, writeErr := s.CreateAnnouncement(ctx, f.actor.ID, AnnouncementCreateRequest{ExpectedRevision: draft.Revision, Title: "a", BodyMarkdown: "b", IsVisible: true})
+		return writeErr
+	})
+	assertRejectedWithoutPartialState("FAQ", func() error {
+		_, writeErr := s.CreateFAQ(ctx, f.actor.ID, FAQCreateRequest{ExpectedRevision: draft.Revision, Question: "q", AnswerMarkdown: "a", IsVisible: true})
+		return writeErr
+	})
+	assertRejectedWithoutPartialState("featured", func() error {
+		_, writeErr := s.ReplaceFeaturedModels(ctx, f.actor.ID, FeaturedModelsSaveRequest{ExpectedRevision: draft.Revision, FeaturedModelKeys: []string{config.ModelKey}})
+		return writeErr
+	})
+	assertRejectedWithoutPartialState("documents", func() error {
+		_, writeErr := s.SaveDocumentsDraft(ctx, f.actor.ID, DocumentsDraftSaveRequest{ExpectedRevision: draft.Revision, About: "a"})
+		return writeErr
+	})
+	assertRejectedWithoutPartialState("legacy", func() error {
+		home, empty, reviewed := "h", "", false
+		_, writeErr := s.SaveDraft(ctx, f.actor.ID, PublicContentDraftSaveRequest{ExpectedRevision: draft.Revision, Home: &home, About: &empty, Terms: &empty, Privacy: &empty, LegalReviewed: &reviewed})
+		return writeErr
+	})
+}
+
+func TestPublicHomePatchAuditDistinguishesVisibilityAndSortWithoutContent(t *testing.T) {
+	if os.Getenv("TEST_DATABASE_URL") == "" {
+		t.Skip("BLOCKED_FIXTURE: requires explicit disposable TEST_DATABASE_URL; .env is never read")
+	}
+	f := openPublicModelDBFixture(t)
+	cleanPublicContentDBFixture(t, f.db)
+	tx := f.db.Begin()
+	if tx.Error != nil {
+		t.Fatal(tx.Error)
+	}
+	t.Cleanup(func() { _ = tx.Rollback().Error })
+	ctx := context.Background()
+	s := NewPublicContentService(tx)
+	draft, err := s.GetHomeDraft(ctx, f.actor.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	draft, err = s.CreateAnnouncement(ctx, f.actor.ID, AnnouncementCreateRequest{ExpectedRevision: draft.Revision, Title: "audit title", BodyMarkdown: "audit body", IsVisible: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	announcementGUID := draft.Announcements[0].GUID
+	draft, err = s.CreateFAQ(ctx, f.actor.ID, FAQCreateRequest{ExpectedRevision: draft.Revision, Question: "audit question", AnswerMarkdown: "audit answer", IsVisible: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	faqGUID := draft.FAQs[0].GUID
+	visible, order := false, 9
+	for _, mutation := range []func() error{
+		func() error {
+			var e error
+			draft, e = s.UpdateAnnouncement(ctx, f.actor.ID, announcementGUID, AnnouncementUpdateRequest{ExpectedRevision: draft.Revision, IsVisible: &visible})
+			return e
+		},
+		func() error {
+			var e error
+			draft, e = s.UpdateAnnouncement(ctx, f.actor.ID, announcementGUID, AnnouncementUpdateRequest{ExpectedRevision: draft.Revision, SortOrder: &order})
+			return e
+		},
+		func() error {
+			var e error
+			draft, e = s.UpdateFAQ(ctx, f.actor.ID, faqGUID, FAQUpdateRequest{ExpectedRevision: draft.Revision, IsVisible: &visible})
+			return e
+		},
+		func() error {
+			var e error
+			draft, e = s.UpdateFAQ(ctx, f.actor.ID, faqGUID, FAQUpdateRequest{ExpectedRevision: draft.Revision, SortOrder: &order})
+			return e
+		},
+	} {
+		if err = mutation(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var audits []models.AuditLog
+	if err = tx.Where("user_id=? AND action IN ?", f.actor.ID, []string{"public_content.home.announcement.update", "public_content.home.faq.update"}).Order("id").Find(&audits).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(audits) != 4 {
+		t.Fatalf("audit count=%d", len(audits))
+	}
+	want := [][]string{{"is_visible"}, {"sort_order"}, {"is_visible"}, {"sort_order"}}
+	for i := range audits {
+		if got := publicHomeAuditChangedFields(audits[i].Detail); !reflect.DeepEqual(got, want[i]) {
+			t.Fatalf("audit %d changed_fields=%v want=%v detail=%#v", i, got, want[i], audits[i].Detail)
+		}
+		encoded, _ := json.Marshal(audits[i].Detail)
+		for _, forbidden := range []string{"audit title", "audit body", "audit question", "audit answer", "password"} {
+			if strings.Contains(strings.ToLower(string(encoded)), forbidden) {
+				t.Fatalf("audit leaked %q: %s", forbidden, encoded)
+			}
+		}
+	}
+}
+
+func publicHomeAuditChangedFields(detail models.JSONMap) []string {
+	values, ok := detail["changed_fields"].([]any)
+	if !ok {
+		if typed, typedOK := detail["changed_fields"].(models.JSONSlice); typedOK {
+			return append([]string(nil), typed...)
+		}
+		return nil
+	}
+	fields := make([]string, 0, len(values))
+	for _, value := range values {
+		field, ok := value.(string)
+		if !ok {
+			return nil
+		}
+		fields = append(fields, field)
+	}
+	return fields
+}
+
 func TestPublicHomeDraftMutationLimitsAndConcurrentRevision(t *testing.T) {
 	if os.Getenv("TEST_DATABASE_URL") == "" {
 		t.Skip("BLOCKED_FIXTURE: requires explicit disposable TEST_DATABASE_URL; .env is never read")

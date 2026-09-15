@@ -140,6 +140,9 @@ func (s *PublicContentService) SaveDraft(ctx context.Context, actorID int64, in 
 		}
 		now := s.now()
 		payload := mergePublicContentDraftPayload(d.Payload, in)
+		if e = validatePublicHomeAggregateDraftTx(tx, d, payload); e != nil {
+			return e
+		}
 		review := models.PublicContentReviewPending
 		if *in.LegalReviewed {
 			review = models.PublicContentReviewApproved
