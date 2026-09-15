@@ -132,6 +132,17 @@ func TestPublicRenderExpiredFenceExhaustionUsesCycleOrdinal(t *testing.T) {
 	}
 }
 
+func TestPublicRenderExplicitFailureKeepsInputOnlyAtCycleTerminal(t *testing.T) {
+	for _, tc := range []struct {
+		fence int
+		keep  bool
+	}{{1, false}, {2, false}, {3, true}, {4, false}, {5, false}, {6, true}, {8, false}, {9, true}} {
+		if got := publicRenderFailureKeepsInputMarker(tc.fence); got != tc.keep {
+			t.Fatalf("fence=%d keep input=%v want=%v", tc.fence, got, tc.keep)
+		}
+	}
+}
+
 func TestPublicRenderJobFixtureBoundaryRequeueRejectsDelayedFirstAttempt(t *testing.T) {
 	for _, operation := range []string{"complete", "fail"} {
 		t.Run(operation, func(t *testing.T) {
@@ -796,6 +807,137 @@ func TestPublicRenderJobFixtureExpiredFinalAttemptPreservesDueAnnouncementRecove
 	var alert models.RootAlert
 	if err = db.Where("fingerprint=? AND is_deleted=0", fingerprint).First(&alert).Error; err != nil || alert.OccurrenceCount != 1 || alert.State != models.RootAlertStateResolved {
 		t.Fatalf("recovered crash alert=%#v err=%v", alert, err)
+	}
+}
+
+func TestPublicRenderJobFixtureExplicitFinalFailPreservesBoundaryCoverage(t *testing.T) {
+	for _, finalFence := range []int{3, 6, 9} {
+		t.Run(strconv.Itoa(finalFence), func(t *testing.T) {
+			db := openTestMySQL(t)
+			ctx := context.Background()
+			effective := time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC)
+			job := seedStructuredPublicRenderJobFixture(t, db, effective)
+			if err := db.Model(&models.PublicRenderJob{}).Where("id=?", job.ID).Updates(map[string]any{"state": models.PublicRenderJobQueued, "attempt_count": finalFence - 1, "lease_owner_hmac": nil, "lease_expires_at": nil, "completed_at": nil, "last_failure": nil, "last_terminal_owner_hmac": nil, "last_terminal_fence": nil, "last_terminal_operation": nil, "last_terminal_state": nil}).Error; err != nil {
+				t.Fatal(err)
+			}
+			var releasesBefore, jobsBefore int64
+			if err := db.Model(&models.PublicContentRelease{}).Count(&releasesBefore).Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := db.Model(&models.PublicRenderJob{}).Count(&jobsBefore).Error; err != nil {
+				t.Fatal(err)
+			}
+			clock := &fakePublicRenderClock{millis: effective.Add(-100 * time.Millisecond).UnixMilli()}
+			svc := NewPublicRenderJobServiceWithClock(db, []byte("fixture-render-job-purpose-key-32"), clock)
+			owner := "explicit-final-fail-owner"
+			lease, err := svc.Lease(ctx, PublicRenderLeaseInput{OwnerToken: owner, LeaseMillis: 30_000})
+			if err != nil || lease == nil || lease.Fence != finalFence {
+				t.Fatalf("final fence=%d lease=%#v err=%v", finalFence, lease, err)
+			}
+			inputAt := clock.millis
+			reader := newPublicCatalogReadServiceWithClock(db, func() time.Time { return time.UnixMilli(clock.millis).UTC() })
+			projection, err := reader.Projection(ctx)
+			if err != nil || len(projection.HomeConfig.Announcements) != 0 {
+				t.Fatalf("pre-boundary projection=%#v err=%v", projection, err)
+			}
+			clock.millis = effective.Add(100 * time.Millisecond).UnixMilli()
+			if err = svc.Fail(ctx, PublicRenderTransitionInput{JobGUID: lease.JobGUID, OwnerToken: lease.OwnerToken, Fence: lease.Fence, Failure: "validation_failed"}); err != nil {
+				t.Fatal(err)
+			}
+			var failed models.PublicRenderJob
+			if err = db.Where("id=?", job.ID).First(&failed).Error; err != nil || failed.State != models.PublicRenderJobFailed || failed.AttemptCount != finalFence || failed.LastFailure == nil || *failed.LastFailure != "validation_failed" || failed.CompletedAt == nil || *failed.CompletedAt != inputAt || failed.UpdatedAt != clock.millis {
+				t.Fatalf("explicit terminal fail=%#v input_at=%d fail_at=%d err=%v", failed, inputAt, clock.millis, err)
+			}
+			projection, err = reader.Projection(ctx)
+			if err != nil || len(projection.HomeConfig.Announcements) != 1 {
+				t.Fatalf("post-boundary projection=%#v err=%v", projection, err)
+			}
+			clock.millis++
+			next, err := svc.Lease(ctx, PublicRenderLeaseInput{OwnerToken: owner, LeaseMillis: 30_000})
+			if err != nil || next == nil || next.Fence != finalFence+1 || next.JobGUID != job.Guid {
+				t.Fatalf("next cycle after final fence=%d lease=%#v err=%v", finalFence, next, err)
+			}
+			if err = svc.Complete(ctx, PublicRenderTransitionInput{JobGUID: lease.JobGUID, OwnerToken: owner, Fence: lease.Fence}); err != ErrPublicRenderLeaseLost {
+				t.Fatalf("stale complete=%v", err)
+			}
+			if err = svc.Fail(ctx, PublicRenderTransitionInput{JobGUID: lease.JobGUID, OwnerToken: owner, Fence: lease.Fence, Failure: "render_failed"}); err != ErrPublicRenderLeaseLost {
+				t.Fatalf("stale fail=%v", err)
+			}
+			var active models.PublicRenderJob
+			if err = db.Where("id=?", job.ID).First(&active).Error; err != nil || active.State != models.PublicRenderJobLeased || active.AttemptCount != next.Fence || active.CompletedAt == nil || *active.CompletedAt != clock.millis {
+				t.Fatalf("stale transition mutated next cycle=%#v err=%v", active, err)
+			}
+			if err = svc.Complete(ctx, PublicRenderTransitionInput{JobGUID: next.JobGUID, OwnerToken: next.OwnerToken, Fence: next.Fence}); err != nil {
+				t.Fatal(err)
+			}
+			clock.millis++
+			again, err := svc.Lease(ctx, PublicRenderLeaseInput{OwnerToken: owner, LeaseMillis: 30_000})
+			if err != nil || again != nil {
+				t.Fatalf("duplicate boundary tick=%#v err=%v", again, err)
+			}
+			fingerprint := rootAlertFingerprint(models.RootAlertTypeRendererFailure, "", publicRenderAlertIdentity(job.Guid))
+			var alert models.RootAlert
+			if err = db.Where("fingerprint=? AND is_deleted=0", fingerprint).First(&alert).Error; err != nil || alert.State != models.RootAlertStateResolved || alert.OccurrenceCount != 1 || alert.Payload["error_code"] != "validation_failed" {
+				t.Fatalf("explicit failure alert=%#v err=%v", alert, err)
+			}
+			var releasesAfter, jobsAfter int64
+			if err = db.Model(&models.PublicContentRelease{}).Count(&releasesAfter).Error; err != nil {
+				t.Fatal(err)
+			}
+			if err = db.Model(&models.PublicRenderJob{}).Count(&jobsAfter).Error; err != nil {
+				t.Fatal(err)
+			}
+			if releasesAfter != releasesBefore || jobsAfter != jobsBefore {
+				t.Fatalf("explicit fail boundary created rows releases=%d/%d jobs=%d/%d", releasesBefore, releasesAfter, jobsBefore, jobsAfter)
+			}
+		})
+	}
+}
+
+func TestPublicRenderJobFixtureExplicitFailureMarkerSemanticsWithoutBoundary(t *testing.T) {
+	db := openTestMySQL(t)
+	ctx := context.Background()
+	fixture := seedPublicRenderJobFixture(t, db)
+	var job models.PublicRenderJob
+	if err := db.Where("guid=?", fixture.generation).First(&job).Error; err != nil {
+		t.Fatal(err)
+	}
+	now := int64(1_900_000_195_000)
+	clock := &fakePublicRenderClock{millis: now}
+	svc := NewPublicRenderJobServiceWithClock(db, []byte("fixture-render-job-purpose-key-32"), clock)
+	first, err := svc.Lease(ctx, PublicRenderLeaseInput{OwnerToken: "nonterminal-marker-owner", LeaseMillis: 30_000})
+	if err != nil || first == nil || first.Fence != 1 {
+		t.Fatalf("first=%#v err=%v", first, err)
+	}
+	clock.millis++
+	if err = svc.Fail(ctx, PublicRenderTransitionInput{JobGUID: first.JobGUID, OwnerToken: first.OwnerToken, Fence: first.Fence, Failure: "render_failed"}); err != nil {
+		t.Fatal(err)
+	}
+	var retrying models.PublicRenderJob
+	if err = db.Where("id=?", job.ID).First(&retrying).Error; err != nil || retrying.State != models.PublicRenderJobQueued || retrying.CompletedAt != nil || retrying.UpdatedAt != clock.millis {
+		t.Fatalf("nonterminal marker=%#v err=%v", retrying, err)
+	}
+	if err = db.Model(&models.PublicRenderJob{}).Where("id=?", job.ID).Updates(map[string]any{"state": models.PublicRenderJobQueued, "attempt_count": 2, "lease_expires_at": nil, "last_terminal_owner_hmac": nil, "last_terminal_fence": nil, "last_terminal_operation": nil, "last_terminal_state": nil}).Error; err != nil {
+		t.Fatal(err)
+	}
+	clock.millis += 20_000
+	final, err := svc.Lease(ctx, PublicRenderLeaseInput{OwnerToken: "terminal-marker-owner", LeaseMillis: 30_000})
+	if err != nil || final == nil || final.Fence != 3 {
+		t.Fatalf("final=%#v err=%v", final, err)
+	}
+	inputAt := clock.millis
+	clock.millis++
+	if err = svc.Fail(ctx, PublicRenderTransitionInput{JobGUID: final.JobGUID, OwnerToken: final.OwnerToken, Fence: final.Fence, Failure: "render_failed"}); err != nil {
+		t.Fatal(err)
+	}
+	var failed models.PublicRenderJob
+	if err = db.Where("id=?", job.ID).First(&failed).Error; err != nil || failed.State != models.PublicRenderJobFailed || failed.CompletedAt == nil || *failed.CompletedAt != inputAt || failed.UpdatedAt != clock.millis {
+		t.Fatalf("terminal marker=%#v err=%v", failed, err)
+	}
+	clock.millis += time.Hour.Milliseconds()
+	again, err := svc.Lease(ctx, PublicRenderLeaseInput{OwnerToken: "terminal-marker-owner", LeaseMillis: 30_000})
+	if err != nil || again != nil {
+		t.Fatalf("no-boundary final failure requeued=%#v err=%v", again, err)
 	}
 }
 

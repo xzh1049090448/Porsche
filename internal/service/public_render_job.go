@@ -470,7 +470,10 @@ func (s *PublicRenderJobService) Fail(ctx context.Context, in PublicRenderTransi
 			return ErrPublicRenderInvalid
 		}
 	}
-	updates := map[string]any{"state": state, "last_failure": code, "lease_owner_hmac": nil, "completed_at": nil, "updated_at": now}
+	updates := map[string]any{"state": state, "last_failure": code, "lease_owner_hmac": nil, "updated_at": now}
+	if !publicRenderFailureKeepsInputMarker(in.Fence) {
+		updates["completed_at"] = nil
+	}
 	op := 2
 	updates["last_terminal_owner_hmac"] = s.ownerHMAC(in.OwnerToken)
 	updates["last_terminal_fence"] = in.Fence
@@ -577,6 +580,10 @@ func publicRenderAttemptOrdinal(fence int) int {
 
 func publicRenderAttemptExhausted(fence int) bool {
 	return fence > 0 && publicRenderAttemptOrdinal(fence) == publicRenderMaxAttempts
+}
+
+func publicRenderFailureKeepsInputMarker(fence int) bool {
+	return publicRenderAttemptExhausted(fence)
 }
 
 // publicRenderNextCycleBase advances to the end of the current retry cycle.
