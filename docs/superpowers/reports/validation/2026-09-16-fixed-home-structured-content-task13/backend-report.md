@@ -1,10 +1,10 @@
 # Fixed Home Structured Content — Task 13 后端真实数据层验证记录
 
 日期：2026-09-16
-后端实现候选：`8303a28`（包含 `f6ed4e1` exact action target locks 与 `8303a28` atomic structured artifact renderer）
-配对前端实现候选：`78006b360b1f005ded208b68aae6464c67891b52`
-跨仓库总合同：`interface-contract.json`，`v1.0.0-p0 / agreed_for_implementation`，SHA-256 `771f9efb7c9684cd25cf53dbad667badaca26d6289de8cf4e2bbefa50e0a6579`
-后端公共内容子合同：`docs/agents/contracts/public-content-pricing-v1.json`，`v2 / implemented_locally_pending_acceptance`，SHA-256 `649f3b2f44e8676032097f57b00931647042e70d9d7283ca0fb29a0eaa798ce5`
+后端实现候选：`77c4e003310f3194f3e7a90cdadb7d650cbd3ba1`（包含 `f6ed4e1` exact action target locks 与 `8303a28` atomic structured artifact renderer）
+配对前端实现候选：`61c1ccb6512198539ae13b3d98e4043ef77a1dca`
+跨仓库总合同：`interface-contract.json`，`v1.0.0-p0 / agreed_for_implementation`，SHA-256 `9bc9c70e70bb45b63185b3b619ae49e5e6a251ba3c4a30f64539774cb272a3ce`
+后端公共内容子合同：`docs/agents/contracts/public-content-pricing-v1.json`，`v2 / implemented_locally_pending_acceptance`，SHA-256 `4db4380dcef26f0098443f591d9fe098f9faefd32a367f02ce2a14ba62d8309d`
 当前结论：`PASS_LIMITED_SCOPE`
 
 ## 已验证范围
@@ -41,6 +41,13 @@ Task 13 在 disposable、loopback-only 的 MySQL 8.4.11 和 Redis 7-alpine 上�
 - `go test ./internal/dto ./internal/router -run 'TestPublicContentPricingContract|TestPublicContentPricingAdminRoutesMatchFrozenContract' -count=1` 使用私有 Go cache 后 exit 0。
 - `go test ./... -count=1` 在获准的 loopback 环境下 exit 0；先前沙箱内运行仅因本机监听权限失败，不计为产品失败。
 - `go vet ./...`、`go build ./...`、`deploy/test-dockerfile.sh`、变更 Go 文件格式检查和 `git diff --check` 再次 exit 0。
+
+## 规格复审缺陷与修复
+
+- 首个最终快照后，前端独立规格审查发现两项阻塞：Root 首页预览错误要求无空格 `noindex,nofollow`；两份合同未写入后端既有稳定 `modelKey` 规则，且公开详情客户端接受后端会拒绝的大小写、点和下划线。该前端快照及配对后端快照均失效。
+- RED 证据：后端合同测试因缺失 `minLength/maxLength/pattern` 失败；前端定向 55 项中合同、公开详情键与真实预览头三项失败。
+- 后端 `77c4e00` 将既有规则冻结为 `^[a-z](?:[a-z0-9]|-[a-z0-9])*$`、长度 1–128，并把预览头合同写为字面量 `noindex, nofollow`。前端 `61c1ccb` 同步合同、严格公开详情输入与预览响应校验。
+- GREEN 证据：后端 dto/router/publiccontent 定向通过；前端定向 61/61、跨仓库公共内容子合同字节一致；后端 `go test ./... -count=1` 通过，前端完整 `npm test` 1138/1138、0 fail/skip/cancel/todo，48.734s；production build 与公共 chunk 9/9、171428 JS bytes/20362 CSS bytes 通过。
 
 ## 尚未运行与状态边界
 

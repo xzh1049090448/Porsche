@@ -1,8 +1,8 @@
 Fixed Home Structured Content Task13 backend record — 2026-09-16
-backend implementation HEAD: 8303a28 (includes f6ed4e1 target locks and 8303a28 artifact renderer)
-frontend implementation HEAD: 78006b360b1f005ded208b68aae6464c67891b52
-cross-repo contract: interface-contract.json v1.0.0-p0 / agreed_for_implementation / 771f9efb7c9684cd25cf53dbad667badaca26d6289de8cf4e2bbefa50e0a6579
-backend subsystem contract: public-content-pricing-v1.json v2 / implemented_locally_pending_acceptance / 649f3b2f44e8676032097f57b00931647042e70d9d7283ca0fb29a0eaa798ce5
+backend implementation HEAD: 77c4e003310f3194f3e7a90cdadb7d650cbd3ba1 (includes f6ed4e1 target locks and 8303a28 artifact renderer)
+frontend implementation HEAD: 61c1ccb6512198539ae13b3d98e4043ef77a1dca
+cross-repo contract: interface-contract.json v1.0.0-p0 / agreed_for_implementation / 9bc9c70e70bb45b63185b3b619ae49e5e6a251ba3c4a30f64539774cb272a3ce
+backend subsystem contract: public-content-pricing-v1.json v2 / implemented_locally_pending_acceptance / 4db4380dcef26f0098443f591d9fe098f9faefd32a367f02ce2a14ba62d8309d
 overall: PASS_LIMITED_SCOPE
 
 PASS exit=0  go test -p 1 ./internal/migration ./internal/service ./internal/handler -run 'Test.*PublicHome|Test.*PublicContent|Test.*PublicCatalog' -count=1
@@ -28,6 +28,14 @@ PASS  exact cleanup: MySQL 230609b618dde469fdf1093ed109c747d9989f41fd91b4e5bc3f4
 PASS exit=0  contract-status focused dto/router revalidation
 PASS exit=0  post-remediation go test ./... -count=1 with loopback permission
 PASS exit=0  post-remediation vet/build/dockerfile/gofmt/diff
+
+SPEC_FAIL_INVALIDATED  frontend snapshot 6cdec47f13716e4f546b19d69c56050f5bde5f159416d91c708f3b7ce2727d92: preview header and stable modelKey contract drift
+RED  backend contract missing stable modelKey shape; frontend focused 3 failures (contract, model key, preview header)
+PASS  fixes backend=77c4e003310f3194f3e7a90cdadb7d650cbd3ba1 frontend=61c1ccb6512198539ae13b3d98e4043ef77a1dca
+PASS exit=0  backend dto/router/publiccontent focused and full go test ./...
+PASS exit=0  frontend focused 61/61 and full 1138/1138, 0 fail/skip/cancel/todo, 48.734s
+PASS exit=0  cross-repo public content contracts byte-equal
+PASS exit=0  production build and public chunk checker: 9 chunks, 171428 JS bytes, 20362 CSS bytes
 
 Task12 browser evidence remains synthetic page.route: 12/12 scenarios, 234/234 assertions, 32 sanitized requests, 0 unexpected console/page errors.
 NOT_RUN  authenticated Root real browser CRUD/RBAC/transaction flow
