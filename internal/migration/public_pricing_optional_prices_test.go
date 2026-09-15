@@ -7,9 +7,9 @@ import (
 	"testing"
 )
 
-func TestPublicPricingOptionalPricesMigrationIsLatestAndReversible(t *testing.T) {
+func TestPublicPricingOptionalPricesMigrationIsOrderedAndReversible(t *testing.T) {
 	ms, e := All()
-	if e != nil || len(ms) != 19 || ms[18].Version != "0019" {
+	if e != nil || len(ms) < 19 || ms[18].Version != "0019" {
 		t.Fatalf("migrations=%d err=%v", len(ms), e)
 	}
 	for _, token := range []string{"input_price_usd_per_million_tokens", "output_price_usd_per_million_tokens", " null", " not null"} {

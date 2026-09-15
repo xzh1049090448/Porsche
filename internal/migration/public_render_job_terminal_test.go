@@ -14,7 +14,7 @@ func TestPublicRenderJobTerminalMigrationContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(ms) != 19 || ms[16].Version != "0017" {
+	if len(ms) < 17 || ms[16].Version != "0017" {
 		t.Fatalf("migration tail=%#v", ms)
 	}
 	up := strings.ToLower(string(ms[16].UpSQL))

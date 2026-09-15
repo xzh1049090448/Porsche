@@ -14,7 +14,7 @@ func TestUpstreamMonitorLeaseMigrationContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(ms) != 19 || ms[15].Version != "0016" {
+	if len(ms) < 16 || ms[15].Version != "0016" {
 		t.Fatalf("migration tail=%d/%v", len(ms), ms)
 	}
 	up := strings.ToLower(string(ms[15].UpSQL))

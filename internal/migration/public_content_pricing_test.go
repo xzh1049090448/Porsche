@@ -199,8 +199,8 @@ func publicContentPricingMigration(t *testing.T) Migration {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(migrations) != 19 || migrations[13].Version != "0014" || migrations[14].Version != "0015" {
-		t.Fatalf("All() = %#v, want migration 0012 last", migrations)
+	if len(migrations) < 15 || migrations[13].Version != "0014" || migrations[14].Version != "0015" {
+		t.Fatalf("All() = %#v, want migrations 0014 and 0015 at their published positions", migrations)
 	}
 	return migrations[13]
 }

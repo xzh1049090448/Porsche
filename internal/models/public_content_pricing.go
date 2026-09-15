@@ -404,6 +404,33 @@ type PublicContentDraft struct {
 
 func (PublicContentDraft) TableName() string { return "public_content_drafts" }
 
+type PublicHomeAnnouncement struct {
+	ID             int64 `gorm:"column:id;type:bigint;not null;primaryKey;autoIncrement" json:"-"`
+	AuditFields    `gorm:"embedded" json:"-"`
+	ContentDraftID int64  `gorm:"column:content_draft_id;type:bigint;not null" json:"-"`
+	Title          string `gorm:"column:title;type:varchar(120);not null" json:"-"`
+	BodyMarkdown   string `gorm:"column:body_markdown;type:mediumtext;not null" json:"-"`
+	EffectiveAt    *int64 `gorm:"column:effective_at;type:bigint" json:"-"`
+	IsVisible      int    `gorm:"column:is_visible;type:int;not null" json:"-"`
+	SortOrder      int    `gorm:"column:sort_order;type:int;not null" json:"-"`
+	Revision       int64  `gorm:"column:revision;type:bigint;not null" json:"-"`
+}
+
+func (PublicHomeAnnouncement) TableName() string { return "public_home_announcements" }
+
+type PublicHomeFAQ struct {
+	ID             int64 `gorm:"column:id;type:bigint;not null;primaryKey;autoIncrement" json:"-"`
+	AuditFields    `gorm:"embedded" json:"-"`
+	ContentDraftID int64  `gorm:"column:content_draft_id;type:bigint;not null" json:"-"`
+	Question       string `gorm:"column:question;type:varchar(200);not null" json:"-"`
+	AnswerMarkdown string `gorm:"column:answer_markdown;type:mediumtext;not null" json:"-"`
+	IsVisible      int    `gorm:"column:is_visible;type:int;not null" json:"-"`
+	SortOrder      int    `gorm:"column:sort_order;type:int;not null" json:"-"`
+	Revision       int64  `gorm:"column:revision;type:bigint;not null" json:"-"`
+}
+
+func (PublicHomeFAQ) TableName() string { return "public_home_faqs" }
+
 type PublicContentRelease struct {
 	ID                    int64                     `gorm:"column:id;type:bigint;not null;primaryKey;autoIncrement" json:"-"`
 	Guid                  int64                     `gorm:"column:guid;type:bigint;not null;<-:create" json:"guid"`

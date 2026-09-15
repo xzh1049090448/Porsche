@@ -9,6 +9,50 @@ import (
 	"gorm.io/gorm/schema"
 )
 
+func TestPublicHomeStructuredContentModelsUseExplicitTablesAndFields(t *testing.T) {
+	tests := []struct {
+		model  interface{}
+		table  string
+		fields map[string]string
+	}{
+		{
+			model: &PublicHomeAnnouncement{},
+			table: "public_home_announcements",
+			fields: map[string]string{
+				"ID": "id", "Guid": "guid", "CreatedAt": "created_at", "CreatedBy": "created_by",
+				"UpdatedAt": "updated_at", "UpdatedBy": "updated_by", "IsDeleted": "is_deleted",
+				"ContentDraftID": "content_draft_id", "Title": "title", "BodyMarkdown": "body_markdown",
+				"EffectiveAt": "effective_at", "IsVisible": "is_visible", "SortOrder": "sort_order", "Revision": "revision",
+			},
+		},
+		{
+			model: &PublicHomeFAQ{},
+			table: "public_home_faqs",
+			fields: map[string]string{
+				"ID": "id", "Guid": "guid", "CreatedAt": "created_at", "CreatedBy": "created_by",
+				"UpdatedAt": "updated_at", "UpdatedBy": "updated_by", "IsDeleted": "is_deleted",
+				"ContentDraftID": "content_draft_id", "Question": "question", "AnswerMarkdown": "answer_markdown",
+				"IsVisible": "is_visible", "SortOrder": "sort_order", "Revision": "revision",
+			},
+		},
+	}
+	for _, tc := range tests {
+		parsed, err := schema.Parse(tc.model, &sync.Map{}, schema.NamingStrategy{})
+		if err != nil {
+			t.Fatalf("parse %T: %v", tc.model, err)
+		}
+		if parsed.Table != tc.table {
+			t.Errorf("%T table = %q, want %q", tc.model, parsed.Table, tc.table)
+		}
+		for fieldName, columnName := range tc.fields {
+			field := parsed.LookUpField(fieldName)
+			if field == nil || field.DBName != columnName {
+				t.Errorf("%T field %s = %#v, want column %q", tc.model, fieldName, field, columnName)
+			}
+		}
+	}
+}
+
 func TestPublicRenderJobTerminalReceiptFieldsAreInternalAndTyped(t *testing.T) {
 	typ := reflect.TypeOf(PublicRenderJob{})
 	for _, name := range []string{"LastTerminalOwnerHMAC", "LastTerminalFence", "LastTerminalOperation", "LastTerminalState"} {

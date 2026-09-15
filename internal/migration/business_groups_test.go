@@ -17,12 +17,12 @@ import (
 	"gorm.io/gorm/schema"
 )
 
-func TestBusinessGroupMigrationLatest(t *testing.T) {
+func TestBusinessGroupMigrationPublishedPosition(t *testing.T) {
 	migrations, err := All()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(migrations) != 19 || migrations[6].Version != "0007" || migrations[7].Version != "0008" || migrations[8].Version != "0009" || migrations[9].Version != "0010" {
+	if len(migrations) < 10 || migrations[6].Version != "0007" || migrations[7].Version != "0008" || migrations[8].Version != "0009" || migrations[9].Version != "0010" {
 		t.Fatalf("All() count/tail = %d/%q, want ten migrations with business groups at 0007", len(migrations), migrations[len(migrations)-1].Version)
 	}
 
@@ -46,8 +46,9 @@ func TestBusinessGroupMigrationLatest(t *testing.T) {
 		"998e273023e4a6992f6bf78b8ac6f7a0ee7e7d85bb3bcfa468659e7e4db7f9be",
 		"107d1c9f547e5988068d10bbaf3adbc892d63c683f71209725473be6bacc0afa",
 		"04e8c22b9c3ead34a4572f81ca0060a9305acf635cc0ead5c10136239b031ff2",
+		"c3acbbc0fb1692ca654b689f72489fe4c93e07067e66fd81e0a6506877ac9ce7",
 	}
-	if len(wantPublished) != len(migrations) {
+	if len(migrations) < len(wantPublished) {
 		t.Fatalf("checksum list length = %d, migrations = %d", len(wantPublished), len(migrations))
 	}
 	for i, want := range wantPublished {

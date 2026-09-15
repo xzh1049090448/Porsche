@@ -1,0 +1,40 @@
+CREATE TABLE IF NOT EXISTS public_home_announcements (
+  id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  guid BIGINT NOT NULL,
+  content_draft_id BIGINT NOT NULL,
+  title VARCHAR(120) NOT NULL,
+  body_markdown MEDIUMTEXT NOT NULL,
+  effective_at BIGINT NULL,
+  is_visible INT NOT NULL DEFAULT 1,
+  sort_order INT NOT NULL DEFAULT 0,
+  revision BIGINT NOT NULL DEFAULT 1,
+  created_at BIGINT NOT NULL,
+  created_by BIGINT NULL,
+  updated_at BIGINT NOT NULL,
+  updated_by BIGINT NULL,
+  is_deleted INT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_public_home_announcements_guid (guid),
+  KEY idx_public_home_announcements_draft_active_order (content_draft_id, is_deleted, sort_order, guid),
+  CONSTRAINT fk_public_home_announcements_draft FOREIGN KEY (content_draft_id) REFERENCES public_content_drafts(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT chk_public_home_announcements_values CHECK (revision > 0 AND is_visible IN (0, 1) AND sort_order >= 0 AND is_deleted IN (0, 1))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS public_home_faqs (
+  id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  guid BIGINT NOT NULL,
+  content_draft_id BIGINT NOT NULL,
+  question VARCHAR(200) NOT NULL,
+  answer_markdown MEDIUMTEXT NOT NULL,
+  is_visible INT NOT NULL DEFAULT 1,
+  sort_order INT NOT NULL DEFAULT 0,
+  revision BIGINT NOT NULL DEFAULT 1,
+  created_at BIGINT NOT NULL,
+  created_by BIGINT NULL,
+  updated_at BIGINT NOT NULL,
+  updated_by BIGINT NULL,
+  is_deleted INT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_public_home_faqs_guid (guid),
+  KEY idx_public_home_faqs_draft_active_order (content_draft_id, is_deleted, sort_order, guid),
+  CONSTRAINT fk_public_home_faqs_draft FOREIGN KEY (content_draft_id) REFERENCES public_content_drafts(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT chk_public_home_faqs_values CHECK (revision > 0 AND is_visible IN (0, 1) AND sort_order >= 0 AND is_deleted IN (0, 1))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

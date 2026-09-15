@@ -126,6 +126,12 @@ var publicPricingOptionalPricesUp []byte
 //go:embed sql/0017_public_pricing_optional_prices.down.sql
 var publicPricingOptionalPricesDown []byte
 
+//go:embed sql/0020_public_home_structured_content.up.sql
+var publicHomeStructuredContentUp []byte
+
+//go:embed sql/0020_public_home_structured_content.down.sql
+var publicHomeStructuredContentDown []byte
+
 // Migration is an immutable, embedded schema version.
 type Migration struct {
 	Version string
@@ -161,6 +167,7 @@ func All() ([]Migration, error) {
 		{Version: "0017", UpSQL: publicRenderJobTerminalUp, DownSQL: publicRenderJobTerminalDown},
 		{Version: "0018", UpSQL: publicPricingCatalogMetadataUp, DownSQL: publicPricingCatalogMetadataDown},
 		{Version: "0019", UpSQL: publicPricingOptionalPricesUp, DownSQL: publicPricingOptionalPricesDown},
+		{Version: "0020", UpSQL: publicHomeStructuredContentUp, DownSQL: publicHomeStructuredContentDown},
 	}
 	sort.Slice(migrations, func(i, j int) bool { return migrations[i].Version < migrations[j].Version })
 	return migrations, nil
@@ -288,6 +295,11 @@ func Up(ctx context.Context, db *gorm.DB, nextGUID func() int64, nowMillis func(
 						return err
 					}
 				}
+				if migration.Version == "0020" {
+					if err := VerifyPublicHomeStructuredContentSchema(ctx, conn); err != nil {
+						return err
+					}
+				}
 				continue
 			}
 			if migration.Version == "0007" {
@@ -406,6 +418,11 @@ func Up(ctx context.Context, db *gorm.DB, nextGUID func() int64, nowMillis func(
 					return err
 				}
 			}
+			if migration.Version == "0020" {
+				if err := VerifyPublicHomeStructuredContentSchema(ctx, conn); err != nil {
+					return err
+				}
+			}
 			now := nowMillis()
 			if err := conn.Exec(
 				"INSERT INTO schema_migrations (guid, version, checksum, created_at, updated_at, is_deleted) VALUES (?, ?, ?, ?, ?, 0) ON DUPLICATE KEY UPDATE checksum=VALUES(checksum),updated_at=VALUES(updated_at),updated_by=NULL,is_deleted=0",
@@ -510,7 +527,10 @@ func Verify(ctx context.Context, db *gorm.DB) error {
 	if err := VerifyPublicPricingCatalogMetadataSchema(ctx, db); err != nil {
 		return err
 	}
-	return VerifyPublicPricingOptionalPricesSchema(ctx, db)
+	if err := VerifyPublicPricingOptionalPricesSchema(ctx, db); err != nil {
+		return err
+	}
+	return VerifyPublicHomeStructuredContentSchema(ctx, db)
 }
 
 // VerifyApplied is the side-effect-free portion of Verify, kept separate so

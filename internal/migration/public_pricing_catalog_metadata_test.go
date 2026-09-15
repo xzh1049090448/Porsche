@@ -13,9 +13,9 @@ func TestPublicPricingCatalogMetadataVerifierFailsClosedWithoutDatabase(t *testi
 	}
 }
 
-func TestPublicPricingCatalogMetadataMigrationIsLatestAndReversible(t *testing.T) {
+func TestPublicPricingCatalogMetadataMigrationIsOrderedAndReversible(t *testing.T) {
 	ms, err := All()
-	if err != nil || len(ms) != 19 || ms[17].Version != "0018" {
+	if err != nil || len(ms) < 18 || ms[17].Version != "0018" {
 		t.Fatalf("migrations=%v err=%v", len(ms), err)
 	}
 	up, down := strings.ToLower(string(ms[17].UpSQL)), strings.ToLower(string(ms[17].DownSQL))
