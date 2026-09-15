@@ -2,7 +2,7 @@
   "schema_version": 1,
   "recorded_at": "2026-09-16",
   "overall_status": "PASS_LIMITED_SCOPE",
-  "review_status": "PENDING_ORDERED_REVIEW_CHAIN",
+  "review_status": "PENDING_ORDERED_REVIEW_CHAIN_EXTERNAL_RECEIPT",
   "code_under_test": {
     "backend": "8303a28",
     "backend_included_commits": [
@@ -10,11 +10,6 @@
       "8303a28"
     ],
     "frontend": "78006b360b1f005ded208b68aae6464c67891b52"
-  },
-  "contract": {
-    "version": "v1.0.0-p0",
-    "status": "agreed_for_implementation",
-    "sha256": "3bb7932bf8637b6fcbe3b26694b4e63aa0fb72a047fb127f817865d46e0c7058"
   },
   "fixture": {
     "mysql": {
@@ -39,11 +34,17 @@
     "after": "PASS: 20 lines, 0001-0020",
     "scoped_gate": "PASS",
     "full_real_package_extra_check": "NON_BLOCKING_EXTRA_CHECK_FAIL",
-    "extra_check_reason": "historical migration tests hard-code obsolete terminal/dependency assumptions"
+    "extra_check_reason": "historical migration tests hard-code obsolete terminal/dependency assumptions",
+    "extra_check_failures": [
+      "TestBusinessGroupMigrationOnIsolatedMySQL/backfills_active_and_tombstoned_users",
+      "TestPublicPriceDraftStateMigrationRealMySQLDownAndReapply",
+      "TestPublicRenderJobTerminalMigrationRealMySQLDownAndReapply",
+      "TestUpstreamMonitorLeaseMigrationRealMySQLDownAndReapply"
+    ]
   },
   "planned_gates": {
     "normal_p1": {
-      "migration_seconds": 3.860,
+      "migration_seconds": 3.86,
       "service_seconds": 3.178,
       "handler_seconds": 0.519,
       "result": "PASS",
@@ -118,5 +119,77 @@
     "pull_request": false,
     "merge": false,
     "deploy": false
+  },
+  "contracts": {
+    "cross_repo": {
+      "path": "Porsche-Web/interface-contract.json",
+      "version": "v1.0.0-p0",
+      "status": "agreed_for_implementation",
+      "sha256": "771f9efb7c9684cd25cf53dbad667badaca26d6289de8cf4e2bbefa50e0a6579"
+    },
+    "backend_public_content": {
+      "path": "docs/agents/contracts/public-content-pricing-v1.json",
+      "version": "v2",
+      "status": "implemented_locally_pending_acceptance",
+      "sha256": "649f3b2f44e8676032097f57b00931647042e70d9d7283ca0fb29a0eaa798ce5"
+    }
+  },
+  "commands": [
+    {
+      "command": "go test -p 1 ./internal/migration ./internal/service ./internal/handler -run 'Test.*PublicHome|Test.*PublicContent|Test.*PublicCatalog' -count=1",
+      "exit": 0,
+      "unexpected_skip": 0
+    },
+    {
+      "command": "go test -race -p 1 ./internal/service ./internal/handler -run 'Test.*PublicHome|Test.*PublicContent' -count=1",
+      "exit": 0,
+      "unexpected_skip": 0
+    },
+    {
+      "command": "go test ./... -count=1",
+      "exit": 0,
+      "boundary": "root loopback permission"
+    },
+    {
+      "command": "go vet ./...",
+      "exit": 0
+    },
+    {
+      "command": "go build ./...",
+      "exit": 0
+    },
+    {
+      "command": "deploy/test-dockerfile.sh",
+      "exit": 0
+    },
+    {
+      "command": "gofmt -d",
+      "exit": 0
+    },
+    {
+      "command": "git diff --check",
+      "exit": 0
+    },
+    {
+      "command": "go test -p 1 ./internal/migration ./internal/service ./internal/handler -count=1",
+      "exit": 1,
+      "classification": "NON_BLOCKING_EXTRA_CHECK_FAIL"
+    }
+  ],
+  "review_receipt": {
+    "path": "/private/tmp/porsche-fixed-home-structured-content-review/backend/final-review-receipt.json",
+    "location": "outside_worktree",
+    "status": "PENDING",
+    "excluded_from_reviewed_scope": true
+  },
+  "post_contract_status_revalidation": {
+    "focused_dto_router": "PASS",
+    "full_go_test_all": "PASS_WITH_LOOPBACK_PERMISSION",
+    "go_vet": "PASS",
+    "go_build": "PASS",
+    "dockerfile_test": "PASS",
+    "gofmt": "PASS",
+    "git_diff_check": "PASS",
+    "sandbox_only_deviation": "loopback listeners returned operation not permitted before permitted rerun"
   }
 }

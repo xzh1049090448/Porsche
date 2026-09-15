@@ -1,21 +1,7 @@
 {
   "version": "v2",
-  "status": "approved_contract_pending_implementation",
-  "pending_implementation_routes": [
-    "GET /api/v1/public/home-config",
-    "GET /admin/v2/public-content/home-draft",
-    "POST /admin/v2/public-content/home-draft/announcements",
-    "PATCH /admin/v2/public-content/home-draft/announcements/{guid}",
-    "DELETE /admin/v2/public-content/home-draft/announcements/{guid}",
-    "POST /admin/v2/public-content/home-draft/faqs",
-    "PATCH /admin/v2/public-content/home-draft/faqs/{guid}",
-    "DELETE /admin/v2/public-content/home-draft/faqs/{guid}",
-    "PUT /admin/v2/public-content/home-draft/featured-models",
-    "GET /admin/v2/public-content/home-preview",
-    "GET /admin/v2/public-content/releases/{guid}/home-config",
-    "GET /admin/v2/public-content/documents-draft",
-    "PUT /admin/v2/public-content/documents-draft"
-  ],
+  "status": "implemented_locally_pending_acceptance",
+  "pending_implementation_routes": [],
   "pricing": {
     "currency": "USD",
     "unit": "million_tokens",

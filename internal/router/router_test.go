@@ -55,33 +55,15 @@ func TestPublicContentPricingAdminRoutesMatchFrozenContract(t *testing.T) {
 	if err := json.Unmarshal(raw, &contract); err != nil {
 		t.Fatal(err)
 	}
-	if contract.Version != "v2" || contract.Status != "approved_contract_pending_implementation" || len(contract.Routes) != 48 {
+	if contract.Version != "v2" || contract.Status != "implemented_locally_pending_acceptance" || len(contract.Routes) != 48 {
 		t.Fatalf("contract version/status/routes=%q/%q/%d", contract.Version, contract.Status, len(contract.Routes))
 	}
-	expectedPending := map[string]bool{
-		"GET /api/v1/public/home-config":                                  false,
-		"GET /admin/v2/public-content/home-draft":                         false,
-		"POST /admin/v2/public-content/home-draft/announcements":          false,
-		"PATCH /admin/v2/public-content/home-draft/announcements/{guid}":  false,
-		"DELETE /admin/v2/public-content/home-draft/announcements/{guid}": false,
-		"POST /admin/v2/public-content/home-draft/faqs":                   false,
-		"PATCH /admin/v2/public-content/home-draft/faqs/{guid}":           false,
-		"DELETE /admin/v2/public-content/home-draft/faqs/{guid}":          false,
-		"PUT /admin/v2/public-content/home-draft/featured-models":         false,
-		"GET /admin/v2/public-content/home-preview":                       false,
-		"GET /admin/v2/public-content/releases/{guid}/home-config":        false,
-		"GET /admin/v2/public-content/documents-draft":                    false,
-		"PUT /admin/v2/public-content/documents-draft":                    false,
-	}
-	if len(contract.PendingImplementationRoutes) != len(expectedPending) {
-		t.Fatalf("pending implementation route count=%d want=%d", len(contract.PendingImplementationRoutes), len(expectedPending))
+	if len(contract.PendingImplementationRoutes) != 0 {
+		t.Fatalf("implemented contract retains pending routes: %#v", contract.PendingImplementationRoutes)
 	}
 	pendingImplementation := map[string]bool{}
 	pendingRegistered := map[string]bool{}
 	for _, route := range contract.PendingImplementationRoutes {
-		if _, ok := expectedPending[route]; !ok {
-			t.Fatalf("unexpected pending implementation route %s", route)
-		}
 		if pendingImplementation[route] {
 			t.Fatalf("duplicate pending implementation route %s", route)
 		}
@@ -153,7 +135,7 @@ func TestPublicContentPricingAdminRoutesMatchFrozenContract(t *testing.T) {
 			t.Errorf("pending contract route %s count=%d", route, pendingContractRoutes[route])
 		}
 	}
-	if len(want) != 28 || len(got) != len(want)+len(pendingImplementation)-1 {
+	if len(want) != 40 || len(got) != len(want) {
 		t.Fatalf("route count got=%d want=%d", len(got), len(want))
 	}
 	for route, count := range got {
@@ -165,7 +147,7 @@ func TestPublicContentPricingAdminRoutesMatchFrozenContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if digest := fmt.Sprintf("%x", sha256.Sum256(metadataJSON)); digest != "ecf66cbdabc47f85a74d72021b1429ab0a6a846816aee773a4d2bf1a6001b0c6" {
+	if digest := fmt.Sprintf("%x", sha256.Sum256(metadataJSON)); digest != "2b8767c72f2e117aa305971a0076ff12977c1625f32bac63c9539f5ba24162b1" {
 		t.Fatalf("root route metadata drift: %s", digest)
 	}
 }

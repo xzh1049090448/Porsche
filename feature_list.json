@@ -51,8 +51,8 @@
       "status": "passing",
       "acceptance_status": "limited_subscope",
       "a14_status": "PASS_LIMITED_SCOPE",
-      "active_production_consumers": 7,
-      "joint_acceptance_blocker_count": 8,
+      "active_production_consumers": 12,
+      "joint_acceptance_blocker_count": 2,
       "joint_acceptance_blockers": [
         {
           "id": "A03",
@@ -169,7 +169,8 @@
         },
         {
           "id": "P01",
-          "status": "BLOCKED_NOT_IMPLEMENTED"
+          "status": "PASS_BACKEND_LOCAL",
+          "evidence": "Fixed Home Task13 implements registered public reads, structured home publication, and atomic renderer artifacts; real Root browser and production publication remain NOT_RUN."
         },
         {
           "id": "P03",
@@ -241,9 +242,9 @@
         "A08 managed-user roles/permissions：后端候选 9fdc07b；合同 SHA-256 dd202cb5019b10a891e10f03f77629b5f54e993110f148f417e05d089df35698；代码评审 findings 已闭环，但真实 fixture 与独立 SECURITY_REVIEW 均未完成，状态 BLOCKED_FIXTURE。",
         "2026-09-09：A08 本地联合切片 PASS_LIMITED_SCOPE。BE f2f9760 / FE 25b0731；真实 MySQL 8.0.46、Redis 7.4.11、0012 down/up、事务/并发/运行时、可见 Chromium 提升/权限修改/降级、375/390 与 exact cleanup 通过；生产和外部 PM 未运行。",
         "P03–P07 仅提升为 PASS_BACKEND_LOCAL；P08 继续 BLOCKED_PRODUCT。未执行前端联合、生产迁移、部署或生产验收。报告 docs/superpowers/reports/2026-09-09-public-content-pricing-backend.md。",
-        "2026-09-16：Task13计划内真实数据层门禁PASS且0 unexpected skip：normal -p1 migration/service/handler为3.860s/3.178s/0.519s，race service/handler为7.051s/1.643s；真实全包service/handler串行171.312s/17.009s、root静态全仓、vet/build/dockerfile/gofmt/diff通过。renderer stale-overwrite RED后flock GREEN、race count=3，覆盖安全root/symlink/0600/0700/canonical SHA/manifest/fence/rollback。fixture与凭据精确清理。Root真实浏览器、scheduler/systemd、生产volume、前端artifact reader及生产均NOT_RUN；报告docs/superpowers/reports/validation/2026-09-16-fixed-home-structured-content-task13/。"
+        "2026-09-16：Task13计划内真实数据层门禁PASS且0 unexpected skip：normal -p1 migration/service/handler为3.860s/3.178s/0.519s，race service/handler为7.051s/1.643s；真实全包service/handler串行171.312s/17.009s、root静态全仓、vet/build/dockerfile/gofmt/diff通过。renderer stale-overwrite RED后flock GREEN、race count=3，覆盖安全root/symlink/0600/0700/canonical SHA/manifest/fence/rollback。fixture与凭据精确清理。Root真实浏览器、scheduler/systemd、生产volume、前端artifact reader及生产均NOT_RUN；报告docs/superpowers/reports/validation/2026-09-16-fixed-home-structured-content-task13/。 跨仓库总合同为v1.0.0-p0/agreed_for_implementation/771f9efb，后端公共内容子合同为v2/implemented_locally_pending_acceptance/649f3b2f。"
       ],
-      "notes": "当前权威本地矩阵为 18 PASS_LIMITED_SCOPE、6 BLOCKED_NOT_IMPLEMENTED、1 BLOCKED_PRODUCT、1 BLOCKED_ENV，合计 8 项阻塞。A09/A10 为前端开发专用 CNY Mock；A11 的后端职责仅为保持真实调额动作和代表性写路径 404；A12/A14 沿用 users.delete 限定切片并在当前候选复验。真实金额/账本/充值/退款/扣费、生产迁移、部署、生产验收和真实业务账号均 NOT_RUN。外部后端 project_manager 本轮书面确认未获得。ACTION_SECURITY_HMAC_KEY v1 lacks key ID/multi-key verification; rotation is prohibited while replayable post-0010 active snapshots exist unless a separately approved multi-key verifier or atomic full re-HMAC migration is delivered. PASS_LIMITED_SUBSCOPE：B1-E内部安全原语及A03 users.create/users.create_admin本地联合切片已验证；A03为PASS_LIMITED_SCOPE。ActiveActionRegistry当前3项（users.create、users.create_admin、users.delete）。当前 joint_acceptance_blockers 中有12个BLOCKED条目：10个BLOCKED_NOT_IMPLEMENTED、P08 BLOCKED_PRODUCT、R02 BLOCKED_ENV；A03为PASS_LIMITED_SCOPE，P03–P07仅为PASS_BACKEND_LOCAL，均不代表完整联合验收通过。生产迁移、部署、真实业务账号和完整PRD验收均未运行。ACTION_SECURITY_HMAC_KEY v1 lacks key ID/multi-key verification; rotation is prohibited while replayable post-0010 active snapshots exist unless a separately approved multi-key verifier or atomic full re-HMAC migration is delivered. Public content/pricing 后端本地 Task 12 已验证，P08 仍 BLOCKED_PRODUCT；生产边界不变。 Task13后端8303a28真实数据层与renderer限定证据已记录；完整真实migration package的计划外检查因历史测试硬编码过时terminal/dependency假设而NON_BLOCKING_EXTRA_CHECK_FAIL，计划内scoped migration已通过。Task12浏览器仍为synthetic，不代表真实Root浏览器；P08继续BLOCKED_PRODUCT，web-012继续in_progress/PASS_LIMITED_SCOPE。",
+      "notes": "当前 go-017 联合条目共18项：10项PASS_LIMITED_SCOPE、6项PASS_BACKEND_LOCAL、P08 BLOCKED_PRODUCT、R02 BLOCKED_ENV，合计2项阻塞。A09/A10 为前端开发专用 CNY Mock；A11 的后端职责仅为保持真实调额动作和代表性写路径 404；A12/A14 沿用 users.delete 限定切片并在当前候选复验。真实金额/账本/充值/退款/扣费、生产迁移、部署、生产验收和真实业务账号均 NOT_RUN。外部后端 project_manager 本轮书面确认未获得。ACTION_SECURITY_HMAC_KEY v1 lacks key ID/multi-key verification; rotation is prohibited while replayable post-0010 active snapshots exist unless a separately approved multi-key verifier or atomic full re-HMAC migration is delivered. ActiveActionRegistry当前12项；P01、P03–P07仅为PASS_BACKEND_LOCAL，均不代表完整联合验收通过。生产迁移、部署、真实业务账号和完整PRD验收均未运行。Public content/pricing 后端本地 Task 12 已验证，P08 仍 BLOCKED_PRODUCT；生产边界不变。Task13后端8303a28真实数据层与renderer限定证据已记录；完整真实migration package的计划外检查因历史测试硬编码过时terminal/dependency假设而NON_BLOCKING_EXTRA_CHECK_FAIL，计划内scoped migration已通过。Task12浏览器仍为synthetic，不代表真实Root浏览器；web-012继续in_progress/PASS_LIMITED_SCOPE。",
       "a03_joint_acceptance": {
         "status": "PASS_LIMITED_SCOPE",
         "code_under_test": {
@@ -346,7 +347,7 @@
         },
         "scope_boundary": "仅本地A06禁用/启用切片；生产migration、deploy、production acceptance及真实business accounts均NOT_RUN；拒绝管理动作审计仍为后续PRD残留。"
       },
-      "current_joint_acceptance_blocker_count": 8,
+      "current_joint_acceptance_blocker_count": 2,
       "a07_joint_acceptance": {
         "status": "PASS_LIMITED_SCOPE",
         "code_under_test": {

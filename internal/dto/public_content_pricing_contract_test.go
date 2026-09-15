@@ -40,7 +40,7 @@ func TestPublicContentPricingContract(t *testing.T) {
 	}
 
 	publicContentPricingRequire(t, contract, "v2", "version")
-	publicContentPricingRequire(t, contract, "approved_contract_pending_implementation", "status")
+	publicContentPricingRequire(t, contract, "implemented_locally_pending_acceptance", "status")
 	publicContentPricingRequire(t, contract, "USD", "pricing", "currency")
 	publicContentPricingRequire(t, contract, "million_tokens", "pricing", "unit")
 	publicContentPricingRequire(t, contract, []any{"input", "output"}, "pricing", "components")
@@ -102,21 +102,7 @@ func TestPublicContentPricingContract(t *testing.T) {
 		{"PUT", "/admin/v2/public-content/documents-draft", "root", "admin_request_headers", "admin_response_headers", "NoBody", "NoBody", "DocumentsDraftSaveRequest", "DocumentsDraftResponse", json.Number("200")},
 	}
 	publicContentPricingRequireExactRoutes(t, contract, expectedRoutes)
-	publicContentPricingRequire(t, contract, []any{
-		"GET /api/v1/public/home-config",
-		"GET /admin/v2/public-content/home-draft",
-		"POST /admin/v2/public-content/home-draft/announcements",
-		"PATCH /admin/v2/public-content/home-draft/announcements/{guid}",
-		"DELETE /admin/v2/public-content/home-draft/announcements/{guid}",
-		"POST /admin/v2/public-content/home-draft/faqs",
-		"PATCH /admin/v2/public-content/home-draft/faqs/{guid}",
-		"DELETE /admin/v2/public-content/home-draft/faqs/{guid}",
-		"PUT /admin/v2/public-content/home-draft/featured-models",
-		"GET /admin/v2/public-content/home-preview",
-		"GET /admin/v2/public-content/releases/{guid}/home-config",
-		"GET /admin/v2/public-content/documents-draft",
-		"PUT /admin/v2/public-content/documents-draft",
-	}, "pending_implementation_routes")
+	publicContentPricingRequire(t, contract, []any{}, "pending_implementation_routes")
 	publicContentPricingAssertListQueries(t, contract)
 	for _, field := range []string{"endpoint_type", "public_display_group", "pricing_type", "sort", "order"} {
 		if _, ok := contract["schemas"].(map[string]any)["PublicModelsListRequest"].(map[string]any)["properties"].(map[string]any)[field]; !ok {

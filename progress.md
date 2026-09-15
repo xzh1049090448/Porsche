@@ -2,7 +2,7 @@
 
 ## 2026-09-16：Fixed Home Structured Content Task13 后端真实数据层验证（PASS_LIMITED_SCOPE）
 
-- 代码候选为后端 `8303a28`（含 `f6ed4e1` exact action target locks 与 `8303a28` atomic structured artifact renderer）、配对前端 `78006b360b1f005ded208b68aae6464c67891b52`；合同保持 `v1.0.0-p0` / `agreed_for_implementation` / SHA-256 `3bb7932bf8637b6fcbe3b26694b4e63aa0fb72a047fb127f817865d46e0c7058`。
+- 代码候选为后端 `8303a28`（含 `f6ed4e1` exact action target locks 与 `8303a28` atomic structured artifact renderer）、配对前端 `78006b360b1f005ded208b68aae6464c67891b52`；跨仓库总合同 `interface-contract.json` 为 `v1.0.0-p0 / agreed_for_implementation`、SHA-256 `771f9efb7c9684cd25cf53dbad667badaca26d6289de8cf4e2bbefa50e0a6579`，后端公共内容子合同为 `v2 / implemented_locally_pending_acceptance`、SHA-256 `649f3b2f44e8676032097f57b00931647042e70d9d7283ca0fb29a0eaa798ce5`。
 - disposable、loopback-only MySQL 8.4.11（tmpfs）与 Redis 7-alpine（无持久化）下，迁移前后均为 20 行 0001–0020。计划内 normal `-p 1` 的 migration/service/handler 为 3.860s/3.178s/0.519s，race service/handler 为 7.051s/1.643s，全部 PASS 且 0 unexpected skip；root 允许 loopback 后静态全仓 `go test ./...` 通过，真实 fixture 下 service/handler 全包串行为 171.312s/17.009s PASS。
 - `go vet ./...`、build、`deploy/test-dockerfile.sh`、`gofmt -d`、`git diff --check` 通过。renderer 的确定性 stale-overwrite 先 RED，加入 `flock` 后 GREEN，race `-count=3` 通过；覆盖安全 root、symlink 拒绝、0700/0600、canonical SHA/manifest、generation/fence、原子 current 切换和 stale rollback 保护。产物是供固定 Vue shell 消费的结构化快照，不是服务端生成 HTML。
 - 计划外完整真实 migration package 因历史迁移测试硬编码已过时的 terminal/dependency 假设而失败，明确记录为 `NON_BLOCKING_EXTRA_CHECK_FAIL`；计划内 scoped migration gate 已通过。MySQL `230609b618dde469fdf1093ed109c747d9989f41fd91b4e5bc3f432f702ba3c0`、Redis `4156fde30229cb2372c2a8376b608a678b4e952d6a1cf0b6f28af16f0c38f00e` 已按完整 ID 删除，名称不存在，52179/54737 关闭，凭据文件不存在。
