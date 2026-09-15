@@ -625,7 +625,8 @@ func TestPublicContentDBAtomicPublishIdempotencyRollbackAndRestore(t *testing.T)
 		t.Fatalf("cross actor replay=%#v err=%v", other, otherErr)
 	}
 	pub, err := s.PublicProjection(ctx)
-	if err != nil || pub.Content.Home != home || pub.ContentReleaseVersion != other.Version {
+	expectedHome, expectedHomeIssues := sanitizeContentHTML("home", home, false)
+	if err != nil || len(expectedHomeIssues) != 0 || pub.Content.Home != expectedHome || pub.ContentReleaseVersion != other.Version {
 		t.Fatalf("public=%#v err=%v", pub, err)
 	}
 	// Draft edits never affect the committed projection.
@@ -635,7 +636,7 @@ func TestPublicContentDBAtomicPublishIdempotencyRollbackAndRestore(t *testing.T)
 		t.Fatal(err)
 	}
 	pub2, _ := s.PublicProjection(ctx)
-	if pub2.Content.Home != home {
+	if pub2.Content.Home != expectedHome {
 		t.Fatal("public projection leaked draft")
 	}
 	var pointerBeforeReplay models.PublicPublicationState
@@ -714,6 +715,248 @@ func TestPublicContentDBAtomicPublishIdempotencyRollbackAndRestore(t *testing.T)
 	}
 }
 
+func TestStructuredHomePublishRestoreFiltersTombstonesAtomically(t *testing.T) {
+	if os.Getenv("TEST_DATABASE_URL") == "" {
+		t.Skip("BLOCKED_FIXTURE: requires explicit disposable TEST_DATABASE_URL; .env is never read")
+	}
+	f := openPublicModelDBFixture(t)
+	cleanPublicContentDBFixture(t, f.db)
+	tx := f.db.Begin()
+	if tx.Error != nil {
+		t.Fatal(tx.Error)
+	}
+	t.Cleanup(func() { _ = tx.Rollback().Error })
+	ctx := context.Background()
+	seed, err := seedContentPublicationFixture(tx, f.actor.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := NewPublicContentService(tx)
+	documents, err := service.GetDraft(ctx, f.actor.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	homeText, about, terms, privacy, reviewed := "legacy", "about", "terms", "privacy", true
+	documents, err = service.SaveDraft(ctx, f.actor.ID, PublicContentDraftSaveRequest{ExpectedRevision: documents.Revision, Home: &homeText, About: &about, Terms: &terms, Privacy: &privacy, LegalReviewed: &reviewed})
+	if err != nil {
+		t.Fatal(err)
+	}
+	future := int64(1_800_000_000_000)
+	home, err := service.CreateAnnouncement(ctx, f.actor.ID, AnnouncementCreateRequest{ExpectedRevision: documents.Revision, Title: "future", BodyMarkdown: "announcement", EffectiveAt: &future, IsVisible: true, SortOrder: 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	home, err = service.CreateFAQ(ctx, f.actor.ID, FAQCreateRequest{ExpectedRevision: home.Revision, Question: "question", AnswerMarkdown: "answer", IsVisible: true, SortOrder: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	home, err = service.ReplaceFeaturedModels(ctx, f.actor.ID, FeaturedModelsSaveRequest{ExpectedRevision: home.Revision, FeaturedModelKeys: []string{seed.modelKey}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if issues, validateErr := service.Validate(ctx, f.actor.ID, home.Revision); validateErr != nil || len(issues) != 0 {
+		t.Fatalf("structured validate issues=%+v err=%v", issues, validateErr)
+	}
+	for _, lifecycle := range []struct {
+		name   string
+		column string
+		value  any
+		reset  any
+	}{
+		{name: "inactive", column: "status", value: models.PublicModelConfigStatusInactive, reset: models.PublicModelConfigStatusActive},
+		{name: "soft_deleted", column: "is_deleted", value: 1, reset: 0},
+		{name: "missing_input", column: "input_price_usd_per_million_tokens", value: nil, reset: "1.00000000"},
+		{name: "missing_output", column: "output_price_usd_per_million_tokens", value: nil, reset: "2.00000000"},
+	} {
+		t.Run("publish_rejects_"+lifecycle.name, func(t *testing.T) {
+			before := contentDBCounts(t, tx)
+			var stateBefore models.PublicPublicationState
+			if err := tx.Where("state_key=?", publicPublicationStateKey).First(&stateBefore).Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := tx.Model(&models.PublicModelConfig{}).Where("model_key=?", seed.modelKey).Update(lifecycle.column, lifecycle.value).Error; err != nil {
+				t.Fatal(err)
+			}
+			_, publishErr := service.Publish(ctx, PublicContentPublicationRequest{ActorID: f.actor.ID, ExpectedRevision: home.Revision, PriceReleaseGUID: seed.priceGUID, IdempotencyKey: "reject-" + lifecycle.name})
+			if status(publishErr) != 422 {
+				t.Fatalf("publish=%v", publishErr)
+			}
+			if err := tx.Model(&models.PublicModelConfig{}).Where("model_key=?", seed.modelKey).Update(lifecycle.column, lifecycle.reset).Error; err != nil {
+				t.Fatal(err)
+			}
+			var stateAfter models.PublicPublicationState
+			if err := tx.Where("state_key=?", publicPublicationStateKey).First(&stateAfter).Error; err != nil {
+				t.Fatal(err)
+			}
+			if contentDBCounts(t, tx) != before || stateBefore.Revision != stateAfter.Revision || !sameOptionalInt64(stateBefore.ContentReleaseID, stateAfter.ContentReleaseID) {
+				t.Fatal("rejected structured publish changed committed state")
+			}
+		})
+	}
+	release, err := service.Publish(ctx, PublicContentPublicationRequest{ActorID: f.actor.ID, ExpectedRevision: home.Revision, PriceReleaseGUID: seed.priceGUID, IdempotencyKey: "structured-publish"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var published models.PublicContentRelease
+	if err = tx.Where("guid=?", mustGUID(t, release.GUID)).First(&published).Error; err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := decodePublishedContentPayloadV2(published.Payload)
+	if err != nil || len(decoded.HomeConfig.Announcements) != 1 || decoded.HomeConfig.Announcements[0].EffectiveAt == nil || len(decoded.HomeConfig.FAQs) != 1 || !reflect.DeepEqual(decoded.HomeConfig.FeaturedModelKeys, []string{seed.modelKey}) {
+		t.Fatalf("published=%#v decoded=%#v err=%v", published.Payload, decoded, err)
+	}
+	if _, err = service.DeleteAnnouncement(ctx, f.actor.ID, home.Announcements[0].GUID, AnnouncementDeleteRequest{ExpectedRevision: home.Revision}); err != nil {
+		t.Fatal(err)
+	}
+	home, err = service.GetHomeDraft(ctx, f.actor.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = service.DeleteFAQ(ctx, f.actor.ID, home.FAQs[0].GUID, FAQDeleteRequest{ExpectedRevision: home.Revision}); err != nil {
+		t.Fatal(err)
+	}
+	home, err = service.GetHomeDraft(ctx, f.actor.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = tx.Model(&models.PublicModelConfig{}).Where("model_key=?", seed.modelKey).Updates(map[string]any{"status": models.PublicModelConfigStatusInactive, "revision": gorm.Expr("revision+1")}).Error; err != nil {
+		t.Fatal(err)
+	}
+	before := contentDBCounts(t, tx)
+	var stateBefore models.PublicPublicationState
+	if err = tx.Where("state_key=?", publicPublicationStateKey).First(&stateBefore).Error; err != nil {
+		t.Fatal(err)
+	}
+	broken := NewPublicContentService(tx)
+	broken.fail = func(point string) error {
+		if point == "after_pointer" {
+			return fmt.Errorf("injected structured restore")
+		}
+		return nil
+	}
+	if _, err = broken.Restore(ctx, PublicContentRestoreRequest{ActorID: f.actor.ID, ExpectedRevision: home.Revision, ReleaseGUID: release.GUID, IdempotencyKey: "structured-restore-fail"}); status(err) != 503 {
+		t.Fatalf("restore failure=%v", err)
+	}
+	var stateAfterFailure models.PublicPublicationState
+	if err = tx.Where("state_key=?", publicPublicationStateKey).First(&stateAfterFailure).Error; err != nil {
+		t.Fatal(err)
+	}
+	if contentDBCounts(t, tx) != before || !sameOptionalInt64(stateBefore.ContentReleaseID, stateAfterFailure.ContentReleaseID) || stateBefore.Revision != stateAfterFailure.Revision {
+		t.Fatal("failed structured restore changed committed state")
+	}
+	restored, err := service.Restore(ctx, PublicContentRestoreRequest{ActorID: f.actor.ID, ExpectedRevision: home.Revision, ReleaseGUID: release.GUID, IdempotencyKey: "structured-restore"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var restoredRow models.PublicContentRelease
+	if err = tx.Where("guid=?", mustGUID(t, restored.GUID)).First(&restoredRow).Error; err != nil {
+		t.Fatal(err)
+	}
+	restoredPayload, err := decodePublishedContentPayloadV2(restoredRow.Payload)
+	if err != nil || len(restoredPayload.HomeConfig.Announcements) != 0 || len(restoredPayload.HomeConfig.FAQs) != 0 || len(restoredPayload.HomeConfig.FeaturedModelKeys) != 0 || restoredRow.ContentHash == published.ContentHash {
+		t.Fatalf("restored=%#v err=%v", restoredRow, err)
+	}
+	var originalAfter models.PublicContentRelease
+	if err = tx.First(&originalAfter, published.ID).Error; err != nil || originalAfter.ContentHash != published.ContentHash || !reflect.DeepEqual(originalAfter.Payload, published.Payload) {
+		t.Fatalf("historical release mutated: before=%#v after=%#v err=%v", published, originalAfter, err)
+	}
+}
+
+func TestPriceStructuredHomeDBRebindKeepsFeaturedKeysAndRollsBack(t *testing.T) {
+	if os.Getenv("TEST_DATABASE_URL") == "" {
+		t.Skip("BLOCKED_FIXTURE: requires explicit disposable TEST_DATABASE_URL; .env is never read")
+	}
+	f := openPublicModelDBFixture(t)
+	tx := f.db.Begin()
+	if tx.Error != nil {
+		t.Fatal(tx.Error)
+	}
+	t.Cleanup(func() { _ = tx.Rollback().Error })
+	if err := requirePublicPriceSnapshotFixture(tx, f.actor.ID); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	admin := NewPublicModelAdminService(tx)
+	input := f.input("structured-rebind-" + fmt.Sprint(persistence.NextGUID()))
+	f.observe(t, input.UpstreamModelID)
+	model, err := admin.Create(ctx, f.actor.ID, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	model, err = admin.Activate(ctx, f.actor.ID, mustGUID(t, model.GUID), model.Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	priceService := NewPublicPriceSnapshotService(tx)
+	boundPrice, err := priceService.Publish(ctx, PublicPriceSnapshotRequest{ActorID: f.actor.ID, ExpectedRevision: publicPriceDraftRevision(t, tx), IdempotencyKey: "structured-price-initial"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	contentService := NewPublicContentService(tx)
+	draft, err := contentService.GetDraft(ctx, f.actor.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	homeText, about, terms, privacy, reviewed := "legacy", "about", "terms", "privacy", true
+	draft, err = contentService.SaveDraft(ctx, f.actor.ID, PublicContentDraftSaveRequest{ExpectedRevision: draft.Revision, Home: &homeText, About: &about, Terms: &terms, Privacy: &privacy, LegalReviewed: &reviewed})
+	if err != nil {
+		t.Fatal(err)
+	}
+	home, err := contentService.ReplaceFeaturedModels(ctx, f.actor.ID, FeaturedModelsSaveRequest{ExpectedRevision: draft.Revision, FeaturedModelKeys: []string{model.ModelKey}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = contentService.Publish(ctx, PublicContentPublicationRequest{ActorID: f.actor.ID, ExpectedRevision: home.Revision, PriceReleaseGUID: boundPrice.GUID, IdempotencyKey: "structured-content"}); err != nil {
+		t.Fatal(err)
+	}
+	changedName := model.DisplayName + " updated"
+	if _, err = admin.Update(ctx, f.actor.ID, mustGUID(t, model.GUID), UpdatePublicModelRequest{ExpectedRevision: model.Revision, DisplayName: &changedName}); err != nil {
+		t.Fatal(err)
+	}
+	request := PublicPriceSnapshotRequest{ActorID: f.actor.ID, ExpectedRevision: publicPriceDraftRevision(t, tx), IdempotencyKey: "structured-price-rebind"}
+	beforeCounts := publicPriceSnapshotFixtureCounts(t, tx, f.actor.ID)
+	var beforeState models.PublicPublicationState
+	if err = tx.Where("state_key=?", publicPublicationStateKey).First(&beforeState).Error; err != nil {
+		t.Fatal(err)
+	}
+	broken := NewPublicPriceSnapshotService(tx)
+	broken.fail = func(point string) error {
+		if point == "content_release" {
+			return fmt.Errorf("injected structured rebind")
+		}
+		return nil
+	}
+	if _, err = broken.Publish(ctx, request); status(err) != 503 {
+		t.Fatalf("injected rebind=%v", err)
+	}
+	var afterFailure models.PublicPublicationState
+	if err = tx.Where("state_key=?", publicPublicationStateKey).First(&afterFailure).Error; err != nil {
+		t.Fatal(err)
+	}
+	if beforeCounts != publicPriceSnapshotFixtureCounts(t, tx, f.actor.ID) || beforeState.Revision != afterFailure.Revision || !sameOptionalInt64(beforeState.PriceSnapshotID, afterFailure.PriceSnapshotID) || !sameOptionalInt64(beforeState.ContentReleaseID, afterFailure.ContentReleaseID) {
+		t.Fatal("failed structured price rebind changed committed state")
+	}
+	reboundPrice, err := priceService.Publish(ctx, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var state models.PublicPublicationState
+	if err = tx.Where("state_key=?", publicPublicationStateKey).First(&state).Error; err != nil {
+		t.Fatal(err)
+	}
+	var content models.PublicContentRelease
+	if err = tx.First(&content, *state.ContentReleaseID).Error; err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := decodePublishedContentPayloadV2(content.Payload)
+	if err != nil || !reflect.DeepEqual(decoded.HomeConfig.FeaturedModelKeys, []string{model.ModelKey}) || decoded.PriceSnapshotGUID != reboundPrice.GUID || decoded.PriceSnapshotVersion != reboundPrice.Version {
+		t.Fatalf("rebound content=%#v price=%#v err=%v", decoded, reboundPrice, err)
+	}
+	if hash, hashErr := hashPublicContentPayload(content.Payload); hashErr != nil || hash != content.ContentHash {
+		t.Fatalf("rebound hash=%s stored=%s err=%v", hash, content.ContentHash, hashErr)
+	}
+}
+
 func cloneContentPriceSnapshot(t *testing.T, db *gorm.DB, actor, version, guid int64, modelKey string) int64 {
 	t.Helper()
 	now := persistence.NowMillis()
@@ -773,7 +1016,7 @@ func seedContentPublicationFixture(db *gorm.DB, actor int64) (contentSeed, error
 	if e := db.Create(&model).Error; e != nil {
 		return contentSeed{}, e
 	}
-	item := models.PublicPriceSnapshotItem{Guid: persistence.NextGUID(), CreatedAt: now, CreatedBy: &actor, UpdatedAt: now, UpdatedBy: &actor, SnapshotID: price.ID, ModelConfigID: model.ID, ModelKey: modelKey, UpstreamModelID: "org/" + modelKey, DisplayName: "Content Model", Provider: "provider", Capabilities: models.JSONSlice{"chat"}, ContextWindow: 8192, InputPriceUSDPerMillionTokens: &in, OutputPriceUSDPerMillionTokens: &out}
+	item := models.PublicPriceSnapshotItem{Guid: persistence.NextGUID(), CreatedAt: now, CreatedBy: &actor, UpdatedAt: now, UpdatedBy: &actor, SnapshotID: price.ID, ModelConfigID: model.ID, ModelKey: modelKey, UpstreamModelID: "org/" + modelKey, DisplayName: "Content Model", Provider: "provider", Capabilities: models.JSONSlice{"chat"}, ContextWindow: 8192, InputPriceUSDPerMillionTokens: &in, OutputPriceUSDPerMillionTokens: &out, PricingType: "token"}
 	if e := db.Create(&item).Error; e != nil {
 		return contentSeed{}, e
 	}

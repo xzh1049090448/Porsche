@@ -1,6 +1,7 @@
 package service
 
 import (
+	"encoding/json"
 	"reflect"
 	"strings"
 	"testing"
@@ -19,21 +20,21 @@ func TestPublicContentPreparationSanitizesAndRequiresReviewedLegalAndExactModels
 	d := PublicContentDraft{Revision: 2, Home: "Use [alpha](/pricing/alpha)", About: "About", Terms: "Terms", Privacy: "Privacy", LegalReviewed: true}
 	price := models.PublicPriceSnapshot{ID: 8, Guid: 80, Version: 4}
 	items := []models.PublicPriceSnapshotItem{{ModelKey: "alpha", UpstreamModelID: "org/alpha", InputPriceUSDPerMillionTokens: snapshotStringPointer("1.00000000"), OutputPriceUSDPerMillionTokens: snapshotStringPointer("2.00000000")}}
-	p, issues := preparePublicContent(d, price, items)
-	if issues == nil || len(issues) != 0 || p.Hash == "" || p.Payload["home"] != d.Home {
+	p, issues := preparePublicContent(d, PublicHomeDraft{Revision: d.Revision}, price, items)
+	if issues == nil || len(issues) != 0 || p.Hash == "" || p.Payload["home"] != "<p>Use <a href=\"/pricing/alpha\">alpha</a></p>\n" {
 		t.Fatalf("prepared=%#v issues=%#v", p, issues)
 	}
 	d.LegalReviewed = false
-	if _, issues = preparePublicContent(d, price, items); !hasPublicContentIssue(issues, "legal_review_required") {
+	if _, issues = preparePublicContent(d, PublicHomeDraft{Revision: d.Revision}, price, items); !hasPublicContentIssue(issues, "legal_review_required") {
 		t.Fatalf("issues=%#v", issues)
 	}
 	d.LegalReviewed = true
 	d.Home = "Use [other](/pricing/other)"
-	if _, issues = preparePublicContent(d, price, items); !hasPublicContentIssue(issues, "unknown_home_model") {
+	if _, issues = preparePublicContent(d, PublicHomeDraft{Revision: d.Revision}, price, items); !hasPublicContentIssue(issues, "unknown_home_model") {
 		t.Fatalf("issues=%#v", issues)
 	}
 	d.Home = strings.Repeat("x", PublicContentDocumentLimit+1)
-	if _, issues = preparePublicContent(d, price, items); !hasPublicContentIssue(issues, "content_too_large") {
+	if _, issues = preparePublicContent(d, PublicHomeDraft{Revision: d.Revision}, price, items); !hasPublicContentIssue(issues, "content_too_large") {
 		t.Fatalf("issues=%#v", issues)
 	}
 }
@@ -56,9 +57,172 @@ func TestPublicContentAboutTruthGateAndParserReferences(t *testing.T) {
 	d := PublicContentDraft{Revision: 2, Home: "[alpha][model] <a href='/pricing/html'>html</a> `[/pricing/code]`\n\n[model]: /pricing/alpha", About: "100% reliable", Terms: "Terms", Privacy: "Privacy", LegalReviewed: true}
 	price := models.PublicPriceSnapshot{ID: 8, Guid: 80, Version: 4}
 	items := []models.PublicPriceSnapshotItem{{ModelKey: "alpha", UpstreamModelID: "org/alpha", InputPriceUSDPerMillionTokens: snapshotStringPointer("1"), OutputPriceUSDPerMillionTokens: snapshotStringPointer("2")}}
-	_, issues := preparePublicContent(d, price, items)
+	_, issues := preparePublicContent(d, PublicHomeDraft{Revision: d.Revision}, price, items)
 	if !hasPublicContentIssue(issues, "unsubstantiated_prototype_claim") || !hasPublicContentIssue(issues, "unknown_home_model") {
 		t.Fatalf("issues=%#v", issues)
+	}
+}
+
+func TestPreparePublicContentBindsStructuredHomeToPriceSnapshot(t *testing.T) {
+	effective := "2026-09-20T00:00:00Z"
+	draft := PublicContentDraft{Revision: 4, Home: "legacy", About: "about", Terms: "terms", Privacy: "privacy", LegalReviewed: true}
+	home := PublicHomeDraft{
+		Revision: 4,
+		Announcements: []PublicHomeAnnouncementDraft{
+			{GUID: "12", Title: "later", BodyMarkdown: "**future**", EffectiveAt: &effective, IsVisible: true, SortOrder: 20},
+			{GUID: "10", Title: "first", BodyMarkdown: "[safe](/about)", IsVisible: true, SortOrder: 10},
+			{GUID: "11", Title: "hidden", BodyMarkdown: "must not publish", IsVisible: false, SortOrder: 0},
+		},
+		FAQs: []PublicHomeFAQDraft{
+			{GUID: "21", Question: "visible?", AnswerMarkdown: "yes", IsVisible: true, SortOrder: 1},
+			{GUID: "22", Question: "hidden?", AnswerMarkdown: "no", IsVisible: false, SortOrder: 0},
+		},
+		FeaturedModelKeys: []string{"deepseek-chat"},
+	}
+	price := models.PublicPriceSnapshot{ID: 8, Guid: 80, Version: 4}
+	items := []models.PublicPriceSnapshotItem{{ModelKey: "deepseek-chat", UpstreamModelID: "org/deepseek-chat", InputPriceUSDPerMillionTokens: snapshotStringPointer("1"), OutputPriceUSDPerMillionTokens: snapshotStringPointer("2"), PricingType: "token"}}
+
+	prepared, issues := preparePublicContent(draft, home, price, items)
+	if len(issues) != 0 {
+		t.Fatalf("issues=%+v", issues)
+	}
+	encoded, err := json.Marshal(prepared.Payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(encoded)
+	var databaseRoundTrip models.JSONMap
+	if err = json.Unmarshal(encoded, &databaseRoundTrip); err != nil {
+		t.Fatal(err)
+	}
+	roundTripHash, err := hashPublicContentPayload(databaseRoundTrip)
+	if err != nil || roundTripHash != prepared.Hash {
+		t.Fatalf("hash changed after JSON database round trip: prepared=%s round_trip=%s err=%v", prepared.Hash, roundTripHash, err)
+	}
+	for _, forbidden := range []string{"body_markdown", "answer_markdown", "is_visible", "is_deleted", "must not publish", "\"id\""} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("payload leaked %q: %s", forbidden, text)
+		}
+	}
+	if !strings.Contains(text, `"schema_version":2`) || !strings.Contains(text, `"featured_model_keys":["deepseek-chat"]`) || !strings.Contains(text, effective) {
+		t.Fatalf("payload=%s", text)
+	}
+	config, ok := prepared.Payload["home_config"].(models.JSONMap)
+	decodedConfig, decodeErr := decodePublishedContentPayloadV2(prepared.Payload)
+	if !ok || !reflect.DeepEqual(config["featured_model_keys"], []string{"deepseek-chat"}) || decodeErr != nil || len(decodedConfig.HomeConfig.Announcements) != 2 || decodedConfig.HomeConfig.Announcements[0].BodyHTML != "<p><a href=\"/about\">safe</a></p>\n" || len(decodedConfig.HomeConfig.FAQs) != 1 || decodedConfig.HomeConfig.FAQs[0].AnswerHTML != "<p>yes</p>\n" {
+		t.Fatalf("home_config=%#v", prepared.Payload["home_config"])
+	}
+	if prepared.Payload["home"] != "<p>legacy</p>\n" || prepared.Hash == "" {
+		t.Fatalf("prepared=%#v", prepared)
+	}
+	reordered := home
+	reordered.Announcements = []PublicHomeAnnouncementDraft{home.Announcements[2], home.Announcements[1], home.Announcements[0]}
+	again, againIssues := preparePublicContent(draft, reordered, price, items)
+	if len(againIssues) != 0 || again.Hash != prepared.Hash {
+		t.Fatalf("nondeterministic hash first=%s second=%#v issues=%+v", prepared.Hash, again, againIssues)
+	}
+}
+
+func TestPreparePublicContentRejectsStructuredRevisionMarkdownAndFeaturedModels(t *testing.T) {
+	draft := PublicContentDraft{Revision: 4, Home: "legacy", About: "about", Terms: "terms", Privacy: "privacy", LegalReviewed: true}
+	price := models.PublicPriceSnapshot{ID: 8, Guid: 80, Version: 4}
+	good := models.PublicPriceSnapshotItem{ModelKey: "alpha", UpstreamModelID: "org/alpha", InputPriceUSDPerMillionTokens: snapshotStringPointer("1"), OutputPriceUSDPerMillionTokens: snapshotStringPointer("2"), PricingType: "token"}
+	base := PublicHomeDraft{Revision: 4, FeaturedModelKeys: []string{"alpha"}}
+
+	tests := []struct {
+		name  string
+		home  PublicHomeDraft
+		items []models.PublicPriceSnapshotItem
+		code  string
+	}{
+		{"revision", PublicHomeDraft{Revision: 3}, []models.PublicPriceSnapshotItem{good}, "revision_mismatch"},
+		{"missing", base, nil, "unknown_home_model"},
+		{"deleted snapshot item", base, []models.PublicPriceSnapshotItem{func() models.PublicPriceSnapshotItem { v := good; v.IsDeleted = 1; return v }()}, "unknown_home_model"},
+		{"missing input", base, []models.PublicPriceSnapshotItem{func() models.PublicPriceSnapshotItem { v := good; v.InputPriceUSDPerMillionTokens = nil; return v }()}, "missing_input_price"},
+		{"missing output", base, []models.PublicPriceSnapshotItem{func() models.PublicPriceSnapshotItem { v := good; v.OutputPriceUSDPerMillionTokens = nil; return v }()}, "missing_output_price"},
+		{"per call pricing", base, []models.PublicPriceSnapshotItem{func() models.PublicPriceSnapshotItem { v := good; v.PricingType = "call"; return v }()}, "unsupported_pricing_type"},
+		{"duplicate", PublicHomeDraft{Revision: 4, FeaturedModelKeys: []string{"alpha", "alpha"}}, []models.PublicPriceSnapshotItem{good}, "duplicate_model_key"},
+		{"dangerous announcement", PublicHomeDraft{Revision: 4, Announcements: []PublicHomeAnnouncementDraft{{GUID: "1", Title: "x", BodyMarkdown: "[x](javascript:alert(1))", IsVisible: true}}}, []models.PublicPriceSnapshotItem{good}, "unsafe_url"},
+		{"empty FAQ", PublicHomeDraft{Revision: 4, FAQs: []PublicHomeFAQDraft{{GUID: "2", Question: "x", AnswerMarkdown: "[](/about)", IsVisible: true}}}, []models.PublicPriceSnapshotItem{good}, "empty_sanitized_content"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, issues := preparePublicContent(draft, tc.home, price, tc.items)
+			if !hasPublicContentIssue(issues, tc.code) {
+				t.Fatalf("issues=%+v", issues)
+			}
+		})
+	}
+}
+
+func TestPriceStructuredHomeRebindPreservesFeaturedGenerationAndV1Compatibility(t *testing.T) {
+	draft := PublicContentDraft{Revision: 7, Home: "legacy", About: "about", Terms: "terms", Privacy: "privacy", LegalReviewed: true}
+	home := PublicHomeDraft{Revision: 7, FeaturedModelKeys: []string{"beta", "alpha"}}
+	oldPrice := models.PublicPriceSnapshot{ID: 8, Guid: 80, Version: 4}
+	items := []models.PublicPriceSnapshotItem{
+		{ModelKey: "alpha", UpstreamModelID: "org/alpha", InputPriceUSDPerMillionTokens: snapshotStringPointer("1"), OutputPriceUSDPerMillionTokens: snapshotStringPointer("2"), PricingType: "token"},
+		{ModelKey: "beta", UpstreamModelID: "org/beta", InputPriceUSDPerMillionTokens: snapshotStringPointer("3"), OutputPriceUSDPerMillionTokens: snapshotStringPointer("4"), PricingType: "token"},
+	}
+	prepared, issues := preparePublicContent(draft, home, oldPrice, items)
+	if len(issues) != 0 {
+		t.Fatalf("issues=%+v", issues)
+	}
+	release := models.PublicContentRelease{SourceRevision: draft.Revision, Payload: prepared.Payload, ContentHash: prepared.Hash}
+	newPrice := models.PublicPriceSnapshot{ID: 9, Guid: 90, Version: 5}
+	rebound, err := prepareContentReleaseRebinding(release, newPrice, items)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := decodePublishedContentPayloadV2(rebound.Payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(decoded.HomeConfig.FeaturedModelKeys, []string{"beta", "alpha"}) || decoded.PriceSnapshotGUID != "90" || decoded.PriceSnapshotVersion != 5 || rebound.Hash == prepared.Hash {
+		t.Fatalf("rebound=%#v decoded=%#v", rebound, decoded)
+	}
+	if _, err = prepareContentReleaseRebinding(release, newPrice, items[:1]); status(err) != 409 {
+		t.Fatalf("missing featured model rebind=%v", err)
+	}
+
+	legacyPayload := models.JSONMap{"home": "Home", "about": "About", "terms": "Terms", "privacy": "Privacy", "legal_reviewed": true, "model_keys": []string{"alpha"}, "price_snapshot_guid": "80", "price_snapshot_version": int64(4)}
+	legacyHash, _ := hashPublicContentPayload(legacyPayload)
+	legacy, err := prepareContentReleaseRebinding(models.PublicContentRelease{Payload: legacyPayload, ContentHash: legacyHash}, newPrice, items)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, synthesized := legacy.Payload["home_config"]; synthesized {
+		t.Fatalf("legacy release synthesized structured home: %#v", legacy.Payload)
+	}
+	if _, upgraded := legacy.Payload["schema_version"]; upgraded {
+		t.Fatalf("legacy release upgraded schema: %#v", legacy.Payload)
+	}
+}
+
+func TestStructuredHomeReleaseIntegrityRejectsUnknownOrDraftFields(t *testing.T) {
+	payload := models.JSONMap{
+		"schema_version": int64(2),
+		"home_config": publishedHomeConfig{
+			Announcements: []publishedAnnouncement{}, FAQs: []publishedFAQ{}, FeaturedModelKeys: []string{},
+		},
+		"home": "<p>home</p>\n", "about": "<p>about</p>\n", "terms": "<p>terms</p>\n", "privacy": "<p>privacy</p>\n",
+		"legal_reviewed": true, "price_snapshot_guid": "80", "price_snapshot_version": int64(4),
+	}
+	makeRelease := func(candidate models.JSONMap) models.PublicContentRelease {
+		hash, err := hashPublicContentPayload(candidate)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return models.PublicContentRelease{Payload: candidate, ContentHash: hash}
+	}
+	if err := verifyPublicContentRelease(makeRelease(payload)); err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"body_markdown", "is_visible", "credential"} {
+		copy := clonePublicContentPayload(payload)
+		copy[field] = "forbidden"
+		if err := verifyPublicContentRelease(makeRelease(copy)); status(err) != 503 {
+			t.Fatalf("unknown field %q accepted: %v", field, err)
+		}
 	}
 }
 

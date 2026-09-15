@@ -498,6 +498,12 @@ func (s *PublicPriceSnapshotService) transact(ctx context.Context, actorID, expe
 			if bindErr != nil {
 				return bindErr
 			}
+			if rebound.PriceSnapshotID != snapshot.ID || rebound.PriceSnapshotGUID != snapshot.Guid || rebound.PriceSnapshotVersion != snapshot.Version {
+				return errUnavailable("content release binding unavailable")
+			}
+			if bindErr = verifyPublicContentRelease(models.PublicContentRelease{Payload: rebound.Payload, ContentHash: rebound.Hash}); bindErr != nil {
+				return errUnavailable("content release binding unavailable")
+			}
 			contentRelease := models.PublicContentRelease{Guid: s.nextGUID(), CreatedAt: now, CreatedBy: &actor.ID, UpdatedAt: now, UpdatedBy: &actor.ID, DocumentKind: models.PublicContentDocumentSite, Version: currentContent.Version + 1, SourceRevision: currentContent.SourceRevision, Payload: rebound.Payload, ContentHash: rebound.Hash, PublishedAt: now}
 			if contentRelease.Guid <= 0 {
 				return errUnavailable("content release persistence unavailable")
