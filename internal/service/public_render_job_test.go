@@ -44,6 +44,97 @@ func TestEffectiveAnnouncementWatermarkQueuesOncePerReachedBoundary(t *testing.T
 	}
 }
 
+func TestRenderAttemptCrossingEffectiveBoundaryRequiresFollowup(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		attemptStart *int64
+		watermark    int64
+		want         bool
+	}{
+		{name: "started before boundary", attemptStart: pointerInt64(900), watermark: 1000, want: true},
+		{name: "started at boundary", attemptStart: pointerInt64(1000), watermark: 1000, want: false},
+		{name: "started after boundary", attemptStart: pointerInt64(1100), watermark: 1000, want: false},
+		{name: "legacy missing marker is conservative", attemptStart: nil, watermark: 1000, want: true},
+		{name: "no effective announcement", attemptStart: nil, watermark: 0, want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := renderAttemptCrossedEffectiveBoundary(tc.attemptStart, tc.watermark); got != tc.want {
+				t.Fatalf("crossed=%v want=%v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestPublicRenderJobFixtureCompletionAcrossAnnouncementBoundaryRequeuesOnce(t *testing.T) {
+	db := openTestMySQL(t)
+	ctx := context.Background()
+	effective := time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC)
+	job := seedStructuredPublicRenderJobFixture(t, db, effective)
+	var releasesBefore, jobsBefore int64
+	if err := db.Model(&models.PublicContentRelease{}).Count(&releasesBefore).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&models.PublicRenderJob{}).Count(&jobsBefore).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	clock := &fakePublicRenderClock{millis: effective.Add(-100 * time.Millisecond).UnixMilli()}
+	svc := NewPublicRenderJobServiceWithClock(db, []byte("fixture-render-job-purpose-key-32"), clock)
+	first, err := svc.Lease(ctx, PublicRenderLeaseInput{OwnerToken: "cross-boundary-render-owner", LeaseMillis: 30_000})
+	if err != nil || first == nil || first.JobGUID != job.Guid {
+		t.Fatalf("pre-boundary lease=%#v err=%v", first, err)
+	}
+	attemptInputAt := clock.millis
+	clock.millis = effective.Add(-50 * time.Millisecond).UnixMilli()
+	if err = svc.Renew(ctx, PublicRenderTransitionInput{JobGUID: first.JobGUID, OwnerToken: first.OwnerToken, Fence: first.Fence, LeaseMillis: 30_000}); err != nil {
+		t.Fatal(err)
+	}
+	var renewed models.PublicRenderJob
+	if err = db.Where("guid=?", first.JobGUID).First(&renewed).Error; err != nil || renewed.CompletedAt == nil || *renewed.CompletedAt != attemptInputAt || renewed.UpdatedAt != clock.millis {
+		t.Fatalf("renewed job=%#v input_at=%d updated_at=%d err=%v", renewed, attemptInputAt, clock.millis, err)
+	}
+	reader := newPublicCatalogReadServiceWithClock(db, func() time.Time { return time.UnixMilli(clock.millis).UTC() })
+	projection, err := reader.Projection(ctx)
+	if err != nil || !projection.HomeConfigAvailable || len(projection.HomeConfig.Announcements) != 0 {
+		t.Fatalf("pre-boundary projection=%#v err=%v", projection, err)
+	}
+
+	clock.millis = effective.Add(100 * time.Millisecond).UnixMilli()
+	if err = svc.Complete(ctx, PublicRenderTransitionInput{JobGUID: first.JobGUID, OwnerToken: first.OwnerToken, Fence: first.Fence}); err != nil {
+		t.Fatal(err)
+	}
+	var crossed models.PublicRenderJob
+	if err = db.Where("guid=?", first.JobGUID).First(&crossed).Error; err != nil || crossed.State != models.PublicRenderJobQueued || crossed.UpdatedAt != clock.millis || crossed.CompletedAt != nil {
+		t.Fatalf("crossed completion=%#v input_at=%d completed_at=%d err=%v", crossed, attemptInputAt, clock.millis, err)
+	}
+	second, err := svc.Lease(ctx, PublicRenderLeaseInput{OwnerToken: "cross-boundary-render-owner", LeaseMillis: 30_000})
+	if err != nil || second == nil || second.JobGUID != job.Guid || second.Fence != 1 {
+		t.Fatalf("due-boundary lease=%#v err=%v", second, err)
+	}
+	projection, err = reader.Projection(ctx)
+	if err != nil || len(projection.HomeConfig.Announcements) != 1 {
+		t.Fatalf("post-boundary projection=%#v err=%v", projection, err)
+	}
+	if err = svc.Complete(ctx, PublicRenderTransitionInput{JobGUID: second.JobGUID, OwnerToken: second.OwnerToken, Fence: second.Fence}); err != nil {
+		t.Fatal(err)
+	}
+	clock.millis++
+	again, err := svc.Lease(ctx, PublicRenderLeaseInput{OwnerToken: "cross-boundary-render-owner", LeaseMillis: 30_000})
+	if err != nil || again != nil {
+		t.Fatalf("duplicate due-boundary lease=%#v err=%v", again, err)
+	}
+	var releasesAfter, jobsAfter int64
+	if err = db.Model(&models.PublicContentRelease{}).Count(&releasesAfter).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err = db.Model(&models.PublicRenderJob{}).Count(&jobsAfter).Error; err != nil {
+		t.Fatal(err)
+	}
+	if releasesAfter != releasesBefore || jobsAfter != jobsBefore {
+		t.Fatalf("boundary tick created rows releases=%d/%d jobs=%d/%d", releasesBefore, releasesAfter, jobsBefore, jobsAfter)
+	}
+}
+
 func pointerInt64(value int64) *int64 { return &value }
 
 func TestPublicRenderJobFixtureEffectiveAnnouncementRequeuesExistingGenerationOnce(t *testing.T) {
@@ -600,7 +691,12 @@ func seedPublicRenderJobFixture(t *testing.T, db *gorm.DB) publicRenderFixture {
 func seedStructuredPublicRenderJobFixture(t *testing.T, db *gorm.DB, effective time.Time) models.PublicRenderJob {
 	t.Helper()
 	now := effective.Add(-time.Hour).UnixMilli()
-	price := models.PublicPriceSnapshot{Guid: persistence.NextGUID(), CreatedAt: now, UpdatedAt: now, Version: 911, Reason: models.PublicPriceSnapshotReasonRootPublish, SourceRevision: 1, ContentHash: strings.Repeat("e", 64), PublishedAt: now}
+	price := models.PublicPriceSnapshot{Guid: persistence.NextGUID(), CreatedAt: now, UpdatedAt: now, Version: 911, Reason: models.PublicPriceSnapshotReasonRootPublish, SourceRevision: 1, PublishedAt: now}
+	var err error
+	price.ContentHash, err = hashPublicPriceSnapshotItems(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := db.Create(&price).Error; err != nil {
 		t.Fatal(err)
 	}

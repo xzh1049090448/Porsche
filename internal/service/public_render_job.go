@@ -183,7 +183,7 @@ func (s *PublicRenderJobService) Lease(ctx context.Context, in PublicRenderLease
 				return err
 			}
 			if !current {
-				if err := tx.Model(&models.PublicRenderJob{}).Where("id=? AND state IN ?", job.ID, []models.PublicRenderJobState{models.PublicRenderJobQueued, models.PublicRenderJobLeased}).Updates(map[string]any{"state": models.PublicRenderJobFailed, "last_failure": "obsolete_generation", "lease_owner_hmac": nil, "lease_expires_at": nil, "updated_at": now}).Error; err != nil {
+				if err := tx.Model(&models.PublicRenderJob{}).Where("id=? AND state IN ?", job.ID, []models.PublicRenderJobState{models.PublicRenderJobQueued, models.PublicRenderJobLeased}).Updates(map[string]any{"state": models.PublicRenderJobFailed, "last_failure": "obsolete_generation", "lease_owner_hmac": nil, "lease_expires_at": nil, "completed_at": nil, "updated_at": now}).Error; err != nil {
 					return ErrPublicRenderUnavailable
 				}
 				continue
@@ -194,7 +194,10 @@ func (s *PublicRenderJobService) Lease(ctx context.Context, in PublicRenderLease
 				return ErrPublicRenderInvalid
 			}
 			hash := s.ownerHMAC(strings.TrimSpace(in.OwnerToken))
-			res := tx.Model(&models.PublicRenderJob{}).Where("id=? AND attempt_count=?", job.ID, job.AttemptCount).Updates(map[string]any{"state": models.PublicRenderJobLeased, "lease_owner_hmac": hash, "lease_expires_at": expires, "attempt_count": attempt, "last_failure": nil, "last_terminal_owner_hmac": nil, "last_terminal_fence": nil, "last_terminal_operation": nil, "last_terminal_state": nil, "updated_at": now})
+			// completed_at temporarily carries the durable input timestamp while
+			// leased. Complete either replaces it with the finish timestamp or
+			// clears it when an effective boundary requires another render.
+			res := tx.Model(&models.PublicRenderJob{}).Where("id=? AND attempt_count=?", job.ID, job.AttemptCount).Updates(map[string]any{"state": models.PublicRenderJobLeased, "lease_owner_hmac": hash, "lease_expires_at": expires, "attempt_count": attempt, "last_failure": nil, "completed_at": now, "last_terminal_owner_hmac": nil, "last_terminal_fence": nil, "last_terminal_operation": nil, "last_terminal_state": nil, "updated_at": now})
 			if res.Error != nil {
 				return ErrPublicRenderUnavailable
 			}
@@ -216,22 +219,7 @@ func (s *PublicRenderJobService) queueEffectiveAnnouncements(tx *gorm.DB, state 
 	if state.PriceSnapshotID == nil || state.ContentReleaseID == nil {
 		return nil
 	}
-	var content models.PublicContentRelease
-	if err := tx.Where("id=? AND is_deleted=0", *state.ContentReleaseID).First(&content).Error; err != nil {
-		return ErrPublicRenderUnavailable
-	}
-	structured, err := publicContentPayloadUsesStructuredSchema(content.Payload)
-	if err != nil {
-		return ErrPublicRenderUnavailable
-	}
-	if !structured {
-		return nil
-	}
-	home, err := projectPublicHomeConfigRelease(content)
-	if err != nil {
-		return ErrPublicRenderUnavailable
-	}
-	watermark, err := effectiveAnnouncementWatermark(home, now)
+	watermark, err := effectiveAnnouncementWatermarkForRelease(tx, *state.ContentReleaseID, now)
 	if err != nil || watermark == 0 {
 		if err != nil {
 			return ErrPublicRenderUnavailable
@@ -263,6 +251,29 @@ func (s *PublicRenderJobService) queueEffectiveAnnouncements(tx *gorm.DB, state 
 		return ErrPublicRenderUnavailable
 	}
 	return nil
+}
+
+func effectiveAnnouncementWatermarkForRelease(tx *gorm.DB, contentReleaseID, now int64) (int64, error) {
+	var content models.PublicContentRelease
+	if err := tx.Where("id=? AND is_deleted=0", contentReleaseID).First(&content).Error; err != nil {
+		return 0, ErrPublicRenderUnavailable
+	}
+	structured, err := publicContentPayloadUsesStructuredSchema(content.Payload)
+	if err != nil {
+		return 0, ErrPublicRenderUnavailable
+	}
+	if !structured {
+		return 0, nil
+	}
+	home, err := projectPublicHomeConfigRelease(content)
+	if err != nil {
+		return 0, ErrPublicRenderUnavailable
+	}
+	watermark, err := effectiveAnnouncementWatermark(home, now)
+	if err != nil {
+		return 0, ErrPublicRenderUnavailable
+	}
+	return watermark, nil
 }
 
 func effectiveAnnouncementWatermark(home PublicHomeConfig, now int64) (int64, error) {
@@ -298,6 +309,10 @@ func shouldQueueEffectiveAnnouncement(job models.PublicRenderJob, watermark int6
 	default:
 		return false
 	}
+}
+
+func renderAttemptCrossedEffectiveBoundary(attemptInputAt *int64, watermark int64) bool {
+	return watermark > 0 && (attemptInputAt == nil || *attemptInputAt < watermark)
 }
 
 type renderGenerationPart struct {
@@ -375,9 +390,21 @@ func (s *PublicRenderJobService) Complete(ctx context.Context, in PublicRenderTr
 		if !current {
 			return ErrPublicRenderLeaseLost
 		}
+		watermark, err := effectiveAnnouncementWatermarkForRelease(tx, job.ContentReleaseID, now)
+		if err != nil {
+			return err
+		}
 		terminalState := models.PublicRenderJobSucceeded
 		op := 1
-		res := tx.Model(&models.PublicRenderJob{}).Where("id=? AND state=? AND attempt_count=? AND lease_owner_hmac=? AND lease_expires_at>?", job.ID, models.PublicRenderJobLeased, in.Fence, s.ownerHMAC(in.OwnerToken), now).Updates(map[string]any{"state": terminalState, "completed_at": now, "lease_owner_hmac": nil, "lease_expires_at": nil, "last_failure": nil, "last_terminal_owner_hmac": s.ownerHMAC(in.OwnerToken), "last_terminal_fence": in.Fence, "last_terminal_operation": op, "last_terminal_state": terminalState, "updated_at": now})
+		updates := map[string]any{"state": terminalState, "completed_at": now, "lease_owner_hmac": nil, "lease_expires_at": nil, "last_failure": nil, "last_terminal_owner_hmac": s.ownerHMAC(in.OwnerToken), "last_terminal_fence": in.Fence, "last_terminal_operation": op, "last_terminal_state": terminalState, "updated_at": now}
+		if renderAttemptCrossedEffectiveBoundary(job.CompletedAt, watermark) {
+			terminalState = models.PublicRenderJobQueued
+			updates["state"] = terminalState
+			updates["attempt_count"] = 0
+			updates["completed_at"] = nil
+			updates["last_terminal_state"] = terminalState
+		}
+		res := tx.Model(&models.PublicRenderJob{}).Where("id=? AND state=? AND attempt_count=? AND lease_owner_hmac=? AND lease_expires_at>?", job.ID, models.PublicRenderJobLeased, in.Fence, s.ownerHMAC(in.OwnerToken), now).Updates(updates)
 		if err := renderTransitionResult(res); err != nil {
 			return err
 		}
@@ -407,7 +434,7 @@ func (s *PublicRenderJobService) Fail(ctx context.Context, in PublicRenderTransi
 			return ErrPublicRenderInvalid
 		}
 	}
-	updates := map[string]any{"state": state, "last_failure": code, "lease_owner_hmac": nil, "updated_at": now}
+	updates := map[string]any{"state": state, "last_failure": code, "lease_owner_hmac": nil, "completed_at": nil, "updated_at": now}
 	op := 2
 	updates["last_terminal_owner_hmac"] = s.ownerHMAC(in.OwnerToken)
 	updates["last_terminal_fence"] = in.Fence
