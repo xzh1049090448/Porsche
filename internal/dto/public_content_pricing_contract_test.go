@@ -3,6 +3,7 @@ package dto
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"reflect"
@@ -38,7 +39,8 @@ func TestPublicContentPricingContract(t *testing.T) {
 		t.Fatalf("contract contains a trailing JSON value: %v", err)
 	}
 
-	publicContentPricingRequire(t, contract, "v1", "version")
+	publicContentPricingRequire(t, contract, "v2", "version")
+	publicContentPricingRequire(t, contract, "approved_contract_pending_implementation", "status")
 	publicContentPricingRequire(t, contract, "USD", "pricing", "currency")
 	publicContentPricingRequire(t, contract, "million_tokens", "pricing", "unit")
 	publicContentPricingRequire(t, contract, []any{"input", "output"}, "pricing", "components")
@@ -85,8 +87,36 @@ func TestPublicContentPricingContract(t *testing.T) {
 		{"GET", "/admin/v2/public-content/releases", "root", "admin_request_headers", "admin_response_headers", "NoBody", "PaginationRequest", "NoBody", "ReleaseListResponse", json.Number("200")},
 		{"GET", "/admin/v2/public-content/releases/{guid}", "root", "admin_request_headers", "admin_response_headers", "GUIDRequest", "NoBody", "NoBody", "ImmutableContentReleaseResponse", json.Number("200")},
 		{"POST", "/admin/v2/public-content/releases/{guid}/restore", "root", "admin_publish_request_headers", "admin_response_headers", "GUIDRequest", "NoBody", "RevisionRequest", "Release", json.Number("201")},
+		{"GET", "/api/v1/public/home-config", "anonymous", "public_request_headers", "public_response_headers", "NoBody", "NoBody", "NoBody", "HomeConfigPublicResponse", json.Number("200")},
+		{"GET", "/admin/v2/public-content/home-draft", "root", "admin_request_headers", "admin_response_headers", "NoBody", "NoBody", "NoBody", "HomeDraftResponse", json.Number("200")},
+		{"POST", "/admin/v2/public-content/home-draft/announcements", "root", "admin_request_headers", "admin_response_headers", "NoBody", "NoBody", "AnnouncementCreateRequest", "HomeDraftResponse", json.Number("201")},
+		{"PATCH", "/admin/v2/public-content/home-draft/announcements/{guid}", "root", "admin_request_headers", "admin_response_headers", "GUIDRequest", "NoBody", "AnnouncementUpdateRequest", "HomeDraftResponse", json.Number("200")},
+		{"DELETE", "/admin/v2/public-content/home-draft/announcements/{guid}", "root", "admin_request_headers", "admin_draft_delete_response_headers", "GUIDRequest", "NoBody", "AnnouncementDeleteRequest", "NoBody", json.Number("204")},
+		{"POST", "/admin/v2/public-content/home-draft/faqs", "root", "admin_request_headers", "admin_response_headers", "NoBody", "NoBody", "FAQCreateRequest", "HomeDraftResponse", json.Number("201")},
+		{"PATCH", "/admin/v2/public-content/home-draft/faqs/{guid}", "root", "admin_request_headers", "admin_response_headers", "GUIDRequest", "NoBody", "FAQUpdateRequest", "HomeDraftResponse", json.Number("200")},
+		{"DELETE", "/admin/v2/public-content/home-draft/faqs/{guid}", "root", "admin_request_headers", "admin_draft_delete_response_headers", "GUIDRequest", "NoBody", "FAQDeleteRequest", "NoBody", json.Number("204")},
+		{"PUT", "/admin/v2/public-content/home-draft/featured-models", "root", "admin_request_headers", "admin_response_headers", "NoBody", "NoBody", "FeaturedModelsSaveRequest", "HomeDraftResponse", json.Number("200")},
+		{"GET", "/admin/v2/public-content/home-preview", "root", "admin_request_headers", "admin_preview_response_headers", "NoBody", "PreviewRequest", "NoBody", "HomeDraftResponse", json.Number("200")},
+		{"GET", "/admin/v2/public-content/releases/{guid}/home-config", "root", "admin_request_headers", "admin_response_headers", "GUIDRequest", "NoBody", "NoBody", "HomeConfigPublicResponse", json.Number("200")},
+		{"GET", "/admin/v2/public-content/documents-draft", "root", "admin_request_headers", "admin_response_headers", "NoBody", "NoBody", "NoBody", "DocumentsDraftResponse", json.Number("200")},
+		{"PUT", "/admin/v2/public-content/documents-draft", "root", "admin_request_headers", "admin_response_headers", "NoBody", "NoBody", "DocumentsDraftSaveRequest", "DocumentsDraftResponse", json.Number("200")},
 	}
 	publicContentPricingRequireExactRoutes(t, contract, expectedRoutes)
+	publicContentPricingRequire(t, contract, []any{
+		"GET /api/v1/public/home-config",
+		"GET /admin/v2/public-content/home-draft",
+		"POST /admin/v2/public-content/home-draft/announcements",
+		"PATCH /admin/v2/public-content/home-draft/announcements/{guid}",
+		"DELETE /admin/v2/public-content/home-draft/announcements/{guid}",
+		"POST /admin/v2/public-content/home-draft/faqs",
+		"PATCH /admin/v2/public-content/home-draft/faqs/{guid}",
+		"DELETE /admin/v2/public-content/home-draft/faqs/{guid}",
+		"PUT /admin/v2/public-content/home-draft/featured-models",
+		"GET /admin/v2/public-content/home-preview",
+		"GET /admin/v2/public-content/releases/{guid}/home-config",
+		"GET /admin/v2/public-content/documents-draft",
+		"PUT /admin/v2/public-content/documents-draft",
+	}, "pending_implementation_routes")
 	publicContentPricingAssertListQueries(t, contract)
 	for _, field := range []string{"endpoint_type", "public_display_group", "pricing_type", "sort", "order"} {
 		if _, ok := contract["schemas"].(map[string]any)["PublicModelsListRequest"].(map[string]any)["properties"].(map[string]any)[field]; !ok {
@@ -145,6 +175,14 @@ func TestPublicContentPricingContract(t *testing.T) {
 		"POST /admin/v2/public-content/validate",
 		"POST /admin/v2/public-content/publish",
 		"POST /admin/v2/public-content/releases/{guid}/restore",
+		"POST /admin/v2/public-content/home-draft/announcements",
+		"PATCH /admin/v2/public-content/home-draft/announcements/{guid}",
+		"DELETE /admin/v2/public-content/home-draft/announcements/{guid}",
+		"POST /admin/v2/public-content/home-draft/faqs",
+		"PATCH /admin/v2/public-content/home-draft/faqs/{guid}",
+		"DELETE /admin/v2/public-content/home-draft/faqs/{guid}",
+		"PUT /admin/v2/public-content/home-draft/featured-models",
+		"PUT /admin/v2/public-content/documents-draft",
 	}, "mutation_requirements", "expected_revision_routes")
 	publicContentPricingRequire(t, contract, []any{
 		"POST /admin/v2/public-pricing/publish",
@@ -171,6 +209,13 @@ func TestPublicContentPricingContract(t *testing.T) {
 		publicContentPricingRequireRouteValue(t, contract, route, "admin_publish_request_headers", "request_headers")
 	}
 	publicContentPricingRequireRouteValue(t, contract, publicContentPricingRoute{"DELETE", "/admin/v2/public-models/{guid}", "root"}, "admin_verified_action_request_headers", "request_headers")
+	for _, route := range []publicContentPricingRoute{
+		{"DELETE", "/admin/v2/public-content/home-draft/announcements/{guid}", "root"},
+		{"DELETE", "/admin/v2/public-content/home-draft/faqs/{guid}", "root"},
+	} {
+		publicContentPricingRequireRouteValue(t, contract, route, "admin_request_headers", "request_headers")
+		publicContentPricingRequireRouteValue(t, contract, route, "admin_draft_delete_response_headers", "response_headers")
+	}
 	preview := publicContentPricingRoute{"GET", "/admin/v2/public-content/preview", "root"}
 	publicContentPricingRequireRouteValue(t, contract, preview, "admin_preview_response_headers", "response_headers")
 	publicContentPricingRequire(t, contract, "no-store", "admin_preview_response_headers", "Cache-Control")
@@ -208,6 +253,7 @@ func TestPublicContentPricingContract(t *testing.T) {
 		"POST /admin/v2/public-content/publish",
 		"POST /admin/v2/public-content/releases/{guid}/restore",
 	}, "mutation_requirements", "action_ticket_header_routes")
+	publicContentPricingAssertStructuredHomeSchemas(t, contract)
 	publicContentPricingAssertSchemas(t, contract)
 	publicContentPricingAssertAllSchemasReachable(t, contract)
 	publicContentPricingRequire(t, contract, "^[1-9][0-9]{0,18}$", "schemas", "GUIDRequest", "properties", "guid", "pattern")
@@ -232,6 +278,25 @@ func TestPublicContentPricingContract(t *testing.T) {
 
 	for _, forbidden := range []string{"credential_value", "api_key", "current_password", "internal_id", "database_id", "upstream_url"} {
 		publicContentPricingForbidText(t, raw, forbidden)
+	}
+}
+
+func TestPublicContentPricingContractRejectsStructuredSortOrderTypeDrift(t *testing.T) {
+	raw, err := os.ReadFile(publicContentPricingContractPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var contract map[string]any
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	if err := decoder.Decode(&contract); err != nil {
+		t.Fatal(err)
+	}
+	publicContentPricingSchemaProperties(t, contract, "FAQCreateRequest")["sort_order"].(map[string]any)["type"] = "string"
+	if err := publicContentPricingValidateStructuredSortOrders(contract); err == nil {
+		t.Fatal("FAQCreateRequest sort_order type drift was accepted")
+	} else if !strings.Contains(err.Error(), "FAQCreateRequest sort_order type") {
+		t.Fatalf("unexpected structured sort_order error: %v", err)
 	}
 }
 
@@ -457,6 +522,158 @@ func publicContentPricingAssertDecimalPattern(t *testing.T) {
 	}
 }
 
+func publicContentPricingAssertStructuredHomeSchemas(t *testing.T, contract map[string]any) {
+	t.Helper()
+	if err := publicContentPricingValidateStructuredSortOrders(contract); err != nil {
+		t.Fatal(err)
+	}
+	publicContentPricingRequire(t, contract, "null", "schemas", "null", "type")
+	publicContentPricingRequire(t, contract, "string", "schemas", "rfc3339_utc", "type")
+	publicContentPricingRequire(t, contract, "date-time-rfc3339-utc", "schemas", "rfc3339_utc", "format")
+
+	publicContentPricingRequire(t, contract, []any{"guid", "title", "body_markdown", "effective_at", "is_visible", "sort_order"}, "schemas", "AnnouncementDraft", "required")
+	publicContentPricingRequire(t, contract, []any{"guid", "question", "answer_markdown", "is_visible", "sort_order"}, "schemas", "FAQDraft", "required")
+	publicContentPricingRequire(t, contract, []any{"guid", "title", "body_html", "effective_at", "sort_order"}, "schemas", "HomeConfigPublicAnnouncement", "required")
+	publicContentPricingRequire(t, contract, []any{"guid", "question", "answer_html", "sort_order"}, "schemas", "HomeConfigPublicFAQ", "required")
+	for _, schemaName := range []string{"AnnouncementDraft", "HomeConfigPublicAnnouncement"} {
+		publicContentPricingRequire(t, contract, "string", "schemas", schemaName, "properties", "guid", "type")
+		publicContentPricingRequire(t, contract, "positive-int64", "schemas", schemaName, "properties", "guid", "format")
+		publicContentPricingRequire(t, contract, "string", "schemas", schemaName, "properties", "title", "type")
+		publicContentPricingRequire(t, contract, json.Number("1"), "schemas", schemaName, "properties", "title", "minLength")
+		publicContentPricingRequire(t, contract, json.Number("120"), "schemas", schemaName, "properties", "title", "maxLength")
+		publicContentPricingRequire(t, contract, []any{"null", "rfc3339_utc"}, "schemas", schemaName, "properties", "effective_at", "one_of")
+	}
+	publicContentPricingRequire(t, contract, "string", "schemas", "HomeConfigPublicAnnouncement", "properties", "body_html", "type")
+	for _, schemaName := range []string{"AnnouncementDraft", "AnnouncementCreateRequest", "AnnouncementUpdateRequest"} {
+		publicContentPricingRequire(t, contract, "string", "schemas", schemaName, "properties", "title", "type")
+		publicContentPricingRequire(t, contract, json.Number("1"), "schemas", schemaName, "properties", "title", "minLength")
+		publicContentPricingRequire(t, contract, json.Number("120"), "schemas", schemaName, "properties", "title", "maxLength")
+		publicContentPricingRequire(t, contract, "string", "schemas", schemaName, "properties", "body_markdown", "type")
+		publicContentPricingRequire(t, contract, json.Number("16384"), "schemas", schemaName, "properties", "body_markdown", "maxBytes")
+		publicContentPricingRequire(t, contract, []any{"null", "rfc3339_utc"}, "schemas", schemaName, "properties", "effective_at", "one_of")
+		publicContentPricingRequire(t, contract, "boolean", "schemas", schemaName, "properties", "is_visible", "type")
+	}
+	publicContentPricingRequire(t, contract, "string", "schemas", "HomeConfigPublicFAQ", "properties", "answer_html", "type")
+	for _, schemaName := range []string{"FAQDraft", "HomeConfigPublicFAQ"} {
+		publicContentPricingRequire(t, contract, "string", "schemas", schemaName, "properties", "guid", "type")
+		publicContentPricingRequire(t, contract, "positive-int64", "schemas", schemaName, "properties", "guid", "format")
+		publicContentPricingRequire(t, contract, "string", "schemas", schemaName, "properties", "question", "type")
+		publicContentPricingRequire(t, contract, json.Number("1"), "schemas", schemaName, "properties", "question", "minLength")
+		publicContentPricingRequire(t, contract, json.Number("200"), "schemas", schemaName, "properties", "question", "maxLength")
+	}
+	for _, schemaName := range []string{"FAQDraft", "FAQCreateRequest", "FAQUpdateRequest"} {
+		publicContentPricingRequire(t, contract, "string", "schemas", schemaName, "properties", "question", "type")
+		publicContentPricingRequire(t, contract, json.Number("1"), "schemas", schemaName, "properties", "question", "minLength")
+		publicContentPricingRequire(t, contract, json.Number("200"), "schemas", schemaName, "properties", "question", "maxLength")
+		publicContentPricingRequire(t, contract, "string", "schemas", schemaName, "properties", "answer_markdown", "type")
+		publicContentPricingRequire(t, contract, json.Number("16384"), "schemas", schemaName, "properties", "answer_markdown", "maxBytes")
+		publicContentPricingRequire(t, contract, "boolean", "schemas", schemaName, "properties", "is_visible", "type")
+	}
+
+	publicContentPricingRequire(t, contract, []any{"expected_revision", "title", "body_markdown", "effective_at", "is_visible", "sort_order"}, "schemas", "AnnouncementCreateRequest", "required")
+	publicContentPricingRequire(t, contract, []any{"expected_revision"}, "schemas", "AnnouncementUpdateRequest", "required")
+	publicContentPricingRequire(t, contract, []any{"expected_revision"}, "schemas", "AnnouncementDeleteRequest", "required")
+	publicContentPricingRequireSchemaKeys(t, contract, "AnnouncementDeleteRequest", "expected_revision")
+	publicContentPricingRequire(t, contract, []any{"expected_revision", "question", "answer_markdown", "is_visible", "sort_order"}, "schemas", "FAQCreateRequest", "required")
+	publicContentPricingRequire(t, contract, []any{"expected_revision"}, "schemas", "FAQUpdateRequest", "required")
+	publicContentPricingRequire(t, contract, []any{"expected_revision"}, "schemas", "FAQDeleteRequest", "required")
+	publicContentPricingRequireSchemaKeys(t, contract, "FAQDeleteRequest", "expected_revision")
+
+	publicContentPricingRequire(t, contract, []any{"revision", "announcements", "faqs", "featured_model_keys"}, "schemas", "HomeDraftResponse", "required")
+	publicContentPricingRequire(t, contract, "integer", "schemas", "HomeDraftResponse", "properties", "revision", "type")
+	publicContentPricingRequire(t, contract, json.Number("1"), "schemas", "HomeDraftResponse", "properties", "revision", "minimum")
+	publicContentPricingRequireArrayBoundary(t, contract, "HomeDraftResponse", "announcements", json.Number("20"), true, "AnnouncementDraft")
+	publicContentPricingRequireArrayBoundary(t, contract, "HomeDraftResponse", "faqs", json.Number("50"), true, "FAQDraft")
+	publicContentPricingRequireArrayBoundary(t, contract, "HomeDraftResponse", "featured_model_keys", json.Number("12"), false, "")
+	publicContentPricingRequire(t, contract, true, "schemas", "HomeDraftResponse", "properties", "featured_model_keys", "uniqueItems")
+	publicContentPricingRequire(t, contract, "string", "schemas", "HomeDraftResponse", "properties", "featured_model_keys", "items", "type")
+	publicContentPricingRequire(t, contract, json.Number("1"), "schemas", "HomeDraftResponse", "properties", "featured_model_keys", "items", "minLength")
+
+	publicContentPricingRequire(t, contract, []any{"revision", "about", "terms", "privacy", "legal_reviewed"}, "schemas", "DocumentsDraftResponse", "required")
+	publicContentPricingRequireSchemaKeys(t, contract, "DocumentsDraftResponse", "revision", "about", "terms", "privacy", "legal_reviewed")
+	publicContentPricingRequire(t, contract, []any{"expected_revision", "about", "terms", "privacy", "legal_reviewed"}, "schemas", "DocumentsDraftSaveRequest", "required")
+	publicContentPricingRequireSchemaKeys(t, contract, "DocumentsDraftSaveRequest", "expected_revision", "about", "terms", "privacy", "legal_reviewed")
+	for _, schemaName := range []string{"DocumentsDraftResponse", "DocumentsDraftSaveRequest"} {
+		for _, field := range []string{"about", "terms", "privacy"} {
+			publicContentPricingRequire(t, contract, "string", "schemas", schemaName, "properties", field, "type")
+		}
+		publicContentPricingRequire(t, contract, "boolean", "schemas", schemaName, "properties", "legal_reviewed", "type")
+	}
+	publicContentPricingRequire(t, contract, "integer", "schemas", "DocumentsDraftResponse", "properties", "revision", "type")
+	publicContentPricingRequire(t, contract, json.Number("1"), "schemas", "DocumentsDraftResponse", "properties", "revision", "minimum")
+	publicContentPricingRequire(t, contract, []any{"expected_revision", "featured_model_keys"}, "schemas", "FeaturedModelsSaveRequest", "required")
+	publicContentPricingRequireArrayBoundary(t, contract, "FeaturedModelsSaveRequest", "featured_model_keys", json.Number("12"), false, "")
+	publicContentPricingRequire(t, contract, true, "schemas", "FeaturedModelsSaveRequest", "properties", "featured_model_keys", "uniqueItems")
+	publicContentPricingRequire(t, contract, "string", "schemas", "FeaturedModelsSaveRequest", "properties", "featured_model_keys", "items", "type")
+	publicContentPricingRequire(t, contract, json.Number("1"), "schemas", "FeaturedModelsSaveRequest", "properties", "featured_model_keys", "items", "minLength")
+
+	publicContentPricingRequire(t, contract, []any{"announcements", "faqs", "featured_model_keys", "content_release_version", "price_release_version"}, "schemas", "HomeConfigPublicResponse", "required")
+	publicContentPricingRequireArrayBoundary(t, contract, "HomeConfigPublicResponse", "announcements", json.Number("20"), true, "HomeConfigPublicAnnouncement")
+	publicContentPricingRequireArrayBoundary(t, contract, "HomeConfigPublicResponse", "faqs", json.Number("50"), true, "HomeConfigPublicFAQ")
+	publicContentPricingRequireArrayBoundary(t, contract, "HomeConfigPublicResponse", "featured_model_keys", json.Number("12"), false, "")
+	publicContentPricingRequire(t, contract, true, "schemas", "HomeConfigPublicResponse", "properties", "featured_model_keys", "uniqueItems")
+	publicContentPricingRequire(t, contract, "string", "schemas", "HomeConfigPublicResponse", "properties", "featured_model_keys", "items", "type")
+	publicContentPricingRequire(t, contract, json.Number("1"), "schemas", "HomeConfigPublicResponse", "properties", "featured_model_keys", "items", "minLength")
+	for _, field := range []string{"content_release_version", "price_release_version"} {
+		publicContentPricingRequire(t, contract, "integer", "schemas", "HomeConfigPublicResponse", "properties", field, "type")
+		publicContentPricingRequire(t, contract, json.Number("1"), "schemas", "HomeConfigPublicResponse", "properties", field, "minimum")
+	}
+
+	publicContentPricingRequire(t, contract, "no-store", "admin_draft_delete_response_headers", "Cache-Control")
+	publicContentPricingRequire(t, contract, "required_non_empty", "admin_draft_delete_response_headers", "X-Request-ID")
+	publicContentPricingRequire(t, contract, "required_positive_integer", "admin_draft_delete_response_headers", "X-Content-Draft-Revision")
+}
+
+func publicContentPricingValidateStructuredSortOrders(contract map[string]any) error {
+	schemas, ok := contract["schemas"].(map[string]any)
+	if !ok {
+		return fmt.Errorf("contract schemas must be an object")
+	}
+	for _, schemaName := range []string{
+		"AnnouncementDraft",
+		"HomeConfigPublicAnnouncement",
+		"AnnouncementCreateRequest",
+		"AnnouncementUpdateRequest",
+		"FAQDraft",
+		"HomeConfigPublicFAQ",
+		"FAQCreateRequest",
+		"FAQUpdateRequest",
+	} {
+		schema, ok := schemas[schemaName].(map[string]any)
+		if !ok {
+			return fmt.Errorf("schema %s must be an object", schemaName)
+		}
+		properties, ok := schema["properties"].(map[string]any)
+		if !ok {
+			return fmt.Errorf("schema %s properties must be an object", schemaName)
+		}
+		sortOrder, ok := properties["sort_order"].(map[string]any)
+		if !ok {
+			return fmt.Errorf("schema %s sort_order must be an object", schemaName)
+		}
+		if got := sortOrder["type"]; got != "integer" {
+			return fmt.Errorf("schema %s sort_order type=%v, want integer", schemaName, got)
+		}
+		if got := sortOrder["minimum"]; got != json.Number("0") {
+			return fmt.Errorf("schema %s sort_order minimum=%v, want 0", schemaName, got)
+		}
+		if got := sortOrder["maximum"]; got != json.Number("1000000") {
+			return fmt.Errorf("schema %s sort_order maximum=%v, want 1000000", schemaName, got)
+		}
+	}
+	return nil
+}
+
+func publicContentPricingRequireArrayBoundary(t *testing.T, contract map[string]any, schemaName, field string, maxItems json.Number, hasRef bool, ref string) {
+	t.Helper()
+	publicContentPricingRequire(t, contract, "array", "schemas", schemaName, "properties", field, "type")
+	publicContentPricingRequire(t, contract, maxItems, "schemas", schemaName, "properties", field, "maxItems")
+	if hasRef {
+		publicContentPricingRequire(t, contract, "object", "schemas", schemaName, "properties", field, "items", "type")
+		publicContentPricingRequire(t, contract, ref, "schemas", schemaName, "properties", field, "items", "$ref")
+	}
+}
+
 func publicContentPricingAssertSchemas(t *testing.T, contract map[string]any) {
 	t.Helper()
 	schemas, ok := contract["schemas"].(map[string]any)
@@ -518,8 +735,10 @@ func publicContentPricingValidateSchema(t *testing.T, schemas map[string]any, na
 	if !ok {
 		t.Fatalf("schema %s must be an object", name)
 	}
-	if _, ok := schema["type"].(string); !ok {
-		t.Fatalf("schema %s must define type", name)
+	_, hasType := schema["type"].(string)
+	_, hasUnion := schema["one_of"].([]any)
+	if !hasType && !hasUnion {
+		t.Fatalf("schema %s must define type or one_of", name)
 	}
 	if reference, ok := schema["$ref"].(string); ok {
 		if _, exists := schemas[reference]; !exists {
