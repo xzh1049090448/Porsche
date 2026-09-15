@@ -83,7 +83,7 @@ func (s *ActionVerificationService) VerifyAndConsumeInTx(ctx context.Context, tx
 	if now <= 0 {
 		return ErrActionVerificationUnavailable
 	}
-	locked, err := lockActionIdentity(tx, in.Actor, descriptor, in.TargetGUID, now)
+	locked, err := lockActionIdentity(tx, in.Actor, descriptor, in.TargetGUID, in.Intent, false, now)
 	if err != nil {
 		return err
 	}
@@ -96,6 +96,11 @@ func (s *ActionVerificationService) VerifyAndConsumeInTx(ctx context.Context, tx
 	}
 	if !validVerificationConsumeBinding(verification, locked.actor.ID, locked.actor.AuthVersion, locked.session.ID, descriptor, in.TargetGUID, intentHex, ticketHex, now) {
 		return ErrActionVerificationForbidden
+	}
+	if descriptor.TargetKind == actionsecurity.TargetPublicContent {
+		if err := lockPublicActionTarget(tx, locked.actor.ID, descriptor.Action, in.TargetGUID, in.Intent); err != nil {
+			return err
+		}
 	}
 	actorID := locked.actor.ID
 	result := tx.Model(&models.AdminActionVerification{}).

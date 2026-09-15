@@ -465,14 +465,15 @@ func TestPublicHomeDraftMutationLimitsAndConcurrentRevision(t *testing.T) {
 	var success, conflict int
 	for i := 0; i < 2; i++ {
 		result := <-results
-		switch status(result.err) {
-		case 0:
+		if result.err == nil {
 			success++
-		case 409:
-			conflict++
-		default:
-			t.Fatalf("concurrent result=%#v", result)
+			continue
 		}
+		if status(result.err) == 409 {
+			conflict++
+			continue
+		}
+		t.Fatalf("concurrent result=%#v", result)
 	}
 	if success != 1 || conflict != 1 {
 		t.Fatalf("success=%d conflict=%d", success, conflict)

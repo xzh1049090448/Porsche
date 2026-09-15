@@ -171,7 +171,8 @@ func TestPublicModelListCompletenessIsGlobalBeforePagination(t *testing.T) {
 }
 func (f *publicModelDBFixture) input(s string) CreatePublicModelRequest {
 	p := "2.00000000"
-	return CreatePublicModelRequest{UpstreamModelID: "org/model-" + s, ModelKey: "model-" + s, DisplayName: "Model", Provider: "provider", Capabilities: []string{"chat"}, ContextWindow: 8192, InputPriceUSDPerMillionTokens: &p, OutputPriceUSDPerMillionTokens: &p}
+	effectiveAt := persistence.NowMillis()
+	return CreatePublicModelRequest{UpstreamModelID: "org/model-" + s, ModelKey: "model-" + s, DisplayName: "Model", Provider: "provider", Capabilities: []string{"chat"}, ContextWindow: 8192, InputPriceUSDPerMillionTokens: &p, OutputPriceUSDPerMillionTokens: &p, PriceSource: "approved catalog", PriceReviewer: "pricing team", PriceEffectiveAt: &effectiveAt}
 }
 
 func TestPublicModelDBLifecycleReservationOmissionAuditAndRollback(t *testing.T) {

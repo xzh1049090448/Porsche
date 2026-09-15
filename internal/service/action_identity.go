@@ -3,6 +3,7 @@ package service
 import (
 	"crypto/subtle"
 	"errors"
+	"math"
 
 	"github.com/porsche/ai-gateway-go/internal/actionsecurity"
 	"github.com/porsche/ai-gateway-go/internal/authz"
@@ -29,7 +30,7 @@ type lockedActionIdentity struct {
 
 // lockActionIdentity owns the common actor -> session -> target -> policy lock
 // order. The Redis limiter and revocation barrier must already have succeeded.
-func lockActionIdentity(tx *gorm.DB, actor ActionActor, descriptor actionsecurity.Descriptor, targetGUID *int64, now int64) (lockedActionIdentity, error) {
+func lockActionIdentity(tx *gorm.DB, actor ActionActor, descriptor actionsecurity.Descriptor, targetGUID *int64, intent any, lockPublicTarget bool, now int64) (lockedActionIdentity, error) {
 	if tx == nil || actor.UserID <= 0 || actor.UserGUID <= 0 || actor.AuthVersion <= 0 ||
 		len(actor.SessionSID) != 36 || actor.SessionVersion <= 0 || now <= 0 {
 		return lockedActionIdentity{}, ErrActionVerificationUnavailable
@@ -94,9 +95,11 @@ func lockActionIdentity(tx *gorm.DB, actor ActionActor, descriptor actionsecurit
 			return lockedActionIdentity{}, ErrActionVerificationUnavailable
 		}
 	case actionsecurity.TargetPublicContent:
-		// B1-E has no public-content persistence consumer or lockable target
-		// model. Fail closed until that consumer adds its reviewed target lock.
-		return lockedActionIdentity{}, ErrActionVerificationUnavailable
+		if lockPublicTarget {
+			if err := lockPublicActionTarget(tx, storedActor.ID, descriptor.Action, targetGUID, intent); err != nil {
+				return lockedActionIdentity{}, err
+			}
+		}
 	default:
 		if targetGUID == nil || *targetGUID <= 0 {
 			return lockedActionIdentity{}, ErrActionVerificationHidden
@@ -146,6 +149,208 @@ func lockActionIdentity(tx *gorm.DB, actor ActionActor, descriptor actionsecurit
 		lockedTarget = &targetCopy
 	}
 	return lockedActionIdentity{actor: storedActor, session: session, target: lockedTarget}, nil
+}
+
+// lockPublicActionTarget locks the revisioned aggregate and exact public target
+// in the same order as the corresponding business transaction. Issue and
+// consume both call this function, so a ticket cannot cross targets or survive
+// a draft revision change between password verification and execution.
+func lockPublicActionTarget(tx *gorm.DB, actorID int64, action actionsecurity.Action, targetGUID *int64, intent any) error {
+	if tx == nil || actorID <= 0 {
+		return ErrActionVerificationUnavailable
+	}
+	if err := validatePublicVerificationBinding(action, intent, targetGUID); err != nil {
+		return err
+	}
+
+	switch action {
+	case actionsecurity.ActionPublicModelDelete:
+		value := intent.(actionsecurity.PublicModelDeleteIntent)
+		if _, err := lockPublicPriceDraftRevision(tx); err != nil {
+			return err
+		}
+		var model models.PublicModelConfig
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Select("id", "guid", "revision").
+			Where("guid = ? AND is_deleted = 0", value.ModelGUID).
+			First(&model).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrActionVerificationHidden
+			}
+			return ErrActionVerificationUnavailable
+		}
+		if model.Revision != value.ExpectedRevision {
+			return ErrActionVerificationConflict
+		}
+		return nil
+
+	case actionsecurity.ActionPublicPricingRestore:
+		value := intent.(actionsecurity.PublicPricingRestoreIntent)
+		draft, err := lockPublicPriceDraftRevision(tx)
+		if err != nil {
+			return err
+		}
+		if _, err := lockPublicActionPublicationState(tx); err != nil {
+			return err
+		}
+		var snapshot models.PublicPriceSnapshot
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Select("id", "guid").
+			Where("guid = ? AND is_deleted = 0", value.ReleaseGUID).
+			First(&snapshot).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrActionVerificationHidden
+			}
+			return ErrActionVerificationUnavailable
+		}
+		if draft.Revision != value.ExpectedRevision {
+			committed, err := publicPricingRestoreAlreadyCommitted(tx, actorID, snapshot.ID, value.ExpectedRevision)
+			if err != nil {
+				return err
+			}
+			if !committed {
+				return ErrActionVerificationConflict
+			}
+		}
+		return nil
+
+	case actionsecurity.ActionPublicContentPublish:
+		value := intent.(actionsecurity.PublicContentPublishIntent)
+		draft, err := lockPublicContentDraftRevision(tx)
+		if err != nil {
+			return err
+		}
+		if draft.Revision != value.ExpectedRevision {
+			return ErrActionVerificationConflict
+		}
+		state, err := lockPublicActionPublicationState(tx)
+		if err != nil {
+			return err
+		}
+		if state.PriceSnapshotID == nil {
+			return ErrActionVerificationUnavailable
+		}
+		var current models.PublicPriceSnapshot
+		if err = tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Select("id", "guid").
+			Where("id = ? AND is_deleted = 0", *state.PriceSnapshotID).
+			First(&current).Error; err != nil {
+			return ErrActionVerificationUnavailable
+		}
+		if current.Guid == value.PriceReleaseGUID {
+			return nil
+		}
+		var requested models.PublicPriceSnapshot
+		if err = tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Select("id", "guid").
+			Where("guid = ? AND is_deleted = 0", value.PriceReleaseGUID).
+			First(&requested).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrActionVerificationHidden
+			}
+			return ErrActionVerificationUnavailable
+		}
+		return ErrActionVerificationConflict
+
+	case actionsecurity.ActionPublicContentRestore:
+		value := intent.(actionsecurity.PublicContentRestoreIntent)
+		draft, err := lockPublicContentDraftRevision(tx)
+		if err != nil {
+			return err
+		}
+		var release models.PublicContentRelease
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Select("id", "guid").
+			Where("guid = ? AND document_kind = ? AND is_deleted = 0", value.ReleaseGUID, models.PublicContentDocumentSite).
+			First(&release).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrActionVerificationHidden
+			}
+			return ErrActionVerificationUnavailable
+		}
+		if draft.Revision != value.ExpectedRevision {
+			committed, err := publicContentRestoreAlreadyCommitted(tx, actorID, release.ID, value.ExpectedRevision)
+			if err != nil {
+				return err
+			}
+			if !committed {
+				return ErrActionVerificationConflict
+			}
+		}
+		return nil
+
+	default:
+		return ErrActionVerificationUnavailable
+	}
+}
+
+func lockPublicPriceDraftRevision(tx *gorm.DB) (*models.PublicPriceDraftState, error) {
+	var draft models.PublicPriceDraftState
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Select("id", "revision").
+		Where("state_key = ? AND is_deleted = 0", "pricing").
+		First(&draft).Error; err != nil {
+		return nil, ErrActionVerificationUnavailable
+	}
+	return &draft, nil
+}
+
+func lockPublicContentDraftRevision(tx *gorm.DB) (*models.PublicContentDraft, error) {
+	var draft models.PublicContentDraft
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Select("id", "revision").
+		Where("document_kind = ? AND is_deleted = 0", models.PublicContentDocumentSite).
+		First(&draft).Error; err != nil {
+		return nil, ErrActionVerificationUnavailable
+	}
+	return &draft, nil
+}
+
+func lockPublicActionPublicationState(tx *gorm.DB) (*models.PublicPublicationState, error) {
+	var state models.PublicPublicationState
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Select("id", "price_snapshot_id").
+		Where("state_key = ? AND is_deleted = 0", publicPublicationStateKey).
+		First(&state).Error; err != nil {
+		return nil, ErrActionVerificationUnavailable
+	}
+	return &state, nil
+}
+
+func publicPricingRestoreAlreadyCommitted(tx *gorm.DB, actorID, sourceID, expectedRevision int64) (bool, error) {
+	if expectedRevision <= 0 || expectedRevision == math.MaxInt64 {
+		return false, nil
+	}
+	var restored models.PublicPriceSnapshot
+	err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Select("id").
+		Where("restored_from_snapshot_id = ? AND source_revision = ? AND created_by = ? AND is_deleted = 0", sourceID, expectedRevision+1, actorID).
+		First(&restored).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, ErrActionVerificationUnavailable
+	}
+	return true, nil
+}
+
+func publicContentRestoreAlreadyCommitted(tx *gorm.DB, actorID, sourceID, expectedRevision int64) (bool, error) {
+	if expectedRevision <= 0 || expectedRevision == math.MaxInt64 {
+		return false, nil
+	}
+	var restored models.PublicContentRelease
+	err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Select("id").
+		Where("restored_from_release_id = ? AND source_revision = ? AND created_by = ? AND document_kind = ? AND is_deleted = 0", sourceID, expectedRevision+1, actorID, models.PublicContentDocumentSite).
+		First(&restored).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, ErrActionVerificationUnavailable
+	}
+	return true, nil
 }
 
 func constantTimeSIDEqual(stored, claimed string) bool {

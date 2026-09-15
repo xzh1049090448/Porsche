@@ -128,7 +128,7 @@ func (s *ActionVerificationService) Issue(ctx context.Context, in VerificationIs
 	}
 	var issued *IssuedVerification
 	err = s.db.Session(&gorm.Session{NewDB: true, Logger: logger.Discard}).WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		identity, err := lockActionIdentity(tx, in.Actor, descriptor, in.TargetGUID, now)
+		identity, err := lockActionIdentity(tx, in.Actor, descriptor, in.TargetGUID, in.Intent, true, now)
 		if err != nil {
 			return err
 		}

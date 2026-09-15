@@ -328,7 +328,7 @@ func fInputForTicket(t *testing.T, f *publicTicketDBFixture) CreatePublicModelRe
 		t.Fatal(err)
 	}
 	inputPrice, outputPrice := "1.00000000", "2.00000000"
-	return CreatePublicModelRequest{UpstreamModelID: upstream, ModelKey: "ticket-" + fmt.Sprint(persistence.NextGUID()), DisplayName: "Ticket Model", Provider: "provider", Capabilities: []string{"chat"}, ContextWindow: 8192, InputPriceUSDPerMillionTokens: &inputPrice, OutputPriceUSDPerMillionTokens: &outputPrice}
+	return CreatePublicModelRequest{UpstreamModelID: upstream, ModelKey: "ticket-" + fmt.Sprint(persistence.NextGUID()), DisplayName: "Ticket Model", Provider: "provider", Capabilities: []string{"chat"}, ContextWindow: 8192, InputPriceUSDPerMillionTokens: &inputPrice, OutputPriceUSDPerMillionTokens: &outputPrice, PriceSource: "approved catalog", PriceReviewer: "pricing team", PriceEffectiveAt: &now}
 }
 
 func TestPublicContentTicketAndBusinessCommitRollbackReplayRealDB(t *testing.T) {
@@ -445,4 +445,117 @@ func TestPublicContentTicketAndBusinessCommitRollbackReplayRealDB(t *testing.T) 
 		t.Fatalf("content restore replay duplicated or rematerialized counts=%v want=%v draft=%#v want=%#v", got, restoredCounts, afterReplayDraft, restoredDraft)
 	}
 	f.assertTicket(t, actionsecurity.ActionPublicContentRestore, true)
+}
+
+func TestPublicContentActionTargetLocksExactRevisionRealDB(t *testing.T) {
+	f := openTask8MonitorDBFixture(t)
+	cleanPublicContentDBFixture(t, f.db)
+	t.Cleanup(func() { cleanPublicContentDBFixture(t, f.db) })
+	seed, err := seedContentPublicationFixture(f.db, f.actor.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	content := NewPublicContentService(f.db)
+	draft, err := content.GetDraft(ctx, f.actor.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	home, about, terms, privacy, reviewed := "[model](/pricing/"+seed.modelKey+")", "About", "Terms", "Privacy", true
+	draft, err = content.SaveDraft(ctx, f.actor.ID, PublicContentDraftSaveRequest{ExpectedRevision: draft.Revision, Home: &home, About: &about, Terms: &terms, Privacy: &privacy, LegalReviewed: &reviewed})
+	if err != nil {
+		t.Fatal(err)
+	}
+	release, err := content.Publish(ctx, PublicContentPublicationRequest{ActorID: f.actor.ID, ExpectedRevision: draft.Revision, PriceReleaseGUID: seed.priceGUID, IdempotencyKey: "target-lock-fixture"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var model models.PublicModelConfig
+	if err = f.db.Where("model_key=? AND is_deleted=0", seed.modelKey).First(&model).Error; err != nil {
+		t.Fatal(err)
+	}
+	var priceDraft models.PublicPriceDraftState
+	if err = f.db.Where("state_key=? AND is_deleted=0", "pricing").First(&priceDraft).Error; err != nil {
+		t.Fatal(err)
+	}
+	priceGUID := mustGUID(t, seed.priceGUID)
+	releaseGUID := mustGUID(t, release.GUID)
+	tests := []struct {
+		name   string
+		action actionsecurity.Action
+		target int64
+		intent any
+	}{
+		{name: "model delete", action: actionsecurity.ActionPublicModelDelete, target: model.Guid, intent: actionsecurity.PublicModelDeleteIntent{ModelGUID: model.Guid, ExpectedRevision: model.Revision, Reason: "target lock"}},
+		{name: "pricing restore", action: actionsecurity.ActionPublicPricingRestore, target: priceGUID, intent: actionsecurity.PublicPricingRestoreIntent{ReleaseGUID: priceGUID, ExpectedRevision: priceDraft.Revision}},
+		{name: "content publish", action: actionsecurity.ActionPublicContentPublish, target: priceGUID, intent: actionsecurity.PublicContentPublishIntent{PriceReleaseGUID: priceGUID, ExpectedRevision: draft.Revision}},
+		{name: "content restore", action: actionsecurity.ActionPublicContentRestore, target: releaseGUID, intent: actionsecurity.PublicContentRestoreIntent{ReleaseGUID: releaseGUID, ExpectedRevision: draft.Revision}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			target := test.target
+			if err := f.db.Transaction(func(tx *gorm.DB) error {
+				return lockPublicActionTarget(tx, f.actor.ID, test.action, &target, test.intent)
+			}); err != nil {
+				t.Fatalf("valid target lock: %v", err)
+			}
+			stale := stalePublicActionIntent(test.intent)
+			if err := f.db.Transaction(func(tx *gorm.DB) error {
+				return lockPublicActionTarget(tx, f.actor.ID, test.action, &target, stale)
+			}); !errors.Is(err, ErrActionVerificationConflict) {
+				t.Fatalf("stale target lock=%v, want conflict", err)
+			}
+			mismatchedTarget := target + 1
+			if err := f.db.Transaction(func(tx *gorm.DB) error {
+				return lockPublicActionTarget(tx, f.actor.ID, test.action, &mismatchedTarget, test.intent)
+			}); !errors.Is(err, ErrActionVerificationConflict) {
+				t.Fatalf("mismatched binding=%v, want conflict", err)
+			}
+			missingTarget := int64(9_000_000_000_000_000_000) - int64(test.action)
+			missingIntent := retargetPublicActionIntent(test.intent, missingTarget)
+			if err := f.db.Transaction(func(tx *gorm.DB) error {
+				return lockPublicActionTarget(tx, f.actor.ID, test.action, &missingTarget, missingIntent)
+			}); !errors.Is(err, ErrActionVerificationHidden) {
+				t.Fatalf("missing target lock=%v, want hidden", err)
+			}
+		})
+	}
+}
+
+func stalePublicActionIntent(value any) any {
+	switch intent := value.(type) {
+	case actionsecurity.PublicModelDeleteIntent:
+		intent.ExpectedRevision++
+		return intent
+	case actionsecurity.PublicPricingRestoreIntent:
+		intent.ExpectedRevision++
+		return intent
+	case actionsecurity.PublicContentPublishIntent:
+		intent.ExpectedRevision++
+		return intent
+	case actionsecurity.PublicContentRestoreIntent:
+		intent.ExpectedRevision++
+		return intent
+	default:
+		return value
+	}
+}
+
+func retargetPublicActionIntent(value any, target int64) any {
+	switch intent := value.(type) {
+	case actionsecurity.PublicModelDeleteIntent:
+		intent.ModelGUID = target
+		return intent
+	case actionsecurity.PublicPricingRestoreIntent:
+		intent.ReleaseGUID = target
+		return intent
+	case actionsecurity.PublicContentPublishIntent:
+		intent.PriceReleaseGUID = target
+		return intent
+	case actionsecurity.PublicContentRestoreIntent:
+		intent.ReleaseGUID = target
+		return intent
+	default:
+		return value
+	}
 }

@@ -114,17 +114,7 @@ func TestPublicContentPricingMigrationRealMySQL(t *testing.T) {
 	if err := Verify(context.Background(), db); err != nil {
 		t.Fatalf("global verify immediately after apply: %v", err)
 	}
-	all, err := All()
-	if err != nil {
-		t.Fatal(err)
-	}
-	terminalMigration := all[len(all)-1]
-	if err := executePublicContentPricingSQL(db, terminalMigration.DownSQL); err != nil {
-		t.Fatal(err)
-	}
-	if err := setFixtureMigrationActive(db, terminalMigration.Version, false); err != nil {
-		t.Fatal(err)
-	}
+	rollbackFixtureMigrationsAfter(t, db, migration.Version)
 	if err := executePublicContentPricingSQL(db, migration.DownSQL); err != nil {
 		t.Fatal(err)
 	}
@@ -168,6 +158,20 @@ func TestUpRejectsInterruptedPublicContentPricingCreateWithActiveLedger(t *testi
 	if err := Up(context.Background(), db, generator.Next, func() int64 { return 1_900_000_000_000 }); err != nil {
 		t.Fatal(err)
 	}
+	rollbackFixtureMigrationsAfter(t, db, migration.Version)
+	t.Cleanup(func() {
+		if err := executePublicContentPricingSQL(db, migration.DownSQL); err != nil {
+			t.Errorf("reset interrupted 0014 fixture: %v", err)
+			return
+		}
+		if err := setFixtureMigrationActive(db, migration.Version, false); err != nil {
+			t.Errorf("deactivate interrupted 0014 fixture: %v", err)
+			return
+		}
+		if err := Up(context.Background(), db, generator.Next, func() int64 { return 1_900_000_000_000 }); err != nil {
+			t.Errorf("restore migrations after interrupted 0014 fixture: %v", err)
+		}
+	})
 	if err := executePublicContentPricingSQL(db, migration.DownSQL); err != nil {
 		t.Fatal(err)
 	}
@@ -375,10 +379,42 @@ func assertPublicContentPricingLedger(t *testing.T, db *gorm.DB, migration Migra
 }
 
 func executePublicContentPricingSQL(db *gorm.DB, raw []byte) error {
-	for index, statement := range splitStatements(string(raw)) {
+	// The generic splitter is intentionally simple; discard SQL comment lines
+	// first so a semicolon in rollback documentation cannot become a statement.
+	lines := strings.Split(string(raw), "\n")
+	executable := lines[:0]
+	for _, line := range lines {
+		if strings.HasPrefix(strings.TrimSpace(line), "--") {
+			continue
+		}
+		executable = append(executable, line)
+	}
+	for index, statement := range splitStatements(strings.Join(executable, "\n")) {
 		if err := db.Exec(statement).Error; err != nil {
 			return fmt.Errorf("statement %d: %w", index+1, err)
 		}
 	}
 	return nil
+}
+
+func rollbackFixtureMigrationsAfter(t *testing.T, db *gorm.DB, version string) {
+	t.Helper()
+	migrations, err := All()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Later migrations may alter or reference tables owned by this migration.
+	// Roll back the entire dependent suffix before replaying the target.
+	for index := len(migrations) - 1; index >= 0; index-- {
+		migration := migrations[index]
+		if migration.Version <= version {
+			continue
+		}
+		if err := executePublicContentPricingSQL(db, migration.DownSQL); err != nil {
+			t.Fatalf("rollback fixture migration %s: %v", migration.Version, err)
+		}
+		if err := setFixtureMigrationActive(db, migration.Version, false); err != nil {
+			t.Fatalf("deactivate fixture migration %s: %v", migration.Version, err)
+		}
+	}
 }

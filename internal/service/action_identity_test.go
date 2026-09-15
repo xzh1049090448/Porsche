@@ -187,7 +187,7 @@ func TestLockActionIdentityReturnsDefensiveTargetCopyAndNilForTargetNone(t *test
 		var identity lockedActionIdentity
 		err := db.Transaction(func(tx *gorm.DB) error {
 			var err error
-			identity, err = lockActionIdentity(tx, actor, activeDeleteDescriptor(t), &original.Guid, now)
+			identity, err = lockActionIdentity(tx, actor, activeDeleteDescriptor(t), &original.Guid, nil, true, now)
 			return err
 		})
 		if err != nil {
@@ -222,7 +222,7 @@ func TestLockActionIdentityReturnsDefensiveTargetCopyAndNilForTargetNone(t *test
 		var identity lockedActionIdentity
 		err := db.Transaction(func(tx *gorm.DB) error {
 			var err error
-			identity, err = lockActionIdentity(tx, actor, descriptor, nil, now)
+			identity, err = lockActionIdentity(tx, actor, descriptor, nil, nil, true, now)
 			return err
 		})
 		if err != nil {
