@@ -1119,14 +1119,21 @@ func TestPublicRenderJobFixtureSkipsObsoleteGeneration(t *testing.T) {
 	if err := db.Create(&job).Error; err != nil {
 		t.Fatal(err)
 	}
+	previousState := clonePublicRenderPublicationState(state)
 	if err := db.Model(&state).Updates(map[string]any{"price_snapshot_id": price.ID, "content_release_id": content.ID, "revision": state.Revision + 1, "updated_at": now}).Error; err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		db.Model(&models.PublicPublicationState{}).Where("id=?", state.ID).Updates(map[string]any{"price_snapshot_id": state.PriceSnapshotID, "content_release_id": state.ContentReleaseID, "revision": state.Revision})
-		db.Exec("DELETE FROM public_render_jobs WHERE id=?", job.ID)
-		db.Exec("DELETE FROM public_content_releases WHERE id=?", content.ID)
-		db.Exec("DELETE FROM public_price_snapshots WHERE id=?", price.ID)
+		for _, cleanup := range []*gorm.DB{
+			db.Model(&models.PublicPublicationState{}).Where("id=?", state.ID).Updates(map[string]any{"price_snapshot_id": previousState.PriceSnapshotID, "content_release_id": previousState.ContentReleaseID, "revision": previousState.Revision, "updated_at": previousState.UpdatedAt}),
+			db.Exec("DELETE FROM public_render_jobs WHERE id=?", job.ID),
+			db.Exec("DELETE FROM public_content_releases WHERE id=?", content.ID),
+			db.Exec("DELETE FROM public_price_snapshots WHERE id=?", price.ID),
+		} {
+			if cleanup.Error != nil {
+				t.Error(cleanup.Error)
+			}
+		}
 	})
 	clock := &fakePublicRenderClock{now + 1}
 	lease, err := NewPublicRenderJobServiceWithClock(db, []byte("fixture-render-job-purpose-key-32"), clock).Lease(ctx, PublicRenderLeaseInput{OwnerToken: "obsolete-scan-owner-token", LeaseMillis: 30_000})
@@ -1140,6 +1147,19 @@ func TestPublicRenderJobFixtureSkipsObsoleteGeneration(t *testing.T) {
 }
 
 type publicRenderFixture struct{ generation int64 }
+
+func clonePublicRenderPublicationState(state models.PublicPublicationState) models.PublicPublicationState {
+	clone := state
+	if state.PriceSnapshotID != nil {
+		value := *state.PriceSnapshotID
+		clone.PriceSnapshotID = &value
+	}
+	if state.ContentReleaseID != nil {
+		value := *state.ContentReleaseID
+		clone.ContentReleaseID = &value
+	}
+	return clone
+}
 
 func seedPublicRenderJobFixture(t *testing.T, db *gorm.DB) publicRenderFixture {
 	t.Helper()
@@ -1164,7 +1184,7 @@ func seedPublicRenderJobFixture(t *testing.T, db *gorm.DB) publicRenderFixture {
 		}
 		createdState = true
 	}
-	previousState := state
+	previousState := clonePublicRenderPublicationState(state)
 	if err := db.Model(&state).Updates(map[string]any{"price_snapshot_id": price.ID, "content_release_id": content.ID, "revision": int64(903), "is_deleted": 0, "updated_at": now}).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -1227,7 +1247,7 @@ func seedStructuredPublicRenderJobFixture(t *testing.T, db *gorm.DB, effective t
 		}
 		createdState = true
 	}
-	previousState := state
+	previousState := clonePublicRenderPublicationState(state)
 	if err := db.Model(&state).Updates(map[string]any{"price_snapshot_id": price.ID, "content_release_id": content.ID, "revision": int64(913), "is_deleted": 0, "updated_at": now}).Error; err != nil {
 		t.Fatal(err)
 	}

@@ -2,9 +2,11 @@ package config
 
 import (
 	"crypto/subtle"
+	"encoding/base64"
 	"fmt"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -58,6 +60,11 @@ type Settings struct {
 	AnalyticsAdminPhones     string
 	AnalyticsTokenPricePer1K float64
 	WhiteLabel               WhiteLabelSettings
+}
+
+type PublicRenderSettings struct {
+	JobKey []byte
+	Root   string
 }
 
 // WhiteLabelSettings contains the only supported upstream configuration. BaseURL
@@ -584,6 +591,39 @@ func LoadMigrationSettings() (*Settings, error) {
 		return nil, err
 	}
 	return s, nil
+}
+
+// LoadPublicRenderSettings loads the dedicated local renderer capability. It
+// deliberately excludes database and upstream configuration from the result.
+func LoadPublicRenderSettings() (*PublicRenderSettings, error) {
+	_ = godotenv.Load()
+	rawKey := strings.TrimSpace(os.Getenv("PUBLIC_RENDER_JOB_KEY"))
+	if rawKey == "" {
+		return nil, fmt.Errorf("PUBLIC_RENDER_JOB_KEY: missing")
+	}
+	key, err := base64.RawURLEncoding.DecodeString(rawKey)
+	if err != nil || len(key) != 32 || base64.RawURLEncoding.EncodeToString(key) != rawKey {
+		return nil, fmt.Errorf("PUBLIC_RENDER_JOB_KEY: invalid")
+	}
+	if publicRenderKeyReused(key) {
+		return nil, fmt.Errorf("PUBLIC_RENDER_JOB_KEY: key_reuse")
+	}
+	root := os.Getenv("PUBLIC_RENDER_ROOT")
+	if root == "" || root != strings.TrimSpace(root) || !filepath.IsAbs(root) || filepath.Clean(root) != root || root == string(filepath.Separator) {
+		return nil, fmt.Errorf("PUBLIC_RENDER_ROOT: invalid")
+	}
+	return &PublicRenderSettings{JobKey: append([]byte(nil), key...), Root: root}, nil
+}
+
+func publicRenderKeyReused(key []byte) bool {
+	reused := 0
+	for _, name := range []string{"AUTH_HMAC_KEY", "JWT_SECRET_KEY", "JIEKOU_API_KEY", "ADMIN_TOKEN", "METRICS_TOKEN"} {
+		reused |= subtle.ConstantTimeCompare(key, []byte(os.Getenv(name)))
+	}
+	if action, err := base64.RawURLEncoding.DecodeString(strings.TrimSpace(os.Getenv("ACTION_SECURITY_HMAC_KEY"))); err == nil {
+		reused |= subtle.ConstantTimeCompare(key, action)
+	}
+	return reused == 1
 }
 
 func isMySQLURL(databaseURL string) bool {

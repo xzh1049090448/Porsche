@@ -30,6 +30,16 @@ type renderJobs interface {
 	Fail(context.Context, service.PublicRenderTransitionInput) error
 	Health(context.Context) (service.PublicRenderHealthStatus, error)
 	Lookup(context.Context) (*service.PublicRenderGeneration, error)
+	RenderOnce(context.Context, service.PublicRenderLeaseInput) (service.PublicRenderWorkerResult, error)
+}
+
+type publicRenderRuntime struct {
+	*service.PublicRenderJobService
+	worker *service.PublicRenderWorker
+}
+
+func (r *publicRenderRuntime) RenderOnce(ctx context.Context, input service.PublicRenderLeaseInput) (service.PublicRenderWorkerResult, error) {
+	return r.worker.RunOnce(ctx, input)
 }
 
 func main() {
@@ -45,6 +55,16 @@ func main() {
 		writeStartupError("credential_unavailable")
 		os.Exit(1)
 	}
+	renderRoot := ""
+	if len(os.Args) == 2 && os.Args[1] == "render-once" {
+		renderSettings, loadErr := config.LoadPublicRenderSettings()
+		if loadErr != nil {
+			writeStartupError("renderer_configuration_unavailable")
+			os.Exit(1)
+		}
+		key = renderSettings.JobKey
+		renderRoot = renderSettings.Root
+	}
 	gdb, err := db.Open(settings.DatabaseURL, settings.AppEnv)
 	if err != nil {
 		writeStartupError("database_unavailable")
@@ -54,13 +74,22 @@ func main() {
 		writeStartupError("schema_unavailable")
 		os.Exit(1)
 	}
-	os.Exit(run(ctx, os.Args[1:], os.Stdin, os.Stdout, os.Stderr, service.NewPublicRenderJobService(gdb, key)))
+	jobs := service.NewPublicRenderJobService(gdb, key)
+	runtime := &publicRenderRuntime{
+		PublicRenderJobService: jobs,
+		worker: service.NewPublicRenderWorker(
+			jobs,
+			service.NewPublicCatalogReadService(gdb),
+			service.NewPublicGenerationPublisher(renderRoot),
+		),
+	}
+	os.Exit(run(ctx, os.Args[1:], os.Stdin, os.Stdout, os.Stderr, runtime))
 }
 
 func decodePurposeKey(raw string) ([]byte, error) {
 	raw = strings.TrimSpace(raw)
 	key, err := base64.RawURLEncoding.DecodeString(raw)
-	if err != nil || len(key) != 32 {
+	if err != nil || len(key) != 32 || base64.RawURLEncoding.EncodeToString(key) != raw {
 		return nil, errors.New("invalid purpose key")
 	}
 	return key, nil
@@ -153,6 +182,15 @@ func run(ctx context.Context, args []string, in io.Reader, out, stderr io.Writer
 			return invalidInput(stderr)
 		}
 		result, err = jobs.Lookup(ctx)
+	case "render-once":
+		var input struct {
+			OwnerToken  string `json:"owner_token"`
+			LeaseMillis int64  `json:"lease_millis"`
+		}
+		if !decodeExact(raw, &input) || !validLeaseFields(input.OwnerToken, input.LeaseMillis) {
+			return invalidInput(stderr)
+		}
+		result, err = jobs.RenderOnce(ctx, service.PublicRenderLeaseInput{OwnerToken: input.OwnerToken, LeaseMillis: input.LeaseMillis})
 	}
 	if err != nil {
 		if errors.Is(err, service.ErrPublicRenderInvalid) {
@@ -176,7 +214,7 @@ func run(ctx context.Context, args []string, in io.Reader, out, stderr io.Writer
 
 func validCommand(command string) bool {
 	switch command {
-	case "lease", "renew", "complete", "fail", "health", "lookup":
+	case "lease", "renew", "complete", "fail", "health", "lookup", "render-once":
 		return true
 	}
 	return false

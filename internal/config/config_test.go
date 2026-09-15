@@ -247,6 +247,7 @@ func TestEnvironmentExampleDocumentsEveryRuntimeSettingExactlyOnce(t *testing.T)
 		"HOST", "JIEKOU_ALLOWED_MODELS", "JIEKOU_API_KEY", "JWT_EXPIRE_MINUTES", "JWT_SECRET_KEY",
 		"LOG_LEVEL", "METRICS_TOKEN", "PASSWORD_LOGIN_ENABLED", "PASSWORD_REGISTER_ENABLED",
 		"PLAN_ENTERPRISE_PRICE", "PLAN_PROFESSIONAL_PRICE", "PORT", "REAL_NAME_AUTO_VERIFY",
+		"PUBLIC_RENDER_JOB_KEY", "PUBLIC_RENDER_ROOT",
 		"REDIS_URL", "REFRESH_REPLAY_SECONDS", "REGISTER_ENABLED", "ROOT_BOOTSTRAP_PASSWORD",
 		"ROOT_BOOTSTRAP_USERNAME", "SESSION_ACCESS_MINUTES", "SESSION_DAYS", "SESSION_ISSUE_LIMIT_24H",
 		"SESSION_MAX_ACTIVE", "SMS_DEV_MODE", "SMS_SEND_LIMIT_PER_IP", "SMS_SEND_LIMIT_PER_PHONE",
@@ -278,6 +279,47 @@ func TestEnvironmentExampleDocumentsEveryRuntimeSettingExactlyOnce(t *testing.T)
 	validActionKey := regexp.MustCompile(`(?m)^#? ?ACTION_SECURITY_HMAC_KEY=[A-Za-z0-9_-]{43}$`)
 	if validActionKey.Match(raw) {
 		t.Error(".env.example contains a valid action-security key")
+	}
+}
+
+func TestLoadPublicRenderSettingsRequiresDedicatedKeyAndCleanAbsoluteRoot(t *testing.T) {
+	keyBytes := []byte("0123456789abcdef0123456789abcdef")
+	key := base64.RawURLEncoding.EncodeToString(keyBytes)
+	for _, tc := range []struct {
+		name, key, root, authKey, want string
+	}{
+		{name: "valid", key: key, root: "/var/lib/porsche-public-renderer"},
+		{name: "missing key", root: "/var/lib/porsche-public-renderer", want: "PUBLIC_RENDER_JOB_KEY: missing"},
+		{name: "bad key", key: "short", root: "/var/lib/porsche-public-renderer", want: "PUBLIC_RENDER_JOB_KEY: invalid"},
+		{name: "relative root", key: key, root: "renderer", want: "PUBLIC_RENDER_ROOT: invalid"},
+		{name: "unclean root", key: key, root: "/var/lib/../renderer", want: "PUBLIC_RENDER_ROOT: invalid"},
+		{name: "filesystem root", key: key, root: "/", want: "PUBLIC_RENDER_ROOT: invalid"},
+		{name: "reused key", key: key, root: "/var/lib/porsche-public-renderer", authKey: string(keyBytes), want: "PUBLIC_RENDER_JOB_KEY: key_reuse"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			unsetEnvironment(t, "PUBLIC_RENDER_JOB_KEY")
+			unsetEnvironment(t, "PUBLIC_RENDER_ROOT")
+			unsetEnvironment(t, "AUTH_HMAC_KEY")
+			if tc.key != "" {
+				t.Setenv("PUBLIC_RENDER_JOB_KEY", tc.key)
+			}
+			if tc.root != "" {
+				t.Setenv("PUBLIC_RENDER_ROOT", tc.root)
+			}
+			if tc.authKey != "" {
+				t.Setenv("AUTH_HMAC_KEY", tc.authKey)
+			}
+			got, err := LoadPublicRenderSettings()
+			if tc.want != "" {
+				if err == nil || err.Error() != tc.want {
+					t.Fatalf("error=%v want=%q", err, tc.want)
+				}
+				return
+			}
+			if err != nil || got.Root != tc.root || string(got.JobKey) != string(keyBytes) {
+				t.Fatalf("settings=%#v err=%v", got, err)
+			}
+		})
 	}
 }
 

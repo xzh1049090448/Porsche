@@ -10,12 +10,13 @@ RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -o /out/server ./cmd/server \
     && CGO_ENABLED=0 GOOS=linux go build -o /out/bootstrap-root ./cmd/bootstrap-root \
+    && CGO_ENABLED=0 GOOS=linux go build -o /out/public-render-job ./cmd/public-render-job \
     && CGO_ENABLED=0 GOOS=linux go build -o /out/check-config ./cmd/check-config
 
 FROM alpine:3.20
 RUN apk add --no-cache ca-certificates
 WORKDIR /app
-COPY --from=builder /out/server /out/bootstrap-root ./
+COPY --from=builder /out/server /out/bootstrap-root /out/public-render-job ./
 COPY --from=builder /out/check-config /app/check-config
 ENV APP_ENV=production
 EXPOSE 8000

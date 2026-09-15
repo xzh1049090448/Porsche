@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 
@@ -37,15 +38,20 @@ func (f *fakeRenderJobs) Lookup(context.Context) (*service.PublicRenderGeneratio
 	f.command = "lookup"
 	return &service.PublicRenderGeneration{Generation: 1}, nil
 }
+func (f *fakeRenderJobs) RenderOnce(context.Context, service.PublicRenderLeaseInput) (service.PublicRenderWorkerResult, error) {
+	f.command = "render-once"
+	return service.PublicRenderWorkerResult{Status: "idle"}, nil
+}
 
 func TestPublicRenderCLICommandsAreStrictAndJSONOnly(t *testing.T) {
 	valid := map[string]string{
-		"lease":    `{"owner_token":"owner-one-long-random-token","lease_millis":30000}`,
-		"renew":    `{"owner_token":"owner-one-long-random-token","job_guid":123,"fence":1,"lease_millis":30000}`,
-		"complete": `{"owner_token":"owner-one-long-random-token","job_guid":123,"fence":1}`,
-		"fail":     `{"owner_token":"owner-one-long-random-token","job_guid":123,"fence":1,"failure":"render_failed"}`,
-		"health":   `{}`,
-		"lookup":   `{}`,
+		"lease":       `{"owner_token":"owner-one-long-random-token","lease_millis":30000}`,
+		"renew":       `{"owner_token":"owner-one-long-random-token","job_guid":123,"fence":1,"lease_millis":30000}`,
+		"complete":    `{"owner_token":"owner-one-long-random-token","job_guid":123,"fence":1}`,
+		"fail":        `{"owner_token":"owner-one-long-random-token","job_guid":123,"fence":1,"failure":"render_failed"}`,
+		"health":      `{}`,
+		"lookup":      `{}`,
+		"render-once": `{"owner_token":"owner-one-long-random-token","lease_millis":30000}`,
 	}
 	for command, body := range valid {
 		t.Run(command, func(t *testing.T) {
@@ -110,7 +116,7 @@ func TestPublicRenderJSONShapeRejectsNestedDuplicatesAndDepth(t *testing.T) {
 }
 
 func TestPublicRenderEveryCommandRejectsTrailingScalars(t *testing.T) {
-	valid := map[string]string{"lease": `{"owner_token":"1234567890123456","lease_millis":5000}`, "renew": `{"owner_token":"1234567890123456","job_guid":1,"fence":1,"lease_millis":5000}`, "complete": `{"owner_token":"1234567890123456","job_guid":1,"fence":1}`, "fail": `{"owner_token":"1234567890123456","job_guid":1,"fence":1,"failure":"render_failed"}`, "health": `{}`, "lookup": `{}`}
+	valid := map[string]string{"lease": `{"owner_token":"1234567890123456","lease_millis":5000}`, "renew": `{"owner_token":"1234567890123456","job_guid":1,"fence":1,"lease_millis":5000}`, "complete": `{"owner_token":"1234567890123456","job_guid":1,"fence":1}`, "fail": `{"owner_token":"1234567890123456","job_guid":1,"fence":1,"failure":"render_failed"}`, "health": `{}`, "lookup": `{}`, "render-once": `{"owner_token":"1234567890123456","lease_millis":5000}`}
 	for command, body := range valid {
 		for _, suffix := range []string{" true", " 0", ` "tail"`, " null"} {
 			t.Run(command+suffix, func(t *testing.T) {
@@ -159,4 +165,28 @@ func (e *errorRenderJobs) Health(context.Context) (service.PublicRenderHealthSta
 }
 func (e *errorRenderJobs) Lookup(context.Context) (*service.PublicRenderGeneration, error) {
 	return nil, e.err
+}
+func (e *errorRenderJobs) RenderOnce(context.Context, service.PublicRenderLeaseInput) (service.PublicRenderWorkerResult, error) {
+	return service.PublicRenderWorkerResult{}, e.err
+}
+
+func TestPublicRenderImageAndExampleExposeDedicatedWorkerInputs(t *testing.T) {
+	dockerfile, err := os.ReadFile("../../Dockerfile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	example, err := os.ReadFile("../../.env.example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range []string{"go build -o /out/public-render-job ./cmd/public-render-job", "/out/public-render-job"} {
+		if !bytes.Contains(dockerfile, []byte(required)) {
+			t.Fatalf("Dockerfile missing %q", required)
+		}
+	}
+	for _, required := range []string{"PUBLIC_RENDER_JOB_KEY", "PUBLIC_RENDER_ROOT"} {
+		if !bytes.Contains(example, []byte(required)) {
+			t.Fatalf(".env.example missing %q", required)
+		}
+	}
 }
