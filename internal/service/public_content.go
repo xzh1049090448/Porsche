@@ -139,7 +139,7 @@ func (s *PublicContentService) SaveDraft(ctx context.Context, actorID int64, in 
 			return errConflict("public content draft revision conflict")
 		}
 		now := s.now()
-		payload := models.JSONMap{"home": *in.Home, "about": *in.About, "terms": *in.Terms, "privacy": *in.Privacy, "legal_reviewed": *in.LegalReviewed}
+		payload := mergePublicContentDraftPayload(d.Payload, in)
 		review := models.PublicContentReviewPending
 		if *in.LegalReviewed {
 			review = models.PublicContentReviewApproved
@@ -659,7 +659,7 @@ func lockOrCreatePublicContentDraft(tx *gorm.DB, actor int64, nowFn func() int64
 	if now <= 0 || guid <= 0 {
 		return nil, errUnavailable("public content draft unavailable")
 	}
-	d = models.PublicContentDraft{AuditFields: models.AuditFields{Guid: guid, CreatedAt: now, CreatedBy: &actor, UpdatedAt: now, UpdatedBy: &actor}, DocumentKind: models.PublicContentDocumentSite, Payload: models.JSONMap{"home": "", "about": "", "terms": "", "privacy": "", "legal_reviewed": false}, Revision: 1, ReviewState: models.PublicContentReviewPending}
+	d = models.PublicContentDraft{AuditFields: models.AuditFields{Guid: guid, CreatedAt: now, CreatedBy: &actor, UpdatedAt: now, UpdatedBy: &actor}, DocumentKind: models.PublicContentDocumentSite, Payload: models.JSONMap{"home": "", "about": "", "terms": "", "privacy": "", "legal_reviewed": false, "featured_model_keys": []string{}}, Revision: 1, ReviewState: models.PublicContentReviewPending}
 	if e = tx.Create(&d).Error; e != nil {
 		return nil, errUnavailable("public content draft unavailable")
 	}
@@ -673,6 +673,49 @@ func projectContentPayload(p models.JSONMap, revision int64) PublicContentDraft 
 }
 func jsonString(v any) string { s, _ := v.(string); return s }
 func jsonBool(v any) bool     { b, _ := v.(bool); return b }
+
+func mergePublicContentDraftPayload(existing models.JSONMap, in PublicContentDraftSaveRequest) models.JSONMap {
+	payload := clonePublicContentPayload(existing)
+	payload["home"] = *in.Home
+	payload["about"] = *in.About
+	payload["terms"] = *in.Terms
+	payload["privacy"] = *in.Privacy
+	payload["legal_reviewed"] = *in.LegalReviewed
+	return payload
+}
+
+func clonePublicContentPayload(input models.JSONMap) models.JSONMap {
+	output := make(models.JSONMap, len(input))
+	for key, value := range input {
+		output[key] = clonePublicContentJSONValue(value)
+	}
+	return output
+}
+
+func clonePublicContentJSONValue(value any) any {
+	switch typed := value.(type) {
+	case models.JSONMap:
+		return clonePublicContentPayload(typed)
+	case map[string]any:
+		copy := make(map[string]any, len(typed))
+		for key, item := range typed {
+			copy[key] = clonePublicContentJSONValue(item)
+		}
+		return copy
+	case models.JSONSlice:
+		return append(models.JSONSlice(nil), typed...)
+	case []string:
+		return append([]string(nil), typed...)
+	case []any:
+		copy := make([]any, len(typed))
+		for index, item := range typed {
+			copy[index] = clonePublicContentJSONValue(item)
+		}
+		return copy
+	default:
+		return value
+	}
+}
 func publicContentIdempotencyBinding(actor int64, op, key, payload string) string {
 	s := sha256.Sum256([]byte(strconv.FormatInt(actor, 10) + "\x00" + op + "\x00" + key + "\x00" + payload))
 	return hex.EncodeToString(s[:])

@@ -10,7 +10,80 @@ import (
 	"time"
 
 	"github.com/porsche/ai-gateway-go/internal/models"
+	"gorm.io/gorm"
 )
+
+func TestPublicContentLegacyDraftPayloadPreservesUnknownKeysWithoutAliasing(t *testing.T) {
+	featured := []any{"alpha", "beta"}
+	existing := models.JSONMap{
+		"home":                "old",
+		"about":               "old",
+		"terms":               "old",
+		"privacy":             "old",
+		"legal_reviewed":      false,
+		"featured_model_keys": featured,
+		"future":              map[string]any{"enabled": true},
+	}
+	home, about, terms, privacy, reviewed := "home", "about", "terms", "privacy", true
+	got := mergePublicContentDraftPayload(existing, PublicContentDraftSaveRequest{
+		Home: &home, About: &about, Terms: &terms, Privacy: &privacy, LegalReviewed: &reviewed,
+	})
+	if !reflect.DeepEqual(got["featured_model_keys"], []any{"alpha", "beta"}) || !reflect.DeepEqual(got["future"], map[string]any{"enabled": true}) {
+		t.Fatalf("unknown keys lost: %#v", got)
+	}
+	featured[0] = "mutated"
+	existing["future"].(map[string]any)["enabled"] = false
+	if !reflect.DeepEqual(got["featured_model_keys"], []any{"alpha", "beta"}) || !reflect.DeepEqual(got["future"], map[string]any{"enabled": true}) {
+		t.Fatalf("payload aliases source: %#v", got)
+	}
+}
+
+func TestPublicHomeCASRowsAffectedZeroIsConflict(t *testing.T) {
+	if err := publicHomeCASResult(&gorm.DB{RowsAffected: 0}); status(err) != 409 {
+		t.Fatalf("status=%d err=%v", status(err), err)
+	}
+	if err := publicHomeCASResult(&gorm.DB{RowsAffected: 1}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPublicHomeMutationValidationUsesTask3Boundaries(t *testing.T) {
+	validAnnouncement := AnnouncementCreateRequest{ExpectedRevision: 1, Title: "title", BodyMarkdown: "body", IsVisible: true, SortOrder: 1}
+	if err := validateAnnouncementCreate(validAnnouncement); err != nil {
+		t.Fatal(err)
+	}
+	badAnnouncement := validAnnouncement
+	badAnnouncement.Title = "\n"
+	if status(validateAnnouncementCreate(badAnnouncement)) != 400 {
+		t.Fatal("accepted invalid announcement title")
+	}
+	validFAQ := FAQCreateRequest{ExpectedRevision: 1, Question: "question", AnswerMarkdown: "answer", IsVisible: true, SortOrder: 1}
+	if err := validateFAQCreate(validFAQ); err != nil {
+		t.Fatal(err)
+	}
+	badFAQ := validFAQ
+	badFAQ.AnswerMarkdown = strings.Repeat("x", PublicHomeMarkdownLimit+1)
+	if status(validateFAQCreate(badFAQ)) != 400 {
+		t.Fatal("accepted oversized FAQ answer")
+	}
+	if _, err := normalizePublicHomeModelKeys([]string{"alpha", "alpha"}); err == nil {
+		t.Fatal("accepted duplicate featured model key")
+	}
+}
+
+func TestPublicHomeAuditDetailContainsTargetRevisionAndResultOnly(t *testing.T) {
+	got := publicHomeAuditDetail(123, 7)
+	want := models.JSONMap{"target_guid": "123", "previous_revision": int64(7), "revision": int64(8), "result": "success"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("detail=%#v", got)
+	}
+	encoded, _ := json.Marshal(got)
+	for _, forbidden := range []string{"body", "answer", "password", "secret"} {
+		if strings.Contains(strings.ToLower(string(encoded)), forbidden) {
+			t.Fatalf("audit detail contains %q: %s", forbidden, encoded)
+		}
+	}
+}
 
 func TestPublicHomeDraftProjectionFiltersDeletedConvertsAndSorts(t *testing.T) {
 	early := int64(1_700_000_000_000)
