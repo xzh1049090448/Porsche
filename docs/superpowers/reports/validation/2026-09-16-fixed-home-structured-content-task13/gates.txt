@@ -1,0 +1,25 @@
+Fixed Home Structured Content Task13 backend record — 2026-09-16
+backend code HEAD: 8303a28 (includes f6ed4e1 target locks and 8303a28 artifact renderer)
+frontend code HEAD: 78006b360b1f005ded208b68aae6464c67891b52
+contract: v1.0.0-p0 / agreed_for_implementation / 3bb7932bf8637b6fcbe3b26694b4e63aa0fb72a047fb127f817865d46e0c7058
+overall: PASS_LIMITED_SCOPE
+
+PASS  disposable loopback-only MySQL 8.4.11 tmpfs and Redis 7-alpine without persistence
+PASS  migration up/status before and after: 20 lines, 0001-0020
+PASS  planned normal -p 1: migration 3.860s, service 3.178s, handler 0.519s, 0 unexpected skip
+PASS  planned race: service 7.051s, handler 1.643s, 0 unexpected skip
+PASS  root static go test ./... when loopback permitted
+PASS  full real service serial 171.312s and handler serial 17.009s
+PASS  go vet ./..., build, deploy/test-dockerfile.sh, gofmt -d, git diff --check
+PASS  renderer stale-overwrite RED then flock GREEN; race count=3
+PASS  renderer root/symlink/mode 0600+0700/canonical SHA/manifest/fence/rollback coverage
+NON_BLOCKING_EXTRA_CHECK_FAIL  full real migration package: historical tests hard-code obsolete terminal/dependency assumptions
+PASS  exact cleanup: MySQL 230609b618dde469fdf1093ed109c747d9989f41fd91b4e5bc3f432f702ba3c0 and Redis 4156fde30229cb2372c2a8376b608a678b4e952d6a1cf0b6f28af16f0c38f00e removed; names absent; ports 52179/54737 closed; credentials absent
+
+Task12 browser evidence remains synthetic page.route: 12/12 scenarios, 234/234 assertions, 32 sanitized requests, 0 unexpected console/page errors.
+NOT_RUN  authenticated Root real browser CRUD/RBAC/transaction flow
+NOT_RUN  external scheduler/systemd, production volume mount, frontend artifact reader
+NOT_RUN  production migration/deploy/content publication/public HTTPS acceptance
+BLOCKED_PRODUCT  P08 production content truth criteria
+PENDING  review baseline/final snapshot and ordered Spec -> Security -> Test chain
+NO_ACTION  push/PR/merge/deploy

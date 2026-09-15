@@ -1,0 +1,122 @@
+{
+  "schema_version": 1,
+  "recorded_at": "2026-09-16",
+  "overall_status": "PASS_LIMITED_SCOPE",
+  "review_status": "PENDING_ORDERED_REVIEW_CHAIN",
+  "code_under_test": {
+    "backend": "8303a28",
+    "backend_included_commits": [
+      "f6ed4e1",
+      "8303a28"
+    ],
+    "frontend": "78006b360b1f005ded208b68aae6464c67891b52"
+  },
+  "contract": {
+    "version": "v1.0.0-p0",
+    "status": "agreed_for_implementation",
+    "sha256": "3bb7932bf8637b6fcbe3b26694b4e63aa0fb72a047fb127f817865d46e0c7058"
+  },
+  "fixture": {
+    "mysql": {
+      "version": "8.4.11",
+      "container_id": "230609b618dde469fdf1093ed109c747d9989f41fd91b4e5bc3f432f702ba3c0",
+      "port": 52179,
+      "storage": "tmpfs",
+      "network": "loopback-only"
+    },
+    "redis": {
+      "image": "redis:7-alpine",
+      "container_id": "4156fde30229cb2372c2a8376b608a678b4e952d6a1cf0b6f28af16f0c38f00e",
+      "port": 54737,
+      "persistence": false,
+      "network": "loopback-only"
+    },
+    "production_access": false,
+    "environment_files_read": false
+  },
+  "migration": {
+    "before": "PASS: 20 lines, 0001-0020",
+    "after": "PASS: 20 lines, 0001-0020",
+    "scoped_gate": "PASS",
+    "full_real_package_extra_check": "NON_BLOCKING_EXTRA_CHECK_FAIL",
+    "extra_check_reason": "historical migration tests hard-code obsolete terminal/dependency assumptions"
+  },
+  "planned_gates": {
+    "normal_p1": {
+      "migration_seconds": 3.860,
+      "service_seconds": 3.178,
+      "handler_seconds": 0.519,
+      "result": "PASS",
+      "unexpected_skip": 0
+    },
+    "race": {
+      "service_seconds": 7.051,
+      "handler_seconds": 1.643,
+      "result": "PASS",
+      "unexpected_skip": 0
+    }
+  },
+  "additional_gates": {
+    "root_static_go_test_all": "PASS_WITH_LOOPBACK_PERMISSION",
+    "real_service_full_serial_seconds": 171.312,
+    "real_service_full_serial": "PASS",
+    "real_handler_full_serial_seconds": 17.009,
+    "real_handler_full_serial": "PASS",
+    "go_vet": "PASS",
+    "build": "PASS",
+    "dockerfile_test": "PASS",
+    "gofmt_diff": "PASS",
+    "git_diff_check": "PASS"
+  },
+  "renderer": {
+    "artifact_type": "structured snapshot for fixed Vue shell",
+    "server_generated_html": false,
+    "deterministic_stale_overwrite": "RED_THEN_FLOCK_GREEN",
+    "race_count_3": "PASS",
+    "coverage": [
+      "safe absolute non-root output root",
+      "symlink rejection",
+      "directories mode 0700",
+      "files mode 0600",
+      "canonical JSON SHA and manifest",
+      "generation and fence binding",
+      "atomic current pointer switch",
+      "stale rollback cannot overwrite newer generation"
+    ]
+  },
+  "browser": {
+    "source": "Task12 synthetic Playwright page.route matrix",
+    "scenarios": "12/12",
+    "assertions": "234/234",
+    "sanitized_requests": 32,
+    "unexpected_console_errors": 0,
+    "page_errors": 0,
+    "real_backend_browser": "NOT_RUN"
+  },
+  "cleanup": {
+    "mysql_removed": true,
+    "redis_removed": true,
+    "matching_names": 0,
+    "ports_52179_54737_closed": true,
+    "credential_files_absent": true
+  },
+  "not_run": [
+    "authenticated Root browser CRUD/RBAC/transactions",
+    "external scheduler or systemd",
+    "production volume mount",
+    "frontend artifact reader",
+    "production migration",
+    "deployment",
+    "content publication",
+    "public HTTPS acceptance"
+  ],
+  "product_blockers": [
+    "P08 production content truth criteria remains BLOCKED_PRODUCT"
+  ],
+  "delivery_actions": {
+    "push": false,
+    "pull_request": false,
+    "merge": false,
+    "deploy": false
+  }
+}

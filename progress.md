@@ -1,5 +1,13 @@
 # Porsche 开发进度
 
+## 2026-09-16：Fixed Home Structured Content Task13 后端真实数据层验证（PASS_LIMITED_SCOPE）
+
+- 代码候选为后端 `8303a28`（含 `f6ed4e1` exact action target locks 与 `8303a28` atomic structured artifact renderer）、配对前端 `78006b360b1f005ded208b68aae6464c67891b52`；合同保持 `v1.0.0-p0` / `agreed_for_implementation` / SHA-256 `3bb7932bf8637b6fcbe3b26694b4e63aa0fb72a047fb127f817865d46e0c7058`。
+- disposable、loopback-only MySQL 8.4.11（tmpfs）与 Redis 7-alpine（无持久化）下，迁移前后均为 20 行 0001–0020。计划内 normal `-p 1` 的 migration/service/handler 为 3.860s/3.178s/0.519s，race service/handler 为 7.051s/1.643s，全部 PASS 且 0 unexpected skip；root 允许 loopback 后静态全仓 `go test ./...` 通过，真实 fixture 下 service/handler 全包串行为 171.312s/17.009s PASS。
+- `go vet ./...`、build、`deploy/test-dockerfile.sh`、`gofmt -d`、`git diff --check` 通过。renderer 的确定性 stale-overwrite 先 RED，加入 `flock` 后 GREEN，race `-count=3` 通过；覆盖安全 root、symlink 拒绝、0700/0600、canonical SHA/manifest、generation/fence、原子 current 切换和 stale rollback 保护。产物是供固定 Vue shell 消费的结构化快照，不是服务端生成 HTML。
+- 计划外完整真实 migration package 因历史迁移测试硬编码已过时的 terminal/dependency 假设而失败，明确记录为 `NON_BLOCKING_EXTRA_CHECK_FAIL`；计划内 scoped migration gate 已通过。MySQL `230609b618dde469fdf1093ed109c747d9989f41fd91b4e5bc3f432f702ba3c0`、Redis `4156fde30229cb2372c2a8376b608a678b4e952d6a1cf0b6f28af16f0c38f00e` 已按完整 ID 删除，名称不存在，52179/54737 关闭，凭据文件不存在。
+- Task12 浏览器仍为 synthetic `page.route` 12/12、234/234、32 条脱敏请求、0 unexpected console/page error；真实 Root 浏览器 CRUD/RBAC/事务仍 `NOT_RUN`。有序 review snapshot 尚未生成；external scheduler/systemd、生产 volume、前端 artifact reader、production migration/deploy/publication/HTTPS 均 `NOT_RUN`。P08 继续 `BLOCKED_PRODUCT`，`web-012` 继续 `in_progress / PASS_LIMITED_SCOPE`。未 push、PR、merge 或 deploy。证据见 `docs/superpowers/reports/validation/2026-09-16-fixed-home-structured-content-task13/`。
+
 ## 2026-09-12：OpenAI CLI 首期取得限定通过，文档闭环后需重建快照
 
 - 首轮独立规格复审绑定 `28d8f1f` / snapshot `c3ddad2ccb3ee37d87d11597061b4aa99f79dd6e2de923097430307b6dc72b00`，结论 `SPEC_FAIL`：超限工具参数/输出错误码、assistant 非法 content、Responses 嵌套未知字段分类和完整取消传播测试共四项未满足设计。
