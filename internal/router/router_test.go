@@ -35,7 +35,9 @@ func TestPublicContentPricingAdminRoutesMatchFrozenContract(t *testing.T) {
 	state := &app.State{Settings: &config.Settings{AllowedHosts: "example.com"}}
 	engine := router.New(state)
 	got := map[string]int{}
+	registered := map[string]int{}
 	for _, route := range engine.Routes() {
+		registered[route.Method+" "+route.Path]++
 		if strings.HasPrefix(route.Path, "/admin/v2/public-models") || strings.HasPrefix(route.Path, "/admin/v2/public-pricing") || strings.HasPrefix(route.Path, "/admin/v2/public-content") || strings.HasPrefix(route.Path, "/admin/v2/notifications") {
 			got[route.Method+" "+route.Path]++
 		}
@@ -45,28 +47,74 @@ func TestPublicContentPricingAdminRoutesMatchFrozenContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	var contract struct {
-		Routes []map[string]any `json:"routes"`
+		Version                     string           `json:"version"`
+		Status                      string           `json:"status"`
+		PendingImplementationRoutes []string         `json:"pending_implementation_routes"`
+		Routes                      []map[string]any `json:"routes"`
 	}
 	if err := json.Unmarshal(raw, &contract); err != nil {
 		t.Fatal(err)
 	}
+	if contract.Version != "v2" || contract.Status != "approved_contract_pending_implementation" || len(contract.Routes) != 48 {
+		t.Fatalf("contract version/status/routes=%q/%q/%d", contract.Version, contract.Status, len(contract.Routes))
+	}
+	expectedPending := map[string]bool{
+		"GET /api/v1/public/home-config":                                  false,
+		"GET /admin/v2/public-content/home-draft":                         false,
+		"POST /admin/v2/public-content/home-draft/announcements":          false,
+		"PATCH /admin/v2/public-content/home-draft/announcements/{guid}":  false,
+		"DELETE /admin/v2/public-content/home-draft/announcements/{guid}": false,
+		"POST /admin/v2/public-content/home-draft/faqs":                   false,
+		"PATCH /admin/v2/public-content/home-draft/faqs/{guid}":           false,
+		"DELETE /admin/v2/public-content/home-draft/faqs/{guid}":          false,
+		"PUT /admin/v2/public-content/home-draft/featured-models":         false,
+		"GET /admin/v2/public-content/home-preview":                       false,
+		"GET /admin/v2/public-content/releases/{guid}/home-config":        false,
+		"GET /admin/v2/public-content/documents-draft":                    false,
+		"PUT /admin/v2/public-content/documents-draft":                    false,
+	}
+	if len(contract.PendingImplementationRoutes) != len(expectedPending) {
+		t.Fatalf("pending implementation route count=%d want=%d", len(contract.PendingImplementationRoutes), len(expectedPending))
+	}
+	pendingImplementation := map[string]bool{}
+	for _, route := range contract.PendingImplementationRoutes {
+		if _, ok := expectedPending[route]; !ok {
+			t.Fatalf("unexpected pending implementation route %s", route)
+		}
+		if pendingImplementation[route] {
+			t.Fatalf("duplicate pending implementation route %s", route)
+		}
+		pendingImplementation[route] = true
+		ginRoute := strings.ReplaceAll(route, "{guid}", ":guid")
+		if count := registered[ginRoute]; count != 0 {
+			t.Fatalf("route %s registered %d time(s) while still declared pending", ginRoute, count)
+		}
+	}
 	want := map[string]bool{}
 	rootMetadata := make([]map[string]any, 0, 28)
+	pendingContractRoutes := map[string]int{}
 	for _, route := range contract.Routes {
-		if route["role"] != "root" {
-			continue
-		}
-		rootMetadata = append(rootMetadata, route)
 		method, methodOK := route["method"].(string)
 		contractPath, pathOK := route["path"].(string)
 		if !methodOK || !pathOK {
 			t.Fatal("invalid route metadata types")
+		}
+		contractKey := method + " " + contractPath
+		if pendingImplementation[contractKey] {
+			pendingContractRoutes[contractKey]++
+		}
+		if route["role"] != "root" {
+			continue
 		}
 		for _, field := range []string{"request_headers", "response_headers", "path_schema", "query_schema", "body_schema", "response_schema", "status"} {
 			if _, ok := route[field]; !ok {
 				t.Fatalf("%s %s missing %s", method, contractPath, field)
 			}
 		}
+		if pendingImplementation[contractKey] {
+			continue
+		}
+		rootMetadata = append(rootMetadata, route)
 		path := strings.ReplaceAll(contractPath, "{guid}", ":guid")
 		key := method + " " + path
 		want[key] = true
@@ -87,6 +135,11 @@ func TestPublicContentPricingAdminRoutesMatchFrozenContract(t *testing.T) {
 		}
 		if json.Unmarshal(recorder.Body.Bytes(), &envelope) != nil || envelope.Error.Code != "authentication_required" || envelope.Error.RequestID != recorder.Header().Get("X-Request-ID") {
 			t.Fatalf("%s %s envelope=%s", method, requestPath, recorder.Body.String())
+		}
+	}
+	for route := range pendingImplementation {
+		if pendingContractRoutes[route] != 1 {
+			t.Errorf("pending contract route %s count=%d", route, pendingContractRoutes[route])
 		}
 	}
 	if len(want) != 28 || len(got) != len(want) {

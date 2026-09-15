@@ -1,6 +1,21 @@
 {
-  "version": "v1",
+  "version": "v2",
   "status": "approved_contract_pending_implementation",
+  "pending_implementation_routes": [
+    "GET /api/v1/public/home-config",
+    "GET /admin/v2/public-content/home-draft",
+    "POST /admin/v2/public-content/home-draft/announcements",
+    "PATCH /admin/v2/public-content/home-draft/announcements/{guid}",
+    "DELETE /admin/v2/public-content/home-draft/announcements/{guid}",
+    "POST /admin/v2/public-content/home-draft/faqs",
+    "PATCH /admin/v2/public-content/home-draft/faqs/{guid}",
+    "DELETE /admin/v2/public-content/home-draft/faqs/{guid}",
+    "PUT /admin/v2/public-content/home-draft/featured-models",
+    "GET /admin/v2/public-content/home-preview",
+    "GET /admin/v2/public-content/releases/{guid}/home-config",
+    "GET /admin/v2/public-content/documents-draft",
+    "PUT /admin/v2/public-content/documents-draft"
+  ],
   "pricing": {
     "currency": "USD",
     "unit": "million_tokens",
@@ -109,7 +124,15 @@
       "PUT /admin/v2/public-content/draft",
       "POST /admin/v2/public-content/validate",
       "POST /admin/v2/public-content/publish",
-      "POST /admin/v2/public-content/releases/{guid}/restore"
+      "POST /admin/v2/public-content/releases/{guid}/restore",
+      "POST /admin/v2/public-content/home-draft/announcements",
+      "PATCH /admin/v2/public-content/home-draft/announcements/{guid}",
+      "DELETE /admin/v2/public-content/home-draft/announcements/{guid}",
+      "POST /admin/v2/public-content/home-draft/faqs",
+      "PATCH /admin/v2/public-content/home-draft/faqs/{guid}",
+      "DELETE /admin/v2/public-content/home-draft/faqs/{guid}",
+      "PUT /admin/v2/public-content/home-draft/featured-models",
+      "PUT /admin/v2/public-content/documents-draft"
     ],
     "idempotency_key_routes": [
       "POST /admin/v2/public-pricing/publish",
@@ -1362,6 +1385,473 @@
           }
         }
       }
+    },
+    "null": {
+      "type": "null"
+    },
+    "rfc3339_utc": {
+      "type": "string",
+      "format": "date-time-rfc3339-utc"
+    },
+    "AnnouncementDraft": {
+      "type": "object",
+      "required": [
+        "guid",
+        "title",
+        "body_markdown",
+        "effective_at",
+        "is_visible",
+        "sort_order"
+      ],
+      "properties": {
+        "guid": {
+          "type": "string",
+          "format": "positive-int64"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "body_markdown": {
+          "type": "string",
+          "maxBytes": 16384
+        },
+        "effective_at": {
+          "one_of": [
+            "null",
+            "rfc3339_utc"
+          ]
+        },
+        "is_visible": {
+          "type": "boolean"
+        },
+        "sort_order": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000000
+        }
+      }
+    },
+    "FAQDraft": {
+      "type": "object",
+      "required": [
+        "guid",
+        "question",
+        "answer_markdown",
+        "is_visible",
+        "sort_order"
+      ],
+      "properties": {
+        "guid": {
+          "type": "string",
+          "format": "positive-int64"
+        },
+        "question": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "answer_markdown": {
+          "type": "string",
+          "maxBytes": 16384
+        },
+        "is_visible": {
+          "type": "boolean"
+        },
+        "sort_order": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000000
+        }
+      }
+    },
+    "HomeDraftResponse": {
+      "type": "object",
+      "required": [
+        "revision",
+        "announcements",
+        "faqs",
+        "featured_model_keys"
+      ],
+      "properties": {
+        "revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "announcements": {
+          "type": "array",
+          "maxItems": 20,
+          "items": {
+            "type": "object",
+            "$ref": "AnnouncementDraft"
+          }
+        },
+        "faqs": {
+          "type": "array",
+          "maxItems": 50,
+          "items": {
+            "type": "object",
+            "$ref": "FAQDraft"
+          }
+        },
+        "featured_model_keys": {
+          "type": "array",
+          "maxItems": 12,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "DocumentsDraftResponse": {
+      "type": "object",
+      "required": [
+        "revision",
+        "about",
+        "terms",
+        "privacy",
+        "legal_reviewed"
+      ],
+      "properties": {
+        "revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "about": {
+          "type": "string"
+        },
+        "terms": {
+          "type": "string"
+        },
+        "privacy": {
+          "type": "string"
+        },
+        "legal_reviewed": {
+          "type": "boolean"
+        }
+      }
+    },
+    "AnnouncementCreateRequest": {
+      "type": "object",
+      "required": [
+        "expected_revision",
+        "title",
+        "body_markdown",
+        "effective_at",
+        "is_visible",
+        "sort_order"
+      ],
+      "properties": {
+        "expected_revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "body_markdown": {
+          "type": "string",
+          "maxBytes": 16384
+        },
+        "effective_at": {
+          "one_of": [
+            "null",
+            "rfc3339_utc"
+          ]
+        },
+        "is_visible": {
+          "type": "boolean"
+        },
+        "sort_order": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000000
+        }
+      }
+    },
+    "AnnouncementUpdateRequest": {
+      "type": "object",
+      "required": [
+        "expected_revision"
+      ],
+      "properties": {
+        "expected_revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "body_markdown": {
+          "type": "string",
+          "maxBytes": 16384
+        },
+        "effective_at": {
+          "one_of": [
+            "null",
+            "rfc3339_utc"
+          ]
+        },
+        "is_visible": {
+          "type": "boolean"
+        },
+        "sort_order": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000000
+        }
+      }
+    },
+    "AnnouncementDeleteRequest": {
+      "type": "object",
+      "required": [
+        "expected_revision"
+      ],
+      "properties": {
+        "expected_revision": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "FAQCreateRequest": {
+      "type": "object",
+      "required": [
+        "expected_revision",
+        "question",
+        "answer_markdown",
+        "is_visible",
+        "sort_order"
+      ],
+      "properties": {
+        "expected_revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "question": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "answer_markdown": {
+          "type": "string",
+          "maxBytes": 16384
+        },
+        "is_visible": {
+          "type": "boolean"
+        },
+        "sort_order": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000000
+        }
+      }
+    },
+    "FAQUpdateRequest": {
+      "type": "object",
+      "required": [
+        "expected_revision"
+      ],
+      "properties": {
+        "expected_revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "question": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "answer_markdown": {
+          "type": "string",
+          "maxBytes": 16384
+        },
+        "is_visible": {
+          "type": "boolean"
+        },
+        "sort_order": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000000
+        }
+      }
+    },
+    "FAQDeleteRequest": {
+      "type": "object",
+      "required": [
+        "expected_revision"
+      ],
+      "properties": {
+        "expected_revision": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "FeaturedModelsSaveRequest": {
+      "type": "object",
+      "required": [
+        "expected_revision",
+        "featured_model_keys"
+      ],
+      "properties": {
+        "expected_revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "featured_model_keys": {
+          "type": "array",
+          "maxItems": 12,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "DocumentsDraftSaveRequest": {
+      "type": "object",
+      "required": [
+        "expected_revision",
+        "about",
+        "terms",
+        "privacy",
+        "legal_reviewed"
+      ],
+      "properties": {
+        "expected_revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "about": {
+          "type": "string"
+        },
+        "terms": {
+          "type": "string"
+        },
+        "privacy": {
+          "type": "string"
+        },
+        "legal_reviewed": {
+          "type": "boolean"
+        }
+      }
+    },
+    "HomeConfigPublicAnnouncement": {
+      "type": "object",
+      "required": [
+        "guid",
+        "title",
+        "body_html",
+        "effective_at",
+        "sort_order"
+      ],
+      "properties": {
+        "guid": {
+          "type": "string",
+          "format": "positive-int64"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "body_html": {
+          "type": "string"
+        },
+        "effective_at": {
+          "one_of": [
+            "null",
+            "rfc3339_utc"
+          ]
+        },
+        "sort_order": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000000
+        }
+      }
+    },
+    "HomeConfigPublicFAQ": {
+      "type": "object",
+      "required": [
+        "guid",
+        "question",
+        "answer_html",
+        "sort_order"
+      ],
+      "properties": {
+        "guid": {
+          "type": "string",
+          "format": "positive-int64"
+        },
+        "question": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "answer_html": {
+          "type": "string"
+        },
+        "sort_order": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000000
+        }
+      }
+    },
+    "HomeConfigPublicResponse": {
+      "type": "object",
+      "required": [
+        "announcements",
+        "faqs",
+        "featured_model_keys",
+        "content_release_version",
+        "price_release_version"
+      ],
+      "properties": {
+        "announcements": {
+          "type": "array",
+          "maxItems": 20,
+          "items": {
+            "type": "object",
+            "$ref": "HomeConfigPublicAnnouncement"
+          }
+        },
+        "faqs": {
+          "type": "array",
+          "maxItems": 50,
+          "items": {
+            "type": "object",
+            "$ref": "HomeConfigPublicFAQ"
+          }
+        },
+        "featured_model_keys": {
+          "type": "array",
+          "maxItems": 12,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "content_release_version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "price_release_version": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
     }
   },
   "routes": [
@@ -1784,6 +2274,162 @@
       "body_schema": "RevisionRequest",
       "response_schema": "Release",
       "status": 201
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/public/home-config",
+      "role": "anonymous",
+      "request_headers": "public_request_headers",
+      "response_headers": "public_response_headers",
+      "path_schema": "NoBody",
+      "query_schema": "NoBody",
+      "body_schema": "NoBody",
+      "response_schema": "HomeConfigPublicResponse",
+      "status": 200
+    },
+    {
+      "method": "GET",
+      "path": "/admin/v2/public-content/home-draft",
+      "role": "root",
+      "request_headers": "admin_request_headers",
+      "response_headers": "admin_response_headers",
+      "path_schema": "NoBody",
+      "query_schema": "NoBody",
+      "body_schema": "NoBody",
+      "response_schema": "HomeDraftResponse",
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/admin/v2/public-content/home-draft/announcements",
+      "role": "root",
+      "request_headers": "admin_request_headers",
+      "response_headers": "admin_response_headers",
+      "path_schema": "NoBody",
+      "query_schema": "NoBody",
+      "body_schema": "AnnouncementCreateRequest",
+      "response_schema": "HomeDraftResponse",
+      "status": 201
+    },
+    {
+      "method": "PATCH",
+      "path": "/admin/v2/public-content/home-draft/announcements/{guid}",
+      "role": "root",
+      "request_headers": "admin_request_headers",
+      "response_headers": "admin_response_headers",
+      "path_schema": "GUIDRequest",
+      "query_schema": "NoBody",
+      "body_schema": "AnnouncementUpdateRequest",
+      "response_schema": "HomeDraftResponse",
+      "status": 200
+    },
+    {
+      "method": "DELETE",
+      "path": "/admin/v2/public-content/home-draft/announcements/{guid}",
+      "role": "root",
+      "request_headers": "admin_request_headers",
+      "response_headers": "admin_draft_delete_response_headers",
+      "path_schema": "GUIDRequest",
+      "query_schema": "NoBody",
+      "body_schema": "AnnouncementDeleteRequest",
+      "response_schema": "NoBody",
+      "status": 204
+    },
+    {
+      "method": "POST",
+      "path": "/admin/v2/public-content/home-draft/faqs",
+      "role": "root",
+      "request_headers": "admin_request_headers",
+      "response_headers": "admin_response_headers",
+      "path_schema": "NoBody",
+      "query_schema": "NoBody",
+      "body_schema": "FAQCreateRequest",
+      "response_schema": "HomeDraftResponse",
+      "status": 201
+    },
+    {
+      "method": "PATCH",
+      "path": "/admin/v2/public-content/home-draft/faqs/{guid}",
+      "role": "root",
+      "request_headers": "admin_request_headers",
+      "response_headers": "admin_response_headers",
+      "path_schema": "GUIDRequest",
+      "query_schema": "NoBody",
+      "body_schema": "FAQUpdateRequest",
+      "response_schema": "HomeDraftResponse",
+      "status": 200
+    },
+    {
+      "method": "DELETE",
+      "path": "/admin/v2/public-content/home-draft/faqs/{guid}",
+      "role": "root",
+      "request_headers": "admin_request_headers",
+      "response_headers": "admin_draft_delete_response_headers",
+      "path_schema": "GUIDRequest",
+      "query_schema": "NoBody",
+      "body_schema": "FAQDeleteRequest",
+      "response_schema": "NoBody",
+      "status": 204
+    },
+    {
+      "method": "PUT",
+      "path": "/admin/v2/public-content/home-draft/featured-models",
+      "role": "root",
+      "request_headers": "admin_request_headers",
+      "response_headers": "admin_response_headers",
+      "path_schema": "NoBody",
+      "query_schema": "NoBody",
+      "body_schema": "FeaturedModelsSaveRequest",
+      "response_schema": "HomeDraftResponse",
+      "status": 200
+    },
+    {
+      "method": "GET",
+      "path": "/admin/v2/public-content/home-preview",
+      "role": "root",
+      "request_headers": "admin_request_headers",
+      "response_headers": "admin_preview_response_headers",
+      "path_schema": "NoBody",
+      "query_schema": "PreviewRequest",
+      "body_schema": "NoBody",
+      "response_schema": "HomeDraftResponse",
+      "status": 200
+    },
+    {
+      "method": "GET",
+      "path": "/admin/v2/public-content/releases/{guid}/home-config",
+      "role": "root",
+      "request_headers": "admin_request_headers",
+      "response_headers": "admin_response_headers",
+      "path_schema": "GUIDRequest",
+      "query_schema": "NoBody",
+      "body_schema": "NoBody",
+      "response_schema": "HomeConfigPublicResponse",
+      "status": 200
+    },
+    {
+      "method": "GET",
+      "path": "/admin/v2/public-content/documents-draft",
+      "role": "root",
+      "request_headers": "admin_request_headers",
+      "response_headers": "admin_response_headers",
+      "path_schema": "NoBody",
+      "query_schema": "NoBody",
+      "body_schema": "NoBody",
+      "response_schema": "DocumentsDraftResponse",
+      "status": 200
+    },
+    {
+      "method": "PUT",
+      "path": "/admin/v2/public-content/documents-draft",
+      "role": "root",
+      "request_headers": "admin_request_headers",
+      "response_headers": "admin_response_headers",
+      "path_schema": "NoBody",
+      "query_schema": "NoBody",
+      "body_schema": "DocumentsDraftSaveRequest",
+      "response_schema": "DocumentsDraftResponse",
+      "status": 200
     }
   ],
   "errors": {
@@ -1809,5 +2455,10 @@
     "visibility": "omitted_from_management_search_detail_and_public_operational_routes",
     "deleted_list_endpoint": "absent",
     "identity_reservation": "model_key_and_upstream_model_id_remain_reserved"
+  },
+  "admin_draft_delete_response_headers": {
+    "Cache-Control": "no-store",
+    "X-Request-ID": "required_non_empty",
+    "X-Content-Draft-Revision": "required_positive_integer"
   }
 }
