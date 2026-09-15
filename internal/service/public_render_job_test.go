@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"math"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -98,13 +99,24 @@ func TestPublicRenderJobFixtureFailureDeduplicatesAlertAndCompleteResolves(t *te
 	if err != nil || lease == nil {
 		t.Fatalf("lease=%#v err=%v", lease, err)
 	}
-	if err = svc.Fail(ctx, PublicRenderTransitionInput{JobGUID: lease.JobGUID, OwnerToken: lease.OwnerToken, Fence: lease.Fence, Failure: "validation_failed"}); err != nil {
+	if err = svc.Fail(ctx, PublicRenderTransitionInput{JobGUID: lease.JobGUID, OwnerToken: lease.OwnerToken, Fence: lease.Fence, Failure: "supersecretpassword"}); err != nil {
 		t.Fatal(err)
+	}
+	var failedJob models.PublicRenderJob
+	if err = db.Where("guid=?", lease.JobGUID).First(&failedJob).Error; err != nil || failedJob.LastFailure == nil || *failedJob.LastFailure != "render_failed" {
+		t.Fatalf("sanitized failed job=%#v err=%v", failedJob, err)
 	}
 	fingerprint := rootAlertFingerprint(models.RootAlertTypeRendererFailure, "", publicRenderAlertIdentity(lease.JobGUID))
 	var first models.RootAlert
 	if err = db.Where("fingerprint=? AND is_deleted=0", fingerprint).First(&first).Error; err != nil || first.State != models.RootAlertStateActive || first.OccurrenceCount != 1 {
 		t.Fatalf("first alert=%#v err=%v", first, err)
+	}
+	if got := first.Payload["error_code"]; got != "render_failed" {
+		t.Fatalf("sanitized renderer alert error_code=%#v", got)
+	}
+	health, err := svc.Health(ctx)
+	if err != nil || health.FailureCode != "render_failed" {
+		t.Fatalf("sanitized public render health=%#v err=%v", health, err)
 	}
 	clock.millis = now + 5_001
 	second, err := svc.Lease(ctx, PublicRenderLeaseInput{OwnerToken: "renderer-alert-owner-token", LeaseMillis: 30_000})
@@ -134,15 +146,68 @@ func TestPublicRenderJobFixtureFailureDeduplicatesAlertAndCompleteResolves(t *te
 }
 
 func TestPublicRenderFailureSanitizationAndBackoff(t *testing.T) {
-	got := sanitizePublicRenderFailure("render failed at /var/www/private: Authorization: Bearer super-secret\nraw stderr")
-	if got != "render_failed" {
-		t.Fatalf("sanitized failure = %q", got)
+	for _, tc := range []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{name: "generic renderer failure", raw: "render_failed", want: "render_failed"},
+		{name: "validated payload failure", raw: "validation_failed", want: "validation_failed"},
+		{name: "obsolete generation", raw: "obsolete_generation", want: "obsolete_generation"},
+		{name: "password shaped value", raw: "supersecretpassword", want: "render_failed"},
+		{name: "secret label", raw: "database_secret", want: "render_failed"},
+		{name: "token label", raw: "token", want: "render_failed"},
+		{name: "encoded secret", raw: "c3VwZXJzZWNyZXRwYXNzd29yZA", want: "render_failed"},
+		{name: "unknown code", raw: "template_parse_failed", want: "render_failed"},
+		{name: "raw renderer output", raw: "render failed at /var/www/private: Authorization: Bearer super-secret\nraw stderr", want: "render_failed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := sanitizePublicRenderFailure(tc.raw); got != tc.want {
+				t.Fatalf("sanitized persistence failure = %q, want %q", got, tc.want)
+			}
+			if got := sanitizeHealthFailure(tc.raw); got != tc.want {
+				t.Fatalf("sanitized anonymous health failure = %q, want %q", got, tc.want)
+			}
+		})
+	}
+	if got := sanitizeHealthFailure(""); got != "" {
+		t.Fatalf("empty healthy failure = %q", got)
 	}
 	if d := publicRenderRetryDelay(1); d != 5*time.Second {
 		t.Fatalf("first retry = %s", d)
 	}
 	if d := publicRenderRetryDelay(publicRenderMaxAttempts); d != 0 {
 		t.Fatalf("terminal retry = %s", d)
+	}
+}
+
+func TestPublicRenderTransitionsLockPublicationStateBeforeRenderJob(t *testing.T) {
+	source, err := os.ReadFile("public_render_job.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(source)
+	for _, tc := range []struct {
+		name  string
+		start string
+		end   string
+	}{
+		{name: "complete", start: "func (s *PublicRenderJobService) Complete", end: "func (s *PublicRenderJobService) Fail"},
+		{name: "renew and fail transition", start: "func (s *PublicRenderJobService) transitionCurrent", end: "func publicRenderAlertIdentity"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			start := strings.Index(text, tc.start)
+			end := strings.Index(text, tc.end)
+			if start < 0 || end <= start {
+				t.Fatalf("cannot locate transaction body %q", tc.name)
+			}
+			body := text[start:end]
+			stateLock := strings.Index(body, "lockPublicRenderState(tx)")
+			jobLock := strings.Index(body, "Clauses(clause.Locking{Strength: \"UPDATE\"}).Where(\"guid=? AND is_deleted=0\"")
+			if stateLock < 0 || jobLock < 0 || stateLock > jobLock {
+				t.Fatalf("%s must lock publication state before render job", tc.name)
+			}
+		})
 	}
 }
 
@@ -348,6 +413,64 @@ func TestPublicRenderJobFixtureLeaseRaceHasOneOwner(t *testing.T) {
 	}
 	if winners != 1 {
 		t.Fatalf("lease winners=%d", winners)
+	}
+}
+
+func TestPublicRenderJobFixtureLeaseAndRenewUseConsistentLockOrder(t *testing.T) {
+	db := openTestMySQL(t)
+	fixture := seedPublicRenderJobFixture(t, db)
+	var job models.PublicRenderJob
+	if err := db.Where("guid=?", fixture.generation).First(&job).Error; err != nil {
+		t.Fatal(err)
+	}
+	clock := &fakePublicRenderClock{}
+	svc := NewPublicRenderJobServiceWithClock(db, []byte("fixture-render-job-purpose-key-32"), clock)
+	oldOwner := "lock-order-old-owner-token"
+	newOwner := "lock-order-new-owner-token"
+
+	for iteration := 0; iteration < 12; iteration++ {
+		now := int64(1_900_000_230_000 + iteration*100)
+		clock.millis = now
+		if err := db.Model(&models.PublicRenderJob{}).Where("id=?", job.ID).Updates(map[string]any{
+			"state":                    models.PublicRenderJobLeased,
+			"attempt_count":            1,
+			"lease_owner_hmac":         svc.ownerHMAC(oldOwner),
+			"lease_expires_at":         now,
+			"last_failure":             nil,
+			"last_terminal_owner_hmac": nil,
+			"last_terminal_fence":      nil,
+			"last_terminal_operation":  nil,
+			"last_terminal_state":      nil,
+			"completed_at":             nil,
+		}).Error; err != nil {
+			t.Fatal(err)
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		start := make(chan struct{})
+		leaseResult := make(chan *PublicRenderLease, 1)
+		leaseError := make(chan error, 1)
+		renewError := make(chan error, 1)
+		go func() {
+			<-start
+			lease, err := svc.Lease(ctx, PublicRenderLeaseInput{OwnerToken: newOwner, LeaseMillis: 30_000})
+			leaseResult <- lease
+			leaseError <- err
+		}()
+		go func() {
+			<-start
+			renewError <- svc.Renew(ctx, PublicRenderTransitionInput{JobGUID: job.Guid, OwnerToken: oldOwner, Fence: 1, LeaseMillis: 30_000})
+		}()
+		close(start)
+		lease, leaseErr := <-leaseResult, <-leaseError
+		renewErr := <-renewError
+		cancel()
+		if leaseErr != nil || lease == nil || lease.Fence != 2 {
+			t.Fatalf("iteration %d lease=%#v err=%v", iteration, lease, leaseErr)
+		}
+		if renewErr != ErrPublicRenderLeaseLost {
+			t.Fatalf("iteration %d expired renew=%v", iteration, renewErr)
+		}
 	}
 }
 

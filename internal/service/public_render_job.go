@@ -6,7 +6,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -26,7 +25,6 @@ var (
 	ErrPublicRenderInvalid     = errors.New("invalid public render job request")
 	ErrPublicRenderLeaseLost   = errors.New("public render job lease lost")
 	ErrPublicRenderUnavailable = errors.New("public render job unavailable")
-	publicRenderFailureCode    = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
 )
 
 type PublicRenderJobService struct {
@@ -161,7 +159,11 @@ func (s *PublicRenderJobService) Lease(ctx context.Context, in PublicRenderLease
 	}
 	var out *PublicRenderLease
 	err := s.db.Session(&gorm.Session{NewDB: true}).WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := s.queueEffectiveAnnouncements(tx, now); err != nil {
+		state, err := lockPublicRenderState(tx)
+		if err != nil {
+			return err
+		}
+		if err := s.queueEffectiveAnnouncements(tx, state, now); err != nil {
 			return err
 		}
 		for scan := 0; scan < 8; scan++ {
@@ -176,7 +178,7 @@ func (s *PublicRenderJobService) Lease(ctx context.Context, in PublicRenderLease
 				return ErrPublicRenderUnavailable
 			}
 
-			current, price, content, err := loadPublicRenderGeneration(tx, job.PriceSnapshotID, job.ContentReleaseID)
+			current, price, content, err := loadPublicRenderGenerationForState(tx, state, job.PriceSnapshotID, job.ContentReleaseID)
 			if err != nil {
 				return err
 			}
@@ -210,11 +212,7 @@ func (s *PublicRenderJobService) Lease(ctx context.Context, in PublicRenderLease
 	return out, nil
 }
 
-func (s *PublicRenderJobService) queueEffectiveAnnouncements(tx *gorm.DB, now int64) error {
-	var state models.PublicPublicationState
-	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("state_key=? AND is_deleted=0", publicPublicationStateKey).First(&state).Error; err != nil {
-		return ErrPublicRenderUnavailable
-	}
+func (s *PublicRenderJobService) queueEffectiveAnnouncements(tx *gorm.DB, state models.PublicPublicationState, now int64) error {
 	if state.PriceSnapshotID == nil || state.ContentReleaseID == nil {
 		return nil
 	}
@@ -308,10 +306,22 @@ type renderGenerationPart struct {
 }
 
 func loadPublicRenderGeneration(tx *gorm.DB, priceID, contentID int64) (bool, renderGenerationPart, renderGenerationPart, error) {
+	state, err := lockPublicRenderState(tx)
+	if err != nil {
+		return false, renderGenerationPart{}, renderGenerationPart{}, err
+	}
+	return loadPublicRenderGenerationForState(tx, state, priceID, contentID)
+}
+
+func lockPublicRenderState(tx *gorm.DB) (models.PublicPublicationState, error) {
 	var state models.PublicPublicationState
 	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("state_key=? AND is_deleted=0", publicPublicationStateKey).First(&state).Error; err != nil {
-		return false, renderGenerationPart{}, renderGenerationPart{}, ErrPublicRenderUnavailable
+		return models.PublicPublicationState{}, ErrPublicRenderUnavailable
 	}
+	return state, nil
+}
+
+func loadPublicRenderGenerationForState(tx *gorm.DB, state models.PublicPublicationState, priceID, contentID int64) (bool, renderGenerationPart, renderGenerationPart, error) {
 	if state.PriceSnapshotID == nil || state.ContentReleaseID == nil || *state.PriceSnapshotID != priceID || *state.ContentReleaseID != contentID {
 		return false, renderGenerationPart{}, renderGenerationPart{}, nil
 	}
@@ -347,6 +357,10 @@ func (s *PublicRenderJobService) Complete(ctx context.Context, in PublicRenderTr
 		return ErrPublicRenderInvalid
 	}
 	return s.db.Session(&gorm.Session{NewDB: true}).WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		state, err := lockPublicRenderState(tx)
+		if err != nil {
+			return err
+		}
 		var job models.PublicRenderJob
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("guid=? AND is_deleted=0", in.JobGUID).First(&job).Error; err != nil {
 			return ErrPublicRenderLeaseLost
@@ -354,7 +368,7 @@ func (s *PublicRenderJobService) Complete(ctx context.Context, in PublicRenderTr
 		if terminalReplay(job, s.ownerHMAC(in.OwnerToken), in.Fence, 1) {
 			return nil
 		}
-		current, _, _, err := loadPublicRenderGeneration(tx, job.PriceSnapshotID, job.ContentReleaseID)
+		current, _, _, err := loadPublicRenderGenerationForState(tx, state, job.PriceSnapshotID, job.ContentReleaseID)
 		if err != nil {
 			return err
 		}
@@ -409,6 +423,10 @@ func (s *PublicRenderJobService) Fail(ctx context.Context, in PublicRenderTransi
 
 func (s *PublicRenderJobService) transitionCurrent(ctx context.Context, in PublicRenderTransitionInput, now int64, updates map[string]any, rendererFailure ...string) error {
 	return s.db.Session(&gorm.Session{NewDB: true}).WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		state, err := lockPublicRenderState(tx)
+		if err != nil {
+			return err
+		}
 		var job models.PublicRenderJob
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("guid=? AND is_deleted=0", in.JobGUID).First(&job).Error; err != nil {
 			return ErrPublicRenderLeaseLost
@@ -420,7 +438,7 @@ func (s *PublicRenderJobService) transitionCurrent(ctx context.Context, in Publi
 			}
 			return ErrPublicRenderLeaseLost
 		}
-		current, _, content, err := loadPublicRenderGeneration(tx, job.PriceSnapshotID, job.ContentReleaseID)
+		current, _, content, err := loadPublicRenderGenerationForState(tx, state, job.PriceSnapshotID, job.ContentReleaseID)
 		if err != nil {
 			return err
 		}
@@ -465,10 +483,12 @@ func renderTransitionResult(res *gorm.DB) error {
 
 func sanitizePublicRenderFailure(raw string) string {
 	raw = strings.TrimSpace(raw)
-	if publicRenderFailureCode.MatchString(raw) {
+	switch raw {
+	case "render_failed", "validation_failed", "obsolete_generation":
 		return raw
+	default:
+		return "render_failed"
 	}
-	return "render_failed"
 }
 
 func publicRenderRetryDelay(attempt int) time.Duration {
@@ -503,10 +523,10 @@ func PublicRenderHealth(now int64, in PublicRenderHealthInput) PublicRenderHealt
 }
 
 func sanitizeHealthFailure(code string) string {
-	if publicRenderFailureCode.MatchString(code) {
-		return code
+	if strings.TrimSpace(code) == "" {
+		return ""
 	}
-	return ""
+	return sanitizePublicRenderFailure(code)
 }
 
 func (s *PublicRenderJobService) Health(ctx context.Context) (PublicRenderHealthStatus, error) {
