@@ -57,7 +57,7 @@ func (s publicReadStub) Projection(context.Context) (*service.PublicCatalogProje
 func testPublicProjection() *service.PublicCatalogProjection {
 	return &service.PublicCatalogProjection{
 		Content: service.PublicContentDraft{Home: "home", About: "about", Terms: "terms", Privacy: "privacy"}, ContentReleaseVersion: 7, PriceReleaseVersion: 9,
-		PriceVisibility: models.PublicPriceVisibilityAuthenticatedOnly, ETag: `"abc"`, Items: []service.PublicCatalogItem{{ModelKey: "alpha-chat", DisplayName: "Alpha", Provider: "acme", Capabilities: []string{"chat"}, ContextWindow: 8192, InputPriceUSDPerMillionTokens: "1.00000000", OutputPriceUSDPerMillionTokens: "2.00000000"}}, GoneKeys: map[string]struct{}{"retired": {}},
+		HomeConfigAvailable: true, PriceVisibility: models.PublicPriceVisibilityAuthenticatedOnly, ETag: `"abc"`, Items: []service.PublicCatalogItem{{ModelKey: "alpha-chat", DisplayName: "Alpha", Provider: "acme", Capabilities: []string{"chat"}, ContextWindow: 8192, InputPriceUSDPerMillionTokens: "1.00000000", OutputPriceUSDPerMillionTokens: "2.00000000"}}, GoneKeys: map[string]struct{}{"retired": {}},
 	}
 }
 
@@ -101,9 +101,31 @@ func TestPublicHomeConfigReturnsPublishedProjectionOnly(t *testing.T) {
 	}
 }
 
-func TestPublicHomeConfigReturnsUnavailableWhenCurrentReleaseIsLegacy(t *testing.T) {
+func TestPublicLegacyProjectionKeepsExistingRoutesAvailableAndOnlyHomeConfigUnavailable(t *testing.T) {
+	projection := testPublicProjection()
+	projection.Content = service.PublicContentDraft{Home: "legacy home", About: "legacy about", Terms: "legacy terms", Privacy: "legacy privacy"}
+	projection.HomeConfigAvailable = false
 	r := gin.New()
-	registerPublicContentWithReader(r, publicReadStub{err: &service.HTTPError{Status: http.StatusServiceUnavailable, Message: "committed content integrity unavailable"}}, func(*gin.Context) bool { return false })
+	registerPublicContentWithReader(r, publicReadStub{projection: projection}, func(*gin.Context) bool { return false })
+	for _, tc := range []struct {
+		path string
+		want string
+	}{
+		{path: "/api/v1/public/site", want: `"content_release_version":7`},
+		{path: "/api/v1/public/home", want: "legacy home"},
+		{path: "/api/v1/public/pages/about", want: "legacy about"},
+		{path: "/api/v1/public/pages/terms", want: "legacy terms"},
+		{path: "/api/v1/public/pages/privacy", want: "legacy privacy"},
+		{path: "/api/v1/public/models", want: "alpha-chat"},
+		{path: "/api/v1/public/models/alpha-chat", want: "alpha-chat"},
+	} {
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, tc.path, nil))
+		if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), tc.want) {
+			t.Fatalf("path=%s status=%d body=%s", tc.path, rec.Code, rec.Body.String())
+		}
+	}
+
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/public/home-config", nil))
 	if rec.Code != http.StatusServiceUnavailable {
@@ -112,7 +134,7 @@ func TestPublicHomeConfigReturnsUnavailableWhenCurrentReleaseIsLegacy(t *testing
 	if rec.Header().Get("Cache-Control") != "no-store" || rec.Header().Get("X-Request-ID") == "" {
 		t.Fatalf("headers=%#v", rec.Header())
 	}
-	for _, forbidden := range []string{"home", "announcement", "faq", "database", "release"} {
+	for _, forbidden := range []string{"legacy home", "alpha-chat", "announcement", "faq", "database"} {
 		if strings.Contains(strings.ToLower(rec.Body.String()), forbidden) {
 			t.Fatalf("unavailable response leaked %q: %s", forbidden, rec.Body.String())
 		}

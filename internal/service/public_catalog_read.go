@@ -76,6 +76,7 @@ type PublicModelDetailRead struct {
 type PublicCatalogProjection struct {
 	Content               PublicContentDraft
 	HomeConfig            PublicHomeConfig
+	HomeConfigAvailable   bool
 	ContentReleaseVersion int64
 	PriceReleaseVersion   int64
 	PriceVisibility       models.PublicPriceVisibility
@@ -146,11 +147,11 @@ func (s *PublicCatalogReadService) Projection(ctx context.Context) (*PublicCatal
 			return errUnavailable("committed publication generation pending")
 		}
 		sum := sha256.Sum256([]byte(content.ContentHash + ":" + price.ContentHash + ":" + state.PriceVisibility.String()))
-		homeConfig, e := projectPublicHomeConfig(content.Payload, content.Version, price.Version, time.Now().UTC())
+		homeConfig, homeConfigAvailable, e := projectPublicCatalogHomeConfig(content.Payload, content.Version, price.Version, time.Now().UTC())
 		if e != nil {
 			return errUnavailable("committed content integrity unavailable")
 		}
-		out = &PublicCatalogProjection{Content: projectContentPayload(content.Payload, content.SourceRevision), HomeConfig: homeConfig, ContentReleaseVersion: content.Version, PriceReleaseVersion: price.Version, PriceVisibility: state.PriceVisibility, ETag: `"` + hex.EncodeToString(sum[:]) + `"`, Items: items, GoneKeys: gone}
+		out = &PublicCatalogProjection{Content: projectContentPayload(content.Payload, content.SourceRevision), HomeConfig: homeConfig, HomeConfigAvailable: homeConfigAvailable, ContentReleaseVersion: content.Version, PriceReleaseVersion: price.Version, PriceVisibility: state.PriceVisibility, ETag: `"` + hex.EncodeToString(sum[:]) + `"`, Items: items, GoneKeys: gone}
 		return nil
 	})
 	return out, err

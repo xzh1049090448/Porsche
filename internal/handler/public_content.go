@@ -109,6 +109,10 @@ func registerPublicContentWithReader(r *gin.Engine, reader publicProjectionReade
 		if p == nil {
 			return
 		}
+		if !p.HomeConfigAvailable {
+			publicReadError(c, &service.HTTPError{Status: http.StatusServiceUnavailable, Message: "public home configuration unavailable"})
+			return
+		}
 		c.Header("X-Public-Release-Version", strconv.FormatInt(p.ContentReleaseVersion, 10))
 		publicWriteJSON(c, p, c.FullPath(), p.HomeConfig)
 	})

@@ -127,7 +127,7 @@ func TestPreparePublicContentBindsStructuredHomeToPriceSnapshot(t *testing.T) {
 	}
 }
 
-func TestProjectPublicHomeConfigFiltersFutureAnnouncementsAndRejectsLegacyCurrentProjection(t *testing.T) {
+func TestProjectPublicCatalogHomeConfigFiltersFutureAnnouncementsAndMarksLegacyUnavailable(t *testing.T) {
 	now := time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC)
 	past := now.Add(-time.Second).Format(time.RFC3339)
 	future := now.Add(time.Second).Format(time.RFC3339)
@@ -145,16 +145,29 @@ func TestProjectPublicHomeConfigFiltersFutureAnnouncementsAndRejectsLegacyCurren
 	if len(issues) != 0 {
 		t.Fatalf("issues=%+v", issues)
 	}
-	got, err := projectPublicHomeConfig(prepared.Payload, 7, 9, now)
+	got, available, err := projectPublicCatalogHomeConfig(prepared.Payload, 7, 9, now)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got.Announcements) != 2 || got.Announcements[0].GUID != "10" || got.Announcements[1].GUID != "11" || len(got.FAQs) != 1 || got.ContentReleaseVersion != 7 || got.PriceReleaseVersion != 9 {
+	if !available || len(got.Announcements) != 2 || got.Announcements[0].GUID != "10" || got.Announcements[1].GUID != "11" || len(got.FAQs) != 1 || got.ContentReleaseVersion != 7 || got.PriceReleaseVersion != 9 {
 		t.Fatalf("projection=%#v", got)
 	}
 
-	if legacy, legacyErr := projectPublicHomeConfig(models.JSONMap{"model_keys": []string{}}, 3, 4, now); status(legacyErr) != 503 {
-		t.Fatalf("legacy current projection=%#v status=%d err=%v", legacy, status(legacyErr), legacyErr)
+	legacy, legacyAvailable, legacyErr := projectPublicCatalogHomeConfig(models.JSONMap{"model_keys": []string{}}, 3, 4, now)
+	if legacyErr != nil || legacyAvailable {
+		t.Fatalf("legacy current projection=%#v available=%v err=%v", legacy, legacyAvailable, legacyErr)
+	}
+	if legacy.Announcements == nil || legacy.FAQs == nil || legacy.FeaturedModelKeys == nil || len(legacy.Announcements)+len(legacy.FAQs)+len(legacy.FeaturedModelKeys) != 0 {
+		t.Fatalf("legacy projection must preserve non-nil empty arrays: %#v", legacy)
+	}
+
+	emptyPrepared, emptyIssues := preparePublicContent(draft, PublicHomeDraft{Revision: draft.Revision}, models.PublicPriceSnapshot{ID: 8, Guid: 80, Version: 9}, nil)
+	if len(emptyIssues) != 0 {
+		t.Fatalf("empty structured issues=%+v", emptyIssues)
+	}
+	empty, emptyAvailable, emptyErr := projectPublicCatalogHomeConfig(emptyPrepared.Payload, 8, 9, now)
+	if emptyErr != nil || !emptyAvailable || empty.Announcements == nil || empty.FAQs == nil || empty.FeaturedModelKeys == nil {
+		t.Fatalf("empty structured projection=%#v available=%v err=%v", empty, emptyAvailable, emptyErr)
 	}
 }
 
