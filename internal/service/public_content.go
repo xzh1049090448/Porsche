@@ -820,6 +820,13 @@ func decodePublishedContentPayloadV2(payload models.JSONMap) (*publishedContentP
 }
 
 func projectPublicHomeConfig(payload models.JSONMap, contentVersion, priceVersion int64, now time.Time) (PublicHomeConfig, error) {
+	structured, err := publicContentPayloadUsesStructuredSchema(payload)
+	if err != nil {
+		return PublicHomeConfig{}, err
+	}
+	if !structured {
+		return PublicHomeConfig{}, errUnavailable("structured home publication unavailable")
+	}
 	return projectPublicHomeConfigAt(payload, contentVersion, priceVersion, now, true)
 }
 

@@ -127,7 +127,7 @@ func TestPreparePublicContentBindsStructuredHomeToPriceSnapshot(t *testing.T) {
 	}
 }
 
-func TestProjectPublicHomeConfigFiltersFutureAnnouncementsAndKeepsLegacyArrays(t *testing.T) {
+func TestProjectPublicHomeConfigFiltersFutureAnnouncementsAndRejectsLegacyCurrentProjection(t *testing.T) {
 	now := time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC)
 	past := now.Add(-time.Second).Format(time.RFC3339)
 	future := now.Add(time.Second).Format(time.RFC3339)
@@ -153,12 +153,8 @@ func TestProjectPublicHomeConfigFiltersFutureAnnouncementsAndKeepsLegacyArrays(t
 		t.Fatalf("projection=%#v", got)
 	}
 
-	legacy, err := projectPublicHomeConfig(models.JSONMap{"model_keys": []string{}}, 3, 4, now)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if legacy.Announcements == nil || legacy.FAQs == nil || legacy.FeaturedModelKeys == nil || len(legacy.Announcements)+len(legacy.FAQs)+len(legacy.FeaturedModelKeys) != 0 {
-		t.Fatalf("legacy projection must use empty non-nil arrays: %#v", legacy)
+	if legacy, legacyErr := projectPublicHomeConfig(models.JSONMap{"model_keys": []string{}}, 3, 4, now); status(legacyErr) != 503 {
+		t.Fatalf("legacy current projection=%#v status=%d err=%v", legacy, status(legacyErr), legacyErr)
 	}
 }
 

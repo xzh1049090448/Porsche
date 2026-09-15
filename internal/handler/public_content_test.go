@@ -101,6 +101,24 @@ func TestPublicHomeConfigReturnsPublishedProjectionOnly(t *testing.T) {
 	}
 }
 
+func TestPublicHomeConfigReturnsUnavailableWhenCurrentReleaseIsLegacy(t *testing.T) {
+	r := gin.New()
+	registerPublicContentWithReader(r, publicReadStub{err: &service.HTTPError{Status: http.StatusServiceUnavailable, Message: "committed content integrity unavailable"}}, func(*gin.Context) bool { return false })
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/public/home-config", nil))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if rec.Header().Get("Cache-Control") != "no-store" || rec.Header().Get("X-Request-ID") == "" {
+		t.Fatalf("headers=%#v", rec.Header())
+	}
+	for _, forbidden := range []string{"home", "announcement", "faq", "database", "release"} {
+		if strings.Contains(strings.ToLower(rec.Body.String()), forbidden) {
+			t.Fatalf("unavailable response leaked %q: %s", forbidden, rec.Body.String())
+		}
+	}
+}
+
 func TestPublicReadSuccessfulHTTPBoundaryAllRoutes(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
