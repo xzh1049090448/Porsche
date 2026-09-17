@@ -282,6 +282,36 @@ func TestConversationDetailGETAndPUTReturnGroupsAndReloadUpdatedTitle(t *testing
 	}
 }
 
+func TestConversationDetailPUTEmptyTitleReloadsWithoutUpdate(t *testing.T) {
+	fixture := newConversationDetailHandlerFixture(t)
+	recorder := performConversationRequest(
+		fixture.router(),
+		http.MethodPut,
+		"/api/v1/conversations/8001",
+		`{"title":""}`,
+		context.Background(),
+	)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("empty-title PUT status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	response := decodeConversationResponse(t, recorder)
+	assertConversationGroups(t, response, 1)
+	if response["title"] != "original title" {
+		t.Fatalf("empty-title PUT title=%#v, want unchanged original title", response["title"])
+	}
+	if fixture.updateCalls != 0 {
+		t.Fatalf("empty-title PUT update calls=%d, want 0", fixture.updateCalls)
+	}
+	if fixture.conversationReads != 1 || fixture.receiptReads != 1 || fixture.resultReads != 1 {
+		t.Fatalf(
+			"empty-title PUT detail reads conversation/receipt/result=%d/%d/%d, want 1/1/1",
+			fixture.conversationReads,
+			fixture.receiptReads,
+			fixture.resultReads,
+		)
+	}
+}
+
 func TestConversationDetailRoutesPreserveErrorAndAuthenticationStatus(t *testing.T) {
 	for _, test := range []struct {
 		name       string
