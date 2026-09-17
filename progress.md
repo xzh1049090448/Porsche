@@ -5,6 +5,7 @@
 - 后端代码候选为 `1f22cb878ed43ff97b61042919b71f2a096b0646`。会话详情 `GET /api/v1/conversations/:guid` 及更新后的详情重载现在返回 compare-only `generation_groups`，按 `model_index` 稳定投影每个成功或失败结果，同时保留原始 `messages`；会话列表、创建和导出继续保持旧响应形状。
 - 版本化合同 `docs/agents/contracts/platform-compare-history-grouping-v1.json` 的 SHA-256 为 `43d394e794dfd829fc2884c0982ff0aa68aa22f82c357f708ae7dca7ec19420f`，与前端工作树中的合同副本字节一致。
 - 沙箱外使用 `GOCACHE=/private/tmp/porsche-go-build-cache` 执行 `go test ./... -count=1`、`go vet ./...`、`go build ./...`，三项均 `exit 0`。focused service 测试中的分组投影、错误边界和批量结果加载均通过。
+- 补充执行 `GOCACHE=/private/tmp/porsche-go-build-cache go test -race ./internal/service ./internal/dto ./internal/handler -count=1`，整体 `exit 0`，其中 service `43.886s`、dto `2.150s`、handler `5.406s`。对计划列出的 8 个 Go 文件运行 `gofmt -d` 输出为空，`format_gate=clean`；`git diff --check` 为 clean。
 - 四个真实数据层 detail 用例 `TestGetConversationDetailRejectsForeignConversationAsNotFound`、`TestGetConversationDetailLoadsOwnedCompareGroupAndKeepsRawMessages`、`TestGetConversationDetailSkipsResultQueryWhenNoCompareReceipts`、`TestGetConversationDetailSanitizesDatabaseQueryErrors` 需要显式 `TEST_DATABASE_URL`，本轮以 `BLOCKED_FIXTURE` 跳过；因此这些结果不构成真实 MySQL 验收。
 - `go-018` 保持 `in_progress`；本轮后端修复证据限定为 `PASS_LIMITED_SCOPE`。本轮未执行生产部署、生产迁移、公开 HTTPS、真实 MySQL、真实账号或真实上游验收，也未据此扩大既有发布结论。
 
