@@ -30,6 +30,14 @@ func CreateConversation(db *gorm.DB, user *models.User, title, model string) (*m
 }
 
 func GetConversation(db *gorm.DB, user *models.User, id int64, withMessages bool) (*models.Conversation, error) {
+	conv, err := loadConversation(db, user, id, withMessages)
+	if err != nil {
+		return nil, errNotFound("对话不存在")
+	}
+	return conv, nil
+}
+
+func loadConversation(db *gorm.DB, user *models.User, id int64, withMessages bool) (*models.Conversation, error) {
 	q := db.Where("guid = ? AND user_id = ? AND is_deleted = 0", id, user.ID)
 	if withMessages {
 		q = q.Preload("Messages", func(tx *gorm.DB) *gorm.DB {
@@ -38,7 +46,7 @@ func GetConversation(db *gorm.DB, user *models.User, id int64, withMessages bool
 	}
 	var conv models.Conversation
 	if err := q.First(&conv).Error; err != nil {
-		return nil, errNotFound("对话不存在")
+		return nil, err
 	}
 	return &conv, nil
 }

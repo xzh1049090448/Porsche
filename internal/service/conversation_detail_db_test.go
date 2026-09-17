@@ -6,10 +6,12 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/porsche/ai-gateway-go/internal/models"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
+	gormlogger "gorm.io/gorm/logger"
 )
 
 func TestGetConversationDetailRejectsUnavailableDependencies(t *testing.T) {
@@ -36,18 +38,7 @@ func TestGetConversationDetailRejectsUnavailableDependencies(t *testing.T) {
 }
 
 func TestGetConversationDetailPreservesOwnerBoundNotFound(t *testing.T) {
-	db, err := gorm.Open(mysql.New(mysql.Config{
-		DSN:                       "test:test@tcp(127.0.0.1:1)/conversation_detail_test",
-		SkipInitializeWithVersion: true,
-	}), &gorm.Config{DisableAutomaticPing: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	sqlDB, err := db.DB()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = sqlDB.Close() })
+	db := openConversationDetailSyntheticDB(t, false)
 	const callbackName = "conversation_detail_test:owner_not_found"
 	if err := db.Callback().Query().Before("gorm:query").Register(callbackName, func(tx *gorm.DB) {
 		if tx.Statement.Table == "conversations" {
@@ -61,6 +52,62 @@ func TestGetConversationDetailPreservesOwnerBoundNotFound(t *testing.T) {
 	status, message := StatusFromError(err)
 	if detail != nil || status != 404 || message != "对话不存在" {
 		t.Fatalf("detail=%#v status=%d message=%q, want owner-bound 404", detail, status, message)
+	}
+}
+
+func TestGetConversationDetailSanitizesConversationQueryErrors(t *testing.T) {
+	db := openConversationDetailSyntheticDB(t, false)
+	const callbackName = "conversation_detail_test:conversation_query_error"
+	const secret = "conversation-query-sql-secret"
+	if err := db.Callback().Query().Before("gorm:query").Register(callbackName, func(tx *gorm.DB) {
+		if tx.Statement.Table == "conversations" {
+			tx.AddError(errors.New(secret))
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	detail, err := GetConversationDetail(context.Background(), db, &models.User{ID: 1}, 42)
+	status, message := StatusFromError(err)
+	if detail != nil || status != 503 || message != "会话详情不可用" || strings.Contains(message, secret) {
+		t.Fatalf("detail=%#v status=%d message=%q", detail, status, message)
+	}
+}
+
+func TestGetConversationDetailPreservesConversationQueryCancellation(t *testing.T) {
+	tests := []struct {
+		name string
+		ctx  func() (context.Context, context.CancelFunc)
+		want error
+	}{
+		{
+			name: "canceled",
+			ctx: func() (context.Context, context.CancelFunc) {
+				ctx, cancel := context.WithCancel(context.Background())
+				cancel()
+				return ctx, func() {}
+			},
+			want: context.Canceled,
+		},
+		{
+			name: "deadline exceeded",
+			ctx: func() (context.Context, context.CancelFunc) {
+				return context.WithDeadline(context.Background(), time.Unix(1, 0))
+			},
+			want: context.DeadlineExceeded,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			db := openConversationDetailSyntheticDB(t, false)
+			ctx, cancel := test.ctx()
+			defer cancel()
+
+			detail, err := GetConversationDetail(ctx, db, &models.User{ID: 1}, 42)
+			if detail != nil || !errors.Is(err, test.want) {
+				t.Fatalf("detail=%#v error=%v, want %v", detail, err, test.want)
+			}
+		})
 	}
 }
 
@@ -163,6 +210,69 @@ func TestGetConversationDetailSanitizesDatabaseQueryErrors(t *testing.T) {
 	}
 }
 
+func TestLoadConversationGenerationResultsBatchesReceiptIDs(t *testing.T) {
+	db := openConversationDetailSyntheticDB(t, true)
+	batchSizes := make([]int, 0, 2)
+	const callbackName = "conversation_detail_test:record_result_batches"
+	if err := db.Callback().Query().After("gorm:query").Register(callbackName, func(tx *gorm.DB) {
+		if tx.Statement.Table == (models.PlatformChatGenerationResult{}).TableName() {
+			batchSizes = append(batchSizes, len(tx.Statement.Vars))
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	receipts := make([]models.PlatformChatGenerationReceipt, 501)
+	for index := range receipts {
+		receipts[index].ID = int64(index + 1)
+	}
+
+	results, err := loadConversationGenerationResults(db, receipts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 0 || !reflect.DeepEqual(batchSizes, []int{500, 1}) {
+		t.Fatalf("results=%d batch sizes=%v, want 0 and [500 1]", len(results), batchSizes)
+	}
+	for _, size := range batchSizes {
+		if size > 500 {
+			t.Fatalf("batch size=%d exceeds 500", size)
+		}
+	}
+}
+
+func TestLoadConversationGenerationResultsFailsClosedOnLaterBatchError(t *testing.T) {
+	db := openConversationDetailSyntheticDB(t, true)
+	const callbackName = "conversation_detail_test:fail_second_result_batch"
+	const secret = "second-result-batch-secret"
+	calls := 0
+	if err := db.Callback().Query().After("gorm:query").Register(callbackName, func(tx *gorm.DB) {
+		if tx.Statement.Table != (models.PlatformChatGenerationResult{}).TableName() {
+			return
+		}
+		calls++
+		if calls == 1 {
+			rows, ok := tx.Statement.Dest.(*[]models.PlatformChatGenerationResult)
+			if !ok {
+				t.Fatalf("result destination type=%T", tx.Statement.Dest)
+			}
+			*rows = append(*rows, models.PlatformChatGenerationResult{ID: 1, ReceiptID: 1})
+			return
+		}
+		tx.AddError(errors.New(secret))
+	}); err != nil {
+		t.Fatal(err)
+	}
+	receipts := make([]models.PlatformChatGenerationReceipt, 501)
+	for index := range receipts {
+		receipts[index].ID = int64(index + 1)
+	}
+
+	results, err := loadConversationGenerationResults(db, receipts)
+	if results != nil || err == nil || !strings.Contains(err.Error(), secret) || calls != 2 {
+		t.Fatalf("results=%#v error=%v calls=%d, want nil/raw second-batch error/2", results, err, calls)
+	}
+}
+
 func seedConversationDetailReceipt(
 	t *testing.T,
 	db *gorm.DB,
@@ -218,4 +328,21 @@ func seedConversationDetailReceipt(
 		}
 	}
 	return receipt
+}
+
+func openConversationDetailSyntheticDB(t *testing.T, dryRun bool) *gorm.DB {
+	t.Helper()
+	db, err := gorm.Open(mysql.New(mysql.Config{
+		DSN:                       "test:test@tcp(127.0.0.1:1)/conversation_detail_test",
+		SkipInitializeWithVersion: true,
+	}), &gorm.Config{DisableAutomaticPing: true, DryRun: dryRun, Logger: gormlogger.Default.LogMode(gormlogger.Silent)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	return db
 }

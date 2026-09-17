@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"strconv"
 
@@ -30,6 +31,8 @@ type ConversationDetail struct {
 	OmittedGenerationGroupCount int
 }
 
+const conversationDetailReceiptBatchSize = 500
+
 // GetConversationDetail loads one owner-bound conversation and the committed
 // compare-generation rows needed to project its public grouping metadata.
 func GetConversationDetail(ctx context.Context, db *gorm.DB, user *models.User, guid int64) (*ConversationDetail, error) {
@@ -38,9 +41,12 @@ func GetConversationDetail(ctx context.Context, db *gorm.DB, user *models.User, 
 	}
 
 	query := db.WithContext(ctx)
-	conversation, err := GetConversation(query, user, guid, true)
+	conversation, err := loadConversation(query, user, guid, true)
 	if err != nil {
-		return nil, err
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, errNotFound("对话不存在")
+		}
+		return nil, conversationDetailStorageError(err)
 	}
 
 	var receipts []models.PlatformChatGenerationReceipt
@@ -48,7 +54,7 @@ func GetConversationDetail(ctx context.Context, db *gorm.DB, user *models.User, 
 		Where("user_id = ? AND conversation_id = ? AND mode = ? AND is_deleted = 0", user.ID, conversation.ID, models.PlatformGenerationReceiptModeCompare).
 		Order("committed_at asc, id asc").
 		Find(&receipts).Error; err != nil {
-		return nil, errUnavailable("会话详情不可用")
+		return nil, conversationDetailStorageError(err)
 	}
 	if len(receipts) == 0 {
 		return &ConversationDetail{
@@ -57,16 +63,9 @@ func GetConversationDetail(ctx context.Context, db *gorm.DB, user *models.User, 
 		}, nil
 	}
 
-	receiptIDs := make([]int64, 0, len(receipts))
-	for _, receipt := range receipts {
-		receiptIDs = append(receiptIDs, receipt.ID)
-	}
-	var results []models.PlatformChatGenerationResult
-	if err := query.
-		Where("receipt_id IN ? AND is_deleted = 0", receiptIDs).
-		Order("receipt_id asc, model_index asc").
-		Find(&results).Error; err != nil {
-		return nil, errUnavailable("会话详情不可用")
+	results, err := loadConversationGenerationResults(query, receipts)
+	if err != nil {
+		return nil, conversationDetailStorageError(err)
 	}
 
 	groups, omitted := buildConversationGenerationGroups(user.ID, conversation, receipts, results)
@@ -75,6 +74,36 @@ func GetConversationDetail(ctx context.Context, db *gorm.DB, user *models.User, 
 		GenerationGroups:            groups,
 		OmittedGenerationGroupCount: omitted,
 	}, nil
+}
+
+func loadConversationGenerationResults(db *gorm.DB, receipts []models.PlatformChatGenerationReceipt) ([]models.PlatformChatGenerationResult, error) {
+	results := make([]models.PlatformChatGenerationResult, 0)
+	for start := 0; start < len(receipts); start += conversationDetailReceiptBatchSize {
+		end := start + conversationDetailReceiptBatchSize
+		if end > len(receipts) {
+			end = len(receipts)
+		}
+		receiptIDs := make([]int64, 0, end-start)
+		for _, receipt := range receipts[start:end] {
+			receiptIDs = append(receiptIDs, receipt.ID)
+		}
+		var batch []models.PlatformChatGenerationResult
+		if err := db.
+			Where("receipt_id IN ? AND is_deleted = 0", receiptIDs).
+			Order("receipt_id asc, model_index asc").
+			Find(&batch).Error; err != nil {
+			return nil, err
+		}
+		results = append(results, batch...)
+	}
+	return results, nil
+}
+
+func conversationDetailStorageError(err error) error {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	return errUnavailable("会话详情不可用")
 }
 
 // buildConversationGenerationGroups creates the public compare-history
