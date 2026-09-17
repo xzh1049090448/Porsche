@@ -33,7 +33,7 @@ func GetConversation(db *gorm.DB, user *models.User, id int64, withMessages bool
 	q := db.Where("guid = ? AND user_id = ? AND is_deleted = 0", id, user.ID)
 	if withMessages {
 		q = q.Preload("Messages", func(tx *gorm.DB) *gorm.DB {
-			return tx.Where("is_deleted = 0").Order("created_at asc")
+			return tx.Where("is_deleted = 0").Order("created_at asc, id asc")
 		})
 	}
 	var conv models.Conversation

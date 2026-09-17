@@ -1,10 +1,12 @@
 package service
 
 import (
+	"context"
 	"sort"
 	"strconv"
 
 	"github.com/porsche/ai-gateway-go/internal/models"
+	"gorm.io/gorm"
 )
 
 type ConversationGenerationResult struct {
@@ -26,6 +28,53 @@ type ConversationDetail struct {
 	Conversation                *models.Conversation
 	GenerationGroups            []ConversationGenerationGroup
 	OmittedGenerationGroupCount int
+}
+
+// GetConversationDetail loads one owner-bound conversation and the committed
+// compare-generation rows needed to project its public grouping metadata.
+func GetConversationDetail(ctx context.Context, db *gorm.DB, user *models.User, guid int64) (*ConversationDetail, error) {
+	if ctx == nil || db == nil || user == nil || user.ID <= 0 {
+		return nil, errUnavailable("会话详情不可用")
+	}
+
+	query := db.WithContext(ctx)
+	conversation, err := GetConversation(query, user, guid, true)
+	if err != nil {
+		return nil, err
+	}
+
+	var receipts []models.PlatformChatGenerationReceipt
+	if err := query.
+		Where("user_id = ? AND conversation_id = ? AND mode = ? AND is_deleted = 0", user.ID, conversation.ID, models.PlatformGenerationReceiptModeCompare).
+		Order("committed_at asc, id asc").
+		Find(&receipts).Error; err != nil {
+		return nil, errUnavailable("会话详情不可用")
+	}
+	if len(receipts) == 0 {
+		return &ConversationDetail{
+			Conversation:     conversation,
+			GenerationGroups: make([]ConversationGenerationGroup, 0),
+		}, nil
+	}
+
+	receiptIDs := make([]int64, 0, len(receipts))
+	for _, receipt := range receipts {
+		receiptIDs = append(receiptIDs, receipt.ID)
+	}
+	var results []models.PlatformChatGenerationResult
+	if err := query.
+		Where("receipt_id IN ? AND is_deleted = 0", receiptIDs).
+		Order("receipt_id asc, model_index asc").
+		Find(&results).Error; err != nil {
+		return nil, errUnavailable("会话详情不可用")
+	}
+
+	groups, omitted := buildConversationGenerationGroups(user.ID, conversation, receipts, results)
+	return &ConversationDetail{
+		Conversation:                conversation,
+		GenerationGroups:            groups,
+		OmittedGenerationGroupCount: omitted,
+	}, nil
 }
 
 // buildConversationGenerationGroups creates the public compare-history
