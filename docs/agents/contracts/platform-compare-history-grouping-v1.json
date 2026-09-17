@@ -19,11 +19,15 @@
     "result_count": { "minimum": 2, "maximum": 3 },
     "models_unique": true,
     "completed": {
+      "model": "nonempty_string",
+      "status": "completed",
       "assistant_message_guid": "positive_decimal_string_int64",
       "tokens": "nonnegative_integer",
       "error_code": null
     },
     "failed": {
+      "model": "nonempty_string",
+      "status": "failed",
       "assistant_message_guid": null,
       "tokens": 0,
       "error_code": "stable_lower_snake_case"
