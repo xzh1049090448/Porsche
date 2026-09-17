@@ -1,5 +1,13 @@
 # Porsche 开发进度
 
+## 2026-09-17：Compare History Grouping 后端 Task 5 tracker 收尾（PASS_LIMITED_SCOPE）
+
+- 后端代码候选为 `1f22cb878ed43ff97b61042919b71f2a096b0646`。会话详情 `GET /api/v1/conversations/:guid` 及更新后的详情重载现在返回 compare-only `generation_groups`，按 `model_index` 稳定投影每个成功或失败结果，同时保留原始 `messages`；会话列表、创建和导出继续保持旧响应形状。
+- 版本化合同 `docs/agents/contracts/platform-compare-history-grouping-v1.json` 的 SHA-256 为 `43d394e794dfd829fc2884c0982ff0aa68aa22f82c357f708ae7dca7ec19420f`，与前端工作树中的合同副本字节一致。
+- 沙箱外使用 `GOCACHE=/private/tmp/porsche-go-build-cache` 执行 `go test ./... -count=1`、`go vet ./...`、`go build ./...`，三项均 `exit 0`。focused service 测试中的分组投影、错误边界和批量结果加载均通过。
+- 四个真实数据层 detail 用例 `TestGetConversationDetailRejectsForeignConversationAsNotFound`、`TestGetConversationDetailLoadsOwnedCompareGroupAndKeepsRawMessages`、`TestGetConversationDetailSkipsResultQueryWhenNoCompareReceipts`、`TestGetConversationDetailSanitizesDatabaseQueryErrors` 需要显式 `TEST_DATABASE_URL`，本轮以 `BLOCKED_FIXTURE` 跳过；因此这些结果不构成真实 MySQL 验收。
+- `go-018` 保持 `in_progress`；本轮后端修复证据限定为 `PASS_LIMITED_SCOPE`。本轮未执行生产部署、生产迁移、公开 HTTPS、真实 MySQL、真实账号或真实上游验收，也未据此扩大既有发布结论。
+
 ## 2026-09-16：Fixed Home Structured Content Task13 后端真实数据层验证（PASS_LIMITED_SCOPE）
 
 - 代码候选为后端 `77c4e003310f3194f3e7a90cdadb7d650cbd3ba1`（含 `f6ed4e1` target locks、`8303a28` renderer 与稳定 modelKey 合同）、配对前端 `ab18718f89b55ea7106d0ac52ff9972576e4e9e4`；跨仓库总合同 `interface-contract.json` 为 `v1.0.0-p0 / agreed_for_implementation`、SHA-256 `9bc9c70e70bb45b63185b3b619ae49e5e6a251ba3c4a30f64539774cb272a3ce`，后端公共内容子合同为 `v2 / implemented_locally_pending_acceptance`、SHA-256 `4db4380dcef26f0098443f591d9fe098f9faefd32a367f02ce2a14ba62d8309d`。
