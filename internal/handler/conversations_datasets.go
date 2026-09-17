@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"log"
 	"net/http"
 	"strconv"
 
@@ -9,13 +10,15 @@ import (
 	"github.com/porsche/ai-gateway-go/internal/dto"
 	"github.com/porsche/ai-gateway-go/internal/httpx"
 	"github.com/porsche/ai-gateway-go/internal/middleware"
-	"github.com/porsche/ai-gateway-go/internal/models"
 	"github.com/porsche/ai-gateway-go/internal/service"
 )
 
 func RegisterConversations(r *gin.Engine, state *app.State) {
 	g := r.Group("/api/v1/conversations", middleware.RequireUser(state))
+	registerConversationRoutes(g, state)
+}
 
+func registerConversationRoutes(g *gin.RouterGroup, state *app.State) {
 	g.GET("", func(c *gin.Context) {
 		user := middleware.CurrentUser(c)
 		skip := parseUintQuery(c, "skip", 0)
@@ -60,13 +63,13 @@ func RegisterConversations(r *gin.Engine, state *app.State) {
 	g.GET("/:guid", func(c *gin.Context) {
 		user := middleware.CurrentUser(c)
 		id, _ := strconv.ParseUint(c.Param("guid"), 10, 64)
-		conv, err := service.GetConversation(state.DB, user, int64(id), true)
+		detail, err := service.GetConversationDetail(c.Request.Context(), state.DB, user, int64(id))
 		if err != nil {
 			code, msg := service.StatusFromError(err)
 			httpx.AbortJSON(c, code, msg)
 			return
 		}
-		c.JSON(http.StatusOK, dto.Conversation(conv, true))
+		writeConversationDetail(c, detail)
 	})
 
 	g.PUT("/:guid", func(c *gin.Context) {
@@ -76,19 +79,20 @@ func RegisterConversations(r *gin.Engine, state *app.State) {
 			Title *string `json:"title"`
 		}
 		_ = c.ShouldBindJSON(&body)
-		var conv *models.Conversation
-		var err error
 		if body.Title != nil && *body.Title != "" {
-			conv, err = service.UpdateConversationTitle(state.DB, user, int64(id), *body.Title)
-		} else {
-			conv, err = service.GetConversation(state.DB, user, int64(id), true)
+			if _, err := service.UpdateConversationTitle(state.DB, user, int64(id), *body.Title); err != nil {
+				code, msg := service.StatusFromError(err)
+				httpx.AbortJSON(c, code, msg)
+				return
+			}
 		}
+		detail, err := service.GetConversationDetail(c.Request.Context(), state.DB, user, int64(id))
 		if err != nil {
 			code, msg := service.StatusFromError(err)
 			httpx.AbortJSON(c, code, msg)
 			return
 		}
-		c.JSON(http.StatusOK, dto.Conversation(conv, true))
+		writeConversationDetail(c, detail)
 	})
 
 	g.DELETE("/:guid", func(c *gin.Context) {
@@ -113,4 +117,16 @@ func RegisterConversations(r *gin.Engine, state *app.State) {
 		}
 		c.Data(http.StatusOK, "text/plain; charset=utf-8", []byte(service.ExportMarkdown(conv)))
 	})
+}
+
+func writeConversationDetail(c *gin.Context, detail *service.ConversationDetail) {
+	if detail.OmittedGenerationGroupCount > 0 {
+		log.Printf(
+			"conversation_detail_omitted_generation_groups request_id=%q conversation_guid=%q omitted_count=%d",
+			c.Writer.Header().Get("X-Request-ID"),
+			strconv.FormatInt(detail.Conversation.Guid, 10),
+			detail.OmittedGenerationGroupCount,
+		)
+	}
+	c.JSON(http.StatusOK, dto.ConversationDetail(detail))
 }

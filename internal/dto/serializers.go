@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/porsche/ai-gateway-go/internal/models"
+	"github.com/porsche/ai-gateway-go/internal/service"
 )
 
 func FormatTime(t time.Time) string {
@@ -92,6 +93,31 @@ func Conversation(conv *models.Conversation, includeMessages bool) map[string]in
 		}
 		out["messages"] = msgs
 	}
+	return out
+}
+
+func ConversationDetail(detail *service.ConversationDetail) map[string]interface{} {
+	out := Conversation(detail.Conversation, true)
+	groups := make([]map[string]interface{}, 0, len(detail.GenerationGroups))
+	for _, group := range detail.GenerationGroups {
+		results := make([]map[string]interface{}, 0, len(group.Results))
+		for _, result := range group.Results {
+			results = append(results, map[string]interface{}{
+				"model":                  result.Model,
+				"status":                 result.Status,
+				"assistant_message_guid": result.AssistantMessageGUID,
+				"tokens":                 result.Tokens,
+				"error_code":             result.ErrorCode,
+			})
+		}
+		groups = append(groups, map[string]interface{}{
+			"generation_id":     group.GenerationID,
+			"mode":              group.Mode,
+			"user_message_guid": group.UserMessageGUID,
+			"results":           results,
+		})
+	}
+	out["generation_groups"] = groups
 	return out
 }
 
