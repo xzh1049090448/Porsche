@@ -74,6 +74,25 @@ func TestGetConversationDetailSanitizesConversationQueryErrors(t *testing.T) {
 	}
 }
 
+func TestGetConversationPreservesLegacyNotFoundForDatabaseErrors(t *testing.T) {
+	db := openConversationDetailSyntheticDB(t, false)
+	const callbackName = "conversation_detail_test:legacy_get_conversation_error"
+	const secret = "legacy-get-conversation-sql-secret"
+	if err := db.Callback().Query().Before("gorm:query").Register(callbackName, func(tx *gorm.DB) {
+		if tx.Statement.Table == "conversations" {
+			tx.AddError(errors.New(secret))
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	conversation, err := GetConversation(db, &models.User{ID: 1}, 42, true)
+	status, message := StatusFromError(err)
+	if conversation != nil || status != 404 || message != "对话不存在" || strings.Contains(message, secret) {
+		t.Fatalf("conversation=%#v status=%d message=%q, want legacy owner-bound 404", conversation, status, message)
+	}
+}
+
 func TestGetConversationDetailPreservesConversationQueryCancellation(t *testing.T) {
 	tests := []struct {
 		name string
@@ -207,6 +226,57 @@ func TestGetConversationDetailSanitizesDatabaseQueryErrors(t *testing.T) {
 	status, message := StatusFromError(err)
 	if detail != nil || status != 503 || message != "会话详情不可用" || strings.Contains(message, secret) {
 		t.Fatalf("detail=%#v status=%d message=%q", detail, status, message)
+	}
+}
+
+func TestGetConversationDetailFailsClosedAndSanitizesResultQueryErrors(t *testing.T) {
+	db := openConversationDetailSyntheticDB(t, true)
+	const callbackName = "conversation_detail_test:result_query_error_boundary"
+	const secret = "result-query-sql-secret"
+	user := models.User{ID: 7}
+	conversation := models.Conversation{
+		ID: 11, AuditFields: models.AuditFields{Guid: 42}, UserID: user.ID, Title: "synthetic detail",
+		Messages: []models.Message{{ID: 21, ConversationID: 11, Role: models.MessageRoleUser, Content: "must not leak as partial detail"}},
+	}
+	receipt := models.PlatformChatGenerationReceipt{
+		ID: 31, AuditFields: models.AuditFields{Guid: 301}, UserID: user.ID,
+		GenerationID: "01234567-89ab-4cde-8f01-23456789abcd", Mode: models.PlatformGenerationReceiptModeCompare,
+		ConversationID: conversation.ID, UserMessageID: 21, SuccessfulModelCount: 1, DailyCallsCharged: 1, CommittedAt: 100,
+	}
+	receiptQuerySucceeded := false
+	resultQueryAttempted := false
+	if err := db.Callback().Query().After("gorm:query").Register(callbackName, func(tx *gorm.DB) {
+		switch tx.Statement.Table {
+		case "conversations":
+			loaded, ok := tx.Statement.Dest.(*models.Conversation)
+			if !ok {
+				t.Fatalf("conversation destination type=%T", tx.Statement.Dest)
+			}
+			*loaded = conversation
+			tx.RowsAffected = 1
+		case (models.PlatformChatGenerationReceipt{}).TableName():
+			loaded, ok := tx.Statement.Dest.(*[]models.PlatformChatGenerationReceipt)
+			if !ok {
+				t.Fatalf("receipt destination type=%T", tx.Statement.Dest)
+			}
+			*loaded = []models.PlatformChatGenerationReceipt{receipt}
+			tx.RowsAffected = 1
+			receiptQuerySucceeded = true
+		case (models.PlatformChatGenerationResult{}).TableName():
+			resultQueryAttempted = true
+			tx.AddError(errors.New(secret))
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	detail, err := GetConversationDetail(context.Background(), db, &user, conversation.Guid)
+	status, message := StatusFromError(err)
+	if !receiptQuerySucceeded || !resultQueryAttempted {
+		t.Fatalf("receipt query succeeded=%t result query attempted=%t", receiptQuerySucceeded, resultQueryAttempted)
+	}
+	if detail != nil || status != 503 || message != "会话详情不可用" || strings.Contains(message, secret) {
+		t.Fatalf("detail=%#v status=%d message=%q, want nil sanitized 503 with no partial messages or groups", detail, status, message)
 	}
 }
 
