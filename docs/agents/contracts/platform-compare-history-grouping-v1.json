@@ -1,0 +1,48 @@
+{
+  "version": "platform-compare-history-grouping.v1",
+  "status": "agreed_for_implementation",
+  "endpoints": [
+    "GET /api/v1/conversations/{guid}",
+    "PUT /api/v1/conversations/{guid}"
+  ],
+  "response_extension": {
+    "field": "generation_groups",
+    "detail_responses_only": true,
+    "list_and_create_unchanged": true,
+    "value_when_empty": []
+  },
+  "generation_group": {
+    "mode": "compare",
+    "generation_id": "canonical_lowercase_uuid",
+    "user_message_guid": "positive_decimal_string_int64",
+    "results_order": "model_index_ascending",
+    "result_count": { "minimum": 2, "maximum": 3 },
+    "models_unique": true,
+    "completed": {
+      "assistant_message_guid": "positive_decimal_string_int64",
+      "tokens": "nonnegative_integer",
+      "error_code": null
+    },
+    "failed": {
+      "assistant_message_guid": null,
+      "tokens": 0,
+      "error_code": "stable_lower_snake_case"
+    }
+  },
+  "integrity": {
+    "ownership": "authenticated_user_and_current_conversation",
+    "invalid_group": "omit_group_and_preserve_flat_messages",
+    "database_error": "fail_detail_request",
+    "database_ids_exposed": false
+  },
+  "compatibility": {
+    "old_backend": "frontend_preserves_flat_messages",
+    "old_frontend": "ignores_generation_groups",
+    "legacy_multi_model_marker": "preserved",
+    "database_migration_required": false
+  },
+  "acceptance": {
+    "production": "pending",
+    "required": "create_compare_logout_login_reopen_one_aggregate_reply"
+  }
+}
