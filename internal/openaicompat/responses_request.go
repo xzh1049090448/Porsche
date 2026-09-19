@@ -21,12 +21,13 @@ type responsesRequestDTO struct {
 	Stream            *bool             `json:"stream"`
 	Store             *bool             `json:"store"`
 	PreviousResponse  json.RawMessage   `json:"previous_response_id"`
+	Reasoning         json.RawMessage   `json:"reasoning"`
 }
 
 var responsesRequestFields = map[string]struct{}{
 	"model": {}, "instructions": {}, "input": {}, "tools": {}, "tool_choice": {},
 	"parallel_tool_calls": {}, "max_output_tokens": {}, "temperature": {}, "top_p": {},
-	"stream": {}, "store": {}, "previous_response_id": {},
+	"stream": {}, "store": {}, "previous_response_id": {}, "reasoning": {},
 }
 
 type responseMessageItemDTO struct {
@@ -72,7 +73,7 @@ var responseTextPartFields = map[string]struct{}{"type": {}, "text": {}}
 var responseToolFields = map[string]struct{}{"type": {}, "name": {}, "description": {}, "parameters": {}, "strict": {}}
 var responseToolChoiceFields = map[string]struct{}{"type": {}, "name": {}}
 
-func DecodeResponses(body []byte) (Conversation, *Error) {
+func DecodeResponses(body []byte, policy ReasoningPolicy) (Conversation, *Error) {
 	if len(body) > MaxRequestBodyBytes {
 		return Conversation{}, RequestTooLarge()
 	}
@@ -85,6 +86,10 @@ func DecodeResponses(body []byte) (Conversation, *Error) {
 	}
 	if request.Store != nil && *request.Store || len(request.PreviousResponse) != 0 && !bytes.Equal(bytes.TrimSpace(request.PreviousResponse), []byte("null")) {
 		return Conversation{}, UnsupportedParameter()
+	}
+	reasoningEffort, reasoningErr := decodeResponseReasoning(request.Reasoning)
+	if reasoningErr != nil {
+		return Conversation{}, reasoningErr
 	}
 	maxOutput, ok := numberInt(request.MaxOutputTokens, 1, math.MaxInt64)
 	if !ok {
@@ -114,7 +119,10 @@ func DecodeResponses(body []byte) (Conversation, *Error) {
 	if request.ParallelToolCalls != nil {
 		parallel = *request.ParallelToolCalls
 	}
-	conversation := Conversation{Model: request.Model, Messages: messages, Tools: tools, ToolChoice: choice, ParallelToolCalls: &parallel, MaxOutputTokens: maxOutput, Temperature: temperature, TopP: topP, Stream: request.Stream != nil && *request.Stream}
+	if reasoningEffort != "" && !policy.Allows(request.Model) {
+		return Conversation{}, UnsupportedParameter()
+	}
+	conversation := Conversation{Model: request.Model, Messages: messages, Tools: tools, ToolChoice: choice, ParallelToolCalls: &parallel, MaxOutputTokens: maxOutput, Temperature: temperature, TopP: topP, Stream: request.Stream != nil && *request.Stream, ReasoningEffort: reasoningEffort}
 	if request.Instructions != nil {
 		if !utf8.ValidString(*request.Instructions) || len(*request.Instructions) > MaxTextContentBytes {
 			return Conversation{}, InvalidRequest()

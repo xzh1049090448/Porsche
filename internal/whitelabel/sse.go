@@ -214,10 +214,11 @@ type ChatCompletionChunkChoice struct {
 }
 
 type ChatCompletionChunkDelta struct {
-	Role      *string                       `json:"role,omitempty"`
-	Content   *string                       `json:"content,omitempty"`
-	Refusal   *string                       `json:"refusal,omitempty"`
-	ToolCalls []ChatCompletionChunkToolCall `json:"tool_calls,omitempty"`
+	Role             *string                       `json:"role,omitempty"`
+	Content          *string                       `json:"content,omitempty"`
+	Refusal          *string                       `json:"refusal,omitempty"`
+	ReasoningContent *string                       `json:"reasoning_content,omitempty"`
+	ToolCalls        []ChatCompletionChunkToolCall `json:"tool_calls,omitempty"`
 }
 
 type ChatCompletionChunkToolCall struct {
@@ -311,10 +312,11 @@ func projectChunkDelta(raw json.RawMessage) (ChatCompletionChunkDelta, error) {
 }
 func projectChunkDeltaDetail(raw json.RawMessage) (ChatCompletionChunkDelta, *diagnostics.ChunkFailure) {
 	var upstream struct {
-		Role      *string         `json:"role"`
-		Content   *string         `json:"content"`
-		Refusal   *string         `json:"refusal"`
-		ToolCalls json.RawMessage `json:"tool_calls"`
+		Role             *string         `json:"role"`
+		Content          *string         `json:"content"`
+		Refusal          *string         `json:"refusal"`
+		ReasoningContent *string         `json:"reasoning_content"`
+		ToolCalls        json.RawMessage `json:"tool_calls"`
 	}
 	if len(raw) == 0 {
 		return ChatCompletionChunkDelta{}, chunkFailure(diagnostics.ChunkMissing, diagnostics.ChunkDelta)
@@ -329,7 +331,7 @@ func projectChunkDeltaDetail(raw json.RawMessage) (ChatCompletionChunkDelta, *di
 	if failure != nil {
 		return ChatCompletionChunkDelta{}, failure
 	}
-	return ChatCompletionChunkDelta{Role: upstream.Role, Content: upstream.Content, Refusal: upstream.Refusal, ToolCalls: tools}, nil
+	return ChatCompletionChunkDelta{Role: upstream.Role, Content: upstream.Content, Refusal: upstream.Refusal, ReasoningContent: upstream.ReasoningContent, ToolCalls: tools}, nil
 }
 func projectChunkToolCalls(raw json.RawMessage) ([]ChatCompletionChunkToolCall, error) {
 	calls, failure := projectChunkToolCallsDetail(raw)

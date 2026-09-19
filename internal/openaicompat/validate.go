@@ -24,6 +24,12 @@ func validateConversation(c Conversation) *Error {
 			return InvalidRequest()
 		}
 	}
+	if c.ReasoningEffort != "" && !validReasoningEffort(c.ReasoningEffort) {
+		return InvalidRequest()
+	}
+	if c.Thinking != nil && *c.Thinking != ThinkingEnabled && *c.Thinking != ThinkingDisabled {
+		return InvalidRequest()
+	}
 	declared := make(map[string]struct{})
 	open := make(map[string]struct{})
 	for _, message := range append(append([]Message(nil), c.Instructions...), c.Messages...) {
@@ -32,11 +38,14 @@ func validateConversation(c Conversation) *Error {
 		}
 		switch message.Role {
 		case RoleSystem, RoleDeveloper, RoleUser:
-			if message.Content == nil || len(message.ToolCalls) != 0 || message.ToolCallID != "" {
+			if message.Content == nil || len(message.ToolCalls) != 0 || message.ToolCallID != "" || message.ReasoningContent != nil {
 				return InvalidRequest()
 			}
 		case RoleAssistant:
 			if message.Content == nil && len(message.ToolCalls) == 0 || len(message.ToolCalls) > MaxParallelCalls || message.ToolCallID != "" {
+				return InvalidRequest()
+			}
+			if message.ReasoningContent != nil && (!utf8.ValidString(*message.ReasoningContent) || len(*message.ReasoningContent) > MaxTextContentBytes) {
 				return InvalidRequest()
 			}
 			for _, call := range message.ToolCalls {
@@ -50,7 +59,7 @@ func validateConversation(c Conversation) *Error {
 				open[call.ID] = struct{}{}
 			}
 		case RoleTool:
-			if len(message.ToolCalls) != 0 || message.Content == nil {
+			if len(message.ToolCalls) != 0 || message.Content == nil || message.ReasoningContent != nil {
 				return InvalidRequest()
 			}
 			if _, exists := open[message.ToolCallID]; !exists {

@@ -244,7 +244,8 @@ func TestEnvironmentExampleDocumentsEveryRuntimeSettingExactlyOnce(t *testing.T)
 		"ANALYTICS_TOKEN_PRICE_PER_1K", "APP_ENV", "AUTH_HMAC_KEY", "AUTH_TRUSTED_ORIGINS",
 		"BILLING_ALLOW_MOCK_PAYMENT", "CIRCUIT_FAILURE_THRESHOLD", "CIRCUIT_OPEN_SECONDS",
 		"DATABASE_URL", "FIXED_LOGIN_ENABLED", "FIXED_LOGIN_PASSWORD", "FIXED_LOGIN_PHONE",
-		"HOST", "JIEKOU_ALLOWED_MODELS", "JIEKOU_API_KEY", "JWT_EXPIRE_MINUTES", "JWT_SECRET_KEY",
+		"HOST", "JIEKOU_ALLOWED_MODELS", "JIEKOU_API_KEY", "JIEKOU_PASSTHROUGH_MODELS",
+		"JIEKOU_REASONING_MODELS", "JWT_EXPIRE_MINUTES", "JWT_SECRET_KEY",
 		"LOG_LEVEL", "METRICS_TOKEN", "PASSWORD_LOGIN_ENABLED", "PASSWORD_REGISTER_ENABLED",
 		"PLAN_ENTERPRISE_PRICE", "PLAN_PROFESSIONAL_PRICE", "PORT", "REAL_NAME_AUTO_VERIFY",
 		"PUBLIC_RENDER_JOB_KEY", "PUBLIC_RENDER_ROOT",
@@ -605,7 +606,7 @@ func TestWhiteLabelSettingsFailClosedAndUseFixedRegionURLs(t *testing.T) {
 		{name: "whitespace allowlist", region: "cn", key: "test-key", models: " , \t ", wantErr: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := ParseWhiteLabelSettings(tc.region, tc.key, tc.models)
+			got, err := ParseWhiteLabelSettings(tc.region, tc.key, tc.models, "", "")
 			if tc.wantErr {
 				if err == nil {
 					t.Fatal("expected configuration error")
@@ -623,7 +624,7 @@ func TestWhiteLabelSettingsFailClosedAndUseFixedRegionURLs(t *testing.T) {
 }
 
 func TestParseWhiteLabelSettingsSupportsExactAndRegexModels(t *testing.T) {
-	settings, err := ParseWhiteLabelSettings("cn", "test-key", "model-a,re:^zai-org/.+$,re:^.+$")
+	settings, err := ParseWhiteLabelSettings("cn", "test-key", "model-a,re:^zai-org/.+$,re:^.+$", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -635,21 +636,21 @@ func TestParseWhiteLabelSettingsSupportsExactAndRegexModels(t *testing.T) {
 }
 
 func TestParseWhiteLabelSettingsRejectsInvalidRegex(t *testing.T) {
-	_, err := ParseWhiteLabelSettings("cn", "test-key", "re:[")
+	_, err := ParseWhiteLabelSettings("cn", "test-key", "re:[", "", "")
 	if err == nil || strings.Contains(err.Error(), "test-key") {
 		t.Fatalf("want sanitized config error, got %v", err)
 	}
 }
 
 func TestParseWhiteLabelSettingsRejectsEmptyRegex(t *testing.T) {
-	_, err := ParseWhiteLabelSettings("cn", "test-key", "re:")
+	_, err := ParseWhiteLabelSettings("cn", "test-key", "re:", "", "")
 	if err == nil {
 		t.Fatal("want error")
 	}
 }
 
 func TestParseWhiteLabelSettingsAcceptsRegexOnlyAllowlist(t *testing.T) {
-	settings, err := ParseWhiteLabelSettings("cn", "test-key", " re:^zai-org/.+$ ")
+	settings, err := ParseWhiteLabelSettings("cn", "test-key", " re:^zai-org/.+$ ", "", "")
 	if err != nil {
 		t.Fatalf("ParseWhiteLabelSettings() error = %v", err)
 	}
@@ -669,12 +670,70 @@ func TestWhiteLabelSettingsAllowsSkipsNilPattern(t *testing.T) {
 }
 
 func TestParseWhiteLabelSettingsTreatsNonRegexPrefixAsExact(t *testing.T) {
-	settings, err := ParseWhiteLabelSettings("cn", "test-key", "regex:^.+$")
+	settings, err := ParseWhiteLabelSettings("cn", "test-key", "regex:^.+$", "", "")
 	if err != nil {
 		t.Fatalf("ParseWhiteLabelSettings() error = %v", err)
 	}
 	if !settings.Allows("regex:^.+$") || settings.Allows("other/model") {
 		t.Fatal("non-re: model entry was not treated as an exact ID")
+	}
+}
+
+func TestParseWhiteLabelSettingsReasoningAndPassthroughSelectors(t *testing.T) {
+	settings, err := ParseWhiteLabelSettings(
+		"cn", "test-key",
+		"model-a,re:^deepseek/.+$",
+		"model-a,re:^deepseek/",
+		"deepseek/deepseek-v4-pro,re:^passthrough/",
+	)
+	if err != nil {
+		t.Fatalf("ParseWhiteLabelSettings() error = %v", err)
+	}
+	for _, model := range []string{"model-a", "deepseek/deepseek-v4-pro"} {
+		if !settings.AllowsReasoning(model) {
+			t.Fatalf("AllowsReasoning(%q) = false, want true", model)
+		}
+	}
+	if settings.AllowsReasoning("zai-org/glm-5.1") {
+		t.Fatal("AllowsReasoning matched an undeclared model")
+	}
+	for _, model := range []string{"deepseek/deepseek-v4-pro", "passthrough/anything"} {
+		if !settings.AllowsPassthrough(model) {
+			t.Fatalf("AllowsPassthrough(%q) = false, want true", model)
+		}
+	}
+	if settings.AllowsPassthrough("model-a") {
+		t.Fatal("AllowsPassthrough matched a model that was not declared")
+	}
+	if !settings.PassthroughEnabled() {
+		t.Fatal("PassthroughEnabled() = false with a configured selector")
+	}
+}
+
+func TestParseWhiteLabelSettingsReasoningAndPassthroughDefaultOff(t *testing.T) {
+	settings, err := ParseWhiteLabelSettings("cn", "test-key", "model-a", "", "")
+	if err != nil {
+		t.Fatalf("ParseWhiteLabelSettings() error = %v", err)
+	}
+	if settings.AllowsReasoning("model-a") || settings.AllowsPassthrough("model-a") || settings.PassthroughEnabled() {
+		t.Fatalf("empty selectors must be fail-closed: %#v", settings)
+	}
+}
+
+func TestParseWhiteLabelSettingsRejectsInvalidReasoningAndPassthroughRegex(t *testing.T) {
+	for _, tc := range []struct {
+		name, reasoning, passthrough string
+	}{
+		{name: "reasoning invalid", reasoning: "re:["},
+		{name: "reasoning empty", reasoning: "re:"},
+		{name: "passthrough invalid", passthrough: "re:["},
+		{name: "passthrough empty", passthrough: "re:"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := ParseWhiteLabelSettings("cn", "test-key", "model-a", tc.reasoning, tc.passthrough); err == nil {
+				t.Fatal("expected selector validation error")
+			}
+		})
 	}
 }
 
