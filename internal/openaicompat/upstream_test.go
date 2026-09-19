@@ -23,7 +23,7 @@ func TestEncodeUpstreamProjectsOnlyNormalizedFields(t *testing.T) {
 }
 
 func TestEncodeUpstreamDoesNotForwardUnknownJSONSchemaFields(t *testing.T) {
-	conversation, decodeErr := DecodeChat([]byte(`{"model":"m","messages":[{"role":"user","content":"x"}],"response_format":{"type":"json_schema","json_schema":{"name":"safe","schema":{"type":"object"},"strict":true,"secret":"must-not-forward"}}}`))
+	conversation, decodeErr := DecodeChat([]byte(`{"model":"m","messages":[{"role":"user","content":"x"}],"response_format":{"type":"json_schema","json_schema":{"name":"safe","schema":{"type":"object"},"strict":true,"secret":"must-not-forward"}}}`), NoReasoning)
 	if decodeErr != nil {
 		if decodeErr.Code != "invalid_request" {
 			t.Fatalf("unexpected decode error: %#v", decodeErr)

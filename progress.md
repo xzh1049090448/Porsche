@@ -551,3 +551,16 @@
 - 当前后端 `go test ./... -count=1`、`GOCACHE=/tmp/porsche-a09-a12-go-cache go build ./...` 与 focused 路由测试通过；A12 的 authz/dto/handler/router/service 定向回归通过。
 - disposable MySQL 8/Redis 7 补验中，合并后的 `0011–0013` up 与 A08 `0013` down 兼容测试通过。后续完整 A08 service fixture 复跑因一次 host mapping 连接失败未闭环，原 A08 真实服务证据仍单独保留，不把本次结果扩写为完整 service PASS。三次本轮容器均由 trap 精确删除，label 检查零残留。
 - 权威矩阵更新为 18 项 `PASS_LIMITED_SCOPE`、8 项阻塞；A09/A10 只代表开发环境 CNY Mock，真实余额、账本、充值、退款与扣费仍未开发。外部后端 `project_manager` 对当前候选的书面确认、生产迁移、部署及生产验收均未执行。
+
+## 2026-09-19：DeepSeek Harness 请求字段兼容与受控上游透传（issue #18）
+
+- 归属 `go-018` 的 Gateway/CLI 兼容子项目，不新增第二个 `in_progress` 功能。设计要求见 `docs/superpowers/specs/2026-09-19-deepseek-harness-field-compat-design.md`，计划见 `docs/superpowers/plans/2026-09-19-deepseek-harness-field-compat.md`。
+- 请求侧：`/v1/chat/completions` 新增顶层 `reasoning_effort`（`minimal|low|medium|high|max`）与 `thinking`（`{type:"enabled"|"disabled"}`），assistant 消息新增 `reasoning_content`；`/v1/responses` 新增 `reasoning.effort` 映射。`internal/openaicompat` 仍为结构化解析 + 显式白名单，未知顶层字段保持 `400 unsupported_parameter`、形状错误保持 `400 invalid_request`、超限保持 `413 request_too_large`。
+- 能力门禁：新增 `JIEKOU_REASONING_MODELS`（精确 ID 或 `re:` RE2），未声明的模型携带思考字段时返回 `400 unsupported_parameter` 且零上游调用；默认空等于当前行为。
+- 受控透传：新增 `JIEKOU_PASSTHROUGH_MODELS`，仅对 `POST /v1/chat/completions` 生效；仍执行 12 MiB、Bearer 鉴权、`application/json`、模型/目录/IP ACL，随后由 `openaicompat.SanitizePassthrough` 剥离固定敏感字段（`user`、`metadata`、`safety_identifier`、`service_tier`、`inference_geo`、`speed`、`store`、`previous_response_id`、`prompt_cache_key`、`logit_bias`、`logprobs`、`top_logprobs` 及凭据类字段与 `stream_options.include_obfuscation`），并输出无内容审计日志。默认空表示从不透传。
+- 响应侧：非流式 message 与 SSE delta 保留 `reasoning_content`；`ChatCompletionUsage` 新增可选 `prompt_tokens_details.cached_tokens`、`completion_tokens_details.reasoning_tokens`、`prompt_cache_hit_tokens`、`prompt_cache_miss_tokens`。`total_tokens`/`prompt_tokens`/`completion_tokens` 语义不变，平台计费仍只读 `TotalTokens`。
+- 未新增数据库表、列、迁移或 GORM 实体；未改 Gateway Token 鉴权、目录、SSE 帧顺序或 `/api/v1/platform/**` 请求契约。
+- 验证证据（worktree `/Users/xuzhihao/code/Porsche/.worktrees/deepseek-harness-field-compat`，`GOCACHE=/private/tmp/porsche-issue18-go-cache`）：disposable loopback-only、tmpfs、无命名卷的 MySQL 8.0.46 + Redis 7 夹具完成 `0001–0020` 迁移；`go test ./internal/openaicompat ./internal/whitelabel ./internal/config ./internal/handler -count=1` exit 0；`go test -race` 同四包 exit 0；`go test ./... -count=1`、`go vet ./...`、`go build ./...`、`git diff --check`、`gofmt -l` 通过。5 个新增真实 Handler 用例（DSH 推理往返、未声明模型零上游、透传剥离与审计、透传关闭回归、令牌 ACL）在真实 MySQL 上 PASS 且零 skip。
+- 明确未运行：真实 JieKou 付费上游对 `reasoning_effort`/`thinking` 的支持、真实 DeepSeek Harness 端到端会话、平台路径推理控制、`/v1` 逐请求计费与 DB 审计、生产迁移/部署/验收。本地夹具不代表上游或生产验收。
+- 独立门禁（同一 review snapshot `f8031ca84266e1999b6d2acab4c5de1248f9fb077cb0f78cc5f1c09c3d6e9b5b` / 受审 revision `1f60fbf9b8c56bb4577fec8d5b9d86b1392856e8`，`review_snapshot.py verify` 均 exit 0）：规格 `SPEC_PASS`（10 项逐项 PASS）；安全 `SECURITY_PASS`（无 Critical/High，记录 3 项 Low 与 1 项 Info，见实现报告）；独立测试 `PASS`（单元与 race 0 fail/0 skip，5 个真实 MySQL Handler 用例 5 PASS/0 FAIL/0 SKIP，vet 与 diff clean）。
+- 实现报告 `docs/superpowers/reports/2026-09-19-deepseek-harness-field-compat.md` 与本节、`feature_list.json` 的门禁记录属于受审 revision 之后的文档收尾提交，不改变受审代码。PR #19。

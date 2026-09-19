@@ -41,13 +41,16 @@ type Conversation struct {
 	ResponseFormat    json.RawMessage
 	IncludeUsage      bool
 	Stream            bool
+	ReasoningEffort   string
+	Thinking          *ThinkingMode
 }
 
 type Message struct {
-	Role       Role
-	Content    any
-	ToolCalls  []ToolCall
-	ToolCallID string
+	Role             Role
+	Content          any
+	ToolCalls        []ToolCall
+	ToolCallID       string
+	ReasoningContent *string
 }
 
 type ToolCall struct {

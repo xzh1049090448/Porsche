@@ -69,20 +69,45 @@ type PublicRenderSettings struct {
 
 // WhiteLabelSettings contains the only supported upstream configuration. BaseURL
 // is selected from a fixed region mapping and must never be supplied by callers.
+// ReasoningModels/PassthroughModels are explicit, fail-closed model selectors:
+// an empty selector disables the corresponding capability for every model.
 type WhiteLabelSettings struct {
-	Region               string
-	BaseURL              string
-	APIKey               string
-	AllowedModels        map[string]struct{}
-	AllowedModelPatterns []*regexp.Regexp
+	Region                   string
+	BaseURL                  string
+	APIKey                   string
+	AllowedModels            map[string]struct{}
+	AllowedModelPatterns     []*regexp.Regexp
+	ReasoningModels          map[string]struct{}
+	ReasoningModelPatterns   []*regexp.Regexp
+	PassthroughModels        map[string]struct{}
+	PassthroughModelPatterns []*regexp.Regexp
 }
 
 func (s WhiteLabelSettings) Allows(model string) bool {
+	return matchesModelSelector(model, s.AllowedModels, s.AllowedModelPatterns)
+}
+
+// AllowsReasoning reports whether model may carry reasoning_effort/thinking.
+func (s WhiteLabelSettings) AllowsReasoning(model string) bool {
+	return matchesModelSelector(model, s.ReasoningModels, s.ReasoningModelPatterns)
+}
+
+// AllowsPassthrough reports whether model may use raw upstream body forwarding.
+func (s WhiteLabelSettings) AllowsPassthrough(model string) bool {
+	return matchesModelSelector(model, s.PassthroughModels, s.PassthroughModelPatterns)
+}
+
+// PassthroughEnabled reports whether any model has opted into raw passthrough.
+func (s WhiteLabelSettings) PassthroughEnabled() bool {
+	return len(s.PassthroughModels) > 0 || len(s.PassthroughModelPatterns) > 0
+}
+
+func matchesModelSelector(model string, models map[string]struct{}, patterns []*regexp.Regexp) bool {
 	model = strings.TrimSpace(model)
-	if _, ok := s.AllowedModels[model]; ok {
+	if _, ok := models[model]; ok {
 		return true
 	}
-	for _, pattern := range s.AllowedModelPatterns {
+	for _, pattern := range patterns {
 		if pattern == nil {
 			continue
 		}
@@ -93,7 +118,35 @@ func (s WhiteLabelSettings) Allows(model string) bool {
 	return false
 }
 
-func ParseWhiteLabelSettings(region, apiKey, allowedModels string) (WhiteLabelSettings, error) {
+// parseModelSelectorList parses the shared comma-separated selector grammar:
+// an exact model ID, or a `re:` prefixed RE2 expression. Empty entries are
+// skipped; an empty or invalid RE2 expression is rejected.
+func parseModelSelectorList(raw, field string) (map[string]struct{}, []*regexp.Regexp, error) {
+	models := make(map[string]struct{})
+	patterns := make([]*regexp.Regexp, 0)
+	for _, entry := range strings.Split(raw, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		if strings.HasPrefix(entry, "re:") {
+			expression := strings.TrimPrefix(entry, "re:")
+			if expression == "" {
+				return nil, nil, fmt.Errorf("%s contains an invalid regular expression", field)
+			}
+			pattern, err := regexp.Compile(expression)
+			if err != nil {
+				return nil, nil, fmt.Errorf("%s contains an invalid regular expression", field)
+			}
+			patterns = append(patterns, pattern)
+			continue
+		}
+		models[entry] = struct{}{}
+	}
+	return models, patterns, nil
+}
+
+func ParseWhiteLabelSettings(region, apiKey, allowedModels, reasoningModels, passthroughModels string) (WhiteLabelSettings, error) {
 	region = strings.TrimSpace(region)
 	apiKey = strings.TrimSpace(apiKey)
 	if apiKey == "" {
@@ -109,32 +162,28 @@ func ParseWhiteLabelSettings(region, apiKey, allowedModels string) (WhiteLabelSe
 		return WhiteLabelSettings{}, fmt.Errorf("UPSTREAM_REGION must be cn or global")
 	}
 
-	models := make(map[string]struct{})
-	patterns := make([]*regexp.Regexp, 0)
-	for _, model := range strings.Split(allowedModels, ",") {
-		model = strings.TrimSpace(model)
-		if model == "" {
-			continue
-		}
-		if strings.HasPrefix(model, "re:") {
-			expression := strings.TrimPrefix(model, "re:")
-			if expression == "" {
-				return WhiteLabelSettings{}, fmt.Errorf("JIEKOU_ALLOWED_MODELS contains an invalid regular expression")
-			}
-			pattern, err := regexp.Compile(expression)
-			if err != nil {
-				return WhiteLabelSettings{}, fmt.Errorf("JIEKOU_ALLOWED_MODELS contains an invalid regular expression")
-			}
-			patterns = append(patterns, pattern)
-			continue
-		}
-		models[model] = struct{}{}
+	models, patterns, err := parseModelSelectorList(allowedModels, "JIEKOU_ALLOWED_MODELS")
+	if err != nil {
+		return WhiteLabelSettings{}, err
 	}
 	if len(models)+len(patterns) == 0 {
 		return WhiteLabelSettings{}, fmt.Errorf("JIEKOU_ALLOWED_MODELS must contain at least one model")
 	}
+	reasoningSet, reasoningPatterns, err := parseModelSelectorList(reasoningModels, "JIEKOU_REASONING_MODELS")
+	if err != nil {
+		return WhiteLabelSettings{}, err
+	}
+	passthroughSet, passthroughPatterns, err := parseModelSelectorList(passthroughModels, "JIEKOU_PASSTHROUGH_MODELS")
+	if err != nil {
+		return WhiteLabelSettings{}, err
+	}
 
-	return WhiteLabelSettings{Region: region, BaseURL: baseURL, APIKey: apiKey, AllowedModels: models, AllowedModelPatterns: patterns}, nil
+	return WhiteLabelSettings{
+		Region: region, BaseURL: baseURL, APIKey: apiKey,
+		AllowedModels: models, AllowedModelPatterns: patterns,
+		ReasoningModels: reasoningSet, ReasoningModelPatterns: reasoningPatterns,
+		PassthroughModels: passthroughSet, PassthroughModelPatterns: passthroughPatterns,
+	}, nil
 }
 
 func Load() (*Settings, error) {
@@ -153,6 +202,8 @@ func Load() (*Settings, error) {
 		os.Getenv("UPSTREAM_REGION"),
 		os.Getenv("JIEKOU_API_KEY"),
 		os.Getenv("JIEKOU_ALLOWED_MODELS"),
+		os.Getenv("JIEKOU_REASONING_MODELS"),
+		os.Getenv("JIEKOU_PASSTHROUGH_MODELS"),
 	)
 	if err != nil {
 		return nil, err

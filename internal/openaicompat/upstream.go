@@ -19,13 +19,20 @@ type upstreamRequest struct {
 	ResponseFormat    json.RawMessage        `json:"response_format,omitempty"`
 	Stream            bool                   `json:"stream,omitempty"`
 	StreamOptions     *upstreamStreamOptions `json:"stream_options,omitempty"`
+	ReasoningEffort   *string                `json:"reasoning_effort,omitempty"`
+	Thinking          *upstreamThinking      `json:"thinking,omitempty"`
+}
+
+type upstreamThinking struct {
+	Type string `json:"type"`
 }
 
 type upstreamMessage struct {
-	Role       string             `json:"role"`
-	Content    any                `json:"content"`
-	ToolCalls  []upstreamToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string             `json:"tool_call_id,omitempty"`
+	Role             string             `json:"role"`
+	Content          any                `json:"content"`
+	ToolCalls        []upstreamToolCall `json:"tool_calls,omitempty"`
+	ToolCallID       string             `json:"tool_call_id,omitempty"`
+	ReasoningContent *string            `json:"reasoning_content,omitempty"`
 }
 
 type upstreamToolCall struct {
@@ -74,7 +81,7 @@ func EncodeUpstream(conversation Conversation) ([]byte, error) {
 		if message.Role == RoleDeveloper {
 			role = string(RoleSystem)
 		}
-		encoded := upstreamMessage{Role: role, Content: message.Content, ToolCallID: message.ToolCallID}
+		encoded := upstreamMessage{Role: role, Content: message.Content, ToolCallID: message.ToolCallID, ReasoningContent: message.ReasoningContent}
 		for _, call := range message.ToolCalls {
 			encoded.ToolCalls = append(encoded.ToolCalls, upstreamToolCall{ID: call.ID, Type: "function", Function: upstreamFunctionCall{Name: call.Name, Arguments: call.Arguments}})
 		}
@@ -97,6 +104,13 @@ func EncodeUpstream(conversation Conversation) ([]byte, error) {
 	request := upstreamRequest{Model: conversation.Model, Messages: messages, MaxTokens: conversation.MaxOutputTokens, Temperature: conversation.Temperature, TopP: conversation.TopP, FrequencyPenalty: conversation.FrequencyPenalty, PresencePenalty: conversation.PresencePenalty, Stop: cloneRaw(conversation.Stop), Seed: conversation.Seed, N: conversation.N, Tools: tools, ToolChoice: choice, ParallelToolCalls: conversation.ParallelToolCalls, ResponseFormat: cloneRaw(conversation.ResponseFormat), Stream: conversation.Stream}
 	if conversation.IncludeUsage {
 		request.StreamOptions = &upstreamStreamOptions{IncludeUsage: true}
+	}
+	if conversation.ReasoningEffort != "" {
+		effort := conversation.ReasoningEffort
+		request.ReasoningEffort = &effort
+	}
+	if conversation.Thinking != nil {
+		request.Thinking = &upstreamThinking{Type: string(*conversation.Thinking)}
 	}
 	return json.Marshal(request)
 }

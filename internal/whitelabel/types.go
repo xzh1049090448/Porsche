@@ -52,10 +52,11 @@ type ChatCompletionChoice struct {
 // ChatCompletionMessage is the allowed public completion-message surface.
 // It deliberately excludes provider-specific nested fields.
 type ChatCompletionMessage struct {
-	Role      string                   `json:"role"`
-	Content   any                      `json:"content"`
-	Refusal   *string                  `json:"refusal,omitempty"`
-	ToolCalls []ChatCompletionToolCall `json:"tool_calls,omitempty"`
+	Role             string                   `json:"role"`
+	Content          any                      `json:"content"`
+	Refusal          *string                  `json:"refusal,omitempty"`
+	ReasoningContent *string                  `json:"reasoning_content,omitempty"`
+	ToolCalls        []ChatCompletionToolCall `json:"tool_calls,omitempty"`
 }
 
 type ChatCompletionContentPart struct {
@@ -78,6 +79,21 @@ type ChatCompletionUsage struct {
 	PromptTokens     int `json:"prompt_tokens"`
 	CompletionTokens int `json:"completion_tokens"`
 	TotalTokens      int `json:"total_tokens"`
+	// Optional detail fields are additive projections. They never change the
+	// meaning of the three aggregate counters above and are omitted when the
+	// upstream does not report them.
+	PromptTokensDetails     *ChatCompletionPromptTokensDetails     `json:"prompt_tokens_details,omitempty"`
+	CompletionTokensDetails *ChatCompletionCompletionTokensDetails `json:"completion_tokens_details,omitempty"`
+	PromptCacheHitTokens    *int                                   `json:"prompt_cache_hit_tokens,omitempty"`
+	PromptCacheMissTokens   *int                                   `json:"prompt_cache_miss_tokens,omitempty"`
+}
+
+type ChatCompletionPromptTokensDetails struct {
+	CachedTokens *int `json:"cached_tokens,omitempty"`
+}
+
+type ChatCompletionCompletionTokensDetails struct {
+	ReasoningTokens *int `json:"reasoning_tokens,omitempty"`
 }
 
 // ChatMessage is the internal, OpenAI-compatible request message passed to
@@ -143,12 +159,14 @@ func (*completionProjectionError) Error() string { return "malformed completion"
 
 func projectCompletionMessage(raw json.RawMessage) (ChatCompletionMessage, error) {
 	var upstream struct {
-		Role      string          `json:"role"`
-		Content   json.RawMessage `json:"content"`
-		Refusal   *string         `json:"refusal"`
-		ToolCalls json.RawMessage `json:"tool_calls"`
+		Role             string          `json:"role"`
+		Content          json.RawMessage `json:"content"`
+		Refusal          *string         `json:"refusal"`
+		ReasoningContent *string         `json:"reasoning_content"`
+		ToolCalls        json.RawMessage `json:"tool_calls"`
 	}
-	if json.Unmarshal(raw, &upstream) != nil || strings.TrimSpace(upstream.Role) == "" {
+	if json.Unmarshal(raw, &upstream) != nil || strings.TrimSpace(upstream.Role) == "" ||
+		upstream.ReasoningContent != nil && (!utf8.ValidString(*upstream.ReasoningContent) || len(*upstream.ReasoningContent) > MaxTextContentBytes) {
 		return ChatCompletionMessage{}, errMalformedCompletion
 	}
 	toolCalls, err := projectToolCalls(upstream.ToolCalls)
@@ -159,7 +177,7 @@ func projectCompletionMessage(raw json.RawMessage) (ChatCompletionMessage, error
 	if err != nil {
 		return ChatCompletionMessage{}, errMalformedCompletion
 	}
-	return ChatCompletionMessage{Role: upstream.Role, Content: content, Refusal: upstream.Refusal, ToolCalls: toolCalls}, nil
+	return ChatCompletionMessage{Role: upstream.Role, Content: content, Refusal: upstream.Refusal, ReasoningContent: upstream.ReasoningContent, ToolCalls: toolCalls}, nil
 }
 
 func projectCompletionContent(raw json.RawMessage, allowNull bool) (any, error) {
@@ -219,7 +237,27 @@ func validProjectedCallID(id string) bool {
 }
 
 func validCompletionUsage(usage *ChatCompletionUsage) bool {
-	return usage == nil || (usage.PromptTokens >= 0 && usage.CompletionTokens >= 0 && usage.TotalTokens >= 0)
+	if usage == nil {
+		return true
+	}
+	if usage.PromptTokens < 0 || usage.CompletionTokens < 0 || usage.TotalTokens < 0 ||
+		usage.PromptTokens > math.MaxInt32 || usage.CompletionTokens > math.MaxInt32 || usage.TotalTokens > math.MaxInt32 {
+		return false
+	}
+	if !validOptionalTokenCount(usage.PromptCacheHitTokens) || !validOptionalTokenCount(usage.PromptCacheMissTokens) {
+		return false
+	}
+	if details := usage.PromptTokensDetails; details != nil && !validOptionalTokenCount(details.CachedTokens) {
+		return false
+	}
+	if details := usage.CompletionTokensDetails; details != nil && !validOptionalTokenCount(details.ReasoningTokens) {
+		return false
+	}
+	return true
+}
+
+func validOptionalTokenCount(value *int) bool {
+	return value == nil || *value >= 0 && *value <= math.MaxInt32
 }
 
 const CodeModelUnavailable Code = "model_unavailable"

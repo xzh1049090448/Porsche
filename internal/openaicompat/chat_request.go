@@ -26,13 +26,16 @@ type chatRequestDTO struct {
 	ResponseFormat      json.RawMessage   `json:"response_format"`
 	Stream              *bool             `json:"stream"`
 	StreamOptions       *streamOptionsDTO `json:"stream_options"`
+	ReasoningEffort     *string           `json:"reasoning_effort"`
+	Thinking            json.RawMessage   `json:"thinking"`
 }
 
 type chatMessageDTO struct {
-	Role       string          `json:"role"`
-	Content    json.RawMessage `json:"content"`
-	ToolCalls  []toolCallDTO   `json:"tool_calls"`
-	ToolCallID string          `json:"tool_call_id"`
+	Role             string          `json:"role"`
+	Content          json.RawMessage `json:"content"`
+	ToolCalls        []toolCallDTO   `json:"tool_calls"`
+	ToolCallID       string          `json:"tool_call_id"`
+	ReasoningContent *string         `json:"reasoning_content"`
 }
 
 type toolCallDTO struct {
@@ -59,7 +62,7 @@ type streamOptionsDTO struct {
 	IncludeUsage *bool `json:"include_usage"`
 }
 
-func DecodeChat(body []byte) (Conversation, *Error) {
+func DecodeChat(body []byte, policy ReasoningPolicy) (Conversation, *Error) {
 	if len(body) > MaxRequestBodyBytes {
 		return Conversation{}, RequestTooLarge()
 	}
@@ -69,6 +72,14 @@ func DecodeChat(body []byte) (Conversation, *Error) {
 	var request chatRequestDTO
 	if decodeStrict(body, &request) != nil || request.Messages == nil || len(request.Messages) > MaxMessages || strings.TrimSpace(request.Model) == "" {
 		return Conversation{}, InvalidRequest()
+	}
+	reasoningEffort, reasoningErr := decodeReasoningEffort(request.ReasoningEffort)
+	if reasoningErr != nil {
+		return Conversation{}, reasoningErr
+	}
+	thinking, thinkingErr := decodeThinking(request.Thinking)
+	if thinkingErr != nil {
+		return Conversation{}, thinkingErr
 	}
 	if request.MaxTokens != nil && request.MaxCompletionTokens != nil {
 		return Conversation{}, InvalidRequest()
@@ -113,6 +124,9 @@ func DecodeChat(body []byte) (Conversation, *Error) {
 		}
 		messages = append(messages, message)
 	}
+	if !reasoningAllowed(policy, request.Model, reasoningEffort, thinking, messages) {
+		return Conversation{}, UnsupportedParameter()
+	}
 	tools, err := decodeChatTools(request.Tools)
 	if err != nil {
 		return Conversation{}, err
@@ -125,7 +139,7 @@ func DecodeChat(body []byte) (Conversation, *Error) {
 	if !validStop(request.Stop) || !responseFormatOK || request.StreamOptions != nil && request.StreamOptions.IncludeUsage == nil {
 		return Conversation{}, InvalidRequest()
 	}
-	conversation := Conversation{Model: request.Model, Messages: messages, Tools: tools, ToolChoice: choice, ParallelToolCalls: request.ParallelToolCalls, MaxOutputTokens: maxOutput, Temperature: temperature, TopP: topP, FrequencyPenalty: frequency, PresencePenalty: presence, Stop: cloneRaw(request.Stop), Seed: seed, N: n, ResponseFormat: responseFormat, Stream: request.Stream != nil && *request.Stream, IncludeUsage: request.StreamOptions != nil && request.StreamOptions.IncludeUsage != nil && *request.StreamOptions.IncludeUsage}
+	conversation := Conversation{Model: request.Model, Messages: messages, Tools: tools, ToolChoice: choice, ParallelToolCalls: request.ParallelToolCalls, MaxOutputTokens: maxOutput, Temperature: temperature, TopP: topP, FrequencyPenalty: frequency, PresencePenalty: presence, Stop: cloneRaw(request.Stop), Seed: seed, N: n, ResponseFormat: responseFormat, Stream: request.Stream != nil && *request.Stream, IncludeUsage: request.StreamOptions != nil && request.StreamOptions.IncludeUsage != nil && *request.StreamOptions.IncludeUsage, ReasoningEffort: reasoningEffort, Thinking: thinking}
 	if err := validateConversation(conversation); err != nil {
 		return Conversation{}, err
 	}
@@ -137,6 +151,7 @@ var chatRequestFields = map[string]struct{}{
 	"temperature": {}, "top_p": {}, "frequency_penalty": {}, "presence_penalty": {},
 	"stop": {}, "seed": {}, "n": {}, "tools": {}, "tool_choice": {},
 	"parallel_tool_calls": {}, "response_format": {}, "stream": {}, "stream_options": {},
+	"reasoning_effort": {}, "thinking": {},
 }
 
 func decodeChatMessage(raw json.RawMessage) (Message, *Error) {
@@ -145,6 +160,9 @@ func decodeChatMessage(raw json.RawMessage) (Message, *Error) {
 		return Message{}, InvalidRequest()
 	}
 	message := Message{Role: Role(dto.Role), ToolCallID: dto.ToolCallID}
+	if message.Role != RoleAssistant && dto.ReasoningContent != nil {
+		return Message{}, InvalidRequest()
+	}
 	switch message.Role {
 	case RoleSystem, RoleDeveloper:
 		content, ok := decodeContent(dto.Content, false, false, MaxTextContentBytes)
@@ -164,6 +182,12 @@ func decodeChatMessage(raw json.RawMessage) (Message, *Error) {
 			return Message{}, InvalidRequest()
 		}
 		message.Content = content
+		if dto.ReasoningContent != nil {
+			if !utf8.ValidString(*dto.ReasoningContent) || len(*dto.ReasoningContent) > MaxTextContentBytes {
+				return Message{}, InvalidRequest()
+			}
+			message.ReasoningContent = dto.ReasoningContent
+		}
 		for _, call := range dto.ToolCalls {
 			if call.Type != "function" || !utf8.ValidString(call.Function.Arguments) {
 				return Message{}, InvalidRequest()

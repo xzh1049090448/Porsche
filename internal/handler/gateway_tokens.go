@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"mime"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -74,31 +76,44 @@ func gatewayCompletion(c *gin.Context, state *app.State, protocol gatewayProtoco
 		gatewayWhiteLabelError(c, &whitelabel.Error{Code: whitelabel.CodeRequestTooLarge, Status: http.StatusRequestEntityTooLarge, Type: whitelabel.TypeInvalidRequest})
 		return
 	}
-	conversation, decodeErr := decodeGatewayConversation(protocol, body)
+	// Raw passthrough is an explicit, per-model opt-in and is only reachable on
+	// the Chat Completions route. Every other request keeps the structured
+	// decode -> authorize -> re-encode order unchanged.
+	if protocol == gatewayChat && gatewayPassthroughConfigured(state) {
+		model, stream, routingErr := openaicompat.ExtractChatRouting(body)
+		if routingErr != nil {
+			gatewayCompatError(c, routingErr)
+			return
+		}
+		if !gatewayAuthorizeModel(c, state, token, model) {
+			return
+		}
+		if state.Settings.WhiteLabel.AllowsPassthrough(model) {
+			sanitized, report, sanitizeErr := openaicompat.SanitizePassthrough(body, model)
+			if sanitizeErr != nil {
+				gatewayCompatError(c, sanitizeErr)
+				return
+			}
+			logGatewayPassthrough(c, model, stream, report)
+			gatewayInvokeUpstream(c, state, protocol, openaicompat.Conversation{Model: model, Stream: stream}, sanitized)
+			return
+		}
+		gatewayStructuredCompletion(c, state, protocol, body, token, true)
+		return
+	}
+	gatewayStructuredCompletion(c, state, protocol, body, token, false)
+}
+
+// gatewayStructuredCompletion decodes the closed request contract, authorizes
+// the model when that has not happened yet, re-encodes canonical JSON, and
+// invokes the upstream.
+func gatewayStructuredCompletion(c *gin.Context, state *app.State, protocol gatewayProtocol, body []byte, token *service.GatewayTokenPrincipal, authorized bool) {
+	conversation, decodeErr := decodeGatewayConversation(protocol, body, gatewayReasoningPolicy(state))
 	if decodeErr != nil {
 		gatewayCompatError(c, decodeErr)
 		return
 	}
-	modelID := conversation.Model
-	if !token.AllowsModel(modelID) {
-		gatewayAuthenticationError(c, http.StatusForbidden, service.GatewayTokenModelDenied)
-		return
-	}
-	if state.WhiteLabel == nil {
-		gatewayWhiteLabelError(c, whitelabel.ErrUpstreamUnavailable("white-label service unavailable"))
-		return
-	}
-	catalog, catalogErr := state.WhiteLabel.ListModels(c.Request.Context(), token.KeyAllowedModels())
-	if catalogErr != nil {
-		gatewayWhiteLabelError(c, catalogErr)
-		return
-	}
-	if !catalogContains(catalog, modelID) {
-		gatewayWhiteLabelError(c, &whitelabel.Error{Code: whitelabel.CodeModelUnavailable, Status: http.StatusNotFound, Type: whitelabel.TypeInvalidRequest})
-		return
-	}
-	if authErr := state.WhiteLabel.AuthorizeModel(modelID, token.KeyAllowedModels()); authErr != nil {
-		gatewayWhiteLabelError(c, authErr)
+	if !authorized && !gatewayAuthorizeModel(c, state, token, conversation.Model) {
 		return
 	}
 	upstreamBody, encodeErr := openaicompat.EncodeUpstream(conversation)
@@ -106,6 +121,37 @@ func gatewayCompletion(c *gin.Context, state *app.State, protocol gatewayProtoco
 		gatewayWhiteLabelError(c, whitelabel.ErrUpstreamUnavailable("gateway request encoding failed"))
 		return
 	}
+	gatewayInvokeUpstream(c, state, protocol, conversation, upstreamBody)
+}
+
+// gatewayAuthorizeModel applies the Gateway Token model ACL, the upstream
+// catalog, and the owner model ACL, writing the stable error itself.
+func gatewayAuthorizeModel(c *gin.Context, state *app.State, token *service.GatewayTokenPrincipal, modelID string) bool {
+	if !token.AllowsModel(modelID) {
+		gatewayAuthenticationError(c, http.StatusForbidden, service.GatewayTokenModelDenied)
+		return false
+	}
+	if state.WhiteLabel == nil {
+		gatewayWhiteLabelError(c, whitelabel.ErrUpstreamUnavailable("white-label service unavailable"))
+		return false
+	}
+	catalog, catalogErr := state.WhiteLabel.ListModels(c.Request.Context(), token.KeyAllowedModels())
+	if catalogErr != nil {
+		gatewayWhiteLabelError(c, catalogErr)
+		return false
+	}
+	if !catalogContains(catalog, modelID) {
+		gatewayWhiteLabelError(c, &whitelabel.Error{Code: whitelabel.CodeModelUnavailable, Status: http.StatusNotFound, Type: whitelabel.TypeInvalidRequest})
+		return false
+	}
+	if authErr := state.WhiteLabel.AuthorizeModel(modelID, token.KeyAllowedModels()); authErr != nil {
+		gatewayWhiteLabelError(c, authErr)
+		return false
+	}
+	return true
+}
+
+func gatewayInvokeUpstream(c *gin.Context, state *app.State, protocol gatewayProtocol, conversation openaicompat.Conversation, upstreamBody []byte) {
 	response, upstreamErr := state.WhiteLabel.Chat(c.Request.Context(), upstreamBody)
 	if upstreamErr != nil {
 		gatewayWhiteLabelError(c, upstreamErr)
@@ -117,17 +163,43 @@ func gatewayCompletion(c *gin.Context, state *app.State, protocol gatewayProtoco
 		return
 	}
 	if protocol == gatewayChat {
-		gatewayChatStream(c, state, modelID, response.Body)
+		gatewayChatStream(c, state, conversation.Model, response.Body)
 		return
 	}
 	gatewayResponsesStream(c, state, conversation, response.Body)
 }
 
-func decodeGatewayConversation(protocol gatewayProtocol, body []byte) (openaicompat.Conversation, *openaicompat.Error) {
-	if protocol == gatewayResponses {
-		return openaicompat.DecodeResponses(body)
+func gatewayPassthroughConfigured(state *app.State) bool {
+	return state != nil && state.Settings != nil && state.Settings.WhiteLabel.PassthroughEnabled()
+}
+
+// logGatewayPassthrough records content-free passthrough metadata. It never
+// includes prompt text, message bodies, tool payloads, secrets, or raw bodies.
+func logGatewayPassthrough(c *gin.Context, model string, stream bool, report openaicompat.PassthroughReport) {
+	stripped := "-"
+	if len(report.StrippedFields) > 0 {
+		stripped = strings.Join(report.StrippedFields, ",")
 	}
-	return openaicompat.DecodeChat(body)
+	log.Printf("gateway passthrough request_id=%s model=%s stream=%t stripped=%s", c.Writer.Header().Get("X-Request-ID"), model, stream, stripped)
+}
+
+func decodeGatewayConversation(protocol gatewayProtocol, body []byte, policy openaicompat.ReasoningPolicy) (openaicompat.Conversation, *openaicompat.Error) {
+	if protocol == gatewayResponses {
+		return openaicompat.DecodeResponses(body, policy)
+	}
+	return openaicompat.DecodeChat(body, policy)
+}
+
+// gatewayReasoningPolicy projects the fail-closed white-label reasoning
+// selector configuration into the protocol package.
+func gatewayReasoningPolicy(state *app.State) openaicompat.ReasoningPolicy {
+	if state == nil || state.Settings == nil {
+		return openaicompat.NoReasoning
+	}
+	return openaicompat.ReasoningPolicy{
+		Models:   state.Settings.WhiteLabel.ReasoningModels,
+		Patterns: state.Settings.WhiteLabel.ReasoningModelPatterns,
+	}
 }
 
 func gatewayNonStreamingCompletion(c *gin.Context, state *app.State, protocol gatewayProtocol, conversation openaicompat.Conversation, body io.Reader) {

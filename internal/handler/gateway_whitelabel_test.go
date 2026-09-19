@@ -267,9 +267,9 @@ func TestGatewayToolPayloadLimitsRejectBeforeUpstream(t *testing.T) {
 			}
 			var decodeErr *openaicompat.Error
 			if tt.path == "/v1/responses" {
-				_, decodeErr = openaicompat.DecodeResponses(body)
+				_, decodeErr = openaicompat.DecodeResponses(body, openaicompat.NoReasoning)
 			} else {
-				_, decodeErr = openaicompat.DecodeChat(body)
+				_, decodeErr = openaicompat.DecodeChat(body, openaicompat.NoReasoning)
 			}
 			if decodeErr == nil || decodeErr.Status != http.StatusRequestEntityTooLarge || decodeErr.Code != "request_too_large" {
 				t.Fatalf("decoder error=%#v", decodeErr)
