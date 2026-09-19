@@ -72,6 +72,26 @@ bootstrap**。
 解释为模式。因此，`re:^.+$` 只会向没有限制性用户或 Token ACL 的主体自动公开安全
 模型，不能绕过已有 ACL。
 
+`JIEKOU_REASONING_MODELS` 与 `JIEKOU_PASSTHROUGH_MODELS` 复用同一套精确 ID /
+`re:` 语法，且默认均为空：
+
+```dotenv
+# 接受 reasoning_effort / thinking 的模型；未声明的模型收到这些字段时返回
+# 400 unsupported_parameter，且不会调用上游。
+JIEKOU_REASONING_MODELS=deepseek/deepseek-v4-pro
+# 允许原始请求体透传的模型；默认空表示从不透传。透传仅作用于
+# POST /v1/chat/completions，仍会执行 Bearer 鉴权、模型/目录/IP ACL、
+# 12 MiB 大小与 application/json 校验，并剥离固定敏感字段列表后转发。
+JIEKOU_PASSTHROUGH_MODELS=
+```
+
+DeepSeek Harness 客户端在 Chat Completions 上发送的 `thinking`、
+`reasoning_effort` 与 assistant `reasoning_content` 只在命中
+`JIEKOU_REASONING_MODELS` 时被接受并转发；响应会保留上游的
+`reasoning_content` 与 usage 明细（`completion_tokens_details.reasoning_tokens`、
+`prompt_tokens_details.cached_tokens`、`prompt_cache_hit_tokens`、
+`prompt_cache_miss_tokens`），但不改变 `total_tokens` 计费口径。
+
 仅支持新的 MySQL 8 schema。请在 `.env` 中设置 MySQL 连接串，例如：
 
 ```dotenv
