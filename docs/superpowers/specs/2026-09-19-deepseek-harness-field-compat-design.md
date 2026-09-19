@@ -172,6 +172,7 @@ type Message struct {
 - 透传分支**不**经过 `EncodeUpstream`，但鉴权、ACL、大小限制、媒体类型与敏感字段剥离一个都不能省。
 - 透传结构约束：顶层必须是单个 JSON 对象；`model` 为字符串；`messages` 非空数组且 ≤ `MaxMessages`（128）；`tools` 若存在 ≤ `MaxTools`（32）；整体 ≤ `MaxRequestBodyBytes`（12 MiB）。
 - 透传时 `reasoning_effort`、`thinking`、`reasoning_content` **不**被剥离（这正是透传的用途）；操作者通过显式声明该模型承担上游协议责任。
+- 当透传选择器已配置、但请求模型**未**命中时，`ExtractChatRouting` 与其后的鉴权/目录校验仍然先行，然后才执行严格解码与重新编码。因此在这种（非默认）部署下，被拒模型的错误优先级是 ACL 拒绝先于请求体形状错误；透传选择器为空时，`/v1/chat/completions` 完全保持既有 decode-first 顺序与逐字节行为。
 
 ## 上游编码
 
