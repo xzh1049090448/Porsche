@@ -24,25 +24,26 @@ const (
 )
 
 type Conversation struct {
-	Model             string
-	Instructions      []Message
-	Messages          []Message
-	Tools             []ToolDefinition
-	ToolChoice        ToolChoice
-	ParallelToolCalls *bool
-	MaxOutputTokens   *int64
-	Temperature       *float64
-	TopP              *float64
-	FrequencyPenalty  *float64
-	PresencePenalty   *float64
-	Stop              json.RawMessage
-	Seed              *int64
-	N                 *int64
-	ResponseFormat    json.RawMessage
-	IncludeUsage      bool
-	Stream            bool
-	ReasoningEffort   string
-	Thinking          *ThinkingMode
+	Model                 string
+	Instructions          []Message
+	Messages              []Message
+	Tools                 []ToolDefinition
+	ToolChoice            ToolChoice
+	ParallelToolCalls     *bool
+	MaxOutputTokens       *int64
+	Temperature           *float64
+	TopP                  *float64
+	FrequencyPenalty      *float64
+	PresencePenalty       *float64
+	Stop                  json.RawMessage
+	Seed                  *int64
+	N                     *int64
+	ResponseFormat        json.RawMessage
+	IncludeUsage          bool
+	Stream                bool
+	ReasoningEffort       string
+	Thinking              *ThinkingMode
+	ThinkingClearThinking *bool
 }
 
 type Message struct {

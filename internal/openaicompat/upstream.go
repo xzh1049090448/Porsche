@@ -24,7 +24,8 @@ type upstreamRequest struct {
 }
 
 type upstreamThinking struct {
-	Type string `json:"type"`
+	Type          string `json:"type"`
+	ClearThinking *bool  `json:"clear_thinking,omitempty"`
 }
 
 type upstreamMessage struct {
@@ -110,7 +111,7 @@ func EncodeUpstream(conversation Conversation) ([]byte, error) {
 		request.ReasoningEffort = &effort
 	}
 	if conversation.Thinking != nil {
-		request.Thinking = &upstreamThinking{Type: string(*conversation.Thinking)}
+		request.Thinking = &upstreamThinking{Type: string(*conversation.Thinking), ClearThinking: conversation.ThinkingClearThinking}
 	}
 	return json.Marshal(request)
 }

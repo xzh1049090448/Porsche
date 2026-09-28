@@ -564,3 +564,10 @@
 - 明确未运行：真实 JieKou 付费上游对 `reasoning_effort`/`thinking` 的支持、真实 DeepSeek Harness 端到端会话、平台路径推理控制、`/v1` 逐请求计费与 DB 审计、生产迁移/部署/验收。本地夹具不代表上游或生产验收。
 - 独立门禁（同一 review snapshot `f8031ca84266e1999b6d2acab4c5de1248f9fb077cb0f78cc5f1c09c3d6e9b5b` / 受审 revision `1f60fbf9b8c56bb4577fec8d5b9d86b1392856e8`，`review_snapshot.py verify` 均 exit 0）：规格 `SPEC_PASS`（10 项逐项 PASS）；安全 `SECURITY_PASS`（无 Critical/High，记录 3 项 Low 与 1 项 Info，见实现报告）；独立测试 `PASS`（单元与 race 0 fail/0 skip，5 个真实 MySQL Handler 用例 5 PASS/0 FAIL/0 SKIP，vet 与 diff clean）。
 - 实现报告 `docs/superpowers/reports/2026-09-19-deepseek-harness-field-compat.md` 与本节、`feature_list.json` 的门禁记录属于受审 revision 之后的文档收尾提交，不改变受审代码。PR #19。
+
+## 2026-09-20：pi-ai（Z.ai 兼容路由）thinking 兼容补齐
+
+- 背景：DSH 的 `llm-pi-ai` provider 名为 `zai`、baseURL 指向本网关，pi-ai 的 zai thinking format 会发送 `thinking: {type, clear_thinking}`（`openai-completions.js:634-644`），而 PR #19 的 `thinking` 只允许 `type`，因此仍会 `unsupported_parameter`。
+- 变更（堆叠在 PR #19 之上，无数据库迁移）：`thinking` 增加可选 `clear_thinking`（布尔），与 `type` 一起校验并原样转发；assistant 消息的 `reasoning_details` 校验为 JSON 数组、限长后**接受并丢弃**（不转发）；`thinking` 其他未知嵌套字段、缺失/错误类型仍 `unsupported_parameter`；`reasoning_details` 出现在非 assistant 角色、非数组或超限时 `invalid_request`。
+- 验证：`GOCACHE=/private/tmp/porsche-issue18-go-cache go build ./...`、`go vet ./...`、`go test ./internal/openaicompat ./internal/whitelabel ./internal/config -count=1`、`git diff --check` 通过；隔离 disposable MySQL 8.0.46（tmpfs、loopback-only、无命名卷，0001–0020）+ Redis 7 下 `go test ./internal/handler -run 'TestGateway' -count=1` 通过。
+- 未运行：真实 JieKou 上游对 `clear_thinking` 的接受度、真实 DSH 端到端、生产部署与验收。本地夹具不代表上游或生产验收。

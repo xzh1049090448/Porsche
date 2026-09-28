@@ -30,6 +30,9 @@ func validateConversation(c Conversation) *Error {
 	if c.Thinking != nil && *c.Thinking != ThinkingEnabled && *c.Thinking != ThinkingDisabled {
 		return InvalidRequest()
 	}
+	if c.ThinkingClearThinking != nil && c.Thinking == nil {
+		return InvalidRequest()
+	}
 	declared := make(map[string]struct{})
 	open := make(map[string]struct{})
 	for _, message := range append(append([]Message(nil), c.Instructions...), c.Messages...) {
