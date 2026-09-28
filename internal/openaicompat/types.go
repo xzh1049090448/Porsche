@@ -4,7 +4,10 @@ import "encoding/json"
 
 const (
 	MaxRequestBodyBytes = 12 * 1024 * 1024
-	MaxMessages         = 128
+	// MaxMessages bounds one request's message array. It must comfortably fit a
+	// long agent conversation: a coding agent commonly replays 100-500 message
+	// and tool-result entries. The 12 MiB body cap remains the hard bound.
+	MaxMessages         = 1024
 	MaxTextContentBytes = 1 * 1024 * 1024
 	MaxTools            = 32
 	MaxParallelCalls    = 64
@@ -72,9 +75,13 @@ type ToolChoice struct {
 	Name string
 }
 
+// Error is an internal classification. Detail is a content-free diagnostic
+// reason (field name or size limit, never a request value); it is logged
+// server-side and is never part of the public error response.
 type Error struct {
 	Code   string
 	Status int
+	Detail string
 }
 
 func (e *Error) Error() string {
@@ -87,3 +94,15 @@ func (e *Error) Error() string {
 func InvalidRequest() *Error       { return &Error{Code: "invalid_request", Status: 400} }
 func UnsupportedParameter() *Error { return &Error{Code: "unsupported_parameter", Status: 400} }
 func RequestTooLarge() *Error      { return &Error{Code: "request_too_large", Status: 413} }
+
+func InvalidRequestDetail(detail string) *Error {
+	return &Error{Code: "invalid_request", Status: 400, Detail: detail}
+}
+
+func UnsupportedParameterDetail(detail string) *Error {
+	return &Error{Code: "unsupported_parameter", Status: 400, Detail: detail}
+}
+
+func RequestTooLargeDetail(detail string) *Error {
+	return &Error{Code: "request_too_large", Status: 413, Detail: detail}
+}
