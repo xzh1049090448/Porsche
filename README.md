@@ -87,7 +87,10 @@ JIEKOU_PASSTHROUGH_MODELS=
 
 DeepSeek Harness 客户端在 Chat Completions 上发送的 `thinking`、
 `reasoning_effort` 与 assistant `reasoning_content` 只在命中
-`JIEKOU_REASONING_MODELS` 时被接受并转发；响应会保留上游的
+`JIEKOU_REASONING_MODELS` 时被接受并转发；`thinking` 还接受可选的
+`clear_thinking`（布尔，Z.ai/GLM 兼容客户端会携带），它与 `type` 一起原样转发。
+assistant 消息上的 `reasoning_details`（部分 OpenAI-compatible SDK 的思考回放元数据）
+会被校验为 JSON 数组后**丢弃**，不会转发给上游。响应会保留上游的
 `reasoning_content` 与 usage 明细（`completion_tokens_details.reasoning_tokens`、
 `prompt_tokens_details.cached_tokens`、`prompt_cache_hit_tokens`、
 `prompt_cache_miss_tokens`），但不改变 `total_tokens` 计费口径。

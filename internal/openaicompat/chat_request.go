@@ -36,6 +36,7 @@ type chatMessageDTO struct {
 	ToolCalls        []toolCallDTO   `json:"tool_calls"`
 	ToolCallID       string          `json:"tool_call_id"`
 	ReasoningContent *string         `json:"reasoning_content"`
+	ReasoningDetails json.RawMessage `json:"reasoning_details"`
 }
 
 type toolCallDTO struct {
@@ -77,7 +78,7 @@ func DecodeChat(body []byte, policy ReasoningPolicy) (Conversation, *Error) {
 	if reasoningErr != nil {
 		return Conversation{}, reasoningErr
 	}
-	thinking, thinkingErr := decodeThinking(request.Thinking)
+	thinking, thinkingClear, thinkingErr := decodeThinking(request.Thinking)
 	if thinkingErr != nil {
 		return Conversation{}, thinkingErr
 	}
@@ -139,7 +140,7 @@ func DecodeChat(body []byte, policy ReasoningPolicy) (Conversation, *Error) {
 	if !validStop(request.Stop) || !responseFormatOK || request.StreamOptions != nil && request.StreamOptions.IncludeUsage == nil {
 		return Conversation{}, InvalidRequest()
 	}
-	conversation := Conversation{Model: request.Model, Messages: messages, Tools: tools, ToolChoice: choice, ParallelToolCalls: request.ParallelToolCalls, MaxOutputTokens: maxOutput, Temperature: temperature, TopP: topP, FrequencyPenalty: frequency, PresencePenalty: presence, Stop: cloneRaw(request.Stop), Seed: seed, N: n, ResponseFormat: responseFormat, Stream: request.Stream != nil && *request.Stream, IncludeUsage: request.StreamOptions != nil && request.StreamOptions.IncludeUsage != nil && *request.StreamOptions.IncludeUsage, ReasoningEffort: reasoningEffort, Thinking: thinking}
+	conversation := Conversation{Model: request.Model, Messages: messages, Tools: tools, ToolChoice: choice, ParallelToolCalls: request.ParallelToolCalls, MaxOutputTokens: maxOutput, Temperature: temperature, TopP: topP, FrequencyPenalty: frequency, PresencePenalty: presence, Stop: cloneRaw(request.Stop), Seed: seed, N: n, ResponseFormat: responseFormat, Stream: request.Stream != nil && *request.Stream, IncludeUsage: request.StreamOptions != nil && request.StreamOptions.IncludeUsage != nil && *request.StreamOptions.IncludeUsage, ReasoningEffort: reasoningEffort, Thinking: thinking, ThinkingClearThinking: thinkingClear}
 	if err := validateConversation(conversation); err != nil {
 		return Conversation{}, err
 	}
@@ -161,6 +162,9 @@ func decodeChatMessage(raw json.RawMessage) (Message, *Error) {
 	}
 	message := Message{Role: Role(dto.Role), ToolCallID: dto.ToolCallID}
 	if message.Role != RoleAssistant && dto.ReasoningContent != nil {
+		return Message{}, InvalidRequest()
+	}
+	if !validDroppedReasoningDetails(dto.ReasoningDetails) || message.Role != RoleAssistant && !absentJSON(dto.ReasoningDetails) {
 		return Message{}, InvalidRequest()
 	}
 	switch message.Role {

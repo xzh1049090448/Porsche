@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 )
 
 // ThinkingMode is the canonical value of the Chat Completions "thinking"
@@ -60,29 +61,53 @@ func (p ReasoningPolicy) Empty() bool {
 	return len(p.Models) == 0 && len(p.Patterns) == 0
 }
 
-var thinkingRequestFields = map[string]struct{}{"type": {}}
+var thinkingRequestFields = map[string]struct{}{"type": {}, "clear_thinking": {}}
 
-// decodeThinking validates the Chat "thinking" object. Every shape problem
-// (unknown nested field, missing/extra field, wrong JSON type, unknown enum
-// value) is classified as unsupported_parameter by the frozen design.
-func decodeThinking(raw json.RawMessage) (*ThinkingMode, *Error) {
+// decodeThinking validates the Chat "thinking" object. "type" is required and
+// "clear_thinking" is an optional bool; both are forwarded upstream verbatim.
+// Every other shape problem (unknown nested field, missing/extra field, wrong
+// JSON type, unknown enum value) is classified as unsupported_parameter by the
+// frozen design.
+func decodeThinking(raw json.RawMessage) (*ThinkingMode, *bool, *Error) {
 	if len(raw) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
-		return nil, nil
+		return nil, nil, nil
 	}
 	if hasUnknownFields(raw, thinkingRequestFields) {
-		return nil, UnsupportedParameter()
+		return nil, nil, UnsupportedParameter()
 	}
 	var dto struct {
-		Type string `json:"type"`
+		Type          string `json:"type"`
+		ClearThinking *bool  `json:"clear_thinking"`
 	}
 	if decodeStrict(raw, &dto) != nil {
-		return nil, UnsupportedParameter()
+		return nil, nil, UnsupportedParameter()
 	}
 	mode := ThinkingMode(dto.Type)
 	if mode != ThinkingEnabled && mode != ThinkingDisabled {
-		return nil, UnsupportedParameter()
+		return nil, nil, UnsupportedParameter()
 	}
-	return &mode, nil
+	return &mode, dto.ClearThinking, nil
+}
+
+// validDroppedReasoningDetails accepts the client-side reasoning_details replay
+// metadata some OpenAI-compatible SDKs attach to assistant messages. The field
+// is validated (JSON array, UTF-8, bounded) and then dropped: it is never
+// forwarded upstream, because only reasoning_content is part of the upstream
+// contract.
+func validDroppedReasoningDetails(raw json.RawMessage) bool {
+	if absentJSON(raw) {
+		return true
+	}
+	if len(raw) > MaxArgumentsBytes || !utf8.Valid(raw) {
+		return false
+	}
+	var items []json.RawMessage
+	return json.Unmarshal(raw, &items) == nil && items != nil
+}
+
+// absentJSON reports whether a raw JSON field was omitted or explicitly null.
+func absentJSON(raw json.RawMessage) bool {
+	return len(raw) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null"))
 }
 
 // decodeReasoningEffort validates the Chat "reasoning_effort" value. A
