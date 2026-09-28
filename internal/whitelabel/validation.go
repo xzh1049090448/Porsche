@@ -14,10 +14,7 @@ import (
 
 const (
 	MaxRequestBodyBytes = 12 * 1024 * 1024
-	// MaxMessages matches the gateway limit so long agent conversations are not
-	// rejected on the platform path either; the 12 MiB body cap stays the hard
-	// bound. The platform path bounds n=1 and its own message shapes separately.
-	MaxMessages         = 1024
+	MaxMessages         = 128
 	MaxTextContentBytes = 1 * 1024 * 1024
 	MaxDataImageBytes   = 8 * 1024 * 1024
 	MaxTools            = 32

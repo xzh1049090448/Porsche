@@ -3,7 +3,6 @@ package openaicompat
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"math"
 	"strings"
 	"unicode/utf8"
@@ -76,20 +75,14 @@ var responseToolChoiceFields = map[string]struct{}{"type": {}, "name": {}}
 
 func DecodeResponses(body []byte, policy ReasoningPolicy) (Conversation, *Error) {
 	if len(body) > MaxRequestBodyBytes {
-		return Conversation{}, RequestTooLargeDetail(fmt.Sprintf("body=%d limit=%d", len(body), MaxRequestBodyBytes))
+		return Conversation{}, RequestTooLarge()
 	}
-	if field, unknown := unknownFieldName(body, responsesRequestFields); unknown {
-		return Conversation{}, UnsupportedParameterDetail("unknown top-level field " + field)
+	if hasUnknownFields(body, responsesRequestFields) {
+		return Conversation{}, UnsupportedParameter()
 	}
 	var request responsesRequestDTO
-	if err := decodeStrict(body, &request); err != nil {
-		return Conversation{}, InvalidRequestDetail("decode: " + err.Error())
-	}
-	if strings.TrimSpace(request.Model) == "" {
-		return Conversation{}, InvalidRequestDetail("model is required")
-	}
-	if len(request.Input) == 0 {
-		return Conversation{}, InvalidRequestDetail("input is required")
+	if decodeStrict(body, &request) != nil || strings.TrimSpace(request.Model) == "" || len(request.Input) == 0 {
+		return Conversation{}, InvalidRequest()
 	}
 	if request.Store != nil && *request.Store || len(request.PreviousResponse) != 0 && !bytes.Equal(bytes.TrimSpace(request.PreviousResponse), []byte("null")) {
 		return Conversation{}, UnsupportedParameter()
