@@ -303,11 +303,6 @@ func gatewayCompatError(c *gin.Context, err *openaicompat.Error) {
 		gatewayWhiteLabelError(c, &whitelabel.Error{Code: whitelabel.CodeInvalidRequest, Status: http.StatusBadRequest, Type: whitelabel.TypeInvalidRequest})
 		return
 	}
-	// Content-free diagnostic: the field name or size limit that rejected the
-	// request, never a request value. The public envelope below stays unchanged.
-	if err.Detail != "" {
-		log.Printf("gateway request rejected request_id=%s code=%s detail=%s", c.Writer.Header().Get("X-Request-ID"), err.Code, err.Detail)
-	}
 	gatewayWhiteLabelError(c, &whitelabel.Error{Code: whitelabel.Code(err.Code), Status: err.Status, Type: whitelabel.TypeInvalidRequest})
 }
 

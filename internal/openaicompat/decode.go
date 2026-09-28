@@ -6,7 +6,6 @@ import (
 	"io"
 	"math"
 	"regexp"
-	"sort"
 	"strings"
 	"unicode/utf8"
 
@@ -30,29 +29,16 @@ func decodeStrict(raw []byte, dst any) error {
 }
 
 func hasUnknownFields(raw []byte, allowed map[string]struct{}) bool {
-	_, unknown := unknownFieldName(raw, allowed)
-	return unknown
-}
-
-// unknownFieldName returns the lexicographically first top-level field of raw
-// that is not in allowed. The name is safe to log: it is a JSON key, never a
-// request value.
-func unknownFieldName(raw []byte, allowed map[string]struct{}) (string, bool) {
 	var fields map[string]json.RawMessage
 	if json.Unmarshal(raw, &fields) != nil {
-		return "", false
+		return false
 	}
-	unknown := make([]string, 0, 1)
 	for field := range fields {
 		if _, ok := allowed[field]; !ok {
-			unknown = append(unknown, field)
+			return true
 		}
 	}
-	if len(unknown) == 0 {
-		return "", false
-	}
-	sort.Strings(unknown)
-	return unknown[0], true
+	return false
 }
 
 func numberInt(value *json.Number, min, max int64) (*int64, bool) {
