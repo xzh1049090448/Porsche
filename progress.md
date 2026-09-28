@@ -571,3 +571,10 @@
 - 变更（堆叠在 PR #19 之上，无数据库迁移）：`thinking` 增加可选 `clear_thinking`（布尔），与 `type` 一起校验并原样转发；assistant 消息的 `reasoning_details` 校验为 JSON 数组、限长后**接受并丢弃**（不转发）；`thinking` 其他未知嵌套字段、缺失/错误类型仍 `unsupported_parameter`；`reasoning_details` 出现在非 assistant 角色、非数组或超限时 `invalid_request`。
 - 验证：`GOCACHE=/private/tmp/porsche-issue18-go-cache go build ./...`、`go vet ./...`、`go test ./internal/openaicompat ./internal/whitelabel ./internal/config -count=1`、`git diff --check` 通过；隔离 disposable MySQL 8.0.46（tmpfs、loopback-only、无命名卷，0001–0020）+ Redis 7 下 `go test ./internal/handler -run 'TestGateway' -count=1` 通过。
 - 未运行：真实 JieKou 上游对 `clear_thinking` 的接受度、真实 DSH 端到端、生产部署与验收。本地夹具不代表上游或生产验收。
+
+## 2026-09-28：长会话 messages 上限修复与拒绝原因诊断
+
+- 根因：DSH 长会话（失败点约 130 条 wire 消息：2 system + 9 user + 52 assistant + 67 tool）超过网关 `MaxMessages = 128`，`DecodeChat` 返回 `400 invalid_request`；短会话则是顶层 `thinking` 触发 `unsupported_parameter`。DSH 固定发送 27 个工具，未触及 `MaxTools = 32`。
+- 变更（无数据库迁移）：`internal/openaicompat` 与 `internal/whitelabel` 的 `MaxMessages` 由 128 提升到 **1024**（12 MiB body 仍是硬上限）；messages 超限改为 `413 request_too_large`；新增内容无关的拒绝原因诊断——`openaicompat.Error.Detail` 记录未知顶层字段名、`message[index]` + 解码错误字段名或尺寸计数，`gatewayCompatError` 以 `gateway request rejected request_id=... code=... detail=...` 记录；`Detail` 不进入公开错误 envelope。
+- 验证：`GOCACHE=/private/tmp/porsche-issue18-go-cache` 下 `go build ./...`、`go vet ./...`、`go test ./internal/openaicompat ./internal/whitelabel ./internal/config -count=1`、`go test -race ./internal/openaicompat -count=1`、`git diff --check`、`gofmt -l cmd internal` 通过；隔离 disposable MySQL 8.0.46（tmpfs、loopback-only、无命名卷，0001–0020）+ Redis 7 下 `go test ./internal/handler ./internal/whitelabel ./internal/openaicompat ./internal/config -count=1` 通过。新增测试覆盖 130/300/1024 条消息的合法工具历史、超限 413、诊断原因不含取值、Handler 端长会话与拒绝日志。
+- 未运行：真实 DSH 端到端（含 >128 条消息的会话）、生产部署与验收。

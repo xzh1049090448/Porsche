@@ -3,6 +3,7 @@ package openaicompat
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"math"
 	"strings"
 	"unicode/utf8"
@@ -65,14 +66,23 @@ type streamOptionsDTO struct {
 
 func DecodeChat(body []byte, policy ReasoningPolicy) (Conversation, *Error) {
 	if len(body) > MaxRequestBodyBytes {
-		return Conversation{}, RequestTooLarge()
+		return Conversation{}, RequestTooLargeDetail(fmt.Sprintf("body=%d limit=%d", len(body), MaxRequestBodyBytes))
 	}
-	if hasUnknownFields(body, chatRequestFields) {
-		return Conversation{}, UnsupportedParameter()
+	if field, unknown := unknownFieldName(body, chatRequestFields); unknown {
+		return Conversation{}, UnsupportedParameterDetail("unknown top-level field " + field)
 	}
 	var request chatRequestDTO
-	if decodeStrict(body, &request) != nil || request.Messages == nil || len(request.Messages) > MaxMessages || strings.TrimSpace(request.Model) == "" {
-		return Conversation{}, InvalidRequest()
+	if err := decodeStrict(body, &request); err != nil {
+		return Conversation{}, InvalidRequestDetail("decode: " + err.Error())
+	}
+	if request.Messages == nil {
+		return Conversation{}, InvalidRequestDetail("messages is required")
+	}
+	if len(request.Messages) > MaxMessages {
+		return Conversation{}, RequestTooLargeDetail(fmt.Sprintf("messages=%d limit=%d", len(request.Messages), MaxMessages))
+	}
+	if strings.TrimSpace(request.Model) == "" {
+		return Conversation{}, InvalidRequestDetail("model is required")
 	}
 	reasoningEffort, reasoningErr := decodeReasoningEffort(request.ReasoningEffort)
 	if reasoningErr != nil {
@@ -118,15 +128,20 @@ func DecodeChat(body []byte, policy ReasoningPolicy) (Conversation, *Error) {
 		return Conversation{}, InvalidRequest()
 	}
 	messages := make([]Message, 0, len(request.Messages))
-	for _, raw := range request.Messages {
+	for index, raw := range request.Messages {
 		message, err := decodeChatMessage(raw)
 		if err != nil {
+			if err.Detail == "" {
+				err.Detail = fmt.Sprintf("message[%d]", index)
+			} else {
+				err.Detail = fmt.Sprintf("message[%d]: %s", index, err.Detail)
+			}
 			return Conversation{}, err
 		}
 		messages = append(messages, message)
 	}
 	if !reasoningAllowed(policy, request.Model, reasoningEffort, thinking, messages) {
-		return Conversation{}, UnsupportedParameter()
+		return Conversation{}, UnsupportedParameterDetail("reasoning field for model without JIEKOU_REASONING_MODELS capability")
 	}
 	tools, err := decodeChatTools(request.Tools)
 	if err != nil {
@@ -157,8 +172,8 @@ var chatRequestFields = map[string]struct{}{
 
 func decodeChatMessage(raw json.RawMessage) (Message, *Error) {
 	var dto chatMessageDTO
-	if decodeStrict(raw, &dto) != nil {
-		return Message{}, InvalidRequest()
+	if err := decodeStrict(raw, &dto); err != nil {
+		return Message{}, InvalidRequestDetail("decode: " + err.Error())
 	}
 	message := Message{Role: Role(dto.Role), ToolCallID: dto.ToolCallID}
 	if message.Role != RoleAssistant && dto.ReasoningContent != nil {
