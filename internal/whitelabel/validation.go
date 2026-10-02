@@ -14,7 +14,6 @@ import (
 
 const (
 	MaxRequestBodyBytes = 12 * 1024 * 1024
-	MaxMessages         = 128
 	MaxTextContentBytes = 1 * 1024 * 1024
 	MaxDataImageBytes   = 8 * 1024 * 1024
 	MaxTools            = 32
@@ -100,7 +99,7 @@ func ValidateRequest(body []byte, mode ValidationMode) *Error {
 	if err := decodeStrict(body, &request); err != nil {
 		return invalidRequest(CodeInvalidRequest)
 	}
-	if strings.TrimSpace(request.Model) == "" || request.Messages == nil || len(request.Messages) > MaxMessages {
+	if strings.TrimSpace(request.Model) == "" || request.Messages == nil {
 		return invalidRequest(CodeInvalidRequest)
 	}
 	if request.MaxTokens == nil {

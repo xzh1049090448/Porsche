@@ -74,7 +74,7 @@ func SanitizePassthrough(body []byte, model string) ([]byte, PassthroughReport, 
 		return nil, report, InvalidRequest()
 	}
 	var messages []json.RawMessage
-	if json.Unmarshal(rawMessages, &messages) != nil || len(messages) == 0 || len(messages) > MaxMessages {
+	if json.Unmarshal(rawMessages, &messages) != nil || len(messages) == 0 {
 		return nil, report, InvalidRequest()
 	}
 	report.MessageCount = len(messages)

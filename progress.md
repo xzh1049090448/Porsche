@@ -571,3 +571,11 @@
 - 变更（堆叠在 PR #19 之上，无数据库迁移）：`thinking` 增加可选 `clear_thinking`（布尔），与 `type` 一起校验并原样转发；assistant 消息的 `reasoning_details` 校验为 JSON 数组、限长后**接受并丢弃**（不转发）；`thinking` 其他未知嵌套字段、缺失/错误类型仍 `unsupported_parameter`；`reasoning_details` 出现在非 assistant 角色、非数组或超限时 `invalid_request`。
 - 验证：`GOCACHE=/private/tmp/porsche-issue18-go-cache go build ./...`、`go vet ./...`、`go test ./internal/openaicompat ./internal/whitelabel ./internal/config -count=1`、`git diff --check` 通过；隔离 disposable MySQL 8.0.46（tmpfs、loopback-only、无命名卷，0001–0020）+ Redis 7 下 `go test ./internal/handler -run 'TestGateway' -count=1` 通过。
 - 未运行：真实 JieKou 上游对 `clear_thinking` 的接受度、真实 DSH 端到端、生产部署与验收。本地夹具不代表上游或生产验收。
+
+## 2026-09-28：移除 message 条数上限（仅此一项）
+
+- 决定：长会话被 `MaxMessages = 128` 拒绝是主用例阻塞点；本次**只移除 message 条数上限**，其余限制（12 MiB body、单项文本/args/tool 输出/图片、`MaxTools`、`MaxParallelCalls`、`MaxCallIDBytes`）与错误契约**一律不变**；**不新增**任何 token/上下文超限限制（上下文继续交给上游判定）。
+- 变更（无数据库迁移）：删除 `internal/openaicompat` 与 `internal/whitelabel` 的 `MaxMessages` 常量及其全部判定点——`chat_request.go`（messages）、`responses_request.go`（input items）、`passthrough.go`（透传 messages）、`validate.go`（canonical 会话）、`whitelabel/validation.go`（平台路径）。空数组仍按原契约拒绝；12 MiB body 成为唯一的数组规模边界。
+- 残留风险（已知并接受）：请求体上限内可容纳数万条极小 message（约 30 字节/条），`/v1` 会对其逐条解析与校验；这是“移除条数上限”的直接代价，仅由 12 MiB body 兜底。未新增速率/并发限制。
+- 验证：`GOCACHE=/private/tmp/porsche-issue18-go-cache` 下 `go build ./...`、`go vet ./...`、`go test ./internal/openaicompat ./internal/whitelabel ./internal/config -count=1`、`go test -race ./internal/openaicompat ./internal/whitelabel ./internal/config -count=1`、`gofmt -l cmd internal`、`git diff --check` 通过；隔离 disposable MySQL 8.0.46（tmpfs、loopback-only、无命名卷，0001–0020）+ Redis 7 下 `go test ./internal/handler ./internal/whitelabel ./internal/openaicompat ./internal/config -count=1` 通过。新增回归覆盖 129/1024/20000 条 Chat messages、透传 messages、Responses input items、平台路径，以及 200 轮工具往返的 Handler 端长会话（上游确实收到 200 条 tool 消息）。
+- 未运行：真实 DSH 长会话端到端、生产部署与验收。
