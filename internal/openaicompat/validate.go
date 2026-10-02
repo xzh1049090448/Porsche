@@ -6,7 +6,7 @@ import (
 )
 
 func validateConversation(c Conversation) *Error {
-	if strings.TrimSpace(c.Model) == "" || len(c.Messages) > MaxMessages || len(c.Tools) > MaxTools {
+	if strings.TrimSpace(c.Model) == "" || len(c.Tools) > MaxTools {
 		return InvalidRequest()
 	}
 	toolNames := make(map[string]struct{}, len(c.Tools))

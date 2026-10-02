@@ -144,7 +144,7 @@ func decodeResponseInput(raw json.RawMessage) ([]Message, *Error) {
 		return []Message{{Role: RoleUser, Content: text}}, nil
 	}
 	var items []json.RawMessage
-	if json.Unmarshal(raw, &items) != nil || len(items) == 0 || len(items) > MaxMessages*2 {
+	if json.Unmarshal(raw, &items) != nil || len(items) == 0 {
 		return nil, InvalidRequest()
 	}
 	messages := make([]Message, 0, len(items))

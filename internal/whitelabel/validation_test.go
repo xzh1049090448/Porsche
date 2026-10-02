@@ -156,11 +156,21 @@ func TestValidateRequestLimitsBodyMessagesAndText(t *testing.T) {
 	tooLarge := make([]byte, MaxRequestBodyBytes+1)
 	requireCode(t, ValidateRequest(tooLarge, GatewayValidation), CodeRequestTooLarge)
 
-	messages := strings.Repeat(`{"role":"user","content":"x"},`, MaxMessages)
-	requireCode(t, ValidateRequest([]byte(`{"model":"x","messages":[`+messages+`{"role":"user","content":"x"}],"max_tokens":1}`), GatewayValidation), CodeInvalidRequest)
-
 	text := strings.Repeat("x", MaxTextContentBytes+1)
 	requireCode(t, ValidateRequest([]byte(`{"model":"x","messages":[{"role":"user","content":"`+text+`"}],"max_tokens":1}`), GatewayValidation), CodeInvalidRequest)
+}
+
+// TestValidateRequestAcceptsUnboundedMessageCount records the deliberate
+// removal of the message-count ceiling: only the 12 MiB body cap bounds the
+// array, so long agent conversations are not rejected on entry count.
+func TestValidateRequestAcceptsUnboundedMessageCount(t *testing.T) {
+	for _, count := range []int{129, 1024, 20000} {
+		messages := strings.Repeat(`{"role":"user","content":"x"},`, count)
+		body := []byte(`{"model":"x","messages":[` + messages + `{"role":"user","content":"x"}],"max_tokens":1}`)
+		if err := ValidateRequest(body, GatewayValidation); err != nil {
+			t.Fatalf("count=%d rejected: %#v", count, err)
+		}
+	}
 }
 
 func requireCode(t *testing.T, err *Error, want Code) {

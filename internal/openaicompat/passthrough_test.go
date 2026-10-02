@@ -131,7 +131,6 @@ func TestSanitizePassthroughRemovesEmptyStreamOptions(t *testing.T) {
 }
 
 func TestSanitizePassthroughRejectsInvalidStructure(t *testing.T) {
-	tooManyMessages := `{"model":"m","messages":[` + strings.TrimSuffix(strings.Repeat(`{"role":"user","content":"x"},`, MaxMessages+1), ",") + `]}`
 	tooManyTools := `{"model":"m","messages":[{"role":"user","content":"x"}],"tools":[` + strings.TrimSuffix(strings.Repeat(`{"type":"function"},`, MaxTools+1), ",") + `]}`
 	for name, body := range map[string]string{
 		"non object":         `"string"`,
@@ -143,7 +142,6 @@ func TestSanitizePassthroughRejectsInvalidStructure(t *testing.T) {
 		"missing messages":   `{"model":"m"}`,
 		"empty messages":     `{"model":"m","messages":[]}`,
 		"messages not array": `{"model":"m","messages":{}}`,
-		"too many messages":  tooManyMessages,
 		"tools not array":    `{"model":"m","messages":[{"role":"user","content":"x"}],"tools":{}}`,
 		"too many tools":     tooManyTools,
 	} {

@@ -4,7 +4,6 @@ import "encoding/json"
 
 const (
 	MaxRequestBodyBytes = 12 * 1024 * 1024
-	MaxMessages         = 128
 	MaxTextContentBytes = 1 * 1024 * 1024
 	MaxTools            = 32
 	MaxParallelCalls    = 64

@@ -71,7 +71,7 @@ func DecodeChat(body []byte, policy ReasoningPolicy) (Conversation, *Error) {
 		return Conversation{}, UnsupportedParameter()
 	}
 	var request chatRequestDTO
-	if decodeStrict(body, &request) != nil || request.Messages == nil || len(request.Messages) > MaxMessages || strings.TrimSpace(request.Model) == "" {
+	if decodeStrict(body, &request) != nil || request.Messages == nil || strings.TrimSpace(request.Model) == "" {
 		return Conversation{}, InvalidRequest()
 	}
 	reasoningEffort, reasoningErr := decodeReasoningEffort(request.ReasoningEffort)
